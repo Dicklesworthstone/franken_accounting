@@ -7,7 +7,7 @@
 use asupersync::fs::Vfs;
 use fa_model::symbols::property;
 use fa_model::{Id128, Reader, Writer, domain_digest};
-use fgdb::{Database, VertexRow, WriteBatch, WriteTxnError};
+use fgdb::{Database, VertexRow, WriteBatch, WriteTxn, WriteTxnError};
 use fgdb_delta_types::LabelId;
 use fgdb_types::{CanonicalScalar, CommitSeq, QueryCx, VId};
 
@@ -16,6 +16,15 @@ use crate::rows::{prop, scalar_bytes};
 
 pub const CHUNK_BYTES: usize = fa_model::limits::OBJECT_CHUNK_BYTES;
 const FORMAT: &[u8] = b"fa:object:v1";
+
+/// Recognize a typed storage manifest for integrity inventory checks. This is
+/// only a discriminator; consumers must still resolve and verify the body.
+pub fn is_payload_for(kind: ObjectKind, encoded: &[u8]) -> bool {
+    encoded.len() == FORMAT.len() + 2 + 8 + 32 + 32
+        && encoded.starts_with(FORMAT)
+        && encoded.get(FORMAT.len()..FORMAT.len() + 2)
+            == Some((kind as u16).to_le_bytes().as_slice())
+}
 
 /// Registered wire discriminators; adding a consumer must register its kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +40,7 @@ pub enum ObjectKind {
     PeriodPlan = 8,
     MigrationRun = 9,
     MigrationSource = 10,
+    Entry = 11,
 }
 
 /// Public content identity, separate from a caller's graph locator.
@@ -143,7 +153,7 @@ pub fn read<V: Vfs + Clone>(
     at: CommitSeq,
     max_bytes: usize,
 ) -> Result<Vec<u8>, KernelError> {
-    read_checked(db, book, root, label, kind, at, max_bytes, || {
+    read_checked(db, None, book, root, label, kind, at, max_bytes, || {
         cx.checkpoint().map_err(WriteTxnError::Interrupted)?;
         Ok(())
     })
@@ -165,7 +175,7 @@ pub(crate) fn read_bounded<V: Vfs + Clone>(
     max_bytes: usize,
 ) -> Result<Vec<u8>, KernelError> {
     let current = asupersync::Cx::current();
-    read_checked(db, book, root, label, kind, at, max_bytes, || {
+    read_checked(db, None, book, root, label, kind, at, max_bytes, || {
         if let Some(cx) = &current {
             cx.checkpoint()
                 .map_err(|error| WriteTxnError::Interrupted(Box::new(error)))?;
@@ -174,9 +184,43 @@ pub(crate) fn read_bounded<V: Vfs + Clone>(
     })
 }
 
+/// Read a root already authorized by a posting transaction. A root created by
+/// an earlier member of that transaction resolves fragments from its staged
+/// effects; committed roots keep the same historical birth checks as `read`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_staged_bounded<V: Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: Id128,
+    root: &VertexRow,
+    label: LabelId,
+    kind: ObjectKind,
+    max_bytes: usize,
+) -> Result<Vec<u8>, KernelError> {
+    let current = asupersync::Cx::current();
+    read_checked(
+        db,
+        Some(txn),
+        book,
+        root,
+        label,
+        kind,
+        txn.basis(),
+        max_bytes,
+        || {
+            if let Some(cx) = &current {
+                cx.checkpoint()
+                    .map_err(|error| WriteTxnError::Interrupted(Box::new(error)))?;
+            }
+            Ok(())
+        },
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn read_checked<V: Vfs + Clone>(
     db: &Database<V>,
+    txn: Option<&WriteTxn>,
     book: Id128,
     root: &VertexRow,
     label: LabelId,
@@ -216,25 +260,41 @@ fn read_checked<V: Vfs + Clone>(
             "manifest length is outside its format bound",
         ));
     }
-    let before = CommitSeq(
-        root.created_at
-            .0
-            .checked_sub(1)
-            .ok_or_else(|| corrupt(root.vid, "root has no creating commit"))?,
-    );
+    let staged = txn.is_some() && db.vertex_at(root.vid, at)?.is_none();
+    let before = if staged {
+        None
+    } else {
+        Some(CommitSeq(root.created_at.0.checked_sub(1).ok_or_else(
+            || corrupt(root.vid, "root has no creating commit"),
+        )?))
+    };
     let mut bytes = Vec::with_capacity(size);
     for index in 0..size.div_ceil(CHUNK_BYTES) {
         checkpoint()?;
         let vid = fragment_vid(book, root.vid, object, index);
-        let Some(row) = db.vertex_at(vid, at)? else {
+        let observed = if let Some(txn) = txn {
+            txn.vertex(db, vid)?
+        } else {
+            db.vertex_at(vid, at)?
+        };
+        let Some(row) = observed.map(|row| row.seen_at(at)) else {
             return Err(corrupt(root.vid, "missing or retired fragment"));
+        };
+        let birth_changed = if let Some(before) = before {
+            db.vertex_at(vid, before)?.is_some()
+                || db
+                    .vertex_at(vid, row.created_at)?
+                    .map(|row| row.seen_at(at))
+                    .as_ref()
+                    != Some(&row)
+        } else {
+            db.vertex_at(vid, at)?.is_some()
         };
         if row.labels.as_slice() != [label]
             || row.retired_at.is_some_and(|retired| retired <= at)
             || row.props.len() != 3
             || row.created_at != root.created_at
-            || db.vertex_at(vid, before)?.is_some()
-            || db.vertex_at(vid, row.created_at)?.as_ref() != Some(&row)
+            || birth_changed
             || !matches!(prop(&row, property::BOOK_ID), Some(CanonicalScalar::Bytes(v)) if v.as_slice() == book.0)
             || !matches!(prop(&row, property::FA_DIGEST), Some(CanonicalScalar::Bytes(v)) if v.as_slice() == object.digest)
         {
@@ -290,6 +350,7 @@ mod tests {
             ObjectKind::PeriodPlan,
             ObjectKind::MigrationRun,
             ObjectKind::MigrationSource,
+            ObjectKind::Entry,
         ]
         .into_iter()
         .flat_map(|kind| {
@@ -369,7 +430,8 @@ mod tests {
                 | ObjectKind::StatementDefinition
                 | ObjectKind::PeriodPlan
                 | ObjectKind::MigrationRun
-                | ObjectKind::MigrationSource => ObjectKind::PostPlan,
+                | ObjectKind::MigrationSource
+                | ObjectKind::Entry => ObjectKind::PostPlan,
             };
             assert!(
                 read(
@@ -443,6 +505,194 @@ mod tests {
                 bytes
             );
         }
+    }
+
+    #[test]
+    fn staged_fragments_are_atomic_durable_and_committed_reads_are_witnessed() {
+        let runtime = RuntimeBuilder::new().build().unwrap();
+        let root_cx = runtime.request_cx_with_budget(Budget::INFINITE);
+        let cx = PurposeContexts::narrow_runtime_root(&root_cx);
+        let vfs = cx.commit().with_restriction(MemVfs::new).unwrap();
+        let keys = DatabaseKeys::new([71; 32], DatabaseSecurityNamespaceId([72; 32]), [73; 32]);
+        let mut db = runtime
+            .block_on(Database::create_with_vfs(
+                &cx.commit(),
+                vfs.clone(),
+                vfs.database_dir(),
+                keys.clone(),
+            ))
+            .unwrap();
+        let book = Id128([74; 16]);
+        let root = VId(75);
+        let body = vec![0x65; 16_385];
+        let kind = ObjectKind::Entry;
+        let make_batch = |with_fragments: bool| {
+            let mut batch = WriteBatch::new(relation::HAS_LEG);
+            batch.create_vertex(
+                root,
+                vec![label::ENTRY],
+                vec![
+                    (
+                        property::FA_PAYLOAD,
+                        scalar_bytes("root", payload(kind, &body).unwrap()).unwrap(),
+                    ),
+                    (
+                        property::BOOK_ID,
+                        scalar_bytes("book", book.0.to_vec()).unwrap(),
+                    ),
+                ],
+            );
+            if with_fragments {
+                stage(
+                    &cx.query(),
+                    &mut batch,
+                    book,
+                    root,
+                    label::ENTRY_FRAGMENT,
+                    kind,
+                    &body,
+                )
+                .unwrap();
+            }
+            batch
+        };
+        let before = db.frontier().unwrap();
+        let mut missing = db.begin(&cx.txn()).unwrap();
+        missing.write(&mut db, make_batch(false)).unwrap();
+        let missing_root = missing.vertex(&db, root).unwrap().unwrap();
+        assert!(
+            read_staged_bounded(
+                &missing,
+                &db,
+                book,
+                &missing_root,
+                label::ENTRY_FRAGMENT,
+                kind,
+                body.len()
+            )
+            .is_err()
+        );
+        missing.abort();
+        assert_eq!(db.frontier().unwrap(), before);
+        assert!(db.vertex(root).unwrap().is_none());
+
+        let mut txn = db.begin(&cx.txn()).unwrap();
+        txn.write(&mut db, make_batch(true)).unwrap();
+        let staged = txn.vertex(&db, root).unwrap().unwrap();
+        assert_eq!(
+            staged.created_at,
+            txn.basis(),
+            "native overlay birth placeholder"
+        );
+        assert_eq!(
+            read_staged_bounded(
+                &txn,
+                &db,
+                book,
+                &staged,
+                label::ENTRY_FRAGMENT,
+                kind,
+                body.len()
+            )
+            .unwrap(),
+            body
+        );
+        assert!(
+            db.vertex(root).unwrap().is_none(),
+            "staging does not publish"
+        );
+        let born = runtime.block_on(txn.commit(&mut db, &cx.commit())).unwrap();
+        assert_eq!(born.0, before.0 + 1);
+        drop(db);
+        let mut db = runtime
+            .block_on(Database::open_with_vfs(
+                &cx.commit(),
+                vfs.clone(),
+                vfs.database_dir(),
+                keys,
+            ))
+            .unwrap();
+        runtime
+            .block_on(crate::scratch::ensure_history(&mut db, &cx))
+            .unwrap()
+            .unwrap();
+        let stored = db.vertex(root).unwrap().unwrap();
+        assert_eq!(
+            read(
+                &db,
+                &cx.query(),
+                book,
+                &stored,
+                label::ENTRY_FRAGMENT,
+                kind,
+                born,
+                body.len()
+            )
+            .unwrap(),
+            body
+        );
+
+        let mut reader = db.begin(&cx.txn()).unwrap();
+        let selected = reader.vertex(&db, root).unwrap().unwrap();
+        assert_eq!(
+            read_staged_bounded(
+                &reader,
+                &db,
+                book,
+                &selected,
+                label::ENTRY_FRAGMENT,
+                kind,
+                body.len()
+            )
+            .unwrap(),
+            body
+        );
+        let fragment = fragment_vid(book, root, identity(kind, &body), 0);
+        let mut damage = WriteBatch::new(relation::HAS_LEG);
+        damage.set_vertex_property(
+            fragment,
+            property::FA_PAYLOAD,
+            Some(scalar_bytes("damage", vec![0x66; CHUNK_BYTES]).unwrap()),
+        );
+        runtime.block_on(db.write(&cx.commit(), damage)).unwrap();
+        // A transaction still reads its admitted historical prefix, but must
+        // not publish a decision after any of those fragments has changed.
+        assert_eq!(
+            read_staged_bounded(
+                &reader,
+                &db,
+                book,
+                &selected,
+                label::ENTRY_FRAGMENT,
+                kind,
+                body.len()
+            )
+            .unwrap(),
+            body
+        );
+        let mut unrelated = WriteBatch::new(relation::HAS_LEG);
+        unrelated.create_vertex(VId(76), vec![label::CERTIFICATE], vec![]);
+        reader.write(&mut db, unrelated).unwrap();
+        assert!(
+            runtime
+                .block_on(reader.commit(&mut db, &cx.commit()))
+                .is_err()
+        );
+        assert!(db.vertex(VId(76)).unwrap().is_none());
+        assert_eq!(
+            read(
+                &db,
+                &cx.query(),
+                book,
+                &stored,
+                label::ENTRY_FRAGMENT,
+                kind,
+                born,
+                body.len()
+            )
+            .unwrap(),
+            body
+        );
     }
 
     #[test]

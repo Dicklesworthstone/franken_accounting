@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property};
-use fa_model::{Entry, Id128, entry_mirrors};
+use fa_model::{Id128, entry_mirrors};
 use fgdb::{Database, WriteTxnError};
 use fgdb_delta_types::{DeltaRow, ElementId};
 use fgdb_types::context::PurposeContexts;
@@ -24,7 +24,7 @@ use fgdb_types::{CommitSeq, QueryCx, VId};
 
 use crate::genesis::BookContext;
 use crate::refusal::KernelError;
-use crate::rows::{bytes, prop};
+use crate::rows::prop;
 
 /// Every native commit through known_at was examined, including maintenance.
 /// Every Entry birth in that prefix has its original live canonical row.
@@ -191,11 +191,7 @@ fn verify<V: Vfs + Clone>(
                 "a journal Entry differs from its native creating row",
             ));
         }
-        let entry = Entry::decode(&bytes(
-            row,
-            property::FA_PAYLOAD,
-            "entry integrity payload",
-        )?)?;
+        let entry = crate::entry_storage::decode_at(db, row, known_at)?;
         if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
             return Err(corrupt(
                 "a journal Entry's canonical coordinate differs from this trunk book",
@@ -204,6 +200,14 @@ fn verify<V: Vfs + Clone>(
         // This includes the payload, full digest and every declared index
         // mirror. A valid payload with dishonest selection mirrors is not green.
         for (key, value) in entry_mirrors(&entry)? {
+            if key == property::FA_PAYLOAD {
+                if !crate::entry_storage::payload_mirror_matches(row, &entry)? {
+                    return Err(corrupt(
+                        "entry storage payload differs from canonical Entry",
+                    ));
+                }
+                continue;
+            }
             if prop(row, key) != Some(&value) {
                 return Err(corrupt(format!(
                     "journal Entry {:032x} mirror {} disagrees with its canonical payload",

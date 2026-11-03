@@ -359,7 +359,10 @@ pub async fn create_dimension_value<V: Vfs + Clone>(
     }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry payload")?)?;
+        if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
         if row.labels.as_slice() != [label::ENTRY]
             || row.props != entry_mirrors(&stored)?
             || !stored.approvals.is_empty()
@@ -770,7 +773,10 @@ pub async fn record_dimension_requirement<V: Vfs + Clone>(
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry payload")?)?;
+        if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
         if stored.proposal.semantic_digest(&book.seal_key)?
             != proposal.semantic_digest(&book.seal_key)?
         {
@@ -998,7 +1004,10 @@ pub async fn close_dimension_value<V: Vfs + Clone>(
     };
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry payload")?)?;
+        if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
         if stored.proposal.semantic_digest(&book.seal_key)?
             != proposal.semantic_digest(&book.seal_key)?
         {

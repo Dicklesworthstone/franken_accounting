@@ -200,7 +200,7 @@ fn verify<V: Vfs + Clone>(
         let Some(row) = db.vertex_at(vid, created)? else {
             continue;
         };
-        let (entry, _) = match crate::post::entry_of(&row) {
+        let entry = match crate::entry_storage::decode_at(db, &row, created) {
             Ok(value) => value,
             Err(error) => {
                 report.drift.push(error.to_string());
@@ -392,7 +392,7 @@ fn validate_source<V: Vfs + Clone>(
     let row = db
         .vertex_at(debit.entry.vid, created)?
         .ok_or_else(|| corrupt("charge entry missing"))?;
-    let (entry, _) = crate::post::entry_of(&row)?;
+    let entry = crate::entry_storage::decode_at(db, &row, created)?;
     if entry.entry_ref(row.vid) != debit.entry
         || entry.proposal.book_id != book.book_id
         || entry.proposal.branch_id != Id128::TRUNK

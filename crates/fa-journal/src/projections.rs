@@ -21,7 +21,7 @@ use fgdb_types::{CanonicalScalar, CommitSeq, EId, VId};
 
 use crate::genesis::BookContext;
 use crate::refusal::KernelError;
-use crate::rows::{bytes, edge_id, leg_vid, mantissa_scalar, prop};
+use crate::rows::{edge_id, leg_vid, mantissa_scalar, prop};
 
 /// A complete comparison of the stored leg projections with a journal prefix.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,9 +195,7 @@ pub fn verify_projections<V: asupersync::fs::Vfs + Clone>(
     };
     for row in rows.iter().filter(|row| row.labels.contains(&label::ENTRY)) {
         report.entries_checked += 1;
-        let entry = match bytes(row, property::FA_PAYLOAD, "entry._fa_payload")
-            .and_then(|payload| Entry::decode(&payload).map_err(KernelError::from))
-        {
+        let entry = match crate::entry_storage::decode_at(db, row, known_at) {
             Ok(entry) => entry,
             Err(error) => {
                 report.drift.push(format!(

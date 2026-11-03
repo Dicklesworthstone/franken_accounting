@@ -138,6 +138,14 @@ fn from_control(row: &VertexRow, book: Id128) -> Result<Option<StoredLotPolicy>,
         return Ok(None);
     }
     let entry = Entry::decode(&bytes(row, property::FA_PAYLOAD, "lot policy control")?)?;
+    from_entry(row, book, &entry)
+}
+
+fn from_entry(
+    row: &VertexRow,
+    book: Id128,
+    entry: &Entry,
+) -> Result<Option<StoredLotPolicy>, KernelError> {
     let Some(ControlPayload::SchemaChange {
         kind: SCHEMA_CHANGE_LOT_POLICY,
         canonical_bytes,
@@ -243,7 +251,11 @@ pub fn policy_at<V: Vfs + Clone>(
     let rows = db.vertices_at(known_at)?;
     let mut policies = Vec::new();
     for row in &rows {
-        if let Some(policy) = from_control(row, book.book_id)?
+        if !row.labels.contains(&label::ENTRY) {
+            continue;
+        }
+        let entry = crate::entry_storage::decode_at(db, row, known_at)?;
+        if let Some(policy) = from_entry(row, book.book_id, &entry)?
             && policy.policy.account == account
         {
             policies.push(policy);
@@ -442,9 +454,12 @@ pub async fn set_lot_policy_proposal<V: Vfs + Clone>(
     );
     if let Some(row) = txn.vertex(db, vid)? {
         txn.abort();
-        let stored = from_control(&row, book.book_id)?
+        if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        let prior = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
+        let stored = from_entry(&row, book.book_id, &prior)?
             .ok_or_else(|| corrupt("retry identity is not a lot policy"))?;
-        let prior = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "lot policy retry")?)?;
         let same = prior.proposal_digest == proposal_digest
             || matches!(
             (prior.proposal.semantic_digest(&book.seal_key), proposal.semantic_digest(&book.seal_key)),

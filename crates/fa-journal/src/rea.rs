@@ -391,21 +391,18 @@ fn same_rea_control(book: &BookContext, stored: &EntryPayload, proposal: &EntryP
     matches!((plain(stored), plain(proposal)), (Some(a), Some(b)) if a == b)
 }
 
-fn check_rea_idempotency(
+fn check_rea_idempotency<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     row: &VertexRow,
     target_vid: VId,
     proposal: &EntryPayload,
     proposal_digest: &[u8; 32],
 ) -> Outcome<ReaControlRecorded> {
-    let stored = match prop(row, property::FA_PAYLOAD) {
-        Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
-        other => {
-            return Err(KernelError::Corrupt(format!(
-                "entry _fa_payload: {other:?}"
-            )));
-        }
-    };
+    if !crate::entry_storage::has_class_mirror(row, proposal.class) {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
     let same = &stored.proposal_digest == proposal_digest
         || same_rea_control(book, &stored.proposal, proposal);
     if same {
@@ -704,7 +701,7 @@ pub async fn create_party<V: asupersync::fs::Vfs + Clone>(
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return check_rea_idempotency(book, &row, pvid, &proposal, &proposal_digest);
+        return check_rea_idempotency(db, book, &row, pvid, &proposal, &proposal_digest);
     }
     if txn.vertex(db, pvid)?.is_some() {
         txn.abort();
@@ -906,7 +903,7 @@ pub async fn create_instrument<V: asupersync::fs::Vfs + Clone>(
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return check_rea_idempotency(book, &row, ivid, &proposal, &proposal_digest);
+        return check_rea_idempotency(db, book, &row, ivid, &proposal, &proposal_digest);
     }
     if txn.vertex(db, ivid)?.is_some() {
         txn.abort();
@@ -1208,7 +1205,7 @@ pub async fn create_legal_entity<V: asupersync::fs::Vfs + Clone>(
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return check_rea_idempotency(book, &row, levid, &proposal, &proposal_digest);
+        return check_rea_idempotency(db, book, &row, levid, &proposal, &proposal_digest);
     }
     if let Some(refusal) = check_external_id_conflicts(&txn, db, &resolved_ext)? {
         txn.abort();
@@ -1411,7 +1408,7 @@ pub async fn bind_external_id<V: asupersync::fs::Vfs + Clone>(
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return check_rea_idempotency(book, &row, ext_vid, &proposal, &proposal_digest);
+        return check_rea_idempotency(db, book, &row, ext_vid, &proposal, &proposal_digest);
     }
     let target_ok = txn.vertex(db, binding.target_vid)?.is_some_and(|row| {
         row.labels.contains(&label::PARTY)
@@ -1588,7 +1585,7 @@ pub async fn record_relationship<V: asupersync::fs::Vfs + Clone>(
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return check_rea_idempotency(book, &row, spec.from, &proposal, &proposal_digest);
+        return check_rea_idempotency(db, book, &row, spec.from, &proposal, &proposal_digest);
     }
     for (role_label, endpoint) in [("from", spec.from), ("to", spec.to)] {
         let ok = txn.vertex(db, endpoint)?.is_some_and(|row| {
@@ -1721,7 +1718,7 @@ pub async fn record_deposit_profile<V: asupersync::fs::Vfs + Clone>(
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return check_rea_idempotency(book, &row, spec.instrument, &proposal, &proposal_digest);
+        return check_rea_idempotency(db, book, &row, spec.instrument, &proposal, &proposal_digest);
     }
     let instrument = match txn.vertex(db, spec.instrument)? {
         Some(row) if row.labels.contains(&label::INSTRUMENT) => InstrumentSpec::decode(&bytes(
@@ -1911,7 +1908,14 @@ pub async fn update_party_identifiers<V: asupersync::fs::Vfs + Clone>(
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return check_rea_idempotency(book, &row, update.party_vid, &proposal, &proposal_digest);
+        return check_rea_idempotency(
+            db,
+            book,
+            &row,
+            update.party_vid,
+            &proposal,
+            &proposal_digest,
+        );
     }
     let Some(party_row) = txn.vertex(db, update.party_vid)? else {
         txn.abort();
@@ -2205,7 +2209,7 @@ pub async fn record_event<V: asupersync::fs::Vfs + Clone>(
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return check_rea_idempotency(book, &row, ev_vid, &proposal, &proposal_digest);
+        return check_rea_idempotency(db, book, &row, ev_vid, &proposal, &proposal_digest);
     }
     if txn.vertex(db, ev_vid)?.is_some() {
         txn.abort();
@@ -2446,7 +2450,7 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(row, property::FA_PAYLOAD, "rea entry payload")?)?;
+        let entry = crate::entry_storage::decode_at(db, row, known_at)?;
         if entry.proposal.class != EntryClass::SCHEMA_CONTROL {
             continue;
         }

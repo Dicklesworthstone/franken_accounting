@@ -580,6 +580,12 @@ pub async fn create_recurring<V: Vfs + Clone>(
     }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
+        if !crate::entry_storage::has_class_mirror(&row, EntryClass::SCHEDULE_CONTROL) {
+            return Ok(Err(conflict(
+                "recurring creation identity",
+                "name is already bound to another template",
+            )));
+        }
         let recorded = decode_entry(&row)?;
         if recorded.proposal != plan.proposal {
             return Ok(Err(conflict(
@@ -785,7 +791,7 @@ fn records_with_work<V: Vfs + Clone>(
             if row.labels.contains(&label::RECURRING_SCHEDULE) { roots.insert(row.vid, row.clone()); }
             if !row.labels.contains(&label::ENTRY) { continue; }
             work.entries_decoded = work.entries_decoded.saturating_add(1);
-            let entry = decode_entry(&row)?;
+            let entry = crate::entry_storage::decode_at(db, &row, at)?;
             if let Some(mark) = marker(&entry.proposal)? { occurrences.push((row.clone(), entry.clone(), mark)); }
             if !matches!(entry.proposal.origin, EntryOrigin::Control { control_kind: ControlKind::RECURRING_SCHEDULE, .. }) { continue; }
             if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK
@@ -825,7 +831,7 @@ fn records_with_work<V: Vfs + Clone>(
             let tick = Tick { observed_utc_ns, entry: tick_ref };
             if !seen.insert((schedule, index)) || index != record.next_index
                 || row.vid != recurring_occurrence_vid(schedule, index)
-                || entry_mirrors(&entry)? != row.props
+                || !crate::entry_storage::mirrors_match(&row, &entry)?
                 || row.created_at <= record.created_at || tick_row.created_at >= row.created_at
                 || record.cancelled_at.is_some_and(|cancelled| row.created_at >= cancelled)
                 || entry.proposal != occurrence(&record.plan, index, tick)? {
@@ -905,11 +911,12 @@ fn history_unchanged<V: Vfs + Clone>(
                                 return Ok(false);
                             }
                             if labels.contains(&label::ENTRY) {
-                                let Some(row) = db.vertex_at(*vid, at)? else {
+                                let Some(row) = db.vertex_at(*vid, seq)? else {
                                     return Ok(false);
                                 };
                                 work.entries_decoded = work.entries_decoded.saturating_add(1);
-                                let Ok(entry) = decode_entry(&row) else {
+                                let Ok(entry) = crate::entry_storage::decode_at(db, &row, seq)
+                                else {
                                     return Ok(false);
                                 };
                                 let Ok(occurrence_marker) = marker(&entry.proposal) else {
@@ -936,6 +943,7 @@ fn history_unchanged<V: Vfs + Clone>(
                         } => {}
                         DeltaRow::LabelMembership { label: changed, .. }
                             if *changed == label::ENTRY
+                                || *changed == label::ENTRY_FRAGMENT
                                 || *changed == label::RECURRING_SCHEDULE =>
                         {
                             return Ok(false);
@@ -955,6 +963,7 @@ fn history_unchanged<V: Vfs + Clone>(
                             if history.records.contains_key(vid)
                                 || db.vertex_at(*vid, at)?.is_some_and(|row| {
                                     row.labels.contains(&label::ENTRY)
+                                        || row.labels.contains(&label::ENTRY_FRAGMENT)
                                         || row.labels.contains(&label::RECURRING_SCHEDULE)
                                 })
                             {

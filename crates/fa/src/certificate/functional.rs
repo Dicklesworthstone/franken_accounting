@@ -46,8 +46,7 @@ pub(crate) fn verify_sources<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "valued entry")?)
-            .map_err(fa_journal::KernelError::from)?;
+        let entry = fa_journal::entry_storage::decode_at(db, &row, at)?;
         let Some(totals) = &entry.proposal.base_totals else {
             continue;
         };

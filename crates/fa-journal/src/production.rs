@@ -666,6 +666,11 @@ fn recorded_or_conflict(
     row: &VertexRow,
     proposal: &EntryPayload,
 ) -> Outcome<CommitSeq> {
+    // Only inline ProductionControl records belong to this pure retry path.
+    // A monetary root at the caller's key retains the usual conflict result.
+    if !crate::entry_storage::has_class_mirror(row, EntryClass::PRODUCTION_CONTROL) {
+        return Ok(Err(conflict_with(row)));
+    }
     let (stored, recorded_at) = crate::post::entry_of(row)?;
     if stored.proposal_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded_at));
@@ -1172,7 +1177,11 @@ fn recorded_production<V: asupersync::fs::Vfs + Clone>(
     digest: &[u8; 32],
     documents: &[ProducedDocument],
 ) -> Outcome<Produced> {
-    let (entry, recorded_at) = crate::post::entry_of(stored)?;
+    if !crate::entry_storage::has_class_mirror(stored, EntryClass::PRODUCTION_CONTROL) {
+        return Ok(Err(conflict_with(stored)));
+    }
+    let entry = crate::entry_storage::decode_at(db, stored, db.frontier()?)?;
+    let recorded_at = stored.created_at;
     let Some(record) = bates_record(&entry)? else {
         return Ok(Err(conflict_with(stored)));
     };
@@ -1446,7 +1455,8 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         if !src.labels.contains(&label::ENTRY) {
             continue;
         }
-        let (entry, recorded_at) = crate::post::entry_of(&src)?;
+        let entry = crate::entry_storage::decode_at(db, &src, seq)?;
+        let recorded_at = src.created_at;
         if entry.proposal.class != EntryClass::PRODUCTION_CONTROL {
             continue;
         }

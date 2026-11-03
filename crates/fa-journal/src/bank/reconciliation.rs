@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    AccountType, ControlPayload, Entry, EntryClass, EntryRef, Id128, Oid, Writer, domain_digest,
+    AccountType, ControlPayload, EntryClass, EntryRef, Id128, Oid, Writer, domain_digest,
 };
 use fa_money::{Side, UnitId, UnitKind};
 use fa_policy::Capability;
@@ -179,7 +179,7 @@ fn cash_fold<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(verify::payload(&row)?)?;
+        let entry = crate::entry_storage::decode_at(db, &row, at)?;
         if entry.proposal.class == EntryClass::PENDING
             || entry.proposal.effective_date > manifest.statement_date
             || !crate::migration::visible_at(db, &entry, at, &mut visibility)?
@@ -359,7 +359,7 @@ fn verify_import_at<V: Vfs + Clone>(
             "a reconciled statement's native ImportRun is absent",
         )));
     };
-    let entry = Entry::decode(verify::payload(&row)?)?;
+    let entry = crate::entry_storage::decode_at(db, &row, at)?;
     let Some(ControlPayload::ImportRun {
         source,
         document_count,
@@ -1358,7 +1358,7 @@ fn citing_entries_at<V: Vfs + Clone>(
                 "a durable reconciliation citation's Entry is absent",
             )));
         };
-        references.insert(Entry::decode(verify::payload(&row)?)?.entry_ref(source));
+        references.insert(crate::entry_storage::decode_at(db, &row, at)?.entry_ref(source));
     }
     Ok(Ok(references.into_iter().collect()))
 }

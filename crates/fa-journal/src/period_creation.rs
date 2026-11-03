@@ -239,12 +239,14 @@ pub fn births_at<V: asupersync::fs::Vfs + Clone>(
     known_at: CommitSeq,
 ) -> Result<BTreeMap<String, PeriodBirth>, KernelError> {
     let rows = db.vertices_at(known_at)?;
-    births_from_rows(&rows, book)
+    births_from_rows(db, &rows, book, known_at)
 }
 
-pub(crate) fn births_from_rows(
+pub(crate) fn births_from_rows<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     rows: &[VertexRow],
     book: &BookContext,
+    at: CommitSeq,
 ) -> Result<BTreeMap<String, PeriodBirth>, KernelError> {
     let root = rows
         .iter()
@@ -259,7 +261,7 @@ pub(crate) fn births_from_rows(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(row, property::FA_PAYLOAD, "entry payload")?)?;
+        let entry = crate::entry_storage::decode_at(db, row, at)?;
         let relevant = matches!(
             entry.proposal.origin,
             EntryOrigin::Control {

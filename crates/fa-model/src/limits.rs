@@ -2,8 +2,9 @@
 //! "per-kind maximum sizes"; `registries/limits.toml` is the registry and the
 //! `code_limits_match_registry` test keeps the two equal).
 
-/// Hard bound on one `fa:entry:v1` payload; the substrate's scalar bound
-/// (64 MiB) is the outer wall.
+/// Hard bound on one canonical `fa:entry:v1` payload. Native monetary Entries
+/// above OBJECT_CHUNK_BYTES retain these unchanged bytes in immutable object
+/// fragments; both the 16 KiB row and complete transaction bounds still apply.
 pub const MAX_ENTRY_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum nonnegative gross column of an account/unit stock register.
 pub const MAX_REGISTER_MANTISSA: i128 = i128::MAX;

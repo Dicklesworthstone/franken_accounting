@@ -52,7 +52,7 @@ use fa_model::SealKey;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ApprovalRef, Disposition, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Pending,
-    SupersessionKind, entry_mirrors, entry_vid, migration_entry_vid, period_vid,
+    SupersessionKind, entry_vid, migration_entry_vid, period_vid,
 };
 use fa_money::Side;
 use fa_registry::evidence_policy::EvidencePolicy;
@@ -701,7 +701,13 @@ impl PreparedPost {
                         {
                             return Ok(Err(crate::outcome::key_conflict()));
                         }
-                        recorded_or_conflict(&row, &request.proposal, &seal_key, identity)
+                        recorded_or_conflict(
+                            &row,
+                            &recorded,
+                            &request.proposal,
+                            &seal_key,
+                            identity,
+                        )
                     }
                     None if crate::outcome::covered_class(request.proposal.class) => {
                         Ok(Err(crate::outcome::key_conflict()))
@@ -745,18 +751,11 @@ pub(crate) enum Identity {
 /// "cannot verify", never a claimed equivalence.
 pub(crate) fn recorded_or_conflict(
     row: &VertexRow,
+    stored: &Entry,
     proposal: &EntryPayload,
     key: &SealKey,
     identity: Identity,
 ) -> Result<Result<Posted, Refusal>, KernelError> {
-    let stored = match prop(row, property::FA_PAYLOAD) {
-        Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
-        other => {
-            return Err(KernelError::Corrupt(format!(
-                "entry _fa_payload: {other:?}"
-            )));
-        }
-    };
     let entry_ref = EntryRef {
         vid: row.vid,
         entry_digest: stored.entry_digest,
@@ -2854,7 +2853,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(identity_conflict(identity, evid)));
         }
         return Ok(
-            recorded_or_conflict(&row, proposal, &book.seal_key, identity)?
+            recorded_or_conflict(&row, &recorded, proposal, &book.seal_key, identity)?
                 .map(PostPreparation::AlreadyRecorded),
         );
     }
@@ -4557,9 +4556,11 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     };
     let mut has_leg = WriteBatch::new(relation::HAS_LEG);
     let mut in_period = WriteBatch::new(relation::IN_PERIOD);
-    let mirrors = entry_mirrors(&entry)?;
+    let mirrors = crate::entry_storage::stored_mirrors(&entry)?;
     template_tracker.create_vertex(relation::HAS_LEG, evid, 1, &mirrors);
     has_leg.create_vertex(evid, vec![label::ENTRY], mirrors);
+    crate::entry_storage::stage(&ctx.query(), &mut has_leg, &entry, evid)?;
+    template_tracker.record_object_stage(relation::HAS_LEG, &entry.encode()?);
     crate::asset_cost::stage_post(
         &txn,
         db,
@@ -4994,7 +4995,12 @@ pub fn read_entry<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     vid: VId,
 ) -> Result<Option<(Entry, CommitSeq)>, KernelError> {
-    db.vertex(vid)?.map(|row| entry_of(&row)).transpose()
+    let at = db.frontier()?;
+    db.vertex_at(vid, at)?
+        .map(|row| {
+            crate::entry_storage::decode_at(db, &row, at).map(|entry| (entry, row.created_at))
+        })
+        .transpose()
 }
 
 /// Every committed entry in `book` that supersedes `vid`, in recorded order,
@@ -5040,7 +5046,9 @@ pub fn read_entry_at<V: asupersync::fs::Vfs + Clone>(
     seq: CommitSeq,
 ) -> Result<Option<(Entry, CommitSeq)>, KernelError> {
     db.vertex_at(vid, seq)?
-        .map(|row| entry_of(&row))
+        .map(|row| {
+            crate::entry_storage::decode_at(db, &row, seq).map(|entry| (entry, row.created_at))
+        })
         .transpose()
 }
 
@@ -5054,7 +5062,8 @@ fn checked_entry<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     row: &VertexRow,
 ) -> Result<(Entry, CommitSeq), KernelError> {
-    checked_entry_with(row, |vid| Ok(db.vertex(vid)?))
+    let entry = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
+    checked_entry_with(row, entry, |vid| Ok(db.vertex(vid)?))
 }
 
 /// [`checked_entry`] for a row a posting transaction read. A leg mirror is
@@ -5067,7 +5076,8 @@ fn checked_entry_staged<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     row: &VertexRow,
 ) -> Result<(Entry, CommitSeq), KernelError> {
-    checked_entry_with(row, |vid| match db.vertex(vid)? {
+    let entry = crate::entry_storage::decode_staged(txn, db, row)?;
+    checked_entry_with(row, entry, |vid| match db.vertex(vid)? {
         Some(leg) => Ok(Some(leg)),
         None => Ok(txn.vertex(db, vid)?),
     })
@@ -5272,9 +5282,10 @@ fn reversal_fx_origin<V: asupersync::fs::Vfs + Clone>(
 
 fn checked_entry_with(
     row: &VertexRow,
+    entry: Entry,
     mut leg_row: impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
 ) -> Result<(Entry, CommitSeq), KernelError> {
-    let (entry, recorded_at) = entry_of(row)?;
+    let recorded_at = row.created_at;
     let drift = |what: String| {
         KernelError::Corrupt(format!(
             "entry {:032x}: {what} disagrees with its payload; its mirrors drifted",
@@ -5756,7 +5767,8 @@ pub fn explain_entry_lineage<V: asupersync::fs::Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let (entry, created_at) = entry_of(&row)?;
+        let entry = crate::entry_storage::decode_at(db, &row, seq)?;
+        let created_at = row.created_at;
         if entry.proposal.book_id == book.book_id {
             entries.push((row.vid, entry, created_at));
         }

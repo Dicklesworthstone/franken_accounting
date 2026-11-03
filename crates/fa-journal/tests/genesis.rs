@@ -51,6 +51,8 @@ mod disposal_tests;
 mod draft_authority_tests;
 #[path = "genesis/draft_correction.rs"]
 mod draft_correction_tests;
+#[path = "genesis/entry_storage.rs"]
+mod entry_storage_tests;
 #[path = "genesis/external_subledger.rs"]
 mod external_subledger_tests;
 #[path = "genesis/fx_law.rs"]

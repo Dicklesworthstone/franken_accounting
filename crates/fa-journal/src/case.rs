@@ -844,6 +844,23 @@ fn recorded_or_conflict(
     row: &VertexRow,
     proposal: &EntryPayload,
 ) -> Outcome<CommitSeq> {
+    let conflict = || {
+        Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            format!(
+                "this case record's identity holds different content; the recorded entry is {:032x}",
+                row.vid.0
+            ),
+            "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
+            "resubmit the identical request to get its recorded outcome, or use a new --key",
+        )
+    };
+    // This writer emits inline CaseControl records. A monetary root at a
+    // reused key is refused before the pure control decoder sees its manifest.
+    if !crate::entry_storage::has_class_mirror(row, EntryClass::CASE_CONTROL) {
+        return Ok(Err(conflict()));
+    }
     let (stored, recorded_at) = crate::post::entry_of(row)?;
     if stored.proposal_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded_at));
@@ -853,16 +870,7 @@ fn recorded_or_conflict(
         proposal.semantic_digest(&book.seal_key),
     ) {
         (Ok(a), Ok(b)) if a == b => Ok(Ok(recorded_at)),
-        (Ok(_), Ok(_)) => Ok(Err(Refusal::new(
-            code::IDEMPOTENCY_CONFLICT,
-            exit::CONFLICT,
-            format!(
-                "this case record's identity holds different content; the recorded entry is {:032x}",
-                row.vid.0
-            ),
-            "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
-            "resubmit the identical request to get its recorded outcome, or use a new --key",
-        ))),
+        (Ok(_), Ok(_)) => Ok(Err(conflict())),
         (Err(fa_model::EntryError::Sealed(_)), _) | (_, Err(fa_model::EntryError::Sealed(_))) => {
             Ok(Err(Refusal::new(
                 code::EQUIVALENCE_UNVERIFIABLE,
@@ -933,7 +941,13 @@ pub async fn open_case<V: asupersync::fs::Vfs + Clone>(
     }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        let (stored, _) = crate::post::entry_of(&row)?;
+        if !crate::entry_storage::has_class_mirror(&row, EntryClass::CASE_CONTROL) {
+            return Ok(Err(usage(
+                "this case record's key names another kind of record",
+                "use a new --key",
+            )));
+        }
+        let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
         let Some(recorded) = opened_body(&stored)? else {
             return Ok(Err(usage(
                 "this case record's key names another kind of record",
@@ -2603,7 +2617,13 @@ fn witness_disclosure<V: asupersync::fs::Vfs + Clone>(
             "the disclosure's Post entry is absent",
         )));
     };
-    let (entry, recorded_at) = crate::post::entry_of(&row)?;
+    if !crate::entry_storage::has_class_mirror(&row, EntryClass::CASE_CONTROL) {
+        return Ok(Err(comparison_refused(
+            "the disclosure's Post does not belong to this case at its recorded sequence",
+        )));
+    }
+    let entry = crate::entry_storage::decode_staged(txn, db, &row)?;
+    let recorded_at = row.created_at;
     if recorded_at != post.recorded_at
         || entry.proposal.book_id != book.book_id
         || entry.proposal.branch_id != Id128::TRUNK
@@ -2967,14 +2987,16 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let mut approval = None;
     let mut posted = Vec::new();
     let mut disclosure = None;
-    for evid in db.in_neighbours(vid, relation::IN_CASE)? {
-        let Some(src) = db.vertex(evid)? else {
+    let seq = db.frontier()?;
+    for evid in db.in_neighbours_at(vid, relation::IN_CASE, seq)? {
+        let Some(src) = db.vertex_at(evid, seq)? else {
             continue;
         };
         if !src.labels.contains(&label::ENTRY) {
             continue;
         }
-        let (entry, recorded_at) = crate::post::entry_of(&src)?;
+        let entry = crate::entry_storage::decode_at(db, &src, seq)?;
+        let recorded_at = src.created_at;
         if entry.proposal.class != EntryClass::CASE_CONTROL {
             continue;
         }

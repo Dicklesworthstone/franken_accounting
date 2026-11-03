@@ -22,9 +22,7 @@ use std::collections::BTreeSet;
 use asupersync::fs::Vfs;
 use fa_intents::{BatchPlan, BatchPlanCertificate, PostBatch};
 use fa_model::symbols::{label, property, relation};
-use fa_model::{
-    Entry, EntryClass, EntryRef, Id128, Reader, Writer, entry_mirrors, intent_outcome_vid,
-};
+use fa_model::{Entry, EntryClass, EntryRef, Id128, Reader, Writer, intent_outcome_vid};
 use fa_policy::Capability;
 use fgdb::{Database, VertexRow, WriteBatch, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
@@ -1944,7 +1942,8 @@ fn recorded_batch_plan<V: Vfs + Clone>(
         };
         if *reference != prepared.entry_ref(reference.vid)
             || entry.labels.as_slice() != [label::ENTRY]
-            || entry.props != entry_mirrors(prepared)?
+            || !crate::entry_storage::mirrors_match(&entry, prepared)?
+            || crate::entry_storage::decode_at(db, &entry, db.frontier()?)? != *prepared
             || !original_vertex(db, &entry, born, before)?
             || !crate::outcome::verify_recorded(db, &ctx.query(), book, &entry, prepared)?
             || !original_edge(db, relation::IN_BATCH, reference.vid, ovid, born)?

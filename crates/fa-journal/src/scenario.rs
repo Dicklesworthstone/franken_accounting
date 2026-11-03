@@ -484,6 +484,11 @@ fn recorded_or_conflict(
     row: &VertexRow,
     proposal: &EntryPayload,
 ) -> Outcome<CommitSeq> {
+    // Monetary entries can reuse the caller's key; only this writer's
+    // inline ScenarioControl representation reaches the pure decoder.
+    if !crate::entry_storage::has_class_mirror(row, EntryClass::SCENARIO_CONTROL) {
+        return Ok(Err(conflict_with(row)));
+    }
     let (stored, recorded_at) = crate::post::entry_of(row)?;
     if stored.proposal_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded_at));
@@ -1296,7 +1301,8 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         if !src.labels.contains(&label::ENTRY) {
             continue;
         }
-        let (entry, recorded_at) = crate::post::entry_of(&src)?;
+        let entry = crate::entry_storage::decode_at(db, &src, seq)?;
+        let recorded_at = src.created_at;
         if entry.proposal.class != EntryClass::SCENARIO_CONTROL {
             return Err(KernelError::Corrupt(format!(
                 "scenario {:032x} has a member {:032x} that is not a ScenarioControl record",

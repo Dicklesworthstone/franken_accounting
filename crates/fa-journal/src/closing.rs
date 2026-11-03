@@ -623,7 +623,7 @@ fn validate_sources<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = crate::sweep::decode_entry(&row)?;
+        let entry = crate::entry_storage::decode_at(db, &row, at)?;
         if entry.proposal.class != EntryClass::CLOSING {
             continue;
         }
@@ -925,7 +925,7 @@ fn observe<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "closing source entry")?)?;
+        let entry = crate::entry_storage::decode_at(db, &row, at)?;
         if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
             return Err(KernelError::Corrupt(
                 "closing source belongs to another book or branch".into(),

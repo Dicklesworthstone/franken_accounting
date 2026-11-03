@@ -91,6 +91,7 @@ symbols!(
         (MIGRATION_RUN_FRAGMENT, "MigrationRunFragment", 63),
         (MIGRATION_SOURCE, "MigrationSource", 64),
         (MIGRATION_SOURCE_FRAGMENT, "MigrationSourceFragment", 65),
+        (ENTRY_FRAGMENT, "EntryFragment", 66),
     ]
 );
 
@@ -424,6 +425,22 @@ mod tests {
             SymbolTable::compiled().digest(),
             SymbolTable::compiled().digest()
         );
+    }
+
+    #[test]
+    fn entry_fragments_preserve_the_literal_previous_symbol_table() {
+        let current = SymbolTable::compiled();
+        assert_eq!(current.label("EntryFragment"), Some(LabelId(66)));
+        let mut previous = current.clone();
+        assert_eq!(previous.labels.remove("EntryFragment"), Some(66));
+        assert_ne!(current.digest(), previous.digest());
+        assert!(current.matches_label_prefix_digest(previous.digest()));
+        let mut renamed = previous.clone();
+        renamed.labels.insert("DifferentEntryFragment".into(), 66);
+        assert!(!current.matches_label_prefix_digest(renamed.digest()));
+        let mut rebound = previous;
+        rebound.labels.insert("Entry".into(), 66);
+        assert!(!current.matches_label_prefix_digest(rebound.digest()));
     }
 
     #[test]

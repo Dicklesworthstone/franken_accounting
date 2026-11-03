@@ -163,11 +163,7 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
     let mut runs = BTreeMap::new();
     for row in rows.into_values() {
         ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
-        let entry = Entry::decode(&crate::rows::bytes(
-            &row,
-            property::FA_PAYLOAD,
-            "entry._fa_payload",
-        )?)?;
+        let entry = crate::entry_storage::decode_staged(txn, db, &row)?;
         if entry.proposal.book_id != book_id || entry.proposal.branch_id != Id128::TRUNK {
             continue;
         }
@@ -476,10 +472,7 @@ fn entry_at<V: asupersync::fs::Vfs + Clone>(
     if !row.labels.contains(&label::ENTRY) {
         return Ok(Ok(None));
     }
-    let Ok(bytes) = crate::rows::bytes(&row, property::FA_PAYLOAD, "entry._fa_payload") else {
-        return Ok(Err(()));
-    };
-    let Ok(entry) = Entry::decode(&bytes) else {
+    let Ok(entry) = crate::entry_storage::decode_at(db, &row, at) else {
         return Ok(Err(()));
     };
     if entry.proposal.book_id != book_id || entry.proposal.branch_id != Id128::TRUNK {
@@ -746,11 +739,7 @@ fn fits<V: asupersync::fs::Vfs + Clone>(
         if let Some(row) = txn.vertex(db, *vid)?
             && row.labels.contains(&label::ENTRY)
         {
-            let Ok(bytes) = crate::rows::bytes(&row, property::FA_PAYLOAD, "entry._fa_payload")
-            else {
-                return Ok(admission);
-            };
-            let Ok(entry) = Entry::decode(&bytes) else {
+            let Ok(entry) = crate::entry_storage::decode_staged(txn, db, &row) else {
                 return Ok(admission);
             };
             if entry.proposal.book_id == book_id && entry.proposal.branch_id == Id128::TRUNK {

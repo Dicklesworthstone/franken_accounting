@@ -36,6 +36,7 @@ pub mod draft;
 pub mod engagement;
 pub mod entity;
 pub mod entry_history;
+pub mod entry_storage;
 pub mod evidence;
 pub mod external_subledger;
 pub mod finding_history;

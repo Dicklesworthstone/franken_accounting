@@ -683,7 +683,7 @@ fn observe<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "revaluation source")?)?;
+        let entry = crate::entry_storage::decode_at(db, &row, at)?;
         if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
             return Err(KernelError::Corrupt(
                 "revaluation source belongs to another book or branch".into(),
@@ -1048,11 +1048,7 @@ fn observe_verified<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(
-            &row,
-            property::FA_PAYLOAD,
-            "prior revaluation basis",
-        )?)?;
+        let entry = crate::entry_storage::decode_at(db, &row, at)?;
         if entry.proposal.class != EntryClass::REVALUATION
             || !entry
                 .proposal

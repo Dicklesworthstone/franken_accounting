@@ -783,12 +783,7 @@ fn publication_entries<V: Vfs + Clone, B: Vfs + Clone>(
             if !row.labels.contains(&label::ENTRY) {
                 continue;
             }
-            let entry = Entry::decode(&fa_journal::rows::bytes(
-                &row,
-                property::FA_PAYLOAD,
-                "trace entry payload",
-            )?)
-            .map_err(KernelError::from)?;
+            let entry = fa_journal::entry_storage::decode_at(&book.db, &row, at)?;
             if entry.proposal.book_id != book.context().book_id
                 || entry.proposal.branch_id != Id128::TRUNK
                 || row.created_at > at

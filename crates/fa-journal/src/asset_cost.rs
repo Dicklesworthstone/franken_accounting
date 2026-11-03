@@ -353,6 +353,14 @@ fn declared(row: &VertexRow, book: Id128) -> Result<Option<StoredAssetSchedule>,
         return Ok(None);
     }
     let entry = Entry::decode(&bytes(row, property::FA_PAYLOAD, "asset schedule")?)?;
+    declared_entry(row, book, &entry)
+}
+
+fn declared_entry(
+    row: &VertexRow,
+    book: Id128,
+    entry: &Entry,
+) -> Result<Option<StoredAssetSchedule>, KernelError> {
     let Some(ControlPayload::SchemaChange {
         kind: SCHEMA_CHANGE_ASSET_SCHEDULE,
         canonical_bytes,
@@ -513,7 +521,8 @@ fn history<V: Vfs + Clone>(
             let Some((entry, recorded)) = crate::post::read_entry_at(db, row.vid, at)? else {
                 continue;
             };
-            ordered.push((recorded, row.vid, entry, declared(row, book.book_id)?));
+            let schedule = declared_entry(row, book.book_id, &entry)?;
+            ordered.push((recorded, row.vid, entry, schedule));
         }
     }
     ordered.sort_by_key(|(at, vid, _, _)| (*at, *vid));
@@ -994,12 +1003,15 @@ pub async fn create_asset_schedule_proposal<V: Vfs + Clone>(
     );
     if let Some(row) = txn.vertex(db, vid)? {
         txn.abort();
-        let prior = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "asset schedule retry")?)?;
+        if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        let prior = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
         let same = prior.proposal_digest == digest
             || matches!(
             (prior.proposal.semantic_digest(&book.seal_key), proposal.semantic_digest(&book.seal_key)),
             (Ok(a), Ok(b)) if a == b);
-        let stored = declared(&row, book.book_id)?;
+        let stored = declared_entry(&row, book.book_id, &prior)?;
         if !same || prior.approvals != approvals || stored.is_none() {
             return Ok(Err(Refusal::new(
                 code::IDEMPOTENCY_CONFLICT,
@@ -1395,11 +1407,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
             if let Some(row) = txn.vertex(db, application.target.vid)?
                 && row.labels.contains(&label::ENTRY)
             {
-                let target = Entry::decode(&bytes(
-                    &row,
-                    property::FA_PAYLOAD,
-                    "asset application target",
-                )?)?;
+                let target = crate::entry_storage::decode_staged(txn, db, &row)?;
                 if has_basis(&target.proposal) {
                     return Ok(Err(invalid(
                         "scheduled asset charges cannot be application targets; use their exact reversal lifecycle",
@@ -1563,11 +1571,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
         if let Some(row) = txn.vertex(db, link.target.vid)?
             && row.labels.contains(&label::ENTRY)
         {
-            let target = Entry::decode(&bytes(
-                &row,
-                property::FA_PAYLOAD,
-                "asset correction target",
-            )?)?;
+            let target = crate::entry_storage::decode_staged(txn, db, &row)?;
             if has_basis(&target.proposal) && proposal.class != EntryClass::REVERSAL {
                 return Ok(Err(invalid(
                     "scheduled asset charges support exact reversal only; estimates and replacement corrections require a separate lifecycle protocol",
@@ -1594,11 +1598,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
             if !row.labels.contains(&label::ENTRY) {
                 break;
             }
-            let target = Entry::decode(&bytes(
-                &row,
-                property::FA_PAYLOAD,
-                "asset correction ancestor",
-            )?)?;
+            let target = crate::entry_storage::decode_staged(txn, db, &row)?;
             if target.proposal.class != EntryClass::REVERSAL
                 || target.proposal.supersession.len() != 1
                 || target.proposal.supersession[0].kind != SupersessionKind::Reverses
@@ -1708,11 +1708,7 @@ pub fn verify_asset_schedules<V: Vfs + Clone>(
             break;
         }
         if row.labels.contains(&label::ENTRY) {
-            let entry = Entry::decode(&bytes(
-                &row,
-                property::FA_PAYLOAD,
-                "asset verification entry",
-            )?)?;
+            let entry = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
             if has_basis(&entry.proposal)
                 || matches!(
                     entry.proposal.control,

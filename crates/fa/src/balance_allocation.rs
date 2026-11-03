@@ -18,11 +18,10 @@
 use std::collections::BTreeMap;
 
 use asupersync::fs::Vfs;
-use fa_journal::rows::bytes;
 use fa_journal::{AllocationPosting, AllocationTargetCell, KernelError, Refusal, exit};
 use fa_model::limits::MAX_DIMENSIONS_PER_LEG;
-use fa_model::symbols::{label, property};
-use fa_model::{ApprovalRef, Entry, EntryPayload, Id128, Writer, domain_digest};
+use fa_model::symbols::label;
+use fa_model::{ApprovalRef, EntryPayload, Id128, Writer, domain_digest};
 use fa_money::allocation::{AllocationMethod, AllocationRequest, AllocationTarget};
 use fa_money::{Amount, Side, UnitId};
 use fa_policy::{Capability, Op};
@@ -384,9 +383,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                         .map_err(KernelError::from)?
                         .filter(|row| row.labels.contains(&label::ENTRY))
                         .ok_or_else(|| corrupt("allocation source entry is missing"))?;
-                    let entry =
-                        Entry::decode(&bytes(&row, property::FA_PAYLOAD, "allocation source")?)
-                            .map_err(KernelError::from)?;
+                    let entry = fa_journal::entry_storage::decode_at(&self.db, &row, at)?;
                     slot.insert(entry);
                 }
                 let entry = entries

@@ -527,7 +527,8 @@ pub fn due_holds_with_witness<V: asupersync::fs::Vfs + Clone>(
         witness.unrelated_entries_decoded += indexed_witness.unrelated_entries_decoded;
         return Ok((due, witness));
     }
-    let rows = db.vertices()?;
+    let known_at = db.frontier()?;
+    let rows = db.vertices_at(known_at)?;
     witness.substrate_rows_read += rows.len();
     let mut due = Vec::new();
     for row in rows {
@@ -537,7 +538,7 @@ pub fn due_holds_with_witness<V: asupersync::fs::Vfs + Clone>(
         {
             continue;
         }
-        let entry = decode_entry(&row)?;
+        let entry = crate::entry_storage::decode_at(db, &row, known_at)?;
         let Some(Pending {
             timeout_ns: Some(timeout),
             ..
@@ -853,15 +854,30 @@ fn recorded_tick<V: asupersync::fs::Vfs + Clone>(
     req: &TickRequest,
     book: &BookContext,
 ) -> Outcome<Ticked> {
+    if !crate::entry_storage::has_class_mirror(row, EntryClass::TIME_CONTROL) {
+        return Ok(Err(Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            format!(
+                "idempotency key reused with different content; the recorded entry is {:032x}",
+                row.vid.0
+            ),
+            "plan §4.9 (identity is derived from the key; content is bound by proposal_digest)",
+            format!(
+                "resubmit the identical intent to get the recorded outcome (`fa entry show {:032x}` shows it), or use a new idempotency key for new content",
+                row.vid.0
+            ),
+        ).at("entry", format!("{:032x}", row.vid.0))));
+    }
     let mut adjusted = req.clone();
     let prev_anchor = tick_before(db, row.created_at)?;
     adjusted.monotonic_ok =
         effective_monotonic_ok(req.observed_utc_ns, req.monotonic_ok, prev_anchor);
     let proposal = tick_proposal(book, &adjusted);
-    match recorded_or_conflict(row, &proposal, &book.seal_key, Identity::Key)? {
+    let stored = decode_entry(row)?;
+    match recorded_or_conflict(row, &stored, &proposal, &book.seal_key, Identity::Key)? {
         Err(r) => Ok(Err(r)),
         Ok(posted) => {
-            let stored = decode_entry(row)?;
             if !crate::outcome::verify_control_recorded(db, row, &stored)? {
                 return Ok(Err(crate::outcome::key_conflict()));
             }
@@ -1368,7 +1384,7 @@ pub async fn sweep_batch_with_crash_and_witness<V: asupersync::fs::Vfs + Clone>(
         let row = txn
             .vertex(db, hold_vid)?
             .ok_or_else(|| KernelError::Corrupt("a due hold is missing".into()))?;
-        let hold = decode_entry(&row)?;
+        let hold = crate::entry_storage::decode_staged(&txn, db, &row)?;
         if hold.entry_digest != d.hold.entry_digest || hold.proposal.class != EntryClass::PENDING {
             return Err(KernelError::Corrupt(format!(
                 "due hold {:032x} changed under the sweep",
@@ -1435,9 +1451,10 @@ pub async fn sweep_batch_with_crash_and_witness<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(refusal));
         }
         let entry = proposal.seal(Vec::new(), None)?;
-        let mirrors = entry_mirrors(&entry)?;
+        let mirrors = crate::entry_storage::stored_mirrors(&entry)?;
         let mut next_tracker = tracker.clone();
         next_tracker.create_vertex(relation::IN_PERIOD, rvid, 1, &mirrors);
+        next_tracker.record_object_stage(relation::IN_PERIOD, &entry.encode()?);
         next_tracker.record_entry_outcome_claim(relation::IN_PERIOD, &entry.proposal);
         next_tracker.add_edge(relation::IN_PERIOD, &[]);
         next_tracker.add_edge(
@@ -1453,6 +1470,7 @@ pub async fn sweep_batch_with_crash_and_witness<V: asupersync::fs::Vfs + Clone>(
         }
         release_hold(&txn, db, &mut accounts, &mut cells, &hold.proposal, &period)?;
         entries.create_vertex(rvid, vec![label::ENTRY], mirrors);
+        crate::entry_storage::stage(&ctx.query(), &mut entries, &entry, rvid)?;
         crate::outcome::stage_entry(&mut entries, &entry, rvid)?;
         entries.add_edge(edge_id(relation::IN_PERIOD, rvid, pvid), rvid, pvid, vec![]);
         resolves.add_edge(
@@ -1915,6 +1933,41 @@ pub(crate) fn fold_sweep_delta_tail<V: asupersync::fs::Vfs + Clone>(
         let mut batch_schedules = Vec::new();
         for coordinate in batch.coordinate_entries() {
             for row in &coordinate.rows {
+                // Immutable-entry changes cannot be carried as creation-only
+                // work. A fragment edit is just as material as a root edit;
+                // force the authoritative refold instead of retaining stale
+                // deadlines or target digests from the index.
+                let changed = match row {
+                    DeltaRow::Property {
+                        elem: fgdb_delta_types::ElementId::Vertex(vid),
+                        ..
+                    }
+                    | DeltaRow::LabelMembership { vid, .. }
+                    | DeltaRow::DeleteVertex { vid, .. } => Some(*vid),
+                    _ => None,
+                };
+                if let Some(vid) = changed {
+                    let previous = CommitSeq(seq.0.saturating_sub(1));
+                    tail.witness.substrate_rows_read += 1;
+                    let prior = db.vertex_at(vid, previous)?;
+                    let observed = match prior {
+                        Some(row) => Some(row),
+                        None => {
+                            tail.witness.substrate_rows_read += 1;
+                            db.vertex_at(vid, seq)?
+                        }
+                    };
+                    if observed.is_some_and(|row| {
+                        row.labels.iter().any(|label| {
+                            matches!(
+                                *label,
+                                label::ENTRY | label::ENTRY_FRAGMENT | label::REVERSAL_SCHEDULE
+                            )
+                        })
+                    }) {
+                        return Ok(None);
+                    }
+                }
                 if let DeltaRow::CreateVertex {
                     vid,
                     labels,
@@ -1957,21 +2010,26 @@ pub(crate) fn fold_sweep_delta_tail<V: asupersync::fs::Vfs + Clone>(
                     ) {
                         continue;
                     }
-                    let payload = props
-                        .iter()
-                        .find_map(|(k, v)| {
-                            if *k == property::FA_PAYLOAD
-                                && let CanonicalScalar::Bytes(b) = v
-                            {
-                                Some(b.as_slice())
-                            } else {
-                                None
-                            }
-                        })
-                        .ok_or_else(|| {
-                            KernelError::Corrupt("delta Entry lacks canonical payload".into())
-                        })?;
-                    let entry = Entry::decode(payload)?;
+                    // A large Entry's delta contains its storage manifest.
+                    // Resolve the original root at this publication, where
+                    // its same-commit fragments are already visible.
+                    let root = VertexRow {
+                        vid: *vid,
+                        labels: labels.clone(),
+                        props: props.clone(),
+                        created_at: seq,
+                        birth_ordinal: *birth_ordinal,
+                        retired_at: None,
+                    };
+                    let entry = crate::entry_storage::decode_at(db, &root, seq)?;
+                    if matches!(prop(&root, property::FA_PAYLOAD), Some(CanonicalScalar::Bytes(raw))
+                        if crate::entry_storage::is_stored_entry_payload(raw.as_slice()))
+                    {
+                        // Reassembly checks each current fragment and its
+                        // two historical birth witnesses.
+                        tail.witness.substrate_rows_read +=
+                            3 * entry.encode()?.len().div_ceil(crate::object::CHUNK_BYTES);
+                    }
                     batch_entries.push((*vid, entry));
                 }
             }
@@ -2280,7 +2338,7 @@ fn refold_sweep_index_at<V: asupersync::fs::Vfs + Clone>(
     let at_head = through == db.frontier()?;
     let mut holds = Vec::new();
     for row in pending_rows {
-        let entry = decode_entry(&row)?;
+        let entry = crate::entry_storage::decode_at(db, &row, through)?;
         let Some(Pending {
             timeout_ns: Some(timeout),
             ..
@@ -3111,13 +3169,26 @@ mod tests {
         }
 
         fn post_timed_hold(&mut self, timeout_ns: u64, key: &[u8]) -> EntryRef {
+            self.post_timed_hold_with_pairs(timeout_ns, key, 1)
+        }
+
+        fn post_timed_hold_with_pairs(
+            &mut self,
+            timeout_ns: u64,
+            key: &[u8],
+            pairs: usize,
+        ) -> EntryRef {
             use fa_model::LegPayload;
             use fa_money::Amount;
             let principal = VId(7);
-            let legs = vec![
-                LegPayload::simple(Side::Debit, self.rent, Amount::new(self.usd, 1_000)),
-                LegPayload::simple(Side::Credit, self.cash, Amount::new(self.usd, 1_000)),
-            ];
+            let legs = (0..pairs)
+                .flat_map(|_| {
+                    [
+                        LegPayload::simple(Side::Debit, self.rent, Amount::new(self.usd, 1_000)),
+                        LegPayload::simple(Side::Credit, self.cash, Amount::new(self.usd, 1_000)),
+                    ]
+                })
+                .collect::<Vec<_>>();
             let unit_totals = EntryPayload::fold_unit_totals(&legs).expect("totals");
             let proposal = EntryPayload {
                 schema_minor: 0,
@@ -3226,6 +3297,153 @@ mod tests {
                     .expect("bulk write");
             }
         }
+    }
+
+    #[test]
+    fn fragmented_hold_expires_and_scheduled_reversal_preserves_all_legs() {
+        let mut env = SweepTestEnv::new();
+        let t0 = 1_773_532_800_000_000_000_u64;
+        let first_tick = env.record_tick_at(t0, b"large-tick-0");
+        let before = env.db.frontier().unwrap();
+        let hold = env.post_timed_hold_with_pairs(1, b"large-hold", 256);
+        let row = env.db.vertex(hold.vid).unwrap().unwrap();
+        let original = crate::entry_storage::decode_at(&env.db, &row, row.created_at).unwrap();
+        assert_eq!(original.entry_ref(row.vid), hold);
+        assert!(original.encode().unwrap().len() > 16_384);
+        assert!(crate::entry_storage::is_stored_entry_payload(
+            &bytes(&row, property::FA_PAYLOAD, "large root").unwrap()
+        ));
+        let tail = fold_sweep_delta_tail(&env.db, before, Some((before, first_tick.tick)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(tail.added_holds.get(&hold.vid).unwrap().hold, hold);
+
+        env.record_tick_at(t0 + 1, b"large-tick-1");
+        assert_eq!(due_holds(&env.db, None).unwrap()[0].hold, hold);
+        let ctx = env.ctx();
+        let system = crate::rows::system_principal(env.book.book_id);
+        let request = SweepRequest {
+            principal_ref: system,
+            capability: Capability::new(system, Profile::System, &[Op::Post], VId(7)).unwrap(),
+            max_batch: 64,
+        };
+        let seal_key = env.book.seal_key.clone();
+        let mut describe = |text: &str| {
+            Ok(Erasable::seal(
+                &text.to_string(),
+                None,
+                &seal_key,
+                [0x22; 32],
+                [0x33; 24],
+            ))
+        };
+        let expired = env
+            .runtime
+            .block_on(sweep_batch(
+                &mut env.db,
+                &ctx,
+                &env.book,
+                &request,
+                &mut describe,
+            ))
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(expired.expired.len(), 1);
+        assert_eq!(expired.expired[0].0, hold);
+        assert!(due_holds(&env.db, None).unwrap().is_empty());
+
+        // The automatic reversal is another full 512-leg Entry. Its root,
+        // fragments, leg projections and cursor must publish atomically.
+        let mut proposal = original.proposal;
+        proposal.class = EntryClass::ADJUSTING;
+        proposal.pending = None;
+        proposal.idempotency_key = b"large-scheduled-adjustment".to_vec();
+        let proposal =
+            crate::schedule::with_auto_reverse(proposal, DateDay::from_ymd(2026, 3, 16).unwrap());
+        let posted = env
+            .runtime
+            .block_on(crate::post::post(
+                &mut env.db,
+                &ctx,
+                &env.book,
+                crate::post::PostRequest {
+                    capability: Capability::embedded(proposal.principal_ref, &["post"]).unwrap(),
+                    proposal,
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                },
+            ))
+            .unwrap()
+            .unwrap();
+        let target = match posted {
+            Posted::Committed { entry_ref, .. } | Posted::AlreadyRecorded { entry_ref, .. } => {
+                entry_ref
+            }
+        };
+        env.record_tick_at(t0 + 2 * NS_PER_DAY, b"large-tick-2");
+        let reversed = env
+            .runtime
+            .block_on(crate::schedule::sweep_reversals_batch(
+                &mut env.db,
+                &ctx,
+                &env.book,
+                &request,
+                &mut describe,
+            ))
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(reversed.blocked.is_empty(), "{:?}", reversed.blocked);
+        assert_eq!(reversed.minted.len(), 1);
+        assert_eq!(reversed.minted[0].0, target);
+        let reversal = reversed.minted[0].1;
+        let root = env.db.vertex(reversal.vid).unwrap().unwrap();
+        assert_eq!(root.created_at, reversed.recorded_at);
+        let canonical =
+            crate::entry_storage::decode_at(&env.db, &root, reversed.recorded_at).unwrap();
+        assert_eq!(canonical.entry_ref(root.vid), reversal);
+        assert_eq!(canonical.proposal.legs.len(), 512);
+        assert!(crate::entry_storage::is_stored_entry_payload(
+            &bytes(&root, property::FA_PAYLOAD, "reversal root").unwrap()
+        ));
+        assert!(
+            crate::schedule::verify_schedules(&env.db, &env.book)
+                .unwrap()
+                .is_green()
+        );
+
+        // A changed fragment must invalidate the incremental shortcut and be
+        // refused by canonical reassembly; it cannot become a new source.
+        let before_tamper = env.db.frontier().unwrap();
+        let fragment = env
+            .db
+            .vertices()
+            .unwrap()
+            .into_iter()
+            .find(|row| {
+                row.labels == vec![label::ENTRY_FRAGMENT] && row.created_at == reversed.recorded_at
+            })
+            .unwrap();
+        let mut changed = bytes(&fragment, property::FA_PAYLOAD, "fragment").unwrap();
+        changed[0] ^= 1;
+        let mut tamper = WriteBatch::new(relation::HAS_LEG);
+        tamper.set_vertex_property(
+            fragment.vid,
+            property::FA_PAYLOAD,
+            Some(scalar_bytes("changed fragment", changed).unwrap()),
+        );
+        env.runtime
+            .block_on(env.db.write(&ctx.commit(), tamper))
+            .unwrap();
+        assert!(
+            fold_sweep_delta_tail(&env.db, before_tamper, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            crate::entry_storage::decode_at(&env.db, &root, env.db.frontier().unwrap()).is_err()
+        );
     }
 
     /// Count the actual native writes made by an index publication, rather

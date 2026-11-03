@@ -1140,7 +1140,7 @@ pub(crate) fn verify_all_at<V: Vfs + Clone>(
     let line_kind = kind(&policy, "Other")?;
     let mut receipts = Vec::new();
     for row in rows.iter().filter(|row| row.labels.contains(&label::ENTRY)) {
-        if let Ok(entry) = stored_entry(row)
+        if let Ok(entry) = crate::entry_storage::decode_at(db, row, at)
             && entry.proposal.book_id == book.book_id
             && entry.proposal.branch_id == Id128::TRUNK
             && let Some(receipt) = receipt_of(&entry, row.vid, row.created_at)
@@ -1314,7 +1314,7 @@ pub fn unmatched_bank_lines_at<V: Vfs + Clone>(
     let rows = db.vertices_at(at)?;
     let mut receipts = Vec::new();
     for row in rows.iter().filter(|row| row.labels.contains(&label::ENTRY)) {
-        if let Ok(entry) = stored_entry(row)
+        if let Ok(entry) = crate::entry_storage::decode_at(db, row, at)
             && entry.proposal.book_id == book
             && entry.proposal.branch_id == Id128::TRUNK
             && let Some(receipt) = receipt_of(&entry, row.vid, row.created_at)

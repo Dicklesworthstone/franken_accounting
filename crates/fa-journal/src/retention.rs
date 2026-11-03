@@ -34,8 +34,8 @@
 use fa_model::limits::MAX_LEGAL_HOLD_SUBJECTS;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ApprovalRef, ControlKind, ControlPayload, DecodeError, Entry, EntryClass, EntryOrigin,
-    EntryPayload, Erasable, Id128, Oid, Reader, Writer, domain_digest, entry_mirrors, entry_vid,
+    ApprovalRef, ControlKind, ControlPayload, DecodeError, EntryClass, EntryOrigin, EntryPayload,
+    Erasable, Id128, Oid, Reader, Writer, domain_digest, entry_mirrors, entry_vid,
 };
 use fa_policy::{Capability, Intent, Op, Party, Reach};
 use fa_registry::evidence_policy::EvidencePolicy;
@@ -458,14 +458,10 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     expected_oid: Oid,
     approvals: &[ApprovalRef],
 ) -> Outcome<RetentionPolicyActivated> {
-    let stored = match prop(row, property::FA_PAYLOAD) {
-        Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
-        other => {
-            return Err(KernelError::Corrupt(format!(
-                "entry _fa_payload: {other:?}"
-            )));
-        }
-    };
+    if !crate::entry_storage::has_class_mirror(row, proposal.class) {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
     let conflict = || {
         Refusal::new(
             code::IDEMPOTENCY_CONFLICT,

@@ -192,6 +192,32 @@ fn bundle_with_native_inputs(
     expected_rows: &[ReportRow],
     native_inputs: usize,
 ) -> (Vec<u8>, SignedCheckpoint) {
+    let inputs = vec![b"native read attestations are not outsider proofs".to_vec(); native_inputs];
+    bundle_with_input_values(records, known_at, selection, expected_rows, &inputs)
+}
+
+fn entry_fragment_attestation(known_at: u64) -> Vec<u8> {
+    let statement = format!(
+        "MATCH (n:EntryFragment) FOR SYSTEM_TIME AS OF SEQ {known_at} RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n"
+    );
+    let mut input = b"fgdb:native-result-certificate:v1".to_vec();
+    input.push(1);
+    input.extend_from_slice(&[0; 32]);
+    input.extend_from_slice(&known_at.to_be_bytes());
+    input.extend_from_slice(&[0; 128]);
+    input.push(4); // TemporalPattern
+    input.extend_from_slice(&(statement.len() as u64).to_be_bytes());
+    input.extend_from_slice(statement.as_bytes());
+    input
+}
+
+fn bundle_with_input_values(
+    records: &[Record],
+    known_at: u64,
+    selection: Selection,
+    expected_rows: &[ReportRow],
+    native_inputs: &[Vec<u8>],
+) -> (Vec<u8>, SignedCheckpoint) {
     let envelopes: Vec<_> = records.iter().map(|r| r.envelope.encode()).collect();
     let checkpoint = Checkpoint {
         book_id: BOOK,
@@ -275,9 +301,9 @@ fn bundle_with_native_inputs(
     cert.fixed(&[0; 32])
         .fixed(&root_of(&historical))
         .u64(historical.len() as u64)
-        .count(native_inputs);
-    for _ in 0..native_inputs {
-        cert.bytes(b"native read attestations are not outsider proofs");
+        .count(native_inputs.len());
+    for input in native_inputs {
+        cert.bytes(input);
     }
     cert.bytes(&output)
         .fixed(&hash_parts(b"fa:report-output:v1", &[&output]));
@@ -320,6 +346,61 @@ fn original_and_fragment_source_closures_reproduce_the_same_report() {
                 "incomplete or extra closure with {count} inputs"
             );
         }
+    }
+}
+
+#[test]
+fn entry_fragment_closure_preserves_the_source_profile_and_rejects_malformed_tails() {
+    let mut records = schema();
+    records.push(record(
+        1,
+        3,
+        10,
+        b"entry-fragment-closure",
+        125,
+        None,
+        None,
+        None,
+    ));
+    let opaque = b"native read attestations are not outsider proofs".to_vec();
+    // Both an inline migration run and a fragmented run can coexist with an
+    // EntryFragment input, without claiming there was a BindSource control.
+    for original in [7, 8] {
+        let mut inputs = vec![opaque.clone(); original];
+        inputs.push(entry_fragment_attestation(3));
+        let (bytes, anchor) =
+            bundle_with_input_values(&records, 3, Selection::AsOf(20), &rows(125, 0), &inputs);
+        assert_eq!(verify_fixture(&bytes, anchor).unwrap().rows, rows(125, 0));
+    }
+    let valid = entry_fragment_attestation(3);
+    let mut trailing = valid.clone();
+    trailing.push(0);
+    let mut wrong_snapshot = valid.clone();
+    let snapshot_at = b"fgdb:native-result-certificate:v1".len() + 1 + 32;
+    wrong_snapshot[snapshot_at..snapshot_at + 8].copy_from_slice(&2u64.to_be_bytes());
+    let mut wrong_version = valid.clone();
+    wrong_version[b"fgdb:native-result-certificate:v1".len()] = 2;
+    for tail in [
+        trailing,
+        wrong_snapshot,
+        wrong_version,
+        entry_fragment_attestation(2),
+    ] {
+        let mut inputs = vec![opaque.clone(); 7];
+        inputs.push(tail);
+        let (bytes, anchor) =
+            bundle_with_input_values(&records, 3, Selection::AsOf(20), &rows(125, 0), &inputs);
+        assert!(verify_fixture(&bytes, anchor).is_err());
+    }
+    for inputs in [
+        vec![valid.clone(); 8],
+        [vec![opaque.clone(); 7], vec![valid.clone(), opaque.clone()]].concat(),
+        [vec![opaque.clone(); 7], vec![valid.clone(), valid]].concat(),
+        vec![opaque; 11],
+    ] {
+        let (bytes, anchor) =
+            bundle_with_input_values(&records, 3, Selection::AsOf(20), &rows(125, 0), &inputs);
+        assert!(verify_fixture(&bytes, anchor).is_err());
     }
 }
 #[test]

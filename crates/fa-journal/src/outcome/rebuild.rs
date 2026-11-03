@@ -145,7 +145,7 @@ pub async fn prepare_outcome_rebuild<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "rebuild entry")?)?;
+        let entry = crate::entry_storage::decode_at(db, &row, basis)?;
         if !covered_class(entry.proposal.class) {
             continue;
         }

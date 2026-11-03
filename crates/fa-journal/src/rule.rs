@@ -320,7 +320,10 @@ pub async fn propose_rule_version<V: Vfs + Clone>(
     if let Some(row) = txn.vertex(db, evid)? {
         let version_row = txn.vertex(db, version_vid)?;
         txn.abort();
-        let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry payload")?)?;
+        if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
         if stored.proposal.semantic_digest(&book.seal_key)?
             != proposal.semantic_digest(&book.seal_key)?
         {
@@ -844,7 +847,11 @@ pub async fn activate_rule_version<V: Vfs + Clone>(
     let epoch = crate::policy::epoch_witness(&txn, db)?;
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        let (stored, recorded_at) = crate::post::entry_of(&row)?;
+        if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
+        let recorded_at = row.created_at;
         if stored.proposal_digest != proposal_digest {
             return Ok(Err(Refusal::new(
                 code::IDEMPOTENCY_CONFLICT,

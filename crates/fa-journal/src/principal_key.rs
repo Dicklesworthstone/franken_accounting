@@ -100,6 +100,8 @@ fn corrupt(what: String) -> KernelError {
 
 /// A principal's chain, generation 0 first, read through `read` (a point
 /// read of the database or of a transaction, which records the witness).
+/// Each identity is the dedicated principal-key-generation domain, never
+/// the user-key Entry domain; this writer only stores inline key controls.
 pub(crate) fn chain(
     book: &BookContext,
     principal: VId,
@@ -429,7 +431,23 @@ fn recorded<V: asupersync::fs::Vfs + Clone>(
     row: &VertexRow,
     requested: &Entry,
 ) -> Outcome<CommitSeq> {
-    let (stored, recorded_at) = crate::post::entry_of(row)?;
+    let conflict = || {
+        Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            format!(
+                "key generation {:032x} is already registered with different content",
+                row.vid.0
+            ),
+            CITE,
+            "register the chain's next generation, endorsed by the current key",
+        )
+    };
+    if !crate::entry_storage::has_class_mirror(row, EntryClass::POLICY_CONTROL) {
+        return Ok(Err(conflict()));
+    }
+    let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
+    let recorded_at = row.created_at;
     let same = key_of(&stored.proposal) == key_of(&requested.proposal)
         && stored.proposal.book_id == book.book_id
         && stored.proposal.principal_ref == requested.proposal.principal_ref
@@ -441,15 +459,6 @@ fn recorded<V: asupersync::fs::Vfs + Clone>(
     if same {
         Ok(Ok(recorded_at))
     } else {
-        Ok(Err(Refusal::new(
-            code::IDEMPOTENCY_CONFLICT,
-            exit::CONFLICT,
-            format!(
-                "key generation {:032x} is already registered with different content",
-                row.vid.0
-            ),
-            CITE,
-            "register the chain's next generation, endorsed by the current key",
-        )))
+        Ok(Err(conflict()))
     }
 }

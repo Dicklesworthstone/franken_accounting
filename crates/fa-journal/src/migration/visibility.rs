@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property};
-use fa_model::{ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, Id128};
+use fa_model::{ControlKind, ControlPayload, EntryClass, EntryOrigin, Id128};
 use fa_time::DateDay;
 use fgdb::Database;
 use fgdb_delta_types::{DeltaRow, ElementId};
@@ -57,7 +57,7 @@ pub fn verify_run_visibility_at<V: Vfs + Clone>(
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = Entry::decode(&bytes(row, property::FA_PAYLOAD, "migration source entry")?)?;
+        let entry = crate::entry_storage::decode_at(db, row, at)?;
         let proposal = &entry.proposal;
         if proposal.book_id != book.book_id || proposal.branch_id != Id128::TRUNK {
             return Err(corrupt("source entry belongs to another book or branch"));

@@ -28,7 +28,7 @@ concurrency:
 jobs:
   authentic-agency-replay:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: '1'
       CARGO_PROFILE_DEV_DEBUG: '0'
@@ -133,6 +133,23 @@ jobs:
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-formats --test formats_conformance xbrl_ --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/xbrl-calculation-tests.log
 
+      - name: Regress large Entry storage and atomic staged readers
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test genesis entry_storage:: --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/entry-storage-tests.log
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib object::tests:: --jobs 1 -- --nocapture 2>&1 | tee -a artifacts/public-ledger/entry-storage-tests.log
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --lib fragmented_hold_expires_and_scheduled_reversal_preserves_all_legs --jobs 1 -- --nocapture 2>&1 | tee -a artifacts/public-ledger/entry-storage-tests.log
+
+      - name: Regress large Entry historical certificates and portable proofs
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test statements large_entry_certificates_bind_fragments --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/entry-certificate-tests.log
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-verify --all-targets --jobs 1 2>&1 | tee artifacts/public-ledger/independent-verifier-tests.log
+
       - name: Replay the complete finance-authority selection through native migration
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         shell: bash
@@ -209,6 +226,7 @@ jobs:
             artifacts/public-ledger/*/rows.csv
             artifacts/public-ledger/*/source.json
             artifacts/public-ledger/*/controls.json
+            artifacts/public-ledger/*/record-silent-analytics.json
             artifacts/public-ledger/*/legacy.csv
             artifacts/public-ledger/*/extracted-source/*
           retention-days: 14

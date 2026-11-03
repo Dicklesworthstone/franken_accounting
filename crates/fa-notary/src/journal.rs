@@ -206,8 +206,24 @@ impl From<Entry> for Record {
 }
 
 impl Record {
-    /// The record a vertex row holds, or `None` for a vertex that is no
-    /// record kind (a derived, metadata or chart vertex).
+    /// Decode a retained native row, resolving Entry fragments at the same
+    /// authenticated prefix. Storage fragments are never accumulator leaves.
+    pub fn of_row_at<V: asupersync::fs::Vfs + Clone>(
+        db: &Database<V>,
+        row: &VertexRow,
+        at: CommitSeq,
+    ) -> Result<Option<Self>, KernelError> {
+        if row.labels.contains(&label::ENTRY) {
+            return Ok(Some(Self::Entry(Box::new(
+                fa_journal::entry_storage::decode_at(db, row, at)?,
+            ))));
+        }
+        Self::of_row(row)
+    }
+
+    /// The record an inline vertex row holds, or `None` for a vertex that is
+    /// no record kind (a derived, metadata or chart vertex). Native database
+    /// consumers use [`Self::of_row_at`] to authenticate fragmented Entries.
     pub fn of_row(row: &VertexRow) -> Result<Option<Self>, KernelError> {
         let decode = |what: &'static str| bytes(row, property::FA_PAYLOAD, what);
         if row.labels.contains(&label::ACCESS_EVENT)
@@ -671,7 +687,7 @@ impl Journal {
             if !entry && boundary.is_none_or(|b| row.created_at <= b) {
                 continue;
             }
-            if let Some(record) = Record::of_row(&row)? {
+            if let Some(record) = Record::of_row_at(db, &row, seq)? {
                 records.push((row.vid, record, row.created_at));
             }
         }
@@ -753,11 +769,12 @@ impl Journal {
             if row.created_at != leaf.envelope.commit_seq {
                 return Ok(Err(changed("has a different creating sequence")));
             }
-            if bytes(&row, property::FA_PAYLOAD, "checkpointed record payload")
-                .ok()
-                .as_deref()
-                != Some(leaf.payload.as_slice())
-            {
+            let payload = if leaf.envelope.is_entry() {
+                fa_journal::entry_storage::payload_at(db, &row, observed_at)
+            } else {
+                bytes(&row, property::FA_PAYLOAD, "checkpointed record payload")
+            };
+            if payload.ok().as_deref() != Some(leaf.payload.as_slice()) {
                 return Ok(Err(changed("has a rewritten or missing payload")));
             }
             if bytes(&row, property::FA_DIGEST, "checkpointed record digest")

@@ -9,8 +9,7 @@ use std::collections::BTreeMap;
 
 use asupersync::fs::Vfs;
 use fa_journal::KernelError;
-use fa_journal::rows::bytes;
-use fa_model::symbols::{label, property};
+use fa_model::symbols::label;
 use fa_model::{Entry, EntryRef, Id128, Settlement};
 use fa_money::{Amount, UnitId};
 use fa_policy::Capability;
@@ -133,9 +132,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                             .ok_or_else(|| {
                                 KernelError::Corrupt("open-item target payload is missing".into())
                             })?;
-                        let entry =
-                            Entry::decode(&bytes(&row, property::FA_PAYLOAD, "settlement target")?)
-                                .map_err(KernelError::from)?;
+                        let entry = fa_journal::entry_storage::decode_at(&self.db, &row, at)?;
                         if entry.proposal.book_id != book.book_id
                             || entry.proposal.branch_id != Id128::TRUNK
                         {

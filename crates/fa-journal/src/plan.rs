@@ -16,7 +16,7 @@
 use asupersync::fs::Vfs;
 use fa_intents::{PlanCertificate, PostIntent, PostPlan, ReplacementPlan};
 use fa_model::symbols::{label, property, relation};
-use fa_model::{EntryClass, Id128, domain_digest, entry_mirrors, entry_vid};
+use fa_model::{EntryClass, Id128, domain_digest, entry_vid};
 use fa_policy::Capability;
 use fgdb::{Database, WriteBatch, WriteTxnError};
 use fgdb_types::VId;
@@ -439,7 +439,8 @@ async fn recorded_plan<V: Vfs + Clone>(
     }
     if entry.labels.as_slice() != [label::ENTRY]
         || entry.retired_at.is_some()
-        || entry.props != entry_mirrors(plan.prepared_entry())?
+        || !crate::entry_storage::mirrors_match(&entry, plan.prepared_entry())?
+        || crate::entry_storage::decode_at(db, &entry, db.frontier()?)? != *plan.prepared_entry()
         || entry.created_at.0 < min_sequence
         || db
             .vertex_at(evid, fgdb_types::CommitSeq(before_entry))?
@@ -930,7 +931,8 @@ async fn recorded_replacement<V: Vfs + Clone>(
     for ((vid, member), row) in members.into_iter().zip([first, second]) {
         if row.labels.as_slice() != [label::ENTRY]
             || row.retired_at.is_some()
-            || row.props != entry_mirrors(member.prepared_entry())?
+            || !crate::entry_storage::mirrors_match(row, member.prepared_entry())?
+            || crate::entry_storage::decode_at(db, row, db.frontier()?)? != *member.prepared_entry()
             || db.vertex_at(vid, before)?.is_some()
             || db.vertex_at(vid, sequence)?.as_ref() != Some(row)
             || !crate::outcome::verify_recorded(

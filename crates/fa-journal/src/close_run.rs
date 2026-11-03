@@ -741,14 +741,16 @@ fn read_view<V: Vfs + Clone>(
         .map(|task| (close_task_vid(book.book_id, name, &task.id), task))
         .collect();
     let mut records = Vec::new();
-    for row in db.vertices()? {
+    let known_at = db.frontier()?;
+    for row in db.vertices_at(known_at)? {
         cx.query()
             .checkpoint()
             .map_err(WriteTxnError::Interrupted)?;
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let (entry, seq) = crate::post::entry_of(&row)?;
+        let entry = crate::entry_storage::decode_at(db, &row, known_at)?;
+        let seq = row.created_at;
         if let Some(ControlPayload::LifecycleTransition { object_ref, .. }) =
             &entry.proposal.control
             && (*object_ref == run || tasks.contains_key(object_ref))
@@ -1044,7 +1046,8 @@ fn verify_effect<V: Vfs + Clone>(
     let row = db
         .vertex(effect)?
         .ok_or_else(|| corrupt("task's native effect is absent"))?;
-    let (entry, recorded_at) = crate::post::entry_of(&row)?;
+    let entry = crate::entry_storage::decode_at(db, &row, seq)?;
+    let recorded_at = row.created_at;
     if recorded_at != seq || entry.proposal.principal_ref != principal {
         return Err(corrupt(
             "task receipt and native effect were not published atomically by one principal",
@@ -1105,7 +1108,8 @@ fn verify_effect<V: Vfs + Clone>(
                 let row = db.vertex(expected.vid)?.ok_or_else(|| {
                     corrupt("a completed draft's actual monetary entry is absent")
                 })?;
-                let (actual, published) = crate::post::entry_of(&row)?;
+                let actual = crate::entry_storage::decode_at(db, &row, seq)?;
+                let published = row.created_at;
                 if published != seq
                     || actual.entry_ref(expected.vid) != *expected
                     || actual.proposal.book_id != book.book_id
@@ -1409,7 +1413,7 @@ pub async fn execute_close_task<V: Vfs + Clone>(
                 let row = db
                     .vertex(receipt.effect)?
                     .ok_or_else(|| corrupt("completed native transition is absent"))?;
-                let (entry, _) = crate::post::entry_of(&row)?;
+                let entry = crate::entry_storage::decode_at(db, &row, receipt.recorded_at)?;
                 if entry.proposal.proposal_digest()? != digest
                     || entry.approvals != request.approvals
                 {
