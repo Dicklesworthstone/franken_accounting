@@ -51,8 +51,10 @@
 //! ([`VerifyError::FoldLaw`]), never a recomputation under another law.
 //! A partial legacy balance proof is not sufficient for recomputation. The
 //! missing selector-derivation premise can be discharged only when this
-//! bundle independently checks EVERY payload of the same complete prefix;
-//! otherwise that balance fails, even when its supplied amounts add up.
+//! bundle independently checks EVERY entry payload of the same complete
+//! prefix; otherwise that balance fails, even when its supplied amounts add
+//! up. A non-entry leaf's exclusion rests on its signed envelope kind, and
+//! the balance check's subject names that premise.
 //!
 //! A scope admits exactly one completeness claim: `Prefix` is
 //! `SeqRangeComplete(0, leaf_count)`, `Account` is `ScopeIndexComplete`,
@@ -1108,7 +1110,10 @@ pub(crate) fn verify_bundle_observing(
             },
         };
         let subject = if full_prefix_payloads {
-            format!("{subject}; every prefix selector independently rebuilt from its payload")
+            format!(
+                "{subject}; every prefix entry selector independently rebuilt from its payload; \
+                 non-entry leaves rest on their signed kind"
+            )
         } else {
             subject
         };

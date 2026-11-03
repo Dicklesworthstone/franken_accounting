@@ -960,6 +960,26 @@ fn all_five_exports_verify_independently_at_recorded_checkpoints_after_reopen() 
             .expect("claimed next checkpoint"),
         new
     );
+    // Swapped states are a request error (exit 2), never reported as a
+    // history that fails to extend (exit 8).
+    let (code, refused) = run(
+        &f.book,
+        &[
+            "proof",
+            "consistency",
+            "--state",
+            text(&new_state, "oid"),
+            "--next-state",
+            text(&old_state, "oid"),
+        ],
+    );
+    assert_eq!(code, 2, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-100");
+    assert!(
+        text(&refused, "message").contains("precedes --state"),
+        "{}",
+        refused.render()
+    );
 
     let prefix = exported(&f.book, &["prefix"]);
     let complete = fa_verify::verify_prefix(&bytes(&prefix), &new)
@@ -2451,7 +2471,25 @@ fn witnesses_cosign_an_extending_history_and_refuse_a_rewritten_one() {
             s.bytes[0] ^= 1;
         }
     }
-    for (name, copy) in [("stripped", stripped), ("altered", altered)] {
+    // A copy that already claims a junk signature under bob's key id: bob
+    // still signs afresh rather than passing the junk on as his cosignature.
+    let bob_key_bytes: [u8; 32] = unhex(&bob_pk).try_into().unwrap();
+    let mut planted = a1.clone();
+    planted
+        .signatures
+        .push(fa_notary::checkpoint::CheckpointSignature {
+            signer_key_id: fa_notary::checkpoint::signer_key_id(&bob_key_bytes),
+            scheme: a1.signatures[0].scheme,
+            bytes: vec![0; 64],
+        });
+    planted
+        .signatures
+        .sort_by_key(|s| (s.signer_key_id, s.scheme));
+    for (name, copy) in [
+        ("stripped", stripped),
+        ("altered", altered),
+        ("planted", planted),
+    ] {
         let file = path(&format!("{name}.cp"));
         std::fs::write(&file, copy.canonical_bytes().unwrap()).unwrap();
         let out = path(&format!("{name}-b.cp"));
@@ -2787,6 +2825,12 @@ fn a_suffix_carries_every_appended_leaf_and_verifies_against_both_checkpoints() 
             &reversed,
         ],
     );
-    assert_ne!(code, 0, "a suffix runs forward: {}", refused.render());
+    assert_eq!(code, 2, "a suffix runs forward: {}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-100");
+    assert!(
+        text(&refused, "message").contains("precedes --state"),
+        "swapped states are a request error, not a rewritten history: {}",
+        refused.render()
+    );
     assert!(!f.dir.join("reversed").exists());
 }

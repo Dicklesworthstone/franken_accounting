@@ -515,6 +515,36 @@ fn an_agent_profile_capability_never_writes_trunk_and_its_refusal_cites_fa_s7x()
     ));
 }
 
+/// A period of another calendar never resolves (plan §7.3). Its code alone
+/// names this book's March, so without the calendar check the posting was
+/// admitted and stored naming a calendar the book does not have.
+#[test]
+fn an_effective_period_of_another_calendar_is_refused_before_any_write() {
+    let mut h = harness();
+    let head = h.db.frontier().unwrap();
+    let mut foreign = h.proposal(PREPARER, 5_000, b"foreign-1", EntryClass::ORIGINAL);
+    foreign.effective_period = Some(fa_model::PeriodRef {
+        calendar: "another".into(),
+        code: h.march.clone(),
+    });
+    let r = h
+        .post(foreign, human(PREPARER, &["post"]), Vec::new())
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-020", exit::REFUSAL), "{r}");
+    assert!(r.message.contains("calendar `another`"), "{}", r.message);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    // The same period named under this book's calendar posts.
+    let mut own = h.proposal(PREPARER, 5_000, b"own-1", EntryClass::ORIGINAL);
+    own.effective_period = Some(fa_model::PeriodRef {
+        calendar: h.book.calendar.id.clone(),
+        code: h.march.clone(),
+    });
+    assert!(matches!(
+        h.post(own, human(PREPARER, &["post"]), Vec::new()),
+        Ok(Posted::Committed { .. })
+    ));
+}
+
 #[test]
 fn a_capability_authorizes_only_its_holder_and_refusals_precede_any_read() {
     let mut h = harness();

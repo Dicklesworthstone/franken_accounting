@@ -215,7 +215,12 @@ impl EntrySelection {
                             valid_time,
                             ..
                         } => {
-                            if valid_time.is_some() || labels.contains(&label::MIGRATION_RUN) {
+                            if valid_time.is_some()
+                                || labels.contains(&label::MIGRATION_RUN)
+                                || labels.contains(&label::MIGRATION_RUN_FRAGMENT)
+                                || labels.contains(&label::MIGRATION_SOURCE)
+                                || labels.contains(&label::MIGRATION_SOURCE_FRAGMENT)
+                            {
                                 return false;
                             }
                             touched.insert(*vid);
@@ -231,7 +236,12 @@ impl EntrySelection {
                             label: changed,
                             ..
                         } => {
-                            if *changed == label::ENTRY || *changed == label::MIGRATION_RUN {
+                            if *changed == label::ENTRY
+                                || *changed == label::MIGRATION_RUN
+                                || *changed == label::MIGRATION_RUN_FRAGMENT
+                                || *changed == label::MIGRATION_SOURCE
+                                || *changed == label::MIGRATION_SOURCE_FRAGMENT
+                            {
                                 return false;
                             }
                             touched.insert(*vid);
@@ -276,7 +286,11 @@ impl EntrySelection {
             // A run's state or immutable body can change the visibility of
             // chunks not present in the previous selected set. Re-read the
             // complete snapshot rather than assuming those chunks absent.
-            if row.labels.contains(&label::MIGRATION_RUN) {
+            if row.labels.contains(&label::MIGRATION_RUN)
+                || row.labels.contains(&label::MIGRATION_RUN_FRAGMENT)
+                || row.labels.contains(&label::MIGRATION_SOURCE)
+                || row.labels.contains(&label::MIGRATION_SOURCE_FRAGMENT)
+            {
                 return false;
             }
             if row.labels.contains(&label::ENTRY) {
@@ -984,6 +998,39 @@ mod tests {
             );
             self.write(batch)
         }
+    }
+
+    #[test]
+    fn migration_fragment_changes_force_literal_selection_at_each_prefix() {
+        let mut f = Fixture::new();
+        let first = f.entry("before-fragments");
+        let before = f.add(VId(1), &first);
+        let mut batch = WriteBatch::new(relation::IN_BOOK);
+        batch.create_vertex(
+            VId(63),
+            vec![label::MIGRATION_RUN_FRAGMENT],
+            vec![(
+                property::FA_PAYLOAD,
+                scalar_bytes("fragment", vec![1]).unwrap(),
+            )],
+        );
+        let created = f.write(batch);
+        let mut changed = WriteBatch::new(relation::IN_BOOK);
+        changed.set_vertex_property(
+            VId(63),
+            property::FA_PAYLOAD,
+            Some(scalar_bytes("changed fragment", vec![2]).unwrap()),
+        );
+        let changed = f.write(changed);
+        let mut selection = EntrySelection::default();
+        let mut work = ReplayReadWork::default();
+        for at in [before, created, changed] {
+            assert_eq!(
+                selection.read(&f.db, &f.book, at, &mut work).unwrap(),
+                crate::entries_at(&f.db, &f.book, at).unwrap()
+            );
+        }
+        assert_eq!(work.full_reads, 3);
     }
 
     #[test]

@@ -2567,9 +2567,48 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
     }
 
-    // 3. Resolve the effective date to exactly one period (plan §7.3).
-    let fy = book.calendar.fiscal_year_of(proposal.effective_date)?;
-    let periods = book.calendar.periods_for_year(fy)?;
+    // 3. Resolve the effective date to exactly one period (plan §7.3). A
+    //    date outside every fiscal year the calendar defines (a custom
+    //    calendar's undeclared year) is the caller's, refused like any other
+    //    unresolvable date, and a period of another calendar never resolves.
+    if let Some(named) = proposal
+        .effective_period
+        .as_ref()
+        .filter(|p| p.calendar != book.calendar.id)
+    {
+        return Ok(Err(Refusal::new(
+            code::PERIOD_RESOLVE,
+            exit::REFUSAL,
+            format!(
+                "effective_period names calendar `{}`; this book's calendar is `{}`",
+                named.calendar, book.calendar.id
+            ),
+            "plan §7.3 (effective_period discriminator)",
+            "name a period of this book's calendar; `fa calendar show --json` describes it",
+        )
+        .at("effective_period", named.code.clone())));
+    }
+    let periods = match book
+        .calendar
+        .fiscal_year_of(proposal.effective_date)
+        .and_then(|fy| book.calendar.periods_for_year(fy))
+    {
+        Ok(periods) => periods,
+        Err(e) => {
+            return Ok(Err(Refusal::new(
+                code::PERIOD_RESOLVE,
+                exit::REFUSAL,
+                format!(
+                    "effective date {} is outside every fiscal year calendar `{}` defines: {e}",
+                    proposal.effective_date.render(),
+                    book.calendar.id
+                ),
+                "plan §7.2 (a fiscal calendar generates the periods of the years it defines)",
+                "post inside a fiscal year the calendar defines; `fa calendar show --json` describes it",
+            )
+            .at("effective_date", proposal.effective_date.render())));
+        }
+    };
     let period = match resolve_period(
         &periods,
         proposal.effective_date,
@@ -3001,6 +3040,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 return Ok(Err(r));
             }
         };
+        if let Err(refusal) = migration::witness_source_member(&txn, db, book, &run, proposal)? {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
         // The run's own Opening period holds the opening chunks; a Normal
         // code must be declared; any other special period is FullDetail
         // detail inside the declared run of periods (a pre-opening Opening,

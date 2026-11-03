@@ -522,6 +522,9 @@ impl TimedWork {
             // A startup sample or a clock jump is recorded honestly, but cannot
             // supply corroborated time for a critical publication. Retrying
             // waits for the real clock to corroborate; no synthetic increment.
+            // A lasting step (an NTP correction, a suspended host) never
+            // corroborates against the startup baseline, which a running
+            // daemon never moves (clock.rs); only a restart takes a new one.
             if corroborated {
                 Ok(ticked)
             } else {
@@ -530,7 +533,7 @@ impl TimedWork {
                     fa_journal::exit::REFUSAL,
                     "the fresh daemon TimeEvidence tick is not corroborated; the requested operation was not run",
                     "plan §7.1a; fa-7uhr (fresh time evidence before critical publication)",
-                    "wait for the daemon's next locally corroborated clock observation, then retry the same command; inspect fad status for timed_work_error",
+                    "wait for the daemon's next locally corroborated clock observation, then retry the same command; inspect fad status for timed_work_error. If ticks stay uncorroborated, the host clock was stepped (an NTP correction or a suspend) away from the daemon's startup baseline, which is never re-baselined while it runs: restart fad to take a new baseline",
                 )))
             }
         });

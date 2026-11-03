@@ -645,8 +645,9 @@ pub fn assemble(
 /// [`crate::migration_balance::bundle_run_bodies`]); a needed body that is
 /// absent is refused. In a prefix bundle a balance whose cell selects
 /// migration candidates is proved in the migration-aware v2 format, any
-/// other in v1: the bundle itself carries every payload those proofs'
-/// selection rests on. An account or entries bundle cannot, so its balances
+/// other in v1: the bundle itself carries every entry payload those proofs'
+/// selection rests on, and a non-entry leaf is excluded on its signed
+/// envelope kind. An account or entries bundle cannot, so its balances
 /// are payload-complete v3, carrying every prefix record; the facade admits
 /// whole-book read before assembling any bundle. `approvals` holds the
 /// stored record of each approval [`cited_approvals`] names; a cited one
@@ -656,7 +657,7 @@ pub fn assemble_with_runs(
     checkpoint: &StoredCheckpoint,
     request: &BundleRequest,
     documents: &BTreeMap<Oid, DocumentRead>,
-    run_bodies: &BTreeMap<VId, fa_journal::migration::RunBody>,
+    run_bodies: &dyn crate::migration_balance::MigrationSourceInputs,
     approvals: &BTreeMap<VId, Vec<u8>>,
 ) -> Outcome<Bundle> {
     let statement = journal.statement();

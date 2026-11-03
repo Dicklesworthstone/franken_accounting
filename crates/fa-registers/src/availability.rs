@@ -129,16 +129,6 @@ fn fold_entry(
         })
     };
     match p.class {
-        EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL => {
-            for leg in &p.legs {
-                if let Some(k) = key(leg.account_ref, entry)? {
-                    moves
-                        .entry(k)
-                        .or_default()
-                        .post(leg.side, leg.amount.mantissa)?;
-                }
-            }
-        }
         EntryClass::PENDING => {
             zero_duration = resolved.get(vid) == Some(recorded_at);
             for leg in &p.legs {
@@ -178,8 +168,24 @@ fn fold_entry(
             }
         }
         // Migration legs are accumulated separately and move their cells once
-        // at Finalize. Staging, abandonment, and other controls move no cell.
-        _ => {}
+        // at Finalize.
+        EntryClass::MIGRATION => {}
+        // Controls commit outside the posting kernel and move no cell.
+        class if class.is_control() => {}
+        // Every other posting class posts its legs, exactly as the kernel's
+        // limit judge moves them (`limit::judge` has no class filter):
+        // Replace, Reclass, Allocation, Closing, Revaluation and the rest,
+        // not only Original, Adjusting and Reversal.
+        _ => {
+            for leg in &p.legs {
+                if let Some(k) = key(leg.account_ref, entry)? {
+                    moves
+                        .entry(k)
+                        .or_default()
+                        .post(leg.side, leg.amount.mantissa)?;
+                }
+            }
+        }
     }
     apply_movements(cells, moves, zero_duration)
 }

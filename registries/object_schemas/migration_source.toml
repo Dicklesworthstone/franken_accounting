@@ -1,0 +1,32 @@
+# Native immutable population of a retained legacy import package.
+# This is exact package membership, not independent CSV/economic validation.
+schema_version = 1
+format = "FA-MIGRATION-SOURCE"
+format_terminator = 0
+version = 1
+digest_domain = "fa:migration-source:v1"
+identity_domain = "fa:vid:migration-source:v1"
+max_chunks = 4096
+max_bytes = 262144
+root_label = 64
+fragment_label = 65
+object_kind = 10
+control_kind = 3
+tie_out_domain = "fa:migration-tie-out:v2"
+fields = ["book_id:bytes16", "run_ref:u128", "run_body_digest:bytes32", "source_oid:bytes32", "source_commit:bytes32", "package_oid:bytes32", "package_commit:bytes32", "source_rows:u64", "chunks:list<entry_vid:u128,proposal_digest:bytes32>"]
+
+# Format prefix bytes, one NUL byte, u16 version, then fields in the order above; integers LE,
+# lists use u32 count. One through 4096 unique entry identities; declared
+# source_rows >= chunks.len. Source order must equal the retained package.
+# Native bind verifies supplied package bytes against its DocumentRecord,
+# decodes every retained proposal, and compares complete ordered membership.
+# Only an empty Open run can bind. The immutable root's TARGET_REF is the
+# BindSource entry VId, and root/control/fragments share their original birth.
+# The control uses MigrationControl kind3, tie_out_digest=manifest digest;
+# origin spec_body_digest retains the original v1 RunBody commitment.
+# Evidence is exactly source/package OIDs and commitments, role1, sorted unique.
+# Native stage accepts any exact member, preserving arbitrary submission order.
+# Finalize requires all members, with no additional or modified proposal.
+# The v2 tie-out binds original RunBody digest, manifest digest, then the
+# existing actual-publication list ordered (recorded_at, entry_vid).
+# Historical unbound runs retain v1 tie-out bytes and narrower native scope.

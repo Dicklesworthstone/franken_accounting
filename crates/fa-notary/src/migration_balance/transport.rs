@@ -6,7 +6,7 @@ use fa_journal::refusal::{Outcome, Refusal, exit};
 use fa_model::Writer;
 use fgdb_types::VId;
 
-use super::{BALANCE_FORMAT_V2, BALANCE_FORMAT_V3, Selected};
+use super::{BALANCE_FORMAT_V2, BALANCE_FORMAT_V3, BALANCE_FORMAT_V4, Selected};
 use crate::{Journal, Leaf};
 
 pub const MAX_BALANCE_PROOF_BYTES: usize = 64 * 1024 * 1024;
@@ -44,6 +44,7 @@ fn measure<'a>(
     journal: &Journal,
     records: impl IntoIterator<Item = &'a Leaf>,
     witnesses: &[(usize, Vec<u8>)],
+    source_witnesses: &[(usize, Vec<u8>)],
     through: Option<i32>,
 ) -> Result<usize, Refusal> {
     // format bytes, checkpoint, claim and the three list counts. V2 and v3
@@ -76,18 +77,29 @@ fn measure<'a>(
         add(&mut size, 12)?; // Open index and body length
         add(&mut size, body.len())?;
     }
+    if !source_witnesses.is_empty() {
+        add(&mut size, 4)?;
+        for (_, manifest) in source_witnesses {
+            if manifest.len() > MAX_RECORD_BYTES {
+                return Err(limit("source manifest (8 MiB)"));
+            }
+            add(&mut size, 12)?;
+            add(&mut size, manifest.len())?;
+        }
+    }
     Ok(size)
 }
 
 /// Refuse oversized complete prefixes before decoding all their entries.
 pub(super) fn preflight(journal: &Journal, through: Option<i32>) -> Result<(), Refusal> {
-    measure(journal, journal.leaves.iter(), &[], through).map(|_| ())
+    measure(journal, journal.leaves.iter(), &[], &[], through).map(|_| ())
 }
 
 pub(super) fn encode(
     journal: &Journal,
     selected: &Selected<'_>,
     witnesses: Vec<(usize, Vec<u8>)>,
+    source_witnesses: Vec<(usize, Vec<u8>)>,
     complete: bool,
     claim: Claim,
 ) -> Outcome<Vec<u8>> {
@@ -103,6 +115,7 @@ pub(super) fn encode(
         journal,
         leaves.iter().map(|(_, leaf)| *leaf),
         &witnesses,
+        &source_witnesses,
         claim.through,
     ) {
         Ok(size) => size,
@@ -125,7 +138,9 @@ pub(super) fn encode(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut w = Writer::with_capacity(size);
-    w.bytes(if complete {
+    w.bytes(if !source_witnesses.is_empty() {
+        BALANCE_FORMAT_V4
+    } else if complete {
         BALANCE_FORMAT_V3
     } else {
         BALANCE_FORMAT_V2
@@ -147,6 +162,11 @@ pub(super) fn encode(
         .list(&witnesses, |w, (index, body)| {
             w.u64(*index).bytes(body);
         });
+    if !source_witnesses.is_empty() {
+        w.list(&source_witnesses, |w, (index, manifest)| {
+            w.u64(*index as u64).bytes(manifest);
+        });
+    }
     let bytes = w.finish().map_err(fa_model::EntryError::Encode)?;
     if bytes.len() != size {
         return Err(KernelError::Corrupt(
@@ -167,10 +187,11 @@ mod tests {
         let journal = Journal::from_records(Id128([1; 16]), CommitSeq(0), vec![]).unwrap();
         for complete in [false, true] {
             for through in [None, Some(i32::MIN), Some(i32::MAX)] {
-                let expected = measure(&journal, journal.leaves.iter(), &[], through).unwrap();
+                let expected = measure(&journal, journal.leaves.iter(), &[], &[], through).unwrap();
                 let bytes = encode(
                     &journal,
                     &vec![],
+                    vec![],
                     vec![],
                     complete,
                     Claim {

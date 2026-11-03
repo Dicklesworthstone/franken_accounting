@@ -1,4 +1,4 @@
-//! Independent native v1 and retained-carrying v2 YearEndClose replay.
+//! Independent native v1, retained-carrying v2 and fund-preserving v3 replay.
 //!
 //! Every claimed close is rebuilt at its original observation and immediately
 //! before publication. Older native closes are checked too: they cannot
@@ -205,7 +205,7 @@ impl Basis {
             return Err(invalid("unknown intrinsic Closing basis"));
         }
         let version = r.u16("closing.version")?;
-        if !matches!(version, 1 | 2) {
+        if !matches!(version, 1..=3) {
             return Err(failed(
                 "supported_report",
                 "unsupported YearEndClose computation version",
@@ -356,12 +356,17 @@ struct ClosingLeg {
     native: i128,
     base: Option<i128>,
     entity: Option<u128>,
+    fund: Option<u128>,
 }
 
-fn entity(spec: &BookParameters, dimensions: &[(u32, u128)]) -> Result<Option<u128>, ReportError> {
+fn entity(
+    spec: &BookParameters,
+    dimensions: &[(u32, u128)],
+    preserves_fund: bool,
+) -> Result<Option<u128>, ReportError> {
     if dimensions
         .iter()
-        .any(|(id, _)| !matches!(id, 1..=6 | 8 | 9))
+        .any(|(id, _)| !matches!(id, 1..=6 | 8 | 9) && !(preserves_fund && *id == 7))
     {
         return Err(failed(
             "supported_report",
@@ -428,6 +433,46 @@ struct History<'a> {
 }
 
 impl History<'_> {
+    /// Rebuild declarations and closes without consulting native projections.
+    /// Their complete ordered prefix is part of v3's source commitment. A
+    /// fund that closes before year end still owns its historical balance;
+    /// this law-generated transfer retains its identity without reopening it.
+    fn bind_funds(&self, at: u64, source: &mut Writer) -> Result<BTreeMap<u128, u64>, ReportError> {
+        let mut dimensions = crate::report::dimension::History::default();
+        let mut declared = BTreeMap::new();
+        let mut controls = Vec::new();
+        for &index in &self.order {
+            let envelope = &self.envelopes[index];
+            if envelope.commit_seq > at {
+                break;
+            }
+            let info = &self.infos[&index];
+            let Some((kind @ (17 | 19), bytes)) = info.schema else {
+                continue;
+            };
+            dimensions.apply(kind, bytes, &self.spec.book)?;
+            let mut r = Reader::new(bytes);
+            r.fixed::<21>("closing.fund.format")?;
+            let dimension = super::text(&mut r, 64, "closing.fund.dimension")?;
+            if dimension != "fund" {
+                continue;
+            }
+            if kind == 17 {
+                let code = super::text(&mut r, 64, "closing.fund.code")?;
+                let value = crate::report::dimension::value_vid(&self.spec.book, "fund", code);
+                declared.insert(value, envelope.commit_seq);
+            }
+            controls.push((info.identity, envelope.commit_seq, envelope.record_digest));
+        }
+        source
+            .fixed(b"fa:year-end-close-fund-controls:v1")
+            .u64(controls.len() as u64);
+        for (identity, sequence, digest) in controls {
+            source.u128(identity).u64(sequence).fixed(&digest);
+        }
+        Ok(declared)
+    }
+
     fn snapshot(&self, at: u64) -> Result<(metadata::Schema, Vec<Routes>), ReportError> {
         let mut schema = metadata::Schema::default();
         let mut routes = Vec::new();
@@ -507,6 +552,7 @@ impl History<'_> {
         destination: u128,
         unit: u32,
         entity: Option<u128>,
+        fund: Option<u128>,
         balance: Balance,
         valued: bool,
     ) -> Result<(), ReportError> {
@@ -540,6 +586,7 @@ impl History<'_> {
                 native,
                 base: valued.then_some(base),
                 entity,
+                fund,
             });
         }
         if output.len() > 4096 {
@@ -551,7 +598,8 @@ impl History<'_> {
     }
 
     fn reproduce(&self, index: usize, basis: &Basis, at: u64) -> Result<(), ReportError> {
-        let valued = basis.version == 2;
+        let valued = matches!(basis.version, 2 | 3);
+        let preserves_fund = basis.version == 3;
         let (start, end) = self.spec.fiscal_calendar.year_bounds(basis.year)?;
         let (schema, maps) = self.snapshot(at)?;
         let (period_start, period_end, kind, state) = schema
@@ -599,6 +647,11 @@ impl History<'_> {
                 .fixed(&self.registry.unit_table_digest)
                 .fixed(&law_oid(8));
         }
+        let funds = if preserves_fund {
+            self.bind_funds(at, &mut source)?
+        } else {
+            BTreeMap::new()
+        };
         for (&from, &to) in &map.rows {
             for (id, nominal) in [(from, true), (to, false)] {
                 let row = account(
@@ -612,7 +665,7 @@ impl History<'_> {
                 super::revaluation::bind_account(&mut source, id, row, &schema);
             }
         }
-        let mut cells: BTreeMap<(u128, u32, Option<u128>), Cell> = BTreeMap::new();
+        let mut cells: BTreeMap<(u128, u32, Option<u128>, Option<u128>), Cell> = BTreeMap::new();
         for &previous in &self.order {
             let envelope = &self.envelopes[previous];
             if envelope.commit_seq > at {
@@ -652,7 +705,21 @@ impl History<'_> {
                     ));
                 }
                 let base = self.parsed[&previous].amounts[ordinal];
-                let entity = entity(self.spec, &details.dimensions)?;
+                let entity = entity(self.spec, &details.dimensions, preserves_fund)?;
+                let fund = details
+                    .dimensions
+                    .iter()
+                    .find(|(dimension, _)| *dimension == 7)
+                    .map(|(_, value)| *value);
+                if let Some(fund) = fund
+                    && funds
+                        .get(&fund)
+                        .is_none_or(|declared| *declared > envelope.commit_seq)
+                {
+                    return Err(invalid(
+                        "a nominal source fund has no preceding authenticated declaration",
+                    ));
+                }
                 source
                     .u128(self.infos[&previous].identity)
                     .u64(envelope.commit_seq)
@@ -666,7 +733,9 @@ impl History<'_> {
                     .map_err(|_| invalid("closing source functional amount cannot be negative"))?;
                 let gcd = super::gcd(native, functional);
                 let ratio = (functional / gcd, native / gcd);
-                let cell = cells.entry((leg.account, leg.unit, entity)).or_default();
+                let cell = cells
+                    .entry((leg.account, leg.unit, entity, fund))
+                    .or_default();
                 cell.total.add(leg.debit, leg.mantissa, base)?;
                 cell.buckets
                     .entry(ratio)
@@ -676,7 +745,7 @@ impl History<'_> {
         }
         let mut expected = Vec::new();
         let mut bound_unrouted = BTreeSet::new();
-        for ((id, unit, entity), cell) in cells {
+        for ((id, unit, entity, fund), cell) in cells {
             let row = &schema.accounts[&id];
             let inactive = !row.is_leaf || !effective(&schema, id, end)?;
             if inactive && !cell.total.zero() {
@@ -715,6 +784,7 @@ impl History<'_> {
                         destination,
                         unit,
                         entity,
+                        fund,
                         balance,
                         true,
                     )?;
@@ -728,12 +798,15 @@ impl History<'_> {
                     destination,
                     unit,
                     entity,
+                    fund,
                     cell.total,
                     false,
                 )?;
             }
         }
-        let domain: &[u8] = if valued {
+        let domain: &[u8] = if preserves_fund {
+            b"fa:year-end-close-source:v3"
+        } else if valued {
             b"fa:year-end-close-source:v2"
         } else {
             b"fa:year-end-close-source:v1"
@@ -757,6 +830,7 @@ impl History<'_> {
                 .entity
                 .into_iter()
                 .map(|entity| (1, entity))
+                .chain(expected.fund.into_iter().map(|fund| (7, fund)))
                 .collect();
             if expected.account != leg.account
                 || expected.unit != leg.unit

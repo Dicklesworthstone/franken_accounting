@@ -3803,6 +3803,35 @@ mod tests {
                 "{phase} must retain operator migration authority"
             );
         }
+        let selected = json!({
+            "chunks": [
+                {"index": 0, "approvals": ["11".repeat(16), "22".repeat(16)]},
+                {"index": 1, "approvals": ["33".repeat(16), "44".repeat(16)]}
+            ]
+        });
+        let arguments = json!({
+            "action": "import", "import_action": "stage", "package": package,
+            "intent": selected
+        });
+        let invocation = tool
+            .invocation(&mcp, reg, &arguments)
+            .expect("grouped staging forwards the per-chunk selection on stdin");
+        assert!(
+            invocation
+                .argv
+                .windows(2)
+                .any(|pair| pair == ["--intent", "-"])
+        );
+        assert_eq!(invocation.stdin, Some(selected.to_string().into_bytes()));
+        assert!(!mcp.is_call_admissible(
+            reg,
+            &ToolCall {
+                tool: call.tool.clone(),
+                arguments,
+                command: "fa migrate import --action stage".into(),
+            },
+            &authority
+        ));
     }
 
     #[test]

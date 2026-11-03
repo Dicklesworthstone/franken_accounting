@@ -1,0 +1,239 @@
+{
+  "boundary": "Complete published monthly expenditure extract under a declared offset-account model; not a complete original GL, independent human review, fraud finding, or audited trial balance.",
+  "build_scope": {
+    "debug_info": "0",
+    "measurement": "One complete execution on a shared development host; not a release throughput benchmark or controlled comparison",
+    "profile": "dev",
+    "runtime_override": "asupersync opt-level=0; hint-mostly-unused; -Zthreads=1; -Zmir-opt-level=0",
+    "rustc": "rustc 1.100.0-nightly (908501772 2026-08-30)"
+  },
+  "bulk_transport": "direct_cli",
+  "bundle_sha256": "b8afa3cf3ecd0dd1b3aaf4b06fcc75f01a8744ec913bb7e8466dc4f376dd5c0d",
+  "certificate_digest": "80bc484a54c9213b942e892a46dba9280bf4d94e99f8dd64d1f55cb79c783f7e",
+  "checkpoint_public_key": "7cb54c1f88faf1cf2b2524fb2599ccb6363399b20dda254662d978d3b8ccc162",
+  "checks": [
+    "pinned_original_bytes",
+    "deterministic_source_transform",
+    "all_source_documents_durable_byte_identity",
+    "complete_chunk_and_leg_census",
+    "group_receipts_bind_every_approved_chunk",
+    "prepare_retry_without_publication",
+    "chunk_retry_without_publication",
+    "staged_invisibility",
+    "native_full_detail_tieout",
+    "atomic_finalization",
+    "historical_invisibility",
+    "exact_gross_and_net_by_account",
+    "registers_equal_fold",
+    "finalized_retry_without_publication",
+    "native_csv_export_verification",
+    "every_dated_exported_leg_and_memo",
+    "native_certificate_replay",
+    "independent_fa_verify_report",
+    "tampered_bundle_refused",
+    "executable_identity_guards"
+  ],
+  "dataset": "hmrc-2025-03",
+  "document_custody": {
+    "byte_identical_source_readbacks": 6,
+    "grade": "AgentUpload",
+    "review_principal": "public-data-fixture-reviewer-a",
+    "review_scope": "Distinct same-harness fixture principal; not independent human review",
+    "reviewed_attestations": 17,
+    "self_sourced": true,
+    "uploaded_documents": 17
+  },
+  "documents": {
+    "expected_tb.json": "249580f3e5f80f41be4c3e77809a901e4e3cb10d787e3f6d29cd7d709a4c70b8",
+    "legacy.csv": "1638abaa8484cd77f04be3310277d043945bf286b464edbf25b1afea98831cdf",
+    "provenance.jsonl": "0d4081e3724769792eec0b716838f7154d1b2a95e5776cbb3ffa65a5e5843c8c",
+    "raw.csv": "99f4bb6d5fdb1063c8c147c95242ee21bb06b84f98d78013ede4bd829cbf5ec0",
+    "receipt.json": "7b381efe242e6cb443c1d157fb399ca0643df1cecd733379f2bfdb1a1a48c26d",
+    "records.jsonl": "448feb5cd2be9cb2a783d2debe33dc083e4484851052cb2a6bea11056995b18b"
+  },
+  "elapsed_seconds": 113.172,
+  "executed_helpers": {
+    "tools/public-data/public_spend.py": {
+      "bytes": 23968,
+      "sha256": "ed376231ce90bb14bc33f1a4eae9d3d84e4b1fc3e3c58768c467fb4624bc03f3"
+    },
+    "tools/public-data/run_live.py": {
+      "bytes": 40012,
+      "sha256": "7f4fc253f73ad90a2a30a176e1f557871e827398a535fdc85464c420e4756d58"
+    },
+    "tools/public-data/sources.toml": {
+      "bytes": 4124,
+      "sha256": "5aff0da79d6266f36513d8c07ab0b60ba41210c31bdf65768d08e3a7974b02c7"
+    }
+  },
+  "fa_sha256": "b8a0055b2ab294aa6903204a0893fe2626acbc4f025742b335adff0ad9d42498",
+  "fa_verify_sha256": "32c8895f5fb4021f0f97905acc204bee8b1fa3a3aa3752b7f90c8bfe6d7d02b8",
+  "format": "fa-public-data-native-execution-summary-v1",
+  "full_artifacts": {
+    "commands.jsonl": {
+      "bytes": 294696,
+      "sha256": "e31b2781544f6ecc174abd983e00baa0bd425817c9df4032648559390b9da476"
+    },
+    "finalize.plan": {
+      "bytes": 451,
+      "sha256": "e9afe1cddb539002cef7910b69e8712b37c4c09aa3ea429670502eaf8cdd0d99"
+    },
+    "native.csv": {
+      "bytes": 931898,
+      "sha256": "1a17df4e861a25621f81a92812c4adb279da02efa9a08c60561f3f0ccb326b2f"
+    },
+    "replayed.report": {
+      "bytes": 21588,
+      "sha256": "da6a94686a42516834aa4dc7f04fdd91f1b2edf2bd714fe5d568549e6e6ded47"
+    },
+    "report.checkpoint": {
+      "bytes": 288,
+      "sha256": "14f09a5f519a95418046f178295db86c5576e6819a8ae0d372a338b177859cae"
+    },
+    "result.json": {
+      "bytes": 3047,
+      "sha256": "3fcf0a73a2d9e219fd490925cda82e59b1c242cafcbc34f64c756f7acc0ee1fb"
+    },
+    "tampered-trial-balance.fab": {
+      "bytes": 1080467,
+      "sha256": "6e9821e25b276618cf4fc4ea84683c4e7d9a9f6fefcd304d31bf5f779a5c4fe5"
+    },
+    "trial-balance.fab": {
+      "bytes": 1080467,
+      "sha256": "b8afa3cf3ecd0dd1b3aaf4b06fcc75f01a8744ec913bb7e8466dc4f376dd5c0d"
+    },
+    "trial-balance.receipt": {
+      "bytes": 219,
+      "sha256": "44656f902affdd55d85d72a48a3bcc5822d6b98a89417bce7b6b857ce4e19eb8"
+    }
+  },
+  "independent_verification": {
+    "check_counts": [
+      {
+        "check": "canonical_report",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "checkpoint",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "production_receipt",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "report_bundle",
+        "count": 1,
+        "result": "pass"
+      },
+      {
+        "check": "trial_balance_row",
+        "count": 135,
+        "result": "pass"
+      }
+    ],
+    "exit_code": 0,
+    "report_bundle": {
+      "bundle_digest": "c364fb5b0a7666923bea5d4f72a8ba3c41ebeeca246cd2868fef1006792d4001",
+      "certificate_digest": "80bc484a54c9213b942e892a46dba9280bf4d94e99f8dd64d1f55cb79c783f7e",
+      "effective_through": 20178,
+      "known_at": 551,
+      "native_read_attestations": "retained; not used as outsider proofs",
+      "output_digest": "1a084e1ecce128a4ee8f3395ce166af398dfb32450fc9244dd0c0adc2bada35a",
+      "records": 293,
+      "report_mode": "stock",
+      "rows": 135,
+      "unit_universe_source": "not-applicable"
+    },
+    "verdict": "verified"
+  },
+  "migration_run": "d6af023bb08480f8bdad5f38c696ab87",
+  "model_scope": {
+    "historical_span": "March 2025 source activity is carried through empty scoped months to January 1, 2026 go-live; no claim is made about later actual HMRC activity or closing balances.",
+    "native_account_categories": 134,
+    "native_offset_account": {
+      "code": "published-payment-offset",
+      "meaning": "Explicit modeled counterpart; no bank-cash balance is inferred",
+      "type": "Equity"
+    },
+    "source_fields": "Every source field, duplicate row and row identity remains in retained raw/normalized/provenance evidence. Source area, supplier, reference and other dimensions are not asserted to be native queryable dimension tags by this runner.",
+    "verification_trust": "The independently verified report is from this locally created analysis book and caller-trusted checkpoint key; it is not an HMRC-signed or audited ledger."
+  },
+  "native_calls": 463,
+  "native_exit_counts": {
+    "0": 462,
+    "8": 1
+  },
+  "native_export": {
+    "entries": 127,
+    "legs": 2860
+  },
+  "native_source_commit": "93714f772a6279c0ea233841d1d51dbe096d9ff1",
+  "native_source_tree": "d10a9f8191c87250a65b35dc2255cc78c4b03910",
+  "observed_process_exit": 0,
+  "output_digest": "1a084e1ecce128a4ee8f3395ce166af398dfb32450fc9244dd0c0adc2bada35a",
+  "package_oid": "95098d84dd3ff34680e73c19100016beaa2b7170db2ec9d068d5f34ab454e298",
+  "period": "FY2025-P03",
+  "recorded_utc": "2026-11-03T03:49:24.920417+00:00",
+  "report_coordinates": {
+    "book_id": "3b252f79f40e3985bfcc5437ea7ba93f",
+    "certified_report_known_at": 551,
+    "finalization_control_entry": "27e8a57e8ae6f011e0de5c5487703bb9",
+    "finalization_recorded_at": 550,
+    "head_after_finalization_approvals": 549,
+    "historical_empty_tb_known_at": 547,
+    "pre_finalization_known_at": 547
+  },
+  "reproduce": "python3 -B tools/public-data/run_live.py --prepared /path/to/complete-hmrc-2025-03 --dataset hmrc-2025-03 --out /path/to/new-native-execution --fa /path/to/frozen/fa --fa-verify /path/to/frozen/fa-verify --stage-group-size 64 --timeout 300",
+  "source": {
+    "byte_length": 213348,
+    "encoding": "cp1252",
+    "license_url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+    "limits": "Paid invoice lines over the publication threshold, including split lines and credit notes. Values are gross including VAT; dates are payment dates. No original double-entry counterpart, opening balances, or complete departmental ledger is supplied.",
+    "publication_url": "https://www.gov.uk/government/publications/hmrc-spending-over-25000-march-2025",
+    "publisher": "HM Revenue & Customs",
+    "title": "HMRC spending over £25,000, March 2025",
+    "url": "https://assets.publishing.service.gov.uk/media/680fdb56b0d43971b07f5c76/HMRC_spending_over_25000_for_March_2025.csv"
+  },
+  "source_sha256": "eca3d42b3c8f6c8e1b4746fcd3614b6b65311fbd4a7900a96b3b269dc3006a2a",
+  "source_stats": {
+    "date_count": 21,
+    "duplicate_rows": 1,
+    "expense_area_count": 42,
+    "expense_type_count": 134,
+    "max_minor": "1507727368",
+    "max_transaction_rows": 12,
+    "min_minor": "-321224815",
+    "negative_minor": "-942246241",
+    "negative_rows": 125,
+    "net_minor": "28574458415",
+    "positive_minor": "29516704656",
+    "positive_rows": 1305,
+    "row_count": 1430,
+    "split_transaction_count": 71,
+    "supplier_count": 160,
+    "transaction_count": 1321,
+    "zero_rows": 0
+  },
+  "stage_group_size": 64,
+  "stage_requests": 2,
+  "status": "PASS",
+  "tamper_refusal": {
+    "exit_code": 8,
+    "failed_checks": [
+      {
+        "check": "record_derivation",
+        "detail": {},
+        "reason": "Digest { which: \"supplement.body_digest\" }",
+        "result": "fail",
+        "scope": "recomputation"
+      }
+    ],
+    "mutation": "Flip one bit at the midpoint of the authentic report-bundle bytes; retain the original trusted key, checkpoint, receipt and expected certificate digest",
+    "verdict": "failed"
+  },
+  "transcript_scope": "commands.jsonl binds all 463 started/completed commands, their stdout/stderr SHA-256 values and each exact forwarded stdin request. All referenced transcript file hashes and stdin lengths were independently rechecked when preparing this summary."
+}

@@ -8,13 +8,11 @@
 //! The BookSpec is a declared report basis bound by the expected certificate
 //! and signed bundle, not a separate claim of checkpoint membership at genesis.
 
-use std::collections::BTreeMap;
-
+use crate::migration_balance::MigrationSourceInputs;
 use fa_journal::genesis::BookSpec;
-use fa_journal::migration::RunBody;
 use fa_journal::refusal::Outcome;
 use fa_model::{Oid, Reader};
-use fgdb_types::{CommitSeq, VId};
+use fgdb_types::CommitSeq;
 
 use crate::{Bundle, Journal, StoredCheckpoint};
 
@@ -81,7 +79,7 @@ pub fn assemble(
     checkpoint: &StoredCheckpoint,
     certificate: &[u8],
     known_at: CommitSeq,
-    bodies: &BTreeMap<VId, RunBody>,
+    bodies: &dyn MigrationSourceInputs,
     registries: &[(String, Vec<u8>)],
     book_spec: &[u8],
     rates: &[(Oid, Vec<u8>)],

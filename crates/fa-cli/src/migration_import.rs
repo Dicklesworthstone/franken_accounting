@@ -35,10 +35,10 @@ use fa_time::{DateDay, PeriodDef, PeriodKind, PeriodState};
 use fgdb_types::VId;
 
 use crate::args::Args;
-use crate::cli::{Ctx, Fail, hex, parse_json, render_amount, usage, write_post_plan};
+use crate::cli::{Ctx, Fail, Out, hex, parse_json, render_amount, usage, write_post_plan};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa migrate import --action prepare --intent import.json [--plan-out new.package] | --action show --package D:<oid> | --action stage --package D:<oid> --chunk 0 --approval <vid> --approval <vid>";
+const EXAMPLE: &str = "fa migrate import --action prepare --intent import.json [--plan-out new.package] | --action show --package D:<oid> | --action stage --package D:<oid> (--chunk 0 --approval <vid> --approval <vid> | --intent stage-selection.json)";
 const PACKAGE_DOMAIN: &[u8] = b"FA-LEGACY-OPENING-IMPORT\0";
 const PACKAGE_VERSION: u16 = 1;
 const PACKAGE_MIME: &str = "application/vnd.frankenaccounting.legacy-opening-import.v1";
@@ -100,7 +100,7 @@ fn options(args: &Args) -> Result<&str, Fail> {
     let allowed: &[&str] = match action {
         "prepare" => &["--action", "--intent", "--plan-out"],
         "show" => &["--action", "--package"],
-        "stage" => &["--action", "--package", "--chunk", "--approval"],
+        "stage" => &["--action", "--package", "--chunk", "--approval", "--intent"],
         _ => {
             return Err(usage(
                 format!("unknown migration import action `{action}`"),
@@ -138,6 +138,15 @@ fn options(args: &Args) -> Result<&str, Fail> {
         return Err(usage(
             "import prepare retains exact approval material; it does not accept --dry-run",
             EXAMPLE,
+        ));
+    }
+    if action == "stage"
+        && args.flag("--intent").is_some()
+        && (args.flag("--chunk").is_some() || args.flag("--approval").is_some())
+    {
+        return Err(usage(
+            "a staging selection cannot be combined with --chunk or --approval",
+            "use either --chunk with its approvals, or --intent with a chunks array containing each index and its own approvals",
         ));
     }
     if let Some(path) = args.flag("--plan-out")
@@ -1485,6 +1494,261 @@ struct Loaded {
     tie: TieOut,
 }
 
+struct StageSelection {
+    index: usize,
+    approvals: Vec<VId>,
+}
+
+impl StageSelection {
+    fn parse(text: &str) -> Result<Vec<Self>, Fail> {
+        let value = parse_json("migration staging selection", text)?;
+        let Json::Obj(fields) = &value else {
+            return Err(usage("staging selection must be a JSON object", EXAMPLE));
+        };
+        if fields.len() != 1 || fields[0].0 != "chunks" {
+            return Err(usage(
+                "staging selection requires exactly one chunks field",
+                "use {\"chunks\":[{\"index\":0,\"approvals\":[\"<vid>\",\"<vid>\"]}]}",
+            ));
+        }
+        let Some(Json::Arr(chunks)) = value.get("chunks") else {
+            return Err(usage("staging selection chunks must be an array", EXAMPLE));
+        };
+        if chunks.is_empty() || chunks.len() > MAX_CHUNKS {
+            return Err(usage(
+                format!("staging selection needs 1..={MAX_CHUNKS} distinct package chunks"),
+                "split the requested chunk indices into bounded selections and resume with the same retained package",
+            ));
+        }
+        let mut selected = BTreeSet::new();
+        let mut result = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            let Json::Obj(fields) = chunk else {
+                return Err(usage("each staging chunk must be an object", EXAMPLE));
+            };
+            let mut seen = BTreeSet::new();
+            for (key, _) in fields {
+                if !matches!(key.as_str(), "index" | "approvals") || !seen.insert(key) {
+                    return Err(usage(
+                        format!("unknown or repeated staging chunk field `{key}`"),
+                        EXAMPLE,
+                    ));
+                }
+            }
+            let Some(Json::Int(index)) = chunk.get("index") else {
+                return Err(usage(
+                    "each staging chunk index must be a nonnegative integer",
+                    EXAMPLE,
+                ));
+            };
+            let index = usize::try_from(*index)
+                .map_err(|_| usage("staging chunk index is out of range", EXAMPLE))?;
+            if !selected.insert(index) {
+                return Err(usage(
+                    format!("staging selection repeats chunk index {index}"),
+                    "include each index once; retry an interrupted selection with the same package and approvals",
+                ));
+            }
+            let Some(Json::Arr(approvals)) = chunk.get("approvals") else {
+                return Err(usage(
+                    "each staging chunk needs its own approvals array",
+                    EXAMPLE,
+                ));
+            };
+            if approvals.len() > fa_model::limits::MAX_APPROVALS {
+                return Err(usage(
+                    format!(
+                        "staging chunk {index} exceeds max_approvals ({})",
+                        fa_model::limits::MAX_APPROVALS
+                    ),
+                    "supply only the independent approvals bound to this exact proposal",
+                ));
+            }
+            let approvals = approvals
+                .iter()
+                .map(|approval| {
+                    let text = approval.as_str().ok_or_else(|| {
+                        usage("staging approvals must be approval VID strings", EXAMPLE)
+                    })?;
+                    let text = text.strip_prefix("A:").unwrap_or(text);
+                    Ok(VId(u128::from_be_bytes(fixed_hex(text, "approval")?)))
+                })
+                .collect::<Result<_, Fail>>()?;
+            result.push(Self { index, approvals });
+        }
+        Ok(result)
+    }
+}
+
+fn stage_progress(
+    out: &Out,
+    book: &Book,
+    loaded: &Loaded,
+    selected_count: usize,
+    completed: &[Json],
+    failed_index: Option<usize>,
+    phase: &str,
+) {
+    // Preserve the original posting/status failure even if an I/O failure also
+    // prevents refreshing the envelope coordinate. Each completed receipt
+    // retains the native committed sequence independently of that coordinate.
+    let coordinate_refreshed = out.at_book(book).is_ok();
+    let resume = "inspect --action show, then retry the same selection with this retained package and the original approvals; completed chunks are durable and staging remains invisible until independently approved finalization";
+    out.event(
+        "migration_import_progress",
+        vec![
+            ("package_oid", s(hex(&loaded.document.oid().0))),
+            ("run_vid", s(format!("{:032x}", loaded.run.vid.0))),
+            ("atomic", Json::Bool(false)),
+            ("selected_count", Json::Int(selected_count as i128)),
+            ("completed_count", Json::Int(completed.len() as i128)),
+            ("chunks", Json::Arr(completed.to_vec())),
+            (
+                "failed_chunk_index",
+                failed_index.map_or(Json::Null, |index| Json::Int(index as i128)),
+            ),
+            ("phase", s(phase)),
+            ("coordinate_refreshed", Json::Bool(coordinate_refreshed)),
+            ("resume_hint", s(resume)),
+        ],
+        &format!(
+            "migration selection stopped after {} of {selected_count} chunk receipts; those individual publications remain durable. {resume}",
+            completed.len()
+        ),
+    );
+}
+
+fn stage_selection(
+    book: &mut Book,
+    out: &Out,
+    cap: &Capability,
+    loaded: &Loaded,
+    selected: Vec<StageSelection>,
+) -> Result<(), Fail> {
+    // Resolve every index, approval identifier and proposal digest before any
+    // publication. Native approval authority, SoD and current run law still
+    // execute independently inside each Book::post transaction.
+    let requests = selected
+        .into_iter()
+        .map(|selection| {
+            let proposal = loaded
+                .package
+                .proposals
+                .get(selection.index)
+                .ok_or_else(|| {
+                    usage(
+                        format!(
+                            "staging chunk index {} is outside this package",
+                            selection.index
+                        ),
+                        "inspect --action show and select only exact listed chunk indices",
+                    )
+                })?;
+            let digest = proposal
+                .proposal_digest()
+                .map_err(|error| invalid(error.to_string()))?;
+            let approvals = selection
+                .approvals
+                .into_iter()
+                .map(|approval_vid| ApprovalRef {
+                    approval_vid,
+                    approved_digest: digest,
+                })
+                .collect();
+            Ok((selection.index, digest, approvals))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let selected_count = requests.len();
+    let mut completed = Vec::with_capacity(selected_count);
+    for (index, digest, approvals) in requests {
+        let result = book
+            .post(PostRequest {
+                proposal: loaded.package.proposals[index].clone(),
+                approvals,
+                plan_certificate: None,
+                capability: cap.clone(),
+            })
+            .map_err(Fail::Book)
+            .and_then(|posted| posted.map_err(Fail::Refusal));
+        let posted = match result {
+            Ok(posted) => posted,
+            Err(error) => {
+                stage_progress(
+                    out,
+                    book,
+                    loaded,
+                    selected_count,
+                    &completed,
+                    Some(index),
+                    "posting",
+                );
+                return Err(error);
+            }
+        };
+        completed.push(obj(vec![
+            ("chunk_index", Json::Int(index as i128)),
+            ("entry_vid", s(format!("{:032x}", posted.entry_ref().vid.0))),
+            ("proposal_digest", s(hex(&digest))),
+            ("recorded_at", Json::Int(i128::from(posted.recorded_at().0))),
+            (
+                "already_recorded",
+                Json::Bool(matches!(posted, Posted::AlreadyRecorded { .. })),
+            ),
+        ]));
+    }
+    let status = (|| {
+        let run = load_run(book, loaded.run.vid)?;
+        let tie = recorded_chunks(book, &run, &loaded.package)?;
+        out.at_book(book)?;
+        Ok::<_, Fail>((run, tie))
+    })();
+    let (run, tie) = match status {
+        Ok(status) => status,
+        Err(error) => {
+            stage_progress(
+                out,
+                book,
+                loaded,
+                selected_count,
+                &completed,
+                None,
+                "status",
+            );
+            return Err(error);
+        }
+    };
+    let ready = run.state == RunState::Open
+        && tie.chunks.len() == loaded.package.proposals.len()
+        && tie.mismatches.is_empty();
+    out.event(
+        "migration_import_group_staged",
+        vec![
+            ("package_oid", s(hex(&loaded.document.oid().0))),
+            ("run_vid", s(format!("{:032x}", run.vid.0))),
+            ("atomic", Json::Bool(false)),
+            ("selected_count", Json::Int(selected_count as i128)),
+            ("completed_count", Json::Int(completed.len() as i128)),
+            ("chunks", Json::Arr(completed)),
+            ("run_state", s(run.state.name())),
+            ("recorded_count", Json::Int(tie.chunks.len() as i128)),
+            ("chunk_count", Json::Int(loaded.package.proposals.len() as i128)),
+            ("ready_to_finalize", Json::Bool(ready)),
+        ],
+        &format!(
+            "staged {selected_count} selected chunks as individual publications for `{}`; {}/{} staged; {}",
+            run.body.run_key,
+            tie.chunks.len(),
+            loaded.package.proposals.len(),
+            if ready {
+                "prepare and independently approve `fa migrate finalize` to activate the complete run"
+            } else {
+                "retain this package to resume; only native finalization activates an Open run"
+            },
+        ),
+    );
+    Ok(())
+}
+
 fn retained_package(
     book: &mut Book,
     cap: &Capability,
@@ -1931,6 +2195,18 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Ok(());
     }
     let package_oid = oid(args.require("--package", "D:<64-hex-oid>")?, "--package")?;
+    let selection = if let Some(path) = args.flag("--intent") {
+        let bytes =
+            crate::intake::read_document_with_limit(&ctx.files, path, MAX_REQUEST_BYTES as u64)?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| usage("staging selection must be UTF-8 JSON", EXAMPLE))?;
+        Some(StageSelection::parse(text)?)
+    } else {
+        None
+    };
+    // The complete source, all trial balances and all retained transformations
+    // are authenticated once for this request. Only Migration chunks can be
+    // published below; they cannot alter those documents, chart or run body.
     let loaded = load_package(&mut book, &cap, package_oid)?;
     if action == "show" {
         ctx.out.at_book(&book)?;
@@ -1940,6 +2216,9 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             loaded.package.kind.mode_name(), hex(&package_oid.0), loaded.run.body.run_key, loaded.tie.chunks.len(), loaded.package.proposals.len(), loaded.run.state.name(),
         ));
         return Ok(());
+    }
+    if let Some(selection) = selection {
+        return stage_selection(&mut book, &ctx.out, &cap, &loaded, selection);
     }
     let index = args
         .require("--chunk", "zero-based package chunk index")?

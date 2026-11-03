@@ -3,7 +3,7 @@
 //! A trusted checkpoint authenticates a journal prefix, not the account,
 //! unit, cutoff, or amounts an operator intended to check. An otherwise valid
 //! proof for another cell must not satisfy that question. This layer verifies
-//! v1/v2/v3, requires independent scope derivation, then compares the claim
+//! v1/v2/v3/v4, requires independent scope derivation, then compares the claim
 //! with an expectation supplied separately by the recipient. Expectations
 //! must not be copied from the untrusted proof or its packaging.
 //! Partial legacy proofs may be inspected with `crate::verify_balance`, but
@@ -82,7 +82,7 @@ impl fmt::Display for BalanceExpectationError {
             Self::Verification(error) => write!(f, "{error}"),
             Self::Assurance { actual } => write!(
                 f,
-                "balance completeness is not independently verified (scope {actual}); supply a payload-complete v3 proof",
+                "balance completeness is not independently verified (scope {actual}); supply a payload-complete v3 or source-bound v4 proof",
             ),
             Self::Scope { expected, actual } => write!(
                 f,
@@ -180,6 +180,9 @@ mod tests {
         if format != crate::balance::BALANCE_FORMAT {
             w.count(0);
         }
+        if format == crate::migration_balance::BALANCE_FORMAT_V4 {
+            w.count(0);
+        }
         (w.buf, checkpoint)
     }
 
@@ -201,11 +204,12 @@ mod tests {
         }
     }
 
-    fn formats() -> [&'static [u8]; 3] {
+    fn formats() -> [&'static [u8]; 4] {
         [
             crate::balance::BALANCE_FORMAT,
             crate::migration_balance::BALANCE_FORMAT_V2,
             crate::migration_balance::BALANCE_FORMAT_V3,
+            crate::migration_balance::BALANCE_FORMAT_V4,
         ]
     }
 

@@ -14,7 +14,9 @@ from decimal import Decimal
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -27,7 +29,7 @@ import blmis_source as source
 
 def cents(literal):
     """Independent decoding of this fixture's published whole-dollar cells."""
-    text = literal.split(" [", 1)[0]
+    text = re.sub(r"\s+(?:\[[12]\]|\*)$", "", literal)
     if text == "-":
         return 0
     negative = text.startswith("(")
@@ -128,9 +130,11 @@ def export_test_input(raw_rows, path, format_name, mutate=None):
         contra = ("BLMIS-CASH", cash) if cash else ("BLMIS-TRANSFER", transfer)
         for ordinal, (account, signed) in enumerate([("BLMIS-1ZA192", -delta), contra], 1):
             receipt = posted[row["row_id"]]
+            memo = (f"analysis counterpart; SRC-BLM-001 Exhibit {row.get('exhibit', 'B-2')} "
+                    f"PDF p{row['pdf_page']} line {row['source_line']}")
             records.append([receipt["vid"], str(ordinal), source_date(row), str(receipt["recorded_at"]),
                             "1", account, "D" if signed > 0 else "C", amount(abs(signed)).split()[0],
-                            "USD", "2", row["description"], "", "source evidence retained",
+                            "USD", "2", row["description"], r"\N" if format_name == "ads" else "", memo,
                             "12:" + "a" * 32 if ordinal == 1 else ""])
     if mutate is not None:
         mutate(records)
@@ -284,13 +288,49 @@ class BlmisReplayTests(unittest.TestCase):
                     self.assertTrue(result["historical_missing_role_result_unchanged"])
                     self.assertEqual(native.call.call_args_list, [
                         mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
-                                  "--as-known-at", 1500),
+                                  "--known-at", 1500),
                         mock.call("chart", "role", "BLMIS-TRANSFER", "investor_transfer"),
                         mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
-                                  "--as-known-at", 2000),
+                                  "--known-at", 2000),
                         mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
-                                  "--as-known-at", 1500),
+                                  "--known-at", 1500),
                     ])
+
+    def test_analysis_role_setup_preserves_equity_and_rejects_changed_native_chart(self):
+        for accounts in ([source.ACCOUNT], list(source.GLANTZ_ACCOUNTS)):
+            principals = [{"code": f"BLMIS-{account}", "type": "Equity", "unit": "USD", "leaf": True}
+                          for account in accounts]
+            declared = principals + [
+                {"code": source.CASH_ACCOUNT, "type": "Asset", "unit": "USD", "leaf": True},
+                {"code": source.TRANSFER_ACCOUNT, "type": "Liability", "unit": "USD", "leaf": True},
+            ]
+            for mutation in (None, "liability_principal", "wrong_cash", "missing", "duplicate", "unit", "parent"):
+                actual = deepcopy(declared)
+                if mutation == "liability_principal":
+                    actual[0]["type"] = "Liability"
+                elif mutation == "wrong_cash":
+                    actual[-2]["type"] = "Equity"
+                elif mutation == "missing":
+                    actual.pop(0)
+                elif mutation == "duplicate":
+                    actual[-1] = deepcopy(actual[0])
+                elif mutation == "unit":
+                    actual[0]["unit"] = "EUR"
+                elif mutation == "parent":
+                    actual[0]["leaf"] = False
+                native = mock.Mock(spec=replay.ledger.Native)
+                native.call.side_effect = [{"event": "accounts", "data": {"accounts": actual}}, {}]
+                with self.subTest(accounts=len(accounts), mutation=mutation):
+                    if mutation is None:
+                        replay.configure_analysis_roles(native, accounts)
+                        self.assertEqual(native.call.call_args_list, [
+                            mock.call("chart", "list"),
+                            mock.call("chart", "role", "BLMIS-CASH", "cash"),
+                        ])
+                    else:
+                        with self.assertRaisesRegex(replay.ledger.ReplayError, "native analysis chart differs"):
+                            replay.configure_analysis_roles(native, accounts)
+                        native.call.assert_called_once_with("chart", "list")
 
     def test_native_party_registration_uses_actual_dimension_identity_not_party_vid(self):
         registered = {"event": "rea_recorded", "data": {"object": "party", "code": "BLMIS-1ZA192",
@@ -349,6 +389,28 @@ class BlmisReplayTests(unittest.TestCase):
                     path = Path(self.directory.name) / "party-tampered-exports" / format_name / mutation / "GL_Detail.txt"
                     posted = export_test_input(self.originals, path, format_name, change)
                     with self.assertRaisesRegex(replay.ledger.ReplayError, "changed party attribution"):
+                        replay.verify_source_export(path, format_name, self.rows, posted, TEST_PARTY)
+
+    def test_export_comparator_refuses_lost_source_text_and_invented_provenance(self):
+        for format_name in ("csv-gl", "ads"):
+            for leg in (0, 1):
+                for field, index, value in (
+                    ("description", 10, "SOURCE DESCRIPTION LOST"),
+                    ("memo", 12, ""),
+                    ("other_source_citation", 12, "analysis counterpart; SRC-BLM-OTHER Exhibit B-2 PDF p31 line 16"),
+                    ("migrated_from", 11, "invented migration provenance"),
+                ):
+                    def change(records):
+                        before = deepcopy(records)
+                        records[leg][index] = value
+                        self.assertNotEqual(before[leg][index], records[leg][index])
+                        self.assertEqual([row[:10] + row[13:] for row in records],
+                                         [row[:10] + row[13:] for row in before],
+                                         "only the selected source text field may change")
+                    path = Path(self.directory.name) / "text-tampered-exports" / format_name / str(leg) / field / "GL_Detail.txt"
+                    posted = export_test_input(self.originals, path, format_name, change)
+                    with self.subTest(format=format_name, leg=leg, field=field), \
+                            self.assertRaisesRegex(replay.ledger.ReplayError, "source description, citation memo or original-entry provenance"):
                         replay.verify_source_export(path, format_name, self.rows, posted, TEST_PARTY)
 
     def test_export_comparator_checks_counterpart_money_receipts_dates_and_row_coverage(self):
@@ -563,14 +625,25 @@ class BlmisReplayTests(unittest.TestCase):
         # are not cryptographic certificates and are never sent to fa-verify.
         certificate = {"oid": "unit-only-certificate", "output_digest": "unit-only-output",
                        "output_format": "fa:roll-forward:v1"}
-        report = {"event": "general_ledger", "certificate": certificate["oid"], "data": data}
+        report = {"event": "general_ledger", "certificate": certificate["oid"], "data": data,
+                  "book": "unit-only-book", "coordinate": {"branch": "trunk", "known_at": data["known_at"],
+                  "effective": "between:1992-12-07..2008-10-30", "time_evidence": None}}
         events = [report, {"event": "report_certificate", "data": certificate}]
-        first = (json.dumps(report, sort_keys=True) + "\n").encode()
-        encoded = first + (json.dumps(events[1], sort_keys=True) + "\n").encode()
+        first = json.dumps(report, sort_keys=True) + "\n"
+        encoded = first + json.dumps(events[1], sort_keys=True) + "\n"
+        receipt = self.replay_receipt(report, certificate)
         native = mock.Mock(spec=replay.ledger.Native)
         native.command.side_effect = lambda *args: [str(arg) for arg in args]
-        native.execute_events.side_effect = [(events, encoded), ([report], first)]
+        native.execute_events.side_effect = [(events, encoded),
+            ([report, receipt], first + json.dumps(receipt, sort_keys=True) + "\n")]
         return native, posted, events, encoded, first
+
+    @staticmethod
+    def replay_receipt(report, certificate):
+        return {"event": "report_replayed", "certificate": certificate["oid"],
+                "book": report["book"], "coordinate": deepcopy(report["coordinate"]),
+                "data": {"family": "roll-forward", "known_at": report["data"]["known_at"],
+                         "output_digest": certificate["output_digest"], "output_bytes": 12345, "file": None}}
 
     def test_certified_report_replays_the_identical_account_date_and_known_at_scope(self):
         native, posted, events, _, _ = self.certified_inputs()
@@ -603,12 +676,41 @@ class BlmisReplayTests(unittest.TestCase):
     def test_certificate_format_binding_and_exact_replay_bytes_are_required(self):
         for name in ("format", "binding", "bytes", "event_count"):
             native, posted, events, encoded, first = self.certified_inputs()
+            receipt = self.replay_receipt(events[0], events[1]["data"])
             if name == "format":
                 events[1]["data"]["output_format"] = "fa:other-report:v1"
             elif name == "binding":
                 events[0]["certificate"] = "different-certificate"
-            replay_events = [events[0], events[0]] if name == "event_count" else [events[0]]
-            replay_bytes = first.replace(b"1992-12-07", b"1992-12-08") if name == "bytes" else first
+            replay_events = [events[0]] if name == "event_count" else [events[0], receipt]
+            report_bytes = first.replace("1992-12-07", "1992-12-08") if name == "bytes" else first
+            replay_bytes = report_bytes + json.dumps(receipt, sort_keys=True) + "\n"
+            native.execute_events.side_effect = [(events, encoded), (replay_events, replay_bytes)]
+            with self.subTest(name=name), self.assertRaises(replay.ledger.ReplayError):
+                replay.check_certified_ledger(native, self.rows, posted)
+
+    def test_ledger_replay_requires_ordered_events_and_matching_verification_receipt(self):
+        for name in ("missing", "extra", "reversed", "wrong_event", "certificate", "book", "coordinate",
+                     "family", "known_at", "output_digest"):
+            native, posted, events, encoded, _ = self.certified_inputs()
+            receipt = self.replay_receipt(events[0], events[1]["data"])
+            replay_events = [deepcopy(events[0]), receipt]
+            if name == "missing":
+                replay_events.pop()
+            elif name == "extra":
+                replay_events.append(deepcopy(receipt))
+            elif name == "reversed":
+                replay_events.reverse()
+            elif name == "wrong_event":
+                receipt["event"] = "report_certificate"
+            elif name in ("certificate", "book"):
+                receipt[name] = "another-source"
+            elif name == "coordinate":
+                receipt["coordinate"]["known_at"] += 1
+            elif name == "known_at":
+                receipt["data"][name] += 1
+            else:
+                receipt["data"][name] = "another-value"
+            replay_bytes = "".join(json.dumps(event, sort_keys=True) + "\n" for event in replay_events)
             native.execute_events.side_effect = [(events, encoded), (replay_events, replay_bytes)]
             with self.subTest(name=name), self.assertRaises(replay.ledger.ReplayError):
                 replay.check_certified_ledger(native, self.rows, posted)
@@ -623,6 +725,97 @@ class BlmisReplayTests(unittest.TestCase):
         self.assertFalse(output.exists())
         run.assert_not_called()
 
+    def test_native_run_consumes_current_pdf_extraction_before_constructing_native_client(self):
+        # Stop before any accounting execution. This verifies source flow and
+        # ordering only, not a successful native posting or proof-verifier run.
+        class ReachedNative(Exception):
+            pass
+
+        raw = (source.FIXTURE_DIR / "rows.csv").read_bytes()
+        metadata = (source.FIXTURE_DIR / "source.json").read_bytes()
+
+        def extraction(path, *, layout_out):
+            self.assertEqual(path.read_bytes(), b"%PDF-unit-only-input")
+            layout_out.write_bytes(b"unit-only extractor stream\n")
+            return raw, metadata
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "pdf-first"
+
+            def stop_at_native(binary, verifier, directory):
+                self.assertEqual(directory, output)
+                for name in ("source.pdf", "extracted-source/layout.txt", "extracted-source/rows.csv",
+                             "extracted-source/source.json", "legacy.csv", "manifest.json", "extraction.json"):
+                    self.assertTrue((output / name).is_file(), name)
+                self.assertFalse((output / "book").exists())
+                raise ReachedNative()
+
+            with mock.patch.object(source, "verify_pdf", return_value=b"%PDF-unit-only-input"), \
+                    mock.patch.object(source, "extract_pdf", side_effect=extraction) as extract, \
+                    mock.patch.object(source, "load_fixture", wraps=source.load_fixture) as load, \
+                    mock.patch.object(source, "prepare") as fallback, \
+                    mock.patch.object(replay.ledger, "Native", side_effect=stop_at_native) as native:
+                with self.assertRaises(ReachedNative):
+                    replay.run_native(Path(sys.executable), Path(sys.executable), output, Path(tmp) / "provided.pdf")
+            native.assert_called_once_with(Path(sys.executable), Path(sys.executable), output)
+            extract.assert_called_once_with(output / "source.pdf", layout_out=output / "extracted-source/layout.txt")
+            self.assertEqual(load.call_args_list, [mock.call(output / "extracted-source")] * 2)
+            fallback.assert_not_called()
+
+    def test_pdf_drift_and_unavailable_extraction_refuse_before_native_without_fixture_fallback(self):
+        outcomes = (
+            ("drift", mock.Mock(returncode=0, stdout=b"changed extraction layout\n"), None, 1, "FAIL"),
+            ("unavailable", None, FileNotFoundError("pdftotext"), 4, "UNRUN"),
+        )
+        for name, result, exception, expected_exit, expected_status in outcomes:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "refused"
+                with mock.patch.object(source, "verify_pdf", return_value=b"%PDF-unit-only-input"), \
+                        mock.patch.object(source.subprocess, "run", return_value=result, side_effect=exception), \
+                        mock.patch.object(source, "prepare") as fallback, \
+                        mock.patch.object(replay.ledger, "Native") as native, \
+                        redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as error:
+                    status = replay.main(["run", "--out", str(output), "--pdf", str(Path(tmp) / "provided.pdf"),
+                                          "--fa", sys.executable, "--fa-verify", sys.executable])
+                self.assertEqual(status, expected_exit)
+                self.assertEqual(json.loads(error.getvalue())["status"], expected_status)
+                self.assertEqual(json.loads((output / "failure.json").read_bytes())["status"], expected_status)
+                self.assertTrue((output / "source.pdf").is_file())
+                self.assertFalse((output / "book").exists())
+                self.assertFalse((output / "legacy.csv").exists())
+                self.assertFalse((output / "report.json").exists())
+                if name == "drift":
+                    self.assertEqual((output / "extracted-source/layout.txt").read_bytes(), result.stdout)
+                else:
+                    self.assertIn("install Poppler", error.getvalue())
+                fallback.assert_not_called()
+                native.assert_not_called()
+
+    def test_concurrent_output_creator_keeps_ownership_and_receives_no_failure_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "another-run"
+            existing = {"existing-evidence.txt": b"retained by another invocation\n"}
+
+            def verify_while_another_run_creates_output(_path):
+                # This happens after prepare_pdf's initial existence check,
+                # before its exclusive mkdir. Only the other run owns it.
+                output.mkdir()
+                for name, raw in existing.items():
+                    (output / name).write_bytes(raw)
+                return b"%PDF-unit-only-input"
+
+            with mock.patch.object(source, "verify_pdf", side_effect=verify_while_another_run_creates_output), \
+                    mock.patch.object(source, "extract_pdf") as extract, \
+                    mock.patch.object(replay.ledger, "Native") as native, \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as error:
+                status = replay.main(["run", "--out", str(output), "--pdf", str(Path(tmp) / "provided.pdf"),
+                                      "--fa", sys.executable, "--fa-verify", sys.executable])
+            self.assertEqual(status, 1)
+            self.assertEqual(json.loads(error.getvalue())["status"], "FAIL")
+            self.assertEqual({path.name: path.read_bytes() for path in output.iterdir()}, existing)
+            extract.assert_not_called()
+            native.assert_not_called()
+
     def test_existing_output_is_preserved_even_on_an_execution_failure(self):
         original = {path.name: path.read_bytes() for path in self.package.iterdir()}
         with mock.patch.object(replay.ledger, "Native") as native, redirect_stderr(io.StringIO()) as error, \
@@ -634,6 +827,359 @@ class BlmisReplayTests(unittest.TestCase):
         self.assertIn("already exists", json.loads(error.getvalue())["error"])
         self.assertEqual({path.name: path.read_bytes() for path in self.package.iterdir()}, original)
         native.assert_not_called()
+
+
+def six_account_test_inputs(originals):
+    """Construct unit inputs from raw cells; no native execution is represented."""
+    ordered = deepcopy(originals)
+    # Independently spell out the single reviewed source display exception.
+    check = next(i for i, row in enumerate(ordered)
+                 if row["account"] == "1ZB010" and int(row["pdf_page"]) == 35 and int(row["source_line"]) == 38)
+    stop = next(i for i, row in enumerate(ordered)
+                if row["account"] == "1ZB010" and int(row["pdf_page"]) == 35 and int(row["source_line"]) == 39)
+    assert stop == check + 1
+    assert ordered[check]["description"] == "CHECK" and ordered[stop]["description"] == "STOP PAYMENT"
+    ordered[check], ordered[stop] = ordered[stop], ordered[check]
+    groups, posted = {}, {}
+    for index, row in enumerate(ordered, 1):
+        groups.setdefault(row["account"], []).append(row)
+        if movement(row):
+            posted[row["row_id"]] = {
+                "vid": hashlib.sha256(("unit-vid-only:" + row["row_id"]).encode()).hexdigest()[:32],
+                "entry_digest": hashlib.sha256(("unit-digest-only:" + row["row_id"]).encode()).hexdigest(),
+                "recorded_at": 1000 + index,
+            }
+    reports = {}
+    for account, history in groups.items():
+        principal, debits, credits, lines = 0, 0, 0, []
+        for row in history:
+            value = movement(row)
+            principal += value
+            if value == 0:
+                continue
+            receipt = posted[row["row_id"]]
+            debits += max(-value, 0)
+            credits += max(value, 0)
+            lines.append({"entry_digest": receipt["entry_digest"], "recorded_at": receipt["recorded_at"],
+                          "leg_index": 0, "effective_date": source_date(row), "class": "Original",
+                          "account": f"BLMIS-{account}", "unit": "USD",
+                          "debits": amount(max(-value, 0)), "credits": amount(max(value, 0)),
+                          "running_balance": amount(-principal)})
+        reports[account] = {"oid": f"unit-only-certificate-{account}", "native_report": {
+            "label": f"blmis-glantz-{account.lower()}-published-principal", "known_at": 2000,
+            "effective_from": source_date(history[0]), "effective_through": source_date(history[-1]),
+            "cells": [{"account": f"BLMIS-{account}", "unit": "USD", "opening": amount(0),
+                       "debits": amount(debits), "credits": amount(credits), "net_change": amount(-principal),
+                       "closing": amount(-principal), "line_count": len(lines)}], "lines": lines}}
+    return ordered, groups, posted, reports
+
+
+def six_account_analysis_input(originals, *, include_transfers):
+    """Independent raw-literal expectations for the native-shaped unit input."""
+    positions = {}
+    population = 0
+    for row in originals:
+        account = row["account"]
+        values = positions.setdefault(account, {"in": 0, "out": 0, "tin": 0, "tout": 0, "dates": []})
+        cash = cents(row["deposits_literal"]) + cents(row["withdrawals_literal"])
+        transfer = (cents(row["transfers_in_literal"]) + cents(row["transfers_out_literal"])) if include_transfers else 0
+        if cash > 0:
+            values["in"] += cash
+        else:
+            values["out"] -= cash
+        if transfer > 0:
+            values["tin"] += transfer
+        else:
+            values["tout"] -= transfer
+        if cash > 0 or transfer > 0:
+            values["dates"].append(date.fromisoformat(source_date(row)))
+        if cash != 0 or transfer != 0:
+            population += 1
+    first_date = min(at for item in positions.values() for at in item["dates"])
+    findings = []
+    for account, item in positions.items():
+        principal = item["in"] + item["tin"] - item["out"] - item["tout"]
+        if principal == 0:
+            continue
+        cohort = (min(item["dates"]) - first_date).days // 90 + 1 if item["dates"] else 1
+        if principal < 0:
+            name, status = "fictitious_profit_clawback", "net_winner"
+        else:
+            name, status = "net_equity_claim", "net_loser"
+        findings.append({"statistic": {"name": name, "value": abs(principal), "scale": 2, "population": population},
+                         "narrative": (f"investor BLMIS-{account} (cohort {cohort}, status={status}): "
+                                       f"cash_in={item['in']}, cash_out={item['out']}, transfer_in={item['tin']}, "
+                                       f"transfer_out={item['tout']}, {name}={abs(principal)}, "
+                                       "principal_rule=posted_principal_transfer_v1, attribution=complete")})
+    return {"event": "procedure_run", "data": {"procedure": "ponzi.net_investment", "version": 5,
+            "claim": "statistical", "known_at": 2000, "effective_through": max(source_date(row) for row in originals),
+            "finding_count": len(findings), "findings": findings}}
+
+
+class GlantzSixAccountReplayTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        pdf = os.environ.get("FA_BLMIS_GLANTZ_PDF")
+        if not pdf:
+            raise unittest.SkipTest("six-account source comparisons require FA_BLMIS_GLANTZ_PDF pointing to the pinned original; not native execution")
+        cls.directory = tempfile.TemporaryDirectory(prefix="fa-glantz-six-comparator-")
+        cls.addClassCleanup(cls.directory.cleanup)
+        cls.package = Path(cls.directory.name) / "package"
+        cls.manifest = source.prepare_glantz(cls.package, pdf=Path(pdf))
+        cls.rows, cls.metadata = source.load_glantz_fixture(cls.package)
+        with (cls.package / "rows.csv").open(encoding="utf-8", newline="") as stream:
+            cls.originals = list(csv.DictReader(stream, strict=True))
+        cls.ordered_originals, cls.original_groups, cls.posted, cls.reports = six_account_test_inputs(cls.originals)
+        cls.ordered = source.glantz_computation_order(cls.rows)
+        cls.groups = replay.grouped_accounts(cls.ordered)
+
+    def test_all_379_source_observations_map_to_372_native_intents_and_744_legs(self):
+        entries = replay.normalized_entries(self.package / "legacy.csv", self.ordered)
+        monetary = [row for row in self.ordered_originals if movement(row)]
+        self.assertEqual(len(self.originals), 379)
+        self.assertEqual(len(entries), 372)
+        self.assertEqual(sum(len(entry["legs"]) for entry in entries), 744)
+        self.assertEqual([entry["idempotency_key"] for entry in entries], [row["row_id"] for row in monetary])
+        for row, entry in zip(monetary, entries, strict=True):
+            principal, contra = entry["legs"]
+            self.assertEqual(principal["party"], f"BLMIS-{row['account']}")
+            self.assertEqual(principal["account"], principal["party"])
+            self.assertEqual(principal["amount"], amount(abs(movement(row))))
+            self.assertEqual(principal["side"], "credit" if movement(row) > 0 else "debit")
+            self.assertNotIn("party", contra)
+            self.assertEqual(contra["amount"], principal["amount"])
+            self.assertNotEqual(contra["side"], principal["side"])
+        self.assertEqual(set(self.manifest["zero_principal_rows"]),
+                         {row["row_id"] for row in self.originals if not movement(row)})
+        self.assertEqual(len(self.manifest["zero_principal_rows"]), 7)
+
+    def test_every_native_account_line_is_compared_with_the_exact_source_discrepancy(self):
+        expected_off = {"1T0026": 0, "1ZA192": 0, "1ZB010": 0, "1ZB143": 0, "1ZR010": 50, "1ZR176": 12}
+        for account, rows in self.groups.items():
+            with self.subTest(account=account):
+                report = self.reports[account]["native_report"]
+                receipts = {row["row_id"]: self.posted[row["row_id"]] for row in rows if movement(row)}
+                gaps = replay.printed_gaps(rows)
+                self.assertEqual(len(gaps), expected_off[account])
+                replay.check_ledger(report, rows, receipts, published_gaps=gaps, label=report["label"])
+                if gaps:
+                    with self.assertRaises(replay.ledger.ReplayError):
+                        replay.check_ledger(report, rows, receipts, label=report["label"])
+                    changed = dict(gaps)
+                    changed[next(iter(changed))] += 1
+                    with self.assertRaises(replay.ledger.ReplayError):
+                        replay.check_ledger(report, rows, receipts, published_gaps=changed, label=report["label"])
+        self.assertEqual(replay.printed_gaps(self.groups["1ZR010"])[self.groups["1ZR010"][-1]["row_id"]], 900)
+        self.assertEqual(set(replay.printed_gaps(self.groups["1ZR176"]).values()), {-100})
+
+    def test_stopped_check_keeps_signed_cash_and_only_the_named_same_day_order_changes(self):
+        self.assertEqual([row["row_id"] for row in self.ordered], [row["row_id"] for row in self.ordered_originals])
+        changed_positions = [i for i, (before, after) in enumerate(zip(self.originals, self.ordered_originals, strict=True))
+                             if before["row_id"] != after["row_id"]]
+        self.assertEqual(len(changed_positions), 2)
+        stop = next(row for row in self.originals if row["description"] == "STOP PAYMENT")
+        self.assertEqual(cents(stop["withdrawals_literal"]), 2_500_000)
+        entries = replay.normalized_entries(self.package / "legacy.csv", self.ordered)
+        entry = next(entry for entry in entries if entry["idempotency_key"] == stop["row_id"])
+        self.assertEqual([(leg["account"], leg["side"], leg["amount"]) for leg in entry["legs"]],
+                         [("BLMIS-1ZB010", "credit", "25000.00 USD"), ("BLMIS-CASH", "debit", "25000.00 USD")])
+        self.assertNotIn("reverses", entry, "the source never names the stopped check's native identity")
+        raw_order = [row for row in self.rows if row["account"] == "1ZB010"]
+        report = self.reports["1ZB010"]["native_report"]
+        receipts = {row["row_id"]: self.posted[row["row_id"]] for row in raw_order if movement(row)}
+        with self.assertRaises(replay.ledger.ReplayError):
+            replay.check_ledger(report, raw_order, receipts, label=report["label"])
+
+    def test_both_paired_credits_recompute_from_native_shaped_originating_balances(self):
+        pairs = replay.check_transfer_pairs(self.ordered, self.reports, self.posted)
+        self.assertEqual([pair["originating_principal_cents"] for pair in pairs], [485_500_000, -485_468_800])
+        self.assertEqual([pair["statement_amount_cents"] for pair in pairs], [400_000_000, 20_000_000])
+        self.assertEqual([pair["credited_principal_cents"] for pair in pairs], [400_000_000, 0])
+        self.assertTrue(all(pair["rule"] == "trustee_transfer_credit" for pair in pairs))
+        self.assertTrue(all(pair["originating_certificate"].startswith("unit-only-") for pair in pairs))
+        for pair in pairs:
+            self.assertIn(pair["native_originating_balance_row_id"], self.posted)
+        for field in ("running_balance", "entry_digest", "recorded_at"):
+            changed = deepcopy(self.reports)
+            basis = self.posted[pairs[0]["native_originating_balance_row_id"]]
+            line = next(item for item in changed["1ZA192"]["native_report"]["lines"]
+                        if item["entry_digest"] == basis["entry_digest"])
+            line[field] = {"running_balance": "-4854999.99 USD", "entry_digest": "f" * 64, "recorded_at": 999}[field]
+            with self.subTest(field=field), self.assertRaises(replay.ledger.ReplayError):
+                replay.check_transfer_pairs(self.ordered, changed, self.posted)
+
+    def test_transfer_pair_cannot_invent_missing_history_or_substitute_statement_credit(self):
+        for mutation in ("missing_counterpart", "ambiguous_counterpart", "reported_amount", "principal_credit"):
+            rows = deepcopy(self.ordered)
+            selected = next(row for row in rows if row["account"] == "1ZA192" and row["date"] == "2005-12-23")
+            if mutation == "missing_counterpart":
+                rows.remove(selected)
+            elif mutation == "ambiguous_counterpart":
+                rows.append(deepcopy(selected))
+            elif mutation == "reported_amount":
+                selected["reported_cents"] += 100
+            else:
+                selected["transfers_in_cents"] = selected["reported_cents"]
+            with self.subTest(mutation=mutation), self.assertRaises(replay.ledger.ReplayError):
+                replay.check_transfer_pairs(rows, self.reports, self.posted)
+
+    def test_all_six_native_principal_outcomes_preserve_source_balances_and_gaps(self):
+        complete = replay.check_glantz_principal_analysis(
+            six_account_analysis_input(self.originals, include_transfers=True), self.ordered, 2000, include_transfers=True)
+        missing = replay.check_glantz_principal_analysis(
+            six_account_analysis_input(self.originals, include_transfers=False), self.ordered, 2000, include_transfers=False)
+        self.assertEqual(complete["population"], 372)
+        self.assertEqual(missing["population"], 362)
+        self.assertEqual(set(complete["source_accounts"]), set(self.groups))
+        positions = complete["source_accounts"]
+        self.assertEqual(positions["1ZR176"]["native_principal_cents"], -281_796_500)
+        self.assertTrue(positions["1ZR176"]["native_finding_expected"])
+        self.assertEqual(complete["native_report"]["data"]["finding_count"], 6)
+        self.assertEqual(positions["1ZR010"]["gap_from_printed_principal_cents"], 900)
+        self.assertEqual(positions["1ZB010"]["cash_in_cents"], 124_500_000)
+        self.assertEqual(positions["1ZB010"]["cash_out_cents"], 155_250_000)
+        deltas = {account: position["native_principal_cents"] - missing["source_accounts"][account]["native_principal_cents"]
+                  for account, position in positions.items()}
+        self.assertEqual(deltas, {"1T0026": 238_426_600, "1ZA192": -346_263_400, "1ZB010": -20_000_000,
+                                  "1ZB143": 395_500_000, "1ZR010": 0, "1ZR176": 0})
+
+    def test_six_account_role_control_uses_procedure_known_at_and_preserves_history(self):
+        without = six_account_analysis_input(self.originals, include_transfers=False)
+        without["data"]["known_at"] = 1500
+        complete = six_account_analysis_input(self.originals, include_transfers=True)
+        for changed_history in (False, True):
+            native = mock.Mock(spec=replay.ledger.Native)
+            native.head.side_effect = [1500, 2000]
+            native.call.side_effect = [without, {}, complete, complete if changed_history else without]
+            with self.subTest(changed_history=changed_history):
+                if changed_history:
+                    with self.assertRaisesRegex(replay.ledger.ReplayError, "changed the earlier six-account analysis"):
+                        replay.verify_glantz_principal_analysis(native, self.ordered)
+                else:
+                    result = replay.verify_glantz_principal_analysis(native, self.ordered)
+                    self.assertTrue(result["historical_missing_role_result_unchanged"])
+                    self.assertEqual(set(result["declared_transfer_effect_cents"]), set(self.groups))
+                    self.assertEqual(native.call.call_args_list, [
+                        mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
+                                  "--known-at", 1500),
+                        mock.call("chart", "role", "BLMIS-TRANSFER", "investor_transfer"),
+                        mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
+                                  "--known-at", 2000),
+                        mock.call("procedure", "run", "ponzi.net_investment", "--effective-through", "2008-10-30",
+                                  "--known-at", 1500),
+                    ])
+
+    def test_six_account_principal_comparison_refuses_missing_extra_swapped_or_changed_findings(self):
+        for mutation in ("missing", "duplicate", "wrong_party", "wrong_cohort", "cash_as_transfer",
+                         "population", "amount", "zero_finding", "wrong_scope"):
+            report = six_account_analysis_input(self.originals, include_transfers=True)
+            finding = report["data"]["findings"][0]
+            if mutation == "missing":
+                report["data"]["findings"].pop()
+            elif mutation in ("duplicate", "zero_finding"):
+                extra = deepcopy(finding)
+                if mutation == "zero_finding":
+                    extra["narrative"] = extra["narrative"].replace("BLMIS-1T0026", "BLMIS-1ZR176")
+                    extra["statistic"]["value"] = 0
+                report["data"]["findings"].append(extra)
+            elif mutation == "wrong_party":
+                finding["narrative"] = finding["narrative"].replace("BLMIS-1T0026", "BLMIS-1ZA192")
+            elif mutation == "wrong_cohort":
+                finding["narrative"] = re.sub(r"cohort [0-9]+,", "cohort 999999,", finding["narrative"])
+            elif mutation == "cash_as_transfer":
+                finding["narrative"] = finding["narrative"].replace("transfer_in=", "cash_in=")
+            elif mutation == "population":
+                finding["statistic"]["population"] = 379
+            elif mutation == "amount":
+                finding["statistic"]["value"] += 1
+            else:
+                report["data"]["effective_through"] = "2008-10-29"
+            report["data"]["finding_count"] = len(report["data"]["findings"])
+            with self.subTest(mutation=mutation), self.assertRaises(replay.ledger.ReplayError):
+                replay.check_glantz_principal_analysis(report, self.ordered, 2000, include_transfers=True)
+
+    def test_all_744_export_legs_keep_separate_native_party_dimensions(self):
+        parties = {account: {"code": f"BLMIS-{account}", "vid": f"{index + 100:032x}",
+                             "dimension": 12, "value": f"{index + 200:032x}"}
+                   for index, account in enumerate(sorted(self.groups))}
+        base_records = []
+        for row in self.ordered_originals:
+            delta = movement(row)
+            if not delta:
+                continue
+            receipt = self.posted[row["row_id"]]
+            cash = cents(row["deposits_literal"]) + cents(row["withdrawals_literal"])
+            transfer = cents(row["transfers_in_literal"]) + cents(row["transfers_out_literal"])
+            contra = ("BLMIS-CASH", cash) if cash else ("BLMIS-TRANSFER", transfer)
+            for ordinal, (account, value) in enumerate([(f"BLMIS-{row['account']}", -delta), contra], 1):
+                memo = (f"analysis counterpart; SRC-BLM-001 Exhibit {row['exhibit']} "
+                        f"PDF p{row['pdf_page']} line {row['source_line']}")
+                base_records.append([receipt["vid"], str(ordinal), source_date(row), str(receipt["recorded_at"]),
+                                     "1", account, "D" if value > 0 else "C", amount(abs(value)).split()[0],
+                                     "USD", "2", row["description"], "", memo,
+                                     "12:" + parties[row["account"]]["value"] if ordinal == 1 else ""])
+        self.assertEqual(len(base_records), 744)
+        for format_name in ("csv-gl", "ads"):
+            for mutation in (None, "swap_party", "omit_account", "tag_clearing", "money", "extra",
+                             "description", "memo", "other_exhibit", "migrated_from"):
+                records = deepcopy(base_records)
+                if format_name == "ads":
+                    for record in records:
+                        record[11] = r"\N"
+                if mutation == "swap_party":
+                    records[0][13] = "12:" + parties["1ZA192"]["value"]
+                elif mutation == "omit_account":
+                    ids = {receipt["vid"] for row_id, receipt in self.posted.items() if ":1ZR176:" in row_id}
+                    records = [record for record in records if record[0] not in ids]
+                elif mutation == "tag_clearing":
+                    records[1][13] = records[0][13]
+                elif mutation == "money":
+                    records[-1][7] = f"{Decimal(records[-1][7]) + Decimal('0.01'):.2f}"
+                elif mutation == "extra":
+                    records.append(list(records[-1]))
+                elif mutation == "description":
+                    records[-1][10] = "unattributed native replacement"
+                elif mutation == "memo":
+                    records[-1][12] = ""
+                elif mutation == "other_exhibit":
+                    self.assertIn("Exhibit B-6", records[-1][12])
+                    records[-1][12] = records[-1][12].replace("Exhibit B-6", "Exhibit B-2")
+                elif mutation == "migrated_from":
+                    records[-1][11] = "invented migration provenance"
+                path = Path(self.directory.name) / f"six-export-{format_name}-{mutation}" / "GL_Detail.txt"
+                path.parent.mkdir()
+                if format_name == "csv-gl":
+                    with path.open("w", encoding="utf-8", newline="") as stream:
+                        stream.write("# fa_csv_gl_v1|book=unit-only-six-account|dimension_encoding=fa-dimension-ids-v1\n")
+                        writer = csv.writer(stream, lineterminator="\n")
+                        writer.writerow(replay.ledger.CSV_GL_COLUMNS)
+                        writer.writerows(records)
+                else:
+                    (path.parent / "ADS_Coordinate_Certificate.toml").write_text(
+                        'schema_version = 1\nformat = "aicpa_ads_gl_v3"\ndimension_encoding = "fa-dimension-ids-v1"\n',
+                        encoding="utf-8")
+                    path.write_text("|".join(replay.ledger.ADS_GL_COLUMNS) + "\n"
+                                    + "".join("|".join(record) + "\n" for record in records), encoding="utf-8")
+                with self.subTest(format=format_name, mutation=mutation):
+                    if mutation is None:
+                        result = replay.verify_source_export(path, format_name, self.ordered, self.posted, parties)
+                        self.assertEqual(result["rows"], 744)
+                        self.assertEqual(result["tagged_rows"], 372)
+                        self.assertEqual(result["parties"], sorted(item["code"] for item in parties.values()))
+                    else:
+                        with self.assertRaises(replay.ledger.ReplayError):
+                            replay.verify_source_export(path, format_name, self.ordered, self.posted, parties)
+
+    def test_all_account_cli_requires_native_binaries_and_never_reports_comparator_tests_as_execution(self):
+        output = Path(self.directory.name) / "six-missing-binary"
+        absent = Path(self.directory.name) / "absent-native-executable"
+        with mock.patch.object(replay, "run_glantz_native") as run, redirect_stderr(io.StringIO()) as error:
+            status = replay.main(["run", "--account", "all", "--out", str(output),
+                                  "--fa", str(absent), "--fa-verify", str(absent)])
+        self.assertEqual(status, 4)
+        self.assertEqual(json.loads(error.getvalue())["status"], "UNRUN")
+        self.assertFalse(output.exists())
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

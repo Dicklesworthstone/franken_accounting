@@ -441,7 +441,7 @@ existing bytes and content digests. A dimension-only change changes the
 extended journal digest even when every monetary amount is unchanged.
 
 ADS and SAF-T proof verification compares these tags with the authenticated
-native proposals. The verifier reports `dimension_rows` when that comparison
+native proposals (FA-INV-14). The verifier reports `dimension_rows` when that comparison
 is available. Historical exports without the extension remain readable and
 report `null` for this coverage; a successful monetary check alone does not
 establish departmental attribution. The public-ledger driver requires the
@@ -470,20 +470,28 @@ original department codes, checks every native leg's attribution, and compares
 monthly and cumulative departmental net and gross balances to the source.
 Blank department values remain untagged; leading zeros remain significant.
 
-The entire 373,357-row publication has been profiled; normalization and all 55
-public-ledger Python checks pass. Together with the 17 Development Finance
-Authority helper checks below, 72 Python tests pass. **Native replay remains
-unverified:** prerequisite Rust compilation exceeded the execution
-environment's memory limit. The documentation
-records the validation boundary and the commands needed to complete it. These
-published records are monthly activity aggregates, with their actual detail
-retained; they do not contain the agencies' original transaction-level journals
-or opening balances.
+The entire 373,357-row publication has been profiled. **All three complete agency
+fixtures passed the native account-level workflow:** 1,317 original rows
+produce 1,303 exact monetary legs across 48
+migration entries, with every monthly/cumulative/gross account cell reconciled,
+independently verified ADS proofs, and one-cent tamper rejection. The
+[execution record](evidence/public_ledger/validation-2026-11-03.json) preserves
+source/binary hashes, checks, and reproduction commands. These published records
+are monthly activity aggregates with all original detail retained; they do not
+contain the agencies' original transaction-level journals or opening balances.
+Automatic uploads retain native `AgentUpload` custody; explicit review and
+approval principals are same-harness fixture roles, not independent human audits.
+These executed results precede native department projection and dimension-aware
+export verification; the new checks require their own native rerun and are not
+covered by that evidence. The 61 public-ledger Python checks and 17 Development
+Finance Authority helper checks passed for the dimension-preserving source
+oracles. Constructed export fixtures do not establish native execution.
 
 A complementary [complete Development Finance Authority regression](docs/public_ledger_workload.md)
 retains all 312 source records with original byte-offset lineage and prepares
-306 exact legs in 104 balanced groups for one native migration run. Its 17
-Python checks and full-resource versus retained-slice byte parity passed. The
+306 exact legs in 104 balanced groups for one native migration run. Its 18
+Python checks pass, including the native column-map contract, and full-resource
+versus retained-slice byte parity was verified. The
 new Rust regression covers staging, independent approvals, activation,
 source-derived balances, known-at visibility and certified report replay;
 native execution remains pending the required build and test gates.
@@ -491,7 +499,11 @@ native execution remains pending the required build and test gates.
 The [complete published BLMIS account workload](docs/blmis_glantz_workload.md)
 retains all 75 dated observations in Glantz Exhibit B-2, including the printed
 running principal balances and trustee-credited transfers. Its native driver
-posts the 74 monetary rows, reconciles every source observation, replays a
+first downloads or accepts the pinned original PDF, extracts all three account
+pages in the current invocation, and verifies every regenerated row and printed
+control before creating a book. It retains the PDF, extraction text and byte
+lineage; an extraction failure cannot fall back to checked-in rows. The native
+workflow then posts the 74 monetary rows, reconciles every source observation, replays a
 retained ledger certificate, and verifies proof-bearing exports. The declared
 analysis accounts and the source's credited transfer amounts are explicit
 inputs; this is not an original BLMIS double-entry ledger or an independent
@@ -504,6 +516,26 @@ and refuses ambiguous marked transfers. On this source account, omitting the
 credited transfers changes the closing result by $3,462,634. The workload
 documentation records the executable controls and current native validation
 status, including the version boundary for earlier procedure certificates.
+
+
+The same workload now offers `--account all` for all six Glantz exhibits:
+**379 published observations, 372 monetary entries, and 744 legs**. It retains
+detached footnotes, the explicitly identified check/stop-payment ordering
+exception, and the source's one- and nine-dollar arithmetic discrepancies.
+It checks every account ledger and exported party attribution, and recomputes
+the two transfers whose originating and receiving histories are both published.
+The original PDF and actual extraction are acquired before any native posting.
+See the [complete six-account commands and validation boundary](docs/blmis_glantz_workload.md#complete-six-account-ingestion-and-native-replay).
+The new six-account path is implemented but its full extraction/comparator and
+native replay tests are **UNRUN** for this landing because the executor went
+offline; earlier one-account results do not establish its acceptance.
+
+Generic legacy CSV imports also support explicit `party` and `legal_entity`
+column mappings. They resolve existing native dimension identities, preserve
+exact source codes, and retain native reference and per-entity balance checks.
+Imports never create counterparties or subsidiaries implicitly. The
+[attribution mapping guide](docs/public_ledger.md) explains the declaration,
+source-bound replay checks, and current test boundary.
 
 ### Bank CSV downloads
 
@@ -2239,6 +2271,41 @@ cargo run -p fa-cli -- demo init --scenario retail --seed 7
 Releases will ship through the suite's self-releaser (`dsr`), never GitHub Actions.
 
 ---
+
+## Complete public transaction datasets
+
+The [public-data helper](tools/public-data/README.md) downloads and verifies
+complete, pinned official expenditure releases: HMRC March 2025 (1,430 source
+rows) and DWP January 2025 (13,099 source rows). It retains the original bytes,
+every source field, repeated records, credit amounts, zero-value dispositions,
+and explicit row-to-leg provenance. Source controls use exact integer pence and
+an independent decimal calculation over the original CSV.
+
+```bash
+python3 tools/public-data/public_spend.py prepare \
+  --dataset hmrc-2025-03 --out /tmp/fa-public-hmrc
+python3 tools/public-data/run_live.py \
+  --prepared /tmp/fa-public-hmrc --dataset hmrc-2025-03 \
+  --out /tmp/fa-public-hmrc-live \
+  --fa target/debug/fa --fa-verify target/debug/fa-verify
+```
+
+The live runner requires the real binaries and exercises approved FullDetail
+migration, staging invisibility, finalization, restart/retry, exact account
+folds, every exported dated leg, certificate replay and independent report
+bundle verification, including a tampered-bundle refusal. It retains command
+transcripts and writes `PASS` only after all required observations succeed;
+successful source preparation alone is not a native execution result.
+
+These are whole published monthly expenditure extracts, **not original complete
+double-entry ledgers**. The fixture uses declared modeled Expense accounts and
+an explicitly labeled Equity offset, preserves all source dimensions as
+evidence, and makes no claim to reconstruct bank balances, missing activities,
+historical approvals, audited statements or fraud. The
+[source and mapping documentation](tools/public-data/README.md) explains the
+precision, VAT, scope, provenance, test-role and licensing boundaries. The
+[forensic case-study plan](docs/FORENSIC_CASE_STUDIES_PLAN.md) separately governs
+sourced reconstructions of WorldCom, Enron, Lehman and other cases.
 
 ## Repository layout (target)
 

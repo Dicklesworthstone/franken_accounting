@@ -10,7 +10,7 @@
 
 use crate::codec::{DecodeError, Reader, Reason};
 use crate::envelope::{LeafEnvelope, MAX_RECORD_BYTES, check_record};
-use crate::migration_balance::BALANCE_FORMAT_V3;
+use crate::migration_balance::{BALANCE_FORMAT_V3, BALANCE_FORMAT_V4};
 use crate::proof::{
     Checkpoint, PREFIX_FORMAT, Prefix, RecordCheck, SCOPE_SEQ_RANGE_COMPLETE, VerifyError,
     complete_prefix, open, read_envelopes, trusted,
@@ -37,6 +37,8 @@ pub(super) fn read_header<'a>(
         (PREFIX_FORMAT_V2, PrefixKind::Complete)
     } else if tag == BALANCE_FORMAT_V3 {
         (BALANCE_FORMAT_V3, PrefixKind::Balance)
+    } else if tag == BALANCE_FORMAT_V4 {
+        (BALANCE_FORMAT_V4, PrefixKind::Balance)
     } else {
         (PREFIX_FORMAT, PrefixKind::Legacy)
     };

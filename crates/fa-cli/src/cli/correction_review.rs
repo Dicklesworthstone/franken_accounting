@@ -201,7 +201,7 @@ pub(super) fn finish(
     }
     if args.switch("--dry-run") || out.is_bound_agent() {
         let plan = book.plan_replacement(reversal, replacement, &capability)??;
-        return emit_replacement_plan(out, book, files, args, &plan);
+        return emit_replacement_plan(out, book, files, args, &plan, &capability);
     }
     let target = reversal_req
         .proposal

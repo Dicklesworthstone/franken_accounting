@@ -61,6 +61,7 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::evidence::{evidenced_by, resolve_documents};
 use crate::genesis::BookContext;
+use crate::object::{self, ObjectKind};
 use crate::policy::{
     authorize_approvals, capability_witness, epoch_witness, refusal as denial, steward,
 };
@@ -69,6 +70,13 @@ use crate::rows::{bytes, edge_id, prop, scalar_bytes, scalar_text};
 
 mod visibility;
 pub use visibility::verify_run_visibility_at;
+mod source;
+pub use fa_model::migration_source::{SourceChunk, SourceManifest};
+pub(crate) use source::witness_source_member;
+pub use source::{
+    SOURCE_TIE_OUT_DOMAIN, SourceCoverage, bind_source, read_source_manifest_at,
+    source_binding_proposal,
+};
 
 /// Canonical bytes of a run body: `u16 version ‖ book_id[16] ‖ str run_key
 /// ‖ str source_system ‖ u8 mode ‖ trial_balance oid[32] ‖ i32 opening_date
@@ -89,12 +97,16 @@ pub const MAX_TRIAL_BALANCE_LINES: usize = fa_model::limits::MAX_LEGS_PER_ENTRY;
 /// The elapsed periods one `PeriodBalances` run may declare.
 pub const MAX_RUN_PERIODS: usize = 256;
 pub const MAX_PERIOD_CODE_BYTES: usize = 64;
+/// The complete canonical body, matching the independent migration proof
+/// decoder's bound. Storage fragments never enlarge this semantic limit.
+pub const MAX_RUN_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// `ControlPayload::MigrationControl.kind` (plan Appendix A).
 pub mod kind {
     pub const OPEN: u8 = 0;
     pub const FINALIZE: u8 = 1;
     pub const ABANDON: u8 = 2;
+    pub const BIND_SOURCE: u8 = 3;
 }
 
 pub use fa_palimpsest::{PeriodBalance, RunMode, RunState, TrialBalanceLine};
@@ -177,6 +189,11 @@ impl RunBody {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, KernelError> {
+        if bytes.len() > MAX_RUN_BODY_BYTES {
+            return Err(KernelError::Corrupt(format!(
+                "migration run body exceeds {MAX_RUN_BODY_BYTES} bytes"
+            )));
+        }
         let mut r = Reader::new(bytes);
         let body = (|| -> Result<Self, DecodeError> {
             if r.u16("run.version")? != RUN_BODY_VERSION {
@@ -443,27 +460,112 @@ pub struct Run {
     pub opened_at: CommitSeq,
 }
 
-fn run_from_row(row: &VertexRow) -> Result<Run, KernelError> {
+fn body_from_row<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    at: CommitSeq,
+) -> Result<(RunBody, CommitSeq), KernelError> {
     if !row.labels.contains(&label::MIGRATION_RUN) {
         return Err(KernelError::Corrupt(format!(
             "{:032x} is not a MigrationRun",
             row.vid.0
         )));
     }
-    let body = RunBody::decode(&bytes(row, property::FA_PAYLOAD, "run._fa_payload")?)?;
-    if body.vid() != row.vid {
+    if row.created_at > at || row.retired_at.is_some_and(|retired| retired <= at) {
+        return Err(KernelError::Corrupt(
+            "migration run is not live at the selected prefix".into(),
+        ));
+    }
+    // STATE is a mutable projection. Its update gives the root a new native
+    // version timestamp, while every body fragment must retain the Open birth.
+    // Check each retained version's immutable fields while finding that birth;
+    // even restoration of altered bytes cannot impersonate the original body.
+    let mut birth = row.clone();
+    while let Some(before) = birth.created_at.0.checked_sub(1) {
+        let Some(earlier) = db.vertex_at(row.vid, CommitSeq(before))? else {
+            break;
+        };
+        if earlier.birth_ordinal != row.birth_ordinal {
+            return Err(KernelError::Corrupt(
+                "migration run has a different native birth".into(),
+            ));
+        }
+        if earlier.labels != row.labels
+            || [
+                property::FA_PAYLOAD,
+                property::FA_DIGEST,
+                property::BOOK_ID,
+                property::CODE,
+            ]
+            .iter()
+            .any(|key| prop(&earlier, *key) != prop(row, *key))
+        {
+            return Err(KernelError::Corrupt(
+                "migration run immutable body was rewritten".into(),
+            ));
+        }
+        birth = earlier;
+    }
+    let book_bytes: [u8; 16] = bytes(row, property::BOOK_ID, "run.book_id")?
+        .try_into()
+        .map_err(|_| {
+            KernelError::Corrupt("migration run book mirror has the wrong length".into())
+        })?;
+    let raw = object::read_bounded(
+        db,
+        Id128(book_bytes),
+        &birth,
+        label::MIGRATION_RUN_FRAGMENT,
+        ObjectKind::MigrationRun,
+        at,
+        MAX_RUN_BODY_BYTES,
+    )?;
+    let body = RunBody::decode(&raw)?;
+    if body.vid() != row.vid
+        || body.book_id.0 != book_bytes
+        || bytes(row, property::FA_DIGEST, "run._fa_digest")? != body.digest()?
+        || crate::rows::text(row, property::CODE, "run.code")? != body.run_key
+    {
         return Err(KernelError::Corrupt(format!(
-            "run {:032x} does not carry the identity its body derives",
+            "run {:032x} does not carry the identity and digest its body derives",
             row.vid.0
         )));
     }
+    Ok((body, birth.created_at))
+}
+
+/// Load only the immutable body at a retained prefix. Proof producers must
+/// derive lifecycle state from journaled controls, not trust the STATE mirror.
+/// Historical inline bodies and authenticated fragmented bodies share one
+/// canonical codec and the same Open-bound digest.
+pub fn read_run_body_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    vid: VId,
+    at: CommitSeq,
+) -> Result<Option<RunBody>, KernelError> {
+    if at > db.frontier()? {
+        return Err(KernelError::Corrupt(
+            "migration body prefix is beyond the current head".into(),
+        ));
+    }
+    db.vertex_at(vid, at)?
+        .map(|row| body_from_row(db, &row, at).map(|(body, _)| body))
+        .transpose()
+}
+
+fn run_from_row<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    at: CommitSeq,
+) -> Result<Run, KernelError> {
+    let (body, opened_at) = body_from_row(db, row, at)?;
     let state = RunState::from_scalar(prop(row, property::STATE))
         .ok_or_else(|| KernelError::Corrupt(format!("run {:032x} state mirror", row.vid.0)))?;
     Ok(Run {
         vid: row.vid,
         body,
         state,
-        opened_at: row.created_at,
+        opened_at,
     })
 }
 
@@ -473,36 +575,18 @@ pub fn read_run<V: asupersync::fs::Vfs + Clone>(
     vid: VId,
     at: Option<CommitSeq>,
 ) -> Result<Option<Run>, KernelError> {
-    let row = match at {
-        Some(seq) => db.vertex_at(vid, seq)?,
-        None => db.vertex(vid)?,
-    };
+    let head = db.frontier()?;
+    let at = at.unwrap_or(head);
+    if at > head {
+        return Err(KernelError::Corrupt(
+            "migration run prefix is beyond the current head".into(),
+        ));
+    }
+    let row = db.vertex_at(vid, at)?;
     let Some(row) = row else {
         return Ok(None);
     };
-    let mut run = run_from_row(&row)?;
-    // A terminal state write versions the vertex, and a version's
-    // `created_at` is that write's sequence: the run opened at its first.
-    run.opened_at = vertex_birth(db, &row)?;
-    Ok(Some(run))
-}
-
-/// The sequence `row`'s vertex was born at: walk back through the versions
-/// visible just before each one while they keep its birth ordinal.
-fn vertex_birth<V: asupersync::fs::Vfs + Clone>(
-    db: &Database<V>,
-    row: &VertexRow,
-) -> Result<CommitSeq, KernelError> {
-    let mut born = row.created_at;
-    while let Some(before) = born.0.checked_sub(1) {
-        match db.vertex_at(row.vid, CommitSeq(before))? {
-            Some(earlier) if earlier.birth_ordinal == row.birth_ordinal => {
-                born = earlier.created_at;
-            }
-            _ => break,
-        }
-    }
-    Ok(born)
+    Ok(Some(run_from_row(db, &row, at)?))
 }
 
 /// Every entry linked by edge into `run_vid` as of `at` (head when `None`),
@@ -590,7 +674,7 @@ pub fn visible_at<V: asupersync::fs::Vfs + Clone>(
                     run_ref.0, at.0
                 ))
             })?;
-            let run = run_from_row(&row)?;
+            let run = run_from_row(db, &row, at)?;
             let v = RunVisibility {
                 finalized: run.state == RunState::Finalized,
                 counts_from: counts_from(&run.body),
@@ -629,7 +713,7 @@ pub(crate) fn visible_in<V: asupersync::fs::Vfs + Clone>(
             let row = txn
                 .vertex(db, *run_ref)?
                 .ok_or_else(|| KernelError::Corrupt("migration run is missing".into()))?;
-            let run = run_from_row(&row)?;
+            let run = run_from_row(db, &row, txn.basis())?;
             let state =
                 RunState::from_scalar(txn.vertex_property(db, *run_ref, property::STATE)?.as_ref())
                     .ok_or_else(|| KernelError::Corrupt("migration run state is missing".into()))?;
@@ -669,7 +753,7 @@ pub(crate) fn witness_open_item<V: asupersync::fs::Vfs + Clone>(
             run_ref.0
         ))
     })?;
-    let run = run_from_row(&row)?;
+    let run = run_from_row(db, &row, txn.basis())?;
     let state = RunState::from_scalar(txn.vertex_property(db, *run_ref, property::STATE)?.as_ref())
         .ok_or_else(|| KernelError::Corrupt(format!("run {:032x} state mirror", run_ref.0)))?;
     if state != RunState::Finalized {
@@ -735,6 +819,8 @@ pub struct TieOut {
     pub chunks: Vec<RunChunk>,
     pub mismatches: Vec<TieOutLine>,
     pub digest: [u8; 32],
+    /// Present only for an explicitly bound native source population.
+    pub source: Option<SourceCoverage>,
 }
 
 type Fold = BTreeMap<(VId, UnitId), i128>;
@@ -796,7 +882,7 @@ pub fn tie_out<V: asupersync::fs::Vfs + Clone>(
     let mut mismatches = compare(db, book, at, None, &run.body.lines, &opening)?;
     if run.body.mode == RunMode::FullDetail {
         mismatches.extend(full_detail_chain(db, book, at, run, &by_period)?);
-        return finish_tie_out(run, at, chunks, mismatches);
+        return finish_tie_out(db, book, run, at, chunks, mismatches);
     }
     let mut cumulative = opening;
     for p in &run.body.periods {
@@ -817,10 +903,12 @@ pub fn tie_out<V: asupersync::fs::Vfs + Clone>(
             &cumulative,
         )?);
     }
-    finish_tie_out(run, at, chunks, mismatches)
+    finish_tie_out(db, book, run, at, chunks, mismatches)
 }
 
-fn finish_tie_out(
+fn finish_tie_out<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
     run: &Run,
     at: CommitSeq,
     chunks: Vec<RunChunk>,
@@ -831,12 +919,22 @@ fn finish_tie_out(
         w.u128(c.vid.0).fixed(&c.proposal_digest);
     });
     let list = w.finish().map_err(|e| KernelError::Model(e.into()))?;
-    let digest = domain_digest(TIE_OUT_DOMAIN, &[&run.body.digest()?, &list]);
+    let source = read_source_manifest_at(db, book.book_id, run.vid, at)?
+        .map(|manifest| source::source_coverage(&manifest, &chunks))
+        .transpose()?;
+    let digest = match &source {
+        Some(source) => domain_digest(
+            SOURCE_TIE_OUT_DOMAIN,
+            &[&run.body.digest()?, &source.manifest_digest, &list],
+        ),
+        None => domain_digest(TIE_OUT_DOMAIN, &[&run.body.digest()?, &list]),
+    };
     Ok(TieOut {
         at,
         chunks,
         mismatches,
         digest,
+        source,
     })
 }
 
@@ -1163,6 +1261,12 @@ pub fn plan_run_transition<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(not_open(&run)));
     }
     let tie = tie_out(db, book, &run, db.frontier()?)?;
+    if control_kind == kind::FINALIZE
+        && let Some(source) = &tie.source
+        && !source.complete()
+    {
+        return Ok(Err(source::completeness_refusal(&run, source)));
+    }
     if control_kind == kind::FINALIZE && !tie.mismatches.is_empty() {
         return Ok(Err(mismatch_refusal(book, &tie.mismatches)));
     }
@@ -1222,7 +1326,7 @@ pub(crate) fn witness_open<V: asupersync::fs::Vfs + Clone>(
     let Some(row) = txn.vertex(db, run_vid)? else {
         return Ok(Err(unknown_run(run_vid)));
     };
-    let mut run = run_from_row(&row)?;
+    let mut run = run_from_row(db, &row, txn.basis())?;
     let state = RunState::from_scalar(txn.vertex_property(db, run_vid, property::STATE)?.as_ref())
         .ok_or_else(|| KernelError::Corrupt(format!("run {:032x} state mirror", run_vid.0)))?;
     run.state = state;
@@ -1267,7 +1371,6 @@ pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
     req: RunControlRequest,
 ) -> Outcome<RunControlled> {
     let proposal = &req.proposal;
-    let body_digest = body.digest()?;
     let run_vid = body.vid();
     if let Err(r) = check_control(proposal, book, kind::OPEN, run_vid) {
         return Ok(Err(r));
@@ -1275,6 +1378,17 @@ pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = body.check(book) {
         return Ok(Err(r));
     }
+    let body_bytes = body.canonical_bytes()?;
+    if body_bytes.len() > MAX_RUN_BODY_BYTES {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            format!("migration run body exceeds {MAX_RUN_BODY_BYTES} bytes"),
+            "plan §8.6 (bounded canonical migration bodies and independent proof decoding)",
+            "divide the source history into independently declared migration runs",
+        )));
+    }
+    let body_digest = domain_digest(RUN_BODY_DOMAIN, &[&body_bytes]);
     if !matches!(
         proposal.control,
         Some(ControlPayload::MigrationControl { tie_out_digest, .. }) if tie_out_digest == body_digest
@@ -1341,7 +1455,10 @@ pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
     let mut props = vec![
         (
             property::FA_PAYLOAD,
-            scalar_bytes("run._fa_payload", body.canonical_bytes()?)?,
+            scalar_bytes(
+                "run._fa_payload",
+                object::payload(ObjectKind::MigrationRun, &body_bytes)?,
+            )?,
         ),
         (
             property::FA_DIGEST,
@@ -1356,6 +1473,15 @@ pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
     ];
     props.sort_by_key(|(k, _)| k.0);
     let mut in_run = WriteBatch::new(relation::IN_MIGRATION_RUN);
+    object::stage(
+        &ctx.query(),
+        &mut in_run,
+        book.book_id,
+        run_vid,
+        label::MIGRATION_RUN_FRAGMENT,
+        ObjectKind::MigrationRun,
+        &body_bytes,
+    )?;
     in_run.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
     in_run.create_vertex(run_vid, vec![label::MIGRATION_RUN], props);
     in_run.add_edge(
@@ -1479,6 +1605,13 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     let tie = tie_out(db, book, &run, basis)?;
+    if control_kind == kind::FINALIZE
+        && let Some(source) = &tie.source
+        && !source.complete()
+    {
+        txn.abort();
+        return Ok(Err(source::completeness_refusal(&run, source)));
+    }
     if control_kind == kind::FINALIZE && !tie.mismatches.is_empty() {
         txn.abort();
         return Ok(Err(mismatch_refusal(book, &tie.mismatches)));
@@ -2028,7 +2161,7 @@ fn recorded_or_conflict(
         return Ok(Err(conflict));
     }
     let to = match k {
-        kind::OPEN => RunState::Open,
+        kind::OPEN | kind::BIND_SOURCE => RunState::Open,
         kind::FINALIZE => RunState::Finalized,
         kind::ABANDON => RunState::Abandoned,
         t => {
@@ -2097,6 +2230,10 @@ mod tests {
         let mut bad = bytes;
         bad[mode_at] = 7;
         assert!(RunBody::decode(&bad).is_err());
+        assert!(matches!(
+            RunBody::decode(&vec![0; MAX_RUN_BODY_BYTES + 1]),
+            Err(KernelError::Corrupt(message)) if message.contains("exceeds")
+        ));
     }
 
     #[test]

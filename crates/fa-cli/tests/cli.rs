@@ -69,16 +69,20 @@ fn check_robot_output(args: &[&str], code: i32, stdout: &str) -> Vec<String> {
             vec![events.len() - 1],
             "a failure emits exactly one error event, last: args={args:?}\n{stdout}"
         );
-        let last = stdout.lines().last().unwrap_or_default();
+        // The error event's own fields, parsed: canonical key order puts a
+        // `detail` (which may carry a nested refusal's `exit`) before them.
+        let last = json::parse(stdout.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+        let data = last.get("data");
         assert_eq!(
-            field(last, "exit"),
-            Some(code.to_string().as_str()),
-            "the error event names the exit code: args={args:?}"
+            data.and_then(|data| data.get("exit")),
+            Some(&Json::Int(i128::from(code))),
+            "the error event names the exit code: args={args:?}\n{stdout}"
         );
         assert_eq!(
-            field(last, "class"),
+            data.and_then(|data| data.get("class"))
+                .and_then(Json::as_str),
             Some(exit_class(code).as_str()),
-            "the error event names the exit's class: args={args:?}"
+            "the error event names the exit's class: args={args:?}\n{stdout}"
         );
     }
     events
@@ -7348,6 +7352,42 @@ fn law_and_unit_listings_name_every_registered_law_and_unit() {
         arr(&law, "attributes")
             .iter()
             .any(|a| text(a, "key") == "definition"),
+        "{out}"
+    );
+    // A law named under the wrong --family is not a missing law: the
+    // refusal names the family that holds it and the command that works.
+    let (code, out, _) = fa(
+        None,
+        &[
+            "law",
+            "show",
+            "HalfEven",
+            "--family",
+            "allocation",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        text(&doc(&out), "message").contains("`HalfEven` is a rounding law"),
+        "{out}"
+    );
+    assert_eq!(
+        text(&doc(&out), "fix"),
+        "fa law show HalfEven --family rounding",
+        "{out}"
+    );
+    let (code, out, _) = fa(
+        None,
+        &["law", "show", "NoSuchLaw", "--family", "rounding", "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        text(&doc(&out), "fix").starts_with("fa law list --family rounding --json; registered: "),
+        "{out}"
+    );
+    assert!(
+        !text(&doc(&out), "fix").contains("LargestRemainder"),
         "{out}"
     );
     for bad in [
@@ -14909,9 +14949,29 @@ fn balance_bounds_refuse_breaches_and_availability_verifies_by_refold() -> std::
     assert_eq!(code, 3, "{out}\n{err}");
     assert_eq!(field(&out, "refusal_id"), Some("FA-REF-090"), "{out}");
     let rent = intent("rent.json", "rent", "6000", "1000", "60.00");
-    ok(&["post", "--intent", &rent, "--evidence", &ev, "--json"]);
-    // A reservation is an outflow too: 40 available, 50 is refused, 30 holds.
-    let hold = intent("hold.json", "hold", "6000", "1000", "50.00");
+    let posted_rent = ok(&["post", "--intent", &rent, "--evidence", &ev, "--json"]);
+    // Correct the rent to 50.00: a Reversal (+60.00 to cash) and a
+    // Replacement (-50.00) both move the limited cell, and the refold must
+    // count the Replacement too, not only Original/Adjusting/Reversal.
+    let rent_vid = field(&posted_rent, "vid").unwrap_or_default().to_string();
+    let corrected = write(
+        &dir,
+        "rent-corrected.json",
+        r#"{"description":"rent, corrected","legs":[{"side":"debit","account":"6000","amount":"50.00 USD"},{"side":"credit","account":"1000","amount":"50.00 USD"}]}"#,
+    );
+    ok(&[
+        "reverse",
+        &rent_vid,
+        "--reason",
+        "WrongAmount",
+        "--replace-with",
+        &corrected,
+        "--evidence",
+        &ev,
+        "--json",
+    ]);
+    // A reservation is an outflow too: 50 available, 60 is refused, 30 holds.
+    let hold = intent("hold.json", "hold", "6000", "1000", "60.00");
     let (code, out, _) = fa(
         Some(&book),
         &["reserve", "--intent", &hold, "--evidence", &ev, "--json"],
@@ -14941,7 +15001,7 @@ fn balance_bounds_refuse_breaches_and_availability_verifies_by_refold() -> std::
             "1000",
             "debit",
             "0.00 USD",
-            "40.00 USD",
+            "50.00 USD",
             "30.00 USD",
             "0.00 USD"
         )
@@ -16728,6 +16788,29 @@ fn instant_selected_cli_reports_retain_tick_evidence_and_replay() -> std::io::Re
         Some(&upper),
         closed_seq,
     );
+    // `fa diff --to <instant>` resolves through the same retained ticks:
+    // its envelope keeps that evidence and names its selection, never "all".
+    let lower_seq = lower.recorded_at.0.to_string();
+    for (selection, effective) in [
+        (["--period", PERIOD], format!("period:{PERIOD}")),
+        (["--as-of", "2026-03-31"], "as-of:2026-03-31".to_string()),
+    ] {
+        let mut argv = vec!["diff", "--from", lower_seq.as_str(), "--to", INSTANT];
+        argv.extend(selection);
+        argv.push("--json");
+        let diffed = ok(&argv);
+        assert_eq!(field(&diffed, "event"), Some("ledger_diff"), "{diffed}");
+        check_coordinate(
+            diffed.trim_end(),
+            current_frontier,
+            Some(&upper),
+            closed_seq,
+        );
+        let envelope = json::parse(diffed.trim_end()).unwrap();
+        let coordinate = envelope.get("coordinate").unwrap();
+        assert_eq!(text(coordinate, "effective"), effective, "{diffed}");
+        assert_eq!(int(&doc(&diffed), "to"), Some(i128::from(closed_seq.0)));
+    }
     let equivalent = report(
         &book,
         &[
@@ -19294,6 +19377,31 @@ fn a_custom_thirteen_period_calendar_posts_and_closes() -> std::io::Result<()> {
     );
     assert_eq!(code, 0, "{out}\n{err}");
     assert!(out.contains(r#""period":"FY2026-P13""#), "{out}");
+    // A date past the last declared year resolves to no period: the same
+    // law refusal as any unresolvable date (exit 3), never a foundation
+    // failure (exit 5), and nothing is written.
+    let (_, before, _) = fa(Some(&book), &["book", "info", "--json"]);
+    let undeclared = write(
+        &dir,
+        "undeclared.json",
+        r#"{"effective_date":"2027-03-01","description":"after the calendar","idempotency_key":"undeclared-1","legs":[{"side":"debit","account":"1000","amount":"1.00 USD"},{"side":"credit","account":"4000","amount":"1.00 USD"}]}"#,
+    );
+    let (code, out, err) = fa(
+        Some(&book),
+        &["post", "--intent", &undeclared, "--evidence", &ev, "--json"],
+    );
+    assert_eq!(code, 3, "{out}\n{err}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-020"), "{out}");
+    assert!(out.contains("outside every fiscal year"), "{out}");
+    let (_, after, _) = fa(Some(&book), &["book", "info", "--json"]);
+    let known_at = |line: &str| {
+        robot_line(line)
+            .get("coordinate")
+            .and_then(|coordinate| coordinate.get("known_at"))
+            .cloned()
+    };
+    assert!(known_at(&before).is_some(), "{before}");
+    assert_eq!(known_at(&after), known_at(&before), "{after}");
     let tb = report(&book, &["tb", "--period", "FY2026-P13", "--json"]);
     assert!(tb.contains(r#""effective_through":"2027-01-02""#), "{tb}");
     assert!(tb.contains(r#""1300.00 USD""#), "{tb}");

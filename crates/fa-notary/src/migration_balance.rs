@@ -4,6 +4,7 @@
 //! EVERY MigrationControl record, and the bodies of only selected runs.
 //! V3 additionally carries EVERY prefix record, allowing the independent
 //! verifier to derive all scope selectors rather than trusting an index.
+//! V4 adds control-bound source manifests for complete native populations.
 //! Each selected run body is bound to Open; projections never decide visibility.
 //!
 //! V3 is posted-balance recomputation, not proof of migration approval,
@@ -12,27 +13,61 @@
 //! legacy producers retain v1/v2 bytes, but partial-payload proofs now have
 //! only membership scope in the independent verifier.
 
+mod source;
 mod transport;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
-use fa_journal::migration::{RunBody, RunMode, kind};
+use fa_journal::migration::{RunBody, RunMode, SourceManifest, kind};
 use fa_journal::refusal::{Outcome, Refusal, exit};
-use fa_journal::rows::bytes;
-use fa_model::symbols::{label, property};
 use fa_model::{ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin};
 use fa_money::Side;
 use fgdb::Database;
-use fgdb_types::VId;
+use fgdb_types::{CommitSeq, VId};
 
 use crate::{AccumulatorState, Journal, Leaf, LeafEnvelope, code};
 
 pub use transport::MAX_BALANCE_PROOF_BYTES;
 pub const BALANCE_FORMAT_V2: &[u8] = b"fa:acc-balance-proof:v2";
 pub const BALANCE_FORMAT_V3: &[u8] = b"fa:acc-balance-proof:v3";
+pub const BALANCE_FORMAT_V4: &[u8] = b"fa:acc-balance-proof:v4";
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// Immutable migration inputs retained at the proof's historical frontier.
+/// Source manifests are required only for runs with a native BindSource.
+#[derive(Clone, Debug, Default)]
+pub struct MigrationInputs {
+    pub bodies: BTreeMap<VId, RunBody>,
+    pub manifests: BTreeMap<VId, SourceManifest>,
+}
+
+/// Legacy body maps remain valid for historical, unbound runs. A bound run
+/// always requires its manifest; omitting it can never downgrade the proof.
+pub trait MigrationSourceInputs {
+    fn bodies(&self) -> &BTreeMap<VId, RunBody>;
+    fn source_manifests(&self) -> Option<&BTreeMap<VId, SourceManifest>> {
+        None
+    }
+}
+
+impl MigrationSourceInputs for BTreeMap<VId, RunBody> {
+    fn bodies(&self) -> &BTreeMap<VId, RunBody> {
+        self
+    }
+}
+
+impl MigrationSourceInputs for MigrationInputs {
+    fn bodies(&self) -> &BTreeMap<VId, RunBody> {
+        &self.bodies
+    }
+    fn source_manifests(&self) -> Option<&BTreeMap<VId, SourceManifest>> {
+        Some(&self.manifests)
+    }
+}
+
+pub(crate) use source::witnesses as source_witnesses;
 
 type Selected<'a> = Vec<(usize, &'a Leaf, Entry)>;
 
@@ -48,6 +83,7 @@ struct Run<'a> {
     open_day: i32,
     body_digest: [u8; 32],
     terminal: Option<(usize, u8)>,
+    binding: Option<usize>,
     body: Option<&'a RunBody>,
 }
 
@@ -160,6 +196,7 @@ fn encode(
     unit: u32,
     through: Option<i32>,
     bodies: &[RunBody],
+    manifests: Option<&BTreeMap<VId, SourceManifest>>,
     complete: bool,
 ) -> Outcome<Vec<u8>> {
     let mut runs: BTreeMap<VId, Run<'_>> = BTreeMap::new();
@@ -210,10 +247,26 @@ fn encode(
                         open_day,
                         body_digest: *tie_out_digest,
                         terminal: None,
+                        binding: None,
                         body: None,
                     },
                 );
                 open_order.push((*index, *run_ref));
+            }
+            kind::BIND_SOURCE => {
+                let Some(run) = runs.get_mut(run_ref) else {
+                    return Ok(Err(refusal("source binding names an unopened run")));
+                };
+                if run.terminal.is_some()
+                    || run.binding.is_some()
+                    || spec_body_digest != &run.body_digest
+                    || leaf.envelope.effective_day != Some(run.open_day)
+                {
+                    return Ok(Err(refusal(
+                        "source binding is outside its unique open window",
+                    )));
+                }
+                run.binding = Some(*index);
             }
             kind::FINALIZE | kind::ABANDON => {
                 let Some(run) = runs.get_mut(run_ref) else {
@@ -268,6 +321,20 @@ fn encode(
     if supplied != *needed {
         return Ok(Err(refusal(
             "a selected migration run's authenticated body is missing",
+        )));
+    }
+    let body_map = bodies
+        .iter()
+        .map(|body| (body.vid(), body.clone()))
+        .collect();
+    let source_witnesses =
+        match source::witnesses(journal, journal.through_seq, needed, &body_map, manifests)? {
+            Ok(witnesses) => witnesses,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+    if !complete && !source_witnesses.is_empty() {
+        return Ok(Err(refusal(
+            "source-bound migration balances require payload-complete v4 and whole-book export authority",
         )));
     }
     let mut witnesses = Vec::new();
@@ -349,6 +416,7 @@ fn encode(
         journal,
         records,
         witnesses,
+        source_witnesses,
         complete,
         transport::Claim {
             account,
@@ -378,7 +446,7 @@ impl Journal {
             Err(r) => return Ok(Err(r)),
         };
         encode(
-            self, &records, &needed, account, unit, through, bodies, false,
+            self, &records, &needed, account, unit, through, bodies, None, false,
         )
     }
 
@@ -399,7 +467,7 @@ impl Journal {
             Err(r) => return Ok(Err(r)),
         };
         encode(
-            self, &records, &needed, account, unit, through, bodies, true,
+            self, &records, &needed, account, unit, through, bodies, None, true,
         )
     }
 }
@@ -450,7 +518,7 @@ pub fn prove_balance_with_migrations<V: asupersync::fs::Vfs + Clone>(
     )
 }
 
-/// Produce a payload-complete v3 balance proof at the selected checkpoint.
+/// Produce a payload-complete v3 or source-bound v4 proof at the selected checkpoint.
 /// The caller must already hold whole-book read and production authority.
 /// Historical migration bodies are still selected from authenticated entries,
 /// never current projections, and the proof is refused rather than truncated.
@@ -491,8 +559,8 @@ fn prove<V: asupersync::fs::Vfs + Clone>(
     if mode == ProofMode::Automatic && needed.is_empty() {
         return journal.balance_proof(account, unit, through);
     }
-    let bodies = match run_bodies(db, &journal, &needed)? {
-        Ok(bodies) => bodies,
+    let inputs = match inputs_at(db, &journal, &needed, journal.through_seq)? {
+        Ok(inputs) => inputs,
         Err(r) => return Ok(Err(r)),
     };
     encode(
@@ -502,7 +570,8 @@ fn prove<V: asupersync::fs::Vfs + Clone>(
         account,
         unit,
         through,
-        &bodies,
+        &inputs.bodies.values().cloned().collect::<Vec<_>>(),
+        Some(&inputs.manifests),
         mode == ProofMode::Complete,
     )
 }
@@ -530,25 +599,18 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
         // Only immutable body bytes are needed. read_run also decodes the
         // derived STATE mirror, so it is deliberately not used here: a
         // projection must neither authorize nor prevent the journal proof.
-        let Some(row) = db.vertex_at(*run, journal.through_seq)? else {
+        let Some(body) = fa_journal::migration::read_run_body_at(db, *run, journal.through_seq)?
+        else {
             return Ok(Err(refusal(format!(
                 "migration run {:032x} has no retained body",
                 run.0
             ))));
         };
-        if !row.labels.contains(&label::MIGRATION_RUN) {
-            return Ok(Err(refusal(format!(
-                "migration run {:032x} has no MigrationRun label",
-                run.0
-            ))));
-        }
-        let raw = bytes(&row, property::FA_PAYLOAD, "migration run body")?;
-        if raw.len() > MAX_BODY_BYTES {
+        if body.canonical_bytes()?.len() > MAX_BODY_BYTES {
             return Ok(Err(refusal(
                 "migration body exceeds the balance proof's 8 MiB limit",
             )));
         }
-        let body = RunBody::decode(&raw)?;
         if body.vid() != *run {
             return Ok(Err(refusal(format!(
                 "migration body does not derive run identity {:032x}",
@@ -560,13 +622,49 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
     Ok(Ok(bodies))
 }
 
+/// Retained immutable bodies and source manifests at exactly `known_at`.
+/// No mutable run-state projection participates in proof production.
+pub fn inputs_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    journal: &Journal,
+    runs: &BTreeSet<VId>,
+    known_at: CommitSeq,
+) -> Outcome<MigrationInputs> {
+    if known_at > journal.through_seq {
+        return Ok(Err(refusal(
+            "migration input frontier exceeds its authenticated prefix",
+        )));
+    }
+    let mut inputs = MigrationInputs::default();
+    for run in runs {
+        let Some(body) = fa_journal::migration::read_run_body_at(db, *run, known_at)? else {
+            return Ok(Err(refusal("migration run has no retained immutable body")));
+        };
+        if body.book_id != journal.book_id
+            || body.vid() != *run
+            || body.canonical_bytes()?.len() > MAX_BODY_BYTES
+        {
+            return Ok(Err(refusal(
+                "migration body is foreign, inconsistent, or oversized",
+            )));
+        }
+        inputs.bodies.insert(*run, body);
+        if let Some(manifest) =
+            fa_journal::migration::read_source_manifest_at(db, journal.book_id, *run, known_at)?
+        {
+            inputs.manifests.insert(*run, manifest);
+        }
+    }
+    Ok(Ok(inputs))
+}
+
 /// Every run body the balances of a bundle request need, keyed by run, for
 /// [`crate::bundle::assemble_with_runs`].
 pub fn bundle_run_bodies<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     journal: &Journal,
     request: &crate::bundle::BundleRequest,
-) -> Outcome<BTreeMap<VId, RunBody>> {
+) -> Outcome<MigrationInputs> {
     let mut runs = BTreeSet::new();
     for b in &request.balances {
         match runs_needed(journal, b.account, b.unit, b.effective_through)? {
@@ -574,11 +672,7 @@ pub fn bundle_run_bodies<V: asupersync::fs::Vfs + Clone>(
             Err(r) => return Ok(Err(r)),
         }
     }
-    let bodies = match run_bodies(db, journal, &runs)? {
-        Ok(bodies) => bodies,
-        Err(r) => return Ok(Err(r)),
-    };
-    Ok(Ok(runs.into_iter().zip(bodies).collect()))
+    inputs_at(db, journal, &runs, journal.through_seq)
 }
 
 impl Journal {
@@ -591,7 +685,7 @@ impl Journal {
         account: VId,
         unit: u32,
         through: Option<i32>,
-        bodies: &BTreeMap<VId, RunBody>,
+        inputs: &dyn MigrationSourceInputs,
     ) -> Outcome<Vec<u8>> {
         let (records, needed) = match select(self, account, unit, through, false)? {
             Ok(selection) => selection,
@@ -600,9 +694,18 @@ impl Journal {
         if needed.is_empty() {
             return self.balance_proof(account, unit, through);
         }
+        // Prefix bundles already authorize and disclose the full book. A
+        // bound population needs all its chunks, including those outside
+        // this cell/cutoff, so automatic bundle proofs use complete v4.
+        if inputs
+            .source_manifests()
+            .is_some_and(|manifests| needed.iter().any(|run| manifests.contains_key(run)))
+        {
+            return self.balance_proof_complete_auto(account, unit, through, inputs);
+        }
         let mut chosen = Vec::with_capacity(needed.len());
         for run in &needed {
-            let Some(body) = bodies.get(run) else {
+            let Some(body) = inputs.bodies().get(run) else {
                 return Ok(Err(refusal(format!(
                     "migration run {:032x}'s body was not supplied for this balance",
                     run.0
@@ -611,11 +714,19 @@ impl Journal {
             chosen.push(body.clone());
         }
         encode(
-            self, &records, &needed, account, unit, through, &chosen, false,
+            self,
+            &records,
+            &needed,
+            account,
+            unit,
+            through,
+            &chosen,
+            inputs.source_manifests(),
+            false,
         )
     }
 
-    /// The payload-complete v3 proof over this journal (see
+    /// The payload-complete v3 or source-bound v4 proof over this journal (see
     /// [`Self::balance_proof_complete`]), with the needed run bodies taken
     /// from `bodies` (see [`bundle_run_bodies`]). A missing body is refused,
     /// never skipped. The caller must have admitted whole-book disclosure.
@@ -624,7 +735,7 @@ impl Journal {
         account: VId,
         unit: u32,
         through: Option<i32>,
-        bodies: &BTreeMap<VId, RunBody>,
+        inputs: &dyn MigrationSourceInputs,
     ) -> Outcome<Vec<u8>> {
         let (records, needed) = match select(self, account, unit, through, true)? {
             Ok(selection) => selection,
@@ -632,7 +743,7 @@ impl Journal {
         };
         let mut chosen = Vec::with_capacity(needed.len());
         for run in &needed {
-            let Some(body) = bodies.get(run) else {
+            let Some(body) = inputs.bodies().get(run) else {
                 return Ok(Err(refusal(format!(
                     "migration run {:032x}'s body was not supplied for this balance",
                     run.0
@@ -641,7 +752,15 @@ impl Journal {
             chosen.push(body.clone());
         }
         encode(
-            self, &records, &needed, account, unit, through, &chosen, true,
+            self,
+            &records,
+            &needed,
+            account,
+            unit,
+            through,
+            &chosen,
+            inputs.source_manifests(),
+            true,
         )
     }
 }

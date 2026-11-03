@@ -1274,6 +1274,60 @@ fn reinstating_an_undone_payment_cannot_spend_capacity_used_by_another_payment()
     assert!(replay_settlements(&records, &rates).is_err());
 }
 
+#[test]
+fn a_foreign_application_is_refused_even_without_a_carrying_entry() {
+    // No entry claims SettlementCarryingBasis or SettlementSpotCarrying, so
+    // nothing in the prefix starts a carrying replay. A SpotClose payment
+    // that records an application against the invoice's EUR leg still has
+    // no source-bound relief and must not pass for want of one.
+    let (mut records, mut rates, source) = history(100, 110, (11, 10), (6, 5));
+    // The payment date's spot quote takes the settlement quote's slot: the
+    // rate closure must be exactly the referenced set.
+    rates[1] = rate_fixture(11, 10, 1, 20);
+    records[4] = intake(&rates[1], 5);
+    let spot = &rates[1];
+    // EUR cash received for the whole EUR receivable, both legs valued at
+    // the payment date's spot quote (100 EUR at 11/10 is 110).
+    let applied = spot_legs(&source, 100, 100, 110);
+    let unapplied: Vec<_> = applied
+        .iter()
+        .cloned()
+        .map(|mut leg| {
+            leg.applications.clear();
+            leg
+        })
+        .collect();
+    let mut plain = records.clone();
+    plain.push(application_entry(
+        6,
+        1,
+        20,
+        b"spot-payment",
+        &unapplied,
+        (1, spot, None),
+        None,
+    ));
+    records.push(application_entry(
+        6,
+        1,
+        20,
+        b"spot-payment",
+        &applied,
+        (1, spot, None),
+        None,
+    ));
+    let control = replay_settlements(&plain, &rates);
+    assert!(
+        control.is_ok(),
+        "the same SpotClose payment without an application verifies: {:?}",
+        control.err()
+    );
+    assert_eq!(
+        replay_settlements(&records, &rates).unwrap_err().predicate,
+        "supported_report"
+    );
+}
+
 fn route_record(seq: u64) -> Record {
     let mut body = Writer::default();
     body.fixed(b"FA-FX-ROUTES\0")

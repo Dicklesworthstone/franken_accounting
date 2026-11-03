@@ -111,8 +111,15 @@ impl MonthlyRecurrence {
         let (ay, am, _) = self.anchor.ymd();
         let (y, m, _) = date.ymd();
         let elapsed = (i64::from(y) - i64::from(ay)) * 12 + i64::from(m) - i64::from(am);
-        let index = u64::try_from(elapsed).map_err(|_| DateError::OutOfRange)?
-            / u64::from(self.every_months);
+        let elapsed = u64::try_from(elapsed).map_err(|_| DateError::OutOfRange)?;
+        let every = u64::from(self.every_months);
+        // Every month-end policy keeps an occurrence in its own month, so one
+        // in an earlier month precedes `date` whatever its day: only the
+        // searched month's own occurrence is calculated (and may refuse).
+        if elapsed % every != 0 {
+            return self.occurrence(elapsed.div_ceil(every));
+        }
+        let index = elapsed / every;
         let candidate = self.occurrence(index)?;
         if candidate.date >= date {
             Ok(candidate)
@@ -229,6 +236,28 @@ mod tests {
                 (index, expected.to_string())
             );
         }
+    }
+
+    #[test]
+    fn seek_skips_an_earlier_months_missing_day_but_refuses_the_searched_one() {
+        // Quarterly on the 31st: April 31 does not exist.
+        let schedule = recurrence("2026-01-31", 3, MonthEndPolicy::PreserveDay);
+        // From May 10 the next occurrence is July 31; April's missing day
+        // lies before the query, so it is never calculated.
+        let found = schedule
+            .first_on_or_after(DateDay::parse("2026-05-10").unwrap())
+            .unwrap();
+        assert_eq!((found.index, found.date.render()), (2, "2026-07-31".into()));
+        // From April 15 the next occurrence is April's own, which does not
+        // exist: refused, never skipped to July.
+        assert_eq!(
+            schedule.first_on_or_after(DateDay::parse("2026-04-15").unwrap()),
+            Err(RecurrenceError::Date(DateError::InvalidYmd {
+                year: 2026,
+                month: 4,
+                day: 31
+            }))
+        );
     }
 
     #[test]

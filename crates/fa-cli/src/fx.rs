@@ -147,7 +147,15 @@ pub(crate) fn fx_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
-fn strict_object(doc: &Json, fields: &[&str], what: &str, fix: &str) -> Result<(), Fail> {
+/// Refuses a JSON document that is not an object or that carries a field
+/// outside `fields` (or one field twice), so a misspelled key is a usage
+/// error instead of a silently dropped value.
+pub(crate) fn strict_object(
+    doc: &Json,
+    fields: &[&str],
+    what: &str,
+    fix: &str,
+) -> Result<(), Fail> {
     let Json::Obj(supplied) = doc else {
         return Err(usage(format!("{what} must be an object"), fix));
     };

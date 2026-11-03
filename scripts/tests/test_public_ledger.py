@@ -192,18 +192,22 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture = self.cases["31500"]["fixture"]
             output = Path(directory) / "replay"
-            manifest = replay.normalize(fixture, "31500", output)
+            recovery = replay.ReplayRecovery(output, fixture, "31500", Path(sys.executable),
+                                             Path(sys.executable), resume=False)
+            self.addCleanup(recovery.close)
+            manifest = recovery.manifest
             observed = {}
 
             def capture(path, kind="Spreadsheet", mime="text/csv"):
                 observed.update(path=path, kind=kind, mime=mime, raw=path.read_bytes())
                 raise IntakeObserved
 
-            with mock.patch.object(replay.Native, "call", return_value={}), \
+            info = {"book_id": "a" * 32, "base_unit": "USD", "calendar": "monthly", "entities": []}
+            with mock.patch.object(replay.Native, "call", return_value={"data": info}), \
                     mock.patch.object(replay.Native, "register_departments", return_value={}), \
                     mock.patch.object(replay.Native, "document", side_effect=capture):
                 with self.assertRaises(IntakeObserved):
-                    replay.run_native(Path(sys.executable), Path(sys.executable), output, manifest)
+                    replay.run_native(Path(sys.executable), Path(sys.executable), output, manifest, recovery=recovery)
             self.assertEqual(observed["path"], output / "original-agency.csv")
             self.assertEqual(observed["raw"], fixture.read_bytes())
             self.assertEqual(hashlib.sha256(observed["raw"]).hexdigest(), PINNED["31500"]["sha256"])
@@ -586,6 +590,39 @@ class PinnedAgencyNormalizationTests(unittest.TestCase):
 
 
 class ReplayRefusalTests(unittest.TestCase):
+    def test_grouped_staging_checks_all_receipts_and_finalized_retry_identity(self):
+        package = {"package_oid": "package", "chunks": [
+            {"entry_vid": "first", "proposal_digest": "reviewed-first"},
+            {"entry_vid": "second", "proposal_digest": "reviewed-second"},
+        ]}
+        good = {"event": "migration_import_group_staged", "data": {
+            "package_oid": "package", "run_vid": "run", "atomic": False,
+            "selected_count": 2, "completed_count": 2, "recorded_count": 2, "chunk_count": 2,
+            "run_state": "Open", "ready_to_finalize": True,
+            "chunks": [{"chunk_index": index, **chunk, "recorded_at": 30 + index,
+                        "already_recorded": False} for index, chunk in enumerate(package["chunks"])],
+        }}
+        self.assertEqual(len(replay.verify_staged_group(good, package, "run")), 2)
+        for mutate in [
+            lambda data: data.update(atomic=True),
+            lambda data: data.update(run_vid="different-run"),
+            lambda data: data.update(recorded_count=1),
+            lambda data: data["chunks"].reverse(),
+            lambda data: data["chunks"][1].update(proposal_digest="not-approved"),
+            lambda data: data["chunks"][1].update(recorded_at=30),
+            lambda data: data["chunks"][1].update(already_recorded=True),
+        ]:
+            wrong = deepcopy(good)
+            mutate(wrong["data"])
+            with self.assertRaises(replay.ReplayError):
+                replay.verify_staged_group(wrong, package, "run")
+        retried = deepcopy(good)
+        retried["data"].update(run_state="Finalized", ready_to_finalize=False)
+        for receipt in retried["data"]["chunks"]:
+            receipt["already_recorded"] = True
+        result = replay.verify_staged_group(retried, package, "run", retry=True)
+        self.assertEqual([row["recorded_at"] for row in result], [30, 31])
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -631,13 +668,15 @@ class ReplayRefusalTests(unittest.TestCase):
         # These are boundary contract tests, not a claim that native admission
         # ran. Both genuine bytes and driver-created workpapers use the honest
         # upload grade; Generated requires a receipt the uploader cannot claim.
-        native = object.__new__(replay.Native)
+        native = replay.Native(Path(sys.executable), Path(sys.executable), self.root)
         oid = "a" * 64
         added = {"event": "document", "data": {
             "oid": oid, "grade": "AgentUpload", "self_sourced": True,
+            "doc_commit": "c" * 64, "recorded_at": 1,
         }}
         reviewed = {"event": "attestation_recorded", "data": {
             "claim": "Reviewed", "subject": oid, "attestation_vid": "b" * 32,
+            "recorded_at": 2,
         }}
         for filename, kind, mime in (
             ("original-agency.csv", "Spreadsheet", "text/csv;charset=windows-1252"),
@@ -709,6 +748,46 @@ class ReplayRefusalTests(unittest.TestCase):
             self.assertEqual(native.tb("FY2024-P10"), {"101000": 0})
             with self.assertRaisesRegex(replay.ReplayError, "gross debit/credit activity"):
                 native.tb("FY2024-P10", expected_gross=expected_gross)
+
+    def test_native_document_preserves_automated_custody_and_binds_its_fixture_review(self):
+        native = replay.Native(Path(sys.executable), Path(sys.executable), self.root)
+        oid = "ab" * 32
+        added = {"oid": oid, "grade": "AgentUpload", "self_sourced": True,
+                 "doc_commit": "cd" * 32, "recorded_at": 1}
+        reviewed = {"claim": "Reviewed", "subject": oid,
+                    "attestation_vid": "ef" * 16, "recorded_at": 2}
+        with mock.patch.object(native, "call", side_effect=[
+                {"event": "document", "data": added},
+                {"event": "attestation_recorded", "data": reviewed}]) as call:
+            self.assertEqual(native.document(self.root / "source.csv"), oid)
+            self.assertEqual(call.call_args_list[0].args, (
+                "document", "add", self.root / "source.csv", "--kind", "Spreadsheet",
+                "--mime", "text/csv", "--grade", "AgentUpload", "--as", "public-data-source-uploader",
+            ))
+            self.assertEqual(call.call_args_list[1].args, (
+                "document", "attest", "review", "--document", oid,
+                "--as", "public-data-source-reviewer", "--grant", "approve",
+            ))
+        self.assertEqual(native.document_custody, [{
+            "file": "source.csv", "oid": oid, "doc_commit": added["doc_commit"],
+            "intake_grade": "AgentUpload", "self_sourced": True, "intake_recorded_at": 1,
+            "review_principal": "public-data-source-reviewer", "review_claim": "Reviewed",
+            "review_attestation_vid": reviewed["attestation_vid"], "review_recorded_at": 2,
+        }])
+        for grade, self_sourced in [("HumanUpload", False), ("AgentUpload", False)]:
+            with self.subTest(grade=grade, self_sourced=self_sourced):
+                wrong = dict(added, grade=grade, self_sourced=self_sourced)
+                with mock.patch.object(native, "call", return_value={"event": "document", "data": wrong}) as call:
+                    with self.assertRaisesRegex(replay.ReplayError, "self-sourced AgentUpload"):
+                        native.document(self.root / "source.csv")
+                    self.assertEqual(call.call_count, 1)
+        for wrong in [dict(reviewed, subject="00" * 32), dict(reviewed, claim="Confirmed")]:
+            with mock.patch.object(native, "call", side_effect=[
+                    {"event": "document", "data": added},
+                    {"event": "attestation_recorded", "data": wrong}]):
+                with self.assertRaisesRegex(replay.ReplayError, "did not attest the retained document"):
+                    native.document(self.root / "source.csv")
+        self.assertEqual(len(native.document_custody), 1)
 
     def test_department_missing_values_leading_zeros_and_ambiguous_metadata(self):
         for value in ("", " ", "\t \r\n"):
@@ -986,6 +1065,513 @@ class ReplayRefusalTests(unittest.TestCase):
         with self.assertRaisesRegex(replay.ReplayError, "no USD-cent monetary row"):
             replay.tamper_ads_amount(path)
         self.assertEqual(path.read_bytes(), raw)
+
+
+class ReplayRecoveryTests(unittest.TestCase):
+    """Workflow recovery unit contracts; no mock is native replay evidence."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.fixture = replay.FIXTURES / "omes-fy2024-q4-31500.csv"
+        self.binary = Path(sys.executable)
+        self.book_info = {"book_id": "a" * 32, "base_unit": "USD",
+                          "calendar": "fixture-calendar", "entities": []}
+
+    def new_recovery(self, name="run"):
+        recovery = replay.ReplayRecovery(self.root / name, self.fixture, "31500",
+                                         self.binary, self.binary, resume=False)
+        self.addCleanup(recovery.close)
+        recovery.restore_inputs()
+        return recovery
+
+    @staticmethod
+    def files(root):
+        return {str(path.relative_to(root)): path.read_bytes()
+                for path in root.rglob("*") if path.is_file()}
+
+    def native_inventory(self, recovery, *, recorded=False, packages=True):
+        """Read-only native-shaped inventory, independently sourced leg values.
+
+        IDs and receipts here are protocol fixtures. Tests of this inventory
+        never call run_native, create a PASS report, or claim an actual journal.
+        """
+        manifest = recovery.manifest
+        originals = read_csv(self.fixture, "cp1252")
+        values = {spec["code"]: {"dimension": 17, "value": f"{i + 1:032x}"}
+                  for i, spec in enumerate(manifest["departments"])}
+        case = {"originals": originals, "department_values": values}
+        account_specs = json.loads(recovery.artifacts["chart.json"])["accounts"]
+        inventory = {"runs": {}, "packages": {}, "documents": []}
+        recovery.remember_book(self.book_info)
+        (recovery.output / "book").mkdir()
+        for run_index, run in enumerate(manifest["runs"]):
+            key = replay.run_key(manifest, run)
+            run_vid = f"{100 + run_index:032x}"
+            package_oid = f"{1000 + run_index:064x}"
+            source_oid = f"{2000 + run_index:064x}"
+            recovery.input_json(f"{run['name']}-open.json", {
+                "run_key": key, "source_system": replay.SOURCE_SYSTEM, "mode": "FullDetail",
+                "trial_balance": "e" * 64, "opening_date": "2024-07-01",
+            })
+            package = native_package(case, run)
+            package.update(package_oid=package_oid, run_vid=run_vid, run_key=key,
+                           run_body_digest=f"{3000 + run_index:064x}", source_oid=source_oid,
+                           mode="FullDetail", run_state="Open",
+                           recorded_count=len(package["chunks"]) if recorded else 0,
+                           ties_out=recorded)
+            for chunk_index, chunk in enumerate(package["chunks"]):
+                chunk.update(entry_vid=f"{10000 + run_index * 100 + chunk_index:032x}",
+                             proposal_digest=f"{20000 + run_index * 100 + chunk_index:064x}",
+                             recorded_at=1000 + run_index * 100 + chunk_index if recorded else None)
+            inventory["runs"][key] = {
+                "run_key": key, "run_vid": run_vid, "source_system": replay.SOURCE_SYSTEM,
+                "mode": "FullDetail", "state": "Open", "opening_date": "2024-07-01",
+                "trial_balance_oid": "e" * 64, "chunk_count": package["recorded_count"],
+                "chunks": [{"vid": chunk["entry_vid"], "proposal_digest": chunk["proposal_digest"],
+                            "recorded_at": chunk["recorded_at"]} for chunk in package["chunks"]
+                           if chunk["recorded_at"] is not None],
+                "tie_out_digest": f"{4000 + run_index:064x}", "ties_out": recorded,
+            }
+            if packages:
+                recovery.input_json(f"{run['name']}-import.json", {
+                    "run": f"MR:{run_vid}", "source": f"D:{source_oid}", "format": "csv",
+                    "column_map": replay.COLUMN_MAP,
+                    "entry_periods": {entry_id: f"FY2024-P{int(entry_id.split(':')[3]):02}"
+                                     for entry_id in run["entry_ids"]},
+                    "account_map": {row["code"]: row["code"] for row in account_specs},
+                })
+                inventory["packages"][package_oid] = package
+                inventory["documents"].append({
+                    "oid": package_oid,
+                    "mime": "application/vnd.frankenaccounting.legacy-full-detail-import.v1",
+                })
+
+        def read(*args, **kwargs):
+            if args == ("book", "info"):
+                return {"data": self.book_info}
+            if args == ("chart", "list"):
+                return {"data": {"accounts": [{**row, "leaf": True, "lower_bound": None,
+                                              "upper_bound": None, "limit_scope": None}
+                                             for row in account_specs]}}
+            if args == ("dimension", "list", "department"):
+                return {"data": {"values": [{
+                    **spec, "dimension": "department", "dimension_id": values[spec["code"]]["dimension"],
+                    "vid": values[spec["code"]]["value"], "parent": None,
+                    "valid_from": None, "valid_to": None,
+                } for spec in manifest["departments"]]}}
+            if args[:2] == ("migrate", "show"):
+                return {"event": "migration_run", "data": inventory["runs"][args[2]]}
+            if args == ("document", "list"):
+                return {"data": {"documents": inventory["documents"]}}
+            if args[:4] == ("migrate", "import", "--action", "show"):
+                return {"data": inventory["packages"][args[5]]}
+            raise AssertionError(f"unexpected non-read native command: {args!r} {kwargs!r}")
+
+        native = replay.Native(self.binary, self.binary, recovery.output)
+        native.log_path = None
+        native.call = mock.Mock(side_effect=read)
+        native.head = mock.Mock(return_value=10000)
+        native.tb = mock.Mock(return_value={})
+        return native, inventory
+
+    @staticmethod
+    def plan(actual):
+        # Deliberately only a call-contract fixture, not a real native proposal.
+        return {"run_vid": actual["run_vid"], "action": "finalize",
+                "proposal_digest": "b" * 64, "tie_out_digest": actual["tie_out_digest"],
+                "chunk_count": actual["chunk_count"], "plan": None,
+                "bytes": (b"FA-MIGRATE-PLAN\0" + b"unit-test-only").hex()}
+
+    def test_preparation_can_be_recomputed_without_touching_existing_files(self):
+        recovery = self.new_recovery()
+        before = self.files(recovery.output)
+        manifest, artifacts = replay.preparation_artifacts(self.fixture, "31500")
+        self.assertEqual(manifest, recovery.manifest)
+        self.assertEqual(artifacts, recovery.artifacts)
+        self.assertEqual(self.files(recovery.output), before)
+
+    def test_resume_pin_or_retained_input_mismatch_refuses_before_native_or_any_write(self):
+        for change in ("source", "chart", "manifest", "column_map", "normalized", "original", "binary", "dynamic", "checkpoint"):
+            with self.subTest(change=change):
+                recovery = self.new_recovery(change)
+                dynamic = recovery.input_json("run-999-import.json", {"source": "original"})
+                recovery.close()
+                args = ["run", "--resume", "--out", str(recovery.output)]
+                if change == "source":
+                    changed = self.root / "changed-source.csv"
+                    changed.write_bytes(self.fixture.read_bytes() + b"\r\n")
+                    args += ["--source", str(changed)]
+                elif change == "binary":
+                    changed = self.root / "changed-fa"
+                    changed.write_bytes(b"not the pinned executable")
+                    args += ["--fa", str(changed)]
+                else:
+                    names = {"chart": "chart.json", "manifest": "manifest.json",
+                             "column_map": "column_map.toml",
+                             "normalized": recovery.manifest["runs"][0]["source"],
+                             "original": "original-agency.csv", "dynamic": dynamic.name,
+                             "checkpoint": "recovery/input-run-999-import.json.json"}
+                    target = recovery.output / names[change]
+                    target.write_bytes(target.read_bytes() + b"modified")
+                before = self.files(recovery.output)
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), \
+                        mock.patch.object(replay, "Native") as native:
+                    self.assertNotEqual(replay.main(args), 0)
+                    native.assert_not_called()
+                self.assertEqual(self.files(recovery.output), before)
+
+    def test_changed_driver_or_normalizer_pin_refuses_before_native(self):
+        for module in (replay, source):
+            with self.subTest(module=module.__name__):
+                recovery = self.new_recovery(module.__name__)
+                recovery.close()
+                original_hash = replay.sha256
+                changed_path = Path(module.__file__)
+
+                def digest(path):
+                    return "0" * 64 if path == changed_path else original_hash(path)
+
+                before = self.files(recovery.output)
+                with mock.patch.object(replay, "sha256", side_effect=digest), \
+                        mock.patch.object(replay, "Native") as native, \
+                        redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    self.assertNotEqual(replay.main(["run", "--resume", "--out", str(recovery.output)]), 0)
+                    native.assert_not_called()
+                self.assertEqual(self.files(recovery.output), before)
+
+    def test_second_driver_cannot_hold_the_same_recovery_lock(self):
+        first = self.new_recovery()
+        before = self.files(first.output)
+        with self.assertRaises(BlockingIOError):
+            replay.ReplayRecovery(first.output, self.fixture, "31500",
+                                  self.binary, self.binary, resume=True)
+        self.assertEqual(self.files(first.output), before)
+        first.close()
+        resumed = replay.ReplayRecovery(first.output, self.fixture, "31500",
+                                        self.binary, self.binary, resume=True)
+        self.addCleanup(resumed.close)
+        self.assertTrue(resumed.resumed)
+
+    def test_incomplete_publication_keeps_temporary_and_never_exposes_a_partial_checkpoint(self):
+        target = self.root / "durable.json"
+        with mock.patch.object(replay.os, "link", side_effect=OSError("interrupted before publication")):
+            with self.assertRaises(OSError):
+                replay.publish_bytes(target, b'{"complete":true}\n')
+        self.assertFalse(target.exists())
+        pending = list(self.root.glob(".pending-*"))
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].read_bytes(), b'{"complete":true}\n')
+        replay.publish_bytes(target, b'{"complete":true}\n')
+        self.assertTrue(pending[0].exists())
+        with self.assertRaisesRegex(replay.ReplayError, "retained file differs"):
+            replay.publish_bytes(target, b'{"complete":false}\n')
+        self.assertEqual(target.read_bytes(), b'{"complete":true}\n')
+
+    def test_attempts_preserve_failed_exports_and_receipts(self):
+        recovery = self.new_recovery()
+        first = recovery.begin_attempt()
+        (first / "gl.csv").write_bytes(b"incomplete export")
+        (first / "commands.jsonl").write_bytes(b'{"lost_response":true}\n')
+        before = self.files(first)
+        second = recovery.begin_attempt()
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.files(first), before)
+        self.assertEqual(self.files(second), {})
+
+    def test_missing_or_unidentified_native_book_is_never_recreated(self):
+        for state in ("missing", "unidentified", "different"):
+            with self.subTest(state=state):
+                recovery = self.new_recovery(state)
+                native = replay.Native(self.binary, self.binary, recovery.output)
+                if state != "unidentified":
+                    recovery.remember_book(self.book_info)
+                if state != "missing":
+                    native.book.mkdir()
+                changed = {**self.book_info, "book_id": "f" * 32}
+                before = self.files(recovery.output)
+                with mock.patch.object(native, "call", return_value={"data": changed}) as call:
+                    with self.assertRaises(replay.ReplayError):
+                        replay.preflight_recovery(native, recovery)
+                    if state == "different":
+                        self.assertEqual(call.call_args_list, [mock.call("book", "info")])
+                    else:
+                        call.assert_not_called()
+                self.assertEqual(self.files(recovery.output), before)
+
+    def test_lost_open_and_prepare_responses_are_recovered_from_native_inventory(self):
+        for has_package in (False, True):
+            with self.subTest(has_package=has_package):
+                recovery = self.new_recovery(str(has_package))
+                native, inventory = self.native_inventory(recovery, packages=has_package)
+                before = self.files(recovery.output)
+                recovered = replay.preflight_recovery(native, recovery)
+                self.assertEqual({value["package_oid"] for value in recovered.values()},
+                                 set(inventory["packages"]))
+                self.assertEqual(self.files(recovery.output), before)
+                self.assertFalse(any(call.args[:2] in (("migrate", "open"), ("document", "add"))
+                                     for call in native.call.call_args_list))
+
+    def test_native_abandonment_foreign_package_and_extra_chunk_refuse_without_writing(self):
+        for change in ("abandoned", "foreign", "duplicate", "extra_chunk", "source_mapping"):
+            with self.subTest(change=change):
+                recovery = self.new_recovery(change)
+                native, inventory = self.native_inventory(recovery)
+                key = next(iter(inventory["runs"]))
+                package = next(iter(inventory["packages"].values()))
+                if change == "abandoned":
+                    inventory["runs"][key]["state"] = "Abandoned"
+                elif change == "foreign":
+                    package["run_key"] = "a-different-source"
+                elif change == "duplicate":
+                    inventory["documents"].append(deepcopy(inventory["documents"][0]))
+                elif change == "extra_chunk":
+                    inventory["runs"][key]["chunk_count"] = 1
+                    inventory["runs"][key]["chunks"] = [{"vid": "f" * 32, "proposal_digest": "f" * 64, "recorded_at": 99}]
+                else:
+                    name = f"input-{recovery.manifest['runs'][0]['name']}-import.json"
+                    original = json.loads(bytes.fromhex(recovery.facts[name]["hex"]))
+                    original["account_map"]["unused-extra-code"] = "101000"
+                    recovery.facts[name]["hex"] = replay.json_bytes(original).hex()
+                before = self.files(recovery.output)
+                with self.assertRaises(replay.ReplayError):
+                    replay.preflight_recovery(native, recovery)
+                self.assertEqual(self.files(recovery.output), before)
+
+    def test_mixed_group_retry_preserves_recorded_receipt_and_stages_only_unrecorded_chunk(self):
+        package = {"package_oid": "original", "run_state": "Open", "chunks": [
+            {"entry_vid": "first", "proposal_digest": "reviewed-first", "recorded_at": 31},
+            {"entry_vid": "second", "proposal_digest": "reviewed-second", "recorded_at": None},
+        ]}
+        event = {"event": "migration_import_group_staged", "data": {
+            "package_oid": "original", "run_vid": "run", "atomic": False,
+            "selected_count": 2, "completed_count": 2, "recorded_count": 2, "chunk_count": 2,
+            "run_state": "Open", "ready_to_finalize": True,
+            "chunks": [{"chunk_index": index, "entry_vid": chunk["entry_vid"],
+                        "proposal_digest": chunk["proposal_digest"], "recorded_at": 31 + index,
+                        "already_recorded": index == 0} for index, chunk in enumerate(package["chunks"])],
+        }}
+        receipts = replay.verify_staged_group(event, package, "run", recover=True)
+        self.assertEqual([receipt["already_recorded"] for receipt in receipts], [True, False])
+        for field, value in (("already_recorded", False), ("recorded_at", 40)):
+            changed = deepcopy(event)
+            changed["data"]["chunks"][0][field] = value
+            with self.assertRaises(replay.ReplayError):
+                replay.verify_staged_group(changed, package, "run", recover=True)
+
+    def test_partial_finalization_uses_the_original_empty_snapshot_after_all_staged_receipts(self):
+        recovery = self.new_recovery()
+        native, inventory = self.native_inventory(recovery, recorded=True)
+        first_key = next(iter(inventory["runs"]))
+        first = inventory["runs"][first_key]
+        first["state"] = "Finalized"
+        first_package = next(iter(inventory["packages"].values()))
+        first_package["run_state"] = "Finalized"
+        first_name = recovery.manifest["runs"][0]["name"]
+        with self.assertRaisesRegex(replay.ReplayError, "original plan or preactivation snapshot"):
+            replay.preflight_recovery(native, recovery)
+        prepared = [{"name": run["name"], "package": inventory["packages"][f"{1000 + i:064x}"]}
+                    for i, run in enumerate(recovery.manifest["runs"])]
+        prefix = {"known_at": 9000, "packages": replay.activation_membership(prepared)}
+        recovery.save("preactivation", prefix)
+        recovery.save(f"plan-{first_name}", {"plan": self.plan(first)})
+        recovery.input_json(f"{first_name}-finalize-approvals.json",
+                            {"proposal_digest": "b" * 64, "approvals": ["1" * 32, "2" * 32]})
+        before = self.files(recovery.output)
+        replay.preflight_recovery(native, recovery)
+        self.assertEqual(replay.activation_prefix(native, recovery, prepared), 9000)
+        self.assertEqual(self.files(recovery.output), before)
+        for call in native.tb.call_args_list:
+            self.assertEqual(call.kwargs["known_at"], 9000)
+            self.assertEqual(call.kwargs["expected_gross"], {})
+        recovery.facts["preactivation"]["known_at"] = 1
+        with self.assertRaisesRegex(replay.ReplayError, "staged native history"):
+            replay.preflight_recovery(native, recovery)
+
+    def test_finalization_plan_is_durable_before_any_approval_and_reused_after_lost_response(self):
+        recovery = self.new_recovery()
+        recovery.save("preactivation", {"known_at": 9000, "packages": {}})
+        actual = {"run_vid": "c" * 32, "state": "Open", "ties_out": True,
+                  "tie_out_digest": "d" * 64, "chunk_count": 3}
+        run = {"name": "run-000", "run_vid": actual["run_vid"]}
+        proposed = self.plan(actual)
+        native = replay.Native(self.binary, self.binary, recovery.output)
+        native.head = mock.Mock(return_value=10000)
+        native.approve = mock.Mock(return_value=["1" * 32, "2" * 32])
+        submitted = []
+
+        def command(*args, **kwargs):
+            if args[:2] == ("migrate", "show"):
+                return {"data": actual}
+            if "--dry-run" in args:
+                return {"data": proposed}
+            saved = replay.read_fact(recovery.directory / "plan-run-000.json")
+            self.assertEqual(saved["plan"], proposed)
+            submitted.append(kwargs["input_text"])
+            actual["state"] = "Finalized"
+            raise replay.subprocess.TimeoutExpired("fa migrate finalize", 600)
+
+        native.call = mock.Mock(side_effect=command)
+        with self.assertRaises(replay.subprocess.TimeoutExpired):
+            replay.finalize_recovered(native, recovery, run)
+        self.assertEqual(submitted, [proposed["bytes"] + "\n"])
+        recovery.close()
+        resumed = replay.ReplayRecovery(recovery.output, self.fixture, "31500",
+                                        self.binary, self.binary, resume=True)
+        self.addCleanup(resumed.close)
+
+        def repeat(*args, **kwargs):
+            if args[:2] == ("migrate", "show"):
+                return {"data": actual}
+            self.assertNotIn("--dry-run", args)
+            self.assertEqual(kwargs["input_text"], submitted[0])
+            return {"data": {"run_vid": run["run_vid"], "to": "Finalized", "already_recorded": True}}
+
+        native.call = mock.Mock(side_effect=repeat)
+        replay.finalize_recovered(native, resumed, run)
+        self.assertEqual(native.approve.call_args_list, [
+            mock.call(proposed["proposal_digest"], "finalize-reviewer"),
+        ])
+
+    def test_failed_plan_checkpoint_never_reaches_approval(self):
+        recovery = self.new_recovery()
+        recovery.save("preactivation", {"known_at": 10, "packages": {}})
+        actual = {"run_vid": "c" * 32, "state": "Open", "ties_out": True,
+                  "tie_out_digest": "d" * 64, "chunk_count": 3}
+        native = replay.Native(self.binary, self.binary, recovery.output)
+        native.call = mock.Mock(side_effect=[{"data": actual}, {"data": self.plan(actual)}])
+        native.approve = mock.Mock()
+        with mock.patch.object(recovery, "save", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                replay.finalize_recovered(native, recovery, {"name": "run-000", "run_vid": actual["run_vid"]})
+        native.approve.assert_not_called()
+
+
+    def test_output_creation_race_never_writes_failure_into_another_owners_directory(self):
+        real_mkdir = Path.mkdir
+        for action in ("prepare", "run"):
+            with self.subTest(action=action):
+                output = self.root / action
+
+                def racing_mkdir(path, *args, **kwargs):
+                    if path == output:
+                        real_mkdir(path, parents=True, exist_ok=False)
+                        (path / "other-owner.bin").write_bytes(b"must remain untouched")
+                        raise FileExistsError("another process won directory creation")
+                    return real_mkdir(path, *args, **kwargs)
+
+                args = [action, "--out", str(output)]
+                if action == "run":
+                    args += ["--fa", str(self.binary), "--fa-verify", str(self.binary)]
+                with mock.patch.object(Path, "mkdir", new=racing_mkdir), \
+                        redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), \
+                        mock.patch.object(replay, "Native") as native:
+                    self.assertNotEqual(replay.main(args), 0)
+                    native.assert_not_called()
+                self.assertEqual(self.files(output), {"other-owner.bin": b"must remain untouched"})
+
+    def test_setup_retry_keeps_original_chart_requests_after_lost_period_acknowledgement(self):
+        # Native calls are intercepted at the request boundary. No output from
+        # this fixture is allowed to reach the reporting/verification phase.
+        class IntakeObserved(Exception):
+            pass
+
+        recovery = self.new_recovery()
+        chart = json.loads(recovery.artifacts["chart.json"])["accounts"]
+        requests = []
+        phase = [0]
+
+        def command(native, *args, **kwargs):
+            requests.append((phase[0], args))
+            if args == ("book", "info"):
+                return {"data": self.book_info}
+            if args[:2] == ("book", "create"):
+                native.book.mkdir()
+                return {"data": self.book_info}
+            if args[:2] == ("chart", "import"):
+                self.assertEqual(json.loads(Path(args[2]).read_bytes())["accounts"],
+                                 chart if len(chart) <= 32 else chart[:32]
+                                 if Path(args[2]).name == "chart-000.json" else chart[32:64])
+                return {"data": {}}
+            if args == ("period", "create", "--fiscal-year", "2024"):
+                if phase[0] == 0:
+                    raise replay.subprocess.TimeoutExpired("fa period create", 600)
+                return {"data": {}}
+            if args == ("chart", "list"):
+                return {"data": {"accounts": [{**row, "leaf": True} for row in chart]}}
+            if args == ("dimension", "list", "department"):
+                return {"data": {"values": []}}
+            if args[:2] == ("migrate", "show"):
+                return {"event": "error", "data": {"exit": 3, "refusal_id": "FA-REF-132"}}
+            if args == ("document", "list"):
+                return {"data": {"documents": []}}
+            raise AssertionError(f"unexpected request: {args}")
+
+        with mock.patch.object(replay.Native, "call", autospec=True, side_effect=command), \
+                mock.patch.object(replay.Native, "register_departments", return_value={}), \
+                mock.patch.object(replay.Native, "document", side_effect=IntakeObserved):
+            with self.assertRaises(replay.subprocess.TimeoutExpired):
+                replay.run_native(self.binary, self.binary, recovery.output,
+                                  recovery.manifest, recovery=recovery)
+            original_book = replay.read_fact(recovery.directory / "book.json")
+            recovery.close()
+            resumed = replay.ReplayRecovery(recovery.output, self.fixture, "31500",
+                                            self.binary, self.binary, resume=True)
+            self.addCleanup(resumed.close)
+            phase[0] = 1
+            with self.assertRaises(IntakeObserved):
+                replay.run_native(self.binary, self.binary, resumed.output,
+                                  resumed.manifest, recovery=resumed)
+        first = [args for current, args in requests if current == 0 and args[:2] == ("chart", "import")]
+        second = [args for current, args in requests if current == 1 and args[:2] == ("chart", "import")]
+        self.assertEqual(first, second)
+        self.assertEqual(sum(args[:2] == ("book", "create") for _, args in requests), 1)
+        self.assertEqual(sum(args[:2] == ("period", "create") for _, args in requests), 2)
+        self.assertEqual(replay.read_fact(resumed.directory / "book.json"), original_book)
+        self.assertFalse((resumed.output / "report.json").exists())
+
+    def test_lost_approval_acknowledgement_retries_the_same_native_principals_and_digest(self):
+        native = replay.Native(self.binary, self.binary, self.root)
+        digest = "c" * 64
+        with mock.patch.object(native, "call", side_effect=replay.subprocess.TimeoutExpired("fa approve", 600)) as first:
+            with self.assertRaises(replay.subprocess.TimeoutExpired):
+                native.approve(digest, "chunk-reviewer")
+        original_request = first.call_args
+        responses = [{"data": {"approval_vid": "1" * 32, "already_recorded": True}},
+                     {"data": {"approval_vid": "2" * 32, "already_recorded": False}}]
+        with mock.patch.object(native, "call", side_effect=responses) as retried:
+            self.assertEqual(native.approve(digest, "chunk-reviewer"), ["1" * 32, "2" * 32])
+        self.assertEqual(retried.call_args_list[0], original_request)
+        self.assertEqual(retried.call_args_list[1], mock.call(
+            "approve", "--proposal", digest, "--as", "public-data-chunk-reviewer-b"))
+
+    def test_recorded_stage_selection_reuses_exact_approval_identities_without_reapproving(self):
+        recovery = self.new_recovery()
+        run = {"name": "run-000", "package": {"chunks": [
+            {"proposal_digest": "c" * 64}, {"proposal_digest": "d" * 64},
+        ]}}
+        selected = {"chunks": [{"index": 0, "approvals": ["1" * 32, "2" * 32]},
+                               {"index": 1, "approvals": ["3" * 32, "4" * 32]}]}
+        path = recovery.input_json("run-000-stage.json", selected)
+        before = path.read_bytes()
+        native = replay.Native(self.binary, self.binary, recovery.output)
+        with mock.patch.object(native, "approve") as approve:
+            self.assertEqual(replay.retained_stage_selection(native, recovery, run), path)
+            approve.assert_not_called()
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_native_read_only_preflight_and_plan_stdin_do_not_depend_on_command_logs(self):
+        native = replay.Native(self.binary, self.binary, self.root)
+        native.log_path = None
+        result = replay.subprocess.CompletedProcess(["fa"], 3,
+            stdout='{"event":"error","data":{"exit":3,"refusal_id":"FA-REF-132"}}\n', stderr="")
+        with mock.patch.object(replay.subprocess, "run", return_value=result) as process:
+            value = native.call("migrate", "show", "unopened-run", expect=(0, 3))
+            self.assertEqual(value["data"]["refusal_id"], "FA-REF-132")
+            native.call("migrate", "finalize", "--plan", "-", input_text="aabb\n", expect=3)
+            self.assertEqual(process.call_args.kwargs["input"], "aabb\n")
+        self.assertFalse((self.root / "commands.jsonl").exists())
 
 
 if __name__ == "__main__":

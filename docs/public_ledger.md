@@ -23,11 +23,82 @@ the distinction between statement transfer amounts and trustee-credited principa
 Its acquisition, extraction, source controls and native replay have separate
 validation records; a successful source check does not establish a native pass.
 
-## Validation status
+## Native replay validation (2026-11-03)
 
-**All 59 public-ledger Python tests pass. Native end-to-end execution remains
-unverified.** The separate Development Finance Authority helper has 17 passing
-tests, for 76 passing helper tests across the two workloads.
+**Earlier account-level native replays passed for all three complete agency
+fixtures, including independent proof verification and rejection of a one-cent
+corrupted extract.** The current grouped-staging and department/export extensions
+require their own native replay; the measurements below do not validate them.
+The actual `fa` and `fa-verify` binaries executed 608 commands against fresh
+on-disk books. Every monthly account cell, cumulative account cell, and gross
+debit/credit account cell agreed with the original-source oracle.
+
+| Agency | Original rows | Native monetary legs | Migration entries | Native commands | Observed seconds |
+|---|---:|---:|---:|---:|---:|
+| `20400` — museum | 125 | 121 | 15 | 191 | 26.479 |
+| `31500` — pension system | 137 | 131 | 6 | 101 | 13.530 |
+| `66000` — university | 1,055 | 1,051 | 27 | 316 | 132.771 |
+
+The 14 zero-valued source rows remain in the original evidence and explicit
+manifest dispositions. All 1,303 nonzero source rows became individual monetary
+legs without netting opposing rows or inventing counterparts. Each run also
+checked preparation and finalized-stage retries, preactivation invisibility,
+historical reads, native registers, projection integrity, and a signed
+accumulator checkpoint. All 73 helper-uploaded source/control documents retained
+native self-sourced `AgentUpload` custody and received separate native `Reviewed`
+attestations from a distinct fixture principal. A final native inventory check
+confirmed that each document's original grade, commitment, and birth sequence
+remained unchanged. Durations are observations under concurrent diagnostic
+workloads, not performance benchmarks.
+
+Actual execution found and fixed two driver defects: document intake requires
+a MIME value without spaces, and June 30 must be routed explicitly to the
+source's normal fiscal period because it also belongs to year-end adjustment
+and closing periods. The driver now preserves the Windows-1252 declaration as
+`text/csv;charset=windows-1252` and supplies `entry_periods` for every source
+aggregate. The native refusal rules and reconciliation assertions were retained.
+
+Review also found an incorrect `HumanUpload` assertion in the original driver.
+That assertion was removed, and all three agencies were rerun from fresh books
+with native automatic-upload custody and explicit fixture review attestations.
+The results above are from those corrected runs. The document reviewer and
+approval principals are operated by this same harness: their native records
+exercise the review and separation-of-duties laws, and do not constitute
+independent human review or an audit.
+
+The [execution record](../evidence/public_ledger/validation-2026-11-03.json)
+contains per-agency results, checks, source and binary hashes, original report
+and command-transcript hashes, reproduction commands, the two initial native
+failures, and the superseded runs with incorrect asserted custody. Full
+generated books and private keys are not committed. The earlier
+[unverified validation record](../evidence/public_ledger/validation-2026-11-02.json)
+remains as a record of the previous build failures; it is superseded for these
+three native replays.
+
+Source acquisition and profiling had already verified the original
+113,856,733-byte distribution and all 373,357 rows. The 36 Python checks passed
+again after the driver repairs. Those helper checks, the separately executed
+705 targeted Rust tests, and these real-corpus runs are distinct evidence.
+None substitutes for Tier0 on the final exact committed tree, or establishes
+that the entire statewide publication is admissible as one balanced USD-cent
+ledger. **These native measurements precede grouped staging, department
+projection and the source/export dimension checks described below. They do not
+establish execution of those additional checks.**
+
+### Grouped staging and department extension validation boundary
+
+The department extension arrived concurrently with the native account-level
+validation. All 61 integrated public-ledger Python checks pass, covering
+source/export department negatives, grouped staging receipts, source custody and
+document review. Development Finance Authority helper validation is recorded
+separately. These helper checks do not establish a native grouped-staging or
+department PASS.
+
+The Development Finance Authority helper's 18 offline tests include the native
+column-map contract: generated TOML contains only the declared columns, while
+the native intent supplies the account mapping once. The earlier native attempt
+exposed a duplicate `account_map`; the corrected workflow needs its own native
+rerun before it can be recorded as a PASS.
 
 The official 113,856,733-byte resource was downloaded through its actual HTTPS
 redirect and verified against the fixed SHA-256. The complete 373,357-row file
@@ -44,9 +115,9 @@ fixtures' monetary amounts or department codes. Negatives change only a
 department while preserving every monetary amount. They also check leading
 zeros, blank values, missing dimension tags, wrong native identities,
 zero-net/nonzero-gross activity, scope, export row coverage and order, declared
-dimension coverage, and exact report-replay comparisons. Constructed
-native-shaped payloads and exports in those tests are not evidence that the
-accounting engine or its real exporter ran.
+dimension coverage, grouped stage receipts and exact report-replay comparisons.
+Constructed native-shaped payloads and exports in those tests are not evidence
+that the accounting engine or its real exporter ran.
 
 The [first hosted replay](https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41544280544)
 at commit `14dc993adc6f63d8a77c41080c186a39af62731d` built both native binaries
@@ -61,14 +132,10 @@ runner changes, and it did not reach migration, reports, or proof verification.
 The upload path now also records its actual `AgentUpload` provenance and requires
 a native `Reviewed` attestation by a distinct local fixture principal before
 using each source or helper document. Misgraded receipts, reviews of a different
-document, and refused reviews fail the run. These boundary tests do not replace
-native execution. No current end-to-end replay or repository-wide gate PASS is
-claimed here.
-
-The [earlier validation record](../evidence/public_ledger/validation-2026-11-02.json)
-describes the original source-only implementation. Current native acceptance
-requires running the workflows below and inspecting their real
-`report.json` and `commands.jsonl` outputs.
+document, and refused reviews fail the run. The earlier account-level native
+PASS is not attributed to the grouped-staging and department extensions. Their
+acceptance requires running the workflows below and inspecting the actual
+`report.json` and `commands.jsonl`; no repository-wide gate PASS is claimed here.
 
 ## What the publisher actually provides
 
@@ -174,6 +241,14 @@ separate process, and records its arguments, exit status, stdout and stderr in
 the child process so an unrelated configured book or credential cannot redirect
 the exercise.
 
+Within each migration run, the driver obtains a separate approval pair for
+every source chunk and sends one retained selection to `migrate import --action
+stage --intent`. Complete source authentication is shared across the request;
+each chunk still has its own native publication and immutable receipt. The
+driver checks every approved identity and publication sequence, including a
+grouped retry after finalization. A later refusal does not undo earlier staged
+chunks, and no staged balance is activated before native finalization.
+
 To fetch and inspect the **entire** statewide distribution:
 
 ```bash
@@ -234,15 +309,21 @@ transcript and writes `failure.json`; it never emits a partial success report.
    stock. This is a scoped activity ledger starting with the publication, not
    an assertion that the real agency had zero assets before April. Source-
    derived cumulative account controls are retained as documents and declared
-   before import preparation. The native kernel computes its own tie-outs.
-6. **Retain approvals and evidence.** Original sources, normalized CSVs, manifests
-   and control documents are programmatic `AgentUpload` inputs. The driver checks
-   each native receipt's grade and obtains a `Reviewed` attestation from a distinct
-   local test principal. The native importer retains sealed proposals.
-   Two distinct local test principals approve each chunk and each
-   finalization. Original selected bytes and the transformation manifest are
-   attached as supplemental evidence to the staged entries. The harness checks
-   staging before activation and exact retry identities after finalization.
+   before import preparation. Each source aggregate is explicitly routed to its
+   published normal fiscal period, including June 30 where year-end periods
+   overlap. The native kernel computes its own tie-outs.
+6. **Retain custody, reviews, approvals and evidence.** Automatically acquired
+   or generated documents retain self-sourced `AgentUpload` provenance under a
+   named uploader; the driver checks each native receipt's grade and identity.
+   A distinct fixture principal records a native `Reviewed` attestation with
+   `approve` authority, without
+   changing the original document's custody. The native importer retains sealed
+   proposals. Two local fixture principals approve each chunk and finalization.
+   All these roles are operated by the same harness, not independent human
+   reviewers. Original selected bytes and the transformation manifest are
+   attached as supplemental evidence to staged entries. The harness checks
+   staging before activation, exact retries after finalization, and unchanged
+   original document grades, commitments and birth sequences.
 7. **Compare and verify.** Compare every monthly account cell and cumulative
    account cell to a separate integer-cent fold of the original source fields.
    Compare each department's monthly and cumulative account cells, including
@@ -311,6 +392,88 @@ published historical attribution. Native migration retains that attribution
 without applying today's required-dimension or value-effectivity policy to old
 records. Fund, class funding, project and other chartfields remain in evidence;
 this adapter does not yet project them into native dimensions.
+
+## Import existing parties and legal entities from generic CSV
+
+The generic CSV importer also accepts `party` and `legal_entity` in
+`[dimension_columns]`, alongside ordinary dimensions such as department,
+fund and project. This is useful when a legacy ledger already identifies the
+customer, vendor, investor or subsidiary on each source posting.
+
+These columns contain **existing native codes**. Declare the legal entities
+when creating the book and register each party with `fa party add` before
+staging. The importer resolves the codes to their native dimension values; it
+does not create parties or entities, infer a counterparty from an account name,
+or transfer a raw dimension VID from another book.
+
+For example, the following column map preserves all three source fields:
+
+```toml
+[columns]
+source_system = "legacy-csv"
+entry_id_column = "Journal"
+effective_date_column = "Date"
+account_column = "Account"
+signed_amount_column = "Amount"
+
+[dimension_columns]
+party = "InvestorID"
+legal_entity = "Company"
+department = "DepartmentID"
+```
+
+A four-row source can contain two independently balanced entities:
+
+```csv
+Journal,Date,Account,Amount,InvestorID,Company,DepartmentID
+A,2025-12-20,1000,100.00,Case-001,Entity-A,0100001
+A,2025-12-20,3000,-100.00,,Entity-A,
+B,2025-12-29,1000,25.50,case-001,Entity-B,0100001
+B,2025-12-29,3000,-25.50,,Entity-B,
+```
+
+This example assumes the accounts, the department, both legal entities and
+both counterparties are already declared. `Case-001` and `case-001` are
+different parties. The blank equity-leg party and department cells remain
+absent. No placeholder party is invented to make a dimension slice balance.
+
+| Source mapping | Native dimension ID | Native posting requirement |
+| --- | ---: | --- |
+| `legal_entity` | 1 | Names one of the book's declared entities. Every leg must name an entity in a multi-entity book, and each entry balances independently per entity and unit. |
+| `department` | 3 | Names an existing registered department value. A historical Migration preserves its original attribution. |
+| `party` | 12 | Names an existing Party's dimension value. A blank source party stays absent unless the account's native posting law requires one. |
+
+Party codes are bounded by the native 64-byte UTF-8 contract; legal entity
+codes by the native 32-byte contract. Nonblank values retain their exact case,
+Unicode and surrounding spaces. Whitespace-only cells mean absence. Ordinary
+dimension codes retain their stricter printable-ASCII identifier contract.
+The importer never trims a nonblank code to make it match a different object.
+
+Preparation retains the exact source, column map and sealed leg proposals.
+Changing only a party or entity changes the source attribution attestation;
+changing only a retained proposal's dimensions fails source replay even when
+every account total still agrees. The native staging transaction checks value
+existence and per-entity balance. Missing parties, undeclared entities,
+missing mandatory entity tags and entries that balance only across entities
+refuse without posting a partial chunk.
+
+Staging remains invisible until finalization, and exact retries retain the
+same dimension identities. Existing CSV, ADS, SAF-T and other dimension-aware
+exports carry these IDs through the same `fa-dimension-ids-v1` contract.
+These IDs prove identity within the exporting book; the source crosswalk
+remains necessary to explain what each code means.
+
+This generic mapping does not infer investor or legal-entity meaning for OMES
+chartfields. The public OMES adapter still projects only the fields described
+above.
+
+**Validation boundary:** new format and persisted CLI regressions cover the
+simultaneous entity/department/party mapping, case-distinct counterparties,
+retained-package substitution, activation/retry and dimension-preserving CSV
+and ADS certificates. They also exercise missing references and a globally
+balanced entry that violates per-entity balance. Those new Rust tests are
+**UNRUN** in this authoring session: the prerequisite native build was
+unavailable and the executor subsequently disconnected.
 
 ## Preserve attribution through CSV, ADS and offline proof verification
 
@@ -383,10 +546,10 @@ The profile reports the affected groups and source ordinals for investigation.
 
 ## Verification boundaries and remaining work
 
-- A successful native run would establish the tested source-to-accounting-to-
-  extract checks for its complete published selection. Native execution is
-  still unverified as recorded above. Even a successful run would not establish
-  completeness of the publisher's internal system or original transaction history.
+- The three successful native runs establish the tested source-to-accounting-
+  to-extract checks for their complete published selections. They do not
+  establish completeness of the publisher's internal system or original
+  transaction history.
 - All chartfields remain available in retained evidence. Original account codes
   and nonblank departments are projected into the native chart and dimension
   values. Other chartfields are not yet native queryable dimensions.
@@ -394,6 +557,22 @@ The profile reports the affected groups and source ordinals for investigation.
   payloads bounded. Each migration activates atomically; finalizing the entire
   agency across several runs is not one atomic publication. The preactivation
   historical check uses the prefix before the first finalization.
+- Native finalization currently binds the staged chunk set and checks the
+  declared trial balances; it does not bind every proposal in a retained
+  import package. For example, a package can contain an opening cash/capital
+  entry plus a cash/capital increase and its exact reversal in the same
+  period. Omitting the latter two entries leaves every declared net balance
+  unchanged, so native tie-out alone cannot detect the missing gross activity.
+  The import display's recorded-count readiness is not a kernel completeness
+  guarantee. This gap remains open; the replay drivers must stage and check
+  every source chunk.
+- Closing that gap requires an explicit immutable native source-manifest
+  binding before staging: source/package commitments, transformation identity
+  and the complete ordered proposal inventory. Its publication must be atomic
+  and durable, and both staging and finalization must enforce it. Independent
+  proof coverage must say whether this manifest was supplied and verified.
+  Uploading an arbitrary Workpaper, or supplying a count to the CLI finalizer,
+  must not implicitly establish authoritative run membership.
 - The larger selection still has bounded group sizes. It does not settle
   `fa-fdt`/`fa-zddh` large-entry and million-line bulk-migration acceptance.
   Unsupported native sizes must be reported, never addressed by inventing

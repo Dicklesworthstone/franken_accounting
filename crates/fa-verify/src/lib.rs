@@ -118,6 +118,7 @@ pub fn verify_balance(
     let format = reader.bytes(128, "proof.format")?;
     if format == migration_balance::BALANCE_FORMAT_V2
         || format == migration_balance::BALANCE_FORMAT_V3
+        || format == migration_balance::BALANCE_FORMAT_V4
     {
         migration_balance::verify_balance(proof, trusted_checkpoint)
     } else {
@@ -629,6 +630,7 @@ mod balance_dispatch_tests {
             balance::BALANCE_FORMAT,
             migration_balance::BALANCE_FORMAT_V2,
             migration_balance::BALANCE_FORMAT_V3,
+            migration_balance::BALANCE_FORMAT_V4,
         ] {
             let mut w = codec::Writer::default();
             w.bytes(format)
@@ -641,6 +643,9 @@ mod balance_dispatch_tests {
                 .count(0)
                 .count(0);
             if format != balance::BALANCE_FORMAT {
+                w.count(0);
+            }
+            if format == migration_balance::BALANCE_FORMAT_V4 {
                 w.count(0);
             }
             let report = verify_balance(&w.buf, &checkpoint).unwrap();

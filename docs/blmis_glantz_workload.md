@@ -1,12 +1,200 @@
-# Published BLMIS transaction history: Glantz Exhibit B-2
+# Published BLMIS transaction history: Glantz Exhibits B-1 through B-6
 
-This workload retains **every published row of account 1ZA192** from the
-trustee's Glantz Exhibit B-2: 75 transactions dated December 7, 1992 through
-October 30, 2008. It adds actual dated transaction records and independently
-printed running balances to the [public-sector activity workloads](public_ledger.md).
+This workload has two explicit source scopes. The default retains every
+published row of account **1ZA192** in Exhibit B-2: 75 observations dated
+December 7, 1992 through October 30, 2008. The new `--account all` mode acquires
+and processes **all six Glantz Exhibit B accounts**, retaining 379 dated
+observations, including seven transfers with zero credited principal. Their
+372 monetary rows produce 744 native analysis-book legs.
+
+Both scopes use the original hash-pinned trustee PDF. These are published
+customer-account computations from a complaint, not the original BLMIS
+firm-wide general ledger. They add dated real-case records and independently
+printed controls to the [public-sector activity workloads](public_ledger.md).
 The [forensic case plan, section 9](FORENSIC_CASE_STUDIES_PLAN.md#9-case-m--madoff--blmis-trustee-ledgers)
-describes the broader BLMIS program. This is one complete account, not completion
-of the three-complaint, thirteen-account program or its M0-M7 beads.
+describes the broader three-complaint, thirteen-account program. This extension
+does not complete that program or close its M0-M7 beads.
+
+## Complete six-account ingestion and native replay
+
+The full mode reads PDF pages 27-40. It retains every displayed column, printed
+amount literal, source line and page, row hash, footnote marker, and independently
+printed footer. A fresh source census found **379 dated rows** in these six
+accounts. The earlier plan's 1,429 Glantz total is a source-count discrepancy,
+not a population target to fill with synthetic records.
+
+| Source account | PDF pages | Dated observations | Native monetary entries | Running principal compared with printed cells |
+|---|---|---:|---:|---|
+| 1T0026 | 27-30 | 117 | 112 | Exact given the trustee's credited transfers |
+| 1ZA192 | 31-33 | 75 | 74 | Exact given the trustee's credited transfers |
+| 1ZB010 | 34-35 | 61 | 61 | Exact under the explicitly named same-day display rule |
+| 1ZB143 | 36-37 | 51 | 50 | Exact given the trustee's credited transfers |
+| 1ZR010 | 38-39 | 57 | 57 | Source movements end $9 above the printed principal; 50 rows differ |
+| 1ZR176 | 40 | 18 | 18 | Source movements are $1 below printed principal on rows 6-17, then close exactly |
+| **Total** | **27-40** | **379** | **372** | **All differences remain visible; no balancing plugs** |
+
+The original 75-row B-2 fixture remains code-pinned and available offline.
+The new six-account mode prepares its rows from the verified original PDF in
+the current invocation. It does not claim that a newly calculated row hash was
+a previously reviewed repository fixture. Preparation records the exact
+extraction and generated-byte hashes. Loading a prepared six-account package
+re-extracts its pinned original and compares every regenerated source and
+normalization file; a caller-provided checksum sidecar is insufficient.
+The B-2 slice must also reproduce both existing code-owned fixture pins.
+
+The source has several details that a simple amount/date loader would lose:
+
+- Six transfer footnote markers are detached superscripts on their own
+  extraction lines. Their positions and hashes are retained separately.
+  A reported-amount asterisk on 1ZR176 has its own note semantics; it is not
+  silently converted into the transfer-credit rule.
+- On 1ZB010, the 2006-10-17 CHECK and STOP PAYMENT rows are printed out of the
+  order used by their balances. `same_day_display_reorder` swaps only that
+  specifically identified pair for computation; the raw display order remains
+  in the evidence. The source does not identify the stopped check, so the
+  helper creates no invented reversal lineage.
+- STOP PAYMENT is **+$25,000 in the Withdrawals column**. It is a positive cash
+  movement. The native gross cash flows for 1ZB010 are therefore $1,245,000 in
+  and $1,552,500 out, while the printed deposit/withdrawal column totals are
+  $1,220,000 and -$1,527,500. Both have the same net; the driver checks the
+  signed gross movements explicitly.
+- On 1ZR010, displayed deposits sum to $5,979,193 while the printed deposit
+  footer is $5,979,184. The nine-dollar difference remains a source diagnostic.
+  On 1ZR176, intermediate one-dollar differences remain diagnostics even
+  though the closing balance agrees.
+
+### What the native six-account driver checks
+
+The driver creates six declared Equity analysis principal accounts and six native
+counterparties, with one shared cash account and one explicitly marked
+principal-transfer clearing account. Only a principal leg receives its source
+account's native party tag. No customer or subsidiary identity is inferred
+from an account holder's name.
+
+Native investor analysis classifies these principal accounts by their declared
+Equity type. The explicit `investor_capital` role is reserved for Liability
+accounts; the driver verifies the native chart's exact types, currencies and
+leaf accounts instead of assigning an incompatible role. Cash receives its
+`cash` role immediately. The transfer-clearing role is assigned only after the
+missing-transfer-role comparison below.
+
+Every monetary source row posts separately in its declared computation order.
+Every native leg, amount, effective date, commit receipt and party identity is
+checked against the original source. The driver requests and replays an exact
+certified general ledger for each account. Detail replay returns the identical
+report line followed by a `report_replayed` verification receipt; the driver
+checks the receipt's book, certificate, coordinate, report family, known-at and
+output digest as well as the report bytes. It checks the pre-posting historical
+prefix, retries every entry without new history, and reconciles all annual
+account controls. For the two inconsistent accounts it requires the exact
+observed discrepancy at every affected row. `PASS` means the native book
+reproduces the source movements and exposes those discrepancies; it never
+means that all of the trustee's printed cells are arithmetically exact.
+
+There are 17 transfer rows. Two reviewed transfers have both account histories
+in this complaint:
+
+| Date | Origin → recipient | Reported transfer | Certified originating principal before transfer | Recomputed credited principal |
+|---|---|---:|---:|---:|
+| 1993-10-20 | 1ZA192 → 1ZB143 | $4,000,000 | $4,855,000 | $4,000,000 |
+| 2005-12-23 | 1ZB143 → 1ZA192 | $200,000 | -$4,854,688 | $0 |
+
+The separately named interpretive rule `trustee_transfer_credit` computes
+`min(reported_transfer, max(originating_principal, 0))`. The driver obtains
+the originating balance from the certified native ledger, after checking that
+ledger against every original source movement. It preserves aliases such as
+`TRANS TO 1Z314330 (1ZB143)` exactly; only the explicitly printed
+parenthetical identifier identifies the counterpart in these reviewed pairs.
+The other **13 transfer rows** retain trustee-credited principal as explicit
+oracle inputs. No absent originating history or additional pair is fabricated.
+
+`ponzi.net_investment` v5 is compared across all six accounts before and after
+assigning the transfer role. Gross cash and principal transfers remain separate;
+cohorts use their first actual inflow; all six nonzero account outcomes must be
+present. Account 1ZR176 closes with principal of -$2,817,965 and a zero source
+reconciliation gap; it does not have zero principal. The earlier missing-role result must remain
+unchanged at its original recorded prefix. The source's nine-dollar closing
+difference is exposed in the account comparison, not silently rounded away.
+
+Finally the driver checks native registers against folds, projections, source
+document custody, a signed accumulator checkpoint, all **744 CSV/ADS legs**,
+all six actual native party-value identities, and independent ADS proof
+verification. The standalone verifier must reject both a one-cent mutation
+and a party-only mutation. The PDF, raw extraction layout, source records,
+normalization manifest and extraction receipt are retained as native evidence
+with explicit self-sourced AgentUpload custody and distinct local fixture
+reviewers. Those reviewers are not independent human auditors.
+
+### Run the complete source
+
+Python 3.11+ and Poppler's `pdftotext` are required. Source preparation needs
+no accounting executable; native replay additionally needs the pinned `fa`
+and `fa-verify` builds.
+
+```bash
+# Verify the original bytes, extract all six accounts, and prepare the analysis.
+python3 -B scripts/blmis_source.py prepare --account all \
+  --output /path/to/new-glantz-six-package
+
+# Re-extract the original and verify all retained/generated package bytes.
+python3 -B scripts/blmis_source.py verify --account all \
+  --source-dir /path/to/new-glantz-six-package
+
+# Run source-comparator tests against the acquired original.
+FA_BLMIS_GLANTZ_PDF=/path/to/new-glantz-six-package/source.pdf \
+  python3 -B -m unittest discover -s scripts/tests -p 'test_blmis*.py' -v
+
+# Acquire/verify, normalize, post, certify, replay and independently verify.
+python3 -B scripts/blmis_replay.py run --account all \
+  --pdf /path/to/new-glantz-six-package/source.pdf \
+  --out /path/to/new-glantz-six-native \
+  --fa /path/to/fa --fa-verify /path/to/fa-verify
+```
+
+Each preparation/replay destination must be new. The optional
+`--pdf /path/to/original.pdf` on preparation avoids a download while still
+verifying and extracting the original. Without `FA_BLMIS_GLANTZ_PDF`,
+the new full-source comparator tests explicitly skip their unavailable source;
+those skips are not evidence that extraction or native replay passed.
+
+### Observed native validation (2026-11-03)
+
+The complete PDF-first six-account command **exited 0 with `PASS`** after
+1,268 native commands in 415.270 seconds. It used frozen native binaries built
+from `93714f772a6279c0ea233841d1d51dbe096d9ff1` and the helper hashes recorded
+in the [compact execution evidence](../evidence/blmis/glantz-six-native-2026-11-03.json).
+
+| Check | Observed result |
+|---|---|
+| Original exhibit population | All 379 observations, including seven zero-principal rows |
+| Native monetary history | 372 entries, 744 legs; every exact retry kept its VID, digest and recorded sequence without new history |
+| Detailed account reports | Six certified ledgers and exact report/receipt replays; six pre-posting historical prefixes stayed empty |
+| Source balances and transfers | Every running observation and all 17 annual controls matched the source movements and explicit discrepancies; both paired transfer credits matched certified originating principal |
+| Investor principal | All six version-5 outcomes matched cash and credited transfers; the earlier cash-only result remained unchanged after the transfer role was recorded |
+| Native materializations | All 143 active monthly registers and the projections verified |
+| Portable exports | CSV-GL and ADS round trips passed; both source comparisons covered every monetary field, description, citation memo, provenance value and party tag on all 744 legs |
+| Independent proof | `fa-verify` accepted the original ADS package with `complete_native_leg_identities` on 744 rows, then exited 8 for both the one-cent amount mutation and the party-only mutation |
+
+The actual runs exposed three helper contract errors: assigning the
+Liability-only `investor_capital` role to declared Equity accounts, expecting
+only one event from detailed-ledger replay, and passing `--as-known-at` to a
+procedure that accepts `--known-at`. The corrections retain the declared chart
+types and every source comparison. The earlier failed attempts and complete
+successful report and command transcript remain available outside Git; the
+compact evidence records their hashes and the exact reproduction command.
+
+All **79 Python helper tests passed with the original PDF supplied**, with no
+skips. Those tests, this measured native execution, and any Rust workspace or
+CI gate are separate results. The evidence keeps the $9 and intermediate $1
+source discrepancies, the named same-day display rule, and the scope of the
+trustee's credited transfers. Source custody remains `AgentUpload` with a
+distinct same-harness fixture `Reviewed` attestation; this is an analysis-book
+execution under its own trusted signing key.
+
+## Default single-account workload
+
+The following sections describe the unchanged 1ZA192 source scope and its
+original code-pinned fixture in detail.
 
 ## Primary source and retained evidence
 
@@ -129,9 +317,12 @@ The replay runs `ponzi.net_investment` version 5 under the named
 `posted_principal_transfer_v1` rule. It registers one role-labelled native
 counterparty for source account `1ZA192`, with code `BLMIS-1ZA192`, and tags only
 the principal leg of each entry with that party. Cash and transfer-clearing
-counterparts remain untagged. The three accounts receive explicit `cash`,
-`investor_capital` and `investor_transfer` roles; account names do not supply
-their classification.
+counterparts remain untagged. The principal account is classified as investor
+capital by its explicitly declared Equity type; the `investor_capital` role
+is only for Liability accounts. The cash and transfer-clearing accounts receive
+their admitted `cash` and `investor_transfer` roles. Account names do not supply
+any classification, and the driver checks that the native chart retains the
+declared types before proceeding.
 
 The procedure must preserve these distinct source amounts:
 
@@ -168,9 +359,11 @@ role states of version 5; it does not simulate or claim to replay version 4.
 
 ## Reproduce source acquisition, extraction and preparation
 
-Python 3.11 or newer is sufficient for offline verification and preparation.
-Re-extraction also requires Poppler's `pdftotext`; the reviewed extraction used
-version 24.02.0. Run commands from the repository root:
+Python 3.11 or newer is sufficient for explicitly offline retained-row
+verification and preparation. PDF preparation and every native replay require
+Poppler's `pdftotext`; install `poppler-utils` on Linux or `poppler` on macOS
+and ensure `pdftotext` is on `PATH`. The reviewed extraction used version
+24.02.0. Run commands from the repository root:
 
 ```bash
 # Offline: verify the retained pins, all rows and the printed controls.
@@ -183,7 +376,14 @@ python3 -B scripts/blmis_source.py fetch --output /path/to/new-glantz.pdf
 python3 -B scripts/blmis_source.py extract \
   --pdf /path/to/new-glantz.pdf --output /path/to/new-extraction
 
-# Prepare the complete account's explicitly constructed analysis package.
+# Acquire, extract and prepare directly from the primary PDF in one command.
+python3 -B scripts/blmis_source.py prepare-pdf --output /path/to/new-pdf-package
+
+# The same path using an already downloaded original; extraction still runs.
+python3 -B scripts/blmis_source.py prepare-pdf \
+  --pdf /path/to/new-glantz.pdf --output /path/to/another-new-pdf-package
+
+# Explicitly offline: prepare from reviewed retained rows, without extraction.
 python3 -B scripts/blmis_source.py prepare --output /path/to/new-package
 
 # Offline positive, mutation and failure-boundary checks.
@@ -202,6 +402,17 @@ A prepared package contains `rows.csv`, `source.json`, `legacy.csv`,
 accounts for every source row, including the zero-principal observation, names
 the interpretation and baseline, records each transfer input's role, and hashes
 every generated payload. Same-day transactions remain in the exhibit's order.
+
+`prepare-pdf` additionally retains `source.pdf`, the exact extractor output in
+`extracted-source/layout.txt`, regenerated `extracted-source/rows.csv` and
+`extracted-source/source.json`, and an `extraction.json` receipt. The receipt
+records the actual extraction command, selected pages and all byte counts and
+hashes; the package manifest binds these materials. Normalization reads these
+newly extracted rows. The committed fixture hashes are acceptance controls,
+not replacement input when extraction fails. If the extractor produces a
+different layout, the original PDF and diagnostic text remain available, but
+no normalized accounting input is accepted. A missing extractor returns
+`UNRUN` with installation guidance.
 
 The amount parser accepts the source's explicit whole-dollar syntax and converts
 it to exact integer cents. Blank cells, malformed grouping, unexpected footnotes,
@@ -240,10 +451,15 @@ binary returns `UNRUN` with exit code 4 before an output directory is created.
 A source mismatch, accounting discrepancy or failed native command fails the
 run; it is never converted into a successful comparison.
 
-The driver prepares and checks the complete normalized package before creating
-a monthly native book. It creates the 17 fiscal years and opens the source
-months, registers the three declared analysis accounts, and attaches the
-original PDF, extracted rows, source metadata and package manifest as evidence.
+The driver acquires or copies the pinned original PDF, extracts all three pages
+in the current invocation, requires the reviewed rows and metadata byte for
+byte, and prepares and checks the complete normalized package before creating
+a monthly native book. Passing `--pdf` avoids downloading, but still performs
+extraction. There is no retained-fixture fallback in `run`.
+
+It creates the 17 fiscal years and opens the source months, registers the three
+declared analysis accounts, and attaches the original PDF, exact extraction text,
+extraction receipt, extracted rows, source metadata and package manifest as evidence.
 These documents are honestly labelled `AgentUpload`. A distinct local test
 principal records Reviewed attestations so the workload exercises the actual
 evidence-admission rule. This is an explicit local test of that rule, not a
@@ -272,8 +488,8 @@ A successful run must complete all of these checks:
   printed observations. The zero-principal transfer stays in this comparison
   with an unchanged balance and no artificial zero-amount entry.
 - Certify the detailed general ledger and replay the certificate with its exact
-  account, unit, date, label and known-at scope, requiring byte-identical robot
-  output.
+  account, unit, date, label and known-at scope, requiring a byte-identical robot
+  report followed by its matching `report_replayed` verification receipt.
 - Query the pre-import recorded prefix after all entries have been posted and
   require it still to contain no monetary history.
 - Retry every original intent across process reopenings and require the original
@@ -320,7 +536,7 @@ build succeeds. It retains reports, failure records and command transcripts.
 A scheduled workflow or a passing comparator unit test is not evidence of a
 successful native run.
 
-## Verification status
+## Earlier B-2 ingestion validation
 
 The pinned original was downloaded and its hash matched the existing case-plan
 source pin. All three relevant PDF pages were rendered and visually inspected.
@@ -337,7 +553,7 @@ a native FrankenAccounting posting, certificate replay or verifier run. Native
 execution must report its own observed result; an unavailable native run is
 `UNRUN`, never a pass.
 
-Observed in this implementation session: **14 source tests and 28 native-comparator
+Observed after integrating PDF ingestion: **20 source tests and 31 native-comparator
 unit tests passed**. The comparator tests use explicitly test-only receipt
 identities and native-shaped payloads; they check refusal boundaries and do not
 simulate execution of the accounting engine. The restored comparator suite also
@@ -353,8 +569,21 @@ rows, and party-only changes that preserve all monetary fields. Its mocked
 native call contracts establish command and comparison behavior only; the
 runner still requires real executable responses before writing `PASS`.
 
-**Native execution remains UNRUN.** The pinned compiler was available, but the
-shared environment exhausted its filesystem and compiler processes were stopped
-or killed under memory pressure. No complete `fa` binary, native BLMIS run, Rust
-workspace test gate or CI replay PASS was established in this session. The
-workflow and driver are the reproducible path to obtain that missing evidence.
+The PDF preparation path was also executed against a fresh download of the
+389,586-byte original using Poppler 24.02.0. Its 18,432-byte
+extracted layout had SHA-256
+`4390c3f3da1ebab54bafc7a1147514a67aaf3d0af9d2df4d0fc354a99739657d`.
+All 75 regenerated rows and the source metadata matched their existing pins;
+the 148-leg package and 17 annual controls were prepared from that extraction.
+The new offline tests additionally check download/extraction/normalization
+order, byte lineage, extraction drift, changed returned rows, missing Poppler,
+and refusal before any native client is constructed. A concurrent creator's
+output directory receives no diagnostic writes: failure logging requires an
+explicit successful directory-creation receipt. Their mocked extractor
+contracts remain distinct from this actual PDF execution.
+
+Earlier native implementation attempts exhausted the shared filesystem or lost
+compiler processes under memory pressure. The complete six-account execution
+recorded above now establishes the native result for its exact helper and
+binary hashes. The historical B-2 ingestion observations in this section do
+not establish an additional standalone B-2 native run or a Rust workspace gate.

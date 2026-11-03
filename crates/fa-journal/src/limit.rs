@@ -1071,8 +1071,25 @@ pub fn review_balancing<V: asupersync::fs::Vfs + Clone>(
     if let Some(why) = balancing_shape(&req.proposal, leg) {
         return Ok(Err(shape_refusal(why)));
     }
-    let fy = book.calendar.fiscal_year_of(req.proposal.effective_date)?;
-    let periods = book.calendar.periods_for_year(fy)?;
+    let periods = match book
+        .calendar
+        .fiscal_year_of(req.proposal.effective_date)
+        .and_then(|fy| book.calendar.periods_for_year(fy))
+    {
+        Ok(periods) => periods,
+        Err(error) => {
+            return Ok(Err(Refusal::new(
+                code::PERIOD_RESOLVE,
+                exit::REFUSAL,
+                format!(
+                    "balancing review effective date is outside every fiscal year calendar `{}` defines: {error}",
+                    book.calendar.id
+                ),
+                "plan §7.2 (a fiscal calendar generates the periods of the years it defines)",
+                "review a date inside a fiscal year the calendar defines; `fa calendar show --json` describes it",
+            )));
+        }
+    };
     let period = match resolve_period(
         &periods,
         req.proposal.effective_date,

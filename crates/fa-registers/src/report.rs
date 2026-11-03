@@ -119,6 +119,13 @@ impl OpenItemsReport {
                 )
             });
             for application in history {
+                // An application the report's frontier cannot see would
+                // contradict the known_at column printed beside it.
+                if application.recorded_at > self.known_at {
+                    return Err(RegisterError::InvalidSelection(
+                        "CSV application is outside the report selection".into(),
+                    ));
+                }
                 csv_row(
                     &mut out,
                     &[
@@ -450,6 +457,15 @@ mod tests {
         let mut report = fixture();
         report.items[0].recorded_at = CommitSeq(11);
         assert!(report.to_csv().is_err());
+        let mut report = fixture();
+        let applied = report
+            .items
+            .iter_mut()
+            .find(|item| !item.applications.is_empty())
+            .expect("the fixture applies an item");
+        applied.applications[0].recorded_at = CommitSeq(11);
+        assert!(report.to_csv().is_ok(), "item rows carry no application");
+        assert!(report.applications_to_csv().is_err());
     }
 
     #[test]

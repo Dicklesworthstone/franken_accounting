@@ -1693,20 +1693,18 @@ fn run_scoped_with(
         // The daemon never trusts a client working directory outside --files-root;
         // relative paths resolve only under --files-root (or a validated subdirectory
         // within it) (fa-udti).
+        // The file resolver refuses a directory leaf, so the client's
+        // directory is judged here: canonical, inside the root and outside
+        // the book directory. Each path is still checked on its own below.
         files.cwd = match (&daemon.files_root, &files.cwd) {
-            (Some(root), Some(client_cwd)) => client_cwd
-                .to_str()
-                .and_then(|raw| {
-                    crate::authority::resolve_in_daemon_files_root(
-                        root,
-                        &daemon.book_dir,
-                        raw,
-                        false,
-                    )
+            (Some(root), Some(client_cwd)) => {
+                let book = std::fs::canonicalize(&daemon.book_dir)
+                    .unwrap_or_else(|_| daemon.book_dir.clone());
+                std::fs::canonicalize(client_cwd)
                     .ok()
-                })
-                .filter(|path| path.is_dir())
-                .or_else(|| Some(root.clone())),
+                    .filter(|cwd| cwd.is_dir() && cwd.starts_with(root) && !cwd.starts_with(&book))
+                    .or_else(|| Some(root.clone()))
+            }
             (Some(root), None) => Some(root.clone()),
             (None, _) => None,
         };
@@ -2779,6 +2777,22 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         }
     }
     let sub = args.positional.get(1).map(String::as_str);
+    // Flags that read a host file only under one verb (elsewhere the same
+    // spelling names something else, e.g. `capability issue --template`).
+    let scoped: &[&'static str] = match (verb, sub, args.positional.get(2).map(String::as_str)) {
+        ("subledger", Some("detail"), _) => &["--input"],
+        ("schedule", Some("recurring"), Some("create")) => &["--template"],
+        ("case", Some("rehearse"), _) => &["--certificate"],
+        ("checkpoint", Some("witness"), _) => &["--key", "--previous", "--onto"],
+        _ => &[],
+    };
+    for &flag in scoped {
+        for value in args.flag_all(flag) {
+            if value != "-" {
+                paths.push((flag, value, HostPath::Input));
+            }
+        }
+    }
     // A custom calendar's period list (`fa case` uses --periods for period
     // codes, so only book create reads it as a file).
     if verb == "book"
@@ -2970,6 +2984,19 @@ fn operator_command(args: &Args, command: &str) -> String {
     }
     command.push_str(" --json");
     command
+}
+
+/// The `--grant` arguments with which `fa commit`, which always holds `post`,
+/// rebuilds the capability a plan was admitted under. A plan binds that
+/// capability's commitment, so the suggested commit names exactly the planned
+/// operations: one missing or one extra is refused as a different capability.
+fn commit_grants(planned: &Capability) -> String {
+    planned
+        .ops()
+        .iter()
+        .filter(|op| **op != fa::Op::Post)
+        .map(|op| format!(" --grant {}", quoted_argument(op.name())))
+        .collect()
 }
 
 const OPERATOR_PLAN_GUIDANCE: &str = "replace <same-token-file> with the original token file; reuse the same holder capability and forward data.bytes on stdin when --plan is -; attach the required independent approvals";
@@ -5678,6 +5705,34 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// record an Approval binding a planned proposal's digest or a portable allocation/settlement
 /// review under the caller's capability.
 fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if let Some(input) = args.flag("--proposals") {
+        if args.positional.len() != 1
+            || args.flag_all("--proposals").len() != 1
+            || ["--proposal", "--review", "--digest"]
+                .iter()
+                .any(|flag| args.flag(flag).is_some())
+        {
+            return Err(usage(
+                "--proposals occurs once, takes no positional arguments, and cannot be combined with --proposal, --review or --digest",
+                APPROVAL_GROUP_EXAMPLE,
+            ));
+        }
+        // Parse the complete request before loading a key or publishing anything.
+        let digests = read_approval_group(&ctx.files, input)?;
+        let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
+        let capability = ctx.capability(args, &["approve"])?;
+        let mut book = ctx.books.open(args)?;
+        for digest in digests {
+            // Each native transaction rechecks current authority, revocation,
+            // policy epoch and signing key before its idempotency lookup.
+            let approved = match &key {
+                Some(key) => book.approve_signed(capability.clone(), digest, key)??,
+                None => book.approve(capability.clone(), digest)??,
+            };
+            emit_approved(&ctx.out, &book, approved)?;
+        }
+        return Ok(());
+    }
     if let Some(review_arg) = args.flag("--review") {
         if args.flag("--proposal").is_some() {
             return Err(usage(
@@ -5711,6 +5766,93 @@ fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         None => book.approve(capability, digest)??,
     };
     emit_approved(&ctx.out, &book, approved)
+}
+
+const APPROVAL_GROUP_EXAMPLE: &str = "fa approve --proposals '<JSON array of 64-hex digests>' --as <approver>, or --proposals - for stdin; at most 4096 unique digests and 1 MiB";
+const MAX_APPROVAL_GROUP_BYTES: usize = 1024 * 1024;
+const MAX_APPROVAL_GROUP_MEMBERS: usize = 4096;
+
+fn read_approval_group(files: &Files, input: &str) -> Result<Vec<[u8; 32]>, Fail> {
+    let oversized = || usage("approval group exceeds 1 MiB", APPROVAL_GROUP_EXAMPLE);
+    let bytes = if input == "-" {
+        match &files.stdin {
+            Stdin::Forwarded(bytes) => {
+                if bytes.len() > MAX_APPROVAL_GROUP_BYTES {
+                    return Err(oversized());
+                }
+                bytes.clone()
+            }
+            Stdin::Missing => {
+                return Err(usage(
+                    "--proposals - needs forwarded stdin",
+                    APPROVAL_GROUP_EXAMPLE,
+                ));
+            }
+            Stdin::Process => {
+                let mut bytes = Vec::new();
+                std::io::stdin()
+                    .lock()
+                    .take(MAX_APPROVAL_GROUP_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| {
+                        usage(
+                            format!("approval group stdin: {error}"),
+                            APPROVAL_GROUP_EXAMPLE,
+                        )
+                    })?;
+                bytes
+            }
+        }
+    } else {
+        if input.len() > MAX_APPROVAL_GROUP_BYTES {
+            return Err(oversized());
+        }
+        input.as_bytes().to_vec()
+    };
+    if bytes.len() > MAX_APPROVAL_GROUP_BYTES {
+        return Err(oversized());
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| usage("approval group must be UTF-8 JSON", APPROVAL_GROUP_EXAMPLE))?;
+    let Json::Arr(values) = json::parse(text).map_err(|error| {
+        usage(
+            format!("invalid approval group JSON: {error}"),
+            APPROVAL_GROUP_EXAMPLE,
+        )
+    })?
+    else {
+        return Err(usage(
+            "approval group must be a JSON array",
+            APPROVAL_GROUP_EXAMPLE,
+        ));
+    };
+    if values.is_empty() || values.len() > MAX_APPROVAL_GROUP_MEMBERS {
+        return Err(usage(
+            "approval group needs 1 to 4096 digests",
+            APPROVAL_GROUP_EXAMPLE,
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let text = value.as_str().ok_or_else(|| {
+                usage(
+                    format!("approval group member {index} must be a digest string"),
+                    APPROVAL_GROUP_EXAMPLE,
+                )
+            })?;
+            let digest = parse_digest(text, &format!("approval group member {index}"))?;
+            if !seen.insert(digest) {
+                return Err(usage(
+                    format!("duplicate approval group digest at member {index}"),
+                    APPROVAL_GROUP_EXAMPLE,
+                ));
+            }
+            Ok(digest)
+        })
+        .collect()
 }
 
 fn emit_approved(out: &Out, book: &Book, approved: fa_journal::Approved) -> Result<(), Fail> {
@@ -7766,7 +7908,7 @@ fn post_batch_document(
     }
     if args.switch("--dry-run") || out.is_bound_agent() {
         let plan = book.plan_batch(batch, &capability)??;
-        return batch_plan::emit(out, &book, &ctx.files, args, &plan);
+        return batch_plan::emit(out, &book, &ctx.files, args, &plan, &capability);
     }
     let posted = book.post_batch(batch, &capability)??;
     out.at_book(&book)?;
@@ -9861,6 +10003,42 @@ pub(crate) fn emit_post_plan(
             ("source_ordinals", Json::Arr(source_ordinals)),
         ])
     });
+    // A lot disposal's cost relief was priced by its account's lot law
+    // (fa-0hs4.9): the rehearsal names that law beside the legs it derived.
+    let lot_disposal = proposal
+        .lot_disposal_basis()
+        .map_err(|error| Fail::Internal(format!("admitted plan lot-disposal basis: {error}")))?
+        .map(|basis| {
+            let account = accounts.get(&basis.account).ok_or_else(|| {
+                Fail::Internal(format!(
+                    "admitted lot disposal names a missing account {:032x}",
+                    basis.account.0
+                ))
+            })?;
+            let quantity = render_amount(basis.quantity, &book.context().units)?;
+            let line = format!(
+                "\nLot disposal: {quantity} from {} under {} ({}, {} rounding) over the lots recorded through sequence {}; policy entry {:032x}",
+                account.code,
+                basis.law.name(),
+                basis.regime.as_str(),
+                basis.rounding_law.name(),
+                basis.known_at.0,
+                basis.policy.vid.0,
+            );
+            let json = obj(vec![
+                ("account", s(&account.code)),
+                ("account_vid", s(format!("{:032x}", basis.account.0))),
+                ("quantity", s(quantity)),
+                ("law", s(basis.law.name())),
+                ("regime", s(basis.regime.as_str())),
+                ("rounding_law", s(basis.rounding_law.name())),
+                ("known_at", Json::Int(i128::from(basis.known_at.0))),
+                ("policy_entry", s(format!("{:032x}", basis.policy.vid.0))),
+                ("policy_digest", s(hex(&basis.policy.entry_digest))),
+            ]);
+            Ok::<_, Fail>((json, line))
+        })
+        .transpose()?;
     let bound = out.is_bound();
     let authority_posture = out.authority_posture();
     let bound_void = !out.can_confirm() && disposition == Some("voids");
@@ -9889,28 +10067,11 @@ pub(crate) fn emit_post_plan(
                 command.push_str(&format!(" {flag} {}", quoted(value)));
             }
         }
-        for grant in args.flag_all("--grant") {
-            command.push_str(&format!(" --grant {}", quoted(grant)));
-        }
-        if ((proposal.base_totals.is_some() && proposal.class != EntryClass::REVERSAL)
-            || args
-                .positional
-                .first()
-                .is_some_and(|verb| verb == "allocate"))
-            && !args.flag_all("--grant").contains(&"read")
-        {
-            command.push_str(" --grant 'read'");
-        }
-        if proposal.class == EntryClass::CLOSING {
-            // The owner close command explicitly holds these operations.
-            // A restored plan never grants them; the commit caller supplies
-            // the same capability through these ordinary command arguments.
-            for grant in ["read", "close"] {
-                if !args.flag_all("--grant").contains(&grant) {
-                    command.push_str(&format!(" --grant {}", quoted(grant)));
-                }
-            }
-        }
+        // The verb's implied operations (a disposal's or allocation's read,
+        // a year-end close's read and close) and every --grant: a restored
+        // plan never grants them, so the commit caller supplies the same
+        // capability through these ordinary command arguments.
+        command.push_str(&commit_grants(capability));
         command.push_str(" --json");
         command
     };
@@ -9960,6 +10121,9 @@ pub(crate) fn emit_post_plan(
             rate.numerator(),
             rate.denominator(),
         ));
+    }
+    if let Some((_, line)) = &lot_disposal {
+        human.push_str(line);
     }
     if let Some((_, lines)) = &net_effect {
         human.push_str("\nNet effect (the target plus this entry):\n");
@@ -10054,6 +10218,10 @@ pub(crate) fn emit_post_plan(
             ("disposition", disposition.map_or(Json::Null, s)),
             ("proportional_post", proportional_json),
             (
+                "lot_disposal",
+                lot_disposal.map_or(Json::Null, |(json, _)| json),
+            ),
+            (
                 "supersedes",
                 Json::Arr(
                     proposal
@@ -10103,6 +10271,7 @@ fn emit_replacement_plan(
     files: &Files,
     args: &Args,
     plan: &ReplacementPlan,
+    capability: &Capability,
 ) -> Result<(), Fail> {
     let encode = |e| Fail::Internal(format!("encode admitted correction plan: {e}"));
     let bytes = plan.canonical_bytes().map_err(encode)?;
@@ -10214,14 +10383,7 @@ fn emit_replacement_plan(
                 command.push_str(&format!(" {flag} {}", quoted(value)));
             }
         }
-        for grant in args.flag_all("--grant") {
-            command.push_str(&format!(" --grant {}", quoted(grant)));
-        }
-        if plan.replacement().proposal().base_totals.is_some()
-            && !args.flag_all("--grant").contains(&"read")
-        {
-            command.push_str(" --grant 'read'");
-        }
+        command.push_str(&commit_grants(capability));
         command.push_str(" --json");
         command
     };
@@ -13738,6 +13900,7 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
         "--certificate-out",
         "--expect",
         "--request-out",
+        "--grant",
     ];
     for flag in &verb.flags {
         if args.flag(flag).is_some() && !SAVED_FLAGS.contains(&flag.as_str()) {

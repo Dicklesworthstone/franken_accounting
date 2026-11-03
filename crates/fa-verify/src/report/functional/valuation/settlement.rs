@@ -52,6 +52,33 @@ fn effective(envelope: &LeafEnvelope) -> Result<i32, ReportError> {
         .effective_day
         .ok_or_else(|| invalid("a carrying source or application has no effective date"))
 }
+/// SettlementCarryingBasis (law 4) or SettlementSpotCarrying (law 11).
+fn carries(entry: &ParsedEntry) -> bool {
+    entry
+        .base
+        .as_ref()
+        .is_some_and(|claim| [law_oid(4), law_oid(11)].contains(&claim.law))
+}
+/// A foreign-unit leg's application outside a carrying law, or any
+/// application a reversal authors. Checked whether or not the prefix holds a
+/// carrying entry, so such an application never passes vacuously.
+fn unsupported_application(
+    spec: &BookParameters,
+    envelope: &LeafEnvelope,
+    entry: &ParsedEntry,
+    legs: &[Leg],
+) -> bool {
+    entry.details.iter().zip(legs).any(|(detail, leg)| {
+        !detail.settlements.is_empty()
+            && (envelope.class == 4 || leg.unit != spec.base && !carries(entry))
+    })
+}
+fn unsupported_application_error() -> ReportError {
+    failed(
+        "supported_report",
+        "foreign applications require source-bound SettlementCarryingBasis and reversals cannot author fresh applications",
+    )
+}
 
 /// Decode all declared route epochs, including future-effective maps. The
 /// native carrying law refuses aggregate adjustments without an item-level
@@ -451,13 +478,14 @@ pub(super) fn verify(
     parents: &BTreeMap<usize, usize>,
     migration_activations: &BTreeMap<u64, u64>,
 ) -> Result<(), ReportError> {
-    if !parsed.values().any(|entry| {
-        entry
-            .base
-            .as_ref()
-            .is_some_and(|base| [law_oid(4), law_oid(11)].contains(&base.law))
-    }) {
-        return Ok(());
+    if !parsed.values().any(carries) {
+        return if parsed.iter().any(|(&index, entry)| {
+            unsupported_application(spec, &envelopes[index], entry, &legs[index])
+        }) {
+            Err(unsupported_application_error())
+        } else {
+            Ok(())
+        };
     }
     let history = History {
         spec,
@@ -498,31 +526,14 @@ pub(super) fn verify(
         } else {
             roots.insert(index, index);
         }
-        let entry = &parsed[&index];
-        if entry.details.iter().zip(&legs[index]).any(|(detail, leg)| {
-            !detail.settlements.is_empty()
-                && (envelopes[index].class == 4
-                    || leg.unit != spec.base
-                        && entry
-                            .base
-                            .as_ref()
-                            .is_none_or(|claim| ![law_oid(4), law_oid(11)].contains(&claim.law)))
-        }) {
-            return Err(failed(
-                "supported_report",
-                "foreign applications require source-bound SettlementCarryingBasis and reversals cannot author fresh applications",
-            ));
+        if unsupported_application(spec, &envelopes[index], &parsed[&index], &legs[index]) {
+            return Err(unsupported_application_error());
         }
     }
     let mut targets: BTreeMap<Target, Carrying> = BTreeMap::new();
     let mut components: BTreeMap<usize, Vec<(std::ops::Range<usize>, Target)>> = BTreeMap::new();
     for &index in &order {
-        if envelopes[index].class == 4
-            || parsed[&index]
-                .base
-                .as_ref()
-                .is_none_or(|claim| ![law_oid(4), law_oid(11)].contains(&claim.law))
-        {
+        if envelopes[index].class == 4 || !carries(&parsed[&index]) {
             continue;
         }
         if !matches!(envelopes[index].class, 1 | 3 | 7) {

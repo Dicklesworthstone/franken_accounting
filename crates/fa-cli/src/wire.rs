@@ -308,21 +308,21 @@ pub fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Bytes from lowercase hexadecimal.
+/// Bytes from lowercase hexadecimal: exactly the digits `0-9a-f`, so each
+/// byte has one spelling (`from_str_radix` alone would also take `+f`).
 pub fn from_hex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| {
-            let pair = text.get(i..i + 2)?;
-            if pair.bytes().any(|b| b.is_ascii_uppercase()) {
-                return None;
-            }
-            u8::from_str_radix(pair, 16).ok()
-        })
-        .collect()
+    let digit = |b: u8| match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        _ => None,
+    };
+    text.as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[high, low]| Some((digit(high)? << 4) | digit(low)?))
+        .collect::<Option<Vec<u8>>>()
+        .filter(|_| text.len().is_multiple_of(2))
 }
 
 impl Request {
@@ -606,5 +606,9 @@ mod tests {
         assert_eq!(from_hex("00ff10"), Some(vec![0, 255, 16]));
         assert_eq!(from_hex("0F"), None);
         assert_eq!(from_hex("abc"), None);
+        // One spelling per byte: a sign is not a digit.
+        assert_eq!(from_hex("+f"), None);
+        assert_eq!(from_hex("-1"), None);
+        assert_eq!(from_hex(""), Some(Vec::new()));
     }
 }

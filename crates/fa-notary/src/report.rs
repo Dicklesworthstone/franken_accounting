@@ -8,14 +8,14 @@
 //! Native FGDB read certificates are retained as part of the source certificate;
 //! they are not substituted for outsider-authenticated accounting inputs.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use fa_journal::migration::RunBody;
+use crate::migration_balance::{MigrationInputs, MigrationSourceInputs};
 use fa_journal::refusal::{Outcome, Refusal, exit};
 use fa_model::{ControlPayload, Entry, EntryClass, EntryOrigin, Oid, Reader, Writer};
 use fgdb::Database;
 use fgdb_crypto::Hasher;
-use fgdb_types::{CommitSeq, VId};
+use fgdb_types::CommitSeq;
 
 use crate::{Bundle, Journal, StoredCheckpoint, code};
 
@@ -54,7 +54,7 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     journal: &Journal,
     known_at: CommitSeq,
-) -> Outcome<BTreeMap<VId, RunBody>> {
+) -> Outcome<MigrationInputs> {
     let mut needed = BTreeSet::new();
     for leaf in &journal.leaves {
         if !leaf.envelope.is_entry() || leaf.envelope.commit_seq > known_at {
@@ -65,8 +65,7 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
             needed.insert(*run_ref);
         }
     }
-    Ok(crate::migration_balance::run_bodies(db, journal, &needed)?
-        .map(|bodies| needed.into_iter().zip(bodies).collect()))
+    crate::migration_balance::inputs_at(db, journal, &needed, known_at)
 }
 
 /// Package an already replayed native or dimension-filtered trial balance, or
@@ -84,13 +83,15 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
 /// Wire: bytes(domain), u16 major=1, u16 minor=0, bytes(certificate),
 /// bytes(signed checkpoint), bytes(prefix proof), list(proposal_len u32,
 /// bytes(record)), list(open_leaf_index u64, bytes(migration body)). Every
-/// checkpoint leaf has exactly one payload, in prefix order.
+/// checkpoint leaf has exactly one payload, in prefix order. Source-bound runs
+/// use minor 1, appending a BindSource-indexed manifest list after the body list.
+/// Legacy unbound reports retain minor 0 and their exact prior wire bytes.
 pub fn assemble(
     journal: &Journal,
     checkpoint: &StoredCheckpoint,
     certificate: &[u8],
     known_at: CommitSeq,
-    bodies: &BTreeMap<VId, RunBody>,
+    bodies: &dyn MigrationSourceInputs,
 ) -> Outcome<Bundle> {
     assemble_inner(
         journal,
@@ -140,7 +141,7 @@ pub fn assemble_with_registries(
     checkpoint: &StoredCheckpoint,
     certificate: &[u8],
     known_at: CommitSeq,
-    bodies: &BTreeMap<VId, RunBody>,
+    bodies: &dyn MigrationSourceInputs,
     registries: &[(String, Vec<u8>)],
 ) -> Outcome<Bundle> {
     let explanation = explanation_certificate(certificate);
@@ -228,7 +229,7 @@ pub fn assemble_functional_with_registries(
     checkpoint: &StoredCheckpoint,
     certificate: &[u8],
     known_at: CommitSeq,
-    bodies: &BTreeMap<VId, RunBody>,
+    bodies: &dyn MigrationSourceInputs,
     registries: &[(String, Vec<u8>)],
     book_spec: &[u8],
     rates: &[(Oid, Vec<u8>)],
@@ -290,7 +291,7 @@ pub fn assemble_reconciliation_with_registries(
     checkpoint: &StoredCheckpoint,
     certificate: &[u8],
     known_at: CommitSeq,
-    bodies: &BTreeMap<VId, RunBody>,
+    bodies: &dyn MigrationSourceInputs,
     registries: &[(String, Vec<u8>)],
 ) -> Outcome<Bundle> {
     if !reconciliation_certificate(certificate) {
@@ -789,10 +790,12 @@ fn assemble_inner(
     checkpoint: &StoredCheckpoint,
     certificate: &[u8],
     known_at: CommitSeq,
-    bodies: &BTreeMap<VId, RunBody>,
+    bodies: &dyn MigrationSourceInputs,
     registries: &[(String, Vec<u8>)],
     functional: Option<BookClosure<'_>>,
 ) -> Outcome<Bundle> {
+    let inputs = bodies;
+    let bodies = inputs.bodies();
     let major = if functional.is_some() {
         3
     } else if registries.is_empty() {
@@ -904,10 +907,32 @@ fn assemble_inner(
             "the migration closure is unmatched or exceeds 64 MiB",
         )));
     }
+    let source_witnesses = match crate::migration_balance::source_witnesses(
+        journal,
+        known_at,
+        &supplied,
+        bodies,
+        inputs.source_manifests(),
+    )? {
+        Ok(witnesses) => witnesses,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let minor = u16::from(!source_witnesses.is_empty());
+    if minor == 1 {
+        budget = budget.saturating_add(4);
+        for (_, bytes) in &source_witnesses {
+            budget = budget.saturating_add(12).saturating_add(bytes.len());
+        }
+    }
+    if budget > MAX_REPORT_BUNDLE_BYTES {
+        return Ok(Err(refused(
+            "the complete source-bound report closure exceeds 64 MiB",
+        )));
+    }
     let mut w = Writer::with_capacity(budget);
     w.bytes(REPORT_BUNDLE_FORMAT)
         .u16(major)
-        .u16(0)
+        .u16(minor)
         .bytes(certificate)
         .bytes(&checkpoint.bytes)
         .bytes(&prefix)
@@ -918,6 +943,11 @@ fn assemble_inner(
         .list(&ordered, |w, (index, bytes)| {
             w.u64(*index).bytes(bytes);
         });
+    if minor == 1 {
+        w.list(&source_witnesses, |w, (index, bytes)| {
+            w.u64(*index as u64).bytes(bytes);
+        });
+    }
     if major >= 2 {
         w.list(registries, |w, (name, canonical)| {
             w.str(name).bytes(canonical);

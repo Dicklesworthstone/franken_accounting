@@ -1,0 +1,486 @@
+{
+  "actual_native_failures_repaired": [
+    {
+      "command_transcript_sha256": "521b579862c25807be106a53bffcf1a4b84b291d66f62b65f3ac4fb68109fc20",
+      "completed_commands": 5,
+      "failure_report_sha256": "7a522ae51dc0adab6949dc80a3760d7f30f2e1db38c8ed2544b1cfc78cc7629c",
+      "native_exit_code": 2,
+      "reason": "Document intake rejected a MIME argument containing a space (FA-REF-083).",
+      "repair": "Use the valid whitespace-free MIME value text/csv;charset=windows-1252; retain the original bytes and encoding.",
+      "retained_external_run_directory": "/workspace/scratch/e7855ec4cca9/omes-native-museum-20261103-01"
+    },
+    {
+      "command_transcript_sha256": "cf08ed308bc981b16be1099e1784d379fe521326b80ef2f7668097a5cc385652",
+      "completed_commands": 13,
+      "failure_report_sha256": "8494a0272028efdfa0dfdde326c5a341104227bfd3908d460c34f072100ba35b",
+      "native_exit_code": 2,
+      "reason": "FullDetail preparation refused an ambiguous June 30 date shared by Normal, Adjustment and Closing periods.",
+      "repair": "Declare entry_periods for every source aggregate using its published FY2024 period; preserve the native refusal for ambiguous dates.",
+      "retained_external_run_directory": "/workspace/scratch/e7855ec4cca9/omes-native-museum-20261103-02"
+    }
+  ],
+  "agencies": [
+    {
+      "account_count": 43,
+      "agency": "20400",
+      "command_transcript_sha256": "6e139e9709c7f66512a304acd2a32ebcc2a7f0dce4075910de217e87db24f2d7",
+      "commands": 191,
+      "document_custody": {
+        "all_self_sourced": true,
+        "canonical_custody_records_sha256": "dabc8076c2b820921d3fa14f8bb8d40abc504443a6ca4ac9866057925374edc7",
+        "native_review_attestations": 23,
+        "observed_intake_grades": {
+          "AgentUpload": 23
+        },
+        "original_grade_commitment_and_birth_unchanged_after_migration": true,
+        "review_claim": "Reviewed",
+        "review_principals": [
+          "public-data-fixture-document-reviewer"
+        ],
+        "scope": "Native AgentUpload custody is retained; Reviewed attestations use a distinct fixture principal operated by this same harness, not an independent human auditor",
+        "uploaded_source_and_control_documents": 23
+      },
+      "elapsed_seconds": 26.479,
+      "full_report_sha256": "4cdb07278a59f8b79feccfce460d2a60d16a128230789761af6dc84352afc3f3",
+      "independent_verification": {
+        "exit_code": 0,
+        "passed_checks": 242,
+        "proven_bundle": {
+          "balances": 43,
+          "book_id": "9b3c23fc4ce5f694e47ac9e383054114",
+          "branch_id": "00000000000000000000000000000000",
+          "bundle_digest": "f355c7cedc73fa563a0053659cb46f891c7cc7a0b49692ad1500324d1b4f69f5",
+          "checkpoint_oid": "be6b6929e11838a1bc55df982a326c700de844db68989eb8e3314efa476d62d6",
+          "completeness": "seq_range_complete",
+          "documents": 95,
+          "entries": 28,
+          "format": "1.1",
+          "inline": 0,
+          "leaf_count": 94,
+          "scope": "prefix",
+          "through_seq": 138
+        },
+        "stdout_sha256": "15bf550b2a594f17d9ce7735e5c69c1555a860a9f23ba125e51d7399fe64096d",
+        "verdict": "verified",
+        "verified_ads_extract": {
+          "account_scope": null,
+          "chart_rows": 43,
+          "effective_through": "2024-06-30",
+          "entries": 15,
+          "known_at_seq": 138,
+          "rows": 121,
+          "tb_rows": 43,
+          "units": [
+            {
+              "code": "USD",
+              "unit_id": 0
+            }
+          ]
+        }
+      },
+      "migration_entries": 15,
+      "migration_runs": 5,
+      "monetary_rows": 121,
+      "monthly_debit_activity_cents": {
+        "FY2024-P10": 7025554,
+        "FY2024-P11": 8910103,
+        "FY2024-P12": 10143723
+      },
+      "native_command_exit_counts": {
+        "0": 190,
+        "8": 1
+      },
+      "normalization_manifest_sha256": "6f00f953ca2c56ea917b988db3bd0cab5e2b0af596734cdf8484b647cbe5565f",
+      "original_selection_sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+      "quarter_debit_activity_cents": 26079380,
+      "reproduction_command": "python3 scripts/public_ledger.py run --agency 20400 --out artifacts/omes-museum --fa target/debug/fa --fa-verify target/debug/fa-verify",
+      "retained_external_run_directory": "/workspace/scratch/e7855ec4cca9/omes-native-museum-20261103-04",
+      "source_columns": 36,
+      "source_rows": 125,
+      "source_subset_sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+      "status": "PASS",
+      "tamper_control": {
+        "exit_code": 8,
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "reason": "GL_Detail entry e646139a47f14151a91b117339ea5878 (recorded at 23) is no proven entry selected through 2024-06-30; a proven entry recorded at 23 (effective 2024-04-30, 2 legs) is missing from GL_Detail",
+            "scope": "completeness"
+          }
+        ],
+        "mutation": {
+          "delta_cents": 1,
+          "line": 2,
+          "new_amount": "39583.01",
+          "old_amount": "39583.00"
+        },
+        "stdout_sha256": "33b3db5ce8b08cefb674ca3ba4e5c17f182f1909af3618d8818dce2a49fbceb1",
+        "verdict": "failed"
+      },
+      "zero_rows_retained_without_monetary_legs": 4
+    },
+    {
+      "account_count": 51,
+      "agency": "31500",
+      "command_transcript_sha256": "e95d04d4f3bc30557c82f3d1e9168ff51037578b232e220c7964c2792de06195",
+      "commands": 101,
+      "document_custody": {
+        "all_self_sourced": true,
+        "canonical_custody_records_sha256": "b2dd506143cc285d7e4d663b5e538ef39874b726d9051a20301d4ae1e0faf621",
+        "native_review_attestations": 11,
+        "observed_intake_grades": {
+          "AgentUpload": 11
+        },
+        "original_grade_commitment_and_birth_unchanged_after_migration": true,
+        "review_claim": "Reviewed",
+        "review_principals": [
+          "public-data-fixture-document-reviewer"
+        ],
+        "scope": "Native AgentUpload custody is retained; Reviewed attestations use a distinct fixture principal operated by this same harness, not an independent human auditor",
+        "uploaded_source_and_control_documents": 11
+      },
+      "elapsed_seconds": 13.53,
+      "full_report_sha256": "67ba1923e81600de7481e6e69f82a6e28bafd92729bd55e21b15917836447917",
+      "independent_verification": {
+        "exit_code": 0,
+        "passed_checks": 139,
+        "proven_bundle": {
+          "balances": 51,
+          "book_id": "a0a9bf4847f1025a84ae707e664ea56a",
+          "branch_id": "00000000000000000000000000000000",
+          "bundle_digest": "46f94a4ada042e1aebe5a35532b43f6bd61a8417c35a29d810fa56cb5d132806",
+          "checkpoint_oid": "91fbdc06af47dfb7d9d8afbf4f462c4cad5dea9f624c70e9d1bbcc0f1ba3e498",
+          "completeness": "seq_range_complete",
+          "documents": 38,
+          "entries": 13,
+          "format": "1.1",
+          "inline": 0,
+          "leaf_count": 43,
+          "scope": "prefix",
+          "through_seq": 63
+        },
+        "stdout_sha256": "4cf4eadf0cc550b758588fbbdca821fd5085b30e2c78bb485c1c3fc30489fb49",
+        "verdict": "verified",
+        "verified_ads_extract": {
+          "account_scope": null,
+          "chart_rows": 51,
+          "effective_through": "2024-06-30",
+          "entries": 6,
+          "known_at_seq": 63,
+          "rows": 131,
+          "tb_rows": 51,
+          "units": [
+            {
+              "code": "USD",
+              "unit_id": 0
+            }
+          ]
+        }
+      },
+      "migration_entries": 6,
+      "migration_runs": 2,
+      "monetary_rows": 131,
+      "monthly_debit_activity_cents": {
+        "FY2024-P10": 8101289584,
+        "FY2024-P11": 11732456136,
+        "FY2024-P12": 6432209691
+      },
+      "native_command_exit_counts": {
+        "0": 100,
+        "8": 1
+      },
+      "normalization_manifest_sha256": "bd14be56f4ec7a80d04e4764cbbac5956745ddf6e97f198ef4ba0a3f46d8f721",
+      "original_selection_sha256": "2d60b56cd29ef0e426054cd6107962286b2ad92b1633d29d91bb32a139cd4249",
+      "quarter_debit_activity_cents": 26265955411,
+      "reproduction_command": "python3 scripts/public_ledger.py run --agency 31500 --out artifacts/omes-pension --fa target/debug/fa --fa-verify target/debug/fa-verify",
+      "retained_external_run_directory": "/workspace/scratch/e7855ec4cca9/omes-native-pension-20261103-02",
+      "source_columns": 36,
+      "source_rows": 137,
+      "source_subset_sha256": "2d60b56cd29ef0e426054cd6107962286b2ad92b1633d29d91bb32a139cd4249",
+      "status": "PASS",
+      "tamper_control": {
+        "exit_code": 8,
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "reason": "GL_Detail entry dee5bab1dbbc5fb855d4729601543002 (recorded at 23) is no proven entry selected through 2024-06-30; a proven entry recorded at 23 (effective 2024-04-30, 36 legs) is missing from GL_Detail",
+            "scope": "completeness"
+          }
+        ],
+        "mutation": {
+          "delta_cents": 1,
+          "line": 2,
+          "new_amount": "626.01",
+          "old_amount": "626.00"
+        },
+        "stdout_sha256": "cc5c3a2661b90980ab2c3c42a3cbedde6a18de5d831ada48179aaa3557ecb159",
+        "verdict": "failed"
+      },
+      "zero_rows_retained_without_monetary_legs": 6
+    },
+    {
+      "account_count": 223,
+      "agency": "66000",
+      "command_transcript_sha256": "cf84b37eb457c4184479855bd11e33665f795da64ef08bcc9df57dfb544e92fb",
+      "commands": 316,
+      "document_custody": {
+        "all_self_sourced": true,
+        "canonical_custody_records_sha256": "6cec6362dd9300ea56fe904fff4be87c43e4a615e3cb431e3a4d8efd6bd7c35a",
+        "native_review_attestations": 39,
+        "observed_intake_grades": {
+          "AgentUpload": 39
+        },
+        "original_grade_commitment_and_birth_unchanged_after_migration": true,
+        "review_claim": "Reviewed",
+        "review_principals": [
+          "public-data-fixture-document-reviewer"
+        ],
+        "scope": "Native AgentUpload custody is retained; Reviewed attestations use a distinct fixture principal operated by this same harness, not an independent human auditor",
+        "uploaded_source_and_control_documents": 39
+      },
+      "elapsed_seconds": 132.771,
+      "full_report_sha256": "c3570d04488ee295cdb87416a7448b1331bbe95ccb3467dd9446175b2308bdc4",
+      "independent_verification": {
+        "exit_code": 0,
+        "passed_checks": 580,
+        "proven_bundle": {
+          "balances": 223,
+          "book_id": "ad12b4908d2c93752bf69a592d2b23ed",
+          "branch_id": "00000000000000000000000000000000",
+          "bundle_digest": "dad12962296dac47a0efee874b9547062cd6941045589b04784b0a20e0e0d5b2",
+          "checkpoint_oid": "ad4e6c767cb4fcb980ec1ef2201f47e390a92d66c11d9379dcced828ef9b1a3f",
+          "completeness": "seq_range_complete",
+          "documents": 171,
+          "entries": 53,
+          "format": "1.1",
+          "inline": 0,
+          "leaf_count": 167,
+          "scope": "prefix",
+          "through_seq": 243
+        },
+        "stdout_sha256": "58c33216ea49a1427e021628bd365ce0b17e1239858ba086459b9a59c40dced7",
+        "verdict": "verified",
+        "verified_ads_extract": {
+          "account_scope": null,
+          "chart_rows": 223,
+          "effective_through": "2024-06-30",
+          "entries": 27,
+          "known_at_seq": 243,
+          "rows": 1051,
+          "tb_rows": 223,
+          "units": [
+            {
+              "code": "USD",
+              "unit_id": 0
+            }
+          ]
+        }
+      },
+      "migration_entries": 27,
+      "migration_runs": 9,
+      "monetary_rows": 1051,
+      "monthly_debit_activity_cents": {
+        "FY2024-P10": 1894043633,
+        "FY2024-P11": 2720307270,
+        "FY2024-P12": 1994217923
+      },
+      "native_command_exit_counts": {
+        "0": 315,
+        "8": 1
+      },
+      "normalization_manifest_sha256": "2cea2faac9bcabf93e5b35e1d146bf499549f316875868b38c68241cd0e2cbfe",
+      "original_selection_sha256": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+      "quarter_debit_activity_cents": 6608568826,
+      "reproduction_command": "python3 scripts/public_ledger.py run --agency 66000 --out artifacts/omes-university --fa target/debug/fa --fa-verify target/debug/fa-verify",
+      "retained_external_run_directory": "/workspace/scratch/e7855ec4cca9/omes-native-university-20261103-02",
+      "source_columns": 36,
+      "source_rows": 1055,
+      "source_subset_sha256": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+      "status": "PASS",
+      "tamper_control": {
+        "exit_code": 8,
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "reason": "GL_Detail entry bc236fb42d3c7eefc5abc2796d883283 (recorded at 28) is no proven entry selected through 2024-06-30; a proven entry recorded at 28 (effective 2024-04-30, 122 legs) is missing from GL_Detail",
+            "scope": "completeness"
+          }
+        ],
+        "mutation": {
+          "delta_cents": 1,
+          "line": 2,
+          "new_amount": "332.73",
+          "old_amount": "332.72"
+        },
+        "stdout_sha256": "72e5016bfe213e3e6ab05fd8f39c18078a99fa3d0cb6ab9449c50e4b30e9ddd0",
+        "verdict": "failed"
+      },
+      "zero_rows_retained_without_monetary_legs": 4
+    }
+  ],
+  "checks_executed_for_each_agency": [
+    "pinned_source_bytes",
+    "complete_agency_row_coverage",
+    "all_source_groups_balance_exactly",
+    "no_subcent_rounding",
+    "all_original_chartfields_retained",
+    "preparation_retry_is_idempotent",
+    "all_staged_activity_is_invisible",
+    "native_approved_finalization",
+    "every_month_account_cell_matches_source",
+    "cumulative_balances_match_source",
+    "native_proposal_legs_preserve_every_source_row",
+    "gross_debit_credit_account_cells_match_source",
+    "historical_preactivation_prefix_stays_invisible",
+    "native_registers_equal_journal_fold",
+    "all_finalized_chunk_retries_are_idempotent",
+    "native_upload_custody_preserved_and_fixture_reviews_recorded",
+    "native_projections_match_payloads",
+    "signed_accumulator_checkpoint",
+    "independent_fa_verify_ads_proof",
+    "independent_verifier_rejects_tampered_extract"
+  ],
+  "combined": {
+    "migration_entries": 48,
+    "migration_runs": 16,
+    "monetary_rows": 1303,
+    "native_commands_including_expected_tamper_refusals": 608,
+    "native_fixture_document_reviews": 73,
+    "native_self_sourced_uploads": 73,
+    "source_rows": 1317,
+    "zero_rows_retained": 14
+  },
+  "custody_correction": {
+    "reason": "Root review identified that the earlier helper asserted HumanUpload for automatically acquired/generated documents. The rerun removes that assertion and requires actual native self-sourced AgentUpload custody plus a separate fixture Reviewed attestation; no native evidence law was changed.",
+    "review_scope": "The distinct document-review principal and approval principals are all operated by this harness. Their native records exercise admission and role separation; they are not independent human reviews or audits.",
+    "superseded_runs": [
+      {
+        "agency": "20400",
+        "command_transcript_sha256": "8d311bc26541c630da3c97273049812e813b29c31ddf423dae11c4570256383e",
+        "full_report_sha256": "b94c89bf4ffafbe8d5c763d57d39850ab32ca4f2faf2f0d1fb75265e3f22526b",
+        "retained_external_run_directory": "/workspace/scratch/e7855ec4cca9/omes-native-museum-20261103-03",
+        "status": "SUPERSEDED_CUSTODY_ASSERTION_REPLACED"
+      },
+      {
+        "agency": "31500",
+        "command_transcript_sha256": "59ead185b1ddddd0528076667ea9cb725cb364c0e4c45cf3f1f035f35cde1256",
+        "full_report_sha256": "48042b83b7d28ad26ec73ace06f88275f741a3ac01ed2381703fb5dee0e795a5",
+        "retained_external_run_directory": "/workspace/scratch/e7855ec4cca9/omes-native-pension-20261103-01",
+        "status": "SUPERSEDED_CUSTODY_ASSERTION_REPLACED"
+      },
+      {
+        "agency": "66000",
+        "command_transcript_sha256": "ada055ed6b52d844a9062b3d55980497307c8b4be0ea72fd887d3dbc6609e63e",
+        "full_report_sha256": "c7d988c7d669404bcc1d554c8706dee887a4df01ddc703eab18480ad0d775b2f",
+        "retained_external_run_directory": "/workspace/scratch/e7855ec4cca9/omes-native-university-20261103-01",
+        "status": "SUPERSEDED_CUSTODY_ASSERTION_REPLACED"
+      }
+    ],
+    "superseded_summary_external_path": "/workspace/scratch/e7855ec4cca9/fa-build-tools/omes-validation-before-custody-repair-20261103.json",
+    "superseded_summary_sha256": "a8e5da45911e7a8c365de5415bb0a25fa862844e1ee3806161b3fbf3b9f62071"
+  },
+  "execution_identity": {
+    "binaries": [
+      {
+        "path": "target/debug/fa",
+        "sha256": "4fa02da9a92cc773d40ed905f3fbe9340c431958281f6c4d704f9041e0f3e677",
+        "size_bytes": 238010768
+      },
+      {
+        "path": "target/debug/fa-verify",
+        "sha256": "dc308253ac784ca859cc08d31a2e6c242eed9f4e55adf19d198beb4be0e47175",
+        "size_bytes": 20024592
+      }
+    ],
+    "cargo_lock_sha256": "e62ced364aaf38003a28b3e394f63a06b82c33594a367bdd108d63f71e9eb3ac",
+    "driver_sha256": "f2ac200bf5548570c9e17abb907c4f1ad27f80d0059ed03a8ae06f7ea814676b",
+    "driver_tests_sha256": "92cb9a39d1c67406562051d8a24b4ff00b0f74af514f61a1fe1495b67c3b6346",
+    "repository_head_at_recording": "d18540efa212f1968296111b88e0e554f85d5c18",
+    "repository_state": "Working tree includes the tested CSV/native migration repairs and the public-ledger custody, MIME and fiscal-period routing repairs. HEAD alone does not identify executed binaries; binary and driver hashes identify the actual run artifacts.",
+    "rust_toolchain_file_sha256": "50ebba01eb3679ec984620994ff870731011fca0db20750d0a9993550ba2eda6",
+    "source_helper_sha256": "535a80ad3d77b0ed27891394bea58513c5ab408a1b4fb79caedbbd24281100c6"
+  },
+  "limitations": [
+    "The publisher supplies monthly chartfield aggregates, not original transaction-level journals or agency opening balances.",
+    "Source-derived controls independently check the native parser/fold but are not audited third-party statements or proof of upstream completeness.",
+    "All 36 original fields remain in evidence; only original account codes are projected into the native chart.",
+    "Every migration activates atomically; multiple fund/class runs do not make one atomic agency-wide publication.",
+    "All helper-uploaded source/control documents retain AgentUpload custody. Separate native Reviewed attestations are same-harness fixture reviews, not human audits; internally prepared native import packages retain the custody assigned by their existing native workflow.",
+    "Two local test principals exercise native separation of duties; this is not independent human authentication.",
+    "The verifier receives the caller-trusted public key of the newly created test book; no external agency signing-key authentication is claimed.",
+    "Elapsed times are observations from concurrent diagnostic workloads, not performance benchmarks.",
+    "Compact summaries and full-artifact hashes are committed. Full reports, command transcripts and isolated test books remain in the recorded external run directories; private book keys are not copied into the repository."
+  ],
+  "python_checks": {
+    "command": "python3 -m unittest discover -s scripts/tests -p 'test_public_ledger*.py'",
+    "exit_code": 0,
+    "scope": "Source acquisition/normalization, independent Decimal oracle, strict refusals and native-output assertion helpers. Separate from actual native replay. Includes refusal of elevated automatic-upload custody and misbound fixture reviews.",
+    "status": "PASS",
+    "tests": 36
+  },
+  "recorded_date": "2026-11-03",
+  "schema": "franken_accounting.public_ledger.validation.v1",
+  "scope": "Complete pinned Oklahoma OMES FY2024 Q4 published monthly activity for agencies 20400, 31500 and 66000; no agency opening stock or original transaction-level history is asserted.",
+  "separate_rust_validation": {
+    "count_policy": "Count each actually executed test once; exclude repeated large-run execution, zero-match targets, Python checks and all live corpus runs.",
+    "gate_boundary": "These targeted tests and the real-corpus replays do not replace Tier0 for the final exact committed tree. The earlier passing Tier0 used a precommit working tree before subsequent corpus/helper work.",
+    "passed_tests": 705,
+    "suites": [
+      {
+        "log_sha256": "f29a19a6c4375feb80a6c1649840f7f048072fe559a62a0fd64ed3c22d14ae54",
+        "passed_tests": 565,
+        "retained_log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/verify-tests.log",
+        "scope": "fa-verify --lib"
+      },
+      {
+        "log_sha256": "408c7720dac6a0be4bb29aa6c15e1970855d748e8f80f05b24b6eb845ff0c0bc",
+        "passed_tests": 75,
+        "retained_log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/formats-test-rerun.log",
+        "scope": "fa-formats --lib and formats_conformance"
+      },
+      {
+        "log_sha256": "b11992382cef6f8dee446437070a955ec97ba996e57fefd5c4603f1c48ad1657",
+        "passed_tests": 33,
+        "retained_log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/migration-tests.log",
+        "scope": "fa-registers --test migration"
+      },
+      {
+        "log_sha256": "a5310dab7e229ed30c0fe583f9fe3545f807c815508b0bf4beb303296ee0979b",
+        "passed_tests": 23,
+        "retained_log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/legacy-migration-tests.log",
+        "scope": "fa-cli --test legacy_migration"
+      },
+      {
+        "log_sha256": "f05f2d0ba1712f8409e65f1c67747fba6326ae2347bc22e96cdeadbe01d1c8a2",
+        "passed_tests": 4,
+        "retained_log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/object-tests.log",
+        "scope": "fa-journal object::tests"
+      },
+      {
+        "log_sha256": "68e3649a78f63eed15fdfd7c84a7fea53ba12e55fb27e8a2712d704b5985420e",
+        "passed_tests": 2,
+        "retained_log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/runbody-decoder-tests.log",
+        "scope": "fa-journal migration::tests"
+      },
+      {
+        "log_sha256": "8db7da0c57dd267c30f7ea3d76118a694704e1033ae42fcef9107c71c6358cdd",
+        "passed_tests": 1,
+        "retained_log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/model-symbol-test.log",
+        "scope": "fa-model code_table_matches_registry"
+      },
+      {
+        "log_sha256": "184e516fd4a43b7fa285217b8bd995373bee959ad78e346d62a3ece201960878",
+        "passed_tests": 2,
+        "retained_log": "/workspace/scratch/e7855ec4cca9/fa-build-tools/fragment-tests.log",
+        "scope": "fa certificate closure and fa-registers fragment selection"
+      }
+    ]
+  },
+  "source": {
+    "data_rows": 373357,
+    "sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+    "size_bytes": 113856733,
+    "url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv"
+  },
+  "status": "NATIVE_REPLAY_PASS_THREE_COMPLETE_AGENCIES"
+}

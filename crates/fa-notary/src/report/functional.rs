@@ -74,7 +74,7 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                         || basis.version == 1
                             && (proposal.base_totals.is_some()
                                 || proposal.legs.iter().any(|leg| leg.base_amount.is_some()))
-                        || basis.version == 2
+                        || matches!(basis.version, 2 | 3)
                             && proposal.base_totals.as_ref().is_none_or(|base| {
                                 FxLawId::from_oid(&base.fx_law_oid)
                                     != Some(FxLawId::YearEndCloseCarrying)
@@ -83,7 +83,7 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                             })
                     {
                         return Ok(Err(refused(
-                            "portable Closing requires its intrinsic native v1 or retained-carrying v2 source basis without new rates or residuals",
+                            "portable Closing requires its intrinsic native v1, retained-carrying v2 or fund-preserving v3 source basis without new rates or residuals",
                         )));
                     }
                 }

@@ -558,3 +558,373 @@ fn missing_policy_projection_cannot_turn_a_governed_account_into_an_unrestricted
     assert!(matches!(result, Err(KernelError::Corrupt(_))));
     assert_eq!(f.h.db.frontier().unwrap(), before);
 }
+
+/// A seeded splitmix64 stream, so a failing history replays from its seed.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    fn below(&mut self, bound: usize) -> usize {
+        usize::try_from(self.next() % u64::try_from(bound).unwrap()).unwrap()
+    }
+
+    /// Uniform in `1..=max`.
+    fn upto(&mut self, max: i128) -> i128 {
+        let draw = self.next() % u64::try_from(max).unwrap();
+        i128::from(draw).checked_add(1).unwrap()
+    }
+}
+
+/// One acquisition as the test models it: what was bought and what is still
+/// open. Per-lot open amounts are kept for the laws that relieve lot by lot;
+/// WeightedAverage relieves a pool and is modeled by `History::pool` alone.
+struct ModelLot {
+    entry: EntryRef,
+    recorded: u64,
+    bought: (i128, i128),
+    open: (i128, i128),
+}
+
+/// A posted disposal the history may later reverse.
+struct ModelDisposal {
+    proposal: EntryPayload,
+    entry: EntryRef,
+    relief: Vec<(usize, i128, i128)>,
+    pooled: (i128, i128),
+}
+
+struct History {
+    f: Fixture,
+    law: LotLaw,
+    lots: Vec<ModelLot>,
+    live: Vec<ModelDisposal>,
+    pool: (i128, i128),
+}
+
+impl History {
+    fn new(law: LotLaw) -> Self {
+        let f = Fixture::new(law);
+        let mut history = Self {
+            law,
+            lots: Vec::new(),
+            live: Vec::new(),
+            pool: (0, 0),
+            f,
+        };
+        for (entry, cost) in history.f.acquisitions.into_iter().zip([100, 20]) {
+            history.bought(entry, 10, cost);
+        }
+        history
+    }
+
+    fn bought(&mut self, entry: EntryRef, quantity: i128, cost: i128) {
+        let at = self.f.h.db.frontier().unwrap();
+        let (_, recorded) = fa_journal::post::read_entry_at(&self.f.h.db, entry.vid, at)
+            .unwrap()
+            .unwrap();
+        self.lots.push(ModelLot {
+            entry,
+            recorded: recorded.0,
+            bought: (quantity, cost),
+            open: (quantity, cost),
+        });
+        self.pool = (
+            self.pool.0.checked_add(quantity).unwrap(),
+            self.pool.1.checked_add(cost).unwrap(),
+        );
+    }
+
+    fn reference_lot(&self, entry_id: u128, recorded: u64, open: (i128, i128)) -> RefLot {
+        RefLot {
+            entry_id,
+            ordinal: 0,
+            effective_day: self.f.h.day().0,
+            recorded_seq: recorded,
+            quantity_unit: self.f.share.0,
+            open_quantity: open.0,
+            cost_unit: self.f.h.usd.0,
+            open_cost: open.1,
+        }
+    }
+
+    /// The oracle's relief for `quantity`: the open lots one by one, or for
+    /// WeightedAverage the whole pool as one lot, which is the law's
+    /// definition (pooled cost times quantity over pooled quantity, the
+    /// remainder in full on exhaustion).
+    fn oracle(&self, quantity: i128, targets: &[usize]) -> (i128, Vec<(usize, i128, i128)>) {
+        if self.law == LotLaw::WeightedAverage {
+            let pooled = self.reference_lot(0, 0, self.pool);
+            let outcome = relieve_lots_oracle(
+                &[pooled],
+                self.f.share.0,
+                quantity,
+                self.law.name(),
+                Some("US-GAAP"),
+                RefRounding::HalfEven,
+                &[],
+            )
+            .unwrap();
+            return (outcome.total_cost, Vec::new());
+        }
+        let reference = self
+            .lots
+            .iter()
+            .filter(|lot| lot.open.0 > 0)
+            .map(|lot| self.reference_lot(lot.entry.vid.0, lot.recorded, lot.open))
+            .collect::<Vec<_>>();
+        let explicit = targets
+            .iter()
+            .map(|&index| (self.lots[index].entry.vid.0, 0))
+            .collect::<Vec<_>>();
+        let outcome = relieve_lots_oracle(
+            &reference,
+            self.f.share.0,
+            quantity,
+            self.law.name(),
+            Some("US-GAAP"),
+            RefRounding::HalfEven,
+            &explicit,
+        )
+        .unwrap();
+        let mut relief = outcome
+            .slices
+            .iter()
+            .filter(|slice| slice.quantity_relieved != 0 || slice.cost_relieved != 0)
+            .map(|slice| {
+                let index = self
+                    .lots
+                    .iter()
+                    .position(|lot| lot.entry.vid.0 == slice.entry_id)
+                    .unwrap();
+                (index, slice.quantity_relieved, slice.cost_relieved)
+            })
+            .collect::<Vec<_>>();
+        relief.sort_unstable();
+        (outcome.total_cost, relief)
+    }
+
+    /// Prepares a disposal, checks the kernel's derivation against the
+    /// oracle, posts it and moves the model.
+    fn dispose(&mut self, quantity: i128, targets: Vec<usize>, key: &str, context: &str) {
+        let mut request = self.f.request(quantity);
+        request.specific_ids = targets
+            .iter()
+            .map(|&index| (self.lots[index].entry, 0))
+            .collect();
+        let (total, relief) = self.oracle(quantity, &targets);
+        let prepared = self.f.prepare_request(&request, key.as_bytes());
+        assert!(
+            prepared.is_ok(),
+            "{context}: prepare refused {:?}",
+            prepared.as_ref().err()
+        );
+        let prepared = prepared.unwrap();
+        let outcome = prepared.outcome().clone();
+        assert_eq!(outcome.law, self.law, "{context}");
+        assert_eq!(outcome.requested_quantity, quantity, "{context}");
+        // The open lots the law considers: SpecificId's selected targets,
+        // every open lot (and WeightedAverage's whole pool) otherwise.
+        let considered = if self.law == LotLaw::SpecificId {
+            targets.iter().fold((0_i128, 0_i128), |sum, &index| {
+                let open = self.lots[index].open;
+                (
+                    sum.0.checked_add(open.0).unwrap(),
+                    sum.1.checked_add(open.1).unwrap(),
+                )
+            })
+        } else {
+            self.pool
+        };
+        assert_eq!(
+            (outcome.total_open_quantity, outcome.total_open_cost),
+            considered,
+            "{context}: open lots the law considers"
+        );
+        assert_eq!(outcome.total_relieved_cost, total, "{context}");
+        if self.law != LotLaw::WeightedAverage {
+            let mut derived = outcome
+                .slices
+                .iter()
+                .filter(|slice| slice.relieved_quantity != 0 || slice.relieved_cost != 0)
+                .map(|slice| {
+                    let index = self
+                        .lots
+                        .iter()
+                        .position(|lot| lot.entry.vid.0 == slice.entry_id)
+                        .unwrap();
+                    (index, slice.relieved_quantity, slice.relieved_cost)
+                })
+                .collect::<Vec<_>>();
+            derived.sort_unstable();
+            assert_eq!(derived, relief, "{context}: per-lot relief");
+        }
+        let proposal = prepared.into_proposal();
+        let posted = self.f.h.post(posting(proposal.clone())).unwrap();
+        assert!(matches!(posted, Posted::Committed { .. }), "{context}");
+        for &(index, q, c) in &relief {
+            let lot = &mut self.lots[index];
+            lot.open = (
+                lot.open.0.checked_sub(q).unwrap(),
+                lot.open.1.checked_sub(c).unwrap(),
+            );
+        }
+        self.pool = (
+            self.pool.0.checked_sub(quantity).unwrap(),
+            self.pool.1.checked_sub(total).unwrap(),
+        );
+        self.live.push(ModelDisposal {
+            proposal,
+            entry: posted.entry_ref(),
+            relief,
+            pooled: (quantity, total),
+        });
+    }
+
+    fn reverse(&mut self, index: usize, key: &str, context: &str) {
+        let disposal = self.live.remove(index);
+        let reversal = undo(&disposal.proposal, disposal.entry, key.as_bytes());
+        let posted = self.f.h.post(posting(reversal)).unwrap();
+        assert!(matches!(posted, Posted::Committed { .. }), "{context}");
+        for (index, q, c) in disposal.relief {
+            let lot = &mut self.lots[index];
+            lot.open = (
+                lot.open.0.checked_add(q).unwrap(),
+                lot.open.1.checked_add(c).unwrap(),
+            );
+        }
+        self.pool = (
+            self.pool.0.checked_add(disposal.pooled.0).unwrap(),
+            self.pool.1.checked_add(disposal.pooled.1).unwrap(),
+        );
+    }
+
+    /// The book's recorded applications against the model: every lot's for
+    /// the lot-by-lot laws, and the totals for every law.
+    fn check_applications(&self, context: &str) {
+        let mut applied = (0_i128, 0_i128);
+        let mut bought = (0_i128, 0_i128);
+        for lot in &self.lots {
+            let quantity = self.f.h.applied_to(lot.entry.vid, 0);
+            let cost = self.f.h.applied_to(lot.entry.vid, 2);
+            if self.law != LotLaw::WeightedAverage {
+                assert_eq!(
+                    (quantity, cost),
+                    (
+                        lot.bought.0.checked_sub(lot.open.0).unwrap(),
+                        lot.bought.1.checked_sub(lot.open.1).unwrap()
+                    ),
+                    "{context}: applications to lot {:032x}",
+                    lot.entry.vid.0
+                );
+            }
+            applied = (
+                applied.0.checked_add(quantity).unwrap(),
+                applied.1.checked_add(cost).unwrap(),
+            );
+            bought = (
+                bought.0.checked_add(lot.bought.0).unwrap(),
+                bought.1.checked_add(lot.bought.1).unwrap(),
+            );
+        }
+        assert_eq!(
+            (
+                bought.0.checked_sub(applied.0).unwrap(),
+                bought.1.checked_sub(applied.1).unwrap()
+            ),
+            self.pool,
+            "{context}: open pool"
+        );
+    }
+
+    /// SpecificId selections for `quantity`: open lots in a seeded order
+    /// until they cover it. Other laws take none.
+    fn targets(&self, rng: &mut Rng, quantity: i128) -> Vec<usize> {
+        if self.law != LotLaw::SpecificId {
+            return Vec::new();
+        }
+        let mut candidates = (0..self.lots.len())
+            .filter(|&index| self.lots[index].open.0 > 0)
+            .collect::<Vec<_>>();
+        for last in (1..candidates.len()).rev() {
+            let pick = rng.below(last + 1);
+            candidates.swap(last, pick);
+        }
+        let mut covered = 0_i128;
+        let mut targets = Vec::new();
+        for index in candidates {
+            if covered >= quantity {
+                break;
+            }
+            covered = covered.checked_add(self.lots[index].open.0).unwrap();
+            targets.push(index);
+        }
+        targets
+    }
+}
+
+#[test]
+fn lot_relief_matches_reference_over_generated_histories() {
+    for law in [
+        LotLaw::Fifo,
+        LotLaw::Lifo,
+        LotLaw::WeightedAverage,
+        LotLaw::SpecificId,
+    ] {
+        for seed in [3_u64, 0x51ed_2701, 0x9812_73bb, 0xc0ff_ee11] {
+            let mut rng = Rng(seed);
+            let mut history = History::new(law);
+            let tag = format!("{}-{seed:x}", law.name());
+            for step in 0..14 {
+                let context = format!("{} seed {seed:#x} step {step}", law.name());
+                let action = rng.next() % 8;
+                if (3..=6).contains(&action) && history.pool.0 > 0 {
+                    let quantity = rng.upto(history.pool.0);
+                    let targets = history.targets(&mut rng, quantity);
+                    history.dispose(
+                        quantity,
+                        targets,
+                        &format!("{tag}-{step}-dispose"),
+                        &context,
+                    );
+                } else if action == 7 && !history.live.is_empty() {
+                    let index = rng.below(history.live.len());
+                    history.reverse(index, &format!("{tag}-{step}-reverse"), &context);
+                } else {
+                    let (quantity, cost) = (rng.upto(12), rng.upto(999));
+                    let key = format!("{tag}-{step}-buy");
+                    let entry = history.f.buy(key.as_bytes(), quantity, cost);
+                    history.bought(entry, quantity, cost);
+                }
+                history.check_applications(&context);
+            }
+            // Relieving every open unit relieves exactly the open cost, so
+            // over the whole history each lot gives up all it was bought at.
+            let context = format!("{} seed {seed:#x} exhaustion", law.name());
+            if history.pool.0 > 0 {
+                let remaining = history.pool;
+                let targets = history.targets(&mut rng, remaining.0);
+                history.dispose(remaining.0, targets, &format!("{tag}-exhaust"), &context);
+                assert_eq!(history.live.last().unwrap().pooled, remaining, "{context}");
+            }
+            history.check_applications(&context);
+            for lot in &history.lots {
+                assert_eq!(
+                    (
+                        history.f.h.applied_to(lot.entry.vid, 0),
+                        history.f.h.applied_to(lot.entry.vid, 2)
+                    ),
+                    lot.bought,
+                    "{context}: lot {:032x} fully relieved",
+                    lot.entry.vid.0
+                );
+            }
+        }
+    }
+}

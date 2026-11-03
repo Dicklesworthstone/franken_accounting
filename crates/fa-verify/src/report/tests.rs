@@ -182,6 +182,16 @@ fn bundle(
     selection: Selection,
     expected_rows: &[ReportRow],
 ) -> (Vec<u8>, SignedCheckpoint) {
+    bundle_with_native_inputs(records, known_at, selection, expected_rows, 7)
+}
+
+fn bundle_with_native_inputs(
+    records: &[Record],
+    known_at: u64,
+    selection: Selection,
+    expected_rows: &[ReportRow],
+    native_inputs: usize,
+) -> (Vec<u8>, SignedCheckpoint) {
     let envelopes: Vec<_> = records.iter().map(|r| r.envelope.encode()).collect();
     let checkpoint = Checkpoint {
         book_id: BOOK,
@@ -265,8 +275,8 @@ fn bundle(
     cert.fixed(&[0; 32])
         .fixed(&root_of(&historical))
         .u64(historical.len() as u64)
-        .count(7);
-    for _ in 0..7 {
+        .count(native_inputs);
+    for _ in 0..native_inputs {
         cert.bytes(b"native read attestations are not outsider proofs");
     }
     cert.bytes(&output)
@@ -289,6 +299,28 @@ fn bundle(
 }
 fn verify_fixture(bytes: &[u8], anchor: SignedCheckpoint) -> Result<VerifiedReport, ReportError> {
     verify_report_with(bytes, &[], None, None, None, |_, _| Ok(anchor))
+}
+
+#[test]
+fn original_and_fragment_source_closures_reproduce_the_same_report() {
+    let mut records = schema();
+    records.push(record(1, 3, 10, b"fragment-closure", 125, None, None, None));
+    for count in [6, 7, 8, 9] {
+        let (bytes, anchor) =
+            bundle_with_native_inputs(&records, 3, Selection::AsOf(20), &rows(125, 0), count);
+        let checked = verify_fixture(&bytes, anchor);
+        if count == 7 || count == 8 {
+            let checked = checked.unwrap();
+            assert_eq!(checked.checked_records, 3);
+            assert_eq!(checked.rows[0].debits, 125);
+            assert_eq!(checked.rows[1].credits, 125);
+        } else {
+            assert!(
+                checked.is_err(),
+                "incomplete or extra closure with {count} inputs"
+            );
+        }
+    }
 }
 #[test]
 fn stock_activity_and_historical_reports_are_independently_recomputed() {
@@ -449,6 +481,7 @@ fn incomplete_payloads_wrong_anchor_and_unsigned_self_trust_are_refused() {
 
 mod explain;
 mod open_items;
+mod source_binding;
 mod statements;
 mod summary;
 mod temporal;

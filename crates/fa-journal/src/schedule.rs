@@ -198,10 +198,17 @@ pub fn book_policy<V: asupersync::fs::Vfs + Clone>(
     Ok(read_book_spec(db)?.and_then(|s| s.time_zone_policy))
 }
 
-/// The normal period containing `day`.
+/// The normal period containing `day`. A day outside every fiscal year the
+/// calendar defines resolves to no period, like any other such day.
 fn period_of(book: &BookContext, day: DateDay) -> Result<Result<String, String>, KernelError> {
-    let fy = book.calendar.fiscal_year_of(day)?;
-    let periods = book.calendar.periods_for_year(fy)?;
+    let periods = match book
+        .calendar
+        .fiscal_year_of(day)
+        .and_then(|fy| book.calendar.periods_for_year(fy))
+    {
+        Ok(periods) => periods,
+        Err(e) => return Ok(Err(format!("{e:?}"))),
+    };
     Ok(resolve_period(&periods, day, None)
         .map(|p| p.code.clone())
         .map_err(|e| format!("{e:?}")))

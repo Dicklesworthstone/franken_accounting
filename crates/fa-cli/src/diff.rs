@@ -10,7 +10,7 @@
 //! read before anything is observed: a token carrying any scope caveat is
 //! refused, never filtered.
 
-use fa::{Book, TrialBalanceSelection};
+use fa::{Book, InstantSelection, TrialBalanceSelection};
 use fa_money::{Amount, UnitId};
 use fa_registry::reason_codes::ReasonCodes;
 use fa_time::DateDay;
@@ -18,7 +18,8 @@ use fgdb_types::CommitSeq;
 
 use crate::args::Args;
 use crate::cli::{
-    Ctx, Fail, admit_whole_book_read, lineage_json, render_amount, selected_periods, usage,
+    Ctx, Fail, admit_whole_book_read, lineage_json, periods_selector, render_amount,
+    selected_periods, usage,
 };
 use crate::json::{Json, obj, s};
 
@@ -28,13 +29,18 @@ const DEFAULT_LIMIT: usize = 200;
 const MAX_LIMIT: usize = 1000;
 
 /// A `--from`/`--to` value: `HEAD` (`None`), a commit sequence, or an
-/// RFC3339 instant resolved through the book's retained time evidence.
-fn frontier(args: &Args, flag: &str, book: &Book) -> Result<Option<CommitSeq>, Fail> {
+/// RFC3339 instant resolved through the book's retained time evidence,
+/// returned with that evidence so a read coordinate can carry it.
+fn frontier(
+    args: &Args,
+    flag: &str,
+    book: &Book,
+) -> Result<(Option<CommitSeq>, Option<InstantSelection>), Fail> {
     match args.flag(flag) {
-        None | Some("HEAD") => Ok(None),
+        None | Some("HEAD") => Ok((None, None)),
         Some(value) if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) => value
             .parse::<u64>()
-            .map(|seq| Some(CommitSeq(seq)))
+            .map(|seq| (Some(CommitSeq(seq)), None))
             .map_err(|_| usage(format!("{flag} commit sequence exceeds u64"), EXAMPLE)),
         Some(value) => {
             let instant = fa_time::UtcInstant::parse(value).map_err(|error| {
@@ -44,7 +50,7 @@ fn frontier(args: &Args, flag: &str, book: &Book) -> Result<Option<CommitSeq>, F
                 )
             })?;
             let time = book.resolve_known_at_instant(instant.unix_ns())??;
-            Ok(Some(CommitSeq(time.resolution.resolved_seq)))
+            Ok((Some(CommitSeq(time.resolution.resolved_seq)), Some(time)))
         }
     }
 }
@@ -101,13 +107,23 @@ pub(crate) fn diff_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             TrialBalanceSelection::Periods(periods)
         }
     };
-    let from = match frontier(args, "--from", &book)? {
+    let from = match frontier(args, "--from", &book)?.0 {
         Some(seq) => seq,
         None => book.head()?,
     };
-    let to = frontier(args, "--to", &book)?;
+    let (to, to_time) = frontier(args, "--to", &book)?;
     let diff = book.ledger_diff(&selection, from, to)?;
+    // The envelope's coordinate is the `--to` read: its retained tick
+    // evidence when an instant selected it, and the effective selection
+    // named as `fa tb` names it.
+    ctx.out.time_selection(to_time.as_ref());
     ctx.out.known_at(diff.to);
+    ctx.out.effective(match &selection {
+        TrialBalanceSelection::AsOf(date) => format!("as-of:{date}"),
+        TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods) => {
+            periods_selector(periods)
+        }
+    });
     let units = &book.context().units;
     let money =
         |unit: u32, mantissa: i128| render_amount(Amount::new(UnitId(unit), mantissa), units);
