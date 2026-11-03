@@ -1240,6 +1240,10 @@ fn company_statement_mcp_transports_inline_reviews_and_preserves_operation_autho
 fn company_statement_traces_preserve_saved_questions_and_direct_historical_bounds() {
     let (mcp, reg) = embedded();
     let tool = mcp.tool_for("statement", None).unwrap();
+    assert_eq!(
+        tool.input_schema(&mcp, reg)["properties"]["definition"]["type"],
+        json!(["string", "array"])
+    );
     for (arguments, command) in [
         (
             json!({"name":"trace", "from_diff":"C:comparison", "certify":true, "max_publications":"32"}),
@@ -1265,7 +1269,20 @@ fn company_statement_traces_preserve_saved_questions_and_direct_historical_bound
         );
         let translated = mcp.command_to_call(reg, command).unwrap();
         assert_eq!(translated.tool, "fa_read_statement");
-        assert_eq!(translated.arguments, arguments);
+        // Repeatable flags accept scalar input but command translation
+        // retains their canonical array representation, even for one value.
+        let mut canonical = arguments.clone();
+        if arguments.get("definition").is_some() {
+            canonical["definition"] = json!(["company-income"]);
+        }
+        assert_eq!(translated.arguments, canonical);
+        assert_eq!(
+            tool.invocation(&mcp, reg, &translated.arguments)
+                .unwrap()
+                .argv,
+            invocation.argv,
+            "scalar and canonical array forms must run the identical CLI command"
+        );
         if arguments.get("from_diff").is_some() {
             for flag in ["--before", "--after", "--for", "--compare", "--definition"] {
                 assert!(parsed.flag(flag).is_none(), "saved selection stays omitted");
