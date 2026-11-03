@@ -12,9 +12,11 @@
 # not installed) is `UNRUN` + `FAIL`, never a silent green. The contract is
 # scripts/lib/gate_verdict.sh, adopted verbatim from FrankenGraphDB.
 #
-# STEPS (36 in full mode):
-# CANONICAL_STEPS: bench-smoke, fmt, check, clippy, test-list, test, gate-evidence, invariants, invariants-negative, robot-schema, fuzz-smoke, conformance-mutation, deny, installer-integration, ubs, shellcheck, gate-evidence-negative, local-proof-selftest, tier0-selftest, check-classify, merge-train-selftest, owner-watch-selftest, close-bead-selftest, gate-health-selftest, docs-sync, registries, registry-check, reachability, forbidden-deps, foundations, foundations-negative, doctrine, doctrine-negative, reference-boundary, topology, topology-negative
-#   fmt, check, clippy (-D warnings), test-list + test (one rch command per
+# STEPS (37 in full mode):
+# CANONICAL_STEPS: bench-smoke, fmt, public-ledger-unit, check, clippy, test-list, test, gate-evidence, invariants, invariants-negative, robot-schema, fuzz-smoke, conformance-mutation, deny, installer-integration, ubs, shellcheck, gate-evidence-negative, local-proof-selftest, tier0-selftest, check-classify, merge-train-selftest, owner-watch-selftest, close-bead-selftest, gate-health-selftest, docs-sync, registries, registry-check, reachability, forbidden-deps, foundations, foundations-negative, doctrine, doctrine-negative, reference-boundary, topology, topology-negative
+#   fmt, public-ledger-unit (existing Python protocol/orchestration tests;
+#   not native replay or cryptographic verification), check, clippy (-D warnings),
+#   test-list + test (one rch command per
 #   package or test target, each under the worker cap, fa-0hs4.2), gate-evidence
 #   (completion markers, test-inventory witness, per-crate ratchet, fa-czx)
 #   and its planted negative, invariants (fa-37f) and its planted negative,
@@ -730,6 +732,10 @@ if [ "$BENCH_ONLY" -eq 1 ]; then
 fi
 
 run_step "fmt" cargo fmt --all --check
+if [ "$QUICK" -eq 0 ]; then
+  run_step "public-ledger-unit" python3 -B -m unittest discover \
+    -s "$ROOT/scripts/tests" -p 'test_public_ledger*.py'
+fi
 cargo_build "check" check --workspace --all-targets
 cargo_build "clippy" clippy --workspace --all-targets -- -D warnings
 if [ "$QUICK" -eq 0 ]; then
