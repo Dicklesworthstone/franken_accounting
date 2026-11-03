@@ -1,7 +1,7 @@
 {
   "format": "fa-public-ledger-entry-fragment-validation-v1",
   "recorded_on": "2026-11-03",
-  "status": "AWAITING_REPAIRED_ENGINE_EXECUTION",
+  "status": "REPAIRED_WORKLOADS_PASS_HOSTED_TEST_GATE_FAIL",
   "boundary": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
   "trust_scope": "Caller-trusted public checkpoint key of each fresh test book; no OMES publisher signature or externally authenticated ledger claim.",
   "review_scope": "Original source and helper documents retain AgentUpload custody. Distinct local fixture principals exercise native Reviewed attestations and dual control, not independently authenticated human review.",
@@ -1147,31 +1147,3907 @@
     "workflow_run": 41664093934,
     "workflow_job": 126017782741,
     "workflow_url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41664093934",
-    "status": "AWAITING_VERIFIED_ARTIFACT",
-    "cases": [],
-    "pending_acceptance": [
-      "Fresh complete museum selection, dimensions, source oracles, certified reports, exports and independent tamper controls.",
-      "Fresh complete pension selection with the same native and independent acceptance.",
-      "Controlled durable partial-stage interruption and resume with unchanged source, driver, helper and binary pins.",
-      "Copy the completed 3f947 museum book; replay one retained department certificate and verify its corresponding historical report with the repaired engine, preserving the original book.",
-      "Fresh university selection through the unchanged stock driver, including the previously failing 157-leg source entry.",
-      "Separate fresh source-bound university selection and a portable trial-balance proof covering MigrationRunFragment, MigrationSource and EntryFragment inputs."
+    "status": "PASS_SCOPED_WORKLOADS",
+    "cases": [
+      {
+        "case": "museum",
+        "status": "PASS",
+        "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+        "agency": "20400",
+        "agency_name": "J. M. DAVIS ARMS & HIST. MUSEUM",
+        "scope": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+        "trust_scope": "Verifier uses caller-trusted key of freshly created test book; no external authentication claim",
+        "review_scope": "Source and helper documents are AgentUpload. A distinct local test principal records native Reviewed attestations; this exercises evidence admission, not independently authenticated human examination. Generated transforms do not assert the receipt-derived Generated provenance grade.",
+        "approval_scope": "Distinct local test principals exercise native SoD; not independent human authentication",
+        "source_rows": 125,
+        "source_columns": 36,
+        "monetary_legs": 121,
+        "zero_rows_retained_in_evidence": 4,
+        "account_count": 43,
+        "migration_runs": 5,
+        "migration_entries": 15,
+        "dimension_value_counts": {
+          "department": 3,
+          "fund": 1,
+          "product": 0,
+          "project": 0
+        },
+        "largest_source_entry_legs": 19,
+        "input": {
+          "repository_path": "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv",
+          "sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+          "original_selection_sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+          "distribution_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+          "distribution_url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv"
+        },
+        "runtime_pins": {
+          "driver_sha256": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+          "fa_sha256": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+          "fa_verify_sha256": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+          "normalizer_sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+          "python_version": [
+            3,
+            12,
+            14
+          ]
+        },
+        "execution_wrapper": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum.execution.json",
+          "bytes": 3634,
+          "sha256": "aefcab2a5d43cd0387d26943ef9ee99c3419523bd072a0dbb94e6492a0a1bb9b"
+        },
+        "execution_metadata": {
+          "format": "fa-public-ledger-execution-wrapper-v1",
+          "case": "museum",
+          "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+          "working_tree_commit": "a0c79c57cfc07f48635584fa1b97a7f4e1379c40",
+          "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+          "output_directory": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum",
+          "wrapper_sha256": "8a53ba0ea0fdf5ac8cf510209fee14fba0c699cf76f6fc441ec682975450b6c7",
+          "sha256_before": {
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_source.py": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_interrupt.py": "0186c00f1d058a29f87219856c88b81a83414081af8e67d3fb7c2dcb4d082780",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341"
+          },
+          "started_utc": "2026-11-03T17:21:14.222100+00:00",
+          "status": "PASS",
+          "processes": [
+            {
+              "command": [
+                "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+                "-B",
+                "scripts/public_ledger.py",
+                "run",
+                "--agency",
+                "20400",
+                "--out",
+                "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum",
+                "--fa",
+                "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+                "--fa-verify",
+                "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+              ],
+              "expected_exit": 0,
+              "exit": 0,
+              "started_utc": "2026-11-03T17:21:14.222438+00:00",
+              "finished_utc": "2026-11-03T17:21:37.484552+00:00",
+              "log": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum.process-1.log",
+              "log_sha256": "bcb733b09b5686b97af9382ab8feb3aa96636353ecc0b6eb42cc5e0a34c78731",
+              "log_bytes": 170
+            }
+          ],
+          "sha256_after": {
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_source.py": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_interrupt.py": "0186c00f1d058a29f87219856c88b81a83414081af8e67d3fb7c2dcb4d082780",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341"
+          },
+          "files_unchanged": true,
+          "finished_utc": "2026-11-03T17:21:37.729973+00:00",
+          "report_sha256": "0d9588a6f7e80c36b342cb7ecca216bb026e537b4631157033df4ee76b845c3c"
+        },
+        "report": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/report.json",
+          "bytes": 383654,
+          "sha256": "0d9588a6f7e80c36b342cb7ecca216bb026e537b4631157033df4ee76b845c3c"
+        },
+        "manifest": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/manifest.json",
+          "bytes": 89219,
+          "sha256": "75c748e997000bc457e8de944271a6c78ce2a76a6f0830c00e0a010c50220c79"
+        },
+        "recovery_pins_file": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/recovery/pins.json",
+          "bytes": 1898,
+          "sha256": "7d42b602fdafaf97ecef110a77c2a5d0fd7cc4ebf608a20a56f7dc7e7a624ed3"
+        },
+        "prepared_artifact_sha256": {
+          "chart.json": "ed338b94a7ff8c05e110d00d7a8a020a18e1b2389243c94fb0c140d0fe57d9a6",
+          "column_map.toml": "a4ff851b7fc855f21c724b5aef274b3ca17ffd72577d03bb3efd4e37f6fe0881",
+          "manifest.json": "75c748e997000bc457e8de944271a6c78ce2a76a6f0830c00e0a010c50220c79",
+          "original-agency.csv": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+          "run-000.csv": "147521e31f393c9d93eeb5e454c0827d61da2edf5c93c5f66d2e218c2ca9c6f0",
+          "run-001.csv": "99f3414e1d6bf23f8bc7587f3eaca961a8d6029db4c52ef4f6b81b828d4d57cb",
+          "run-002.csv": "9dca8b24e4dc3170ac43312dad560d69ba8ac741562e14367c6c2e2ea019517b",
+          "run-003.csv": "a2af34e9406c0dc76277d63c5d40a7e52908bd87dd68acb490c418f896474251",
+          "run-004.csv": "90cf19ea4c8d7d800b2c37afba9cdcdf545b829068d0abf826c950d4d527ff55"
+        },
+        "recovery": {
+          "attempt": "attempts/000001",
+          "book_id": "693a9689fab41ccaf78c1cc1ecd203a6",
+          "native_packages_recovered": 0,
+          "original_preactivation_seq": 124,
+          "resumed": false
+        },
+        "driver_commands_in_completed_attempt": 235,
+        "elapsed_seconds_in_completed_attempt": 23.075,
+        "transcripts": [
+          {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/attempts/000001/commands.jsonl",
+            "bytes": 790699,
+            "sha256": "09e02d12cbc842a6d557462a44a1a4fa1094e14d9eeea62c370e3ef9b910833d",
+            "attempt": "000001",
+            "native_command_receipts": 235,
+            "exit_counts": {
+              "0": 232,
+              "8": 3
+            }
+          }
+        ],
+        "ads_files": {
+          "ADS_Coordinate_Certificate.toml": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/attempts/000001/ads/ADS_Coordinate_Certificate.toml",
+            "bytes": 422,
+            "sha256": "be0181693199d772d020daa4c51130aad3ec85ff35d580f90bfcf9a6444a2b73"
+          },
+          "ADS_Proof.fab": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/attempts/000001/ads/ADS_Proof.fab",
+            "bytes": 1153900,
+            "sha256": "0ad05e300edb6605188f10e644215efe19c569b5cd9e66bc678bbfc3b4e43863"
+          },
+          "ADS_Proof.receipt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/attempts/000001/ads/ADS_Proof.receipt",
+            "bytes": 219,
+            "sha256": "98829035f8fcb9c7a2ed3f863ceba7937a2070d0ba4849198b7a7e0c9added3e"
+          },
+          "Chart_of_Accounts.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/attempts/000001/ads/Chart_of_Accounts.txt",
+            "bytes": 1914,
+            "sha256": "50bbfa246eeb25b38a4858d184502bb158b5d08b92961201c9d01dedd79c4416"
+          },
+          "GL_Detail.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/attempts/000001/ads/GL_Detail.txt",
+            "bytes": 38670,
+            "sha256": "8e89b880684ba478c04b4818ba70edde46d4f224715faf83393b1ac2a72e2d9b"
+          },
+          "Trial_Balance.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/attempts/000001/ads/Trial_Balance.txt",
+            "bytes": 1521,
+            "sha256": "3154588b3086fb16b061c2b8b1f7862e65ce09a61fa72a3ac507d9d124a0098c"
+          }
+        },
+        "dimension_certificates": {
+          "department": [
+            {
+              "source_value": "1000001",
+              "period": "FY2024-P12",
+              "certificate_oid": "fe209efafc589e000ae8e51ac1cb5dfd1458c91558da43610f1678657b9b3db9"
+            },
+            {
+              "source_value": "7999999",
+              "period": "FY2024-P12",
+              "certificate_oid": "ee310c7a78a2702dfe4b2286cb70ce5c4b1584b1b2af1a4dac1191a5b97c1e1c"
+            },
+            {
+              "source_value": "8800010",
+              "period": "FY2024-P12",
+              "certificate_oid": "bcefbcb8f8680517cbd69a189294eb798d6b363544801cf89aac7e96c491186e"
+            }
+          ],
+          "fund": [
+            {
+              "source_value": "1000",
+              "period": "FY2024-P12",
+              "certificate_oid": "4ce573b639d795b04cde5e0bb365cbd2070b7fb7b97d5581ff7cda9ae1dad651"
+            }
+          ],
+          "product": [],
+          "project": []
+        },
+        "positive_verification": {
+          "attempt": "000001",
+          "transcript_line": 232,
+          "exit": 0,
+          "verdict": "verified",
+          "extract": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/attempts/000001/ads",
+          "failed_checks": []
+        },
+        "negative_controls": {
+          "amount": {
+            "mutation": {
+              "delta_cents": 1,
+              "line": 2,
+              "new_amount": "39583.01",
+              "old_amount": "39583.00"
+            },
+            "verification": {
+              "attempt": "000001",
+              "transcript_line": 233,
+              "exit": 8,
+              "verdict": "failed",
+              "extract": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/attempts/000001/ads-tampered",
+              "failed_checks": [
+                {
+                  "check": "ads_extract",
+                  "scope": "completeness",
+                  "result": "fail",
+                  "reason": "GL_Detail entry 7bf815d2498870b99b80e3e9cde35cec (recorded at 71) is no proven entry selected through 2024-06-30; a proven entry recorded at 71 (effective 2024-04-30, 2 legs) is missing from GL_Detail"
+                }
+              ]
+            }
+          },
+          "dimensions": {
+            "department": {
+              "mutation": {
+                "dimension": 3,
+                "entry_id": "deae0b46a543ea7e8c5c5a066473e54d",
+                "leg": 1,
+                "line": 8,
+                "new_value": "2f8146cc689c740cc4ea0f9aa87954ae",
+                "old_value": "2f8146cc689c740cc4ea0f9aa87954af"
+              },
+              "verification": {
+                "attempt": "000001",
+                "transcript_line": 235,
+                "exit": 8,
+                "verdict": "failed",
+                "extract": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/attempts/000001/ads-department-tampered",
+                "failed_checks": [
+                  {
+                    "check": "ads_extract",
+                    "scope": "completeness",
+                    "result": "fail",
+                    "reason": "GL_Detail entry deae0b46a543ea7e8c5c5a066473e54d (recorded at 83) is no proven entry selected through 2024-06-30; a proven entry recorded at 83 (effective 2024-04-30, 17 legs) is missing from GL_Detail"
+                  }
+                ]
+              }
+            },
+            "fund": {
+              "mutation": {
+                "dimension": 7,
+                "entry_id": "7bf815d2498870b99b80e3e9cde35cec",
+                "leg": 1,
+                "line": 2,
+                "new_value": "4f01692437ce0b83fe74f998a2d1b4d7",
+                "old_value": "4f01692437ce0b83fe74f998a2d1b4d6"
+              },
+              "verification": {
+                "attempt": "000001",
+                "transcript_line": 234,
+                "exit": 8,
+                "verdict": "failed",
+                "extract": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum/attempts/000001/ads-dimension-tampered",
+                "failed_checks": [
+                  {
+                    "check": "ads_extract",
+                    "scope": "completeness",
+                    "result": "fail",
+                    "reason": "GL_Detail entry 7bf815d2498870b99b80e3e9cde35cec (recorded at 71) is no proven entry selected through 2024-06-30; a proven entry recorded at 71 (effective 2024-04-30, 2 legs) is missing from GL_Detail"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "checks": [
+          "pinned_source_bytes",
+          "complete_agency_row_coverage",
+          "all_source_groups_balance_exactly",
+          "no_subcent_rounding",
+          "all_original_chartfields_retained",
+          "source_and_helper_agent_uploads_have_native_local_reviews",
+          "preparation_retry_is_idempotent",
+          "all_staged_activity_is_invisible",
+          "native_approved_finalization",
+          "every_month_account_cell_matches_source",
+          "cumulative_balances_match_source",
+          "native_proposal_legs_preserve_every_source_row",
+          "gross_debit_credit_account_cells_match_source",
+          "historical_preactivation_prefix_stays_invisible",
+          "native_registers_equal_journal_fold",
+          "every_native_leg_preserves_source_department_or_absence",
+          "native_department_monthly_and_cumulative_net_and_gross_match_source",
+          "department_preactivation_history_stays_invisible",
+          "department_certificates_replay_exact_robot_reports",
+          "every_native_leg_preserves_complete_declared_source_dimensions",
+          "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+          "every_dimension_preactivation_history_stays_invisible",
+          "every_dimension_certificate_replays_exact_robot_report",
+          "all_finalized_chunk_retries_are_idempotent",
+          "native_upload_custody_preserved_and_fixture_reviews_recorded",
+          "native_projections_match_payloads",
+          "signed_accumulator_checkpoint",
+          "native_csv_and_ads_reread_certificates",
+          "every_exported_leg_preserves_source_department_or_absence",
+          "every_exported_leg_preserves_complete_declared_source_dimensions",
+          "independent_fa_verify_ads_proof",
+          "independent_fa_verify_authenticates_every_exported_dimension_set",
+          "independent_verifier_rejects_tampered_extract",
+          "independent_verifier_rejects_dimension_only_tampering",
+          "independent_verifier_rejects_each_source_dimension_kind_tamper",
+          "resume_inputs_and_native_book_identity_pinned",
+          "original_native_packages_and_publication_receipts_preserved",
+          "original_finalize_proposals_durable_before_approval"
+        ],
+        "source_binding_requested": false,
+        "reproduction": {
+          "fresh_output_required": true,
+          "commands": [
+            [
+              "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+              "-B",
+              "scripts/public_ledger.py",
+              "run",
+              "--agency",
+              "20400",
+              "--out",
+              "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum",
+              "--fa",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--fa-verify",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+            ]
+          ],
+          "note": "Executed commands; choose fresh output/marker paths before reproduction and preserve the exact runtime pins for resume."
+        }
+      },
+      {
+        "case": "pension",
+        "status": "PASS",
+        "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+        "agency": "31500",
+        "agency_name": "FIREFIGHTERS PENS. & RET. SYST.",
+        "scope": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+        "trust_scope": "Verifier uses caller-trusted key of freshly created test book; no external authentication claim",
+        "review_scope": "Source and helper documents are AgentUpload. A distinct local test principal records native Reviewed attestations; this exercises evidence admission, not independently authenticated human examination. Generated transforms do not assert the receipt-derived Generated provenance grade.",
+        "approval_scope": "Distinct local test principals exercise native SoD; not independent human authentication",
+        "source_rows": 137,
+        "source_columns": 36,
+        "monetary_legs": 131,
+        "zero_rows_retained_in_evidence": 6,
+        "account_count": 51,
+        "migration_runs": 2,
+        "migration_entries": 6,
+        "dimension_value_counts": {
+          "department": 3,
+          "fund": 1,
+          "product": 0,
+          "project": 0
+        },
+        "largest_source_entry_legs": 37,
+        "input": {
+          "repository_path": "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-31500.csv",
+          "sha256": "2d60b56cd29ef0e426054cd6107962286b2ad92b1633d29d91bb32a139cd4249",
+          "original_selection_sha256": "2d60b56cd29ef0e426054cd6107962286b2ad92b1633d29d91bb32a139cd4249",
+          "distribution_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+          "distribution_url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv"
+        },
+        "runtime_pins": {
+          "driver_sha256": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+          "fa_sha256": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+          "fa_verify_sha256": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+          "normalizer_sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+          "python_version": [
+            3,
+            12,
+            14
+          ]
+        },
+        "execution_wrapper": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension.execution.json",
+          "bytes": 3638,
+          "sha256": "0462fe29dd3ca6688cbe74b4da3b4619ce6a6105ef10a9e1b778b8bb680047b0"
+        },
+        "execution_metadata": {
+          "format": "fa-public-ledger-execution-wrapper-v1",
+          "case": "pension",
+          "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+          "working_tree_commit": "a0c79c57cfc07f48635584fa1b97a7f4e1379c40",
+          "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+          "output_directory": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension",
+          "wrapper_sha256": "8a53ba0ea0fdf5ac8cf510209fee14fba0c699cf76f6fc441ec682975450b6c7",
+          "sha256_before": {
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_source.py": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_interrupt.py": "0186c00f1d058a29f87219856c88b81a83414081af8e67d3fb7c2dcb4d082780",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-31500.csv": "2d60b56cd29ef0e426054cd6107962286b2ad92b1633d29d91bb32a139cd4249"
+          },
+          "started_utc": "2026-11-03T17:21:46.232682+00:00",
+          "status": "PASS",
+          "processes": [
+            {
+              "command": [
+                "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+                "-B",
+                "scripts/public_ledger.py",
+                "run",
+                "--agency",
+                "31500",
+                "--out",
+                "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension",
+                "--fa",
+                "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+                "--fa-verify",
+                "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+              ],
+              "expected_exit": 0,
+              "exit": 0,
+              "started_utc": "2026-11-03T17:21:46.232870+00:00",
+              "finished_utc": "2026-11-03T17:22:08.033339+00:00",
+              "log": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension.process-1.log",
+              "log_sha256": "3e65351c035f99495b1ce7d7f5b519106993fffeb3c6d069008822dfa5c0791b",
+              "log_bytes": 169
+            }
+          ],
+          "sha256_after": {
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_source.py": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_interrupt.py": "0186c00f1d058a29f87219856c88b81a83414081af8e67d3fb7c2dcb4d082780",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-31500.csv": "2d60b56cd29ef0e426054cd6107962286b2ad92b1633d29d91bb32a139cd4249"
+          },
+          "files_unchanged": true,
+          "finished_utc": "2026-11-03T17:22:08.276641+00:00",
+          "report_sha256": "683f33c2b0bb37e8fd6179fef118b9aa1f5d8f800f134af232252c29ebae9386"
+        },
+        "report": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/report.json",
+          "bytes": 242192,
+          "sha256": "683f33c2b0bb37e8fd6179fef118b9aa1f5d8f800f134af232252c29ebae9386"
+        },
+        "manifest": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/manifest.json",
+          "bytes": 102424,
+          "sha256": "45bfefc60f4a1969482cf32f4d3ded7892de781ddfc53953fd57634b3816b0e9"
+        },
+        "recovery_pins_file": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/recovery/pins.json",
+          "bytes": 1631,
+          "sha256": "2596d5f4fe63beaf574da653365f7fe69bcefb40fafb1f1d04d719d887158e7e"
+        },
+        "prepared_artifact_sha256": {
+          "chart.json": "5c41adf7e66f6058eb10a883b172cc01cef840f650bd59318826cfe785c8c855",
+          "column_map.toml": "a4ff851b7fc855f21c724b5aef274b3ca17ffd72577d03bb3efd4e37f6fe0881",
+          "manifest.json": "45bfefc60f4a1969482cf32f4d3ded7892de781ddfc53953fd57634b3816b0e9",
+          "original-agency.csv": "2d60b56cd29ef0e426054cd6107962286b2ad92b1633d29d91bb32a139cd4249",
+          "run-000.csv": "9943523dd5b895e14c01a9a8a12c519365a1dfe49584ddb7d9651f6bfde5c626",
+          "run-001.csv": "b973626e0e4b0918468253b9b96d374dfc04b63cc8d30f6be22b2a175ee8eb96"
+        },
+        "recovery": {
+          "attempt": "attempts/000001",
+          "book_id": "c4b31d47e605f52a32f8f1f44a003cec",
+          "native_packages_recovered": 0,
+          "original_preactivation_seq": 58,
+          "resumed": false
+        },
+        "driver_commands_in_completed_attempt": 151,
+        "elapsed_seconds_in_completed_attempt": 21.654,
+        "transcripts": [
+          {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/attempts/000001/commands.jsonl",
+            "bytes": 676315,
+            "sha256": "5887c6bba006d6ce703202d2f5d471f992a5ba05dd695b74b313c89beb134449",
+            "attempt": "000001",
+            "native_command_receipts": 151,
+            "exit_counts": {
+              "0": 148,
+              "8": 3
+            }
+          }
+        ],
+        "ads_files": {
+          "ADS_Coordinate_Certificate.toml": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/attempts/000001/ads/ADS_Coordinate_Certificate.toml",
+            "bytes": 420,
+            "sha256": "847ad54fa6e1e8539647b4cae337fd57ce57f0147bc4521256873c6f8135da6f"
+          },
+          "ADS_Proof.fab": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/attempts/000001/ads/ADS_Proof.fab",
+            "bytes": 1139634,
+            "sha256": "c6ab56b1ea721d0128b8973afabfb768f4d1b229ba22dfa864d7f1854830d423"
+          },
+          "ADS_Proof.receipt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/attempts/000001/ads/ADS_Proof.receipt",
+            "bytes": 219,
+            "sha256": "89c380a665b8324dac12f84d4c2245463783466d84df37cc5115a60900bc2fe4"
+          },
+          "Chart_of_Accounts.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/attempts/000001/ads/Chart_of_Accounts.txt",
+            "bytes": 2291,
+            "sha256": "13ac48a1678f09e70482db61ce567730ddfb2d0ba3911b269f8bded6cd71e508"
+          },
+          "GL_Detail.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/attempts/000001/ads/GL_Detail.txt",
+            "bytes": 42598,
+            "sha256": "77a4b2ce8b881b7820d419141999f5488057f0450344b8c4e3e6a5ba1b3ca6f4"
+          },
+          "Trial_Balance.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/attempts/000001/ads/Trial_Balance.txt",
+            "bytes": 1847,
+            "sha256": "d23ec8ae8b4e043463e4c3452b24dd44222753216d62da0b5c5862448717a5b8"
+          }
+        },
+        "dimension_certificates": {
+          "department": [
+            {
+              "source_value": "0100001",
+              "period": "FY2024-P12",
+              "certificate_oid": "57b9303974e73ffd0a561465f4690615c3b63865fb115c5aa5dd256fc1e967b0"
+            },
+            {
+              "source_value": "7999999",
+              "period": "FY2024-P12",
+              "certificate_oid": "86700d5d55ccbaffdfc62de52fcfe1746a5d158d769df15810c57f7de9ee096c"
+            },
+            {
+              "source_value": "8800001",
+              "period": "FY2024-P12",
+              "certificate_oid": "cca62baf8106a8b1e2af12b61c27fec2f81e6d052c59aa72d12d28e4f30dabfa"
+            }
+          ],
+          "fund": [
+            {
+              "source_value": "6000",
+              "period": "FY2024-P12",
+              "certificate_oid": "b0dac11ccb475a2858e1d7b1b6fd6612b7d754796275a96b77db5462c382d9f9"
+            }
+          ],
+          "product": [],
+          "project": []
+        },
+        "positive_verification": {
+          "attempt": "000001",
+          "transcript_line": 148,
+          "exit": 0,
+          "verdict": "verified",
+          "extract": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/attempts/000001/ads",
+          "failed_checks": []
+        },
+        "negative_controls": {
+          "amount": {
+            "mutation": {
+              "delta_cents": 1,
+              "line": 2,
+              "new_amount": "626.01",
+              "old_amount": "626.00"
+            },
+            "verification": {
+              "attempt": "000001",
+              "transcript_line": 149,
+              "exit": 8,
+              "verdict": "failed",
+              "extract": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/attempts/000001/ads-tampered",
+              "failed_checks": [
+                {
+                  "check": "ads_extract",
+                  "scope": "completeness",
+                  "result": "fail",
+                  "reason": "GL_Detail entry 430ac61cbdd6aea04bd397c6ad74ba00 (recorded at 41) is no proven entry selected through 2024-06-30; a proven entry recorded at 41 (effective 2024-04-30, 36 legs) is missing from GL_Detail"
+                }
+              ]
+            }
+          },
+          "dimensions": {
+            "department": {
+              "mutation": {
+                "dimension": 3,
+                "entry_id": "430ac61cbdd6aea04bd397c6ad74ba00",
+                "leg": 1,
+                "line": 2,
+                "new_value": "9a2465bb82d95ef3a696c251a652b20b",
+                "old_value": "9a2465bb82d95ef3a696c251a652b20a"
+              },
+              "verification": {
+                "attempt": "000001",
+                "transcript_line": 150,
+                "exit": 8,
+                "verdict": "failed",
+                "extract": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/attempts/000001/ads-dimension-tampered",
+                "failed_checks": [
+                  {
+                    "check": "ads_extract",
+                    "scope": "completeness",
+                    "result": "fail",
+                    "reason": "GL_Detail entry 430ac61cbdd6aea04bd397c6ad74ba00 (recorded at 41) is no proven entry selected through 2024-06-30; a proven entry recorded at 41 (effective 2024-04-30, 36 legs) is missing from GL_Detail"
+                  }
+                ]
+              }
+            },
+            "fund": {
+              "mutation": {
+                "dimension": 7,
+                "entry_id": "430ac61cbdd6aea04bd397c6ad74ba00",
+                "leg": 1,
+                "line": 2,
+                "new_value": "b3c164ed7f467e4ee020f675dd5a284c",
+                "old_value": "b3c164ed7f467e4ee020f675dd5a284d"
+              },
+              "verification": {
+                "attempt": "000001",
+                "transcript_line": 151,
+                "exit": 8,
+                "verdict": "failed",
+                "extract": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension/attempts/000001/ads-fund-tampered",
+                "failed_checks": [
+                  {
+                    "check": "ads_extract",
+                    "scope": "completeness",
+                    "result": "fail",
+                    "reason": "GL_Detail entry 430ac61cbdd6aea04bd397c6ad74ba00 (recorded at 41) is no proven entry selected through 2024-06-30; a proven entry recorded at 41 (effective 2024-04-30, 36 legs) is missing from GL_Detail"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "checks": [
+          "pinned_source_bytes",
+          "complete_agency_row_coverage",
+          "all_source_groups_balance_exactly",
+          "no_subcent_rounding",
+          "all_original_chartfields_retained",
+          "source_and_helper_agent_uploads_have_native_local_reviews",
+          "preparation_retry_is_idempotent",
+          "all_staged_activity_is_invisible",
+          "native_approved_finalization",
+          "every_month_account_cell_matches_source",
+          "cumulative_balances_match_source",
+          "native_proposal_legs_preserve_every_source_row",
+          "gross_debit_credit_account_cells_match_source",
+          "historical_preactivation_prefix_stays_invisible",
+          "native_registers_equal_journal_fold",
+          "every_native_leg_preserves_source_department_or_absence",
+          "native_department_monthly_and_cumulative_net_and_gross_match_source",
+          "department_preactivation_history_stays_invisible",
+          "department_certificates_replay_exact_robot_reports",
+          "every_native_leg_preserves_complete_declared_source_dimensions",
+          "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+          "every_dimension_preactivation_history_stays_invisible",
+          "every_dimension_certificate_replays_exact_robot_report",
+          "all_finalized_chunk_retries_are_idempotent",
+          "native_upload_custody_preserved_and_fixture_reviews_recorded",
+          "native_projections_match_payloads",
+          "signed_accumulator_checkpoint",
+          "native_csv_and_ads_reread_certificates",
+          "every_exported_leg_preserves_source_department_or_absence",
+          "every_exported_leg_preserves_complete_declared_source_dimensions",
+          "independent_fa_verify_ads_proof",
+          "independent_fa_verify_authenticates_every_exported_dimension_set",
+          "independent_verifier_rejects_tampered_extract",
+          "independent_verifier_rejects_dimension_only_tampering",
+          "independent_verifier_rejects_each_source_dimension_kind_tamper",
+          "resume_inputs_and_native_book_identity_pinned",
+          "original_native_packages_and_publication_receipts_preserved",
+          "original_finalize_proposals_durable_before_approval"
+        ],
+        "source_binding_requested": false,
+        "reproduction": {
+          "fresh_output_required": true,
+          "commands": [
+            [
+              "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+              "-B",
+              "scripts/public_ledger.py",
+              "run",
+              "--agency",
+              "31500",
+              "--out",
+              "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/pension",
+              "--fa",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--fa-verify",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+            ]
+          ],
+          "note": "Executed commands; choose fresh output/marker paths before reproduction and preserve the exact runtime pins for resume."
+        }
+      },
+      {
+        "case": "museum-resume",
+        "status": "PASS",
+        "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+        "agency": "20400",
+        "agency_name": "J. M. DAVIS ARMS & HIST. MUSEUM",
+        "scope": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+        "trust_scope": "Verifier uses caller-trusted key of freshly created test book; no external authentication claim",
+        "review_scope": "Source and helper documents are AgentUpload. A distinct local test principal records native Reviewed attestations; this exercises evidence admission, not independently authenticated human examination. Generated transforms do not assert the receipt-derived Generated provenance grade.",
+        "approval_scope": "Distinct local test principals exercise native SoD; not independent human authentication",
+        "source_rows": 125,
+        "source_columns": 36,
+        "monetary_legs": 121,
+        "zero_rows_retained_in_evidence": 4,
+        "account_count": 43,
+        "migration_runs": 5,
+        "migration_entries": 15,
+        "dimension_value_counts": {
+          "department": 3,
+          "fund": 1,
+          "product": 0,
+          "project": 0
+        },
+        "largest_source_entry_legs": 19,
+        "input": {
+          "repository_path": "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv",
+          "sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+          "original_selection_sha256": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+          "distribution_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+          "distribution_url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv"
+        },
+        "runtime_pins": {
+          "driver_sha256": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+          "fa_sha256": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+          "fa_verify_sha256": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+          "normalizer_sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+          "python_version": [
+            3,
+            12,
+            14
+          ]
+        },
+        "execution_wrapper": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume.execution.json",
+          "bytes": 4829,
+          "sha256": "2d7b95bb146832770814a65854e821a06558159c671973cd636912f59d4c10b0"
+        },
+        "execution_metadata": {
+          "format": "fa-public-ledger-execution-wrapper-v1",
+          "case": "museum-resume",
+          "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+          "working_tree_commit": "a0c79c57cfc07f48635584fa1b97a7f4e1379c40",
+          "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+          "output_directory": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume",
+          "wrapper_sha256": "8a53ba0ea0fdf5ac8cf510209fee14fba0c699cf76f6fc441ec682975450b6c7",
+          "sha256_before": {
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_source.py": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_interrupt.py": "0186c00f1d058a29f87219856c88b81a83414081af8e67d3fb7c2dcb4d082780",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341"
+          },
+          "started_utc": "2026-11-03T17:21:54.993090+00:00",
+          "status": "PASS",
+          "processes": [
+            {
+              "command": [
+                "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+                "-B",
+                "scripts/public_ledger_interrupt.py",
+                "--driver",
+                "scripts/public_ledger.py",
+                "--boundary",
+                "partial-stage",
+                "--marker",
+                "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume.interruption.json",
+                "--",
+                "run",
+                "--agency",
+                "20400",
+                "--out",
+                "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume",
+                "--fa",
+                "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+                "--fa-verify",
+                "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+              ],
+              "expected_exit": 1,
+              "exit": 1,
+              "started_utc": "2026-11-03T17:21:54.993525+00:00",
+              "finished_utc": "2026-11-03T17:22:07.160566+00:00",
+              "log": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume.process-1.log",
+              "log_sha256": "6be6a0a3418ed51433714c5ab86d192e5f6fe59c362221d3aff92de7d7ee5ddb",
+              "log_bytes": 194
+            },
+            {
+              "command": [
+                "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+                "-B",
+                "scripts/public_ledger.py",
+                "run",
+                "--resume",
+                "--out",
+                "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume"
+              ],
+              "expected_exit": 0,
+              "exit": 0,
+              "started_utc": "2026-11-03T17:22:07.161084+00:00",
+              "finished_utc": "2026-11-03T17:22:33.120713+00:00",
+              "log": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume.process-2.log",
+              "log_sha256": "bcd18417bdcd5d2c113ae182a829920b28ca379d3e87b93648685ab820118541",
+              "log_bytes": 170
+            }
+          ],
+          "sha256_after": {
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_source.py": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_interrupt.py": "0186c00f1d058a29f87219856c88b81a83414081af8e67d3fb7c2dcb4d082780",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-20400.csv": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341"
+          },
+          "files_unchanged": true,
+          "finished_utc": "2026-11-03T17:22:33.360523+00:00",
+          "report_sha256": "fdeec0d7677677caef053a6146bacc5974320358215ec9190822a4e7bfb1fab5",
+          "interruption_marker": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume.interruption.json",
+          "interruption_marker_sha256": "957d2e85157562fccf44a3052ba740bbf2beba697845a0b15adbc2d204b1dfe5"
+        },
+        "report": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/report.json",
+          "bytes": 383653,
+          "sha256": "fdeec0d7677677caef053a6146bacc5974320358215ec9190822a4e7bfb1fab5"
+        },
+        "manifest": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/manifest.json",
+          "bytes": 89219,
+          "sha256": "75c748e997000bc457e8de944271a6c78ce2a76a6f0830c00e0a010c50220c79"
+        },
+        "recovery_pins_file": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/recovery/pins.json",
+          "bytes": 1898,
+          "sha256": "7d42b602fdafaf97ecef110a77c2a5d0fd7cc4ebf608a20a56f7dc7e7a624ed3"
+        },
+        "prepared_artifact_sha256": {
+          "chart.json": "ed338b94a7ff8c05e110d00d7a8a020a18e1b2389243c94fb0c140d0fe57d9a6",
+          "column_map.toml": "a4ff851b7fc855f21c724b5aef274b3ca17ffd72577d03bb3efd4e37f6fe0881",
+          "manifest.json": "75c748e997000bc457e8de944271a6c78ce2a76a6f0830c00e0a010c50220c79",
+          "original-agency.csv": "020b4591235d3aa6fdaed89924b6c7bd59792ca49b528df11ee4c54bca900341",
+          "run-000.csv": "147521e31f393c9d93eeb5e454c0827d61da2edf5c93c5f66d2e218c2ca9c6f0",
+          "run-001.csv": "99f3414e1d6bf23f8bc7587f3eaca961a8d6029db4c52ef4f6b81b828d4d57cb",
+          "run-002.csv": "9dca8b24e4dc3170ac43312dad560d69ba8ac741562e14367c6c2e2ea019517b",
+          "run-003.csv": "a2af34e9406c0dc76277d63c5d40a7e52908bd87dd68acb490c418f896474251",
+          "run-004.csv": "90cf19ea4c8d7d800b2c37afba9cdcdf545b829068d0abf826c950d4d527ff55"
+        },
+        "recovery": {
+          "attempt": "attempts/000002",
+          "book_id": "c9824016ae662988a8935b49b04b660e",
+          "native_packages_recovered": 5,
+          "original_preactivation_seq": 124,
+          "resumed": true
+        },
+        "driver_commands_in_completed_attempt": 245,
+        "elapsed_seconds_in_completed_attempt": 25.524,
+        "transcripts": [
+          {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/attempts/000001/commands.jsonl",
+            "bytes": 125777,
+            "sha256": "d0d02320462ca88b2e14d170a3caf78043005779894e3b66f590c7d54e8e9e29",
+            "attempt": "000001",
+            "native_command_receipts": 75,
+            "exit_counts": {
+              "0": 75
+            }
+          },
+          {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/attempts/000002/commands.jsonl",
+            "bytes": 785717,
+            "sha256": "316e32b61997caaaa4183b9ce3ac36f9f7290a88621b2333faed9100a868d61c",
+            "attempt": "000002",
+            "native_command_receipts": 228,
+            "exit_counts": {
+              "0": 225,
+              "8": 3
+            }
+          }
+        ],
+        "ads_files": {
+          "ADS_Coordinate_Certificate.toml": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/attempts/000002/ads/ADS_Coordinate_Certificate.toml",
+            "bytes": 422,
+            "sha256": "90ba1712786bcddad33a7ffb9b75587768d06d0c47fc163505c2d10deec883ec"
+          },
+          "ADS_Proof.fab": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/attempts/000002/ads/ADS_Proof.fab",
+            "bytes": 1153900,
+            "sha256": "1398a0597b46a600b47a2f80cf027a002ffbe2e318d3ce129c72c9d173fac7e9"
+          },
+          "ADS_Proof.receipt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/attempts/000002/ads/ADS_Proof.receipt",
+            "bytes": 219,
+            "sha256": "a1655ee101f52bf1b66f1f181c7852c3669d506cfd7cc5f354a820a8f1a788d8"
+          },
+          "Chart_of_Accounts.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/attempts/000002/ads/Chart_of_Accounts.txt",
+            "bytes": 1914,
+            "sha256": "50bbfa246eeb25b38a4858d184502bb158b5d08b92961201c9d01dedd79c4416"
+          },
+          "GL_Detail.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/attempts/000002/ads/GL_Detail.txt",
+            "bytes": 38670,
+            "sha256": "a268da8b950de6556c2367729dd592f9756d182449bb391ac54a7b398135465a"
+          },
+          "Trial_Balance.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/attempts/000002/ads/Trial_Balance.txt",
+            "bytes": 1521,
+            "sha256": "3154588b3086fb16b061c2b8b1f7862e65ce09a61fa72a3ac507d9d124a0098c"
+          }
+        },
+        "dimension_certificates": {
+          "department": [
+            {
+              "source_value": "1000001",
+              "period": "FY2024-P12",
+              "certificate_oid": "df644a0f2d725756675766eb9e06b9bd862efe7d285d34943b7a4401e0ddd4f6"
+            },
+            {
+              "source_value": "7999999",
+              "period": "FY2024-P12",
+              "certificate_oid": "f2e0609b9d93aaf48d4eda5623bcfa0cdd47eaec5fe66460d6e653c9f6e47bde"
+            },
+            {
+              "source_value": "8800010",
+              "period": "FY2024-P12",
+              "certificate_oid": "ecb3086a6dd127d58b47f4ed260f8a292093b680aba316ef63a00ae65ff25644"
+            }
+          ],
+          "fund": [
+            {
+              "source_value": "1000",
+              "period": "FY2024-P12",
+              "certificate_oid": "6718a2998ef3aa6554ee9c50359ddb9b6b6d59bf95accc96e27cf44fbeca91c7"
+            }
+          ],
+          "product": [],
+          "project": []
+        },
+        "positive_verification": {
+          "attempt": "000002",
+          "transcript_line": 225,
+          "exit": 0,
+          "verdict": "verified",
+          "extract": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/attempts/000002/ads",
+          "failed_checks": []
+        },
+        "negative_controls": {
+          "amount": {
+            "mutation": {
+              "delta_cents": 1,
+              "line": 2,
+              "new_amount": "39583.01",
+              "old_amount": "39583.00"
+            },
+            "verification": {
+              "attempt": "000002",
+              "transcript_line": 226,
+              "exit": 8,
+              "verdict": "failed",
+              "extract": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/attempts/000002/ads-tampered",
+              "failed_checks": [
+                {
+                  "check": "ads_extract",
+                  "scope": "completeness",
+                  "result": "fail",
+                  "reason": "GL_Detail entry bf827e11cb5edf79bb957c25a955b395 (recorded at 71) is no proven entry selected through 2024-06-30; a proven entry recorded at 71 (effective 2024-04-30, 2 legs) is missing from GL_Detail"
+                }
+              ]
+            }
+          },
+          "dimensions": {
+            "department": {
+              "mutation": {
+                "dimension": 3,
+                "entry_id": "0fb8c16f0f1486167d3f852df1dafbe6",
+                "leg": 1,
+                "line": 8,
+                "new_value": "2a802dbfad450b59fd1f3668c199af29",
+                "old_value": "2a802dbfad450b59fd1f3668c199af28"
+              },
+              "verification": {
+                "attempt": "000002",
+                "transcript_line": 228,
+                "exit": 8,
+                "verdict": "failed",
+                "extract": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/attempts/000002/ads-department-tampered",
+                "failed_checks": [
+                  {
+                    "check": "ads_extract",
+                    "scope": "completeness",
+                    "result": "fail",
+                    "reason": "GL_Detail entry 0fb8c16f0f1486167d3f852df1dafbe6 (recorded at 83) is no proven entry selected through 2024-06-30; a proven entry recorded at 83 (effective 2024-04-30, 17 legs) is missing from GL_Detail"
+                  }
+                ]
+              }
+            },
+            "fund": {
+              "mutation": {
+                "dimension": 7,
+                "entry_id": "bf827e11cb5edf79bb957c25a955b395",
+                "leg": 1,
+                "line": 2,
+                "new_value": "a682566fc009cf6eee523fdcb5f362a2",
+                "old_value": "a682566fc009cf6eee523fdcb5f362a3"
+              },
+              "verification": {
+                "attempt": "000002",
+                "transcript_line": 227,
+                "exit": 8,
+                "verdict": "failed",
+                "extract": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/attempts/000002/ads-dimension-tampered",
+                "failed_checks": [
+                  {
+                    "check": "ads_extract",
+                    "scope": "completeness",
+                    "result": "fail",
+                    "reason": "GL_Detail entry bf827e11cb5edf79bb957c25a955b395 (recorded at 71) is no proven entry selected through 2024-06-30; a proven entry recorded at 71 (effective 2024-04-30, 2 legs) is missing from GL_Detail"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "checks": [
+          "pinned_source_bytes",
+          "complete_agency_row_coverage",
+          "all_source_groups_balance_exactly",
+          "no_subcent_rounding",
+          "all_original_chartfields_retained",
+          "source_and_helper_agent_uploads_have_native_local_reviews",
+          "preparation_retry_is_idempotent",
+          "all_staged_activity_is_invisible",
+          "native_approved_finalization",
+          "every_month_account_cell_matches_source",
+          "cumulative_balances_match_source",
+          "native_proposal_legs_preserve_every_source_row",
+          "gross_debit_credit_account_cells_match_source",
+          "historical_preactivation_prefix_stays_invisible",
+          "native_registers_equal_journal_fold",
+          "every_native_leg_preserves_source_department_or_absence",
+          "native_department_monthly_and_cumulative_net_and_gross_match_source",
+          "department_preactivation_history_stays_invisible",
+          "department_certificates_replay_exact_robot_reports",
+          "every_native_leg_preserves_complete_declared_source_dimensions",
+          "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+          "every_dimension_preactivation_history_stays_invisible",
+          "every_dimension_certificate_replays_exact_robot_report",
+          "all_finalized_chunk_retries_are_idempotent",
+          "native_upload_custody_preserved_and_fixture_reviews_recorded",
+          "native_projections_match_payloads",
+          "signed_accumulator_checkpoint",
+          "native_csv_and_ads_reread_certificates",
+          "every_exported_leg_preserves_source_department_or_absence",
+          "every_exported_leg_preserves_complete_declared_source_dimensions",
+          "independent_fa_verify_ads_proof",
+          "independent_fa_verify_authenticates_every_exported_dimension_set",
+          "independent_verifier_rejects_tampered_extract",
+          "independent_verifier_rejects_dimension_only_tampering",
+          "independent_verifier_rejects_each_source_dimension_kind_tamper",
+          "resume_inputs_and_native_book_identity_pinned",
+          "original_native_packages_and_publication_receipts_preserved",
+          "original_finalize_proposals_durable_before_approval"
+        ],
+        "controlled_interruption": {
+          "marker": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume.interruption.json",
+            "bytes": 2303,
+            "sha256": "957d2e85157562fccf44a3052ba740bbf2beba697845a0b15adbc2d204b1dfe5"
+          },
+          "data": {
+            "boundary": "partial-stage",
+            "driver_sha256": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+            "executed_arguments": [
+              "migrate",
+              "import",
+              "--action",
+              "stage",
+              "--package",
+              "d79d390a801e89cf0314b30c2fb63abc7da509fcdf783969ab62eef7c0e1cc72",
+              "--chunk",
+              "0",
+              "--approval",
+              "42c8389274e0f65c13d9b19d48e3c3fb",
+              "--approval",
+              "5583c2ae15a298352bb6ba190f123870"
+            ],
+            "interruption_helper_sha256": "0186c00f1d058a29f87219856c88b81a83414081af8e67d3fb7c2dcb4d082780",
+            "native_receipt": {
+              "authority": {
+                "ops": null,
+                "posture": "embedded-owner",
+                "principal": "operator",
+                "profile": "Human"
+              },
+              "book": "c9824016ae662988a8935b49b04b660e",
+              "certificate": null,
+              "coordinate": {
+                "branch": "trunk",
+                "effective": "all",
+                "known_at": 71,
+                "time_evidence": null
+              },
+              "data": {
+                "already_recorded": false,
+                "chunk_count": 3,
+                "chunk_index": 0,
+                "entry_vid": "bf827e11cb5edf79bb957c25a955b395",
+                "package_oid": "d79d390a801e89cf0314b30c2fb63abc7da509fcdf783969ab62eef7c0e1cc72",
+                "proposal_digest": "a4ba7f1290928fe099735985a3576e126af084d7365a25f1dd26f91dbef841c0",
+                "ready_to_finalize": false,
+                "recorded_at": 71,
+                "recorded_count": 1,
+                "run_state": "Open",
+                "run_vid": "28fe06ac65bc48260cace6bc67cb01dd"
+              },
+              "event": "migration_import_staged",
+              "next_actions": [],
+              "v": 1,
+              "warnings": []
+            },
+            "pins_sha256": "7d42b602fdafaf97ecef110a77c2a5d0fd7cc4ebf608a20a56f7dc7e7a624ed3",
+            "requested_arguments": [
+              "migrate",
+              "import",
+              "--action",
+              "stage",
+              "--package",
+              "d79d390a801e89cf0314b30c2fb63abc7da509fcdf783969ab62eef7c0e1cc72",
+              "--intent",
+              "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/run-000-stage.json"
+            ],
+            "saved_complete_selection": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume/run-000-stage.json",
+            "saved_complete_selection_sha256": "364c947cb16269058f0fd51b53836e38750b0b2f84859419ea0497235b298323",
+            "schema": "fa-public-ledger-controlled-interruption-v1",
+            "scope": "Controlled stop after a completed real native command; not a mid-transaction crash.",
+            "selected_chunk_count": 3
+          },
+          "pins_unchanged_after_resume": true,
+          "driver_exits": [
+            1,
+            0
+          ]
+        },
+        "source_binding_requested": false,
+        "reproduction": {
+          "fresh_output_required": true,
+          "commands": [
+            [
+              "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+              "-B",
+              "scripts/public_ledger_interrupt.py",
+              "--driver",
+              "scripts/public_ledger.py",
+              "--boundary",
+              "partial-stage",
+              "--marker",
+              "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume.interruption.json",
+              "--",
+              "run",
+              "--agency",
+              "20400",
+              "--out",
+              "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume",
+              "--fa",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--fa-verify",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+            ],
+            [
+              "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+              "-B",
+              "scripts/public_ledger.py",
+              "run",
+              "--resume",
+              "--out",
+              "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/museum-resume"
+            ]
+          ],
+          "note": "Executed commands; choose fresh output/marker paths before reproduction and preserve the exact runtime pins for resume."
+        }
+      },
+      {
+        "case": "university-stock",
+        "status": "PASS",
+        "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+        "source_binding_requested": false,
+        "agency": "66000",
+        "agency_name": "S. E. OKLA. ST. UNIV.",
+        "scope": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+        "trust_scope": "Verifier uses caller-trusted key of freshly created test book; no external authentication claim",
+        "review_scope": "Source and helper documents are AgentUpload. A distinct local test principal records native Reviewed attestations; this exercises evidence admission, not independently authenticated human examination. Generated transforms do not assert the receipt-derived Generated provenance grade.",
+        "approval_scope": "Distinct local test principals exercise native SoD; not independent human authentication",
+        "source_rows": 1055,
+        "source_columns": 36,
+        "monetary_legs": 1051,
+        "zero_rows_retained_in_evidence": 4,
+        "account_count": 223,
+        "migration_runs": 9,
+        "migration_entries": 27,
+        "dimension_value_counts": {
+          "department": 8,
+          "fund": 1,
+          "product": 9,
+          "project": 0
+        },
+        "largest_source_entry_legs": 157,
+        "input": {
+          "repository_path": "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv",
+          "sha256": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+          "original_selection_sha256": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+          "distribution_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+          "distribution_url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv"
+        },
+        "runtime_pins": {
+          "driver_sha256": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+          "fa_sha256": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+          "fa_verify_sha256": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+          "normalizer_sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+          "python_version": [
+            3,
+            12,
+            14
+          ]
+        },
+        "execution_wrapper": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66.execution.json",
+          "sha256": "b3bf9c8c424ae5706e99910bc264cdfa72a0e687efde6fc02e5b5c46bbd5a465",
+          "bytes": 4878
+        },
+        "execution_metadata": {
+          "argv": [
+            "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+            "-B",
+            "scripts/public_ledger.py",
+            "run",
+            "--agency",
+            "66000",
+            "--source",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv",
+            "--out",
+            "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66",
+            "--fa",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+            "--fa-verify",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+          ],
+          "artifact_provenance": {
+            "archive_bytes": 43626792,
+            "archive_path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/public-ledger-native-f3f1d66.zip",
+            "archive_sha256": "b55fc095db4ecd7e78d2cd037e338eb4fec3faac7bed6c8f9331a0a3f05d144f",
+            "artifact_id": 13251708810,
+            "binary_bytes": {
+              "fa": 235320912,
+              "fa-verify": 20226944
+            },
+            "binary_sha256": {
+              "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+              "fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+            },
+            "cargo_lock_blob_sha1": "bcc30a166ddaaa598635650be66018bd341b019d",
+            "executable_checks": [
+              {
+                "command": [
+                  "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+                  "--help"
+                ],
+                "exit_code": 0
+              },
+              {
+                "command": [
+                  "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+                  "--help"
+                ],
+                "exit_code": 0
+              }
+            ],
+            "executable_directory": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug",
+            "native_manifest_sha256": "86243acc68a5f7dfc8523570176903008ef3c6a827d4dad92cc4f4673065a32b",
+            "source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+            "status": "VERIFIED",
+            "verified_utc": "2026-11-03T17:19:11.350058+00:00",
+            "workflow_conclusion": "failure: one object test failed; artifact build and stock workloads succeeded",
+            "workflow_job": 126017782741,
+            "workflow_run": 41664093934
+          },
+          "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+          "elapsed_seconds": 165.397,
+          "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+          "exit_code": 0,
+          "finished_utc": "2026-11-03T17:24:51.053779+00:00",
+          "pins_unchanged": true,
+          "report_sha256": "8348bace06f32b2dd0effa2de7a6c55a48982b6d054a6b4573669903df3e7982",
+          "reported_result": {
+            "account_count": 223,
+            "commands": 521,
+            "elapsed_seconds": 164.695,
+            "migration_entries": 27,
+            "migration_runs": 9,
+            "monetary_rows": 1051,
+            "source_rows": 1055,
+            "status": "PASS"
+          },
+          "repository_head_at_launch": "a0c79c57cfc07f48635584fa1b97a7f4e1379c40",
+          "sha256_after": {
+            "artifact_provenance": "58b57a9f5b2403772b087c7e0594e1df90f1fa03c4ac1efac84bb5570ff3d1d7",
+            "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+            "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+            "fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+            "scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+            "scripts/public_ledger_source.py": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+            "wrapper": "84aaa7d8e408fe484ef2c5639efa158a40c51284564ae67089825e89d374761d"
+          },
+          "sha256_before": {
+            "artifact_provenance": "58b57a9f5b2403772b087c7e0594e1df90f1fa03c4ac1efac84bb5570ff3d1d7",
+            "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+            "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+            "fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+            "scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+            "scripts/public_ledger_source.py": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+            "wrapper": "84aaa7d8e408fe484ef2c5639efa158a40c51284564ae67089825e89d374761d"
+          },
+          "source_binding_requested": false,
+          "started_utc": "2026-11-03T17:22:05.652752+00:00",
+          "status": "PASS",
+          "stderr.log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout.log_sha256": "d77795afe6e26a891c8317ddb703ededbaf180a6707ecbbbe322a1cf180d819a",
+          "stock_driver_blob_pins": {
+            "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv": "c4a3e99dcd7e252c67223030cf384b5b95abbfce",
+            "scripts/public_ledger.py": "683790ce4a6be0170b05952bac636821af11fc30",
+            "scripts/public_ledger_source.py": "996b2fc1f6c640aaf6151674a5c7e8cb82dc0e14"
+          }
+        },
+        "report": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/report.json",
+          "sha256": "8348bace06f32b2dd0effa2de7a6c55a48982b6d054a6b4573669903df3e7982",
+          "bytes": 1194717
+        },
+        "manifest": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/manifest.json",
+          "sha256": "25e7032a428abad37ed5917659e9e211b3b09e6d0484ce2b0c190090607d7151",
+          "bytes": 641959
+        },
+        "recovery_pins_file": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/recovery/pins.json",
+          "sha256": "3e1a01b2c79a3dd51a80ebf189b1bbf9a2ed43ce27aead1a6de73b899b056052",
+          "bytes": 2254
+        },
+        "prepared_artifact_sha256": {
+          "chart.json": "f53c706d7ea0472973d139fcc4aa75d3c952b8ca4136946bc43d43164dea2dc5",
+          "column_map.toml": "a4ff851b7fc855f21c724b5aef274b3ca17ffd72577d03bb3efd4e37f6fe0881",
+          "manifest.json": "25e7032a428abad37ed5917659e9e211b3b09e6d0484ce2b0c190090607d7151",
+          "original-agency.csv": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+          "run-000.csv": "52f5badd06c30d015f0dd2f36a37354f390ee3ef4baabff156553a18d532ffa0",
+          "run-001.csv": "4637e795ed609310ef1fccc783c4ee80e4cd05b432d6b17134c411c50735509e",
+          "run-002.csv": "e554e4074104da0d9a538002bfc62d74e5a4e7505b096337c4c39372761dfb3d",
+          "run-003.csv": "870c25d557bf7d0c24458d876e62e80a0baa67601c2f8e4ed3203345cb7d6294",
+          "run-004.csv": "7912c364d8d38846bb40b4cccffe0ceec1f8b48c107a2844030a670c0e70ddd3",
+          "run-005.csv": "2119b149158be3d7e8f28903c72f5c86699fbf2f6ca0892e004760d7698ddf50",
+          "run-006.csv": "7a7c6ca0a698c323552e953d66e415d035d24195439d51a5f53eb8cc6a28a86e",
+          "run-007.csv": "8ca57adc6549a30b9244880b98efc6b96e66873b8455c836689b3eff0b27bdf3",
+          "run-008.csv": "9e9d5c808e2c39e0d02fa5c0f6aafa54fdb36c8ea91c9cc80381dd31f7185866"
+        },
+        "recovery": {
+          "attempt": "attempts/000001",
+          "book_id": "a9d7933a565065a80ae306bf42310328",
+          "native_packages_recovered": 0,
+          "original_preactivation_seq": 231,
+          "resumed": false
+        },
+        "driver_commands_in_completed_attempt": 521,
+        "elapsed_seconds_in_completed_attempt": 164.695,
+        "transcripts": [
+          {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/attempts/000001/commands.jsonl",
+            "sha256": "c986dbda3d4d166efeb22a63a80dbf27c1a950a33621cc2c7234145d0d9238df",
+            "bytes": 3548457,
+            "attempt": "000001",
+            "native_command_receipts": 521,
+            "exit_counts": {
+              "0": 517,
+              "8": 4
+            }
+          }
+        ],
+        "ads_files": {
+          "ADS_Coordinate_Certificate.toml": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/attempts/000001/ads/ADS_Coordinate_Certificate.toml",
+            "sha256": "e32f554dd7cc5ce2cf30e79eb0ad5490f6c12e49569d60adbc9d569ab30e23e0",
+            "bytes": 422
+          },
+          "ADS_Proof.fab": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/attempts/000001/ads/ADS_Proof.fab",
+            "sha256": "a8015d9a7e67663bc89ea42219094438f543542e36141a49126bdd90ef59e239",
+            "bytes": 22157419
+          },
+          "ADS_Proof.receipt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/attempts/000001/ads/ADS_Proof.receipt",
+            "sha256": "fe1e4dab09ee67eaaa158588141c2cc5636e9c4b74ba0796b39582b8384b7c8d",
+            "bytes": 219
+          },
+          "Chart_of_Accounts.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/attempts/000001/ads/Chart_of_Accounts.txt",
+            "sha256": "91c98b496e8d636143af81cdd8f89c6c482a7e7f448427e4c39580afbcd424a0",
+            "bytes": 9620
+          },
+          "GL_Detail.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/attempts/000001/ads/GL_Detail.txt",
+            "sha256": "7b121be92bbd545b15be8ee6e13f22d6c636122856ec1ca0547786e6d35b4bfe",
+            "bytes": 348333
+          },
+          "Trial_Balance.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/attempts/000001/ads/Trial_Balance.txt",
+            "sha256": "7b98ef67fb8f1a4914acfd2e9807ecd9b99659b397c3d6b33e7c5a7e96b7b94a",
+            "bytes": 7867
+          }
+        },
+        "dimension_certificates": {
+          "department": [
+            {
+              "source_value": "1000001",
+              "period": "FY2024-P12",
+              "certificate_oid": "6f757999fa05cbd66d8e780e19542b1e7d3931876300b5e188b9544868100543"
+            },
+            {
+              "source_value": "1100001",
+              "period": "FY2024-P12",
+              "certificate_oid": "88d10e40437930c5cf2fc4376664e9ef9d0f885d9589a62cd4ca4a5a559298ea"
+            },
+            {
+              "source_value": "2100001",
+              "period": "FY2024-P12",
+              "certificate_oid": "e5a9ad3ea7eeddc487c2db17232838607c6b2b10ddacff8cefba22b66fcad312"
+            },
+            {
+              "source_value": "7999999",
+              "period": "FY2024-P12",
+              "certificate_oid": "14127415bdb575058586d3958632e1272782fdc44a9c649c0ab81ad43e8a29fd"
+            },
+            {
+              "source_value": "8900001",
+              "period": "FY2024-P12",
+              "certificate_oid": "ef8a22c41ef984d48ec5c54206da02e52cfb7f07f25625589644b73005a9eb6a"
+            },
+            {
+              "source_value": "9000001",
+              "period": "FY2024-P12",
+              "certificate_oid": "4ebf7b2eec4b384e2d44b86d8328eccead02dedc722e9b791eb2be118f35bd45"
+            },
+            {
+              "source_value": "9139310",
+              "period": "FY2024-P12",
+              "certificate_oid": "7b02acdcf9e3da220c543c827cd4390dd5d4840f9525e9bb2c146d8f0a2190c7"
+            },
+            {
+              "source_value": "9700001",
+              "period": "FY2024-P12",
+              "certificate_oid": "614d6aae08357cc57c621e196722353e77df53467516865d7c57177f69ced712"
+            }
+          ],
+          "fund": [
+            {
+              "source_value": "9000",
+              "period": "FY2024-P12",
+              "certificate_oid": "df29c996afed2d2e7da77c8044d2fb1f7a6516d0791080f8075aeee6bdf75645"
+            }
+          ],
+          "product": [
+            {
+              "source_value": "01",
+              "period": "FY2024-P12",
+              "certificate_oid": "d2785af5eb00467a8e25a4388336ed07ae85a205ea9d5a2a44423da86c6470ec"
+            },
+            {
+              "source_value": "02",
+              "period": "FY2024-P12",
+              "certificate_oid": "3e30e82d5efdebff3851ce8feaf4ac0708416800733a7efbed5b0b0b62768b67"
+            },
+            {
+              "source_value": "03",
+              "period": "FY2024-P12",
+              "certificate_oid": "edf89f8307e2b702f53fca46ef8cc14b0cc48fbbe8b5794b12ace073820fe840"
+            },
+            {
+              "source_value": "04",
+              "period": "FY2024-P12",
+              "certificate_oid": "387f15fcc29bdfe81e34d3b96f7a9e27344847757c2d6423903435c859d54ca9"
+            },
+            {
+              "source_value": "05",
+              "period": "FY2024-P12",
+              "certificate_oid": "bbcea94816ab8f71c70ddcf81cd26c069bbea8c9eb3ef9e499b14d8ddaf614cd"
+            },
+            {
+              "source_value": "06",
+              "period": "FY2024-P12",
+              "certificate_oid": "35735915b290ca65d92f84c711b1baae079104ad702a524cc7edd00c3a2b30c6"
+            },
+            {
+              "source_value": "07",
+              "period": "FY2024-P12",
+              "certificate_oid": "4c0f76cab7beeb4fc226c992c3827c9c97d756bb1331c8fc758b2d70b662ebe1"
+            },
+            {
+              "source_value": "08",
+              "period": "FY2024-P12",
+              "certificate_oid": "2123035206c35d4639a7a4edc0d2bb4e77c9fa584da14686cabfc2ec26b9d9d3"
+            },
+            {
+              "source_value": "09",
+              "period": "FY2024-P12",
+              "certificate_oid": "3fe6269739a9f7dc8807154a2fb93b2c7e7852061bc567afd6e868be53fe9d59"
+            }
+          ],
+          "project": []
+        },
+        "positive_verification": {
+          "attempt": "000001",
+          "transcript_line": 517,
+          "exit": 0,
+          "verdict": "verified",
+          "extract": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/attempts/000001/ads",
+          "failed_checks": []
+        },
+        "negative_controls": {
+          "amount": {
+            "mutation": {
+              "delta_cents": 1,
+              "line": 2,
+              "new_amount": "332.73",
+              "old_amount": "332.72"
+            },
+            "verification": {
+              "attempt": "000001",
+              "transcript_line": 518,
+              "exit": 8,
+              "verdict": "failed",
+              "extract": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/attempts/000001/ads-tampered",
+              "failed_checks": [
+                {
+                  "check": "ads_extract",
+                  "scope": "completeness",
+                  "result": "fail",
+                  "reason": "GL_Detail entry 7e1e2d474a8a4673b8f03eb7777c2650 (recorded at 130) is no proven entry selected through 2024-06-30; a proven entry recorded at 130 (effective 2024-04-30, 122 legs) is missing from GL_Detail"
+                }
+              ]
+            }
+          },
+          "dimensions": {
+            "department": {
+              "mutation": {
+                "dimension": 3,
+                "entry_id": "7e1e2d474a8a4673b8f03eb7777c2650",
+                "leg": 1,
+                "line": 2,
+                "new_value": "7931ce18ce6d6b2bac5ab8b594fec4bc",
+                "old_value": "7931ce18ce6d6b2bac5ab8b594fec4bd"
+              },
+              "verification": {
+                "attempt": "000001",
+                "transcript_line": 519,
+                "exit": 8,
+                "verdict": "failed",
+                "extract": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/attempts/000001/ads-dimension-tampered",
+                "failed_checks": [
+                  {
+                    "check": "ads_extract",
+                    "scope": "completeness",
+                    "result": "fail",
+                    "reason": "GL_Detail entry 7e1e2d474a8a4673b8f03eb7777c2650 (recorded at 130) is no proven entry selected through 2024-06-30; a proven entry recorded at 130 (effective 2024-04-30, 122 legs) is missing from GL_Detail"
+                  }
+                ]
+              }
+            },
+            "fund": {
+              "mutation": {
+                "dimension": 7,
+                "entry_id": "7e1e2d474a8a4673b8f03eb7777c2650",
+                "leg": 1,
+                "line": 2,
+                "new_value": "c0549259998591ede9e26b4d1941b280",
+                "old_value": "c0549259998591ede9e26b4d1941b281"
+              },
+              "verification": {
+                "attempt": "000001",
+                "transcript_line": 521,
+                "exit": 8,
+                "verdict": "failed",
+                "extract": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/attempts/000001/ads-fund-tampered",
+                "failed_checks": [
+                  {
+                    "check": "ads_extract",
+                    "scope": "completeness",
+                    "result": "fail",
+                    "reason": "GL_Detail entry 7e1e2d474a8a4673b8f03eb7777c2650 (recorded at 130) is no proven entry selected through 2024-06-30; a proven entry recorded at 130 (effective 2024-04-30, 122 legs) is missing from GL_Detail"
+                  }
+                ]
+              }
+            },
+            "product": {
+              "mutation": {
+                "dimension": 5,
+                "entry_id": "19a583dfaa380048b6061599daed2e1b",
+                "leg": 1,
+                "line": 545,
+                "new_value": "58c06cf03f21974585a73da83839e03f",
+                "old_value": "58c06cf03f21974585a73da83839e03e"
+              },
+              "verification": {
+                "attempt": "000001",
+                "transcript_line": 520,
+                "exit": 8,
+                "verdict": "failed",
+                "extract": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/attempts/000001/ads-product-tampered",
+                "failed_checks": [
+                  {
+                    "check": "ads_extract",
+                    "scope": "completeness",
+                    "result": "fail",
+                    "reason": "GL_Detail entry 19a583dfaa380048b6061599daed2e1b (recorded at 202) is no proven entry selected through 2024-06-30; a proven entry recorded at 202 (effective 2024-04-30, 157 legs) is missing from GL_Detail"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "checks": [
+          "pinned_source_bytes",
+          "complete_agency_row_coverage",
+          "all_source_groups_balance_exactly",
+          "no_subcent_rounding",
+          "all_original_chartfields_retained",
+          "source_and_helper_agent_uploads_have_native_local_reviews",
+          "preparation_retry_is_idempotent",
+          "all_staged_activity_is_invisible",
+          "native_approved_finalization",
+          "every_month_account_cell_matches_source",
+          "cumulative_balances_match_source",
+          "native_proposal_legs_preserve_every_source_row",
+          "gross_debit_credit_account_cells_match_source",
+          "historical_preactivation_prefix_stays_invisible",
+          "native_registers_equal_journal_fold",
+          "every_native_leg_preserves_source_department_or_absence",
+          "native_department_monthly_and_cumulative_net_and_gross_match_source",
+          "department_preactivation_history_stays_invisible",
+          "department_certificates_replay_exact_robot_reports",
+          "every_native_leg_preserves_complete_declared_source_dimensions",
+          "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+          "every_dimension_preactivation_history_stays_invisible",
+          "every_dimension_certificate_replays_exact_robot_report",
+          "all_finalized_chunk_retries_are_idempotent",
+          "native_upload_custody_preserved_and_fixture_reviews_recorded",
+          "native_projections_match_payloads",
+          "signed_accumulator_checkpoint",
+          "native_csv_and_ads_reread_certificates",
+          "every_exported_leg_preserves_source_department_or_absence",
+          "every_exported_leg_preserves_complete_declared_source_dimensions",
+          "independent_fa_verify_ads_proof",
+          "independent_fa_verify_authenticates_every_exported_dimension_set",
+          "independent_verifier_rejects_tampered_extract",
+          "independent_verifier_rejects_dimension_only_tampering",
+          "independent_verifier_rejects_each_source_dimension_kind_tamper",
+          "resume_inputs_and_native_book_identity_pinned",
+          "original_native_packages_and_publication_receipts_preserved",
+          "original_finalize_proposals_durable_before_approval"
+        ],
+        "resolved_original_failure": {
+          "source_entry_id": "OK:66000:2024:10:ACTUALS:9000:70000",
+          "source_legs": 157,
+          "source_leg_dimension_count_distribution": {
+            "3": 68,
+            "2": 88,
+            "1": 1
+          },
+          "native_prepared_entry": {
+            "transcript_line": 107,
+            "event": "migration_import_prepared",
+            "native_entry_vid": "19a583dfaa380048b6061599daed2e1b",
+            "proposal_digest": "c6bae2558c651ca5da2d4995cdefae55ec29392065fab16501a055351c1aa3dd",
+            "native_leg_count": 157,
+            "effective_period": "FY2024-P10",
+            "run_vid": "54a99aead45587c40d52f1b82f203248",
+            "package_oid": "259142b9ab52924ef03040fb5d3abe2ba5af4f4b60ed01e0a3220f112f4dde67"
+          },
+          "native_staged_entry": {
+            "transcript_line": 204,
+            "event": "migration_import_package",
+            "native_entry_vid": "19a583dfaa380048b6061599daed2e1b",
+            "proposal_digest": "c6bae2558c651ca5da2d4995cdefae55ec29392065fab16501a055351c1aa3dd",
+            "native_leg_count": 157,
+            "effective_period": "FY2024-P10",
+            "run_vid": "54a99aead45587c40d52f1b82f203248",
+            "package_oid": "259142b9ab52924ef03040fb5d3abe2ba5af4f4b60ed01e0a3220f112f4dde67",
+            "recorded_at": 202
+          },
+          "native_finalization": {
+            "transcript_line": 272,
+            "event": "migration_controlled",
+            "data": {
+              "action": "finalize",
+              "already_recorded": false,
+              "chunk_count": 3,
+              "control_entry": "f780aada96d21bdc39f43f48bb09f54f",
+              "from": "Open",
+              "recorded_at": 252,
+              "run_key": "omes-66000-run-006",
+              "run_vid": "54a99aead45587c40d52f1b82f203248",
+              "tie_out_digest": "bb8b0ed3ffff82975f6ff06270b9c272e795946fb859b039360888cd004c0272",
+              "to": "Finalized"
+            }
+          },
+          "scope": "One native Entry retains all 157 original legs. Source row/dimension and export/proof assertions passed without splitting or netting the source Entry."
+        },
+        "reproduction": {
+          "fresh_output_required": true,
+          "commands": [
+            [
+              "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+              "-B",
+              "scripts/public_ledger.py",
+              "run",
+              "--agency",
+              "66000",
+              "--source",
+              "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv",
+              "--out",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66",
+              "--fa",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--fa-verify",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+            ]
+          ],
+          "note": "Executed command; choose a fresh output path before reproduction."
+        }
+      },
+      {
+        "case": "university-source-bound",
+        "status": "PASS",
+        "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+        "source_binding_requested": true,
+        "agency": "66000",
+        "agency_name": "S. E. OKLA. ST. UNIV.",
+        "scope": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+        "trust_scope": "Verifier uses caller-trusted key of freshly created test book; no external authentication claim",
+        "review_scope": "Source and helper documents are AgentUpload. A distinct local test principal records native Reviewed attestations; this exercises evidence admission, not independently authenticated human examination. Generated transforms do not assert the receipt-derived Generated provenance grade.",
+        "approval_scope": "Distinct local test principals exercise native SoD; not independent human authentication",
+        "source_rows": 1055,
+        "source_columns": 36,
+        "monetary_legs": 1051,
+        "zero_rows_retained_in_evidence": 4,
+        "account_count": 223,
+        "migration_runs": 9,
+        "migration_entries": 27,
+        "dimension_value_counts": {
+          "department": 8,
+          "fund": 1,
+          "product": 9,
+          "project": 0
+        },
+        "largest_source_entry_legs": 157,
+        "input": {
+          "repository_path": "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv",
+          "sha256": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+          "original_selection_sha256": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+          "distribution_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+          "distribution_url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv"
+        },
+        "runtime_pins": {
+          "driver_sha256": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+          "fa_sha256": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+          "fa_verify_sha256": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+          "normalizer_sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+          "python_version": [
+            3,
+            12,
+            14
+          ]
+        },
+        "execution_wrapper": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66.execution.json",
+          "sha256": "e3f4d8c68a7af0c93cca0423ddfa044a4227b1745b2b468f5c3c78a5f1b13ca0",
+          "bytes": 5216
+        },
+        "execution_metadata": {
+          "argv": [
+            "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+            "-B",
+            "scripts/public_ledger_source_bound_replay.py",
+            "--repo",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+            "run",
+            "--agency",
+            "66000",
+            "--source",
+            "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv",
+            "--out",
+            "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66",
+            "--fa",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+            "--fa-verify",
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+          ],
+          "artifact_provenance": {
+            "archive_bytes": 43626792,
+            "archive_path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/public-ledger-native-f3f1d66.zip",
+            "archive_sha256": "b55fc095db4ecd7e78d2cd037e338eb4fec3faac7bed6c8f9331a0a3f05d144f",
+            "artifact_id": 13251708810,
+            "binary_bytes": {
+              "fa": 235320912,
+              "fa-verify": 20226944
+            },
+            "binary_sha256": {
+              "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+              "fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+            },
+            "cargo_lock_blob_sha1": "bcc30a166ddaaa598635650be66018bd341b019d",
+            "executable_checks": [
+              {
+                "command": [
+                  "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+                  "--help"
+                ],
+                "exit_code": 0
+              },
+              {
+                "command": [
+                  "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+                  "--help"
+                ],
+                "exit_code": 0
+              }
+            ],
+            "executable_directory": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug",
+            "native_manifest_sha256": "86243acc68a5f7dfc8523570176903008ef3c6a827d4dad92cc4f4673065a32b",
+            "source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+            "status": "VERIFIED",
+            "verified_utc": "2026-11-03T17:19:11.350058+00:00",
+            "workflow_conclusion": "failure: one object test failed; artifact build and stock workloads succeeded",
+            "workflow_job": 126017782741,
+            "workflow_run": 41664093934
+          },
+          "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+          "elapsed_seconds": 223.326,
+          "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+          "exit_code": 0,
+          "finished_utc": "2026-11-03T17:27:17.374933+00:00",
+          "pins_unchanged": true,
+          "report_sha256": "821c5fd8be75c96d5b10602929b50d979f3d34915333eae9840c0f1cff272d7f",
+          "reported_result": {
+            "account_count": 223,
+            "commands": 521,
+            "elapsed_seconds": 222.804,
+            "migration_entries": 27,
+            "migration_runs": 9,
+            "monetary_rows": 1051,
+            "source_rows": 1055,
+            "status": "PASS"
+          },
+          "repository_head_at_launch": "a0c79c57cfc07f48635584fa1b97a7f4e1379c40",
+          "sha256_after": {
+            "artifact_provenance": "58b57a9f5b2403772b087c7e0594e1df90f1fa03c4ac1efac84bb5570ff3d1d7",
+            "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+            "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+            "fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+            "scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+            "scripts/public_ledger_source.py": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+            "scripts/public_ledger_source_bound_replay.py": "06491a649e134d571c1428b0156d092a6b7040b53a0ede4315224c0d90bdd371",
+            "wrapper": "84aaa7d8e408fe484ef2c5639efa158a40c51284564ae67089825e89d374761d"
+          },
+          "sha256_before": {
+            "artifact_provenance": "58b57a9f5b2403772b087c7e0594e1df90f1fa03c4ac1efac84bb5570ff3d1d7",
+            "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+            "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+            "fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+            "scripts/public_ledger.py": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+            "scripts/public_ledger_source.py": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+            "scripts/public_ledger_source_bound_replay.py": "06491a649e134d571c1428b0156d092a6b7040b53a0ede4315224c0d90bdd371",
+            "wrapper": "84aaa7d8e408fe484ef2c5639efa158a40c51284564ae67089825e89d374761d"
+          },
+          "source_binding_requested": true,
+          "started_utc": "2026-11-03T17:23:34.044101+00:00",
+          "status": "PASS",
+          "stderr.log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout.log_sha256": "096419cda9cd9b16b026c119f92dc2bd0d236d0909b88355ac8d3808bdb95d7f",
+          "stock_driver_blob_pins": {
+            "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv": "c4a3e99dcd7e252c67223030cf384b5b95abbfce",
+            "scripts/public_ledger.py": "683790ce4a6be0170b05952bac636821af11fc30",
+            "scripts/public_ledger_source.py": "996b2fc1f6c640aaf6151674a5c7e8cb82dc0e14"
+          }
+        },
+        "report": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/report.json",
+          "sha256": "821c5fd8be75c96d5b10602929b50d979f3d34915333eae9840c0f1cff272d7f",
+          "bytes": 1249767
+        },
+        "manifest": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/manifest.json",
+          "sha256": "25e7032a428abad37ed5917659e9e211b3b09e6d0484ce2b0c190090607d7151",
+          "bytes": 641959
+        },
+        "recovery_pins_file": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/recovery/pins.json",
+          "sha256": "3e1a01b2c79a3dd51a80ebf189b1bbf9a2ed43ce27aead1a6de73b899b056052",
+          "bytes": 2254
+        },
+        "prepared_artifact_sha256": {
+          "chart.json": "f53c706d7ea0472973d139fcc4aa75d3c952b8ca4136946bc43d43164dea2dc5",
+          "column_map.toml": "a4ff851b7fc855f21c724b5aef274b3ca17ffd72577d03bb3efd4e37f6fe0881",
+          "manifest.json": "25e7032a428abad37ed5917659e9e211b3b09e6d0484ce2b0c190090607d7151",
+          "original-agency.csv": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+          "run-000.csv": "52f5badd06c30d015f0dd2f36a37354f390ee3ef4baabff156553a18d532ffa0",
+          "run-001.csv": "4637e795ed609310ef1fccc783c4ee80e4cd05b432d6b17134c411c50735509e",
+          "run-002.csv": "e554e4074104da0d9a538002bfc62d74e5a4e7505b096337c4c39372761dfb3d",
+          "run-003.csv": "870c25d557bf7d0c24458d876e62e80a0baa67601c2f8e4ed3203345cb7d6294",
+          "run-004.csv": "7912c364d8d38846bb40b4cccffe0ceec1f8b48c107a2844030a670c0e70ddd3",
+          "run-005.csv": "2119b149158be3d7e8f28903c72f5c86699fbf2f6ca0892e004760d7698ddf50",
+          "run-006.csv": "7a7c6ca0a698c323552e953d66e415d035d24195439d51a5f53eb8cc6a28a86e",
+          "run-007.csv": "8ca57adc6549a30b9244880b98efc6b96e66873b8455c836689b3eff0b27bdf3",
+          "run-008.csv": "9e9d5c808e2c39e0d02fa5c0f6aafa54fdb36c8ea91c9cc80381dd31f7185866"
+        },
+        "recovery": {
+          "attempt": "attempts/000001",
+          "book_id": "61fd8184428e88d98dabec2947584018",
+          "native_packages_recovered": 0,
+          "original_preactivation_seq": 240,
+          "resumed": false
+        },
+        "driver_commands_in_completed_attempt": 521,
+        "elapsed_seconds_in_completed_attempt": 222.804,
+        "transcripts": [
+          {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/attempts/000001/commands.jsonl",
+            "sha256": "17198af075bd927e48cdd41e6161d67600494259580cff2e1f78295272880a9f",
+            "bytes": 3625104,
+            "attempt": "000001",
+            "native_command_receipts": 521,
+            "exit_counts": {
+              "0": 517,
+              "8": 4
+            }
+          }
+        ],
+        "ads_files": {
+          "ADS_Coordinate_Certificate.toml": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/attempts/000001/ads/ADS_Coordinate_Certificate.toml",
+            "sha256": "60fb16cac2581dad0bfe7aa0f24aafe5d6fe9f17eeb9cffa35e6445f063abe34",
+            "bytes": 422
+          },
+          "ADS_Proof.fab": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/attempts/000001/ads/ADS_Proof.fab",
+            "sha256": "9238641488bb752347d522f0595a7374c7f44d0c0aa1637775e6f718c81725b6",
+            "bytes": 53159591
+          },
+          "ADS_Proof.receipt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/attempts/000001/ads/ADS_Proof.receipt",
+            "sha256": "729a94525763b3f2b3de875d9f9323e6cf240281681b9c210ed0d0581456b5df",
+            "bytes": 219
+          },
+          "Chart_of_Accounts.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/attempts/000001/ads/Chart_of_Accounts.txt",
+            "sha256": "91c98b496e8d636143af81cdd8f89c6c482a7e7f448427e4c39580afbcd424a0",
+            "bytes": 9620
+          },
+          "GL_Detail.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/attempts/000001/ads/GL_Detail.txt",
+            "sha256": "5da9b7a9efc16b44f2f1cf11cee7f55af32374591a7ac301dafaadeeeaf49f1c",
+            "bytes": 348333
+          },
+          "Trial_Balance.txt": {
+            "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/attempts/000001/ads/Trial_Balance.txt",
+            "sha256": "7b98ef67fb8f1a4914acfd2e9807ecd9b99659b397c3d6b33e7c5a7e96b7b94a",
+            "bytes": 7867
+          }
+        },
+        "dimension_certificates": {
+          "department": [
+            {
+              "source_value": "1000001",
+              "period": "FY2024-P12",
+              "certificate_oid": "538f44d7cf22fe3f0b39ffd88db708ec22de4036c40f044abfe90f5e56567044"
+            },
+            {
+              "source_value": "1100001",
+              "period": "FY2024-P12",
+              "certificate_oid": "fee62e01d39fb584f4be2424f4baabf317f0c6cf110eb986d640a67c37e22466"
+            },
+            {
+              "source_value": "2100001",
+              "period": "FY2024-P12",
+              "certificate_oid": "6316d8801b46c16137d2d37e7636c339aadd62631845e85b1279d8b72ca682ef"
+            },
+            {
+              "source_value": "7999999",
+              "period": "FY2024-P12",
+              "certificate_oid": "6bd1244ee2510d2a5662af233a01de937b0811a6b865e81957d71115024a8b27"
+            },
+            {
+              "source_value": "8900001",
+              "period": "FY2024-P12",
+              "certificate_oid": "41b09918759719f2891381d914998e0a7f1e4334be377684eb1604641779bfba"
+            },
+            {
+              "source_value": "9000001",
+              "period": "FY2024-P12",
+              "certificate_oid": "84782fd865c09a946e89a9fff9b81b633e415108a6c5cf743a3db6db8aa4c1e9"
+            },
+            {
+              "source_value": "9139310",
+              "period": "FY2024-P12",
+              "certificate_oid": "1d67c2fcf0b4cf76752ed04c6c8ff4bf255ad2c0200b5a7bea39e3ffeb89743d"
+            },
+            {
+              "source_value": "9700001",
+              "period": "FY2024-P12",
+              "certificate_oid": "9edbe559b6b537bd06d7846a7e3440f7c7594146f736009158aec597ad340261"
+            }
+          ],
+          "fund": [
+            {
+              "source_value": "9000",
+              "period": "FY2024-P12",
+              "certificate_oid": "a4046496a4ca1d3b25a5bf6883d65d29ee2bbace76baeda1ca0ab4c25e71c69f"
+            }
+          ],
+          "product": [
+            {
+              "source_value": "01",
+              "period": "FY2024-P12",
+              "certificate_oid": "dc52e567a47f314fc2dcc015a503096c787504d2a7181a53f53678b2eb72188c"
+            },
+            {
+              "source_value": "02",
+              "period": "FY2024-P12",
+              "certificate_oid": "e4fcb260536948270b120a7877e3088dceeb1a59e619d93e6ea9e7d4f2af66d7"
+            },
+            {
+              "source_value": "03",
+              "period": "FY2024-P12",
+              "certificate_oid": "3f966e62ce87d5d1888c1af53d65da29e39a6a331dd6481495e50a5757591ae0"
+            },
+            {
+              "source_value": "04",
+              "period": "FY2024-P12",
+              "certificate_oid": "a8232a842e20dfb27edff4bc5c1740becc180ac16a6826be5f4cbc10e7b289f6"
+            },
+            {
+              "source_value": "05",
+              "period": "FY2024-P12",
+              "certificate_oid": "d17bd257cb8e84a90e83d3bc850e7d33a26adf6ee1d1ecc6be6a15f95aeb2a0f"
+            },
+            {
+              "source_value": "06",
+              "period": "FY2024-P12",
+              "certificate_oid": "7db4873ef26729b756f403a13dde5d146108a351f8b731945fe057bb0038e40c"
+            },
+            {
+              "source_value": "07",
+              "period": "FY2024-P12",
+              "certificate_oid": "99340d74f9448b1aedee38be0c54e5ab33b4813c58eca4350022f9c2eb500d6a"
+            },
+            {
+              "source_value": "08",
+              "period": "FY2024-P12",
+              "certificate_oid": "f1c487102637307cdd223a39f8bafae84b1c0fbfa86c9998f41d3e970a1e5c5d"
+            },
+            {
+              "source_value": "09",
+              "period": "FY2024-P12",
+              "certificate_oid": "aa245c518f79e102d9046957c6acdc8ddc41251789e38cee9da908ff4657e8dd"
+            }
+          ],
+          "project": []
+        },
+        "positive_verification": {
+          "attempt": "000001",
+          "transcript_line": 517,
+          "exit": 0,
+          "verdict": "verified",
+          "extract": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/attempts/000001/ads",
+          "failed_checks": []
+        },
+        "negative_controls": {
+          "amount": {
+            "mutation": {
+              "delta_cents": 1,
+              "line": 2,
+              "new_amount": "332.73",
+              "old_amount": "332.72"
+            },
+            "verification": {
+              "attempt": "000001",
+              "transcript_line": 518,
+              "exit": 8,
+              "verdict": "failed",
+              "extract": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/attempts/000001/ads-tampered",
+              "failed_checks": [
+                {
+                  "check": "ads_extract",
+                  "scope": "completeness",
+                  "result": "fail",
+                  "reason": "GL_Detail entry 4ff76d42b24aa178b90d723b1f2fdf3a (recorded at 139) is no proven entry selected through 2024-06-30; a proven entry recorded at 139 (effective 2024-04-30, 122 legs) is missing from GL_Detail"
+                }
+              ]
+            }
+          },
+          "dimensions": {
+            "department": {
+              "mutation": {
+                "dimension": 3,
+                "entry_id": "4ff76d42b24aa178b90d723b1f2fdf3a",
+                "leg": 1,
+                "line": 2,
+                "new_value": "c0230da134b54fb8fbc326fea53778fb",
+                "old_value": "c0230da134b54fb8fbc326fea53778fa"
+              },
+              "verification": {
+                "attempt": "000001",
+                "transcript_line": 519,
+                "exit": 8,
+                "verdict": "failed",
+                "extract": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/attempts/000001/ads-dimension-tampered",
+                "failed_checks": [
+                  {
+                    "check": "ads_extract",
+                    "scope": "completeness",
+                    "result": "fail",
+                    "reason": "GL_Detail entry 4ff76d42b24aa178b90d723b1f2fdf3a (recorded at 139) is no proven entry selected through 2024-06-30; a proven entry recorded at 139 (effective 2024-04-30, 122 legs) is missing from GL_Detail"
+                  }
+                ]
+              }
+            },
+            "fund": {
+              "mutation": {
+                "dimension": 7,
+                "entry_id": "4ff76d42b24aa178b90d723b1f2fdf3a",
+                "leg": 1,
+                "line": 2,
+                "new_value": "6bc522ade3cac02bdb539a0edb60334a",
+                "old_value": "6bc522ade3cac02bdb539a0edb60334b"
+              },
+              "verification": {
+                "attempt": "000001",
+                "transcript_line": 521,
+                "exit": 8,
+                "verdict": "failed",
+                "extract": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/attempts/000001/ads-fund-tampered",
+                "failed_checks": [
+                  {
+                    "check": "ads_extract",
+                    "scope": "completeness",
+                    "result": "fail",
+                    "reason": "GL_Detail entry 4ff76d42b24aa178b90d723b1f2fdf3a (recorded at 139) is no proven entry selected through 2024-06-30; a proven entry recorded at 139 (effective 2024-04-30, 122 legs) is missing from GL_Detail"
+                  }
+                ]
+              }
+            },
+            "product": {
+              "mutation": {
+                "dimension": 5,
+                "entry_id": "ef1440fd2eaa74a5c08dbfb9af3c6917",
+                "leg": 1,
+                "line": 545,
+                "new_value": "3aea11932ca98aac2e8300f420400c1c",
+                "old_value": "3aea11932ca98aac2e8300f420400c1d"
+              },
+              "verification": {
+                "attempt": "000001",
+                "transcript_line": 520,
+                "exit": 8,
+                "verdict": "failed",
+                "extract": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/attempts/000001/ads-product-tampered",
+                "failed_checks": [
+                  {
+                    "check": "ads_extract",
+                    "scope": "completeness",
+                    "result": "fail",
+                    "reason": "GL_Detail entry ef1440fd2eaa74a5c08dbfb9af3c6917 (recorded at 211) is no proven entry selected through 2024-06-30; a proven entry recorded at 211 (effective 2024-04-30, 157 legs) is missing from GL_Detail"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "checks": [
+          "pinned_source_bytes",
+          "complete_agency_row_coverage",
+          "all_source_groups_balance_exactly",
+          "no_subcent_rounding",
+          "all_original_chartfields_retained",
+          "source_and_helper_agent_uploads_have_native_local_reviews",
+          "preparation_retry_is_idempotent",
+          "all_staged_activity_is_invisible",
+          "native_approved_finalization",
+          "every_month_account_cell_matches_source",
+          "cumulative_balances_match_source",
+          "native_proposal_legs_preserve_every_source_row",
+          "gross_debit_credit_account_cells_match_source",
+          "historical_preactivation_prefix_stays_invisible",
+          "native_registers_equal_journal_fold",
+          "every_native_leg_preserves_source_department_or_absence",
+          "native_department_monthly_and_cumulative_net_and_gross_match_source",
+          "department_preactivation_history_stays_invisible",
+          "department_certificates_replay_exact_robot_reports",
+          "every_native_leg_preserves_complete_declared_source_dimensions",
+          "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+          "every_dimension_preactivation_history_stays_invisible",
+          "every_dimension_certificate_replays_exact_robot_report",
+          "all_finalized_chunk_retries_are_idempotent",
+          "native_upload_custody_preserved_and_fixture_reviews_recorded",
+          "native_projections_match_payloads",
+          "signed_accumulator_checkpoint",
+          "native_csv_and_ads_reread_certificates",
+          "every_exported_leg_preserves_source_department_or_absence",
+          "every_exported_leg_preserves_complete_declared_source_dimensions",
+          "independent_fa_verify_ads_proof",
+          "independent_fa_verify_authenticates_every_exported_dimension_set",
+          "independent_verifier_rejects_tampered_extract",
+          "independent_verifier_rejects_dimension_only_tampering",
+          "independent_verifier_rejects_each_source_dimension_kind_tamper",
+          "resume_inputs_and_native_book_identity_pinned",
+          "original_native_packages_and_publication_receipts_preserved",
+          "original_finalize_proposals_durable_before_approval"
+        ],
+        "resolved_original_failure": {
+          "source_entry_id": "OK:66000:2024:10:ACTUALS:9000:70000",
+          "source_legs": 157,
+          "source_leg_dimension_count_distribution": {
+            "3": 68,
+            "2": 88,
+            "1": 1
+          },
+          "native_prepared_entry": {
+            "transcript_line": 107,
+            "event": "migration_import_prepared",
+            "native_entry_vid": "ef1440fd2eaa74a5c08dbfb9af3c6917",
+            "proposal_digest": "b7922898012bb508fc2b240bdddd8e5af2cadcf9483a0f2d3b5007f39a71ca16",
+            "native_leg_count": 157,
+            "effective_period": "FY2024-P10",
+            "run_vid": "e44c8a6e7350191b777a756ccc9ca4c7",
+            "package_oid": "ff29b952b0171d371151dbb737d3ea0011a7e4fa2cc70db7b38f8cbc6eb8bd57"
+          },
+          "native_staged_entry": {
+            "transcript_line": 204,
+            "event": "migration_import_package",
+            "native_entry_vid": "ef1440fd2eaa74a5c08dbfb9af3c6917",
+            "proposal_digest": "b7922898012bb508fc2b240bdddd8e5af2cadcf9483a0f2d3b5007f39a71ca16",
+            "native_leg_count": 157,
+            "effective_period": "FY2024-P10",
+            "run_vid": "e44c8a6e7350191b777a756ccc9ca4c7",
+            "package_oid": "ff29b952b0171d371151dbb737d3ea0011a7e4fa2cc70db7b38f8cbc6eb8bd57",
+            "recorded_at": 211
+          },
+          "native_finalization": {
+            "transcript_line": 272,
+            "event": "migration_controlled",
+            "data": {
+              "action": "finalize",
+              "already_recorded": false,
+              "chunk_count": 3,
+              "control_entry": "afd770300cd7852454d3c30741f5651e",
+              "from": "Open",
+              "recorded_at": 261,
+              "run_key": "omes-66000-run-006",
+              "run_vid": "e44c8a6e7350191b777a756ccc9ca4c7",
+              "tie_out_digest": "103fc7fc5b6595abd95fed6cb96485c76f53724d0cad54a13873d9509aae0c9c",
+              "to": "Finalized"
+            }
+          },
+          "scope": "One native Entry retains all 157 original legs. Source row/dimension and export/proof assertions passed without splitting or netting the source Entry."
+        },
+        "reproduction": {
+          "fresh_output_required": true,
+          "commands": [
+            [
+              "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+              "-B",
+              "scripts/public_ledger_source_bound_replay.py",
+              "--repo",
+              "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+              "run",
+              "--agency",
+              "66000",
+              "--source",
+              "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv",
+              "--out",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66",
+              "--fa",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--fa-verify",
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+            ]
+          ],
+          "note": "Executed command; choose a fresh output path before reproduction."
+        },
+        "source_binding_harness": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_source_bound_replay.py",
+          "sha256": "06491a649e134d571c1428b0156d092a6b7040b53a0ede4315224c0d90bdd371",
+          "bytes": 1374,
+          "repository_path": "scripts/public_ledger_source_bound_replay.py",
+          "transformation": "Adds only --bind-source to native preparation, including exact retry; retains all original driver assertions.",
+          "pin_scope": "The execution wrapper binds this companion separately from the stock recovery driver pins."
+        },
+        "complete_native_source_bindings": [
+          {
+            "transcript_line": 138,
+            "event": "migration_import_package",
+            "binding": {
+              "book_id": "61fd8184428e88d98dabec2947584018",
+              "complete": true,
+              "expected_chunks": 3,
+              "manifest_digest": "4c1f8a1819e8444848ac21055d0ef17e5faf8be358eccc7e4de645d8ef367b04",
+              "manifest_vid": "12cd668f4edcae13c4d75b3717767c1e",
+              "missing_chunks": [],
+              "package_commit": "dbe4b988deeb468c04bf30942cbf4b8030120ef7e4bbb7a7be1432fa44f68265",
+              "package_oid": "e5d2d541d8ed02c7cefaf3829b2567ec19535ccd4f22d387245704f3fac83bca",
+              "recorded_chunks": 3,
+              "run_body_digest": "0e59848f5f890e775acf9ea52dcd1f283c5e85c203f36959002d2442f6613d8f",
+              "run_vid": "ec51ce1fd2f74b3796e57c0da17730e2",
+              "source_commit": "213884457186b0b60b6497eca32b5bebb1e634295bc718131333a7a92de7783a",
+              "source_oid": "e1b96c90fa6e6a4d1f5bbaea1527d269402b21cc07bfa45bcb07f245f5aca500",
+              "source_rows": 323,
+              "unexpected_chunks": []
+            }
+          },
+          {
+            "transcript_line": 149,
+            "event": "migration_import_package",
+            "binding": {
+              "book_id": "61fd8184428e88d98dabec2947584018",
+              "complete": true,
+              "expected_chunks": 3,
+              "manifest_digest": "b8b669c8b8a533da4c509f01b5df2b51dbb3de6486cf526ecfb2f2d8f014eddd",
+              "manifest_vid": "43f42a2e9bc895943debd66d194303f5",
+              "missing_chunks": [],
+              "package_commit": "5c74cbb46ef116cc4f2f3e46a561ae7172aa250797f6144170fb9322fa062077",
+              "package_oid": "862fab0d0ac8f1674986f51c410ef97d319562488f757c2c62d765d91240c851",
+              "recorded_chunks": 3,
+              "run_body_digest": "1df7d1c30814a76176dc8ba946937a615e75b3f75c4a3a64d7dc0d8f5e08abc6",
+              "run_vid": "6b91646c808ff7af49d1e8c4b6b60225",
+              "source_commit": "24f822720432613ebf90b01d9ba91fc5234042967402abb56bed659826aa79c9",
+              "source_oid": "3af78c1e5966659d6004a6c7080731164eabe1059aa1cbc25102244a2c497aca",
+              "source_rows": 9,
+              "unexpected_chunks": []
+            }
+          },
+          {
+            "transcript_line": 160,
+            "event": "migration_import_package",
+            "binding": {
+              "book_id": "61fd8184428e88d98dabec2947584018",
+              "complete": true,
+              "expected_chunks": 3,
+              "manifest_digest": "c02c137b27dcef0b0669197fd4e9314f70caef57718664db9aa8abf8e904e48d",
+              "manifest_vid": "c437a9be6382ea220ce6b2223f8f3de4",
+              "missing_chunks": [],
+              "package_commit": "e6b299980a3fc3c03c70cac726f5a2c334c13ef760df2deb5c198516b9bffddd",
+              "package_oid": "ed4d29db58f883cdf912925d5264ae718ca8ce627ac2f35835d5683f23a918a2",
+              "recorded_chunks": 3,
+              "run_body_digest": "b2d09cc37224d2201cc09e97214b2badc172d4680108d6f2fa187c80105c53c3",
+              "run_vid": "056bedbaa4aa641ad16fa3df51339589",
+              "source_commit": "edc433f86cc57225888338028e6b8441ccd4a03459abbcf87021a6be62e18bb7",
+              "source_oid": "5500d070f1c92507742b1710c3808892f0e731eca3249f7ed46e5f5bce1fee07",
+              "source_rows": 167,
+              "unexpected_chunks": []
+            }
+          },
+          {
+            "transcript_line": 171,
+            "event": "migration_import_package",
+            "binding": {
+              "book_id": "61fd8184428e88d98dabec2947584018",
+              "complete": true,
+              "expected_chunks": 3,
+              "manifest_digest": "7317eaa4aaaed4cfc06585bf6f02ebb18cafaf1a68ea4173b4654a6c7ad79a53",
+              "manifest_vid": "7535cb5013d10f7aaaf526d469993f76",
+              "missing_chunks": [],
+              "package_commit": "c2a1002f985dc788d35bab9d87ac910e8ea518af52856daf366e2453cbb31783",
+              "package_oid": "0a1c6ee7afee25ab33ae2de91ed6d695429823b8dd2451b2e9971f3256ad8e79",
+              "recorded_chunks": 3,
+              "run_body_digest": "334668d79c3585074567ae63d7f888e52a12c2f72f49246f09a5e56cee2ba750",
+              "run_vid": "714323c123a41c35ca48a01aa4f3b26e",
+              "source_commit": "aa986ba591505c8319ff9d87953fa3921e2c52c265e49065dfc63ebefdc0e096",
+              "source_oid": "33dae7a9ae24359de885f8caaa7452e352bf0387f3c90d8e37fdadf97d52fc54",
+              "source_rows": 8,
+              "unexpected_chunks": []
+            }
+          },
+          {
+            "transcript_line": 182,
+            "event": "migration_import_package",
+            "binding": {
+              "book_id": "61fd8184428e88d98dabec2947584018",
+              "complete": true,
+              "expected_chunks": 3,
+              "manifest_digest": "45c3539e92a25b6880df521073658f32f1620864511b6f3c90a01cd495e9a45a",
+              "manifest_vid": "e9c050ed6517040709e350efc0d029b6",
+              "missing_chunks": [],
+              "package_commit": "b924d1065269140c02f8889714df0672d4b23c2510249542ed3ae5be838a8f51",
+              "package_oid": "087ea81164f7994c9307c0a9051b031efae9c95cfc9d025004ebbf106da7cdad",
+              "recorded_chunks": 3,
+              "run_body_digest": "3291bb820bf50da0c9c4f7f3bd4854b0a945501a4f9214c2e1ee815393f95530",
+              "run_vid": "4e25f9f2ac2629f28d8d72003c9a822f",
+              "source_commit": "1c2b52052d6f752e6782fade3a21981966550db35527e7f42d827648d739603b",
+              "source_oid": "3182c15c1f225fbb66072c8d21bd02c4f3cc21f574fe7d4d533620f0bf82fccd",
+              "source_rows": 18,
+              "unexpected_chunks": []
+            }
+          },
+          {
+            "transcript_line": 193,
+            "event": "migration_import_package",
+            "binding": {
+              "book_id": "61fd8184428e88d98dabec2947584018",
+              "complete": true,
+              "expected_chunks": 3,
+              "manifest_digest": "4f4de20911b4abcbe7407e4089b8ddfb7c999b33be03d482d65fda696214834c",
+              "manifest_vid": "34966c3360001cb91b1afba3608b46da",
+              "missing_chunks": [],
+              "package_commit": "262b0370a55fede5cd814c53c635aed130bed4176c7c5dc030d8f8580288c673",
+              "package_oid": "d3347bf443e5fdbfd63f1d4257c1e9eb28b57ed76daeacf813389f9660033eeb",
+              "recorded_chunks": 3,
+              "run_body_digest": "378822084a4c5bd0b01b7a1c827d15a0ac5dd945d260304d7e9bb7037784aab5",
+              "run_vid": "5c42ebda1d9dd56c33cb119f47628421",
+              "source_commit": "8083eaab807869ba7f7644cef8dac3d973c690e8b42e2a27da6ffee1e7a86eeb",
+              "source_oid": "c49a79f53d293ee51460e15350d4eed97e6efb03fef1e71b9b245a5309df94dc",
+              "source_rows": 18,
+              "unexpected_chunks": []
+            }
+          },
+          {
+            "transcript_line": 204,
+            "event": "migration_import_package",
+            "binding": {
+              "book_id": "61fd8184428e88d98dabec2947584018",
+              "complete": true,
+              "expected_chunks": 3,
+              "manifest_digest": "31d80d75d523475f8fc5d3e64d07667c0f6592804309f36c2ca88ff5ba4601c4",
+              "manifest_vid": "a6a036eec5a307ddff82cbe31f95aec8",
+              "missing_chunks": [],
+              "package_commit": "4305e9bcd3dc0d7b95c0d9e02f2df0fe54e34248abb94ba0a67ddb6c0acc5c1b",
+              "package_oid": "ff29b952b0171d371151dbb737d3ea0011a7e4fa2cc70db7b38f8cbc6eb8bd57",
+              "recorded_chunks": 3,
+              "run_body_digest": "7e428fdcc67b75230046c5a504fef0981a5eff972ef4279c4be2e5f8f73465d2",
+              "run_vid": "e44c8a6e7350191b777a756ccc9ca4c7",
+              "source_commit": "5b95dedbdfd4b516f7c35148842fd931aaa3169a85f4d87a0cb899a9980116ce",
+              "source_oid": "8921f4a5a2dcf3d3c24110e4c7087cab5707b1609c3ff800a55ab08e5b6c7c44",
+              "source_rows": 408,
+              "unexpected_chunks": []
+            }
+          },
+          {
+            "transcript_line": 215,
+            "event": "migration_import_package",
+            "binding": {
+              "book_id": "61fd8184428e88d98dabec2947584018",
+              "complete": true,
+              "expected_chunks": 3,
+              "manifest_digest": "3adc655219ac707169ce012ce01cfd52b4a799c4380f84ffced0d94310a6ede7",
+              "manifest_vid": "2886dd561a3fb57f4c9a9b0302c4a67b",
+              "missing_chunks": [],
+              "package_commit": "280f6bf7c2bc0f513644bac3eb4026f639cbb8baf123e72a25a88830feed18b7",
+              "package_oid": "f76fdb781601b6dee6c4abccbd4b46e312ef8813f7f357d5d716d1a3239630ce",
+              "recorded_chunks": 3,
+              "run_body_digest": "6ab16f64c1c2b5cc2cf6d4bfc7380040594dfb1fc6d5717355a4c0efe4156561",
+              "run_vid": "364536996d0ef0f14420022fbdad1be1",
+              "source_commit": "bd4a5747eb20cb31d59e8d058e951b03653d1c3e21100d8caf8b7d9bd712cc1c",
+              "source_oid": "9b62f9240854c84857e7d4337ddbbab1c3de9007cfcb094bf653250e9cdec521",
+              "source_rows": 86,
+              "unexpected_chunks": []
+            }
+          },
+          {
+            "transcript_line": 226,
+            "event": "migration_import_package",
+            "binding": {
+              "book_id": "61fd8184428e88d98dabec2947584018",
+              "complete": true,
+              "expected_chunks": 3,
+              "manifest_digest": "d48c297af9d73bc045eaa1bb225e3f92ab71e144389eee3ac0e1f6339951994e",
+              "manifest_vid": "90fb5bf472ca1d555bf3b6c65939c49f",
+              "missing_chunks": [],
+              "package_commit": "b952a98efa20d947813796b4158abcda82dc5f353c142a9a4556ad4ef839b8ba",
+              "package_oid": "ba5832f70ec349c72ecc6fbd55c6aa683be28d9400a24475ca326cdca42bae81",
+              "recorded_chunks": 3,
+              "run_body_digest": "e50d720338b371f578719a0a4c722f841034d45f4c5421e99833952af5f0cad3",
+              "run_vid": "01deb841d38483ba3cdabcec701535a2",
+              "source_commit": "c796ab68e3c6ec4d1fd1e7bd3e318195017eb5e1455753d42a3f844aad0315de",
+              "source_oid": "f16a69ed0e3c421d2b26d37eb0b4bda3c700ea8d166c1e45a3354a94046677ef",
+              "source_rows": 14,
+              "unexpected_chunks": []
+            }
+          }
+        ]
+      }
     ],
+    "pending_acceptance": [],
     "superseded_target": {
       "source_commit": "9700db7711c91cc959983b3d04e06772829d943e",
       "workflow_run": 41659104697,
       "reason": "Use the later exact source artifact with the corrected XBRL test fixture; no successful runtime EntryFragment claim was recorded for the earlier target."
+    },
+    "executed_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+    "artifact_provenance": {
+      "archive_bytes": 43626792,
+      "archive_path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/public-ledger-native-f3f1d66.zip",
+      "archive_sha256": "b55fc095db4ecd7e78d2cd037e338eb4fec3faac7bed6c8f9331a0a3f05d144f",
+      "artifact_id": 13251708810,
+      "binary_bytes": {
+        "fa": 235320912,
+        "fa-verify": 20226944
+      },
+      "binary_sha256": {
+        "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+        "fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+      },
+      "cargo_lock_blob_sha1": "bcc30a166ddaaa598635650be66018bd341b019d",
+      "executable_checks": [
+        {
+          "command": [
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+            "--help"
+          ],
+          "exit_code": 0
+        },
+        {
+          "command": [
+            "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+            "--help"
+          ],
+          "exit_code": 0
+        }
+      ],
+      "executable_directory": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug",
+      "native_manifest_sha256": "86243acc68a5f7dfc8523570176903008ef3c6a827d4dad92cc4f4673065a32b",
+      "source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+      "status": "VERIFIED",
+      "verified_utc": "2026-11-03T17:19:11.350058+00:00",
+      "workflow_conclusion": "failure: one object test failed; artifact build and stock workloads succeeded",
+      "workflow_job": 126017782741,
+      "workflow_run": 41664093934
+    },
+    "measurement_records": [
+      {
+        "local_path": "/workspace/scratch/69d8c2fe02b1/entry-fragment-validation-f3f1/measured-results.json",
+        "sha256": "7a5e45c3893045f8172ce7ef5c5ceded43def56de2f0d752ebe5ddb5c963b472",
+        "bytes": 60689
+      },
+      {
+        "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-tools/measured-university-and-hosted.json",
+        "sha256": "7de886216b1ca9f7aa14a2f76bde47ea15fea9364cb5b45007481af5e39433ca",
+        "bytes": 27064
+      }
+    ],
+    "portable_report_cases": [
+      {
+        "case": "university-stock-portable",
+        "status": "PASS",
+        "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+        "source_bound_requested": false,
+        "entry_fragments_required": true,
+        "validation": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66-portable/validation.json",
+          "sha256": "99eea22a432c4ed4b69588947129a90583f6424dc84ef31549a01d8ee209b260",
+          "bytes": 82928
+        },
+        "transcript": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66-portable/commands.jsonl",
+          "sha256": "5f06a4887d6a9fda1f306dea580c84c2f5fca4a2fe95bafa0a581701a4bb5f14",
+          "bytes": 31300
+        },
+        "invocation": [
+          "scripts/public_ledger_portable_proof.py",
+          "--run",
+          "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66",
+          "--out",
+          "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66-portable",
+          "--fa",
+          "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+          "--fa-verify",
+          "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+          "--require-entry-fragments"
+        ],
+        "commands": [
+          {
+            "command": [
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--book",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/book",
+              "book",
+              "info",
+              "--json"
+            ],
+            "exit": 0
+          },
+          {
+            "command": [
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--book",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/book",
+              "proof",
+              "signed-checkpoint",
+              "--state",
+              "latest",
+              "--out",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66-portable/checkpoint.bin",
+              "--json"
+            ],
+            "exit": 0
+          },
+          {
+            "command": [
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--book",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66/book",
+              "bundle",
+              "produce",
+              "--certificate",
+              "C:6f757999fa05cbd66d8e780e19542b1e7d3931876300b5e188b9544868100543",
+              "--state",
+              "a32a2c9ae80aefc50cd686f771205a7ac226c9f48603f4308ab9562c9c768a56",
+              "--out",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66-portable/report.fab",
+              "--receipt-out",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66-portable/report.receipt",
+              "--json"
+            ],
+            "exit": 0
+          },
+          {
+            "command": [
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+              "report",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66-portable/report.fab",
+              "--key",
+              "875a9c4e3734cba0923ff7a171e63a3b9d04664e05d77858cf3eff8a98b7401d",
+              "--checkpoint",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66-portable/checkpoint.bin",
+              "--receipt",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-stock-f3f1d66-portable/report.receipt",
+              "--expect",
+              "6f757999fa05cbd66d8e780e19542b1e7d3931876300b5e188b9544868100543",
+              "--json"
+            ],
+            "exit": 0
+          }
+        ],
+        "started_utc": "2026-11-03T17:26:23.751219+00:00",
+        "finished_utc": "2026-11-03T17:26:25.851698+00:00",
+        "elapsed_seconds": 2.1,
+        "binary_and_input_sha256_before": {
+          "driver": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+          "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+          "fa_verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+          "helper": "61b3ddd43e78147ac61a81c8508f2d71c95371b2336c8d6f5db2efc202d765b0",
+          "normalizer": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+          "recovery_pins": "3e1a01b2c79a3dd51a80ebf189b1bbf9a2ed43ce27aead1a6de73b899b056052",
+          "report": "8348bace06f32b2dd0effa2de7a6c55a48982b6d054a6b4573669903df3e7982"
+        },
+        "binary_and_input_sha256_after": {
+          "driver": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+          "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+          "fa_verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+          "helper": "61b3ddd43e78147ac61a81c8508f2d71c95371b2336c8d6f5db2efc202d765b0",
+          "normalizer": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+          "recovery_pins": "3e1a01b2c79a3dd51a80ebf189b1bbf9a2ed43ce27aead1a6de73b899b056052",
+          "report": "8348bace06f32b2dd0effa2de7a6c55a48982b6d054a6b4573669903df3e7982"
+        },
+        "input_hashes_unchanged": true,
+        "expected_certificate": "6f757999fa05cbd66d8e780e19542b1e7d3931876300b5e188b9544868100543",
+        "selected_retained_certificate": {
+          "account_nets": {
+            "441105": -2861243,
+            "511140": 2678301,
+            "511150": 10620878,
+            "511160": 18392244,
+            "511161": 7984771,
+            "511162": 129880,
+            "511390": 3742810,
+            "512130": 1495500,
+            "513110": 2041525,
+            "513120": 477454,
+            "513240": 4121874,
+            "514360": 5037100,
+            "515510": 80000,
+            "515520": 27000,
+            "515540": 144775,
+            "515580": 39054323,
+            "515650": 7000,
+            "515660": 450000,
+            "515980": 590000,
+            "515990": 258500,
+            "521110": 21574,
+            "521150": 60156,
+            "521210": 339132,
+            "521220": 33394,
+            "521230": 312675,
+            "521240": 18616,
+            "521250": 422286,
+            "521260": 848153,
+            "522110": 200800,
+            "522120": 26152829,
+            "522141": 112,
+            "522150": 2007968,
+            "531110": 30839,
+            "531130": 576581,
+            "531150": 2102303,
+            "531160": 1634494,
+            "531170": 1087982,
+            "531180": -16241655,
+            "531190": 1573617,
+            "531250": 1234000,
+            "531260": 1267986,
+            "531350": 264548,
+            "531360": 558158,
+            "531370": 6294808,
+            "532140": 5150,
+            "532141": 202781,
+            "532170": 4424927,
+            "532190": 263179,
+            "533100": 62650,
+            "533110": 14664847,
+            "533120": 4767687,
+            "533180": 573182,
+            "533210": 3215951,
+            "533220": 8030258,
+            "534110": 120839,
+            "534220": 5786087,
+            "534290": 11320074,
+            "535120": 384853,
+            "535180": 26642,
+            "536110": 250734,
+            "536130": 78085,
+            "536140": 331674,
+            "536170": 41960402,
+            "536190": 1125644,
+            "536210": 970888,
+            "536230": 1485100,
+            "537150": 78284,
+            "537290": 133625,
+            "537310": 18827,
+            "541110": 179970,
+            "541120": 209027,
+            "541150": 4642409,
+            "542120": 110193,
+            "545100": 2837500,
+            "546210": 37182789,
+            "548110": 12666665,
+            "548120": 3655210,
+            "548130": 83733,
+            "552110": 7908990,
+            "553190": 454705835,
+            "554230": 91578,
+            "555180": 6655643,
+            "561210": 251175,
+            "562120": 450727236,
+            "562130": 22000,
+            "564110": 1092696
+          },
+          "certificate_oid": "6f757999fa05cbd66d8e780e19542b1e7d3931876300b5e188b9544868100543",
+          "department": "1000001",
+          "gross_cents": {
+            "441105:credit": 2861243,
+            "511140:debit": 2678301,
+            "511150:debit": 10620878,
+            "511160:debit": 18392244,
+            "511161:debit": 7984771,
+            "511162:debit": 129880,
+            "511390:debit": 3742810,
+            "512130:credit": 40700,
+            "512130:debit": 1536200,
+            "513110:debit": 2041525,
+            "513120:debit": 477454,
+            "513240:debit": 4121874,
+            "514360:debit": 5037100,
+            "515510:debit": 80000,
+            "515520:debit": 27000,
+            "515540:debit": 144775,
+            "515580:debit": 39054323,
+            "515650:debit": 7000,
+            "515660:debit": 450000,
+            "515980:debit": 590000,
+            "515990:debit": 258500,
+            "521110:debit": 21574,
+            "521150:debit": 60156,
+            "521210:debit": 339132,
+            "521220:debit": 33394,
+            "521230:debit": 312675,
+            "521240:debit": 18616,
+            "521250:debit": 422286,
+            "521260:debit": 848153,
+            "522110:debit": 200800,
+            "522120:debit": 26152829,
+            "522141:debit": 112,
+            "522150:debit": 2007968,
+            "531110:debit": 30839,
+            "531130:debit": 576581,
+            "531150:debit": 2102303,
+            "531160:debit": 1634494,
+            "531170:debit": 1087982,
+            "531180:credit": 61324538,
+            "531180:debit": 45082883,
+            "531190:debit": 1573617,
+            "531250:debit": 1234000,
+            "531260:debit": 1267986,
+            "531350:debit": 264548,
+            "531360:debit": 558158,
+            "531370:debit": 6294808,
+            "532140:debit": 5150,
+            "532141:debit": 202781,
+            "532170:debit": 4424927,
+            "532190:debit": 263179,
+            "533100:debit": 62650,
+            "533110:debit": 14664847,
+            "533120:debit": 4767687,
+            "533180:debit": 573182,
+            "533210:debit": 3215951,
+            "533220:debit": 8030258,
+            "534110:debit": 120839,
+            "534220:debit": 5786087,
+            "534290:debit": 11320074,
+            "535120:debit": 384853,
+            "535180:debit": 26642,
+            "536110:debit": 250734,
+            "536130:debit": 78085,
+            "536140:debit": 331674,
+            "536170:debit": 41960402,
+            "536190:debit": 1125644,
+            "536210:debit": 970888,
+            "536230:debit": 1485100,
+            "537150:debit": 78284,
+            "537290:debit": 133625,
+            "537310:debit": 18827,
+            "541110:debit": 179970,
+            "541120:debit": 209027,
+            "541150:debit": 4642409,
+            "542120:debit": 110193,
+            "545100:debit": 2837500,
+            "546210:debit": 37182789,
+            "548110:debit": 12666665,
+            "548120:debit": 3655210,
+            "548130:debit": 83733,
+            "552110:debit": 7908990,
+            "553190:debit": 454705835,
+            "554230:debit": 91578,
+            "555180:debit": 6655643,
+            "561210:debit": 251175,
+            "562120:debit": 450727236,
+            "562130:debit": 22000,
+            "564110:debit": 1092696
+          },
+          "period": "FY2024-P12"
+        },
+        "checkpoint_state": "a32a2c9ae80aefc50cd686f771205a7ac226c9f48603f4308ab9562c9c768a56",
+        "trusted_public_key": "875a9c4e3734cba0923ff7a171e63a3b9d04664e05d77858cf3eff8a98b7401d",
+        "trust_scope": "Caller-trusted public key of the fixture book; no external identity claim.",
+        "closure": {
+          "additive_input_labels": [
+            "MigrationRunFragment",
+            "EntryFragment"
+          ],
+          "book": "a9d7933a565065a80ae306bf42310328",
+          "branch": "00000000000000000000000000000000",
+          "bundle_major": 1,
+          "bundle_minor": 0,
+          "canonical_records": 185,
+          "certificate_digest": "6f757999fa05cbd66d8e780e19542b1e7d3931876300b5e188b9544868100543",
+          "certificate_format": "fa:report-certificate:v8",
+          "dimension": "department",
+          "dimension_value": "1000001",
+          "journal_leaves": 71,
+          "known_at": 261,
+          "migration_run_bodies": 9,
+          "migration_source_witnesses": 0,
+          "native_input_count": 10,
+          "native_inputs": [
+            {
+              "facade": 4,
+              "snapshot": 261,
+              "statement": "MATCH (n:Account) FOR SYSTEM_TIME AS OF SEQ 261 RETURN n,n.code,n.name,n.account_type,n.normal_balance,n.posting,n.unit_policy,n.lower_bound,n.upper_bound,n.limit_scope,n._fa_payload,n.book_id ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 261,
+              "statement": "MATCH (n:Book) FOR SYSTEM_TIME AS OF SEQ 261 RETURN n,n._fa_payload,n.book_id,n.base_unit,n.symbols_digest,n.unit_table_digest ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 261,
+              "statement": "MATCH (n:Entry) FOR SYSTEM_TIME AS OF SEQ 261 RETURN n,n._fa_payload,n._fa_digest ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 261,
+              "statement": "MATCH (n:FiscalCalendar) FOR SYSTEM_TIME AS OF SEQ 261 RETURN n,n._fa_payload,n.calendar_id ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 261,
+              "statement": "MATCH (n:MigrationRun) FOR SYSTEM_TIME AS OF SEQ 261 RETURN n,n._fa_payload,n._fa_digest,n.state ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 261,
+              "statement": "MATCH (n:Period) FOR SYSTEM_TIME AS OF SEQ 261 RETURN n,n.code,n.calendar_id,n.fiscal_year,n.ordinal,n.period_kind,n.period_start,n.period_end,n.state ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 261,
+              "statement": "MATCH (n:Unit) FOR SYSTEM_TIME AS OF SEQ 261 RETURN n,n._fa_payload,n.unit_id,n.code,n.name,n.scale,n.version ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 261,
+              "statement": "MATCH (n:DimensionValue) FOR SYSTEM_TIME AS OF SEQ 261 WHERE n.dimension_id = 3 RETURN n,n._fa_payload,n.dimension_id ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 261,
+              "statement": "MATCH (n:MigrationRunFragment) FOR SYSTEM_TIME AS OF SEQ 261 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 261,
+              "statement": "MATCH (n:EntryFragment) FOR SYSTEM_TIME AS OF SEQ 261 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+              "trailing_bytes": 0
+            }
+          ],
+          "scope": "Descriptive framing only; separate fa-verify establishes authentication.",
+          "selected": [
+            "FY2024-P12"
+          ]
+        },
+        "independent_verifier": [
+          {
+            "verdict": "verified",
+            "check_count": 91,
+            "checks_by_kind": {
+              "checkpoint": 1,
+              "report_bundle": 1,
+              "dimension_filter": 1,
+              "trial_balance_row": 86,
+              "canonical_report": 1,
+              "production_receipt": 1
+            },
+            "non_row_checks": [
+              {
+                "check": "checkpoint",
+                "detail": {
+                  "book_id": "a9d7933a565065a80ae306bf42310328",
+                  "branch_id": "00000000000000000000000000000000",
+                  "leaf_count": 185,
+                  "not_judged": [],
+                  "oid": "f58b020fb9d84744dc52e86cf7c1ded29ebbba6a577946ef307be170297ae763",
+                  "root": "40346fccaea4549a38321d3e6b24f67ef3eef17618e3f27b9720fd22401c41ab",
+                  "scope_index_root": "e447f05da580af062e5f5c8c93ae1d64206cc5c0d26fe33c34089e7fe7dfa514",
+                  "signed_by": [
+                    "0d0d1181fbc15e4c2ea89e7e9f1d197cefbdd2f070f27acf9e1a1d12fde0be5d"
+                  ],
+                  "state_oid": "a32a2c9ae80aefc50cd686f771205a7ac226c9f48603f4308ab9562c9c768a56",
+                  "substrate_chain_commitment": "e9f29ab9ebc100bfeff3efabd1b2f79215927dca3d722f8234e05c29c7f3bfa0",
+                  "through_seq": 279
+                },
+                "reason": null,
+                "result": "pass",
+                "scope": "signature"
+              },
+              {
+                "check": "report_bundle",
+                "detail": {
+                  "bundle_digest": "6d6cc2c794e5fd08f52ba2783a7e7fb8e7e8471f82424a16c11830e10255ccbb",
+                  "certificate_digest": "6f757999fa05cbd66d8e780e19542b1e7d3931876300b5e188b9544868100543",
+                  "effective_through": 19904,
+                  "known_at": 261,
+                  "native_read_attestations": "retained; not used as outsider proofs",
+                  "output_digest": "07307197171620e91dd98220b2db40cdaef6dbb53f221bf41888106120f3f168",
+                  "records": 185,
+                  "report_mode": "stock",
+                  "rows": 86,
+                  "unit_universe_source": "not-applicable"
+                },
+                "reason": null,
+                "result": "pass",
+                "scope": "recomputation"
+              },
+              {
+                "check": "dimension_filter",
+                "detail": {
+                  "dimension": "department",
+                  "included_values": [
+                    "1000001"
+                  ],
+                  "monetary_footing": "not required for a filtered view",
+                  "selection": "tagged legs, including declared descendants",
+                  "value": "1000001"
+                },
+                "reason": null,
+                "result": "pass",
+                "scope": "authenticated_journal"
+              },
+              {
+                "check": "canonical_report",
+                "detail": {
+                  "output_digest": "07307197171620e91dd98220b2db40cdaef6dbb53f221bf41888106120f3f168"
+                },
+                "reason": null,
+                "result": "pass",
+                "scope": "recomputation"
+              },
+              {
+                "check": "production_receipt",
+                "detail": {
+                  "signed_by": "0d0d1181fbc15e4c2ea89e7e9f1d197cefbdd2f070f27acf9e1a1d12fde0be5d"
+                },
+                "reason": null,
+                "result": "pass",
+                "scope": "signature"
+              }
+            ]
+          }
+        ],
+        "artifact_files": {
+          "checkpoint.bin": {
+            "bytes": 288,
+            "sha256": "50926987783f006709453c22d3b161ece587b805a82992f22372802264868325"
+          },
+          "report.fab": {
+            "bytes": 263355,
+            "sha256": "f906f952e36d3d1ce2002b5674a1876cfb151aea917763a26d246244b7acdcdf"
+          },
+          "report.receipt": {
+            "bytes": 219,
+            "sha256": "0276e69cb1be36235ce8a2fc96c5a8ac10347d7e583666e61b3a29581ec90d91"
+          },
+          "trusted-public-key.txt": {
+            "bytes": 65,
+            "sha256": "c133547cdd9a81ec097af0f4e0e6f10bc0986f90d3affc720fdcdf45f5dce065"
+          }
+        },
+        "emitted_public_example": null
+      },
+      {
+        "case": "university-source-bound-portable",
+        "status": "PASS",
+        "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+        "source_bound_requested": true,
+        "entry_fragments_required": true,
+        "validation": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66-portable/validation.json",
+          "sha256": "29b353d1b846a330a52343886ebe06b8d4e0e17bc7fd92d8cb16851d8ae17a8e",
+          "bytes": 84852
+        },
+        "transcript": {
+          "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66-portable/commands.jsonl",
+          "sha256": "7f1533064130d58594e7a69fadeb209bd32ed8a0d2d0e957ce548fed7c5d701e",
+          "bytes": 31384
+        },
+        "invocation": [
+          "scripts/public_ledger_portable_proof.py",
+          "--run",
+          "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66",
+          "--out",
+          "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66-portable",
+          "--fa",
+          "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+          "--fa-verify",
+          "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+          "--source-bound",
+          "--require-entry-fragments",
+          "--emit-public-example"
+        ],
+        "commands": [
+          {
+            "command": [
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--book",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/book",
+              "book",
+              "info",
+              "--json"
+            ],
+            "exit": 0
+          },
+          {
+            "command": [
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--book",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/book",
+              "proof",
+              "signed-checkpoint",
+              "--state",
+              "latest",
+              "--out",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66-portable/checkpoint.bin",
+              "--json"
+            ],
+            "exit": 0
+          },
+          {
+            "command": [
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--book",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66/book",
+              "bundle",
+              "produce",
+              "--certificate",
+              "C:538f44d7cf22fe3f0b39ffd88db708ec22de4036c40f044abfe90f5e56567044",
+              "--state",
+              "93f9b2e6fce9e83f9e96ecd97640b93f51f03ffec56b3dd59cb96363fad8b47d",
+              "--out",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66-portable/report.fab",
+              "--receipt-out",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66-portable/report.receipt",
+              "--json"
+            ],
+            "exit": 0
+          },
+          {
+            "command": [
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+              "report",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66-portable/report.fab",
+              "--key",
+              "c1b4180137fe89d5539e0eb40dd620ffb38a35b6c6bbfa0af2e924d17823c13c",
+              "--checkpoint",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66-portable/checkpoint.bin",
+              "--receipt",
+              "/workspace/scratch/69d8c2fe02b1/native-validation-university-source-bound-f3f1d66-portable/report.receipt",
+              "--expect",
+              "538f44d7cf22fe3f0b39ffd88db708ec22de4036c40f044abfe90f5e56567044",
+              "--json"
+            ],
+            "exit": 0
+          }
+        ],
+        "started_utc": "2026-11-03T17:28:06.235605+00:00",
+        "finished_utc": "2026-11-03T17:28:09.659048+00:00",
+        "elapsed_seconds": 3.423,
+        "binary_and_input_sha256_before": {
+          "driver": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+          "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+          "fa_verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+          "helper": "61b3ddd43e78147ac61a81c8508f2d71c95371b2336c8d6f5db2efc202d765b0",
+          "normalizer": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+          "recovery_pins": "3e1a01b2c79a3dd51a80ebf189b1bbf9a2ed43ce27aead1a6de73b899b056052",
+          "report": "821c5fd8be75c96d5b10602929b50d979f3d34915333eae9840c0f1cff272d7f"
+        },
+        "binary_and_input_sha256_after": {
+          "driver": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+          "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+          "fa_verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+          "helper": "61b3ddd43e78147ac61a81c8508f2d71c95371b2336c8d6f5db2efc202d765b0",
+          "normalizer": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+          "recovery_pins": "3e1a01b2c79a3dd51a80ebf189b1bbf9a2ed43ce27aead1a6de73b899b056052",
+          "report": "821c5fd8be75c96d5b10602929b50d979f3d34915333eae9840c0f1cff272d7f"
+        },
+        "input_hashes_unchanged": true,
+        "expected_certificate": "538f44d7cf22fe3f0b39ffd88db708ec22de4036c40f044abfe90f5e56567044",
+        "selected_retained_certificate": {
+          "account_nets": {
+            "441105": -2861243,
+            "511140": 2678301,
+            "511150": 10620878,
+            "511160": 18392244,
+            "511161": 7984771,
+            "511162": 129880,
+            "511390": 3742810,
+            "512130": 1495500,
+            "513110": 2041525,
+            "513120": 477454,
+            "513240": 4121874,
+            "514360": 5037100,
+            "515510": 80000,
+            "515520": 27000,
+            "515540": 144775,
+            "515580": 39054323,
+            "515650": 7000,
+            "515660": 450000,
+            "515980": 590000,
+            "515990": 258500,
+            "521110": 21574,
+            "521150": 60156,
+            "521210": 339132,
+            "521220": 33394,
+            "521230": 312675,
+            "521240": 18616,
+            "521250": 422286,
+            "521260": 848153,
+            "522110": 200800,
+            "522120": 26152829,
+            "522141": 112,
+            "522150": 2007968,
+            "531110": 30839,
+            "531130": 576581,
+            "531150": 2102303,
+            "531160": 1634494,
+            "531170": 1087982,
+            "531180": -16241655,
+            "531190": 1573617,
+            "531250": 1234000,
+            "531260": 1267986,
+            "531350": 264548,
+            "531360": 558158,
+            "531370": 6294808,
+            "532140": 5150,
+            "532141": 202781,
+            "532170": 4424927,
+            "532190": 263179,
+            "533100": 62650,
+            "533110": 14664847,
+            "533120": 4767687,
+            "533180": 573182,
+            "533210": 3215951,
+            "533220": 8030258,
+            "534110": 120839,
+            "534220": 5786087,
+            "534290": 11320074,
+            "535120": 384853,
+            "535180": 26642,
+            "536110": 250734,
+            "536130": 78085,
+            "536140": 331674,
+            "536170": 41960402,
+            "536190": 1125644,
+            "536210": 970888,
+            "536230": 1485100,
+            "537150": 78284,
+            "537290": 133625,
+            "537310": 18827,
+            "541110": 179970,
+            "541120": 209027,
+            "541150": 4642409,
+            "542120": 110193,
+            "545100": 2837500,
+            "546210": 37182789,
+            "548110": 12666665,
+            "548120": 3655210,
+            "548130": 83733,
+            "552110": 7908990,
+            "553190": 454705835,
+            "554230": 91578,
+            "555180": 6655643,
+            "561210": 251175,
+            "562120": 450727236,
+            "562130": 22000,
+            "564110": 1092696
+          },
+          "certificate_oid": "538f44d7cf22fe3f0b39ffd88db708ec22de4036c40f044abfe90f5e56567044",
+          "department": "1000001",
+          "gross_cents": {
+            "441105:credit": 2861243,
+            "511140:debit": 2678301,
+            "511150:debit": 10620878,
+            "511160:debit": 18392244,
+            "511161:debit": 7984771,
+            "511162:debit": 129880,
+            "511390:debit": 3742810,
+            "512130:credit": 40700,
+            "512130:debit": 1536200,
+            "513110:debit": 2041525,
+            "513120:debit": 477454,
+            "513240:debit": 4121874,
+            "514360:debit": 5037100,
+            "515510:debit": 80000,
+            "515520:debit": 27000,
+            "515540:debit": 144775,
+            "515580:debit": 39054323,
+            "515650:debit": 7000,
+            "515660:debit": 450000,
+            "515980:debit": 590000,
+            "515990:debit": 258500,
+            "521110:debit": 21574,
+            "521150:debit": 60156,
+            "521210:debit": 339132,
+            "521220:debit": 33394,
+            "521230:debit": 312675,
+            "521240:debit": 18616,
+            "521250:debit": 422286,
+            "521260:debit": 848153,
+            "522110:debit": 200800,
+            "522120:debit": 26152829,
+            "522141:debit": 112,
+            "522150:debit": 2007968,
+            "531110:debit": 30839,
+            "531130:debit": 576581,
+            "531150:debit": 2102303,
+            "531160:debit": 1634494,
+            "531170:debit": 1087982,
+            "531180:credit": 61324538,
+            "531180:debit": 45082883,
+            "531190:debit": 1573617,
+            "531250:debit": 1234000,
+            "531260:debit": 1267986,
+            "531350:debit": 264548,
+            "531360:debit": 558158,
+            "531370:debit": 6294808,
+            "532140:debit": 5150,
+            "532141:debit": 202781,
+            "532170:debit": 4424927,
+            "532190:debit": 263179,
+            "533100:debit": 62650,
+            "533110:debit": 14664847,
+            "533120:debit": 4767687,
+            "533180:debit": 573182,
+            "533210:debit": 3215951,
+            "533220:debit": 8030258,
+            "534110:debit": 120839,
+            "534220:debit": 5786087,
+            "534290:debit": 11320074,
+            "535120:debit": 384853,
+            "535180:debit": 26642,
+            "536110:debit": 250734,
+            "536130:debit": 78085,
+            "536140:debit": 331674,
+            "536170:debit": 41960402,
+            "536190:debit": 1125644,
+            "536210:debit": 970888,
+            "536230:debit": 1485100,
+            "537150:debit": 78284,
+            "537290:debit": 133625,
+            "537310:debit": 18827,
+            "541110:debit": 179970,
+            "541120:debit": 209027,
+            "541150:debit": 4642409,
+            "542120:debit": 110193,
+            "545100:debit": 2837500,
+            "546210:debit": 37182789,
+            "548110:debit": 12666665,
+            "548120:debit": 3655210,
+            "548130:debit": 83733,
+            "552110:debit": 7908990,
+            "553190:debit": 454705835,
+            "554230:debit": 91578,
+            "555180:debit": 6655643,
+            "561210:debit": 251175,
+            "562120:debit": 450727236,
+            "562130:debit": 22000,
+            "564110:debit": 1092696
+          },
+          "period": "FY2024-P12"
+        },
+        "checkpoint_state": "93f9b2e6fce9e83f9e96ecd97640b93f51f03ffec56b3dd59cb96363fad8b47d",
+        "trusted_public_key": "c1b4180137fe89d5539e0eb40dd620ffb38a35b6c6bbfa0af2e924d17823c13c",
+        "trust_scope": "Caller-trusted public key of the fixture book; no external identity claim.",
+        "closure": {
+          "additive_input_labels": [
+            "MigrationRunFragment",
+            "MigrationSource",
+            "MigrationSourceFragment",
+            "EntryFragment"
+          ],
+          "book": "61fd8184428e88d98dabec2947584018",
+          "branch": "00000000000000000000000000000000",
+          "bundle_major": 1,
+          "bundle_minor": 1,
+          "canonical_records": 194,
+          "certificate_digest": "538f44d7cf22fe3f0b39ffd88db708ec22de4036c40f044abfe90f5e56567044",
+          "certificate_format": "fa:report-certificate:v8",
+          "dimension": "department",
+          "dimension_value": "1000001",
+          "journal_leaves": 80,
+          "known_at": 270,
+          "migration_run_bodies": 9,
+          "migration_source_witnesses": 9,
+          "native_input_count": 12,
+          "native_inputs": [
+            {
+              "facade": 4,
+              "snapshot": 270,
+              "statement": "MATCH (n:Account) FOR SYSTEM_TIME AS OF SEQ 270 RETURN n,n.code,n.name,n.account_type,n.normal_balance,n.posting,n.unit_policy,n.lower_bound,n.upper_bound,n.limit_scope,n._fa_payload,n.book_id ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 270,
+              "statement": "MATCH (n:Book) FOR SYSTEM_TIME AS OF SEQ 270 RETURN n,n._fa_payload,n.book_id,n.base_unit,n.symbols_digest,n.unit_table_digest ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 270,
+              "statement": "MATCH (n:Entry) FOR SYSTEM_TIME AS OF SEQ 270 RETURN n,n._fa_payload,n._fa_digest ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 270,
+              "statement": "MATCH (n:FiscalCalendar) FOR SYSTEM_TIME AS OF SEQ 270 RETURN n,n._fa_payload,n.calendar_id ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 270,
+              "statement": "MATCH (n:MigrationRun) FOR SYSTEM_TIME AS OF SEQ 270 RETURN n,n._fa_payload,n._fa_digest,n.state ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 270,
+              "statement": "MATCH (n:Period) FOR SYSTEM_TIME AS OF SEQ 270 RETURN n,n.code,n.calendar_id,n.fiscal_year,n.ordinal,n.period_kind,n.period_start,n.period_end,n.state ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 270,
+              "statement": "MATCH (n:Unit) FOR SYSTEM_TIME AS OF SEQ 270 RETURN n,n._fa_payload,n.unit_id,n.code,n.name,n.scale,n.version ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 270,
+              "statement": "MATCH (n:DimensionValue) FOR SYSTEM_TIME AS OF SEQ 270 WHERE n.dimension_id = 3 RETURN n,n._fa_payload,n.dimension_id ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 270,
+              "statement": "MATCH (n:MigrationRunFragment) FOR SYSTEM_TIME AS OF SEQ 270 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 270,
+              "statement": "MATCH (n:MigrationSource) FOR SYSTEM_TIME AS OF SEQ 270 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 270,
+              "statement": "MATCH (n:MigrationSourceFragment) FOR SYSTEM_TIME AS OF SEQ 270 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+              "trailing_bytes": 0
+            },
+            {
+              "facade": 4,
+              "snapshot": 270,
+              "statement": "MATCH (n:EntryFragment) FOR SYSTEM_TIME AS OF SEQ 270 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+              "trailing_bytes": 0
+            }
+          ],
+          "scope": "Descriptive framing only; separate fa-verify establishes authentication.",
+          "selected": [
+            "FY2024-P12"
+          ]
+        },
+        "independent_verifier": [
+          {
+            "verdict": "verified",
+            "check_count": 91,
+            "checks_by_kind": {
+              "checkpoint": 1,
+              "report_bundle": 1,
+              "dimension_filter": 1,
+              "trial_balance_row": 86,
+              "canonical_report": 1,
+              "production_receipt": 1
+            },
+            "non_row_checks": [
+              {
+                "check": "checkpoint",
+                "detail": {
+                  "book_id": "61fd8184428e88d98dabec2947584018",
+                  "branch_id": "00000000000000000000000000000000",
+                  "leaf_count": 194,
+                  "not_judged": [],
+                  "oid": "6ecaace66a18efa822391129c3b7bd703dd726d67b4da68d537d0ceea39cb6cb",
+                  "root": "730e7eb792ca79e73e6becf328c6b5ae89cd9257f099aeac8e2f178d672df35e",
+                  "scope_index_root": "eda7aba1c8935cc73952552443cce03db0663236ab741aaa4d990043e68714d4",
+                  "signed_by": [
+                    "34a9578ead17086246cbd12c7de2fedd32fb112502c3580e15178c00b007d6a5"
+                  ],
+                  "state_oid": "93f9b2e6fce9e83f9e96ecd97640b93f51f03ffec56b3dd59cb96363fad8b47d",
+                  "substrate_chain_commitment": "53152e62f044aadaed3dd4637f2b6b3eeab147bd554b5bd8d2cd6c239ea9ab6e",
+                  "through_seq": 288
+                },
+                "reason": null,
+                "result": "pass",
+                "scope": "signature"
+              },
+              {
+                "check": "report_bundle",
+                "detail": {
+                  "bundle_digest": "24b8390c5b069efb0042f5f035c13d1eab13c2095229c791db0c04b0b60d958b",
+                  "certificate_digest": "538f44d7cf22fe3f0b39ffd88db708ec22de4036c40f044abfe90f5e56567044",
+                  "effective_through": 19904,
+                  "known_at": 270,
+                  "native_read_attestations": "retained; not used as outsider proofs",
+                  "output_digest": "5c5630bcaf4641fbc0a89d55bc954bc85a1b10ce998e57efb374b93aae6165ac",
+                  "records": 194,
+                  "report_mode": "stock",
+                  "rows": 86,
+                  "unit_universe_source": "not-applicable"
+                },
+                "reason": null,
+                "result": "pass",
+                "scope": "recomputation"
+              },
+              {
+                "check": "dimension_filter",
+                "detail": {
+                  "dimension": "department",
+                  "included_values": [
+                    "1000001"
+                  ],
+                  "monetary_footing": "not required for a filtered view",
+                  "selection": "tagged legs, including declared descendants",
+                  "value": "1000001"
+                },
+                "reason": null,
+                "result": "pass",
+                "scope": "authenticated_journal"
+              },
+              {
+                "check": "canonical_report",
+                "detail": {
+                  "output_digest": "5c5630bcaf4641fbc0a89d55bc954bc85a1b10ce998e57efb374b93aae6165ac"
+                },
+                "reason": null,
+                "result": "pass",
+                "scope": "recomputation"
+              },
+              {
+                "check": "production_receipt",
+                "detail": {
+                  "signed_by": "34a9578ead17086246cbd12c7de2fedd32fb112502c3580e15178c00b007d6a5"
+                },
+                "reason": null,
+                "result": "pass",
+                "scope": "signature"
+              }
+            ]
+          }
+        ],
+        "artifact_files": {
+          "checkpoint.bin": {
+            "bytes": 288,
+            "sha256": "aaf4337a8ad680ecc4bd76c9cb4e290b9c02d8e72d89cb46551d79fc3eed42be"
+          },
+          "report.fab": {
+            "bytes": 273822,
+            "sha256": "e26022acf9779eb06ff4653911d804a1f61cdbea7f02708b4f6838cad0aecb9c"
+          },
+          "report.receipt": {
+            "bytes": 219,
+            "sha256": "65c60603a9c0aa2ee4effec323bc3b93d7280cf6273aa51f35dd022c9dd9a45f"
+          },
+          "trusted-public-key.txt": {
+            "bytes": 65,
+            "sha256": "6343be5b4252ec5a893a4150ca8fc1e0e80d5ffa0b9240e7d58655605d37fc84"
+          }
+        },
+        "emitted_public_example": {
+          "certificate": "538f44d7cf22fe3f0b39ffd88db708ec22de4036c40f044abfe90f5e56567044",
+          "compressed_bytes": 85694,
+          "files": [
+            {
+              "bytes": 273822,
+              "gzip_bytes": 85156,
+              "gzip_sha256": "b053aa6221f48480bc79992518d96d7625aa30077e62d1e837e95fce7b499ad6",
+              "name": "report.fab",
+              "sha256": "e26022acf9779eb06ff4653911d804a1f61cdbea7f02708b4f6838cad0aecb9c"
+            },
+            {
+              "bytes": 288,
+              "gzip_bytes": 296,
+              "gzip_sha256": "39e670b5cdd7c113d8772f2606598324b2fc1246c83213667292e9d7b8bc6a91",
+              "name": "checkpoint.bin",
+              "sha256": "aaf4337a8ad680ecc4bd76c9cb4e290b9c02d8e72d89cb46551d79fc3eed42be"
+            },
+            {
+              "bytes": 219,
+              "gzip_bytes": 242,
+              "gzip_sha256": "54bc17be3bb6e78ea993b781a2e468146b2a25b0ab4a7f649a3d7ee19bcaee65",
+              "name": "report.receipt",
+              "sha256": "65c60603a9c0aa2ee4effec323bc3b93d7280cf6273aa51f35dd022c9dd9a45f"
+            }
+          ],
+          "format": "fa:public-proof-example:v1",
+          "public_key": "c1b4180137fe89d5539e0eb40dd620ffb38a35b6c6bbfa0af2e924d17823c13c",
+          "source_bound": true,
+          "status": "READY",
+          "trust": "Caller-trusted fixture key; no external identity claim."
+        }
+      }
+    ],
+    "historical_book_compatibility": {
+      "status": "UNRUN_ORIGINAL_BOOK_UNAVAILABLE",
+      "reason": "The execution container was replaced. The previously completed 3f947 museum book and its local retained certificate objects are not present in the restored filesystem. No old-book copy or replay was performed, and no reconstructed fixture is claimed as the original book."
+    },
+    "hosted_test_outcome": {
+      "artifact_provenance": {
+        "archive_bytes": 43626792,
+        "archive_path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/public-ledger-native-f3f1d66.zip",
+        "archive_sha256": "b55fc095db4ecd7e78d2cd037e338eb4fec3faac7bed6c8f9331a0a3f05d144f",
+        "artifact_id": 13251708810,
+        "binary_bytes": {
+          "fa": 235320912,
+          "fa-verify": 20226944
+        },
+        "binary_sha256": {
+          "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+          "fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+        },
+        "cargo_lock_blob_sha1": "bcc30a166ddaaa598635650be66018bd341b019d",
+        "executable_checks": [
+          {
+            "command": [
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+              "--help"
+            ],
+            "exit_code": 0
+          },
+          {
+            "command": [
+              "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+              "--help"
+            ],
+            "exit_code": 0
+          }
+        ],
+        "executable_directory": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug",
+        "native_manifest_sha256": "86243acc68a5f7dfc8523570176903008ef3c6a827d4dad92cc4f4673065a32b",
+        "source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+        "status": "VERIFIED",
+        "verified_utc": "2026-11-03T17:19:11.350058+00:00",
+        "workflow_conclusion": "failure: one object test failed; artifact build and stock workloads succeeded",
+        "workflow_job": 126017782741,
+        "workflow_run": 41664093934
+      },
+      "build_finished_log_utc": "2026-11-03T17:02:56.7213433Z",
+      "build_reported_elapsed": "14m 30s",
+      "build_started_log_utc": "2026-11-03T16:48:26.6241504Z",
+      "full_runtime_pass_claimed": false,
+      "job_completed_observed_utc": "2026-11-03T17:12:13Z",
+      "job_started_utc": "2026-11-03T16:48:01.7460459Z",
+      "log": {
+        "bytes": 271008,
+        "path": "/workspace/scratch/69d8c2fe02b1/hosted-f3f1-job126017782741.log",
+        "sha256": "07e14c32a9b114a14e1d5e25c1daad92bcd73c43b44dbc5578e0d0764ec0de44"
+      },
+      "python": {
+        "blmis": {
+          "failed": 0,
+          "reported_tests": 214,
+          "skipped": 2
+        },
+        "public_ledger": {
+          "failed": 0,
+          "reported_tests": 84,
+          "skipped": 0
+        }
+      },
+      "report_artifact_provenance": {
+        "archive_bytes": 2017243,
+        "archive_sha256": "cc47e3a4c888aa14e62d244676519d60bab931aa244ede94a3838e2849b18ae9",
+        "artifact_id": 13254090273,
+        "extracted_directory": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/reports",
+        "reports": [
+          {
+            "account_count": 51,
+            "agency": "31500",
+            "bytes": 242191,
+            "commands": 151,
+            "elapsed_seconds": 6.704,
+            "migration_entries": 6,
+            "monetary_rows": 131,
+            "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/reports/pension/report.json",
+            "sha256": "901ecb8dc3dc96c312716db38839fe6010212b1262d48eef712429b205a1c1f8",
+            "source_rows": 137,
+            "status": "PASS"
+          },
+          {
+            "account_count": 223,
+            "agency": "66000",
+            "bytes": 1194716,
+            "commands": 521,
+            "elapsed_seconds": 75.189,
+            "migration_entries": 27,
+            "monetary_rows": 1051,
+            "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/reports/university/report.json",
+            "sha256": "45de621442bc7ca7a04b2fe8e893fd27b15d9e4538f2c1f6206008967550762c",
+            "source_rows": 1055,
+            "status": "PASS"
+          },
+          {
+            "bytes": 862550,
+            "commands": 441,
+            "elapsed_seconds": 32.983,
+            "native_entries": 74,
+            "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/reports/blmis-1za192/report.json",
+            "sha256": "0e3d4ad1c59b298d720a42af001f676041f71b57f1c83f01f0be61f2f0e1254a",
+            "source_rows": 75,
+            "status": "PASS"
+          },
+          {
+            "bytes": 4377492,
+            "commands": 1305,
+            "elapsed_seconds": 244.001,
+            "native_entries": 372,
+            "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/reports/blmis-six/report.json",
+            "sha256": "04d5d7c25b1fbcc03ba5f20c53f5c1456b7347834596769e8b5f60cfe9aae656",
+            "source_rows": 379,
+            "status": "PASS"
+          },
+          {
+            "account_count": 43,
+            "agency": "20400",
+            "bytes": 383653,
+            "commands": 235,
+            "elapsed_seconds": 9.815,
+            "migration_entries": 15,
+            "monetary_rows": 121,
+            "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/reports/museum/report.json",
+            "sha256": "1174a4f015a775bd35a5d36bddac5b0ed418c021591d025330b7a47c5aee550b",
+            "source_rows": 125,
+            "status": "PASS"
+          }
+        ],
+        "status": "VERIFIED"
+      },
+      "source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+      "storage_test_log": {
+        "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/reports/entry-storage-tests.log",
+        "sha256": "f94a968ceadaeffe97e0d3950b1d883715811a567fd3e9d9eb5828e5dc770f7f"
+      },
+      "test_groups": {
+        "canonical_csv": {
+          "failed": 0,
+          "passed": 4
+        },
+        "department": {
+          "failed": 0,
+          "passed": 2
+        },
+        "genesis_entry_storage": {
+          "cargo_exit": 0,
+          "executed": 0,
+          "filtered_out": 385,
+          "reason": "Wrong filter entry_storage::; actual module is entry_storage_tests::.",
+          "status": "UNRUN"
+        },
+        "independent_verifier": {
+          "failed": 0,
+          "log_sha256": "9bc37fb4bf769b723c818c9669b7eeee6dcf234c72c190aea2322fd624da5c21",
+          "passed": 878,
+          "targets": 30
+        },
+        "large_entry_portable_certificate": {
+          "failed": 0,
+          "passed": 1,
+          "test": "entry_storage::large_entry_certificates_bind_fragments_and_replay_offline_after_reopen"
+        },
+        "legacy_csv": {
+          "failed": 0,
+          "passed": 33
+        },
+        "object_storage": {
+          "cargo_exit": 101,
+          "failed": 1,
+          "failed_test": "object::tests::staged_fragments_are_atomic_durable_and_committed_reads_are_witnessed",
+          "failure": "object.rs:675:42: reader.write(&mut db, unrelated).unwrap(): SnapshotAdvanced { pinned: CommitSeq(1), live: CommitSeq(2) }",
+          "passed": 4,
+          "source_diagnosis": "The fixture stages its candidate only after the concurrent write advances the snapshot; the API refuses before its intended commit assertion."
+        },
+        "oklahoma_native_and_helper": {
+          "failed": 0,
+          "passed": 2
+        },
+        "party_entity": {
+          "failed": 0,
+          "passed": 3
+        },
+        "scheduled_lifecycle": {
+          "executed": 0,
+          "reason": "set -e stopped the step after object-test failure.",
+          "status": "UNRUN"
+        },
+        "xbrl": {
+          "failed": 0,
+          "passed": 4,
+          "scope": "All three exact-scale/duplicate regressions plus prior calculation test executed."
+        }
+      },
+      "workflow_conclusion": "failure",
+      "workflow_job": 126017782741,
+      "workflow_run": 41664093934
+    },
+    "tier0": {
+      "status": "NOT_ESTABLISHED",
+      "scope": "Measured real-data and portable-proof passes do not establish whole-workspace Tier0, later source changes or any unexecuted hosted target."
+    },
+    "public_example_recheck": {
+      "status": "PASS",
+      "execution_record": {
+        "local_path": "/workspace/scratch/69d8c2fe02b1/native-validation-public-example-recheck-20261103/execution.json",
+        "sha256": "55333a342b9a32f8f58fac1368ec54a9691fd6138ab684a51f34628d2e682728",
+        "bytes": 2119
+      },
+      "execution": {
+        "checks_passed": 91,
+        "command": [
+          "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+          "report",
+          "/workspace/scratch/69d8c2fe02b1/native-validation-public-example-recheck-20261103/report.fab",
+          "--key",
+          "c1b4180137fe89d5539e0eb40dd620ffb38a35b6c6bbfa0af2e924d17823c13c",
+          "--checkpoint",
+          "/workspace/scratch/69d8c2fe02b1/native-validation-public-example-recheck-20261103/checkpoint.bin",
+          "--receipt",
+          "/workspace/scratch/69d8c2fe02b1/native-validation-public-example-recheck-20261103/report.receipt",
+          "--expect",
+          "538f44d7cf22fe3f0b39ffd88db708ec22de4036c40f044abfe90f5e56567044",
+          "--json"
+        ],
+        "elapsed_seconds": 0.251,
+        "exit_code": 0,
+        "fa_verify_sha256_after": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+        "fa_verify_sha256_before": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+        "files": {
+          "checkpoint.bin": {
+            "bytes": 288,
+            "sha256": "aaf4337a8ad680ecc4bd76c9cb4e290b9c02d8e72d89cb46551d79fc3eed42be"
+          },
+          "report.fab": {
+            "bytes": 273822,
+            "sha256": "e26022acf9779eb06ff4653911d804a1f61cdbea7f02708b4f6838cad0aecb9c"
+          },
+          "report.receipt": {
+            "bytes": 219,
+            "sha256": "65c60603a9c0aa2ee4effec323bc3b93d7280cf6273aa51f35dd022c9dd9a45f"
+          }
+        },
+        "finished_utc": "2026-11-03T17:35:51.929132+00:00",
+        "format": "fa-public-example-recheck-v1",
+        "packaging_helper": {
+          "bytes": 12690,
+          "path": "/workspace/scratch/69d8c2fe02b1/native-validation-tools/package_public_example.py",
+          "sha256": "613dfd156ab4c1328f1c7923e10e3e136238f23bd24cdc3766b2e6b3708aba27"
+        },
+        "source_example": "/workspace/scratch/69d8c2fe02b1/franken_accounting/examples/public_ledger/university_source_bound",
+        "started_utc": "2026-11-03T17:35:51.677877+00:00",
+        "status": "PASS",
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout": {
+          "bytes": 22665,
+          "sha256": "f77505426477fca082c3f316d73b0403d22b4b84c3d5326989325fd026b1d706"
+        },
+        "verdict": "verified"
+      },
+      "repository_path": "examples/public_ledger/university_source_bound",
+      "manifest": {
+        "local_path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/examples/public_ledger/university_source_bound/manifest.json",
+        "sha256": "3d267020fbfc6f8f8628e309b422dca7ce83225dde5469c80fb75a9ae750ca99",
+        "bytes": 7506
+      }
     }
   },
   "evidence_notes": [
-    "Only public-source identities, aggregate counts, native receipt metadata and artifact hashes are committed here. Private signing keys and bulky native books stay outside the repository.",
-    "Report and transcript SHA256 values bind complete local artifacts; local paths identify retained session evidence and are not promised as permanent public downloads.",
-    "Completed-attempt driver command counts can differ from transcript counts because resume preflight runs before the new attempt transcript is opened. Interrupted attempts remain separately preserved.",
-    "Each negative control edits a separate ADS copy and must independently produce fa-verify exit 8. Identical refusal JSON is distinguished by the executed extract path and transcript line.",
-    "The original failed university book is retained with its original engine/runtime pins. Repaired-engine validation must use fresh output on the preserved tmpfs workspace; resume never weakens source, driver or binary identity checks.",
+    "Only public-source identities, aggregate counts, native receipt metadata and artifact hashes are committed here. Private signing keys and bulky native books are not included.",
+    "Old-engine outcomes preserve their previously observed identities and hashes. Original session-local books and other temporary artifacts are unavailable after container replacement; historical paths identify earlier evidence, not currently downloadable files.",
+    "Fresh repaired-engine results bind their actual f3f1d66 executables and unchanged source/driver/helper bytes before and after execution, even where checkout HEAD contains later changes.",
+    "Completed-attempt driver command counts can differ from transcript counts because resume preflight runs before the new attempt transcript is opened. Interrupted attempts are separately identified.",
+    "Each ADS negative control edits a separate copy and independently returns fa-verify exit 8. Identical refusal JSON is distinguished by the executed extract path and transcript line.",
+    "Repaired-engine workload passes and hosted test outcomes are separate: f3f1d66 built the executables but its workflow failed after four object-test passes and one failure; the genesis filter matched zero and the scheduled lifecycle command was not reached.",
     "Controlled interruption is after a durable real native command. It does not assert recovery from an abrupt process kill or a torn storage transaction.",
-    "Durations are observed execution times in this session, not a comparative performance result or service-level claim.",
-    "After the overlay became full, the verified writable checkout and all new outputs moved to /dev/shm/franken-accounting-preserved-69d8c2fe02b1. Original paths in earlier records still identify preserved original evidence; no old book is rewritten to change its engine pins."
+    "The source-bound university companion adds only --bind-source to preparation. Both the original unbound driver and explicit bound mode retain all original source, balance, dimension, export and tamper assertions.",
+    "Portable closure parsing is descriptive. Separate real fa-verify processes authenticate and recompute the retained historical report using the expected certificate, signed checkpoint, caller-trusted fixture public key and detached receipt.",
+    "Durations are observed execution times in this session, not comparative performance results or service-level claims.",
+    "No selected public-ledger fixture has a nonblank project code. Native runs exercise populated department, fund and product attribution; offline project tests remain separately scoped."
   ],
   "prior_engine_source_bound_preflight": {
     "case": "museum-prior-source-bound-preflight",
@@ -1777,5 +5653,9 @@
         }
       }
     ]
+  },
+  "historical_artifact_availability": {
+    "status": "ORIGINAL_LOCAL_ARTIFACTS_UNAVAILABLE_AFTER_CONTAINER_REPLACEMENT",
+    "scope": "Old-engine results, original university refusal, ENOSPC failure, identities and hashes are preserved unchanged from the earlier committed record. Their temporary books/reports/transcripts did not survive container replacement and have not been freshly reverified or reconstructed as the originals. Repaired-engine evidence uses fresh books in the restored workspace."
   }
 }

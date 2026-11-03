@@ -13,10 +13,16 @@ import sys
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, add_help=False)
+    parser = argparse.ArgumentParser(description=__doc__, add_help=False, allow_abbrev=False)
     parser.add_argument('--repo', required=True, type=Path)
     selected, arguments = parser.parse_known_args()
-    if not arguments or arguments[0] != 'run' or '--resume' in arguments:
+    # The stock parser accepts unique long-option prefixes. Refuse every
+    # spelling it can interpret as --resume before resolving the repository,
+    # importing the driver or allowing it to inspect an existing output.
+    options = (argument.partition('=')[0] for argument in arguments)
+    resuming = any(option.startswith('--') and len(option) > 2
+                   and '--resume'.startswith(option) for option in options)
+    if not arguments or arguments[0] != 'run' or resuming:
         parser.error('forward a fresh public_ledger.py run invocation; --resume is not supported here')
     sys.path.insert(0, str(selected.repo.resolve(strict=True) / 'scripts'))
     import public_ledger

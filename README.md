@@ -499,7 +499,9 @@ unchanged canonical digests. Historical reads, same-batch resolution, register
 maintenance, native certificates and portable proofs resolve the complete
 original bytes. The [storage and validation section](docs/public_ledger.md#preserve-large-entries-without-losing-source-detail)
 explains compatibility, corruption controls and the real source that exposed
-the defect; earlier account-only execution records do not validate this repair.
+the defect. Fresh complete-chartfield replays now pass for all three original
+agency fixtures, including the intact 157-leg university Entry. The execution
+record retains the earlier refusal and the separate hosted test failure.
 
 The [source-bound replay helper](scripts/public_ledger_source_bound_replay.py)
 adds the native `--bind-source` preparation switch to the same complete-agency
@@ -509,7 +511,33 @@ cannot pass merely because account totals still match. Its
 [reproduction command](docs/public_ledger.md#exercise-native-source-population-completeness)
 uses a fresh book and retains the actual native command arguments.
 
-The entire 373,357-row publication has been profiled. **All three complete agency
+The [portable-report companion](docs/public_ledger_portable_proof.md) exports a
+retained departmental certificate, pins its signed checkpoint and runs the
+separate `fa-verify report` command with an expected certificate, trusted fixture
+key and detached receipt. The full university workflow exercises both ordinary
+and source-bound bundles, including the real Entry and migration-run fragments.
+Both university report modes have passed actual independent verification: the
+ordinary bundle contains 10 native inputs, and the source-bound bundle contains
+12 with all nine source witnesses. The [public offline proof example](examples/public_ledger/university_source_bound/README.md)
+contains the real signed checkpoint, report bundle and receipt in 85,694
+compressed bytes; its decompressed files pass all 91 verifier checks without
+the native book or a private key. Exact source, helper and binary pins retain
+the scope of those results.
+
+An explicit [agency-period balance boundary](docs/public_ledger.md#whole-agency-activity-across-fund-and-class-boundaries)
+also supports complete monthly activity whose individual fund/class slices do
+not balance. The Health Care Authority fixture preserves all 1,440 published
+rows, including 1,405 monetary legs and 35 zero rows. Its two offsetting April
+class balances remain visible; the adapter neither invents a balancing leg nor
+nets those source rows away. The default fund/class boundary remains strict.
+The complete source-bound health-care replay passed 666 native commands and
+all 39 driver checks, followed by an independently verified portable report
+with the full fragment closure and one source witness. Its
+[execution record](evidence/public_ledger/health-authority-agency-period-validation-2026-11-03.json)
+preserves the strict-profile refusal, exact source and executable pins, and
+the distinct accounting scope of this activity-only import.
+
+The entire 373,357-row publication has been profiled. **The original three complete agency
 fixtures passed the native account-level workflow:** 1,317 original rows
 produce 1,303 exact monetary legs across 48
 migration entries, with every monthly/cumulative/gross account cell reconciled,
@@ -677,6 +705,32 @@ later matching and reconciliation. Layouts support signed amounts or separate
 debit/credit columns, explicit date formats, and dot or comma decimals. See
 [declared CSV layouts](docs/bank_csv_layouts.md) for a complete example and the
 inline MCP form. Omitting `--layout` keeps the canonical twelve-column parser.
+
+### CAMT counterparty attribution
+
+CAMT052 and CAMT053 bank imports select the transaction's scoped debtor for an
+ordinary incoming credit and creditor for an ordinary outgoing debit. Both
+direct party names and modern `Pty/Nm` names retain decoded Unicode and XML
+entities. Agent-bank, account-holder and ultimate-party names cannot replace
+that selected role. Batches require complete, agreeing counterparty names and
+consistent direction/counts; ambiguous batches, reversals and returns are
+explicitly refused until an appropriate attribution profile is supplied.
+The [CAMT guide](docs/camt_bank_counterparties.md) explains the supported profile,
+native source/retry checks and historical-interpretation compatibility.
+
+### Lossless normalized bank feeds
+
+Saved `plaid-sync` responses and supervised `fwc` intake use structural JSON
+decoding for the normalized `fwc.robot.v1` envelope. Escaped quotes, Unicode and
+braces in counterparties or payment references retain their exact decoded
+meaning. Every transaction-array member must be a complete declared row;
+duplicate decoded keys, duplicate transaction IDs, trailing data and unsupported
+fields are refused. An offsetting payment pair remains two observations even
+when its amounts cancel. Exact decimal-string money, original source bytes and
+bank-line source links are preserved. Warehouse receipts use the same decoder.
+The [bank-feed guide](docs/fwc_bank_feed.md) gives the supported schema, saved-feed
+import command and current runtime-validation boundary. Raw Plaid change streams
+and live external receipt authentication are outside that normalized profile.
 
 ### Reviewed close runs
 

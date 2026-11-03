@@ -153,6 +153,7 @@ class ReplayRecovery:
 
     def __init__(self, output: Path, path: Path, agency: str,
                  binary: Path, verifier: Path, *, resume: bool,
+                 balance_boundary: str = "fund-class",
                  on_created: Callable[[], None] | None = None):
         try:
             import fcntl
@@ -163,7 +164,7 @@ class ReplayRecovery:
         self.resumed = resume
         self.attempt: Path | None = None
         self.lock = None
-        self.manifest, self.artifacts = preparation_artifacts(path, agency)
+        self.manifest, self.artifacts = preparation_artifacts(path, agency, balance_boundary=balance_boundary)
         pins = {
             "format": "fa-public-ledger-recovery-v1", "agency": agency,
             "input_sha256": sha256(path),
@@ -176,6 +177,8 @@ class ReplayRecovery:
                 "python_version": list(sys.version_info[:3]),
             },
         }
+        if balance_boundary != "fund-class":
+            pins["balance_boundary"] = balance_boundary
         self.facts: dict[str, dict] = {}
         if resume:
             saved = read_fact(self.directory / "pins.json")
@@ -361,7 +364,12 @@ def extract_original(path: Path, destination: Path, agency: str) -> None:
 
 def account_spec(code: str, name: str) -> dict:
     types = {"1": "Asset", "2": "Liability", "3": "Equity", "4": "Revenue", "5": "Expense"}
-    if code == "631100":
+    if code == "621000":
+        require(name == "Appropriated Transfers Out", "account 621000 has an unreviewed source description")
+        # An interfund financing transfer is not operating expense. This is
+        # the activity-book crosswalk only, never a financial-statement claim.
+        kind = "Equity"
+    elif code == "631100":
         # The source calls this Other Financing Sources/Uses, not revenue.
         # Equity is an explicit activity-book crosswalk, never a GAAP assertion.
         kind = "Equity"
@@ -460,10 +468,12 @@ def department_oracle(rows: list[dict]) -> dict[str, dict[str, dict]]:
     return dimension_oracle(rows, "department")
 
 
-def preparation_artifacts(path: Path, agency: str) -> tuple[dict, dict[str, bytes]]:
+def preparation_artifacts(path: Path, agency: str, *,
+                          balance_boundary: str = "fund-class") -> tuple[dict, dict[str, bytes]]:
     """Recompute every source-derived input without touching an existing run."""
     provenance, record_map = input_provenance(path, agency)
-    selected = source.prepare_agency(path, agency, source_records=record_map)
+    selected = source.prepare_agency(path, agency, source_records=record_map,
+                                     balance_boundary=balance_boundary)
     rows = selected["rows"]
     require(bool(rows), f"no published rows for agency {agency}")
     require({r["fields"]["FISCAL_YEAR"] for r in rows} == {"2024"}, "unexpected fiscal year")
@@ -478,14 +488,26 @@ def preparation_artifacts(path: Path, agency: str) -> tuple[dict, dict[str, byte
     artifacts["chart.json"] = json_bytes({"accounts": chart})
     artifacts["column_map.toml"] = COLUMN_MAP.encode("utf-8")
 
-    # Separate native migration runs follow actual fund/class boundaries.
+    # The default runs follow actual fund/class boundaries. An explicitly
+    # selected agency-period boundary preserves all of a month's source rows
+    # in one Entry, including cross-fund activity, in one quarter-wide run.
     # Each source monetary row is one leg. No row is split or netted away.
-    partitions: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    partitions: dict[tuple[str, ...], list[dict]] = defaultdict(list)
+    if balance_boundary == "agency-period":
+        limits = tomllib.loads((ROOT / "registries/limits.toml").read_text(encoding="utf-8"))
+        leg_limits = [row["value"] for row in limits["limit"] if row["name"] == "max_legs_per_entry"]
+        require(len(leg_limits) == 1 and type(leg_limits[0]) is int and leg_limits[0] > 0,
+                "native max_legs_per_entry registry is ambiguous")
+        for group in selected["groups"]:
+            count = sum(row["amount_mills"] != 0 for row in group["rows"])
+            require(count <= leg_limits[0],
+                    f"agency-period {group['key']} has {count} monetary rows, exceeding the native "
+                    f"{leg_limits[0]}-leg Entry limit; import refused without splitting or netting source rows")
     for group in selected["groups"]:
-        fy, period, ledger, fund, cls = group["key"]
+        fy, period, ledger, *boundary = group["key"]
         require(str(fy) == "2024" and str(period) in ("10", "11", "12"), "unexpected group key")
         require(ledger == "ACTUALS", "only published ACTUALS ledger is admitted")
-        partitions[(ledger, fund, cls)].append(group)
+        partitions[(ledger, *boundary)].append(group)
     fieldnames = ["entry_id", "effective_date", "account_code", "signed_amount", "description", "source_record"]
     fieldnames += [f"original_{column}" for column in source.HEADERS]
     used: set[int] = set()
@@ -506,8 +528,9 @@ def preparation_artifacts(path: Path, agency: str) -> tuple[dict, dict[str, byte
             writer = csv.DictWriter(stream, fieldnames=fieldnames, lineterminator="\n")
             writer.writeheader()
             for group in sorted(groups, key=lambda g: int(g["key"][1])):
-                year, period, ledger, fund, cls = group["key"]
-                entry_id = f"OK:{agency}:{year}:{period}:{ledger}:{fund}:{cls}"
+                year, period, ledger, *boundary = group["key"]
+                suffix = ":".join(boundary) if boundary else "agency-period"
+                entry_id = f"OK:{agency}:{year}:{period}:{ledger}:{suffix}"
                 legs = [r for r in group["rows"] if r["amount_mills"]]
                 if not legs:
                     continue
@@ -556,13 +579,28 @@ def preparation_artifacts(path: Path, agency: str) -> tuple[dict, dict[str, byte
         "dimension_policy": "DEPTID, PROJECT_ID, PRODUCT and FUND_CODE map to native department, project, product and fund. Nonblank codes stay exact strings, whitespace-only is absent, and surrounding whitespace on a nonblank code is refused. Other chartfields, including CLASS_FLD and PROGRAM_CODE, remain in retained evidence without an invented native kind. An empty oracle key denotes source rows untagged for that dimension; it is never a native value. These annotations do not assert a balancing-dimension policy.",
         "oracle_policy": "Integer-cent fold of original source fields; not an audited agency opening/closing trial balance",
     }
+    if any(code == "621000" for code, _ in accounts):
+        manifest["chart_policy"] += "; explicit 621000 Appropriated Transfers Out -> Equity in the activity-only test book"
+    if balance_boundary == "agency-period":
+        manifest.update(
+            balance_boundary=balance_boundary,
+            balance_group_columns=selected["group_columns"],
+            source_group_controls=selected["source_group_controls"],
+            balance_boundary_policy=(
+                "Each entire agency/fiscal-year/period/ACTUALS population is one reconstructed activity Entry. "
+                "Fund/class partitions may have nonzero net; their source fields and exact controls are retained. "
+                "No amount is split, netted, rounded or added, and neither periods nor agencies offset each other. "
+                "This explicitly selected boundary is not an original journal identity or a fund-balancing assertion."
+            ),
+        )
     artifacts["manifest.json"] = json_bytes(manifest)
     return manifest, artifacts
 
 
 def normalize(path: Path, agency: str, output: Path, *,
+              balance_boundary: str = "fund-class",
               on_created: Callable[[], None] | None = None) -> dict:
-    manifest, artifacts = preparation_artifacts(path, agency)
+    manifest, artifacts = preparation_artifacts(path, agency, balance_boundary=balance_boundary)
     output.mkdir(parents=True, exist_ok=False)
     if on_created is not None:
         on_created()
@@ -1337,6 +1375,9 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict,
     checks = ["pinned_source_bytes", "complete_agency_row_coverage", "all_source_groups_balance_exactly",
               "no_subcent_rounding", "all_original_chartfields_retained",
               "source_and_helper_agent_uploads_have_native_local_reviews"]
+    if manifest.get("balance_boundary") == "agency-period":
+        checks[2] = "all_declared_agency_period_groups_balance_exactly"
+        checks.append("nonzero_fund_class_controls_preserved_without_balancing_legs")
     for run in manifest["runs"]:
         name = run["name"]
         source_oid = native.document(output / run["source"])
@@ -1507,6 +1548,9 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict,
                    "original_native_packages_and_publication_receipts_preserved",
                    "original_finalize_proposals_durable_before_approval"])
     return {"status": "PASS", "scope": SCOPE, "agency": manifest["agency"],
+            "balance_boundary": manifest.get("balance_boundary", "fund-class"),
+            "balance_boundary_policy": manifest.get("balance_boundary_policy",
+                "Each source fiscal-year/period/ledger/fund/class group balances exactly; runs follow fund/class partitions"),
             "recovery": {"resumed": recovery.resumed, "attempt": str(attempt.relative_to(output)),
                          "native_packages_recovered": len(recovered),
                          "book_id": recovery.facts["book"]["book_id"],
@@ -1547,6 +1591,8 @@ def main(argv: list[str] | None = None) -> int:
         command = sub.add_parser(action, help="normalize a complete agency" if action == "prepare" else "execute real native migration, folds and offline proof verification")
         command.add_argument("--source", type=Path, help="pinned statewide CSV or committed complete-agency fixture")
         command.add_argument("--agency", help="exact business-unit code; default 31500, or the original agency with --resume")
+        command.add_argument("--balance-boundary", choices=source.BALANCE_BOUNDARIES,
+                             help="default fund-class; agency-period preserves complete monthly interfund activity in one Entry; resume uses its original boundary")
         command.add_argument("--out", type=Path, required=True, help="new directory, or an interrupted pinned run with --resume")
         if action == "run":
             command.add_argument("--fa", type=Path, help="default target/debug/fa; resume defaults to the original executable")
@@ -1571,6 +1617,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             saved = read_fact(args.out / "recovery/pins.json") if args.action == "run" and args.resume else {}
             agency = args.agency or saved.get("agency", "31500")
+            balance_boundary = args.balance_boundary or saved.get("balance_boundary", "fund-class")
             path = args.source or (Path(saved["source_path"]) if saved else FIXTURES / f"omes-fy2024-q4-{agency}.csv")
             if args.action == "run":
                 binary = args.fa or Path(saved.get("fa_path", ROOT / "target/debug/fa"))
@@ -1578,7 +1625,8 @@ def main(argv: list[str] | None = None) -> int:
                 require(binary.is_file() and verifier.is_file(),
                         "build fa and fa-verify first: cargo build -p fa-cli --bin fa -p fa-verify --bin fa-verify")
                 recovery = ReplayRecovery(args.out, path, agency, binary, verifier,
-                                          resume=args.resume, on_created=own_output)
+                                          resume=args.resume, balance_boundary=balance_boundary,
+                                          on_created=own_output)
                 manifest = recovery.manifest
                 report = run_native(binary, verifier, args.out, manifest, recovery=recovery)
                 report["elapsed_seconds"] = round(time.monotonic() - started, 3)
@@ -1587,7 +1635,8 @@ def main(argv: list[str] | None = None) -> int:
                 publish_bytes(args.out / "report.json", json_bytes(report))
                 print(json.dumps({key: report[key] for key in ("status", "agency", "source_rows", "monetary_rows", "account_count", "migration_entries", "commands", "elapsed_seconds")}))
             else:
-                manifest = normalize(path, agency, args.out, on_created=own_output)
+                manifest = normalize(path, agency, args.out, balance_boundary=balance_boundary,
+                                     on_created=own_output)
                 print(json.dumps({"status": "PREPARED", "agency": agency, "source_rows": manifest["source_rows"], "out": str(args.out)}))
         return 0
     except (ReplayError, source.SourceError, OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:

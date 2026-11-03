@@ -2474,6 +2474,196 @@ fn every_format_imports_via_cli() {
     );
 }
 
+/// Real saved-statement intake selects the economic role at the scoped CAMT
+/// path, retains raw evidence, and refuses attribution it cannot represent.
+#[test]
+fn camt_counterparty_roles_survive_native_import_and_ambiguous_inputs_refuse() {
+    let incoming = "<NtryDtls><TxDtls>\
+        <RltdAgts><DbtrAgt><FinInstnId><Nm>Incoming agent</Nm></FinInstnId></DbtrAgt></RltdAgts>\
+        <RltdPties><Cdtr><Pty><Nm>Our Company</Nm></Pty></Cdtr>\
+        <DbtrAcct><Nm>Account label</Nm></DbtrAcct>\
+        <UltmtDbtr><Pty><Nm>Ultimate debtor</Nm></Pty></UltmtDbtr>\
+        <Dbtr><Pty><Nm>Customer &#xE9; &amp; &#x1F680;</Nm></Pty></Dbtr>\
+        </RltdPties></TxDtls></NtryDtls>";
+    let outgoing = "<NtryDtls><TxDtls>\
+        <RltdAgts><CdtrAgt><FinInstnId><Nm>Outgoing agent</Nm></FinInstnId></CdtrAgt></RltdAgts>\
+        <RltdPties><Dbtr><Nm>Our Company</Nm></Dbtr>\
+        <UltmtCdtr><Nm>Ultimate creditor</Nm></UltmtCdtr>\
+        <CdtrAcct><Nm>Account label</Nm></CdtrAcct>\
+        <Cdtr><Nm>Payee &quot;Europe&quot; &#x20AC;</Nm></Cdtr>\
+        </RltdPties></TxDtls></NtryDtls>";
+    let statement = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">
+  <BkToCstmrStmt><Stmt><Id>Role selection</Id><ElctrncSeqNb>1</ElctrncSeqNb>
+    <Acct><Id><IBAN>GB29NWBK60161331926819</IBAN></Id><Ccy>USD</Ccy></Acct>
+    <Bal><Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp><Amt Ccy="USD">1000.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-03-01</Dt></Dt></Bal>
+    <Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt Ccy="USD">1250.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-03-31</Dt></Dt></Bal>
+    <Ntry><Amt Ccy="USD">500.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Sts>BOOK</Sts>
+      <BookgDt><Dt>2026-03-10</Dt></BookgDt><ValDt><Dt>2026-03-11</Dt></ValDt><AcctSvcrRef>INV-100</AcctSvcrRef>{incoming}
+    </Ntry>
+    <Ntry><Amt Ccy="USD">250.00</Amt><CdtDbtInd>DBIT</CdtDbtInd><Sts>BOOK</Sts>
+      <BookgDt><Dt>2026-03-15</Dt></BookgDt><ValDt><Dt>2026-03-16</Dt></ValDt><AcctSvcrRef>BILL-200</AcctSvcrRef>{outgoing}
+    </Ntry>
+  </Stmt></BkToCstmrStmt>
+</Document>"#
+    );
+    let intraday = statement
+        .replace("camt.053", "camt.052")
+        .replace("BkToCstmrStmt", "BkToCstmrAcctRpt")
+        .replace("<Stmt>", "<Rpt>")
+        .replace("</Stmt>", "</Rpt>")
+        .replace("<Cd>CLBD</Cd>", "<Cd>ITBD</Cd>");
+    for (format, raw) in [("camt053", statement), ("camt052", intraday)] {
+        let f = Fixture::new();
+        let before = head(&f.book);
+        let imported = f.import(&format!("{format}-roles.xml"), format, &raw);
+        let receipt = data(&imported);
+        assert_eq!(integer(receipt, "line_count"), 2);
+        assert_eq!(text(receipt, "opening_balance"), "1000.00 USD");
+        assert_eq!(text(receipt, "closing_balance"), "1250.00 USD");
+        assert_eq!(receipt.get("already_recorded"), Some(&Json::Bool(false)));
+        let published = head(&f.book);
+        assert_eq!(published, before + 1);
+        assert_eq!(integer(receipt, "recorded_at"), published);
+        let source = ok_privileged(
+            &f.book,
+            &["document", "read", text(receipt, "statement_oid")],
+        );
+        assert_eq!(
+            text(data(&source).get("text").unwrap(), "untrusted_content"),
+            raw
+        );
+        let manifest = text(receipt, "manifest_oid");
+        let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+        let lines = rows(data(&matched), "proposals");
+        assert_eq!(integer(data(&matched), "line_count"), 2);
+        assert_eq!(lines.len(), 2);
+        let line_oids = rows(receipt, "line_oids");
+        assert_eq!(line_oids.len(), 2);
+        for (index, (name, direction, amount, reference)) in [
+            ("Customer é & 🚀", "inflow", "500.00 USD", "INV-100"),
+            ("Payee \"Europe\" €", "outflow", "250.00 USD", "BILL-200"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let line = &lines[index];
+            assert_eq!(
+                integer(line, "line_ordinal"),
+                i128::try_from(index + 1).unwrap()
+            );
+            assert_eq!(text(line, "direction"), direction);
+            assert_eq!(text(line, "amount"), amount);
+            assert_eq!(
+                text(line.get("counterparty").unwrap(), "untrusted_content"),
+                name
+            );
+            assert_eq!(
+                text(line.get("reference").unwrap(), "untrusted_content"),
+                reference
+            );
+            assert_eq!(
+                text(line, "line_document_oid"),
+                line_oids[index].as_str().unwrap()
+            );
+            assert_eq!(
+                text(line.get("counterparty").unwrap(), "source"),
+                format!("D:{}", text(line, "line_document_oid"))
+            );
+        }
+        let repeated = f.import(&format!("{format}-roles-retry.xml"), format, &raw);
+        assert_eq!(
+            data(&repeated).get("already_recorded"),
+            Some(&Json::Bool(true))
+        );
+        for field in [
+            "manifest_oid",
+            "statement_oid",
+            "statement_commit",
+            "line_oids",
+            "receipt_hash",
+            "recorded_at",
+            "line_count",
+        ] {
+            assert_eq!(
+                data(&repeated).get(field),
+                receipt.get(field),
+                "retry {field}"
+            );
+        }
+        assert_eq!(
+            head(&f.book),
+            published,
+            "reads and exact retries publish nothing"
+        );
+        let held = ok(&f.book, &["document", "list"]);
+        let distinct = outgoing.replace(
+            "</NtryDtls>",
+            "<TxDtls><RltdPties><Cdtr><Nm>Different payee</Nm></Cdtr>\
+             </RltdPties></TxDtls></NtryDtls>",
+        );
+        let partial = outgoing.replace("<NtryDtls>", "<NtryDtls><Btch><NbOfTxs>2</NbOfTxs></Btch>");
+        for (name, invalid, reason) in [
+            (
+                "distinct-parties.xml",
+                raw.replace(outgoing, &distinct),
+                "complete common counterparty",
+            ),
+            (
+                "partial-batch.xml",
+                raw.replace(outgoing, &partial),
+                "batch transaction count",
+            ),
+            (
+                "reversal.xml",
+                raw.replacen("<NtryDtls>", "<RvslInd>true</RvslInd><NtryDtls>", 1),
+                "reversal entries require",
+            ),
+            (
+                "return.xml",
+                raw.replacen(
+                    "</TxDtls>",
+                    "<RtrInf><Rsn><Cd>AC01</Cd></Rsn></RtrInf></TxDtls>",
+                    1,
+                ),
+                "return information requires",
+            ),
+        ] {
+            assert_ne!(invalid, raw, "{name}: source mutation applies");
+            let path = f.file(name, &invalid);
+            let (exit, refused) = run(
+                &f.book,
+                &[
+                    "bank",
+                    "import",
+                    &path,
+                    "--bank-format",
+                    format,
+                    "--account",
+                    "1000",
+                ],
+            );
+            assert_eq!(exit, 2, "{format}/{name}: {}", refused.render());
+            assert!(refused.render().contains(reason), "{}", refused.render());
+            assert_eq!(head(&f.book), published, "{name}: no partial import");
+            let after = ok(&f.book, &["document", "list"]);
+            assert_eq!(
+                data(&after),
+                data(&held),
+                "{name}: retained document census"
+            );
+            let reopened = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+            assert_eq!(
+                rows(data(&reopened), "proposals"),
+                lines,
+                "{name}: original bank lines"
+            );
+            assert_eq!(head(&f.book), published);
+        }
+    }
+}
+
 #[test]
 fn real_camt_date_choices_and_currency_attributes_import_and_match() {
     let f = Fixture::new();
@@ -3831,6 +4021,203 @@ fn a_plaid_transactions_sync_payload_imports_and_matches_like_a_statement() {
         "{}",
         matched.render()
     );
+}
+
+/// A saved normalized fwc.robot.v1 response keeps decoded bank-line text and
+/// its original escaped source bytes through real native import and reopen.
+/// This tests the saved-envelope boundary; it does not invoke a live connector.
+#[test]
+fn plaid_json_escaped_text_survives_native_retention_retry_and_structural_refusals() {
+    const PLAID: &str =
+        include_str!("../../fa-formats/corpora/fwc_plaid_transactions_sync_fixture.json");
+    let payload = PLAID
+        .replace(
+            r#""Acme Corp""#,
+            r#""Acme \"Holdings\" \u00e9 \ud83d\ude80 } { [ ]""#,
+        )
+        .replace(
+            r#""INV-100""#,
+            r#""INV\\archive\/\u0037\" [transactions] } {""#,
+        )
+        .replace(r#""Cloud Hosting Inc""#, r#""Cloud {region} \"EU\"""#)
+        .replace(r#""BILL-200""#, r#""BILL\n200\t\u20ac""#);
+    assert_ne!(payload, PLAID, "the legal escaped source changes apply");
+    let f = Fixture::new();
+    let before = head(&f.book);
+    let imported = f.import("escaped-plaid.json", "plaid-sync", &payload);
+    let receipt = data(&imported);
+    assert_eq!(text(&imported, "event"), "bank_imported");
+    assert_eq!(text(receipt, "bank_format"), "plaid-sync");
+    assert_eq!(integer(receipt, "line_count"), 2);
+    assert_eq!(text(receipt, "opening_balance"), "1000.00 USD");
+    assert_eq!(text(receipt, "closing_balance"), "1250.00 USD");
+    assert_eq!(receipt.get("already_recorded"), Some(&Json::Bool(false)));
+    let published = head(&f.book);
+    assert_eq!(
+        published,
+        before + 1,
+        "the complete import is one publication"
+    );
+    assert_eq!(integer(receipt, "recorded_at"), published);
+    let line_oids = rows(receipt, "line_oids");
+    assert_eq!(line_oids.len(), 2);
+    assert_ne!(line_oids[0], line_oids[1]);
+    let manifest = text(receipt, "manifest_oid");
+
+    let source = ok_privileged(
+        &f.book,
+        &["document", "read", text(receipt, "statement_oid")],
+    );
+    assert_eq!(text(data(&source), "kind"), "BankStatement");
+    assert_eq!(
+        text(data(&source).get("text").unwrap(), "untrusted_content"),
+        payload,
+        "cold readback preserves the original escaped JSON bytes"
+    );
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    assert_eq!(integer(data(&matched), "line_count"), 2);
+    let bank_lines = rows(data(&matched), "proposals");
+    assert_eq!(
+        bank_lines.len(),
+        2,
+        "every source transaction survives reopen"
+    );
+    for (index, (date, value_date, direction, amount, counterparty, reference)) in [
+        (
+            "2026-03-10",
+            "2026-03-11",
+            "inflow",
+            "500.00 USD",
+            "Acme \"Holdings\" é 🚀 } { [ ]",
+            "INV\\archive/7\" [transactions] } {",
+        ),
+        (
+            "2026-03-15",
+            "2026-03-16",
+            "outflow",
+            "250.00 USD",
+            "Cloud {region} \"EU\"",
+            "BILL\n200\t€",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let row = &bank_lines[index];
+        assert_eq!(
+            integer(row, "line_ordinal"),
+            i128::try_from(index + 1).unwrap()
+        );
+        assert_eq!(text(row, "booking_date"), date);
+        assert_eq!(text(row, "value_date"), value_date);
+        assert_eq!(text(row, "direction"), direction);
+        assert_eq!(text(row, "amount"), amount);
+        assert_eq!(
+            text(row, "line_document_oid"),
+            line_oids[index].as_str().unwrap()
+        );
+        let line_source = format!("D:{}", text(row, "line_document_oid"));
+        for (field, expected) in [("counterparty", counterparty), ("reference", reference)] {
+            let value = row.get(field).unwrap();
+            assert_eq!(text(value, "untrusted_content"), expected);
+            assert_eq!(text(value, "source"), line_source);
+        }
+    }
+    assert_eq!(
+        head(&f.book),
+        published,
+        "source and bank-line reads do not publish"
+    );
+
+    let repeated = f.import("escaped-plaid-retry.json", "plaid-sync", &payload);
+    assert_eq!(
+        data(&repeated).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    for field in [
+        "manifest_oid",
+        "statement_oid",
+        "statement_commit",
+        "line_oids",
+        "line_count",
+        "receipt_hash",
+        "recorded_at",
+    ] {
+        assert_eq!(
+            data(&repeated).get(field),
+            receipt.get(field),
+            "stable retry {field}"
+        );
+    }
+    assert_eq!(
+        head(&f.book),
+        published,
+        "exact retry publishes no new history"
+    );
+    let held = ok(&f.book, &["document", "list"]);
+    for (name, invalid, expected_error) in [
+        (
+            "duplicate-plaid-field.json",
+            payload.replace(
+                r#""amount": "500.00""#,
+                r#""amount": "500.00", "\u0061mount": "500.00""#,
+            ),
+            "duplicate",
+        ),
+        (
+            "trailing-plaid-data.json",
+            format!("{payload} true"),
+            "trailing characters",
+        ),
+        (
+            "extra-plaid-array-member.json",
+            payload.replace(r#""transactions": ["#, r#""transactions": [null,"#),
+            "transaction 1 must be a JSON object",
+        ),
+    ] {
+        assert_ne!(invalid, payload, "{name}: the planted change applies");
+        let path = f.file(name, &invalid);
+        let (exit, refused) = run(
+            &f.book,
+            &[
+                "bank",
+                "import",
+                &path,
+                "--bank-format",
+                "plaid-sync",
+                "--account",
+                "1000",
+            ],
+        );
+        assert_eq!(exit, 2, "{name}: {}", refused.render());
+        assert!(
+            refused.render().contains(expected_error),
+            "{name}: {}",
+            refused.render()
+        );
+        assert_eq!(
+            head(&f.book),
+            published,
+            "{name}: refusal publishes nothing"
+        );
+        let after = ok(&f.book, &["document", "list"]);
+        assert_eq!(
+            data(&after),
+            data(&held),
+            "{name}: original document census is unchanged"
+        );
+        let reopened = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+        assert_eq!(
+            rows(data(&reopened), "proposals"),
+            bank_lines,
+            "{name}: native bank-line census is unchanged"
+        );
+        assert_eq!(
+            head(&f.book),
+            published,
+            "{name}: verification is read-only"
+        );
+    }
 }
 
 /// fa-lzrn: `fa bank fetch --connector plaid` runs the host's `fwc` (here a

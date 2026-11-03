@@ -27,12 +27,107 @@ validation records; a successful source check does not establish a native pass.
 ## Native replay validation (2026-11-03)
 
 The [latest execution record](../evidence/public_ledger/validation-2026-11-03-entry-fragments.json)
-tracks the complete-chartfield driver, its successful museum and pension runs,
-controlled recovery, and the university's preserved oversized-Entry refusal.
-It distinguishes old-engine execution from acceptance of the repaired engine;
-a queued build is not a native pass. The current 84 public-ledger Python checks
-cover the broader dimension and source/export contract. The earlier campaigns
-below retain their original, narrower scope.
+records successful fresh replays of all three complete agency selections with
+the repaired native engine at
+`f3f1d66b25f9b01535efa9de74e38cb600b08a59`. Every nonzero source row becomes one
+monetary leg with its original mapped dimensions through migration, reporting
+and export; zero rows remain in the retained source evidence. The university's
+previously refused **157-leg Entry now completes as one accounting Entry**,
+with its original fund and product attribution intact.
+
+### Complete chartfields and authenticated Entry storage
+
+| Fresh complete selection | Source rows | Monetary legs | Migration entries | Native commands | Observed seconds |
+|---|---:|---:|---:|---:|---:|
+| `20400` — museum | 125 | 121 | 15 | 235 | 23.075 |
+| `31500` — firefighters pension | 137 | 131 | 6 | 151 | 21.654 |
+| `66000` — university | 1,055 | 1,051 | 27 | 521 | 164.695 |
+
+The three distinct selections contain **1,317 source rows, 1,303 monetary legs
+and 48 Entries**; the 14 zero rows remain in the original evidence. Each run
+passed all 38 driver assertions, including original-source monthly and
+cumulative net/gross oracles, exact leg and dimension preservation, staged
+invisibility, immutable historical reads, idempotent retries, register folds,
+projection checks, certificate replay and independently verified ADS exports.
+The museum and pension each contain three department values and one fund;
+the university contains eight departments, one fund and nine product values.
+These selections contain no nonblank project codes, so they do not establish
+native execution for a populated project dimension.
+
+For every run, the standalone verifier accepted the original ADS package with
+exit 0 and rejected a one-cent mutation and a separate identity mutation for
+each populated dimension kind with exit 8. The university therefore includes
+distinct department, fund and product controls while preserving all monetary
+fields in each dimension-only mutation. Amount and dimension assertions remain
+independent of the source's own economic completeness or correctness.
+
+A separate complete university run through
+[`public_ledger_source_bound_replay.py`](../scripts/public_ledger_source_bound_replay.py)
+also passed: **1,055 rows, 1,051 legs, 27 Entries, 521 commands and 222.804
+seconds**. This companion adds only the native `--bind-source` preparation
+flag; all assertions of the original driver still run. It is a fresh book with
+an explicit source-binding contract, not a retrospective change to the default
+unbound run.
+
+Both university books also passed the separate
+[portable historical-report workflow](public_ledger_portable_proof.md).
+It exported the retained `FY2024-P12` report for department `1000001`, then
+verified its bundle with the expected certificate identity, signed checkpoint,
+caller-trusted fixture public key and detached production receipt. Each run
+executed four real commands, all with exit 0. The unbound report at prefix 261
+carried 10 native inputs, including `MigrationRunFragment` and `EntryFragment`,
+with nine run bodies and no source witnesses. The source-bound report at
+prefix 270 carried 12 native inputs, adding `MigrationSource` and
+`MigrationSourceFragment`, with nine source witnesses. Their bundle minor
+versions were 0 and 1 respectively. Parsing those input lists is descriptive;
+the separate `fa-verify` process established authentication and recomputation.
+The [public university proof example](../examples/public_ledger/university_source_bound/README.md)
+packages the verified source-bound report, checkpoint, detached receipt and
+fixture public-key manifest. Fresh decompression and verification of those
+packaged files also passed, with exit 0 and 91 verifier checks.
+
+A fresh museum recovery run deliberately stopped after one durable staged
+member and resumed with unchanged source, driver, helper and executable pins.
+The interruption returned driver exit 1 and the final resume returned 0,
+recovered all five native packages, and passed the same 38 assertions and
+independent tamper controls. Its final attempt used 245 commands and 25.524
+seconds. The two attempt transcripts retain 75 and 228 receipts respectively;
+the final command total includes recovery preflight calls made before its
+transcript was opened. This tests a controlled stop after a real committed
+command, not a torn transaction or abrupt process kill.
+
+The record binds these results to the downloaded artifact, its source commit,
+Cargo.lock identity, both executable hashes, frozen helpers, original source
+hashes, process timestamps, reports and command transcripts. The earlier
+`3f947ac` results and the original 18,470-byte university row refusal retain
+their separate identities. After the execution container was replaced, the
+original local books were unavailable: replaying an old department certificate
+on a copied original book is explicitly **UNRUN**, not inferred from fresh
+books.
+
+### Separate hosted test outcome
+
+The [hosted build at `f3f1d66`](https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41664093934)
+produced the verified binaries used above, but its overall result was **FAIL**.
+The real-data passes do not change that result:
+
+| Target in that exact hosted run | Observed result |
+|---|---|
+| 512-leg facade certificate/reopen/portable regression | 1 passed |
+| Independent `fa-verify` targets | 878 passed across 30 targets |
+| XBRL scale and duplicate-fact regressions | 4 passed |
+| Genesis Entry-storage filter | 0 executed; `entry_storage::` did not match `entry_storage_tests::` |
+| Object-storage tests | 4 passed, 1 failed |
+| Fragmented expiry and scheduled reversal | Not reached after the object-test failure |
+
+The failed object test was
+`object::tests::staged_fragments_are_atomic_durable_and_committed_reads_are_witnessed`:
+its stale reader returned `SnapshotAdvanced { pinned: CommitSeq(1), live:
+CommitSeq(2) }` at an unconditional unwrap. Later test-fixture or filter
+corrections require their own execution evidence; they do not turn this run
+green. These scoped workload results are not whole-workspace Tier0 acceptance.
+The 84 public-ledger Python checks and the earlier campaigns below retain
+their own source and execution scope.
 
 ### Earlier account-level campaign
 
@@ -202,8 +297,10 @@ and does not redistribute them under the CSV's license.
 
 All records for each named agency in the pinned quarter are included. The
 fixtures are not random samples or balanced subsets chosen from within an
-agency. Every selected agency's natural `(fiscal year, period, ledger, fund,
-class funding)` group balances exactly in the original source.
+agency. The three selections below have natural `(fiscal year, period, ledger,
+fund, class funding)` groups that balance exactly in the original source.
+The complete Health Care Authority selection described next exercises a
+different, explicitly chosen balance boundary.
 
 | Business unit | Published entity | Original rows | Accounts | Natural groups | Debit activity, quarter |
 |---|---|---:|---:|---:|---:|
@@ -221,6 +318,123 @@ records both full-distribution and selected-file hashes, original logical-record
 ordinals and physical line positions, per-period account totals, and distinct
 values across all 36 fields. Fixture bytes and sidecars are checked together;
 a modified input is refused before a native book is created.
+
+### Whole-agency activity across fund and class boundaries
+
+The default `fund-class` interpretation refuses agency `80700` (Health Care
+Authority), although its entire April, May and June activity balances exactly.
+Two published April class-funding slices inside fund `1000` have opposite nets:
+class `20000` is −$479.86 and class `99400` is +$479.86. Demanding that each slice
+balance independently would prevent this complete agency population from being
+imported. An optional `--balance-boundary agency-period` therefore reconstructs
+one activity Entry per agency, fiscal year, accounting period and ACTUALS ledger.
+It preserves every original row and chartfield; it does not alter the source
+accounting to force either class slice to balance.
+
+The new fixture contains all **1,440 published rows**, **118 accounts**, and
+all **36 source fields**. Its 35 zero-valued rows remain evidence. The 1,405
+nonzero rows become exactly 453, 465 and 487 native legs in three monthly Entries,
+in one migration run. Opposing rows are not netted together. The month-end dates
+and Entry IDs are declared replay interpretations, because the public source
+does not contain original transaction dates or journal identifiers.
+
+| Source fiscal period | Published rows | Monetary legs | Debit activity | Credit activity |
+|---|---:|---:|---:|---:|
+| FY2024-P10 | 470 | 453 | $1,633,716,472.39 | $1,633,716,472.39 |
+| FY2024-P11 | 474 | 465 | $1,008,747,262.95 | $1,008,747,262.95 |
+| FY2024-P12 | 496 | 487 | $1,091,742,061.33 | $1,091,742,061.33 |
+
+The original byte-preserved selection is
+`crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-80700.csv`:
+432,290 bytes, SHA-256
+`275781485e5e0a1744cad43912af2d048a8b4538b4de815fd23fadf30d599d28`.
+Its adjacent manifest records original logical-record and physical-line
+positions, independent decimal controls, and the complete distribution's pin.
+The prepared manifest also retains every original fund/class group's row count
+and exact signed net, including the two nonzero slices.
+
+```bash
+# Default grouping deliberately refuses this source; the broader boundary is explicit.
+python3 scripts/public_ledger.py prepare --agency 80700 \
+  --balance-boundary agency-period --out artifacts/omes-health-prepared
+
+# Exercise native source-population binding, all source-row/dimension checks,
+# persisted history, gross/net folds and independent ADS verification.
+python3 scripts/public_ledger_source_bound_replay.py --repo . run \
+  --agency 80700 --balance-boundary agency-period \
+  --out artifacts/omes-health --fa target/debug/fa --fa-verify target/debug/fa-verify
+
+python3 scripts/public_ledger_portable_proof.py \
+  --run artifacts/omes-health --out artifacts/omes-health-proof --source-bound \
+  --fa target/debug/fa --fa-verify target/debug/fa-verify
+```
+
+Preparation and replay also accept `--source path/to/ledger_fy24_qtr4.csv` after the
+existing `fetch` command verifies the complete distribution. Source selection
+and normalization produce the same original rows, accounting mappings and
+controls from either input. The manifest labels which input was used.
+
+This boundary is an explicit choice, never a fallback after a failed narrower
+check. Each whole agency-period must balance exactly; different months, years
+or agencies cannot offset each other. Fractional-cent values still refuse.
+Each month's nonzero source population must fit the registered
+`max_legs_per_entry` bound (currently 4,096); oversized months refuse before an
+output or native book is created, without splitting source legs or inventing
+transactions. Native byte and control bounds continue to apply at admission.
+Account `621000`, **Appropriated Transfers Out**, has an explicit Equity
+crosswalk in this activity-only book, as does the existing **Other Financing
+Sources/Uses** account. This is not a claim about the agency's financial-statement
+presentation; a changed source description for `621000` requires review.
+
+Recovery pins the chosen boundary as well as the prepared artifacts. The stock
+driver's `run --resume` reuses that original choice when the flag is omitted and
+refuses a different choice. Source-bound acceptance currently uses the existing
+fresh-run companion, which explicitly does not support resume.
+
+#### Measured native acceptance — 2026-11-03
+
+The complete source-bound Health Care Authority replay **passed**, using the
+reacquired **113,856,733-byte pinned statewide distribution** as its actual
+input. Independent extraction also matched the committed agency fixture's
+exact Git blob and all 1,440 original record ordinals. The measured results and
+source, helper, executable, transcript and report identities are retained in
+[the Health Care Authority execution record](../evidence/public_ledger/health-authority-agency-period-validation-2026-11-03.json).
+
+| Executed check | Measured outcome |
+|---|---|
+| Full source-bound import and replay | PASS; 666 native commands, 662 exit `0` and four expected tamper refusals with exit `8` |
+| Source, proposal, history, retry, register and export assertions | All 39 driver checks passed; 1,405 source legs preserved in three Entries |
+| Independent ADS verification | `verified`; all 275 checks passed |
+| Separate portable departmental report | `verified`; all 30 independent checks passed |
+| Portable native closure | 12 inputs: the base report inputs plus `MigrationRunFragment`, `MigrationSource`, `MigrationSourceFragment` and `EntryFragment`; one run body and one source witness |
+| Default `fund-class` control | Expected refusal retained, identifying the two original April class imbalances |
+
+The replay took **265.790 seconds** inside the driver. It checked all 44 native
+department values, four product values and the one fund, including exact
+monthly and cumulative gross/net activity, invisible preactivation history,
+retained certificate replay, source-bound staging and finalized retries, and
+every exported source leg. Deliberate amount, department, product and fund
+changes each failed independent verification. This agency has **no nonblank
+project codes**, so it supplies no real-data project-value acceptance.
+
+The separate portable proof took **6.143 seconds** and verifies the retained
+**FY2024-P12 / department 1000001** report at native sequence **90**. Its one
+source witness binds the admitted normalized migration package; original-source
+selection and normalization remain separate, checked source-oracle steps.
+The verifier explicitly trusts the fresh test-book public key. Local review
+principals, quarter activity without opening stock, and the declared transfer
+classification retain the scope limits described above.
+
+Execution used exact native binaries from
+`f3f1d66b25f9b01535efa9de74e38cb600b08a59`, with the authoritative grouping
+driver and source reader from `a24ea4f017f4daa8888ce87e345176432b66ffbc` in
+checkout `31fb97032a34884f4f746f26c052e032bcdd06bf`. The source-bound wrapper's
+fresh-only guard was a separately hash-pinned overlay; the record contains its
+exact bytes' identity. All source, helper and executable hashes remained
+unchanged through both runs. These outcomes do not change the earlier hosted
+job's failed object-test conclusion or establish runtime acceptance for later
+FWC/CAMT changes. The original museum, pension and university evidence remains
+separately pinned to its actual executions.
 
 ## Run it
 
@@ -329,6 +543,14 @@ returned the expected outcome. A failed run exits nonzero, retains its command
 transcript and writes `failure.json`; it never emits a partial success report.
 
 ## How the conversion preserves the source
+
+These steps describe the default `fund-class` balance boundary. The explicit
+[`agency-period` alternative](#whole-agency-activity-across-fund-and-class-boundaries)
+changes the grouping in steps 2, 3 and 5: each complete agency-period must balance,
+its original fund/class controls remain visible, and its source rows form one
+monthly Entry. The Health Care Authority selection uses three such Entries in
+one migration run. The source-preservation and independent-verification checks
+below apply to both choices.
 
 1. **Verify the original bytes.** Admit the pinned statewide distribution or a
    checked-in complete-agency selection with its committed hash and record map.
@@ -514,15 +736,17 @@ Its native-input profile distinguishes an Entry fragment query from migration
 source evidence. Previous inline Entries, including those above 4 KiB, remain
 readable; previous inline-only prefixes keep their original certificate closure.
 
-The focused regression uses a 512-leg Entry exceeding the original row limit
-and checks exact retry, atomic pending resolution, register maintenance and
-rebuild, historical reports, portable verification and reopening. Additional
-controls cover missing and restored fragments and automatic expiry/reversal.
-The public-ledger workflow runs these regressions and the complete university
-selection with the new dimensions. Source and binary hashes bind each run;
-an older failed run is preserved instead of being resumed under another binary.
-Results from an older executable do not establish execution of this storage
-extension.
+The 512-leg facade regression executed successfully on `f3f1d66`, covering
+posting and exact retry, register maintenance and rebuild, historical
+certificates, portable verification and reopening. Fresh complete university
+replays also passed with the new dimensions, including the intact 157-leg
+source Entry. Separate tests cover staged reads, pending resolution, fragment
+corruption and automatic expiry/reversal, but the hosted genesis filter matched
+zero tests and an object test failed before the expiry/reversal command ran.
+Those limits remain explicit in the [test outcome above](#separate-hosted-test-outcome).
+Source and binary hashes bind each real-data run; the earlier failure's error
+and artifact hashes remain recorded, and no failed book is resumed under a
+different binary.
 
 ## Import existing parties and legal entities from generic CSV
 
@@ -598,13 +822,17 @@ This generic mapping does not infer investor or legal-entity meaning for OMES
 chartfields. The public OMES adapter still projects only the fields described
 above.
 
-**Validation boundary:** new format and persisted CLI regressions cover the
+**Validation history:** the format and persisted CLI regressions cover the
 simultaneous entity/department/party mapping, case-distinct counterparties,
 retained-package substitution, activation/retry and dimension-preserving CSV
 and ADS certificates. They also exercise missing references and a globally
-balanced entry that violates per-entity balance. Those new Rust tests are
-**UNRUN** in this authoring session: the prerequisite native build was
-unavailable and the executor subsequently disconnected.
+balanced entry that violates per-entity balance. These Rust tests were
+**UNRUN at their original development point**, when the prerequisite native
+build was unavailable and the executor subsequently disconnected. The later
+[hosted execution at `f3f1d66`](https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41664093934)
+passed all three party/entity tests. Its separate object-test failure still
+makes that overall job **FAIL**, as retained in the
+[complete-chartfield execution record](../evidence/public_ledger/validation-2026-11-03-entry-fragments.json).
 
 ## Preserve attribution through CSV, ADS and offline accumulator proof verification
 
@@ -686,10 +914,12 @@ The profile reports the affected groups and source ordinals for investigation.
   native chart and dimension values. Other chartfields are not yet native
   queryable dimensions; class-funding and program codes keep their original
   meaning without being relabelled as an unrelated registered kind.
-- Run boundaries follow real fund/class boundaries to keep native control
-  payloads bounded. Each migration activates atomically; finalizing the entire
-  agency across several runs is not one atomic publication. The preactivation
-  historical check uses the prefix before the first finalization.
+- Default run boundaries follow real fund/class boundaries to keep native
+  control payloads bounded. Each migration activates atomically; finalizing an
+  agency across several default runs is not one atomic publication. The explicit
+  `agency-period` boundary keeps the three complete months in one bounded native
+  run. The preactivation historical check uses the prefix before the first
+  finalization in either case.
 - Import preparation supports an explicit `--bind-source` opt-in before
   staging. Its immutable native manifest retains source/package commitments
   and the complete ordered proposal inventory. For a bound run, staging admits
@@ -697,7 +927,9 @@ The profile reports the affected groups and source ordinals for investigation.
   well as the declared trial balances: omitting an increase and its exact
   reversal refuses even when every net balance agrees. Default preparation
   remains unbound; already staged or terminal unbound runs cannot acquire a
-  retrospective binding. The historical execution evidence above is unchanged.
+  retrospective binding. The separate fresh source-bound university run and
+  its portable historical report passed; earlier unbound executions keep
+  their original scope.
 - [Source-bound migration completeness](migration_source_completeness.md)
   establishes membership against the retained prepared package. It does not
   independently replay the CSV transformation or establish the source's

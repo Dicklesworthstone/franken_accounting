@@ -1,0 +1,1226 @@
+{
+  "declared_interpretation": {
+    "accounting_scope": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+    "balance_boundary": "agency-period",
+    "balance_boundary_policy": "Each entire agency/fiscal-year/period/ACTUALS population is one reconstructed activity Entry. Fund/class partitions may have nonzero net; their source fields and exact controls are retained. No amount is split, netted, rounded or added, and neither periods nor agencies offset each other. This explicitly selected boundary is not an original journal identity or a fund-balancing assertion.",
+    "chart_policy": "OMES prefixes 1 Asset, 2 Liability, 3 Equity, 4 Revenue, 5 Expense; explicit 631100 Other Financing Sources/Uses -> Equity in the activity-only test book; explicit 621000 Appropriated Transfers Out -> Equity in the activity-only test book",
+    "date_policy": "FY2024 periods 10/11/12 map to 2024-04-30/05-31/06-30; source has no transaction dates",
+    "dimension_policy": "DEPTID, PROJECT_ID, PRODUCT and FUND_CODE map to native department, project, product and fund. Nonblank codes stay exact strings, whitespace-only is absent, and surrounding whitespace on a nonblank code is refused. Other chartfields, including CLASS_FLD and PROGRAM_CODE, remain in retained evidence without an invented native kind. An empty oracle key denotes source rows untagged for that dimension; it is never a native value. These annotations do not assert a balancing-dimension policy.",
+    "source_retention": "Each nonzero original row remains one leg with all original fields. All 35 zero rows remain in the original retained CSV and explicit manifest ordinals; none is a zero-valued monetary leg."
+  },
+  "engine_provenance": {
+    "archive_bytes": 43626792,
+    "archive_path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/public-ledger-native-f3f1d66.zip",
+    "archive_sha256": "b55fc095db4ecd7e78d2cd037e338eb4fec3faac7bed6c8f9331a0a3f05d144f",
+    "artifact_id": 13251708810,
+    "binary_bytes": {
+      "fa": 235320912,
+      "fa-verify": 20226944
+    },
+    "binary_sha256": {
+      "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+      "fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+    },
+    "cargo_lock_blob_sha1": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "executable_checks": [
+      {
+        "command": [
+          "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+          "--help"
+        ],
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+          "--help"
+        ],
+        "exit_code": 0
+      }
+    ],
+    "executable_directory": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug",
+    "native_manifest_sha256": "86243acc68a5f7dfc8523570176903008ef3c6a827d4dad92cc4f4673065a32b",
+    "source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+    "status": "VERIFIED",
+    "verified_utc": "2026-11-03T17:19:11.350058+00:00",
+    "workflow_conclusion": "failure: one object test failed; artifact build and stock workloads succeeded",
+    "workflow_job": 126017782741,
+    "workflow_run": 41664093934
+  },
+  "format": "fa-public-ledger-health-authority-validation-v1",
+  "helper_provenance": {
+    "all_pins_unchanged_after_native_and_portable_runs": true,
+    "checkout_head_at_launch": "31fb97032a34884f4f746f26c052e032bcdd06bf",
+    "driver_and_normalizer_source_commit": "a24ea4f017f4daa8888ce87e345176432b66ffbc",
+    "driver_git_blob": "6b598e52d0c9e5d45259bc7ff65a3e53bf456515",
+    "normalizer_git_blob": "ee9c6494822bf304df1d644c6f5267d49fb0a483",
+    "pins": {
+      "driver": {
+        "bytes": 97369,
+        "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger.py",
+        "sha256": "2be9313a9b1a6ed740ae6528de4246b87214e4ca0628f98592020a8e2061a0c4"
+      },
+      "execution_wrapper": {
+        "bytes": 7370,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-validation-tools/run_authoritative_health_authority.py",
+        "sha256": "13fe38b385564dd66cf66cef5de661fa860c2308e9e3f941efb7f8b16c164173"
+      },
+      "fa": {
+        "bytes": 235320912,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+        "sha256": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45"
+      },
+      "fa_verify": {
+        "bytes": 20226944,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+        "sha256": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+      },
+      "native_limits": {
+        "bytes": 5112,
+        "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/registries/limits.toml",
+        "sha256": "7a87c721d4fcd1f7ae1e027d8984c6c1cd9c1e899d93cce9f1872fcea4cd9eae"
+      },
+      "normalizer": {
+        "bytes": 19743,
+        "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_source.py",
+        "sha256": "c71fa2225f8e52d8ce85deb900d691306eff2e6f1e12e3ae8516654ae1548fd8"
+      },
+      "portable_helper": {
+        "bytes": 18381,
+        "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_portable_proof.py",
+        "sha256": "61b3ddd43e78147ac61a81c8508f2d71c95371b2336c8d6f5db2efc202d765b0"
+      },
+      "source": {
+        "bytes": 113856733,
+        "path": "/workspace/scratch/69d8c2fe02b1/omes-fy2024-q4-full.csv",
+        "sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe"
+      },
+      "source_bound_wrapper": {
+        "bytes": 1810,
+        "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/scripts/public_ledger_source_bound_replay.py",
+        "sha256": "83c003c0b7354cde2e3bb7a0d644dec8be6d527bd96f841a862771fb9fbd352d"
+      }
+    },
+    "portable_helper_source_commit": "a0c79c57cfc07f48635584fa1b97a7f4e1379c40",
+    "source_bound_guard_git_blob": "928158227a0e508b1b1c040a3ca96475c94d91da",
+    "source_bound_guard_scope": "The final fresh-only alias guard was an explicit uncommitted overlay on 31fb970 at launch. Its exact bytes, separately tested by the owning agent, are pinned below; no branch-wide runtime claim is made."
+  },
+  "limits": [
+    "The source publishes monthly chartfield activity aggregates, not original transaction-level journals or audited financial statements. No opening stock is supplied.",
+    "The exact 621000 description maps to Equity only as the documented activity-book presentation of financing uses; no GAAP classification or audit opinion is asserted.",
+    "This corpus has one fund and no nonblank project IDs. Its authentic imbalance crosses two class slices within that fund; it does not establish native real-data coverage of nonblank projects or multiple funds.",
+    "The source witnesses bind admitted normalized migration-package bytes. Original-source selection and normalization were checked by separate source oracles; the public publisher is not the signer of the fixture checkpoint.",
+    "Native reviews and approvals use distinct fixture principals controlled by the harness. Verifiers explicitly trust this fresh test-book key; there is no independent human-review or external-identity claim.",
+    "The binaries are built from f3f1d66b25f9b01535efa9de74e38cb600b08a59. Their hosted job failed an object-test fixture; this record does not convert that job into a pass or claim runtime validation of later FWC/CAMT changes or the entire checkout.",
+    "The source-bound companion was used only for a fresh run. Recovery behavior of this 80700 book was not exercised; the separate museum resume record remains distinct."
+  ],
+  "native_replay": {
+    "command": [
+      "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "-B",
+      "scripts/public_ledger_source_bound_replay.py",
+      "--repo",
+      "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+      "run",
+      "--source",
+      "/workspace/scratch/69d8c2fe02b1/omes-fy2024-q4-full.csv",
+      "--agency",
+      "80700",
+      "--balance-boundary",
+      "agency-period",
+      "--out",
+      "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66",
+      "--fa",
+      "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+      "--fa-verify",
+      "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+    ],
+    "command_exit_counts": {
+      "0": 662,
+      "8": 4
+    },
+    "commands": 666,
+    "cwd": "/workspace/scratch/69d8c2fe02b1/franken_accounting",
+    "dimension_tamper_kinds": [
+      "department",
+      "fund",
+      "product"
+    ],
+    "driver_checks": [
+      "pinned_source_bytes",
+      "complete_agency_row_coverage",
+      "all_declared_agency_period_groups_balance_exactly",
+      "no_subcent_rounding",
+      "all_original_chartfields_retained",
+      "source_and_helper_agent_uploads_have_native_local_reviews",
+      "nonzero_fund_class_controls_preserved_without_balancing_legs",
+      "preparation_retry_is_idempotent",
+      "all_staged_activity_is_invisible",
+      "native_approved_finalization",
+      "every_month_account_cell_matches_source",
+      "cumulative_balances_match_source",
+      "native_proposal_legs_preserve_every_source_row",
+      "gross_debit_credit_account_cells_match_source",
+      "historical_preactivation_prefix_stays_invisible",
+      "native_registers_equal_journal_fold",
+      "every_native_leg_preserves_source_department_or_absence",
+      "native_department_monthly_and_cumulative_net_and_gross_match_source",
+      "department_preactivation_history_stays_invisible",
+      "department_certificates_replay_exact_robot_reports",
+      "every_native_leg_preserves_complete_declared_source_dimensions",
+      "every_dimension_monthly_and_cumulative_net_and_gross_matches_source",
+      "every_dimension_preactivation_history_stays_invisible",
+      "every_dimension_certificate_replays_exact_robot_report",
+      "all_finalized_chunk_retries_are_idempotent",
+      "native_upload_custody_preserved_and_fixture_reviews_recorded",
+      "native_projections_match_payloads",
+      "signed_accumulator_checkpoint",
+      "native_csv_and_ads_reread_certificates",
+      "every_exported_leg_preserves_source_department_or_absence",
+      "every_exported_leg_preserves_complete_declared_source_dimensions",
+      "independent_fa_verify_ads_proof",
+      "independent_fa_verify_authenticates_every_exported_dimension_set",
+      "independent_verifier_rejects_tampered_extract",
+      "independent_verifier_rejects_dimension_only_tampering",
+      "independent_verifier_rejects_each_source_dimension_kind_tamper",
+      "resume_inputs_and_native_book_identity_pinned",
+      "original_native_packages_and_publication_receipts_preserved",
+      "original_finalize_proposals_durable_before_approval"
+    ],
+    "driver_seconds": 265.79,
+    "exit_code": 0,
+    "expected_tamper_refusals": [
+      {
+        "command": [
+          "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+          "ads",
+          "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66/attempts/000001/ads-tampered",
+          "--key",
+          "d3a97e45be883e354c2d8ca0a9731b8a59e909a7c16b4db8dc6a136135a76092",
+          "--json"
+        ],
+        "error": null,
+        "exit_code": 8,
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "detail": {
+              "account_scope": null,
+              "chart_rows": null,
+              "dimension_coverage": "not_authenticated",
+              "dimension_rows": null,
+              "effective_through": "2024-06-30",
+              "entries": 2,
+              "known_at_seq": 139,
+              "rows": 952,
+              "tb_rows": 0,
+              "units": [
+                {
+                  "code": "USD",
+                  "unit_id": 0
+                }
+              ]
+            },
+            "reason": "GL_Detail entry 7ef3ad121b50b5ebc7e13ec7a1146574 (recorded at 79) is no proven entry selected through 2024-06-30; a proven entry recorded at 79 (effective 2024-04-30, 453 legs) is missing from GL_Detail",
+            "result": "fail",
+            "scope": "completeness"
+          }
+        ],
+        "verdict": "failed"
+      },
+      {
+        "command": [
+          "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+          "ads",
+          "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66/attempts/000001/ads-dimension-tampered",
+          "--key",
+          "d3a97e45be883e354c2d8ca0a9731b8a59e909a7c16b4db8dc6a136135a76092",
+          "--json"
+        ],
+        "error": null,
+        "exit_code": 8,
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "detail": {
+              "account_scope": null,
+              "chart_rows": null,
+              "dimension_coverage": "not_authenticated",
+              "dimension_rows": null,
+              "effective_through": "2024-06-30",
+              "entries": 2,
+              "known_at_seq": 139,
+              "rows": 952,
+              "tb_rows": 0,
+              "units": [
+                {
+                  "code": "USD",
+                  "unit_id": 0
+                }
+              ]
+            },
+            "reason": "GL_Detail entry 7ef3ad121b50b5ebc7e13ec7a1146574 (recorded at 79) is no proven entry selected through 2024-06-30; a proven entry recorded at 79 (effective 2024-04-30, 453 legs) is missing from GL_Detail",
+            "result": "fail",
+            "scope": "completeness"
+          }
+        ],
+        "verdict": "failed"
+      },
+      {
+        "command": [
+          "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+          "ads",
+          "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66/attempts/000001/ads-department-tampered",
+          "--key",
+          "d3a97e45be883e354c2d8ca0a9731b8a59e909a7c16b4db8dc6a136135a76092",
+          "--json"
+        ],
+        "error": null,
+        "exit_code": 8,
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "detail": {
+              "account_scope": null,
+              "chart_rows": null,
+              "dimension_coverage": "not_authenticated",
+              "dimension_rows": null,
+              "effective_through": "2024-06-30",
+              "entries": 2,
+              "known_at_seq": 139,
+              "rows": 952,
+              "tb_rows": 0,
+              "units": [
+                {
+                  "code": "USD",
+                  "unit_id": 0
+                }
+              ]
+            },
+            "reason": "GL_Detail entry 7ef3ad121b50b5ebc7e13ec7a1146574 (recorded at 79) is no proven entry selected through 2024-06-30; a proven entry recorded at 79 (effective 2024-04-30, 453 legs) is missing from GL_Detail",
+            "result": "fail",
+            "scope": "completeness"
+          }
+        ],
+        "verdict": "failed"
+      },
+      {
+        "command": [
+          "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+          "ads",
+          "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66/attempts/000001/ads-product-tampered",
+          "--key",
+          "d3a97e45be883e354c2d8ca0a9731b8a59e909a7c16b4db8dc6a136135a76092",
+          "--json"
+        ],
+        "error": null,
+        "exit_code": 8,
+        "failed_checks": [
+          {
+            "check": "ads_extract",
+            "detail": {
+              "account_scope": null,
+              "chart_rows": null,
+              "dimension_coverage": "not_authenticated",
+              "dimension_rows": null,
+              "effective_through": "2024-06-30",
+              "entries": 2,
+              "known_at_seq": 139,
+              "rows": 952,
+              "tb_rows": 0,
+              "units": [
+                {
+                  "code": "USD",
+                  "unit_id": 0
+                }
+              ]
+            },
+            "reason": "GL_Detail entry 7ef3ad121b50b5ebc7e13ec7a1146574 (recorded at 79) is no proven entry selected through 2024-06-30; a proven entry recorded at 79 (effective 2024-04-30, 453 legs) is missing from GL_Detail",
+            "result": "fail",
+            "scope": "completeness"
+          }
+        ],
+        "verdict": "failed"
+      }
+    ],
+    "files": {
+      "execution": {
+        "bytes": 7524,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66.execution.json",
+        "sha256": "bd0c7cf655a635a4a6f4f589d831ee0f6d7cf9fc908dde9dcaaebcaa3ad5ca2f"
+      },
+      "manifest": {
+        "bytes": 740085,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66/manifest.json",
+        "sha256": "562ab096c1ae77c4d1cd0fcf6b7b74e7aabd3fa75580b338da9e84c0c6af1ec0"
+      },
+      "recovery_pins": {
+        "bytes": 1522,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66/recovery/pins.json",
+        "sha256": "e94893d87202b1253395e5bae40b26c47fe866e17c304b8bf1fbe649f23b376f"
+      },
+      "report": {
+        "bytes": 563785,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66/report.json",
+        "sha256": "e486e3dbab58e0e2788b3dc4b260faf93d916c8cca1021a2e77c343f9165a634"
+      },
+      "stderr": {
+        "bytes": 0,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 172,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66.stdout.log",
+        "sha256": "48bf17f361e68e03b7ad69e77857847926aa149938404117e7b3319c264eaf57"
+      },
+      "transcript": {
+        "bytes": 3747033,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66/attempts/000001/commands.jsonl",
+        "sha256": "77053bfb2508beb3776eae9cd5289dcd5f83a46307d5fa27faa2992b231102d7"
+      }
+    },
+    "finished_utc": "2026-11-03T18:03:42.652121+00:00",
+    "independent_ads_checks_passed": 275,
+    "independent_ads_verdict": "verified",
+    "output": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66",
+    "started_utc": "2026-11-03T17:59:16.649132+00:00",
+    "status": "PASS",
+    "wrapper_seconds": 266.001
+  },
+  "portable_report": {
+    "checkpoint_state": "bd483a0f0546349a75c0e247b8004db9b1d1d53c494c39f885011f0804e6df3c",
+    "closure": {
+      "additive_input_labels": [
+        "MigrationRunFragment",
+        "MigrationSource",
+        "MigrationSourceFragment",
+        "EntryFragment"
+      ],
+      "book": "78b1502a32a63e80503baf5fdebb43ee",
+      "branch": "00000000000000000000000000000000",
+      "bundle_major": 1,
+      "bundle_minor": 1,
+      "canonical_records": 78,
+      "certificate_digest": "76e7fe293ef7c11b885e50d504ab5c10724bbc308c0c6c27f27cd46c0458d0fe",
+      "certificate_format": "fa:report-certificate:v8",
+      "dimension": "department",
+      "dimension_value": "1000001",
+      "journal_leaves": 60,
+      "known_at": 90,
+      "migration_run_bodies": 1,
+      "migration_source_witnesses": 1,
+      "native_input_count": 12,
+      "native_inputs": [
+        {
+          "facade": 4,
+          "snapshot": 90,
+          "statement": "MATCH (n:Account) FOR SYSTEM_TIME AS OF SEQ 90 RETURN n,n.code,n.name,n.account_type,n.normal_balance,n.posting,n.unit_policy,n.lower_bound,n.upper_bound,n.limit_scope,n._fa_payload,n.book_id ORDER BY n",
+          "trailing_bytes": 0
+        },
+        {
+          "facade": 4,
+          "snapshot": 90,
+          "statement": "MATCH (n:Book) FOR SYSTEM_TIME AS OF SEQ 90 RETURN n,n._fa_payload,n.book_id,n.base_unit,n.symbols_digest,n.unit_table_digest ORDER BY n",
+          "trailing_bytes": 0
+        },
+        {
+          "facade": 4,
+          "snapshot": 90,
+          "statement": "MATCH (n:Entry) FOR SYSTEM_TIME AS OF SEQ 90 RETURN n,n._fa_payload,n._fa_digest ORDER BY n",
+          "trailing_bytes": 0
+        },
+        {
+          "facade": 4,
+          "snapshot": 90,
+          "statement": "MATCH (n:FiscalCalendar) FOR SYSTEM_TIME AS OF SEQ 90 RETURN n,n._fa_payload,n.calendar_id ORDER BY n",
+          "trailing_bytes": 0
+        },
+        {
+          "facade": 4,
+          "snapshot": 90,
+          "statement": "MATCH (n:MigrationRun) FOR SYSTEM_TIME AS OF SEQ 90 RETURN n,n._fa_payload,n._fa_digest,n.state ORDER BY n",
+          "trailing_bytes": 0
+        },
+        {
+          "facade": 4,
+          "snapshot": 90,
+          "statement": "MATCH (n:Period) FOR SYSTEM_TIME AS OF SEQ 90 RETURN n,n.code,n.calendar_id,n.fiscal_year,n.ordinal,n.period_kind,n.period_start,n.period_end,n.state ORDER BY n",
+          "trailing_bytes": 0
+        },
+        {
+          "facade": 4,
+          "snapshot": 90,
+          "statement": "MATCH (n:Unit) FOR SYSTEM_TIME AS OF SEQ 90 RETURN n,n._fa_payload,n.unit_id,n.code,n.name,n.scale,n.version ORDER BY n",
+          "trailing_bytes": 0
+        },
+        {
+          "facade": 4,
+          "snapshot": 90,
+          "statement": "MATCH (n:DimensionValue) FOR SYSTEM_TIME AS OF SEQ 90 WHERE n.dimension_id = 3 RETURN n,n._fa_payload,n.dimension_id ORDER BY n",
+          "trailing_bytes": 0
+        },
+        {
+          "facade": 4,
+          "snapshot": 90,
+          "statement": "MATCH (n:MigrationRunFragment) FOR SYSTEM_TIME AS OF SEQ 90 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+          "trailing_bytes": 0
+        },
+        {
+          "facade": 4,
+          "snapshot": 90,
+          "statement": "MATCH (n:MigrationSource) FOR SYSTEM_TIME AS OF SEQ 90 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+          "trailing_bytes": 0
+        },
+        {
+          "facade": 4,
+          "snapshot": 90,
+          "statement": "MATCH (n:MigrationSourceFragment) FOR SYSTEM_TIME AS OF SEQ 90 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+          "trailing_bytes": 0
+        },
+        {
+          "facade": 4,
+          "snapshot": 90,
+          "statement": "MATCH (n:EntryFragment) FOR SYSTEM_TIME AS OF SEQ 90 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+          "trailing_bytes": 0
+        }
+      ],
+      "scope": "Descriptive framing only; separate fa-verify establishes authentication.",
+      "selected": [
+        "FY2024-P12"
+      ]
+    },
+    "command": [
+      "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "-B",
+      "scripts/public_ledger_portable_proof.py",
+      "--run",
+      "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66",
+      "--out",
+      "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66-portable",
+      "--source-bound",
+      "--fa",
+      "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+      "--fa-verify",
+      "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify"
+    ],
+    "exit_code": 0,
+    "expected_certificate": "76e7fe293ef7c11b885e50d504ab5c10724bbc308c0c6c27f27cd46c0458d0fe",
+    "files": {
+      "execution": {
+        "bytes": 8471,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66-portable.execution.json",
+        "sha256": "c33b7a6d1f66a57716a079eb2f93c63c865f3bf18887592166fe8190a37d464f"
+      },
+      "stderr": {
+        "bytes": 0,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66-portable.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 866,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66-portable.stdout.log",
+        "sha256": "7b256aea088e9bd587253784da8c96dea31114715c12257d72a7a45c2ef3a650"
+      },
+      "transcript": {
+        "bytes": 14293,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66-portable/commands.jsonl",
+        "sha256": "d7c337d15287e8b26ed36c6cb0bd2ee5180f823aa8deb30979dd53c1122f7a5f"
+      },
+      "validation": {
+        "bytes": 37093,
+        "path": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66-portable/validation.json",
+        "sha256": "b5ebb6dea132a3633f1e8874b357bd4705230246455449a8acee858cfc258c48"
+      }
+    },
+    "finished_utc": "2026-11-03T18:04:11.604463+00:00",
+    "helper_seconds": 6.143,
+    "independent_checks_passed": 30,
+    "native_commands": [
+      [
+        "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+        "--book",
+        "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      [
+        "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+        "--book",
+        "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66/book",
+        "proof",
+        "signed-checkpoint",
+        "--state",
+        "latest",
+        "--out",
+        "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66-portable/checkpoint.bin",
+        "--json"
+      ],
+      [
+        "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+        "--book",
+        "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66/book",
+        "bundle",
+        "produce",
+        "--certificate",
+        "C:76e7fe293ef7c11b885e50d504ab5c10724bbc308c0c6c27f27cd46c0458d0fe",
+        "--state",
+        "bd483a0f0546349a75c0e247b8004db9b1d1d53c494c39f885011f0804e6df3c",
+        "--out",
+        "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66-portable/report.fab",
+        "--receipt-out",
+        "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66-portable/report.receipt",
+        "--json"
+      ],
+      [
+        "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+        "report",
+        "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66-portable/report.fab",
+        "--key",
+        "d3a97e45be883e354c2d8ca0a9731b8a59e909a7c16b4db8dc6a136135a76092",
+        "--checkpoint",
+        "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66-portable/checkpoint.bin",
+        "--receipt",
+        "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66-portable/report.receipt",
+        "--expect",
+        "76e7fe293ef7c11b885e50d504ab5c10724bbc308c0c6c27f27cd46c0458d0fe",
+        "--json"
+      ]
+    ],
+    "output": "/workspace/scratch/69d8c2fe02b1/native-validation-health-authority-source-bound-a24-f3f1d66-portable",
+    "public_artifacts": {
+      "checkpoint.bin": {
+        "bytes": 288,
+        "sha256": "be923497679a570bb5bb0ef1d2a847e759e499a6d4ecdca125f58726973db1e7"
+      },
+      "report.fab": {
+        "bytes": 191394,
+        "sha256": "369f3b769d99507f09f7e0e28ec3ad3d80306abb9e63b913e8914d583405c1f0"
+      },
+      "report.receipt": {
+        "bytes": 219,
+        "sha256": "9d3fef4035e84bce0965775c7815e5039f803edbfd950b33955110e101a25a41"
+      },
+      "trusted-public-key.txt": {
+        "bytes": 65,
+        "sha256": "6d070e3d123d0886b591e3d88ee4b044acfc35812feaee0f0e4fa0bfd7149193"
+      }
+    },
+    "started_utc": "2026-11-03T18:04:04.973060+00:00",
+    "status": "PASS",
+    "trusted_fixture_public_key": "d3a97e45be883e354c2d8ca0a9731b8a59e909a7c16b4db8dc6a136135a76092",
+    "verdict": "verified",
+    "wrapper_seconds": 6.631
+  },
+  "preserved_default_refusal": {
+    "agency": "80700",
+    "boundary": "fund-class",
+    "driver_sha256": "2be9313a9b1a6ed740ae6528de4246b87214e4ca0628f98592020a8e2061a0c4",
+    "elapsed_seconds": 3.194,
+    "error": "agency 80700 has 2 unbalanced source group(s); first key=['2024', '10', 'ACTUALS', '1000', '20000'] net_mills=-479860. The complete agency import is refused; no balancing leg was invented.",
+    "format": "fa-public-ledger-80700-default-refusal-v1",
+    "normalizer_sha256": "c71fa2225f8e52d8ce85deb900d691306eff2e6f1e12e3ae8516654ae1548fd8",
+    "record": {
+      "bytes": 777,
+      "path": "/workspace/scratch/69d8c2fe02b1/native-validation-tools/health-authority-default-refusal.json",
+      "sha256": "08f0ad86ddb2f4c19db77b1cc5bf69eb47b024c67414770e417db0520e874233"
+    },
+    "scope": "Actual source preparation only; no native process or output book created",
+    "source_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+    "started_utc": "2026-11-03T18:01:09.857139+00:00",
+    "status": "EXPECTED_REFUSAL"
+  },
+  "recorded_utc": "2026-11-03T18:08:44.700991+00:00",
+  "scope": "Actual fresh source-bound native replay and independent portable departmental report; no inferred or mocked native success.",
+  "source": {
+    "account_count": 118,
+    "agency": "80700",
+    "attribution": "State of Oklahoma, Office of Management and Enterprise Services",
+    "catalog_url": "https://catalog.data.gov/dataset/general-ledger",
+    "complete_agency_fixture": {
+      "bytes": 432290,
+      "git_blob": "9aca9ce62cc94c6d368954fe3459d9d9805b34f4",
+      "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-80700.csv",
+      "sha256": "275781485e5e0a1744cad43912af2d048a8b4538b4de815fd23fadf30d599d28"
+    },
+    "dimension_value_counts": {
+      "department": 44,
+      "fund": 1,
+      "product": 4,
+      "project": 0
+    },
+    "fixture_manifest": {
+      "bytes": 169165,
+      "path": "/workspace/scratch/69d8c2fe02b1/franken_accounting/crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-80700.json",
+      "sha256": "0f16a77fcb8740b1b9926d2d3312dd05112251d5fbe301e221029263a30c7506"
+    },
+    "full_distribution": {
+      "bytes": 113856733,
+      "path": "/workspace/scratch/69d8c2fe02b1/omes-fy2024-q4-full.csv",
+      "sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe"
+    },
+    "independent_full_distribution_selection": {
+      "commit": "a24ea4f017f4daa8888ce87e345176432b66ffbc",
+      "complete_source_record_count": 1440,
+      "first_original_record": 43196,
+      "fixture_bytes": 432290,
+      "fixture_git_blob": "9aca9ce62cc94c6d368954fe3459d9d9805b34f4",
+      "fixture_sha256": "275781485e5e0a1744cad43912af2d048a8b4538b4de815fd23fadf30d599d28",
+      "last_original_record": 370104,
+      "record": {
+        "bytes": 596,
+        "path": "/workspace/scratch/69d8c2fe02b1/a24-fixture-review/result.json",
+        "sha256": "26f75a134fdec7295daffe8d84b6402ab4e94e8d061a74ab7a46e554a6cf5b99"
+      },
+      "scope": "Independent full-distribution selection and original record census match concurrent committed80700fixture; no native execution",
+      "source_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+      "status": "PASS"
+    },
+    "input_kind": "complete_distribution",
+    "license_url": "http://www.opendefinition.org/licenses/cc-by",
+    "migration_runs": 1,
+    "monetary_legs": 1405,
+    "name": "HEALTH CARE AUTHORITY",
+    "native_entries": 3,
+    "native_proposal_leg_counts": [
+      453,
+      465,
+      487
+    ],
+    "nonblank_project_codes": 0,
+    "period_controls": [
+      {
+        "credit_cents": 163371647239,
+        "debit_cents": 163371647239,
+        "fiscal_period": "FY2024-P10",
+        "monetary_legs": 453,
+        "net_cents": 0,
+        "source_rows": 470,
+        "zero_rows": 17
+      },
+      {
+        "credit_cents": 100874726295,
+        "debit_cents": 100874726295,
+        "fiscal_period": "FY2024-P11",
+        "monetary_legs": 465,
+        "net_cents": 0,
+        "source_rows": 474,
+        "zero_rows": 9
+      },
+      {
+        "credit_cents": 109174206133,
+        "debit_cents": 109174206133,
+        "fiscal_period": "FY2024-P12",
+        "monetary_legs": 487,
+        "net_cents": 0,
+        "source_rows": 496,
+        "zero_rows": 9
+      }
+    ],
+    "source_columns": 36,
+    "source_rows": 1440,
+    "strict_source_group_controls": [
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "19400"
+        ],
+        "net_mills": 0,
+        "rows": 3
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "19401"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "20000"
+        ],
+        "net_mills": -479860,
+        "rows": 385
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "20500"
+        ],
+        "net_mills": 0,
+        "rows": 4
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "23000"
+        ],
+        "net_mills": 0,
+        "rows": 7
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "23600"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "24000"
+        ],
+        "net_mills": 0,
+        "rows": 3
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "24500"
+        ],
+        "net_mills": 0,
+        "rows": 22
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "25000"
+        ],
+        "net_mills": 0,
+        "rows": 5
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "25500"
+        ],
+        "net_mills": 0,
+        "rows": 5
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "34000"
+        ],
+        "net_mills": 0,
+        "rows": 20
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "79901"
+        ],
+        "net_mills": 0,
+        "rows": 10
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "90000"
+        ],
+        "net_mills": 0,
+        "rows": 1
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "99400"
+        ],
+        "net_mills": 479860,
+        "rows": 1
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "19400"
+        ],
+        "net_mills": 0,
+        "rows": 3
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "19401"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "20000"
+        ],
+        "net_mills": 0,
+        "rows": 388
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "20500"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "23000"
+        ],
+        "net_mills": 0,
+        "rows": 6
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "23600"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "24000"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "24500"
+        ],
+        "net_mills": 0,
+        "rows": 22
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "25000"
+        ],
+        "net_mills": 0,
+        "rows": 5
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "25500"
+        ],
+        "net_mills": 0,
+        "rows": 5
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "27000"
+        ],
+        "net_mills": 0,
+        "rows": 3
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "34000"
+        ],
+        "net_mills": 0,
+        "rows": 21
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "79901"
+        ],
+        "net_mills": 0,
+        "rows": 11
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "90000"
+        ],
+        "net_mills": 0,
+        "rows": 1
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "99400"
+        ],
+        "net_mills": 0,
+        "rows": 1
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "19400"
+        ],
+        "net_mills": 0,
+        "rows": 3
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "19401"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "20000"
+        ],
+        "net_mills": 0,
+        "rows": 413
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "20500"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "23000"
+        ],
+        "net_mills": 0,
+        "rows": 6
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "23600"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "24000"
+        ],
+        "net_mills": 0,
+        "rows": 3
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "24500"
+        ],
+        "net_mills": 0,
+        "rows": 22
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "25000"
+        ],
+        "net_mills": 0,
+        "rows": 5
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "25500"
+        ],
+        "net_mills": 0,
+        "rows": 5
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "34000"
+        ],
+        "net_mills": 0,
+        "rows": 20
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "79901"
+        ],
+        "net_mills": 0,
+        "rows": 11
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "90000"
+        ],
+        "net_mills": 0,
+        "rows": 1
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "99400"
+        ],
+        "net_mills": 0,
+        "rows": 1
+      }
+    ],
+    "strict_unbalanced_source_groups": [
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "20000"
+        ],
+        "net_mills": -479860,
+        "rows": 385
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "99400"
+        ],
+        "net_mills": 479860,
+        "rows": 1
+      }
+    ],
+    "url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv",
+    "zero_rows": 35
+  },
+  "status": "PASS"
+}

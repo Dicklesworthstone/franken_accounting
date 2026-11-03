@@ -1,0 +1,146 @@
+{
+  "build": {
+    "binary_bytes": {
+      "fa": 235320912,
+      "fa-verify": 20226944
+    },
+    "binary_sha256": {
+      "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+      "fa-verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+    },
+    "cargo_lock_git_blob": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "driver_sha256": "e68114166f93b247f1780360e1bf15d0a67426c0eb5d6afce59ff330faf77548",
+    "engine_source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+    "native_artifact_bytes": 43626792,
+    "native_artifact_id": 13251708810,
+    "native_artifact_sha256": "b55fc095db4ecd7e78d2cd037e338eb4fec3faac7bed6c8f9331a0a3f05d144f",
+    "native_manifest_sha256": "86243acc68a5f7dfc8523570176903008ef3c6a827d4dad92cc4f4673065a32b",
+    "normalizer_sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80",
+    "portable_helper_git_blob": "6bc56e6aceb9feb504f043983f0ea90ee4bb6596",
+    "portable_helper_path": "scripts/public_ledger_portable_proof.py",
+    "portable_helper_sha256": "61b3ddd43e78147ac61a81c8508f2d71c95371b2336c8d6f5db2efc202d765b0",
+    "portable_helper_source_commit": "a0c79c57cfc07f48635584fa1b97a7f4e1379c40",
+    "repository": "https://github.com/Dicklesworthstone/franken_accounting",
+    "scope": "These binaries predate the later FWC/CAMT fixes. This example verifies the f3f1 engine's real source-bound report; it does not assert a full-tree or hosted-job pass.",
+    "source_bound_replay_helper_sha256": "06491a649e134d571c1428b0156d092a6b7040b53a0ede4315224c0d90bdd371",
+    "workflow_conclusion": "failure: one object test failed; artifact build and stock workloads succeeded",
+    "workflow_job": 126017782741,
+    "workflow_run": 41664093934
+  },
+  "checkpoint_state": "93f9b2e6fce9e83f9e96ecd97640b93f51f03ffec56b3dd59cb96363fad8b47d",
+  "compressed_bytes": 85694,
+  "expected_certificate": "538f44d7cf22fe3f0b39ffd88db708ec22de4036c40f044abfe90f5e56567044",
+  "files": [
+    {
+      "bytes": 273822,
+      "gzip_bytes": 85156,
+      "gzip_name": "report.fab.gz",
+      "gzip_sha256": "b053aa6221f48480bc79992518d96d7625aa30077e62d1e837e95fce7b499ad6",
+      "name": "report.fab",
+      "sha256": "e26022acf9779eb06ff4653911d804a1f61cdbea7f02708b4f6838cad0aecb9c"
+    },
+    {
+      "bytes": 288,
+      "gzip_bytes": 296,
+      "gzip_name": "checkpoint.bin.gz",
+      "gzip_sha256": "39e670b5cdd7c113d8772f2606598324b2fc1246c83213667292e9d7b8bc6a91",
+      "name": "checkpoint.bin",
+      "sha256": "aaf4337a8ad680ecc4bd76c9cb4e290b9c02d8e72d89cb46551d79fc3eed42be"
+    },
+    {
+      "bytes": 219,
+      "gzip_bytes": 242,
+      "gzip_name": "report.receipt.gz",
+      "gzip_sha256": "54bc17be3bb6e78ea993b781a2e468146b2a25b0ab4a7f649a3d7ee19bcaee65",
+      "name": "report.receipt",
+      "sha256": "65c60603a9c0aa2ee4effec323bc3b93d7280cf6273aa51f35dd022c9dd9a45f"
+    }
+  ],
+  "format": "fa-public-ledger-university-proof-example-v1",
+  "gzip": {
+    "compression_level": 9,
+    "implementation": "Python gzip.compress",
+    "mtime": 0,
+    "source": "Exact bytes emitted by the successful portable proof helper."
+  },
+  "report": {
+    "additive_input_labels": [
+      "MigrationRunFragment",
+      "MigrationSource",
+      "MigrationSourceFragment",
+      "EntryFragment"
+    ],
+    "book": "61fd8184428e88d98dabec2947584018",
+    "branch": "00000000000000000000000000000000",
+    "bundle_major": 1,
+    "bundle_minor": 1,
+    "canonical_records": 194,
+    "certificate_format": "fa:report-certificate:v8",
+    "dimension": "department",
+    "dimension_value": "1000001",
+    "journal_leaves": 80,
+    "known_at": 270,
+    "migration_run_bodies": 9,
+    "migration_source_witnesses": 9,
+    "native_input_count": 12,
+    "selected": [
+      "FY2024-P12"
+    ]
+  },
+  "source": {
+    "account_count": 223,
+    "activity_scope": "Complete published FY2024 Q4 activity for one agency, all chartfields. Source rows are monthly chartfield aggregates, not original journal lines. This activity-only book has no agency opening stock; dates are declared period ends. Native FullDetail describes this scoped activity import, not recovered transaction-level history or the agency's financial statements.",
+    "agency": "66000",
+    "attribution": "State of Oklahoma, Office of Management and Enterprise Services",
+    "binding_scope": "The nine witnesses retain the admitted canonical migration-package bytes. The original published CSV and normalization provenance are identified separately; the report is not an OMES-signed attestation.",
+    "catalog_url": "https://catalog.data.gov/dataset/general-ledger",
+    "dimension_value_counts": {
+      "department": 8,
+      "fund": 1,
+      "product": 9,
+      "project": 0
+    },
+    "download_url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv",
+    "encoding": "windows-1252",
+    "fiscal_year": 2024,
+    "fixture_bytes": 304342,
+    "fixture_manifest_sha256": "1069b890496058b90cd496e2776ee3db756a4ec806300e7a3635bd10c149ac9e",
+    "fixture_path": "crates/fa-oracles/fixtures/public_ledger/omes-fy2024-q4-66000.csv",
+    "fixture_sha256": "d8a7eb93c8e45f5a190d96d9bb07bed0230a2db994f4881474e33f26701cb537",
+    "license_url": "http://www.opendefinition.org/licenses/cc-by",
+    "migration_runs": 9,
+    "monetary_legs": 1051,
+    "name": "S. E. OKLA. ST. UNIV.",
+    "native_entries": 27,
+    "published_rows": 1055,
+    "quarter": 4,
+    "statewide_csv_bytes": 113856733,
+    "statewide_csv_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe"
+  },
+  "status": "PASS",
+  "trust_scope": {
+    "accounting": "Monthly chartfield activity aggregates with no opening stock; this is not a reconstruction of original transaction-level journals or an audited financial statement.",
+    "contents": "Exactly three public proof files; no native book, private signing key or other private file is included.",
+    "document_review": "Source and helper documents are AgentUpload. A distinct local test principal records native Reviewed attestations; this exercises evidence admission, not independently authenticated human examination. Generated transforms do not assert the receipt-derived Generated provenance grade.",
+    "key": "Caller-trusted public key of a fresh local test book; no external identity authentication."
+  },
+  "trusted_fixture_public_key": "c1b4180137fe89d5539e0eb40dd620ffb38a35b6c6bbfa0af2e924d17823c13c",
+  "verification": {
+    "fresh_decompression_recheck": {
+      "checks_passed": 91,
+      "elapsed_seconds": 0.251,
+      "execution_record_sha256": "55333a342b9a32f8f58fac1368ec54a9691fd6138ab684a51f34628d2e682728",
+      "exit_code": 0,
+      "finished_utc": "2026-11-03T17:35:51.929132+00:00",
+      "input_and_binary_hashes_unchanged": true,
+      "started_utc": "2026-11-03T17:35:51.677877+00:00",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "f77505426477fca082c3f316d73b0403d22b4b84c3d5326989325fd026b1d706",
+      "verdict": "verified"
+    },
+    "original_emission_stdout_sha256": "826eb18d1f833adab353c8d428f34b4e07e039972fed102a363bc7c301ba35fc",
+    "original_finished_utc": "2026-11-03T17:28:09.659048+00:00",
+    "original_transcript_sha256": "7f1533064130d58594e7a69fadeb209bd32ed8a0d2d0e957ce548fed7c5d701e",
+    "original_validation_sha256": "29b353d1b846a330a52343886ebe06b8d4e0e17bc7fd92d8cb16851d8ae17a8e"
+  }
+}

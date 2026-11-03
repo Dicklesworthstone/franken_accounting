@@ -263,10 +263,13 @@ The resume tests cover source/model/binary mismatch, a directory-creation
 race, lost setup and approval acknowledgements, native package discovery,
 mixed old/new chunk receipts, immutable snapshot reuse, and checkpoint
 failure before approval. Their mocked call contracts are unit tests; they
-are not native crash-recovery evidence. These new tests were **UNRUN** in
-the development session because the execution environment became unavailable.
-Persisted native interruption acceptance remains unverified and must not be
-reported as passing merely because a helper test or source oracle passes.
+are not native crash-recovery evidence. They were **UNRUN in the original
+development session** because its execution environment became unavailable.
+Later campaigns executed those unit tests and actual persisted-book recovery:
+the [complete-chartfield execution record](../evidence/public_ledger/validation-2026-11-03-entry-fragments.json)
+includes the passing museum partial-stage/resume run described below. That
+controlled stop followed a durable native command; it does not establish
+recovery from a torn transaction or an abrupt process kill.
 
 
 ## Independent controls
@@ -296,9 +299,70 @@ every transaction in the state's system, or evidence that an anomaly is fraud.
 
 ## Validation status
 
+### Complete chartfield replay on the repaired engine
+
+Fresh executions using the verified native binaries from
+`f3f1d66b25f9b01535efa9de74e38cb600b08a59` passed for all three complete OMES
+selections. These runs retain nonblank department, fund and product codes
+through native migration, certified reports, CSV and ADS exports, and
+standalone proof verification. The selected sources contain no nonblank project
+codes; project parsing tests do not establish a populated native project run.
+
+| Complete selection | Source rows | Monetary legs | Entries | Department / fund / product values | Commands | Seconds |
+|---|---:|---:|---:|---|---:|---:|
+| 20400 museum | 125 | 121 | 15 | 3 / 1 / 0 | 235 | 23.075 |
+| 31500 firefighters pension | 137 | 131 | 6 | 3 / 1 / 0 | 151 | 21.654 |
+| 66000 university | 1,055 | 1,051 | 27 | 8 / 1 / 9 | 521 | 164.695 |
+
+Each run passed all 38 original-source and native assertions. The independent
+verifier returned 0 for the complete ADS proof and 8 for a one-cent mutation
+and for each separately changed department, fund or product identity present
+in that source. The university's formerly oversized 157-leg Entry now passes
+as one Entry, preserving its complete source legs and dimension sets.
+
+A separate fresh source-bound university run also passed all 38 assertions:
+1,055 source rows, 1,051 legs, 27 Entries, 521 commands and 222.804 seconds.
+The companion adds `--bind-source` only to preparation and preserves the stock
+driver's checks. A fresh museum partial-stage interruption/resume passed with
+unchanged source, helper and binary pins, original package receipts, and all
+five native packages recovered. Its intentional-stop/resume exits were 1 and
+0; the final attempt used 245 commands and 25.524 seconds.
+
+Both university books also passed the
+[portable historical-report workflow](public_ledger_portable_proof.md) for the
+retained department `1000001` report in `FY2024-P12`. Four real commands per
+book exported and independently verified the expected certificate, checkpoint
+and detached receipt. The unbound report contained 10 native inputs, including
+run and Entry fragments; the source-bound report contained 12, adding the
+source manifest and source-fragment queries, and retained nine source
+witnesses. Each exact retained report verified with the caller-trusted public
+key of its fresh test book.
+The [public proof example](../examples/public_ledger/university_source_bound/README.md)
+retains the source-bound bundle, checkpoint and detached receipt in compressed
+form; its separately decompressed files passed another real verifier invocation
+with all 91 checks.
+
+The [complete-chartfield execution record](../evidence/public_ledger/validation-2026-11-03-entry-fragments.json)
+contains the exact source/binary pins, command and process metadata, report and
+export hashes, per-dimension certificates and independent negative controls.
+It preserves earlier results and the original university refusal separately.
+The original old-engine books were unavailable after the execution container
+was replaced, so copied-original-book certificate compatibility remains **UNRUN**.
+
+The producing [hosted run](https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41664093934)
+was **FAIL overall**, despite producing the binaries used for these successful
+workloads. The 512-leg facade regression passed and 878 independent verifier
+tests passed. The genesis filter executed zero tests; object storage had four
+passes and one `SnapshotAdvanced` failure; the fragmented expiry/reversal
+command was not reached. The [detailed test outcome](public_ledger.md#separate-hosted-test-outcome)
+keeps those limits separate from the real-data acceptance. No whole-workspace
+Tier0 pass is asserted.
+
+### Earlier department and Development Finance Authority campaign
+
 The pinned official distribution and complete-agency selections have independent
 source checks. The Development Finance Authority helper has 18 offline tests;
-the integrated public-ledger/source suites now have **79 passing Python tests**,
+the department-era public-ledger/source suites passed **79 Python tests**,
 including the 18 recovery tests. Constructed native-shaped payloads remain unit
 fixtures; the native results below are separate actual executions.
 
@@ -321,7 +385,7 @@ Fresh actual processes built from `93714f77` completed these workloads:
 | 31500 firefighters pension | 137 | 131 | 51 | 6 | 3 | PASS after two deliberate interruptions |
 | 66000 university | 1,055 | 1,051 | 223 | 27 | 8 | PASS |
 
-The [current native evidence](../evidence/public_ledger/validation-2026-11-03-93714f77.json)
+The [department-era native evidence](../evidence/public_ledger/validation-2026-11-03-93714f77.json)
 records source and executable hashes, each completed check, complete-report and
 ADS-package hashes, caller-trusted fixture public keys, and original recovery
 receipts. All three actual ADS packages verify independently; their monetary
@@ -379,15 +443,16 @@ blanks untagged. The four-account Development Finance Authority helper described
 here retains its other chartfields as evidence without projecting them. Class
 funding and program have no established native dimension mapping; neither
 driver invents one. The [complete-chartfield execution record](../evidence/public_ledger/validation-2026-11-03-entry-fragments.json)
-separates successful museum/pension execution from the university storage
-failure and acceptance of the large-Entry repair.
+separates the old-engine university storage failure from successful fresh
+museum, pension and university execution on the repaired engine, and from its
+distinct failed or unexecuted hosted test targets.
 
 Grouped native staging and resumable orchestration reduce repeated intake and
 preserve completed chunk publications. The full university dimension vector
 exposed a 157-leg Entry above the native row limit; the
 [authenticated fragment implementation](public_ledger.md#preserve-large-entries-without-losing-source-detail)
-preserves that single Entry and every original leg. Its runtime acceptance is
-recorded separately. Million-line bulk migration acceptance (`fa-zddh`) remains
+preserves that single Entry and every original leg, as the fresh complete
+university executions demonstrate. Million-line bulk migration acceptance (`fa-zddh`) remains
 open. Import
 preparation now offers an explicit `--bind-source` opt-in that binds an
 immutable native manifest before staging. For a bound run, finalization
@@ -404,8 +469,37 @@ checks each establish.
 
 Broader source coverage also needs a declared treatment of fractional cents
 and separately sourced opening/closing controls. Other agencies' funding
-groups can be unbalanced even when the agency-period total balances; the
-adapter must report that limitation instead of inventing a balancing leg.
+groups can be unbalanced even when the agency-period total balances. The broader
+driver now accepts an explicit
+[`--balance-boundary agency-period`](public_ledger.md#whole-agency-activity-across-fund-and-class-boundaries)
+choice that retains those nonzero funding controls and every original source
+leg in one reconstructed monthly Entry. It still refuses an unbalanced whole
+month, subcents and over-limit Entries, and never invents a balancing leg.
+The complete Health Care Authority fixture exercises this distinction with
+1,440 real rows, 1,405 monetary legs, 35 retained zero rows and 118 accounts.
+Its full source-bound replay from the pinned statewide distribution passed on
+2026-11-03: **666 native commands and all 39 driver checks**, with **275 passing
+independent ADS checks**. The three complete monthly Entries have 453, 465 and
+487 legs. All 44 departments, four products and the one fund matched their
+source-derived monthly, cumulative, gross, history and export controls; there
+are no nonblank project codes in this agency. Four deliberate amount or
+dimension changes each produced the expected independent verification refusal.
+
+A separately exported portable FY2024-P12 departmental report also passed
+**all 30 independent checks**. It includes **12 native inputs**, the complete
+`MigrationRunFragment` / `MigrationSource` / `MigrationSourceFragment` /
+`EntryFragment` closure, and **one source witness**. The authoritative default
+`fund-class` preparation still refuses the original two April class imbalances;
+that negative control remains in
+[the separate measured Health Care Authority record](../evidence/public_ledger/health-authority-agency-period-validation-2026-11-03.json).
+
+The engine is the exact `f3f1d66` artifact, while the grouping driver and source
+reader are exact `a24ea4f` bytes, used from checkout `31fb970` with the separately
+pinned fresh-only source-bound guard. The record preserves all before/after
+hashes, actual commands, timing and trust limits. This is activity-only
+acceptance under a caller-trusted test-book key; it does not change the failed
+hosted job conclusion, authenticate human review, establish later FWC/CAMT
+runtime results or replace the earlier three-agency execution records.
 
 The [BLMIS Glantz transaction workload](blmis_glantz_workload.md) provides a
 complementary route to actual published bankruptcy-case transactions and
