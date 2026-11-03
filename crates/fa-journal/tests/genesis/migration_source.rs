@@ -250,7 +250,7 @@ fn native_stage_rejects_foreign_or_changed_members_and_binding_is_immutable() {
     let mut h = lock_opening(harness());
     let run = open(&mut h, "source-admission", &[("1000", 100), ("4000", -100)]);
     let original = chunk(&h, run, cash_legs(&h, 100), b"source-member");
-    let (manifest, bytes) = package(&mut h, run, &[original.clone()]);
+    let (manifest, bytes) = package(&mut h, run, std::slice::from_ref(&original));
     let request = binding_request(&h, &manifest);
     bind(&mut h, &manifest, &bytes, request).unwrap();
     let foreign = chunk(&h, run, cash_legs(&h, 100), b"foreign-member");

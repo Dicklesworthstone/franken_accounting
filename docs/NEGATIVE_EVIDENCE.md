@@ -2021,3 +2021,19 @@ open, so a refusal records no read and a successful logical read records
 once. All original assertions stay, and missing-policy refusals now cover
 account, period and effective scopes too. Certification retains its prior
 whole-head rule. This further repair still requires native re-execution.
+
+## 2026-11-03 — Strict Clippy rejects a migration fixture's copied slice
+
+The fresh full repository run on 39f088a7 passed its workspace compile
+step, then Clippy actually ran and returned 101. Its single error was
+`cloned_ref_to_slice_refs` in the migration-source Genesis fixture: a
+single original payload was cloned solely to supply an immutable slice.
+The call now uses `std::slice::from_ref(&original)`. The package builder,
+payload, source-admission refusals, immutable-binding checks and every
+test assertion are unchanged. No lint setting or gate changes.
+
+The original failed run is retained and cannot qualify as a passing full
+verdict. The earlier complete Genesis target passed 382 cases on e77291cb;
+that does not establish repaired-source Clippy or final full acceptance.
+The frozen 39f run continues as diagnostic evidence while this correction
+awaits its own exact-tree checks.
