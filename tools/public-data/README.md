@@ -672,3 +672,68 @@ Contains public sector information licensed under the
 [Open Government Licence v3.0](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/).
 Source: HM Revenue & Customs and Department for Work and Pensions. The original
 source links and per-file attribution are included in each preparation receipt.
+
+
+## Executed supplier and expense-area attribution: complete HMRC March 2025
+
+On 2026-11-03 the complete HMRC March 2025 source passed the optional native
+attribution workflow with `--native-attribution --batch-approvals
+--batch-evidence --bind-source`: **1,430 original records, 127 migration
+entries and 2,860 monetary legs**, preserving all **42 expense-area labels and
+160 supplier labels** as native identities. The process exited zero after
+**561 native calls in 254.417 seconds**, with all **38 runner checks** passing.
+The run used the verified CI binaries built from
+`88286f8c41f3943fde51e76334b33db758422c95`, direct CLI transport, and staging
+groups of at most 64 chunks. The
+[checked execution evidence](../../evidence/public_spend/hmrc-2025-03-attribution-native-2026-11-03.json)
+retains the exact source, helper and executable identities, both the initial
+failure and its repair, all area certificate/proof hashes, and the actual process
+completion observation. This is one shared-host execution, not a controlled
+performance comparison; peak memory was not measured.
+
+The initial attempt exposed a real integration defect: the helper's full
+64-character source identity codes made the native default idempotency keys
+86 bytes for cost centers and 70 bytes for parties, beyond the native 64-byte
+limit. The runner now supplies the existing complete digest as `--key` to both
+creation commands. That digest already includes the profile, dataset, identity
+kind and exact source label. Source names and codes remain complete, and the
+original source pin is unchanged. The failed four-command attempt remains
+retained as a failure. A regression covering both commands passed as part of
+all 43 live-harness tests; a fresh book then completed the full workload.
+
+All 42 expense areas received actual historical, activity and certified stock
+reads, exact certificate replay, and a portable proof independently checked by
+`fa-verify`. Each proof authenticated its exact `cost_center` selector and
+carried the complete 127-entry, 2,860-normalized-row source manifest. Together
+with the whole-book report, **43 positive standalone reports passed 601 checks**,
+including 42 dimension-filter checks and 387 recomputed trial-balance rows.
+Every area remained invisible at the retained preactivation prefix; finalization
+activated all 127 entries in one commit. The 135 whole-book register cells
+matched the independent native fold without drift or lag.
+
+A separate audit parsed the pinned original CSV with `csv.DictReader` and
+`Decimal`, independently compared every actual prepared/exported leg, and checked
+all 252 area/account and 449 supplier/account gross debit, gross credit and net
+cells. It checked the native entry identities and posting receipts, original
+dates and signs, complete row memos, source lineage, descriptions, and both tags
+on both modeled legs. Every original field remains in the retained records and
+provenance, including the 125 negative records and the repeated original row.
+All seven retained source/model documents, including the attribution map, were
+read back byte for byte.
+
+The two attribution-only negative exports each changed one native value while
+preserving every other logical field. Native export verification refused both
+with exit eight; the standalone verifier also refused a corrupted whole-book
+report. The 561 calls therefore comprise 558 successful calls and these three
+expected verification refusals. Every completed stdout/stderr hash and all
+12 retained stdin requests were checked against the command transcript.
+
+Use the existing attributed preparation and execution commands above to
+reproduce the complete run in new directories. This evidence exercises native
+supplier tags and exact supplier gross/net comparisons; it does not claim a
+party-filtered trial-balance proof interface. The source remains a published
+expenditure extract and the counterpart remains the declared analysis offset.
+The proof authenticates this test book under its own checkpoint key, without
+asserting a complete original HMRC ledger, department-signed accounts or
+independent human review. The earlier unattributed HMRC and DWP execution
+records remain separate and unchanged.

@@ -56,6 +56,41 @@ pub fn from_beancount_account_name(name: &str) -> Result<String, FormatError> {
     Ok(leaf.to_owned())
 }
 
+/// The account codes behind the names a journal declares. An exported name
+/// keeps only letters, digits and dashes (`1000.10` is spelled `A1000-10`),
+/// so a leg or an assertion is read through the code its account's `open` or
+/// `account` directive carries, never from the name alone.
+#[derive(Default)]
+struct AccountNames(BTreeMap<String, String>);
+
+impl AccountNames {
+    /// `name` stands for `code`. Two codes that export to one name are
+    /// refused: their legs could not be told apart.
+    fn declare(&mut self, format: &'static str, name: &str, code: &str) -> Result<(), FormatError> {
+        match self.0.get(name) {
+            Some(other) if other != code => Err(FormatError::Parse {
+                format,
+                detail: format!(
+                    "accounts {other:?} and {code:?} both export to the name {name:?}, which keeps only letters, digits and dashes; give one of them another code"
+                ),
+            }),
+            _ => {
+                self.0.insert(name.to_owned(), code.to_owned());
+                Ok(())
+            }
+        }
+    }
+
+    /// The code `name` stands for: its declared code, else the code the
+    /// name itself spells.
+    fn code(&self, name: &str) -> Result<String, FormatError> {
+        match self.0.get(name) {
+            Some(code) => Ok(code.clone()),
+            None => from_beancount_account_name(name),
+        }
+    }
+}
+
 /// Write a `FormatJournal` as a deterministic Beancount v3 journal with
 /// coordinate certificate metadata, `open` directives, dated transactions,
 /// and `balance` assertions.
@@ -203,6 +238,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
     let mut accounts: Vec<FormatAccount> = Vec::new();
     let mut entries: Vec<FormatEntry> = Vec::new();
     let mut assertions: Vec<FormatAssertion> = Vec::new();
+    let mut names = AccountNames::default();
 
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0usize;
@@ -268,6 +304,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
                 }
                 i += 1;
             }
+            names.declare(FMT, bc_acct, &code)?;
             accounts.push(FormatAccount {
                 code,
                 name,
@@ -281,7 +318,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
         if tokens.len() >= 5 && tokens[1] == "balance" {
             let bc_day = parse_date_iso(FMT, tokens[0])?;
             let as_of = DateDay(bc_day.0 - 1);
-            let acct_code = from_beancount_account_name(tokens[2])?;
+            let acct_code = names.code(tokens[2])?;
             let amt_tok = tokens[3];
             let unit_code = tokens[4].to_owned();
             let (unit_id, unit_scale) =
@@ -377,7 +414,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
                             ),
                         });
                     }
-                    let acct_code = from_beancount_account_name(p_tokens[0])?;
+                    let acct_code = names.code(p_tokens[0])?;
                     let amt_tok = p_tokens[1];
                     let unit_code = p_tokens[2].to_owned();
                     let (unit_id, unit_scale) =
@@ -544,6 +581,7 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
 
     let mut accounts: Vec<FormatAccount> = Vec::new();
     let mut entries: Vec<FormatEntry> = Vec::new();
+    let mut names = AccountNames::default();
 
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0usize;
@@ -599,6 +637,7 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
                     }
                 }
             }
+            names.declare(FMT, acct_tok, &code)?;
             accounts.push(FormatAccount {
                 code,
                 name,
@@ -674,7 +713,7 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
                         detail: format!("invalid hledger posting line {body:?}"),
                     });
                 }
-                let acct_code = from_beancount_account_name(p_tokens[0])?;
+                let acct_code = names.code(p_tokens[0])?;
                 let amt_tok = p_tokens[1];
                 let unit_code = p_tokens[2].to_owned();
                 let (unit_id, unit_scale) =

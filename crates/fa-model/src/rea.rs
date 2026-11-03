@@ -627,6 +627,11 @@ impl RelationshipSpec {
                 let den = r.u128("relationship.pct_den")?;
                 let pct =
                     OwnershipPct::new(num, den).ok_or_else(|| r.invalid("relationship.pct"))?;
+                // One value, one encoding: the writer stores the reduced pair,
+                // so an unreduced one (6/8 for 3/4) is not canonical bytes.
+                if (pct.num(), pct.den()) != (num, den) {
+                    return Err(r.invalid("relationship.pct"));
+                }
                 RelationshipKind::Owns { pct }
             }
             2 => RelationshipKind::Controls,
@@ -1106,6 +1111,16 @@ mod tests {
         };
         let rel_bytes = rel.encode().unwrap();
         assert_eq!(RelationshipSpec::decode(&rel_bytes).unwrap(), rel);
+        // 6/8 is 3/4 written unreduced: the same value in other bytes, which
+        // would give one relationship two digests. It is refused.
+        let pair = |num: i128, den: u128| [num.to_le_bytes(), den.to_le_bytes()].concat();
+        let at = rel_bytes
+            .windows(32)
+            .position(|w| w == pair(3, 4).as_slice())
+            .expect("the encoded 3/4");
+        let mut unreduced = rel_bytes.clone();
+        unreduced[at..at + 32].copy_from_slice(&pair(6, 8));
+        assert!(RelationshipSpec::decode(&unreduced).is_err());
         assert!(rel.is_active_on(DateDay::from_ymd(2026, 3, 15).unwrap()));
         assert!(!rel.is_active_on(DateDay::from_ymd(2026, 7, 1).unwrap()));
 

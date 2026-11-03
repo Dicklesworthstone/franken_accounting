@@ -388,6 +388,8 @@ fn branches_procedures_and_certificates() {
         ("CALL fa.open_items", None),
         ("CALL fa.open_items() AS KNOWN AT 4", None),
         ("CALL fa.open_items('1200')", Some("1200".to_string())),
+        // The list form the docs and the CALL fix hint name.
+        ("CALL fa.open_items(['1200'])", Some("1200".to_string())),
     ] {
         assert_eq!(
             rewrite(text).unwrap().selection,
@@ -410,6 +412,7 @@ fn branches_procedures_and_certificates() {
             "CALL fa.open_items('1200') FOR PERIOD 'FY2026-P03'",
             "not for a period",
         ),
+        ("CALL fa.open_items(['1200', '1300'])", "stands alone"),
         (
             "CALL fa.open_items EFFECTIVE BETWEEN '2026-01-01' AND '2026-01-31'",
             "by period and known-at",
@@ -845,6 +848,91 @@ fn an_amount_aggregate_returns_its_keys_and_arguments_for_exact_aggregation() {
     assert!(r.message.contains("across units"), "{r:?}");
 }
 
+/// fa-2zf5: an amount aggregate is admitted only when its unit is proved in
+/// scope. An item that only mentions a unit key groups nothing; a pin from
+/// an `OPTIONAL MATCH` null-extends instead of dropping rows; a `WITH` passes
+/// on only the bindings it projects; and a `UNION` arm proves nothing about
+/// the other. Each refused form summed or ordered amounts of several units.
+#[test]
+fn cross_unit_aggregates_are_refused_whatever_the_grouping_or_pin_scope() {
+    for (text, says) in [
+        (
+            "MATCH (l:Leg) RETURN l.unit_id * 0 AS k, SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN size(u.code) AS n, SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg) OPTIONAL MATCH (l)-[:IN_UNIT]->(u:Unit) WHERE u.code = 'USD' RETURN SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg) OPTIONAL MATCH (l)-[:IN_UNIT]->(u:Unit {code: 'USD'}) RETURN SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg) OPTIONAL MATCH (l)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit {code: 'USD'}) WITH COUNT(*) AS n MATCH (l:Leg) RETURN n, SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) WITH l MATCH (u:Unit) RETURN u.code AS unit, SUM(l.amount) AS total",
+            "adds amounts of every unit",
+        ),
+        (
+            "MATCH (l:Leg) WHERE l.unit_id = 1 RETURN l UNION MATCH (l:Leg) RETURN l ORDER BY l.amount",
+            "across units",
+        ),
+    ] {
+        let r = refused(text);
+        assert_eq!(r.law, Law::Amount, "{text}: {r:?}");
+        assert!(r.message.contains(says), "{text}: {r:?}");
+    }
+    // A unit key itself, or a binding a WITH projects unchanged, still proves
+    // the unit.
+    for text in [
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, SUM(l.amount) AS total",
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u, SUM(l.amount) AS total",
+        "MATCH (l:Leg) RETURN l.unit_id AS unit, SUM(l.amount) AS total",
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit {code: 'USD'}) WITH l MATCH (l)-[:POSTS_TO]->(a:Account) RETURN a.code AS account, SUM(l.amount) AS total",
+        "MATCH (l:Leg) WHERE l.unit_id = 1 WITH l AS m RETURN SUM(m.amount) AS total",
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) WITH l, u RETURN u.code AS unit, SUM(l.amount) AS total",
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) WITH * RETURN u.code AS unit, SUM(l.amount) AS total",
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) WITH l, u WHERE u.code = 'USD' RETURN SUM(l.amount) AS total",
+    ] {
+        let (_, n) = native(text);
+        assert!(n.aggregation().is_some(), "{text}");
+    }
+}
+
+/// fa-2zf5: an aggregate over a `WITH` alias of an amount is an amount
+/// aggregate. It ran natively, where `MAX` skips a null mirror; the profile
+/// now computes it exactly, as it does `MAX(l.amount)`, refusing a null.
+#[test]
+fn an_aggregate_over_an_amount_alias_is_computed_exactly() {
+    let (_, n) = native(
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit {code: 'USD'}) WITH l.amount AS x RETURN MAX(x) AS top",
+    );
+    let plan = n.aggregation().expect("an exact aggregation");
+    assert_eq!(
+        plan.columns[0].value,
+        Value::Aggregate {
+            function: Function::Max,
+            native: Some(0),
+            amount: true
+        }
+    );
+    // Unpinned, the alias adds every unit, as its source would.
+    let r = refused("MATCH (l:Leg) WITH l.amount AS x RETURN MAX(x) AS top");
+    assert_eq!(r.law, Law::Amount, "{r:?}");
+    assert!(r.message.contains("adds amounts of every unit"), "{r:?}");
+}
+
 /// fa-5c1, the runtime graph: `CALL fa.access_log` is the AccessEvent read
 /// itself, at trunk's head, optionally one reader's; every coordinate it
 /// cannot honour is refused with the admissible form, never ignored.
@@ -1030,4 +1118,55 @@ fn a_period_range_selects_every_period_between_its_ends() {
         let r = refused(text);
         assert!(r.message.contains(says), "{text}: {r:?}");
     }
+}
+
+/// A `//` comment ending the text before an inserted clause used to comment
+/// out `FOR SYSTEM_TIME AS OF SEQ` and the line after it: the read ran at the
+/// frontier over every account while reporting known-at 4. Comments are
+/// blanked before the native statement is cut, so nothing they precede is lost.
+#[test]
+fn a_line_comment_never_swallows_an_inserted_clause() {
+    let (p, n) = native(
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) // cash only\nWHERE a.code = '1000'\nRETURN COUNT(*) AS legs AS KNOWN AT 4",
+    );
+    assert_eq!(p.known_at, KnownAt::Seq(4));
+    let statement = n.statement(4);
+    assert!(!statement.contains("//"), "{statement}");
+    assert!(
+        statement.starts_with(
+            "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) FOR SYSTEM_TIME AS OF SEQ 4 WHERE a.code = '1000'"
+        ),
+        "{statement}"
+    );
+    assert!(
+        statement.ends_with("RETURN COUNT(*) AS legs"),
+        "{statement}"
+    );
+    // A block comment is blanked too; a statement without comments is unchanged.
+    let (_, n) = native(
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) /* cash */ WHERE a.code = '1000' RETURN COUNT(*) AS legs",
+    );
+    assert!(!n.statement(4).contains("cash"), "{}", n.statement(4));
+}
+
+/// The substrate reads a backtick-quoted name as the plain word, but the
+/// profile's checks read names as words: `` l.`amount` `` ordered or took the
+/// max across units, and `` (r:`RegisterState`) `` read the derived cache, past
+/// the checks that refuse the same queries spelled plainly. A backtick name is
+/// refused instead.
+#[test]
+fn a_backtick_quoted_name_is_refused_rather_than_read_unchecked() {
+    for text in [
+        "MATCH (l:Leg) RETURN l ORDER BY l.`amount` DESC LIMIT 10",
+        "MATCH (l:Leg) RETURN MAX(l.`amount`) AS top",
+        "MATCH (r:`RegisterState`) RETURN r",
+    ] {
+        let refusal = refused(text);
+        assert!(
+            format!("{refusal:?}").contains("backtick-quoted name"),
+            "{text}: {refusal:?}"
+        );
+    }
+    // A backtick inside a quoted string is just a character.
+    native("MATCH (a:Account) WHERE a.code = 'a`b' RETURN a.code");
 }

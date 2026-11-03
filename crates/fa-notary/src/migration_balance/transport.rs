@@ -24,7 +24,7 @@ pub(super) struct Claim {
 
 fn limit(field: &str) -> Refusal {
     Refusal::new(
-        "FA-REF-127",
+        crate::code::PROOF_EXPORT_LIMIT,
         exit::USAGE,
         format!("balance proof {field} exceeds the portable verifier's bounds"),
         "plan §13.3 (bounded, complete proof transport)",
@@ -214,7 +214,7 @@ mod tests {
         let mut size = MAX_BALANCE_PROOF_BYTES - 1;
         add(&mut size, 1).unwrap();
         assert_eq!(size, MAX_BALANCE_PROOF_BYTES);
-        assert_eq!(add(&mut size, 1).unwrap_err().code, "FA-REF-127");
+        assert_eq!(add(&mut size, 1).unwrap_err().code, "FA-REF-146");
         let mut overflowing = usize::MAX;
         assert!(add(&mut overflowing, 1).is_err());
         let mut framed = MAX_BALANCE_PROOF_BYTES - 12;

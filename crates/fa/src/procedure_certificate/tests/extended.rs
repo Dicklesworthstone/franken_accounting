@@ -130,9 +130,10 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
     for (id, _) in selected {
         let certified = f.certify(&f.request(id, source));
         // fa-6l8g moved the party-attributing procedures to version 3, and
-        // fa-yugf.83 the investor-population ones on to version 4.
+        // fa-yugf.83 the investor-population ones on to version 4. As-of
+        // netting moved aging.inventory and the solvency tests to version 3.
         let version = match id {
-            "lookback.preferences" => 3,
+            "lookback.preferences" | "aging.inventory" | "solvency.cash_flow_test" => 3,
             "ponzi.net_investment" => 5,
             "distribution.rising_tide" | "distribution.pro_rata" => 4,
             _ => 2,
@@ -182,7 +183,7 @@ fn signed_solvency_certifies_its_method_and_refuses_the_old_version() {
     let (source, _) = f.post(1, "1010", "6000", 20, false);
     let before = f.head();
     let certified = f.certify(&f.request("solvency.balance_sheet_test", source));
-    assert_eq!(certified.report.version, 2);
+    assert_eq!(certified.report.version, 3);
     assert_eq!(certified.report.findings.len(), 1);
     assert_eq!(certified.report.findings[0].statistic.value, 20);
     let certificate =
@@ -194,14 +195,18 @@ fn signed_solvency_certifies_its_method_and_refuses_the_old_version() {
             .unwrap(),
         certified.report
     );
-    let mut old_method = certificate;
-    old_method.report.version = 1;
-    let refusal = old_method.request().unwrap_err();
-    assert!(
-        refusal
-            .message
-            .contains("no complete registered native certificate closure")
-    );
+    for old in [1, 2] {
+        let mut old_method = certificate.clone();
+        old_method.report.version = old;
+        let refusal = old_method.request().unwrap_err();
+        assert!(
+            refusal
+                .message
+                .contains("no complete registered native certificate closure"),
+            "version {old}: {}",
+            refusal.message
+        );
+    }
     assert_eq!(
         f.head(),
         before,

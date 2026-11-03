@@ -3995,6 +3995,34 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
     assert_eq!(icu.findings.len(), 1);
     assert!(icu.findings[0].cites.contains(&Cite::Entry(VId(90_008))));
     witness::determinism(&snapshot, &h.book, &IntercompanyUnmatched::new().unwrap()).unwrap();
+    // An unmatched intercompany net of exactly i128::MIN (two credits of
+    // 2^126) is a typed overflow, not a panic in its magnitude.
+    let mut extreme = snapshot.clone();
+    for (k, vid) in [(1u64, 90_101u128), (2, 90_102)] {
+        let mut e = make_snapshot_entry(
+            &mut h,
+            VId(vid),
+            CommitSeq(450 + k),
+            day(2026, 2, 20),
+            &feb,
+            EntryClass::ORIGINAL,
+            vec![
+                ("1000", Side::Debit, usd, 1i128 << 126),
+                ("4000", Side::Credit, usd, 1i128 << 126),
+            ],
+            Vec::new(),
+            None,
+            Some(day(2026, 2, 20)),
+            None,
+            Vec::new(),
+        );
+        e.entry.proposal.legs[1].account_ref = ic_vid;
+        extreme.entries.push(e);
+    }
+    assert!(matches!(
+        run_over(&extreme, &h.book, &IntercompanyUnmatched::new().unwrap()),
+        Err(LanternError::Overflow(_))
+    ));
 
     // 7. benford.second_digit & benford.first_two_digits & oracles
     let sd = run_over(
@@ -4778,6 +4806,57 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     assert_eq!(r_inv.findings.len(), 1);
     assert!(r_inv.findings[0].cites.contains(&Cite::Account(inv_vid)));
     witness::determinism(&snapshot, &h.book, &InventoryAging::new().unwrap()).unwrap();
+    // A reversal dated after the as-of day did not exist on it: the stale
+    // position on Apr 30 is reported all the same.
+    let mut reversed_later = snapshot.clone();
+    let stale = reversed_later
+        .entries
+        .iter()
+        .find(|e| e.vid == VId(92_010))
+        .unwrap();
+    let stale_ref = fa_model::EntryRef {
+        vid: stale.vid,
+        entry_digest: stale.entry.entry_digest,
+    };
+    let may = h.period_code(day(2026, 5, 15));
+    let mut reversal = make_snapshot_entry(
+        &mut h,
+        VId(92_099),
+        CommitSeq(699),
+        day(2026, 5, 15),
+        &may,
+        EntryClass::REVERSAL,
+        vec![
+            ("2000", Side::Debit, usd, 250_000),
+            ("1000", Side::Credit, usd, 250_000),
+        ],
+        vec![fa_model::Supersession {
+            target: stale_ref,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
+        }],
+        None,
+        Some(day(2026, 5, 15)),
+        None,
+        Vec::new(),
+    );
+    reversal.entry.proposal.legs[1].account_ref = inv_vid;
+    reversed_later.entries.push(reversal);
+    // The later reversal nets the stale entry out of the whole snapshot's
+    // stream, but not out of the stream as of Apr 30.
+    let vids = |entries: Vec<&fa_lantern::SnapshotEntry>| -> Vec<VId> {
+        entries.iter().map(|e| e.vid).collect()
+    };
+    let whole = vids(reversed_later.live_postings().unwrap());
+    assert!(!whole.contains(&VId(92_010)), "{whole:?}");
+    let as_of = vids(
+        reversed_later
+            .live_postings_through(Some(day(2026, 4, 30)))
+            .unwrap(),
+    );
+    assert!(as_of.contains(&VId(92_010)), "{as_of:?}");
+    let later = run_over(&reversed_later, &h.book, &InventoryAging::new().unwrap()).unwrap();
+    assert_eq!(later.findings, r_inv.findings);
 
     let r_rev = run_over(&snapshot, &h.book, &ReversalPatterns::new().unwrap()).unwrap();
     assert_eq!(r_rev.findings.len(), 1);
@@ -6333,4 +6412,60 @@ fn role_populations_are_the_registered_role_consumers() {
             row.summary
         );
     }
+}
+
+/// fa-lantern review: graph.layering prunes a start account only when fewer
+/// accounts than a chain needs are reachable from it. It used the BFS layer
+/// count (the shortest-path depth), so one direct transfer to a later
+/// account of the chain hid the whole chain.
+#[test]
+fn a_direct_transfer_does_not_hide_a_layering_chain() {
+    use fa_lantern::graph::Layering;
+
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = Some(day(2026, 1, 31));
+    let jan = h.period_code(day(2026, 1, 15));
+    let usd = h.usd;
+    let mut transfer = |vid: u128, seq: u64, date: DateDay, to: &str, from: &str, amount| {
+        make_snapshot_entry(
+            &mut h,
+            VId(vid),
+            CommitSeq(seq),
+            date,
+            &jan,
+            EntryClass::ORIGINAL,
+            vec![
+                (to, Side::Debit, usd, amount),
+                (from, Side::Credit, usd, amount),
+            ],
+            Vec::new(),
+            None,
+            Some(date),
+            None,
+            Vec::new(),
+        )
+    };
+    let chain = vec![
+        transfer(93_001, 701, day(2026, 1, 5), "1010", "1000", 100_000),
+        transfer(93_002, 702, day(2026, 1, 6), "1020", "1010", 95_000),
+        transfer(93_003, 703, day(2026, 1, 8), "6000", "1020", 85_000),
+    ];
+    let shortcut = transfer(93_004, 700, day(2026, 1, 2), "6000", "1000", 1);
+    snapshot.entries = chain.clone();
+    let alone = run_over(&snapshot, &h.book, &Layering::new().unwrap()).unwrap();
+    assert!(!alone.findings.is_empty(), "the chain alone is found");
+    snapshot.entries = chain;
+    snapshot.entries.push(shortcut);
+    let with_shortcut = run_over(&snapshot, &h.book, &Layering::new().unwrap()).unwrap();
+    assert!(
+        with_shortcut.findings.iter().any(|f| {
+            [93_001, 93_002, 93_003]
+                .iter()
+                .all(|vid| f.cites.contains(&Cite::Entry(VId(*vid))))
+        }),
+        "{:?}",
+        with_shortcut.findings
+    );
+    witness::determinism(&snapshot, &h.book, &Layering::new().unwrap()).unwrap();
 }

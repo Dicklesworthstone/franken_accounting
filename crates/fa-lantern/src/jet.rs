@@ -15,7 +15,7 @@ use fa_registry::evidence_policy::EvidencePolicy;
 use fa_time::{PeriodState, Weekday};
 use fgdb_types::VId;
 
-use crate::amount::{amount_share_bps, signed_leg};
+use crate::amount::{amount_magnitude, amount_share_bps, signed_leg};
 use crate::{
     Cite, Finding, LanternError, MAX_CITES, Meter, Params, Procedure, Severity, Snapshot, Statistic,
 };
@@ -1089,7 +1089,10 @@ impl Procedure for IntercompanyUnmatched {
             if net == 0 {
                 continue;
             }
-            let scale = book.units.get(unit_id).map_or(2, |u| u.scale);
+            let scale = crate::unit_scale(book, unit_id.0)?;
+            // The bucket net may be i128::MIN (cross-account sums are not
+            // register cells); its magnitude is a typed overflow, not a panic.
+            let magnitude = amount_magnitude(net, "intercompany balance")?;
             entry_vids.sort_unstable();
             entry_vids.dedup();
             acct_vids.sort_unstable();
@@ -1105,7 +1108,7 @@ impl Procedure for IntercompanyUnmatched {
                 Severity::High,
                 Statistic {
                     name: "unmatched_mantissa".into(),
-                    value: net.abs(),
+                    value: magnitude,
                     scale,
                     population,
                 },

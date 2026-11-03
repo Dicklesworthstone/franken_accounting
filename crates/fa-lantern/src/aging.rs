@@ -190,7 +190,7 @@ impl Procedure for InventoryAging {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        3
     }
     fn params(&self) -> &Params {
         &self.params
@@ -210,7 +210,10 @@ impl Procedure for InventoryAging {
             });
         }
         let inventory = snapshot.role_population(Self::ID)?;
-        let mut live = snapshot.live_postings()?;
+        // Net supersession within the as-of window only: a reversal or a
+        // replacement dated after the as-of day did not yet exist on it, so
+        // it must not erase a position that was stale then.
+        let mut live = snapshot.live_postings_through(snapshot.coordinate.effective_through)?;
         live.sort_by_key(|e| (e.entry.proposal.effective_date, e.vid));
 
         let as_of = snapshot

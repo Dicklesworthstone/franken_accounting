@@ -87,14 +87,9 @@ fn any_aggregate(lexed: &Lexed<'_>, from: usize, to: usize) -> bool {
 
 /// Plan the aggregation of a statement whose amounts are aggregated: the
 /// byte offset its native text keeps up to (the final `RETURN`), the
-/// native `RETURN` that replaces the rest, and the plan.
-pub(crate) fn plan(
-    lexed: &Lexed<'_>,
-    spans: &[(usize, usize)],
-) -> Result<(usize, String, Aggregation), Refusal> {
-    plan_with_amount_aliases(lexed, spans, &[])
-}
-
+/// native `RETURN` that replaces the rest, and the plan. `amounts` names
+/// the bare names that hold an amount (a procedure yield, or a `WITH`
+/// alias of an amount): aggregating one refuses a null as a mirror does.
 pub(crate) fn plan_with_amount_aliases(
     lexed: &Lexed<'_>,
     spans: &[(usize, usize)],

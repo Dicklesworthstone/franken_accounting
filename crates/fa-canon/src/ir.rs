@@ -24,8 +24,9 @@ pub const CANON_IR_DOMAIN: &[u8] = b"fa:canon-ir:v1";
 /// `inputs_digest = BLAKE3("fa:canon-inputs:v1" ‖ len(inputs) ‖ inputs)`.
 pub const CANON_INPUTS_DOMAIN: &[u8] = b"fa:canon-inputs:v1";
 
-/// Bounds on what a decoded IR may hold; a compiled rule is within them
-/// by the parser's own bounds.
+/// Bounds on what a decoded IR may hold. A compiled rule is within them by
+/// the parser's own bounds and by [`validate`], which holds every text to
+/// [`MAX_TEXT`], so every IR a rule compiles to decodes.
 const MAX_NODE_DEPTH: u32 = 256;
 const MAX_SLOTS: usize = 512;
 const MAX_LEGS: usize = 512;
@@ -274,6 +275,7 @@ fn node_unit(
             if label.is_empty() {
                 return Err(IrError("a resource label is empty".into()));
             }
+            bounded("a resource label", label)?;
             known(unit)
         }
         Node::Input(index) => match parts.inputs.get(*index as usize).map(|i| &i.ty) {
@@ -325,6 +327,18 @@ fn well_formed_code(text: &str) -> bool {
     !text.is_empty() && text.trim() == text
 }
 
+/// The decoder reads no text longer than [`MAX_TEXT`] bytes back, so a
+/// longer one is refused here rather than journaled undecodable.
+fn bounded(what: &str, text: &str) -> Result<(), IrError> {
+    if text.len() > MAX_TEXT {
+        return Err(IrError(format!(
+            "{what} is {} bytes; a rule's name, input names, resource labels, account codes and dimension codes are at most {MAX_TEXT} bytes",
+            text.len()
+        )));
+    }
+    Ok(())
+}
+
 /// The structural law every IR obeys, compiled or decoded.
 fn validate(parts: &Parts) -> Result<(), IrError> {
     if parts.name.is_empty() || parts.version == 0 {
@@ -332,8 +346,10 @@ fn validate(parts: &Parts) -> Result<(), IrError> {
             "a rule has a name and a version of at least 1".into(),
         ));
     }
+    bounded("the rule name", &parts.name)?;
     let mut names = BTreeSet::new();
     for input in &parts.inputs {
+        bounded("an input name", &input.name)?;
         if input.name.is_empty() || !names.insert(input.name.as_str()) {
             return Err(IrError(format!(
                 "input `{}` is empty or declared twice",
@@ -366,6 +382,7 @@ fn validate(parts: &Parts) -> Result<(), IrError> {
                 "a leg names its account code without spaces around it".into(),
             ));
         }
+        bounded("an account code", &leg.account)?;
         if node_unit(&leg.amount, parts, &slot_units, 0)? != leg.unit {
             return Err(IrError(format!(
                 "the leg on {} is not in its declared unit",
@@ -382,6 +399,7 @@ fn validate(parts: &Parts) -> Result<(), IrError> {
             if !well_formed_code(code) {
                 return Err(IrError(format!("the {dimension} tag names no value code")));
             }
+            bounded("a dimension code", code)?;
             if last.is_some_and(|id| id >= kind.id) {
                 return Err(IrError(
                     "a leg's dimension tags are not unique and ascending by dimension".into(),

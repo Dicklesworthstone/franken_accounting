@@ -551,3 +551,75 @@ fn evaluation_refuses_what_it_cannot_compute_exactly() {
         }
     );
 }
+
+/// A rule compiles only when its stored IR decodes. The decoder reads no
+/// text longer than 1024 bytes back, so a longer account code, rule name,
+/// input name, resource label or dimension code is refused at compile time
+/// instead of being journaled as an IR every later read refuses.
+#[test]
+fn every_compiled_ir_decodes_so_overlong_text_is_refused_at_compile() {
+    let units = units();
+    let at_bound = "A".repeat(1024);
+    let over = "A".repeat(1025);
+    let rule = |account: &str, name: &str, input: &str, label: &str, code: &str| {
+        format!(
+            "rule {name} v1 for event Sale {{ inputs {{ {input}: date }} \
+             let net = event.resource(\"{label}\", \"USD\") \
+             debit \"{account}\" net dims {{ project = \"{code}\" }} credit \"2000\" net \
+             effective {input} }}"
+        )
+    };
+    let fits = rule(&at_bound, &at_bound, &at_bound, &at_bound, &at_bound);
+    let compiled = compile(&fits, &units).unwrap();
+    assert_eq!(
+        CompiledRule::decode(compiled.ir(), &units).unwrap(),
+        compiled
+    );
+    for (source, what) in [
+        (rule(&over, "r", "d", "net", "P"), "an account code"),
+        (rule("1000", &over, "d", "net", "P"), "the rule name"),
+        (rule("1000", "r", &over, "net", "P"), "an input name"),
+        (rule("1000", "r", "d", &over, "P"), "a resource label"),
+        (rule("1000", "r", "d", "net", &over), "a dimension code"),
+    ] {
+        let error = compile(&source, &units).unwrap_err();
+        assert!(
+            error.message.contains(&format!("{what} is 1025 bytes")),
+            "{what}: {error}"
+        );
+    }
+}
+
+/// The balance proof shares a `let` instead of copying it, so a chain of
+/// lets that each use the previous one twice no longer doubles the proof at
+/// every link. Copying did: 40 links were about 2^40 terms, and every decode
+/// of a stored IR paid that again.
+#[test]
+fn nested_lets_are_proven_without_copying_each_use() {
+    let units = units();
+    let mut source =
+        String::from("rule chain v1 for event Sale { let a0 = event.resource(\"net\", \"USD\")\n");
+    for k in 1..=40 {
+        let prev = k - 1;
+        source.push_str(&format!(
+            "let a{k} = (a{prev} + a{prev} * 1 / 2 round HalfEven) * 1 / 3 round HalfEven\n"
+        ));
+    }
+    source.push_str("debit \"1000\" a40 credit \"2000\" a40 }");
+    let rule = compile(&source, &units).unwrap();
+    assert_eq!(CompiledRule::decode(rule.ir(), &units).unwrap(), rule);
+    // Each link halves the amount, so start high enough that a40 is not 0.
+    let sale = event(EventKind::Sale, vec![("net", usd(&units, 1i128 << 60))]);
+    let derivation = evaluate(&rule, &sale, &Inputs::new()).unwrap();
+    let legs = legs(&derivation);
+    assert_eq!(legs.len(), 2);
+    assert_eq!(legs[0].2, legs[1].2, "{legs:?}");
+
+    // The proof still tells the rounded atoms apart: crediting one link
+    // earlier is refused, and the refusal stays bounded however deep the
+    // residual's roundings nest.
+    let unbalanced = source.replace("credit \"2000\" a40", "credit \"2000\" a39");
+    let error = compile(&unbalanced, &units).unwrap_err();
+    assert!(error.message.contains("does not balance in USD"), "{error}");
+    assert!(error.message.len() < 8 * 1024, "{}", error.message.len());
+}

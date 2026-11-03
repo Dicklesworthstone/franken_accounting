@@ -1,0 +1,430 @@
+{
+  "activation": {
+    "negative": false,
+    "positive": false,
+    "scope": "Positive acceptance is native finalization planning only. Both runs remain Open and ordinary trial balances remain empty; planning publishes no history."
+  },
+  "bead_closure_claimed": false,
+  "checks": [
+    "fresh_both_pinned_originals",
+    "unchanged_printed_controls",
+    "native_unbound_preparation",
+    "370_original_grouped_approved_chunks",
+    "hash_identical_cold_book_prefix",
+    "same_manual_adapter_both_twins",
+    "371_members_in_each_twin",
+    "unaltered_native_finalize_plan_accepted",
+    "exact_388_monetary_mismatches",
+    "native_monetary_FA_REF_131",
+    "no_finalization_publication",
+    "staged_history_remains_invisible"
+  ],
+  "common_prefix": {
+    "bytes": 68637043,
+    "chunks": 370,
+    "files": 10246,
+    "known_at": 1535,
+    "manifest_sha256": "aac252e291713df3fc4847d70a1cf823928ed8ccdfc969f1845d92af5ae245da"
+  },
+  "control_scope": {
+    "negative_counterpart_delta_cents": 100,
+    "negative_principal_delta_cents": -100,
+    "positive_delta_cents": 0,
+    "scope": "Isolated unbound monetary-law control; original source files and printed cells are unchanged",
+    "source_amount_cents": 280000000,
+    "source_binding": false,
+    "target": "SRC-BLM-001:1T0026:p27:l16"
+  },
+  "document_custody": {
+    "agent_uploads": 15,
+    "reviewed_attestations": 15,
+    "scope": "AgentUpload source documents receive Reviewed attestations from a distinct local fixture principal. Two separately issued Human fixture capabilities approve native proposals. These roles are automated test separation, not independently authenticated human examination or court approval."
+  },
+  "driver_sha256": "bf36899791bc7b291d7acc305f3f6089e87f79892459e4447c98f66334045a9a",
+  "elapsed_seconds": 43.074,
+  "focused_tests": {
+    "elapsed_seconds": 1.532,
+    "scope": "11 comparator/copy/CLI unit tests and one independent Decimal oracle over both freshly extracted original PDFs. Unit envelopes are not native execution evidence.",
+    "skipped": 0,
+    "status": "PASS",
+    "test_file": {
+      "bytes": 13073,
+      "sha256": "1f045c074929d214026f5b40c851735330b32b94f6310355717d6d07484488f5"
+    },
+    "tests": 12
+  },
+  "format": "fa-public-data-native-execution-summary-v1",
+  "full_artifacts": {
+    "commands.jsonl": {
+      "bytes": 71165,
+      "sha256": "fbfa63255177b035956be6c488070826d91f61d5a4dbffa9e2b1b0df288fcbe0"
+    },
+    "common-prefix-files.json": {
+      "bytes": 2069253,
+      "sha256": "aac252e291713df3fc4847d70a1cf823928ed8ccdfc969f1845d92af5ae245da"
+    },
+    "legacy.csv": {
+      "bytes": 132044,
+      "sha256": "b71aea3c7a63034d7b00b455ee832f2ddc8aa6c939e65b0b4defe15cf4f3102a"
+    },
+    "migration-manifest.json": {
+      "bytes": 881768,
+      "sha256": "ee003021fa81eb6a04734e7d38a7671d6259672e24a125dd08302bd4e0ee9c6f"
+    },
+    "native-import.json": {
+      "bytes": 18725,
+      "sha256": "0c6ba390c7d446ea3567c223f25034f44c9b2ee63d2fc567e90092c788fb7ab3"
+    },
+    "native-run.json": {
+      "bytes": 199648,
+      "sha256": "c2dd23ff6769f41894ec0d06d3f31a8cb532cc94d4eeb665cfb6637c076fbbee"
+    },
+    "native-twin-control.json": {
+      "bytes": 329,
+      "sha256": "e0afc12ec17584f9da11fababef4dcaad6b91bf26c21a5e7845176be5d2dc39a"
+    },
+    "negative-chunk.json": {
+      "bytes": 1234,
+      "sha256": "dc175058f6f5881928dfc89db8022faf4663627d975afcdfdc0a752966dbb1b0"
+    },
+    "negative-chunk.plan": {
+      "bytes": 1508,
+      "sha256": "f2f045846eeb605dd82529e83a1b996d20dc631cfe790cff01f5e5a172ee331d"
+    },
+    "negative-run.json": {
+      "bytes": 136158,
+      "sha256": "0228a9940b72c1959b04395ef489e707c887ec45c0510f2b86ffa1c18a5b3894"
+    },
+    "positive-chunk.json": {
+      "bytes": 1234,
+      "sha256": "7e8324f1a0a9175d7b199f1acf40b7dabb9e6a53ebc7290fee92d7a87f7b03a6"
+    },
+    "positive-chunk.plan": {
+      "bytes": 1508,
+      "sha256": "e0f214a436ee2fc8f025028d0ef79467e52f63b44981e2de5c292fb06e466d8a"
+    },
+    "positive-finalize.plan": {
+      "bytes": 451,
+      "sha256": "18019a27ce1c70ffcdbf9bb77b2dc84974c18477c2ff437c2e0a095b5dfc3414"
+    },
+    "positive-run.json": {
+      "bytes": 67435,
+      "sha256": "062bc962585392b431b0af65607fd2d157f25ec3e4eefbc4103d36b9322447b9"
+    },
+    "printed-controls.json": {
+      "bytes": 535820,
+      "sha256": "a1b311ebb9f123abaf9722d254fc15608ce29062ff733b4e5bf62b04842b5536"
+    },
+    "report.json": {
+      "bytes": 172088,
+      "sha256": "87060166b413be2b71038d66c32fa9a50eee80a8f372acf026bd0ccc9b361f21"
+    }
+  },
+  "helper_observation_scope": "Start metadata records the driver and principal helpers; supplemental Magnify/public_ledger hashes were captured eight seconds after start. All recorded hashes match completion. Remaining transitive helpers are hashed at completion.",
+  "included_accounts": [
+    "1T0026",
+    "1ZA192",
+    "1ZB010",
+    "1ZB143",
+    "1FN025",
+    "1FN097",
+    "1FR051"
+  ],
+  "maximum_child_rss_kib": 140812,
+  "monetary_refusal": {
+    "affected_periods": 194,
+    "call": 105,
+    "canonical_matrix_sha256": "061314cd52aa21432bc0cfb3aa450478356a83f76b420093874f5439653acc4f",
+    "counterpart_delta_cents": 100,
+    "exit": 3,
+    "first_period": "FY1992-P11",
+    "first_period_cells": [
+      {
+        "account_code": "BLMIS-1T0026",
+        "declared": "-5100000.00 USD",
+        "folded": "-5100001.00 USD",
+        "period": "FY1992-P11",
+        "unit": "USD"
+      },
+      {
+        "account_code": "BLMIS-MIGRATION-OFFSET",
+        "declared": "4612161.00 USD",
+        "folded": "4612162.00 USD",
+        "period": "FY1992-P11",
+        "unit": "USD"
+      }
+    ],
+    "last_period": "FY2008-P12",
+    "last_period_cells": [
+      {
+        "account_code": "BLMIS-1T0026",
+        "declared": "7374165.00 USD",
+        "folded": "7374164.00 USD",
+        "period": "FY2008-P12",
+        "unit": "USD"
+      },
+      {
+        "account_code": "BLMIS-MIGRATION-OFFSET",
+        "declared": "-51081015.00 USD",
+        "folded": "-51081014.00 USD",
+        "period": "FY2008-P12",
+        "unit": "USD"
+      }
+    ],
+    "message_sha256": "fc2050ee838728718ca499befc91231aae92e26558b8eea9b9050ca8f729c285",
+    "mismatch_count": 388,
+    "principal_delta_cents": -100,
+    "refusal_id": "FA-REF-131",
+    "unaffected_periods": 23
+  },
+  "native_build": {
+    "artifact_archive_sha256": "a3946ad20f1a0891c025fb3e071e8a03dc390ed8b13da2c5a49b6fca069aa7f0",
+    "artifact_id": 13210366143,
+    "artifact_name": "public-ledger-native-88286f8c41f3943fde51e76334b33db758422c95",
+    "binaries": {
+      "fa": {
+        "bytes": 235016792,
+        "sha256": "20200170403c9dd6a1d787796d1a63dc7578018598b23bdfc2f03c6fc50db788"
+      },
+      "fa_verify": {
+        "bytes": 20213496,
+        "sha256": "5f444d7a2fd39b970972487745cb3a95e79eb36f44d76119a2ad2c8cbe42d8ad"
+      }
+    },
+    "compiler": "nightly-2026-08-31",
+    "lock_git_oid": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "provenance_files": {
+      "acquisition.json": {
+        "bytes": 275,
+        "sha256": "275fe55f4e36e3cf688b27ffb33a8f24bec361252219927dbfdd0ed7636ef914"
+      },
+      "artifacts/public-ledger/native-binaries.sha256": {
+        "bytes": 171,
+        "sha256": "e8bdd2fef43187aaab7f30dfd432f77e18a90d0e4c826505e48a95428399db35"
+      },
+      "artifacts/public-ledger/native-lock.txt": {
+        "bytes": 41,
+        "sha256": "7a2b745cd7da4313e68dde2e65a3acf91e0fbe39a3e42138c8e8df9b3f72c119"
+      },
+      "artifacts/public-ledger/native-source.txt": {
+        "bytes": 41,
+        "sha256": "d554906e7f9d40648cac3fc8055cd90fe0089ae57e2822951dff90d9b00a4494"
+      },
+      "github-workflow-evidence.json": {
+        "bytes": 5382,
+        "sha256": "3b7dd435f64e0658edc86ccabfabac7413a0b55738c5ad8b6a9665b8188c641d"
+      },
+      "verification.json": {
+        "bytes": 797,
+        "sha256": "1723cbe1b32467fa932fcbe10ed53fe1374b1c66e762422760af9934af5b9b69"
+      }
+    },
+    "rust_sources_and_manifests_match_execution_checkout": true,
+    "source_commit": "88286f8c41f3943fde51e76334b33db758422c95",
+    "workflow_job_id": 125763882661,
+    "workflow_result": "success",
+    "workflow_url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41588158231"
+  },
+  "native_calls": 108,
+  "native_exit_counts": {
+    "0": 107,
+    "3": 1
+  },
+  "native_program_counts": {
+    "fa": 108
+  },
+  "observed_process_exit": 0,
+  "process_evidence": {
+    "blmis-monetary-twin-native-1-result.json": {
+      "bytes": 1646,
+      "sha256": "cc3136d08176451d5f95d566b13b79d3db370bd7b1d8bf7cfa07b2e428aa2738"
+    },
+    "blmis-monetary-twin-native-1-started.json": {
+      "bytes": 1525,
+      "sha256": "3e4d6b00e265432bb4a665bd3152b699aae8f177ed145185bcc670b41f1cac4f"
+    },
+    "blmis-monetary-twin-native-1-supplemental-helpers.json": {
+      "bytes": 484,
+      "sha256": "3936bb8f347c81ffc7b4950cfc24de0c4f15fd4a82bfa8968ed9b0f53b7164c8"
+    },
+    "blmis-monetary-twin-native-1.log": {
+      "bytes": 667,
+      "sha256": "0155850082c8bb106f0980a781d5197a2d667ab8dfaab28fceb9616385a8d2b3"
+    }
+  },
+  "process_wall_seconds": 43.202,
+  "recorded_utc": "2026-11-03T08:45:41.808536+00:00",
+  "reproduce": "python3 -B scripts/blmis_migration_negative.py --pdf /path/to/pinned-glantz.pdf --magnify-pdf /path/to/pinned-magnify-affidavit.pdf --out /path/to/new-monetary-control --fa /path/to/matching/fa --fa-verify /path/to/matching/fa-verify",
+  "runtime_helpers": {
+    "scripts/blmis_magnify.py": {
+      "bytes": 42051,
+      "sha256": "876362a7872e5f447c5eef10d3310fb6ec3004f8ce8a78053dcd3064ac2382d5"
+    },
+    "scripts/blmis_migrate.py": {
+      "bytes": 52112,
+      "sha256": "3d1e222f4722eac59157743778256447f5374bcfecccb2722fa454f75ab1d748"
+    },
+    "scripts/blmis_migration_negative.py": {
+      "bytes": 23942,
+      "sha256": "bf36899791bc7b291d7acc305f3f6089e87f79892459e4447c98f66334045a9a"
+    },
+    "scripts/blmis_source.py": {
+      "bytes": 79226,
+      "sha256": "9e3b6ae3882cf88cff90e826907f4f0f5446646ceff46c65544cfedd5ba60df2"
+    },
+    "scripts/public_ledger.py": {
+      "bytes": 87487,
+      "sha256": "4c3b245d2a25d52fd56f38cee7ea96cab61f17ac731edefc19af70e72e00c3a1"
+    },
+    "scripts/public_ledger_source.py": {
+      "bytes": 17814,
+      "sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80"
+    },
+    "tools/public-data/public_spend.py": {
+      "bytes": 29136,
+      "sha256": "b8142a53f45d395e5fed2ce588b4aeda91708c0e85caf8e08c8845f0fbb46c1a"
+    },
+    "tools/public-data/run_live.py": {
+      "bytes": 86009,
+      "sha256": "93db72c30fe0735e4f6111e3af84eb14ac4a8dcebddc5444db0af1e6a33cf267"
+    }
+  },
+  "scope": "All 393 published observations of the seven exact-footing accounts: Glantz 1T0026, 1ZA192, 1ZB010 and 1ZB143, plus Magnify 1FN025, 1FN097 and 1FR051. The 22 zero-principal observations remain evidence; all 371 monetary observations enter one native migration with 217 monthly printed controls. Both complete original filings and all 2,743 extracted observations are retained, including the five accounts with printed discrepancies that cannot support this exact-control migration. Trustee-credited transfers remain source inputs. The eight-account double-entry model and counterpart are explicit analysis constructions, not a recovered BLMIS general ledger or an independent legal net-equity determination.",
+  "source_binding": false,
+  "source_binding_boundary": "Fresh unbound control books only; original bound runs are unchanged. Manual target chunks do not claim retained-package membership.",
+  "source_inputs": [
+    {
+      "directory": "source",
+      "excluded_accounts": [
+        "1ZR010",
+        "1ZR176"
+      ],
+      "included_accounts": [
+        "1T0026",
+        "1ZA192",
+        "1ZB010",
+        "1ZB143"
+      ],
+      "source_id": "SRC-BLM-001",
+      "source_rows": 379,
+      "source_rows_sha256": "1a846492848eb5d8f4f20ca61bbbf721aa22f776161bd27a11ace2bb75c659cf",
+      "source_sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1",
+      "source_url": "https://www.madofftrustee.com/document/dockets/008796-glantzcomplaint10-05394docket93.pdf"
+    },
+    {
+      "directory": "magnify-source",
+      "excluded_accounts": [
+        "1FN024",
+        "1FN037",
+        "1FN073"
+      ],
+      "included_accounts": [
+        "1FN025",
+        "1FN097",
+        "1FR051"
+      ],
+      "source_id": "SRC-BLM-006",
+      "source_rows": 2364,
+      "source_rows_sha256": "f10a7bc474512a0f4db4b457d4865a4ff7909053f28f24e3dfa023afb60cf697",
+      "source_sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec",
+      "source_url": "https://www.madofftrustee.com/document/dockets/magnify_affidavit_opposingcounsel_10-05279_docket150.pdf"
+    }
+  ],
+  "source_population": {
+    "monetary_entries_per_twin": 371,
+    "monthly_printed_controls": 217,
+    "normalized_source_legs": 742,
+    "retained_original_observations": 2743,
+    "selected_observations": 393,
+    "zero_principal_observations": 22
+  },
+  "standalone_verifier_invoked": false,
+  "status": "PASS",
+  "target_source_row": {
+    "account": "1T0026",
+    "cash_movement_cents": 280000000,
+    "date": "1992-11-19",
+    "date_literal": "11/19/1992",
+    "deposits_cents": 280000000,
+    "deposits_literal": "2,800,000",
+    "description": "CHECK WIRE",
+    "exhibit": "B-1",
+    "exhibit_page": 1,
+    "footnotes": [],
+    "marker_raw_line_sha256": "",
+    "marker_source_line": null,
+    "page_row": 1,
+    "pdf_page": 27,
+    "principal_movement_cents": 280000000,
+    "printed_balance_cents": 280000000,
+    "printed_balance_literal": "2,800,000",
+    "raw_line_sha256": "e6e68fe88dfd8f4dbe20359a5b4ab7a6b03f8725be50f40c86a6856a64293834",
+    "reported_cents": 280000000,
+    "reported_literal": "2,800,000",
+    "reported_marker": "",
+    "row_id": "SRC-BLM-001:1T0026:p27:l16",
+    "source_line": 16,
+    "transfer_credit_role": "not_applicable",
+    "transfer_movement_cents": 0,
+    "transfer_pair_id": null,
+    "transfers_in_cents": 0,
+    "transfers_in_literal": "-",
+    "transfers_out_cents": 0,
+    "transfers_out_literal": "-",
+    "two_year_cents": 0,
+    "two_year_literal": "-",
+    "withdrawals_cents": 0,
+    "withdrawals_literal": "-"
+  },
+  "transcript_integrity": {
+    "all_match": true,
+    "complete_calls": 108,
+    "retained_stdin_hashes_checked": 24,
+    "stderr_hashes_checked": 108,
+    "stdout_hashes_checked": 108
+  },
+  "twins": {
+    "negative": {
+      "chunks": 371,
+      "delta_cents": 100,
+      "frontier_after": 1538,
+      "frontier_before": 1538,
+      "manual_receipt": {
+        "entry_digest": "5038aced00ed184565fbc013bee7b5be10de7b30bf48a3802edca6c7d12608dd",
+        "proposal_digest": "b6b7ca59287c69efeb4ae1f1ecc070ea1add04912c551b72efb1c45fcbb2fe5b",
+        "recorded_at": 1538,
+        "vid": "92fff2fa864808771b7f42f1da5621cb"
+      },
+      "mismatch_count": 388,
+      "planner_exit": 3,
+      "state": "Open",
+      "ties_out": false,
+      "visible_rows": 0
+    },
+    "positive": {
+      "chunks": 371,
+      "delta_cents": 0,
+      "frontier_after": 1538,
+      "frontier_before": 1538,
+      "manual_receipt": {
+        "entry_digest": "704be1f92b20325254c25a845cc55bbaa17733adcb463726c5fc557b1b9a2c7a",
+        "proposal_digest": "86943e5f26fddc1502e0b98d97cf3521f0c4841652e90da7511e34ddee4b9116",
+        "recorded_at": 1538,
+        "vid": "92fff2fa864808771b7f42f1da5621cb"
+      },
+      "mismatch_count": 0,
+      "planner_exit": 0,
+      "state": "Open",
+      "ties_out": true,
+      "visible_rows": 0
+    }
+  },
+  "whole_workspace_gates": {
+    "cargo_test_workspace": "UNRUN",
+    "clippy_workspace": "UNRUN",
+    "scope": "This native monetary-control result does not constitute a current whole-workspace gate verdict.",
+    "tier0": "UNRUN",
+    "tier1": "UNRUN"
+  },
+  "workload": "seven-account-blmis-native-monetary-finalization-twins"
+}

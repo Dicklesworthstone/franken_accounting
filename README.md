@@ -496,39 +496,92 @@ new Rust regression covers staging, independent approvals, activation,
 source-derived balances, known-at visibility and certified report replay;
 native execution remains pending the required build and test gates.
 
-The [complete published BLMIS account workload](docs/blmis_glantz_workload.md)
-retains all 75 dated observations in Glantz Exhibit B-2, including the printed
-running principal balances and trustee-credited transfers. Its native driver
-first downloads or accepts the pinned original PDF, extracts all three account
-pages in the current invocation, and verifies every regenerated row and printed
-control before creating a book. It retains the PDF, extraction text and byte
-lineage; an extraction failure cannot fall back to checked-in rows. The native
-workflow then posts the 74 monetary rows, reconciles every source observation, replays a
-retained ledger certificate, and verifies proof-bearing exports. The declared
-analysis accounts and the source's credited transfer amounts are explicit
-inputs; this is not an original BLMIS double-entry ledger or an independent
-net-equity determination.
+### Real bankruptcy account histories
 
-`ponzi.net_investment` version 5 adds the named `posted_principal_transfer_v1`
-rule. It keeps cash and transferred principal separate, recognizes explicitly
-marked clearing transfers and fully attributed investor-to-investor entries,
-and refuses ambiguous marked transfers. On this source account, omitting the
-credited transfers changes the closing result by $3,462,634. The workload
-documentation records the executable controls and current native validation
-status, including the version boundary for earlier procedure certificates.
+The published BLMIS workloads cover **all 3,793 dated observations across
+thirteen account tables** in three original filings. Every source driver pins
+the complete original PDF, freshly extracts its account-table pages, preserves
+the printed literals and page/line provenance, and refuses extraction drift.
+The resulting books use declared analysis counterparts; the public tables do
+not supply the firm's original double-entry general ledger.
 
+| Complete published tables | Source accounts | Observations | Monetary entries | Balanced legs |
+|---|---:|---:|---:|---:|
+| [Glantz Exhibits B-1 through B-6](docs/blmis_glantz_workload.md#complete-six-account-ingestion-and-native-replay) | 6 | 379 | 372 | 744 |
+| [Square One Exhibit B](docs/blmis_square_one_workload.md) | 1 | 1,050 | 340 | 680 |
+| [Magnify Exhibit B](docs/blmis_magnify_workload.md) | 6 | 2,364 | 1,586 | 3,172 |
+| **Total** | **13** | **3,793** | **2,298** | **4,596** |
 
-The same workload now offers `--account all` for all six Glantz exhibits:
-**379 published observations, 372 monetary entries, and 744 legs**. It retains
-detached footnotes, the explicitly identified check/stop-payment ordering
-exception, and the source's one- and nine-dollar arithmetic discrepancies.
-It checks every account ledger and exported party attribution, and recomputes
-the two transfers whose originating and receiving histories are both published.
-The original PDF and actual extraction are acquired before any native posting.
-See the [complete six-account commands and validation boundary](docs/blmis_glantz_workload.md#complete-six-account-ingestion-and-native-replay).
-The new six-account path is implemented but its full extraction/comparator and
-native replay tests are **UNRUN** for this landing because the executor went
-offline; earlier one-account results do not establish its acceptance.
+All three complete replays have passed actual native execution with the same
+verified `fa` and `fa-verify` binaries. The checked
+[Glantz](evidence/blmis/glantz-six-current-native-2026-11-03.json),
+[Square One](evidence/blmis/square-one-native-2026-11-03.json), and
+[Magnify](evidence/blmis/magnify-native-2026-11-03.json) records retain exact
+source and executable identities, complete export comparisons, certificate
+replays, register checks and actual amount-only and party-only tamper refusals.
+The executions cover every monetary row in the table, including accounts with
+published discrepancies; a matching printed balance is never a precondition
+for admission to these replay workloads.
+
+With matching `fa` and `fa-verify` binaries built in `target/debug`, run the
+complete native workflows from the repository root:
+
+```bash
+python3 -B scripts/blmis_replay.py run --account all --out artifacts/glantz-native
+python3 -B scripts/blmis_square_one_replay.py run --out artifacts/square-one-native
+python3 -B scripts/blmis_magnify_replay.py run --out artifacts/magnify-native
+```
+
+Each destination must be new. `--pdf` accepts an already acquired pinned
+original; otherwise the driver downloads it. `--fa` and `--fa-verify` select
+explicit executable paths. PDF extraction requires `pdftotext`.
+
+These are complete native accounting paths: original-document custody,
+postings, exact retries, historical reads, certified ledger replay, source
+controls, maintained registers, principal analysis, full CSV/ADS export and
+independent proof verification. Zero-principal observations remain in the
+comparison census. The helpers preserve 1,426 footnote-governed tax exclusions,
+positive withdrawal cancellations, detached annotations, different table
+layouts and published balance discrepancies. Every native cent must equal the
+independent source-movement fold; a published discrepancy never becomes a
+tolerance or balancing entry. Magnify additionally reads back its complete
+28.9 MB original through a fresh native process and checks both recovered-file
+and robot-response bytes.
+
+The [source-bound migration workload](docs/blmis_migration.md) exercises a second
+native admission path. `--include-magnify` combines all **seven exact-footing
+accounts** from the Glantz and Magnify sources into one FullDetail import:
+**393 observations, 371 entries, 742 legs and 217 monthly controls**.
+
+```bash
+python3 -B scripts/blmis_migrate.py run --include-magnify \
+  --out artifacts/blmis-seven-migration
+```
+
+Its controls select independently printed month-end principal cells. The
+driver deliberately omits a real cancelling $25,000 check/stop-payment pair:
+every monthly balance still agrees, but native source completeness must refuse
+finalization. It then restores the two original observations, finalizes the
+same run atomically, and independently verifies every monthly report bundle.
+The default without `--include-magnify` preserves the four-account Glantz scope.
+
+The [native monetary control](docs/blmis_migration_negative.md) also checks a
+balanced $1 error after approved chunks have been staged. Two matched books
+contain all 371 monetary entries; finalization planning accepts the
+unaltered amount and refuses the changed amount with exactly 388 monetary
+mismatches. Both control books remain Open without activating their entries.
+
+```bash
+python3 -B scripts/blmis_migration_negative.py \
+  --out artifacts/blmis-monetary-control
+```
+
+`ponzi.net_investment` version 5 keeps cash and declared principal transfers
+separate under `posted_principal_transfer_v1`; ambiguous marked transfers are
+refused. The workload documentation identifies source-credit assumptions,
+published discrepancies, executed validation records and exact helper/binary
+revisions. Reproducing a trustee's published inputs does not establish an
+independent legal net-equity determination.
 
 Generic legacy CSV imports also support explicit `party` and `legal_entity`
 column mappings. They resolve existing native dimension identities, preserve
@@ -2283,11 +2336,12 @@ an independent decimal calculation over the original CSV.
 
 ```bash
 python3 tools/public-data/public_spend.py prepare \
-  --dataset hmrc-2025-03 --out /tmp/fa-public-hmrc
+  --dataset hmrc-2025-03 --out /tmp/fa-public-hmrc --native-attribution
 python3 tools/public-data/run_live.py \
   --prepared /tmp/fa-public-hmrc --dataset hmrc-2025-03 \
   --out /tmp/fa-public-hmrc-live \
-  --fa target/debug/fa --fa-verify target/debug/fa-verify
+  --fa target/debug/fa --fa-verify target/debug/fa-verify \
+  --native-attribution --batch-approvals --batch-evidence --bind-source
 ```
 
 The live runner requires the real binaries and exercises approved FullDetail
@@ -2296,6 +2350,15 @@ folds, every exported dated leg, certificate replay and independent report
 bundle verification, including a tampered-bundle refusal. It retains command
 transcripts and writes `PASS` only after all required observations succeed;
 successful source preparation alone is not a native execution result.
+
+The complete attributed HMRC run passed with **127 entries and 2,860 legs**,
+retaining all **42 expense areas and 160 suppliers** as native identities.
+All 42 area reports and the whole-book report passed **601 independent
+verification checks**. Changing only a supplier or expense-area value in an
+otherwise unchanged export was refused. The
+[execution record](evidence/public_spend/hmrc-2025-03-attribution-native-2026-11-03.json)
+includes the original source comparison and the real identity-key integration
+failure that this workload exposed and repaired.
 
 These are whole published monthly expenditure extracts, **not original complete
 double-entry ledgers**. The fixture uses declared modeled Expense accounts and

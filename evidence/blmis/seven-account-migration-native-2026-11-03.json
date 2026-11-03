@@ -1,0 +1,629 @@
+{
+  "bead_closure_claimed": false,
+  "checks": [
+    "fresh_pinned_complete_pdf_extraction",
+    "declared_exact_footing_account_population",
+    "printed_only_monthly_controls",
+    "balanced_one_dollar_prepare_twin_refused_before_publication",
+    "native_generic_csv_full_detail",
+    "exact_prepared_leg_and_date_census",
+    "native_source_population_binding",
+    "real_offsetting_pair_omission_refused_despite_all_monetary_tieouts",
+    "original_missing_members_repaired_same_open_run",
+    "approved_grouped_staging",
+    "staged_and_historical_invisibility",
+    "atomic_finalization",
+    "stable_prepare_and_stage_retries",
+    "exact_gross_and_net",
+    "every_exported_dated_leg_text_and_provenance",
+    "every_month_certified_and_replayed",
+    "every_month_registers_equal_fold",
+    "every_month_independent_source_bound_report",
+    "tampered_report_refused"
+  ],
+  "document_custody": {
+    "agent_uploads": 15,
+    "documents": 15,
+    "reviewed_attestations": 15,
+    "scope": "AgentUpload source documents receive Reviewed attestations from a distinct local fixture principal. Two separately issued Human fixture capabilities approve native proposals. These roles are automated test separation, not independently authenticated human examination or court approval."
+  },
+  "driver_sha256": "3d1e222f4722eac59157743778256447f5374bcfecccb2722fa454f75ab1d748",
+  "elapsed_seconds": 858.486,
+  "executed_helpers": {
+    "scripts/blmis_magnify.py": {
+      "bytes": 42051,
+      "sha256": "876362a7872e5f447c5eef10d3310fb6ec3004f8ce8a78053dcd3064ac2382d5"
+    },
+    "scripts/blmis_migrate.py": {
+      "bytes": 52112,
+      "sha256": "3d1e222f4722eac59157743778256447f5374bcfecccb2722fa454f75ab1d748"
+    },
+    "scripts/blmis_source.py": {
+      "bytes": 79226,
+      "sha256": "9e3b6ae3882cf88cff90e826907f4f0f5446646ceff46c65544cfedd5ba60df2"
+    },
+    "scripts/public_ledger.py": {
+      "bytes": 87487,
+      "sha256": "4c3b245d2a25d52fd56f38cee7ea96cab61f17ac731edefc19af70e72e00c3a1"
+    },
+    "scripts/public_ledger_source.py": {
+      "bytes": 17814,
+      "sha256": "d9653bab775d00073b1c32e266ca2ee5358a53cadf3ef028df189fad1cbd9b80"
+    },
+    "tools/public-data/run_live.py": {
+      "bytes": 85743,
+      "sha256": "37d36d3215fb8292098fd3b491d244215516e29f594d224beef971b5b876fee4"
+    }
+  },
+  "final_gross_unit_totals": [
+    {
+      "credits": "128974531.00 USD",
+      "debits": "128974531.00 USD",
+      "unit": "USD"
+    }
+  ],
+  "finalization": {
+    "action": "finalize",
+    "activation_publications": 1,
+    "already_recorded": false,
+    "chunk_count": 371,
+    "control_entry": "70e8ecb5084a283c2bd5ba180a299e61",
+    "from": "Open",
+    "frontier_after_commit": 1543,
+    "frontier_before_commit": 1542,
+    "recorded_at": 1543,
+    "run_key": "blmis-seven-printed-principal-v1",
+    "run_vid": "1d1edab68b8c514140369ed70a081f1b",
+    "tie_out_digest": "e3a8823c65075be16a318f110c82d2e0151a7864ee664e02f571d6a8ff44aab7",
+    "to": "Finalized"
+  },
+  "format": "fa-public-data-native-execution-summary-v1",
+  "full_artifacts": {
+    "chart.json": {
+      "bytes": 1177,
+      "sha256": "d30a178a22a43fbdca0e7e0a48218346970cfe07232414c8cc1d35713690103e"
+    },
+    "column_map.toml": {
+      "bytes": 268,
+      "sha256": "329f33f69b07ae5e9b50ce4bf61b7f6ce035d522ded0f43ceabf5f607497c505"
+    },
+    "commands.jsonl": {
+      "bytes": 899247,
+      "sha256": "d4bdea73c7f1ea4abf30a22c1d1baa837955e04dbf68679e7704866071c41f1a"
+    },
+    "legacy.csv": {
+      "bytes": 132044,
+      "sha256": "b71aea3c7a63034d7b00b455ee832f2ddc8aa6c939e65b0b4defe15cf4f3102a"
+    },
+    "magnify-source/extracted-source/layout.txt": {
+      "bytes": 721606,
+      "sha256": "2528f349bc87df810e36b54f61179cd78118720d5ec21140ebb498d7052544ec"
+    },
+    "magnify-source/extraction.json": {
+      "bytes": 1810,
+      "sha256": "facee14208f0add94c98d2aadad185697087630036232536a8c8ab17ca68402e"
+    },
+    "magnify-source/rows.csv": {
+      "bytes": 522085,
+      "sha256": "f10a7bc474512a0f4db4b457d4865a4ff7909053f28f24e3dfa023afb60cf697"
+    },
+    "magnify-source/source.json": {
+      "bytes": 24684,
+      "sha256": "7350a15658dfc63da0386f8b17ca19acc09c454938df5abf94ca78e96e89fc80"
+    },
+    "magnify-source/source.pdf": {
+      "bytes": 28947445,
+      "sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec"
+    },
+    "migration-manifest.json": {
+      "bytes": 881768,
+      "sha256": "ee003021fa81eb6a04734e7d38a7671d6259672e24a125dd08302bd4e0ee9c6f"
+    },
+    "migration-run.json": {
+      "bytes": 199643,
+      "sha256": "58f53cf95dbedcbe0299abd768a01786de44433e4929312c5036442f75f584f0"
+    },
+    "native.csv": {
+      "bytes": 182190,
+      "sha256": "7df95d0a70a9a398de88ebebcd716822b9d61d8b74ff86b7a020a7a7482ddf33"
+    },
+    "printed-controls.json": {
+      "bytes": 535820,
+      "sha256": "a1b311ebb9f123abaf9722d254fc15608ce29062ff733b4e5bf62b04842b5536"
+    },
+    "report.checkpoint": {
+      "bytes": 288,
+      "sha256": "9ae88643e080123b6fd6ef45ba5393d95b2c7dd91a428097882aa8952095a87d"
+    },
+    "report.json": {
+      "bytes": 2040266,
+      "sha256": "e168da6d4c7271f4254d287faee0dad4aae16bab604e46de3034cfef08a736a7"
+    },
+    "source/extracted-source/layout.txt": {
+      "bytes": 88638,
+      "sha256": "258f770d126b7c8cb8a0216fcca98259ce75b3ae86806638f7a2711c8176033f"
+    },
+    "source/extraction.json": {
+      "bytes": 1457,
+      "sha256": "cabe8e4732f33a1748ce2ce570be067e28f10a6e5b1e6ce36065a7da6f522a51"
+    },
+    "source/rows.csv": {
+      "bytes": 68500,
+      "sha256": "1a846492848eb5d8f4f20ca61bbbf721aa22f776161bd27a11ace2bb75c659cf"
+    },
+    "source/source.json": {
+      "bytes": 10877,
+      "sha256": "8da252a4e2307fa1fe0bcef6ffa5073d13a028ac9b26340ff4541df6a9aa6882"
+    },
+    "source/source.pdf": {
+      "bytes": 389586,
+      "sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1"
+    }
+  },
+  "helper_source_commit": "7c293181f21880359d5ba820fdd09a6261e70417",
+  "historical_visibility": {
+    "old_known_at": 1540,
+    "old_rows": 0,
+    "period": "FY2008-P12",
+    "queried_after_finalization_at": 1543,
+    "staged_rows_before_activation": 0
+  },
+  "independent_export_audit": {
+    "actual_evidence_attachment_receipts": 371,
+    "all_amounts_dates_sequences_classes_units_text_citations_and_migrated_from_checked": true,
+    "attachment_scope": "Both complete original PDFs, both extracted factual tables, both source metadata documents and the migration manifest are attached to every native entry.",
+    "entries": 371,
+    "expected_source_documents_per_entry": 7,
+    "export": {
+      "bytes": 182190,
+      "sha256": "7df95d0a70a9a398de88ebebcd716822b9d61d8b74ff86b7a020a7a7482ddf33"
+    },
+    "legs": 742,
+    "magnify_owned_blob_bytes": 28947445,
+    "magnify_owned_blob_sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec",
+    "method": "Independent Decimal interpretation of original printed movement literals, matched to actual native prepared identities and staging receipts; migration.check_export and normalization helpers were not used.",
+    "native_known_at": 1543,
+    "repaired_glantz_pair_present": true,
+    "source_entry_counts": {
+      "SRC-BLM-001": 297,
+      "SRC-BLM-006": 74
+    },
+    "source_namespaces": [
+      "SRC-BLM-001",
+      "SRC-BLM-006"
+    ]
+  },
+  "independent_verification": {
+    "aggregate_digest_encoding": "UTF-8 JSON with sorted keys, no insignificant whitespace, ensure_ascii=false",
+    "all_bundle_sha256_checked": true,
+    "check_counts": {
+      "canonical_report": 217,
+      "checkpoint": 217,
+      "production_receipt": 217,
+      "report_bundle": 217,
+      "trial_balance_row": 1441
+    },
+    "reports_canonical_json_sha256": "9b4f2d3c50fed51418f95d78a17db843d62ce89ad4b10570d9e674f7084baaac",
+    "source_bound_report_bundles": 217,
+    "source_witnesses_per_bundle": 1,
+    "verified_reports": 217
+  },
+  "monthly_controls": {
+    "byte_exact_replays": 217,
+    "certificates_canonical_json_sha256": "83771ae8c9a26eb330f5427aad7d9bbefd25835c99ea06331eacac82e0c1b41c",
+    "certified_trial_balances": 217,
+    "count": 217,
+    "first": {
+      "at_date": "1990-12-31",
+      "certificate_oid": "b046a933e6a5221cfcaf69bd486675045aa3fd92726220e23f25246523130611",
+      "native_cells_cents": {
+        "BLMIS-1FN025": 705000,
+        "BLMIS-MIGRATION-OFFSET": -705000
+      },
+      "output_digest": "b894e9f0a3c04ef16f53f6e7dede8915263eef6d9335b323f678aa26097082cd",
+      "period": "FY1990-P12"
+    },
+    "last": {
+      "at_date": "2008-12-31",
+      "certificate_oid": "a5e456dc85920c89d94a6c6748b3f4e604c977c1f859267b23f518032713306d",
+      "native_cells_cents": {
+        "BLMIS-1FN025": 474582200,
+        "BLMIS-1FN097": 32179000,
+        "BLMIS-1FR051": 1123001900,
+        "BLMIS-1T0026": 737416500,
+        "BLMIS-1ZA192": 994703100,
+        "BLMIS-1ZB010": 50750000,
+        "BLMIS-1ZB143": 1695468800,
+        "BLMIS-MIGRATION-OFFSET": -5108101500
+      },
+      "output_digest": "fc523eda3f1dd10c16277d96936a206df21b020a461a2f399e8f8a6a5ba27301",
+      "period": "FY2008-P12"
+    },
+    "projection_verifications": 1,
+    "register_advances": 217,
+    "register_periods_with_stored_digest": 144,
+    "register_scope": "All periods are green with no drift or lag. Materialized cells reproduce their stored digest; empty-activity periods legitimately have no stored-cell digest.",
+    "register_verifications": 217,
+    "verified_empty_register_periods": 73
+  },
+  "native_build": {
+    "artifact_archive_sha256": "a3946ad20f1a0891c025fb3e071e8a03dc390ed8b13da2c5a49b6fca069aa7f0",
+    "artifact_id": 13210366143,
+    "artifact_name": "public-ledger-native-88286f8c41f3943fde51e76334b33db758422c95",
+    "binaries": {
+      "fa": {
+        "bytes": 235016792,
+        "sha256": "20200170403c9dd6a1d787796d1a63dc7578018598b23bdfc2f03c6fc50db788"
+      },
+      "fa_verify": {
+        "bytes": 20213496,
+        "sha256": "5f444d7a2fd39b970972487745cb3a95e79eb36f44d76119a2ad2c8cbe42d8ad"
+      }
+    },
+    "compiler": "nightly-2026-08-31",
+    "lock_git_oid": "bcc30a166ddaaa598635650be66018bd341b019d",
+    "provenance_files": {
+      "acquisition.json": {
+        "bytes": 275,
+        "sha256": "275fe55f4e36e3cf688b27ffb33a8f24bec361252219927dbfdd0ed7636ef914"
+      },
+      "artifacts/public-ledger/native-binaries.sha256": {
+        "bytes": 171,
+        "sha256": "e8bdd2fef43187aaab7f30dfd432f77e18a90d0e4c826505e48a95428399db35"
+      },
+      "artifacts/public-ledger/native-lock.txt": {
+        "bytes": 41,
+        "sha256": "7a2b745cd7da4313e68dde2e65a3acf91e0fbe39a3e42138c8e8df9b3f72c119"
+      },
+      "artifacts/public-ledger/native-source.txt": {
+        "bytes": 41,
+        "sha256": "d554906e7f9d40648cac3fc8055cd90fe0089ae57e2822951dff90d9b00a4494"
+      },
+      "github-workflow-evidence.json": {
+        "bytes": 5382,
+        "sha256": "3b7dd435f64e0658edc86ccabfabac7413a0b55738c5ad8b6a9665b8188c641d"
+      },
+      "verification.json": {
+        "bytes": 797,
+        "sha256": "1723cbe1b32467fa932fcbe10ed53fe1374b1c66e762422760af9934af5b9b69"
+      }
+    },
+    "rust_sources_and_manifests_match_execution_checkout": true,
+    "source_commit": "88286f8c41f3943fde51e76334b33db758422c95",
+    "workflow_job_id": 125763882661,
+    "workflow_result": "success",
+    "workflow_url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41588158231"
+  },
+  "native_calls": 1424,
+  "native_exit_counts": {
+    "0": 1421,
+    "2": 1,
+    "3": 1,
+    "8": 1
+  },
+  "native_export": {
+    "entries": 371,
+    "legs": 742,
+    "text_and_provenance_exact": true
+  },
+  "native_program_counts": {
+    "fa": 1206,
+    "fa-verify": 218
+  },
+  "negative_controls": {
+    "balanced_one_dollar_prepare": {
+      "call": 54,
+      "exit": 2,
+      "message": "the complete mapped source does not tie exactly to the independently declared trial balance through `FY1990-P12`",
+      "mutation": {
+        "counterpart_delta_cents": -100,
+        "principal_delta_cents": 100,
+        "printed_controls_changed": false,
+        "source_row_id": "SRC-BLM-006:1FN025:p120:l18"
+      },
+      "no_publication": true
+    },
+    "real_offsetting_pair_omission": {
+      "all_217_monetary_tieouts_match": true,
+      "call": 93,
+      "exit": 3,
+      "expected_chunks": 371,
+      "message": "run `blmis-seven-printed-principal-v1` has 369 of 371 exact source chunks; 2 missing and 0 unexpected; equal net trial balances cannot establish source completeness",
+      "missing_chunks": 2,
+      "missing_entry_vids": [
+        "59b1be36843aa271d8ec741827e52fe6",
+        "9cbafd58712d07b686cf98077eb7f971"
+      ],
+      "no_publication": true,
+      "recorded_chunks": 369,
+      "refusal_id": "FA-REF-131",
+      "run_remained_open": true,
+      "source_row_ids": [
+        "SRC-BLM-001:1ZB010:p35:l39",
+        "SRC-BLM-001:1ZB010:p35:l38"
+      ],
+      "unexpected_chunks": 0
+    },
+    "tampered_report_bundle": {
+      "call": 1424,
+      "exit": 8,
+      "failed_checks": [
+        {
+          "check": "record_derivation",
+          "detail": {},
+          "reason": "Digest { which: \"supplement.body_digest\" }",
+          "result": "fail",
+          "scope": "recomputation"
+        }
+      ],
+      "verdict": "failed"
+    }
+  },
+  "observed_process_exit": 0,
+  "peak_rss": "UNMEASURED",
+  "process_evidence": {
+    "log": {
+      "bytes": 3543,
+      "sha256": "abd4bf5abb2248724f2c4d69618fccb2e2e5e259a2f32e480270e2352fb99a04"
+    },
+    "observation_source": "exec_command process resumed to completion with write_stdin",
+    "result": {
+      "bytes": 859,
+      "sha256": "f4e715097041595d1115c3e8302368c9abc43af30619f685fdd8282245718588"
+    }
+  },
+  "recorded_utc": "2026-11-03T08:20:11.137196+00:00",
+  "reproduce": {
+    "artifact_scope": "Full local command bytes, native book, source tables and proof bundles are summarized by hash. Fresh artifacts can be regenerated with the recorded helper commit.",
+    "command": "python3 -B scripts/blmis_migrate.py run --include-magnify --pdf /path/to/pinned-glantz.pdf --magnify-pdf /path/to/pinned-magnify.pdf --out /path/to/new-seven-account-migration --fa /path/to/fa --fa-verify /path/to/fa-verify",
+    "requirements": "Both pinned complete original PDFs, pdftotext, Python 3, matching real fa and fa-verify executables; output path must be new."
+  },
+  "scope": {
+    "case_plan": "Seven-account extension of the source-bound M-T-03 execution slice; the separate native-chunk monetary twin and full case-framework bead are not claimed complete.",
+    "cross_source_order": "Stable effective date and original source namespace, preserving each source same-day order; no original transaction time is invented.",
+    "review": "AgentUpload source documents receive Reviewed attestations from a distinct local fixture principal. Two separately issued Human fixture capabilities approve native proposals. These roles are automated test separation, not independently authenticated human examination or court approval.",
+    "source_and_model": "All 393 published observations of the seven exact-footing accounts: Glantz 1T0026, 1ZA192, 1ZB010 and 1ZB143, plus Magnify 1FN025, 1FN097 and 1FR051. The 22 zero-principal observations remain evidence; all 371 monetary observations enter one native migration with 217 monthly printed controls. Both complete original filings and all 2,743 extracted observations are retained, including the five accounts with printed discrepancies that cannot support this exact-control migration. Trustee-credited transfers remain source inputs. The eight-account double-entry model and counterpart are explicit analysis constructions, not a recovered BLMIS general ledger or an independent legal net-equity determination.",
+    "source_order": "Retained source identities and effective dates; named same-day computation order is disclosed, never an original transaction timestamp",
+    "trust": "Caller-trusted checkpoint of a fresh local analysis book; no external trustee or court signing key"
+  },
+  "source": {
+    "excluded_accounts": {
+      "1FN024": {
+        "classification": "printed_source_discrepancy",
+        "closing_gap_cents": -4200,
+        "maximum_gap_cents": 4200,
+        "rows_off": 330,
+        "source_rows": 342
+      },
+      "1FN037": {
+        "classification": "printed_source_discrepancy",
+        "closing_gap_cents": 1600,
+        "maximum_gap_cents": 1800,
+        "rows_off": 1920,
+        "source_rows": 1927
+      },
+      "1FN073": {
+        "classification": "printed_source_discrepancy",
+        "closing_gap_cents": 100,
+        "maximum_gap_cents": 100,
+        "rows_off": 2,
+        "source_rows": 6
+      },
+      "1ZR010": {
+        "classification": "printed_source_discrepancy",
+        "closing_gap_cents": 900,
+        "maximum_gap_cents": 900,
+        "rows_off": 50,
+        "source_rows": 57
+      },
+      "1ZR176": {
+        "classification": "printed_source_discrepancy",
+        "closing_gap_cents": 0,
+        "maximum_gap_cents": 100,
+        "rows_off": 12,
+        "source_rows": 18
+      }
+    },
+    "excluded_observations": 2350,
+    "included_accounts": [
+      "1T0026",
+      "1ZA192",
+      "1ZB010",
+      "1ZB143",
+      "1FN025",
+      "1FN097",
+      "1FR051"
+    ],
+    "included_observations": 393,
+    "inputs": [
+      {
+        "directory": "source",
+        "excluded_accounts": [
+          "1ZR010",
+          "1ZR176"
+        ],
+        "included_accounts": [
+          "1T0026",
+          "1ZA192",
+          "1ZB010",
+          "1ZB143"
+        ],
+        "source_id": "SRC-BLM-001",
+        "source_rows": 379,
+        "source_rows_sha256": "1a846492848eb5d8f4f20ca61bbbf721aa22f776161bd27a11ace2bb75c659cf",
+        "source_sha256": "751a8a55bf02b022076af39c8637086630090b41164f70e2a04184c0d003dec1",
+        "source_url": "https://www.madofftrustee.com/document/dockets/008796-glantzcomplaint10-05394docket93.pdf"
+      },
+      {
+        "directory": "magnify-source",
+        "excluded_accounts": [
+          "1FN024",
+          "1FN037",
+          "1FN073"
+        ],
+        "included_accounts": [
+          "1FN025",
+          "1FN097",
+          "1FR051"
+        ],
+        "source_id": "SRC-BLM-006",
+        "source_rows": 2364,
+        "source_rows_sha256": "f10a7bc474512a0f4db4b457d4865a4ff7909053f28f24e3dfa023afb60cf697",
+        "source_sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec",
+        "source_url": "https://www.madofftrustee.com/document/dockets/magnify_affidavit_opposingcounsel_10-05279_docket150.pdf"
+      }
+    ],
+    "monetary_entries": 371,
+    "normalized_csv_legs": 742,
+    "retained_observations": 2743,
+    "source_system": "blmis-seven-printed-principal-migration-v1",
+    "zero_principal_rows": [
+      "SRC-BLM-006:1FN025:p120:l22",
+      "SRC-BLM-001:1T0026:p27:l27",
+      "SRC-BLM-001:1T0026:p27:l35",
+      "SRC-BLM-001:1T0026:p27:l37",
+      "SRC-BLM-001:1T0026:p27:l40",
+      "SRC-BLM-001:1T0026:p27:l41",
+      "SRC-BLM-006:1FN025:p120:l58",
+      "SRC-BLM-006:1FR051:p162:l22",
+      "SRC-BLM-006:1FR051:p162:l27",
+      "SRC-BLM-006:1FN025:p121:l18",
+      "SRC-BLM-006:1FN025:p121:l20",
+      "SRC-BLM-006:1FN025:p121:l21",
+      "SRC-BLM-006:1FN025:p121:l23",
+      "SRC-BLM-001:1ZA192:p32:l43",
+      "SRC-BLM-001:1ZB143:p37:l23",
+      "SRC-BLM-006:1FN025:p121:l24",
+      "SRC-BLM-006:1FN025:p121:l25",
+      "SRC-BLM-006:1FN025:p121:l26",
+      "SRC-BLM-006:1FN025:p121:l27",
+      "SRC-BLM-006:1FN025:p121:l28",
+      "SRC-BLM-006:1FN025:p121:l29",
+      "SRC-BLM-006:1FN025:p121:l30"
+    ]
+  },
+  "source_binding": {
+    "book_id": "a1ba0766cca375a4341771a34f40ecde",
+    "complete": true,
+    "expected_chunks": 371,
+    "manifest_digest": "1f5fb271da3ce85ace26dbb91a8d0821a3a1d0d9ca4e0d3c8307e67f3936d68c",
+    "manifest_vid": "731586cbe3d39b381e7e2ff5bece7851",
+    "missing_chunks": [],
+    "package_commit": "a16ce4d44436c51fe2e9bd651d3c84a849d7b1e5f323cbd410ba51f822f4f645",
+    "package_oid": "652c86f10a64d1ad2c8904e609a217bef16f1c9be8a8f611e9ff9a85c390e2b1",
+    "recorded_chunks": 371,
+    "run_body_digest": "aa015f85a2d3ff2628a655cc877cc00afff4561865d8e15d7f4161d410240792",
+    "run_vid": "1d1edab68b8c514140369ed70a081f1b",
+    "source_commit": "9657d5e871a682b80dd715db04c22af58b7f66b08891010473fd12dedd7e3e91",
+    "source_oid": "2c30694bdeeb51d14a785066e47a88f5ac50919ec0863a9ae4e147d6a5e20bba",
+    "source_rows": 742,
+    "unexpected_chunks": []
+  },
+  "source_binding_receipt": {
+    "already_recorded": false,
+    "control_entry": "a6805b5e466103acc668abd7b93b27d9",
+    "recorded_at": 54
+  },
+  "staging": {
+    "groups": [
+      {
+        "atomic": false,
+        "call": 66,
+        "new_members": 64,
+        "recorded_population": 64,
+        "retried_members": 0,
+        "run_state": "Open",
+        "selected": 64
+      },
+      {
+        "atomic": false,
+        "call": 69,
+        "new_members": 0,
+        "recorded_population": 64,
+        "retried_members": 64,
+        "run_state": "Open",
+        "selected": 64
+      },
+      {
+        "atomic": false,
+        "call": 73,
+        "new_members": 64,
+        "recorded_population": 128,
+        "retried_members": 0,
+        "run_state": "Open",
+        "selected": 64
+      },
+      {
+        "atomic": false,
+        "call": 77,
+        "new_members": 64,
+        "recorded_population": 192,
+        "retried_members": 0,
+        "run_state": "Open",
+        "selected": 64
+      },
+      {
+        "atomic": false,
+        "call": 81,
+        "new_members": 64,
+        "recorded_population": 256,
+        "retried_members": 0,
+        "run_state": "Open",
+        "selected": 64
+      },
+      {
+        "atomic": false,
+        "call": 85,
+        "new_members": 64,
+        "recorded_population": 320,
+        "retried_members": 0,
+        "run_state": "Open",
+        "selected": 64
+      },
+      {
+        "atomic": false,
+        "call": 89,
+        "new_members": 49,
+        "recorded_population": 369,
+        "retried_members": 0,
+        "run_state": "Open",
+        "selected": 49
+      },
+      {
+        "atomic": false,
+        "call": 98,
+        "new_members": 2,
+        "recorded_population": 371,
+        "retried_members": 0,
+        "run_state": "Open",
+        "selected": 2
+      },
+      {
+        "atomic": false,
+        "call": 115,
+        "new_members": 0,
+        "recorded_population": 371,
+        "retried_members": 64,
+        "run_state": "Finalized",
+        "selected": 64
+      }
+    ],
+    "new_members": 371,
+    "omitted_pair_repaired_in_same_open_run": true,
+    "retried_members": 128
+  },
+  "status": "PASS",
+  "timing_scope": "Execution duration is separately recorded by the driver's monotonic timer; tool polling duration is not run duration. Peak RSS was not measured.",
+  "transcript_integrity": {
+    "command_records": 2848,
+    "every_stdout_stderr_and_retained_stdin_hash_checked": true,
+    "started_and_completed_calls": 1424
+  },
+  "whole_workspace_gates": {
+    "cargo_test_workspace": "UNRUN",
+    "clippy_workspace": "UNRUN",
+    "scope": "This recorded native workload and the baseline CI executable build do not constitute a current whole-workspace gate verdict.",
+    "tier0": "UNRUN",
+    "tier1": "UNRUN"
+  }
+}

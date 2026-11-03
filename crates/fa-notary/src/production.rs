@@ -266,6 +266,12 @@ pub struct PrivilegeLog {
     pub rows: Vec<PrivilegeLogRow>,
 }
 
+/// A Markdown table cell: a `|` would end the cell and a line break the row,
+/// shifting every later column of the log under another header.
+fn table_cell(text: &str) -> String {
+    text.replace('|', "/").replace(['\n', '\r'], " ")
+}
+
 impl PrivilegeLog {
     /// Build a deterministic privilege log for `matter_id` from the documents
     /// observed during bundle production (`reads`), any documents withheld in
@@ -364,14 +370,14 @@ impl PrivilegeLog {
                 "| `{}` | `{}` | {} | {} | {} | {} | {} | {} | {} |\n",
                 hex(&row.document_oid.0),
                 hex(&row.doc_commit),
-                bates,
+                table_cell(bates),
                 row.date
                     .map_or_else(|| "UNSPECIFIED".to_string(), |d| d.to_string()),
-                row.author.replace('|', "/"),
-                recipients.replace('|', "/"),
-                row.basis.replace('|', "/"),
+                table_cell(&row.author),
+                table_cell(&recipients),
+                table_cell(&row.basis),
                 row.treatment.label(),
-                row.description.replace('|', "/"),
+                table_cell(&row.description),
             ));
         }
         out
@@ -437,6 +443,9 @@ impl Fre902Package {
         let signer_key_id_hex = hex(&receipt.signer_key_id);
         let signer_public_key_hex = hex(signer_public_key);
         let produced_at_seq = receipt.body.produced_at_seq;
+        // The accumulator's own domain separators, never restated by hand.
+        let leaf_domain = String::from_utf8_lossy(crate::tree::LEAF_DOMAIN);
+        let node_domain = String::from_utf8_lossy(crate::tree::NODE_DOMAIN);
 
         let mut document_commitments: Vec<(Oid, [u8; 32], Option<String>)> = assignments
             .iter()
@@ -453,7 +462,7 @@ impl Fre902Package {
                     "| `{}` | `{}` | {} |\n",
                     hex(&oid.0),
                     hex(commit),
-                    bates.as_deref().unwrap_or("UNSTAMPED"),
+                    table_cell(bates.as_deref().unwrap_or("UNSTAMPED")),
                 ));
             }
         }
@@ -485,11 +494,14 @@ impl Fre902Package {
              1. I, `[NAME AND TITLE OF QUALIFIED PERSON]`, am familiar with the operation of the FrankenAccounting\n\
                 system of record that maintains Book `{book_id_hex}`.\n\
              2. Each journal entry in the produced `.fab` bundle is a leaf of an append-only BLAKE3 Merkle\n\
-                Mountain Range (`fa:leaf:v1` / `fa:mmr:node:v1`) whose root at commit sequence `{}` is\n\
+                Mountain Range (`{leaf_domain}` / `{node_domain}`) whose root at commit sequence `{}` is\n\
                 signed by Ed25519 key `{signer_public_key_hex}` in Transparency Checkpoint `{checkpoint_oid_hex}`.\n\
-             3. Each cited document is bound at intake by its 256-bit BLAKE3 chunk-tree commitment (`fa:doc:v1`).\n\
-                Any single-bit modification to a document, entry, balance proof, or scope index causes\n\
-                `fa-verify` to reject the bundle with exit code `8` (`verification`).\n\
+             3. Each cited document is bound at intake by its 256-bit BLAKE3 chunk-tree commitment (`fa:doc:v1`),\n\
+                listed in section 2. Any single-bit modification to an entry, a balance proof, the scope index,\n\
+                or a document carried inside the bundle causes `fa-verify bundle` to reject the bundle with\n\
+                exit code `8` (`verification`). A native document file produced beside the bundle is bound by\n\
+                the same commitment but is not read by `fa-verify bundle`; it is checked on its own with\n\
+                `fa-verify doc-commit`, which exits `8` when the file does not match its commitment.\n\
              \n\
              I declare under penalty of perjury that the foregoing technical facts are true and correct.\n\
              \n\
@@ -519,7 +531,13 @@ impl Fre902Package {
                 - Ed25519 signature on the `ProductionReceipt` verifies under public key `{signer_public_key_hex}` and binds `bundle_digest` `{bundle_digest_hex}`.\n\
                 - Every in-scope entry payload hashes to its MMR leaf envelope and verifies against the checkpoint root.\n\
                 - Every document stub rebuilds its `fa:doc:v1` commitment from `(kind, length, chunk_root)`.\n\
-                - Every included balance proof recomputes the exact debit and credit totals from its leaf contributions.\n"
+                - Every included balance proof recomputes the exact debit and credit totals from its leaf contributions.\n\
+             3. **Native document files produced beside the bundle** are not read by `fa-verify bundle`. Check\n\
+                each against its commitment in the declaration's section 2, with the document's registered kind byte:\n\
+                ```sh\n\
+                fa-verify doc-commit <native file> --kind <kind> --expect <BLAKE3 commitment> --json\n\
+                ```\n\
+                A file that does not match exits `8`.\n"
         );
 
         let adverse_party_notice_template_md = format!(
@@ -805,5 +823,40 @@ mod tests {
                 .adverse_party_notice_template_md
                 .contains("MATTER-SEC")
         );
+
+        // The sworn text names the accumulator's real domain separators, and
+        // says that native files beside the bundle are checked on their own.
+        let declaration = &pkg.fre902.declaration_template_md;
+        assert!(
+            declaration.contains("`fa:acc-leaf:v1` / `fa:acc-node:v1`"),
+            "{declaration}"
+        );
+        assert!(!declaration.contains("fa:leaf:v1"), "{declaration}");
+        assert!(
+            declaration.contains("fa-verify doc-commit"),
+            "{declaration}"
+        );
+        assert!(
+            pkg.fre902
+                .verification_procedure_md
+                .contains("fa-verify doc-commit <native file> --kind <kind> --expect")
+        );
+
+        // A `|` or a line break in a cell stays inside its cell.
+        let mut log = pkg.privilege_log.clone();
+        log.rows[1].description = "Strategy | draft 2\nsee annex".into();
+        log.rows[0].bates_range = Some("AB|C00000001..=AB|C00000004".into());
+        let md = log.to_markdown();
+        let columns = md
+            .lines()
+            .find(|line| line.starts_with("| Document OID"))
+            .unwrap()
+            .matches('|')
+            .count();
+        let rows: Vec<&str> = md.lines().filter(|line| line.starts_with("| `")).collect();
+        assert_eq!(rows.len(), log.rows.len(), "{md}");
+        for row in rows {
+            assert_eq!(row.matches('|').count(), columns, "{row}");
+        }
     }
 }

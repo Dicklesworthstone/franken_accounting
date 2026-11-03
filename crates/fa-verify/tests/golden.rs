@@ -576,3 +576,87 @@ fn a_pinned_approval_bundle_refuses_a_changed_signature_or_minor() {
         }
     }
 }
+
+/// fa-472t item 2: a producer writes format 1.1 exactly when an in-scope
+/// entry cites an approval, so the minor follows from the authenticated
+/// entries. The pinned 1.1 entries bundle re-encoded consistently as 1.0
+/// (its approval and key lists dropped, its manifest text regenerated)
+/// carries none of the approval records its entry cites, and it verified.
+/// A pinned 1.0 bundle re-encoded as 1.1 with empty lists is not the
+/// canonical bytes either. Each fails the format check, and only that.
+#[test]
+fn a_bundle_minor_must_match_its_approval_citations() {
+    use fa_verify::bundle::{ApprovalSummary, manifest_md};
+    use fa_verify::verify_bundle;
+
+    // `v` with format minor `minor`, its bytes through `body_end`, `lists`
+    // after them, and the manifest text the generator writes for that.
+    let reencode = |v: &[u8],
+                    key: [u8; 32],
+                    body_end: usize,
+                    minor: u16,
+                    lists: &[u8],
+                    approvals: Option<ApprovalSummary>|
+     -> Vec<u8> {
+        let report = verify_bundle(v, &[key], None).unwrap();
+        assert!(report.verified(), "{:#?}", report.checks);
+        let mut summary = report.summary.clone();
+        summary.format.1 = minor;
+        summary.approvals = approvals;
+        let md = manifest_md(&report.manifest, &summary);
+        let mut out = v[..body_end].to_vec();
+        out[18..20].copy_from_slice(&minor.to_le_bytes());
+        out.extend_from_slice(lists);
+        out.extend_from_slice(&u32::try_from(md.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(md.as_bytes());
+        out
+    };
+    let failed = |bytes: &[u8], key: [u8; 32]| -> Vec<&'static str> {
+        verify_bundle(bytes, &[key], None)
+            .unwrap()
+            .checks
+            .iter()
+            .filter(|c| !matches!(c.grade, fa_verify::Grade::Pass))
+            .map(|c| c.check)
+            .collect()
+    };
+
+    // 1.1 as 1.0: the lists begin with a u32 count of one and the record's
+    // u32 length, just before the one approval record.
+    let key: [u8; 32] = approvals_vector("public_key").try_into().unwrap();
+    let record = approvals_vector("approval_record");
+    let v = approvals_vector("bundle_entries");
+    assert_eq!(v[18..20], 1u16.to_le_bytes(), "format minor 1");
+    let at = v
+        .windows(record.len())
+        .position(|w| w == record.as_slice())
+        .expect("the bundle carries the record");
+    let lists = at - 8;
+    assert_eq!(
+        v[lists..lists + 4],
+        1u32.to_le_bytes(),
+        "one approval record"
+    );
+    let stripped = reencode(&v, key, lists, 0, &[], None);
+    assert_eq!(failed(&stripped, key), ["format"]);
+
+    // 1.0 as 1.1: an empty approval list and an empty key-leaf list before
+    // the manifest text, which is the bundle's last field.
+    let key = bundle_key();
+    let v = bundle_vector("bundle_entries");
+    assert_eq!(v[18..20], 0u16.to_le_bytes(), "format minor 0");
+    let report = verify_bundle(&v, &[key], None).unwrap();
+    let md = manifest_md(&report.manifest, &report.summary);
+    assert!(
+        v.ends_with(md.as_bytes()),
+        "the manifest text ends the bundle"
+    );
+    let body_end = v.len() - md.len() - 4;
+    let empty = ApprovalSummary {
+        records: 0,
+        signed: 0,
+        key_records: 0,
+    };
+    let relabelled = reencode(&v, key, body_end, 1, &[0; 8], Some(empty));
+    assert_eq!(failed(&relabelled, key), ["format"]);
+}

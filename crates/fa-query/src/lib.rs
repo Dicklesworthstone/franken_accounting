@@ -366,6 +366,15 @@ pub fn rewrite(text: &str) -> Result<Profiled, Refusal> {
     for span in &selectors.spans {
         rest.replace_range(span.0..span.1, &" ".repeat(span.1 - span.0));
     }
+    // A comment means nothing here, but the native statement is spliced
+    // around this text: a `//` comment ending the part before an inserted
+    // clause (`FOR SYSTEM_TIME AS OF SEQ`, a filter) would comment out that
+    // clause and the line after it. Blank comments in place, as the selectors
+    // are, so every byte position a refusal names stays where it was.
+    let comments = lex::lex(&rest)?.comments;
+    for (start, end) in comments {
+        rest.replace_range(start..end, &" ".repeat(end - start));
+    }
     let lexed = lex::lex(&rest)?;
     if lexed.tokens.is_empty() {
         return Err(Refusal::new(
@@ -838,7 +847,8 @@ fn call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> 
             CALL_FIX,
         ));
     }
-    // `()` or `('<account code>')`, then nothing.
+    // `()`, `('<account code>')` or the documented `(['<account code>'])`,
+    // then nothing.
     let mut end = 4;
     let mut account = None;
     if lexed.punct(end, '(') {
@@ -847,6 +857,13 @@ fn call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> 
         } else if lexed.kind(end + 1) == Some(Kind::Quoted) && lexed.punct(end + 2, ')') {
             account = Some(lexed.unquoted(end + 1));
             end += 3;
+        } else if lexed.punct(end + 1, '[')
+            && lexed.kind(end + 2) == Some(Kind::Quoted)
+            && lexed.punct(end + 3, ']')
+            && lexed.punct(end + 4, ')')
+        {
+            account = Some(lexed.unquoted(end + 2));
+            end += 5;
         }
     }
     let refuse = |at: usize, message: &str| Err(Refusal::new(Law::Profile, at, message, CALL_FIX));
@@ -1090,8 +1107,10 @@ fn native(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Native, Refusal> {
             )
         })?;
     let spans = &selectors.spans;
-    let (cut, returned, aggregation) = if law::check(lexed)? {
-        let (cut, returned, plan) = aggregate::plan(lexed, spans)?;
+    let amounts = law::check(lexed)?;
+    let (cut, returned, aggregation) = if amounts.aggregated {
+        let aliases: Vec<&str> = amounts.aliases.iter().map(String::as_str).collect();
+        let (cut, returned, plan) = aggregate::plan_with_amount_aliases(lexed, spans, &aliases)?;
         (cut, returned, Some(plan))
     } else {
         (lexed.text.len(), String::new(), None)

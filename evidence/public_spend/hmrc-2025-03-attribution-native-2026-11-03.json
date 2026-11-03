@@ -1,0 +1,1602 @@
+{
+  "boundaries": [
+    "The input is the complete published monthly expenditure extract, not HMRC's complete original general ledger. The Equity offset and category accounts are an explicit analysis model.",
+    "Source labels identify published strings, not independently resolved legal entities or original publisher master IDs. Both modeled legs carry the same source attribution.",
+    "All 42 area reports have actual native dimension-filtered certificates, replay and standalone proofs. Supplier coverage is exact source-to-native-to-export attribution plus gross/net comparisons, without claiming a party-filtered TB proof surface.",
+    "Native source binding covers every normalized CSV leg/package member. Original raw rows, fields, dates and signs were checked separately; absent publisher activity is not reconstructed.",
+    "Later empty modeled months carry source-month balances only to satisfy the explicit historical span. They make no statement about HMRC's actual later activity.",
+    "The trusted checkpoint key belongs to this local test book, not the department. No audit opinion, fraud finding, independent human review, whole-workspace test gate or bead closure is claimed."
+  ],
+  "checks_passed": [
+    "pinned_original_bytes",
+    "deterministic_source_transform",
+    "all_source_documents_durable_byte_identity",
+    "complete_chunk_and_leg_census",
+    "group_receipts_bind_every_approved_chunk",
+    "prepare_retry_without_publication",
+    "chunk_retry_without_publication",
+    "staged_invisibility",
+    "native_full_detail_tieout",
+    "atomic_finalization",
+    "historical_invisibility",
+    "exact_gross_and_net_by_account",
+    "registers_equal_fold",
+    "finalized_retry_without_publication",
+    "native_csv_export_verification",
+    "every_dated_exported_leg_and_memo",
+    "native_certificate_replay",
+    "independent_fa_verify_report",
+    "tampered_bundle_refused",
+    "approval_groups_bound_to_each_digest_and_reviewer",
+    "approval_group_retry_without_publication",
+    "group_evidence_binds_every_entry_and_source_commitment",
+    "evidence_group_retry_without_publication",
+    "native_source_binding_matches_complete_prepared_population",
+    "bound_prepare_retry_without_publication",
+    "source_population_complete_before_activation",
+    "terminal_binding_retry_retains_original_identity",
+    "portable_source_manifest_matches_every_prepared_proposal",
+    "native_source_supplier_and_cost_center_inventory",
+    "every_prepared_leg_preserves_supplier_and_cost_center",
+    "every_exported_leg_preserves_supplier_and_cost_center",
+    "all_supplier_and_cost_center_gross_and_net_cells_match_original_source",
+    "all_cost_center_historical_prefixes_remain_invisible",
+    "all_cost_center_stock_and_activity_reports_match_original_source",
+    "all_cost_center_certificates_replay_exactly",
+    "all_cost_center_portable_reports_independently_verified",
+    "supplier_only_and_cost_center_only_export_mutations_refused",
+    "executable_identity_guards"
+  ],
+  "cost_center_reports": [
+    {
+      "bundle_sha256": "0f67bf8d355b2bed03cd7108f2305ba6dd16ce6cce1104d9816ab70abfc80623",
+      "certificate_oid": "2c77603fbd77ade60505b300c076f4826998b901752a6e2dfc3f7adaa0b5311f",
+      "code": "6d79c19322a28701f94797c3e4f1dd78dfa0dfb2ceae3e7fbf9bafb5733df953",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 6,
+      "independently_verified": true,
+      "known_at": 758,
+      "name": "B&T Border Change Delivery",
+      "output_digest": "06042b8dceb22944e14da6435335243f8afbbe0c0809c0e8d2b0891e49360a4f",
+      "posted_source_rows": 68,
+      "proof_call": 476,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "beb2fde302cd1095923d7b3309808ec415684cc2534b366836b00d05ebaabd61",
+      "receipt_sha256": "5749eaa81c9969c3c7a7b9d97a6ae521ca3affac67e33ae1a0c8a64e4b654954",
+      "replayed_report_sha256": "8ef748ef839f929c6cc8925c1e0c8f179347b37333f2bedb860d2b0a8712fd96",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 68
+    },
+    {
+      "bundle_sha256": "e5d8e751b004938aedbc7fc55baea7eb5a9b4866468bd9cbd15616d66ff00246",
+      "certificate_oid": "a17b610051b5b1cb5a54fef55574fedb4a74aa5fab2df71c378979af5a168a85",
+      "code": "3a3afd8ca16b64592dc787389b321e98427281929db4bb87d587af49ce38d11b",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 2,
+      "independently_verified": true,
+      "known_at": 759,
+      "name": "B&T DG Finance & Risk",
+      "output_digest": "d65775cbee8cb076a5f6bda850fc87560929481035dfc0f01d8f6a991878bb75",
+      "posted_source_rows": 5,
+      "proof_call": 478,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "5cfd75c1c207b6f5f05176ec80529fc8235255c2355ef6d066bda5d7cca02608",
+      "receipt_sha256": "b2f4636508d3b5c9b89426c21167ad5f42bff2b8a94b558e15b76193d679311a",
+      "replayed_report_sha256": "a17e3321670e7610d9416a1ca67a98ec38775056d6d5f36a6c754c95b2efc0ec",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 5
+    },
+    {
+      "bundle_sha256": "6ea5ea539e74fd2d8802dac5d19e99a8c3fdf2a9c327c94bb9175dfe65e53462",
+      "certificate_oid": "a01990a4f8fb744bd90eedf4eab9cd79ea295545e224a24361a81a4b43c5cb01",
+      "code": "f85b9094cd1bf6719a399beb4042f1173b7dc5c1a1db524c8f42423ec3419f4c",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 2,
+      "independently_verified": true,
+      "known_at": 760,
+      "name": "Benefits & Credits Delivery",
+      "output_digest": "a1f1190db9ab153c3db11191c2849237e2ff0f4dbb8e2a50cf055714e63c2cdb",
+      "posted_source_rows": 1,
+      "proof_call": 480,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "990bb924c2da1c039a7c7e6c4515dcdf3f253c6bdf2e895fb1465830c0e1e538",
+      "receipt_sha256": "4468c267630d17fa0e0ffcd56434a866a0489f444df0684d14d8a650730dfd9d",
+      "replayed_report_sha256": "9b1d8e95acdb0dc51a4722b6fb581cd76d5759da6bf1e9629961630516f9e5b8",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 1
+    },
+    {
+      "bundle_sha256": "9abd0df007f7ccfae01599927704b673ae12f102e5586a7b37103e6608c0bd4d",
+      "certificate_oid": "6fa098e3aa6be234026f3dec3f2403cd850ef7ccd1f79b2a7598f93a03a60ca2",
+      "code": "e5e40c2ea56c86bb5dda43d66b2f9f11201b04daf8189d4a9d04f51d283e360f",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 3,
+      "independently_verified": true,
+      "known_at": 761,
+      "name": "Border Service, Data and Design",
+      "output_digest": "8b3443d99ed28b8344b42fb3457e2ba84c9faef957bec6ffbf719b78d09149dc",
+      "posted_source_rows": 5,
+      "proof_call": 482,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "6338804ebe7dcdf58dfe6f1d6515fd357b58ec42a5cadf56458dafa0c12cd727",
+      "receipt_sha256": "919f178cbf17ca1f8f6431379d84620221cbae908e8c63c60c30b6e3aaaeece6",
+      "replayed_report_sha256": "294acc50797b837b253836a36f2a9d2e9f5968a55317a31d4e85b55bacdb18df",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 5
+    },
+    {
+      "bundle_sha256": "31b968b86e14d227a186fe75742961ca28a99d34b5a735726d7b6e272b41c05e",
+      "certificate_oid": "00c82e3cf60e68ac54d264ccbc8941e0d65a5962dc571ef508c44beb28c2e1b1",
+      "code": "6550437741e262d5ecd0f7520be82dcd80d10cc4e9fde74259f8f59d52a0a555",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 3,
+      "independently_verified": true,
+      "known_at": 762,
+      "name": "CCG Transformation",
+      "output_digest": "cccb6f009475b44e015057dedacefe781dc4630822aec158d6e463662178deb0",
+      "posted_source_rows": 7,
+      "proof_call": 484,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "e0f82ff824f0350b7f5c7b9ab74a1d8bfcfac9c044fffd758e2132e8fc3ad35a",
+      "receipt_sha256": "9d26a9e4f2eb77b2b4f92cf9314d1ffddd516085545b055fedfcc50bbd2cf0b9",
+      "replayed_report_sha256": "066144c37faf1b707977cdc7e07c1214aaf0fb1a4c57e0d681a7ed26a7b0ddad",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 7
+    },
+    {
+      "bundle_sha256": "e434e8c78b47d2fbf3bf20f5a0972c67f4a8b0a665c86991eebae0ea42ec75ed",
+      "certificate_oid": "4365ed4cffd79f38cbe4c76e8e5a5bd62fabd3f5cf1f5d450ae6b987e7d730c2",
+      "code": "5cc38aec56e2ffcae76f356a55569254a56d9e4ab37ef3ddd87f7fcb2f72e9da",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 2,
+      "independently_verified": true,
+      "known_at": 763,
+      "name": "CCG Transformation Programmes",
+      "output_digest": "833c4e4cc7097f2a85f1c8d9e736428fb79cba9fe2f483ad2f22339e8841544c",
+      "posted_source_rows": 9,
+      "proof_call": 486,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "f9bb3d8bd530422b2fd7d27c57d77111efcc253cac35e705a6efac566c1f5862",
+      "receipt_sha256": "6b8ca906ed63e0cdd89779073f6a1c77cccb60c9c481dcb091039949b1b22d9d",
+      "replayed_report_sha256": "20eeda3c914ff1db69385468e2f67269c541a2b81a216b09afd53a0a1a4b938b",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 9
+    },
+    {
+      "bundle_sha256": "8c0e77afb127ddaa17c832a01a8a9800b2755d0adbcad33b94edd3fb0084c931",
+      "certificate_oid": "e29ebd55ed3eab6c722f1ab7b552a22c2e50f3f9be572adf5422432949e6f3af",
+      "code": "fae2e362aa8565956c7cf9e1848a4cc429062127978310162604d989a22332f1",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 48,
+      "independently_verified": true,
+      "known_at": 764,
+      "name": "CDIO - Core",
+      "output_digest": "080ab492fd2a918262ce609715d2822f101bb9fe267dac0fdd94bd34f33d3813",
+      "posted_source_rows": 381,
+      "proof_call": 488,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "b22d8b3c600d33b4e4c49454f21515feec3bd3a30c58c6d527d137bb48a9f7ec",
+      "receipt_sha256": "3d20d7625e82fbaa817ce16417dc796347d75303519bbf5d026c1e701c84e6b3",
+      "replayed_report_sha256": "75ae0b8e796971782fb65a85466ab68d4b217daf40070a2491e8ee4453bd346d",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 381
+    },
+    {
+      "bundle_sha256": "2816a73ab2327a8c2d301896fd325a0441491e99977b4310fea4712e9f4df3ac",
+      "certificate_oid": "dafbd0181bf330221a6cc1cf3e376a34d815f0db0e32b7ae07ba9f2e8d8d0c3e",
+      "code": "c90d017f6dbbefcf0d9798e0f54cc051eca365269d62898f2b14bef1d4974744",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 3,
+      "independently_verified": true,
+      "known_at": 765,
+      "name": "CDIO Transformation Programmes",
+      "output_digest": "3bd1cb417a7f175bcd708faf1918816b76db9fff7e2292c2b86a7d47dc46495b",
+      "posted_source_rows": 8,
+      "proof_call": 490,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "6a38e24ab2febb16026c6693608dc08c96ebc422db48db5ebdf648c7a698ac4b",
+      "receipt_sha256": "5e86ea0aba9445f6f46c319fd3a623162148fc5fea37c78e351960174c74ce06",
+      "replayed_report_sha256": "d1130bb470da8310c4272fcddcd9baccffb9737e57cd4485db88cb0eb3cfd02c",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 8
+    },
+    {
+      "bundle_sha256": "abdfade7304c752ac35ad57f10a8bd639ca7108aea178abc548df5cfb3db7ce3",
+      "certificate_oid": "32ff9e0165418e9f65a2bf5e00465a0cd4069f6411699a9aabe8258a914e65a6",
+      "code": "9a2f860328f873807fea9f4842ef5ba48e7d03aaaa0fa0a57f06b58b3b6773c0",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 3,
+      "independently_verified": true,
+      "known_at": 766,
+      "name": "CFO Transformation Programmes",
+      "output_digest": "c3bd1aef0776045376e96f67f9d9174d9d5af2d41626eb8a3e685c66060ce690",
+      "posted_source_rows": 2,
+      "proof_call": 492,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "d9a3505784ec6aaa2c594971bd473b9d2f543bfab70d9a5c2bb6af801ab682e5",
+      "receipt_sha256": "c036e463e425636e5fe97a2dfc6027e1f674421ad9edda6d85c5c99838ce136c",
+      "replayed_report_sha256": "8a99fb6a0189c8a71f504fa74f6ee05277bb38274ab1cb33b28a5f8bae7c216e",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 2
+    },
+    {
+      "bundle_sha256": "22972084a08990fb2e58095c6f3dc3aaa6939da14766925fdc2f9ced28d0f265",
+      "certificate_oid": "41e2a03b994ee8d0df1e22dc7ee48bf666436204a9f743e0de327f3056ae8e32",
+      "code": "5bf56ff894d38ac8aacd5c37cf388bda35f7b9398c8742325c46db32e6d5482a",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 3,
+      "independently_verified": true,
+      "known_at": 767,
+      "name": "CSG Strategy and Change",
+      "output_digest": "19ea866d02e921fc7990b172e0a866df7d19f15bb21af8ed84fba455e6ca6fdd",
+      "posted_source_rows": 3,
+      "proof_call": 494,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "5eb9831a5ea7e9db6bf15bd7da90c71fe98821be3ff4163314616cb412fd62ae",
+      "receipt_sha256": "231b5f701acca80af70e17acfc91b03ef305fa00b15b451dbbef3b5f0de8333e",
+      "replayed_report_sha256": "3c5300ef64c7b151a8dd6ce3041fa939130978a12add41412b360ca89042f190",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 3
+    },
+    {
+      "bundle_sha256": "862fe47a7bb799a847ed6163b462ec34c6008395fb011de4eed6d2a8481ee16b",
+      "certificate_oid": "7e6ff036deb1f495906adf35ffdb32f3bdfe6971ade07d10553eb832a6ce6b89",
+      "code": "6397a3b95a1906abd168a83c1fa58db6fc9778c531dd735b5bd70afe64338c87",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 2,
+      "independently_verified": true,
+      "known_at": 768,
+      "name": "CSG Transformation",
+      "output_digest": "473f236cf37212847aadc6a8cc66f14007c81d1943f6f5a95a89c17d582588b7",
+      "posted_source_rows": 2,
+      "proof_call": 496,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "79e2876d2c36543a81ed0a180fa1494dac1141c93d11d775fc995d6ddc2772c8",
+      "receipt_sha256": "627dc85004fc598d50ea0b3d201fb940ad95919b13907580feb1475b0177275f",
+      "replayed_report_sha256": "fa4fe645147a4b7a3f673e82364cca06ae18fa21e75f550b02b9178bb9e489f8",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 2
+    },
+    {
+      "bundle_sha256": "6c01e8804d31d90d025741433847458ce128b7933231075c3425a6d00fbfa2d8",
+      "certificate_oid": "07ce8906836fe03fca4ed0b67a5d161756564158cca0b4963fbd037b2e3bc479",
+      "code": "0d3d8f70cee7f78d75204c6a1c7ed8892d8cf692748d89987f2d860869735412",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 14,
+      "independently_verified": true,
+      "known_at": 769,
+      "name": "Change Delivery DG & Programme Office",
+      "output_digest": "2437b91bfa499d60de3bf4133d0457f3bf45a025c0eb8bee6f505ae5bfcee2ec",
+      "posted_source_rows": 202,
+      "proof_call": 498,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "d389cf95c9f466d96e9a0f3bcc27f272149c2b3e623b25fabfd41dcfd2017591",
+      "receipt_sha256": "f88ac8db66249288cff5a36dfe89289bf12b47741f3fd47fad923319ce1633a5",
+      "replayed_report_sha256": "366cb425ac590d4ddb07f22cd0ceb70506242215e75168a265afe08ee4c6c30d",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 202
+    },
+    {
+      "bundle_sha256": "735a592923d4897c63595d0c0090d838786ca057097622d3879c157dc9d843ba",
+      "certificate_oid": "77c3bc314bfe6a0f04417c7383e73d530b244db39ba4f6a28d0c79dcaf5e9ccd",
+      "code": "d25b8882475a6968eaa13612112c6f8f70172ff724fc8602ad7d99693b5d8a8f",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 3,
+      "independently_verified": true,
+      "known_at": 770,
+      "name": "Change Delivery Making Tax Digital",
+      "output_digest": "86079e8f8a1aa230d066453cb47bbb20d4bf95a023161dc4504a89bbe2eb2bee",
+      "posted_source_rows": 36,
+      "proof_call": 500,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "7b11e129aa04517068685503c3aa596468d43766cec3b42bdb3d07f2a5f27ada",
+      "receipt_sha256": "0eaf5bc3f85e5d9a764d3fd900420bd44d434c9aeb42eebb59cf275604efd10e",
+      "replayed_report_sha256": "2fac39a682b40895c8a06ed3477cd853df93a2300d2a3cd405ea1b98a93242f9",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 36
+    },
+    {
+      "bundle_sha256": "6e28a6b6cdf5803c6f40f9791f7e776adfee576ab079669589ff57e1a67975a9",
+      "certificate_oid": "b99ca233a82f89d4e3a401ba7f48529b0030b03c787527c24366b3dd32cabdee",
+      "code": "9f076c720f1cd6d8af4cd90e75fbef63974a1d4726fe910786a3558a9f9e1044",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 2,
+      "independently_verified": true,
+      "known_at": 771,
+      "name": "Commercial Directorate",
+      "output_digest": "3c30ce2220b21af40d1ad93c5483af9044d20465d27fed458541e6b190ec63e7",
+      "posted_source_rows": 2,
+      "proof_call": 502,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "49e6916bb25754ac0dae6e4161f2cd6304f0d8d42633ba66ebb07551e1f439c3",
+      "receipt_sha256": "74b95b91ffb2bb4d86ba8c791fbff70461a2ecf6e8b81bd274bbcc4eab341406",
+      "replayed_report_sha256": "3b13586b1d6787354f09d316b2d8be421ca7b3d43ae7a1aef22c164b0181266a",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 2
+    },
+    {
+      "bundle_sha256": "9a3c5d5c967e38f89ff3b23500a1bc5060b60d05e69761d86b28af48140e2db1",
+      "certificate_oid": "9305a53018adfec1008d4002d271137fae0a9104c6171a60bd3a2d9536f25b4a",
+      "code": "74020b7158e67fdf5ac02e86411fae1646af298f0b7a08fa67f3bfb835f66525",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 2,
+      "independently_verified": true,
+      "known_at": 772,
+      "name": "Compliance Operations Directorate",
+      "output_digest": "5ace124207f5a45b8c1530e7da54bf28d6c6c9c8fb076a617a75ce59fa735f8c",
+      "posted_source_rows": 5,
+      "proof_call": 504,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "2a98e2166be92a1d12546cd62790b528931f35eca6137f1a666358dfab2f7928",
+      "receipt_sha256": "2251df6be80f8c0b9eea26f8616ce64c571c13193e5ec50d8f961881cb644f16",
+      "replayed_report_sha256": "a179ce43692ca21d223c0f35b894b3c04cd686a340ad942a29945d9a49044102",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 5
+    },
+    {
+      "bundle_sha256": "2677ee9c739d3368a303d25a6bd1de9c7d229e80210f5330c25b804ca212df30",
+      "certificate_oid": "d882f1a91408de9c9c61aa25e36b6959667f5b99f8c9a7ccd8e280cbf4f38bd8",
+      "code": "d8ae1b201515fc132aefc069180aede1cdadd919548f9e2f452ffa2090073564",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 2,
+      "independently_verified": true,
+      "known_at": 773,
+      "name": "Corporate Centre",
+      "output_digest": "250171cd8b14bbfc19afd9427a9d5d5f926669384e2fd26419e2ebc6e5c58d38",
+      "posted_source_rows": 1,
+      "proof_call": 506,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "c3394f129578c461e69e93f2b2e6a15ca8162f40b1f3e98f178e53b8ab34c2c1",
+      "receipt_sha256": "eaa8d850186876dc07c005e4eff5bc5ec4ec279f7a7f0bac4ba8970a7b6f4bae",
+      "replayed_report_sha256": "06eb13bdee0d69b406f0b3356ed46c0a8da06c76244bf123e6f66748ef2663ba",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 1
+    },
+    {
+      "bundle_sha256": "ca45713239bec02c1614273e567a6a710dd3f55dc8487c4c1906e0f3b8ad2693",
+      "certificate_oid": "82d077802ef70b422e94c2f2568bdb395199fbee4e4df88cd9f2f7b427f2d1b0",
+      "code": "78aea30507b4566b395f15ad35ae8b1b8dda23555c6c75752faab3fe3252b073",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 5,
+      "independently_verified": true,
+      "known_at": 774,
+      "name": "Customs Policy and Strategy",
+      "output_digest": "001d8dc499e099b5a7abed4392c908da84fc3c8bbbb8119a25e09acf8102c3cb",
+      "posted_source_rows": 4,
+      "proof_call": 508,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "8ddc60509147b3a941d86c616dab4cd4bb6ac46a20913ceed561677c8c8a8b5f",
+      "receipt_sha256": "bdcc28771f098297f3249e9bd0b3d2590cf41ae36ef88a6744444e2f555eb506",
+      "replayed_report_sha256": "9198454dd004d5b8fc1f2ffd6c4a859b713d9ba41edf3b5f2c683d17b8a04b5f",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 4
+    },
+    {
+      "bundle_sha256": "bafdabf645d3de536f01edce9e7310ba37b8b5a7b075161c8fc9ef6f3e57cd01",
+      "certificate_oid": "a1162d4dc5fe95f8da118de303a41188e0360669ba6de113d447e785b7ef26ce",
+      "code": "910ff1b8cf7aa9a4f02b64724fb63a6dd2bfe57add165c1c6965996f3a42d198",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 3,
+      "independently_verified": true,
+      "known_at": 775,
+      "name": "Debt Management",
+      "output_digest": "08906286bc225fee6cc482554c297d0a8c8fe8588b46a03d5acd09993c3fa683",
+      "posted_source_rows": 18,
+      "proof_call": 510,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "c69e2822c54a6cca6ecfddeba2148ed0084be1978725eb9af9d02d35b2b242fa",
+      "receipt_sha256": "d4a80157c019ef7f4ec8d9bc5a7b8c8b90794c958566933eb576aa523929de92",
+      "replayed_report_sha256": "16f819d0fb8b4aabb9f1ee5a194d89cd01b5d266c5b720fee908976d177c6234",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 18
+    },
+    {
+      "bundle_sha256": "d346ad3553db29ce352d9b77e32bbb352e16530bc9c004e5e438926a72a1150f",
+      "certificate_oid": "c7722fb101f843566c2ec729aac0ad9b16c3bdbf28ddc86c076caca30399e4cd",
+      "code": "c88960822efc6695f6a97363a1d2a102826c6eb8ba99ba8876f608026856d3ef",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 4,
+      "independently_verified": true,
+      "known_at": 776,
+      "name": "ETG Customer Process Design",
+      "output_digest": "99dda53bc8960a2bb37614ec07102aae68b891b7e069c47875369661e371afcf",
+      "posted_source_rows": 3,
+      "proof_call": 512,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "c8fbd6d2c976b8a95bfb7ec32eb41b33817e52bc2d381a329a80f0d2a0f949b6",
+      "receipt_sha256": "6b3660d0410a9a64cd2cf3c746b2ee5859e8a1991f2e43bee8f1871273d27e06",
+      "replayed_report_sha256": "b3a551f038e1b78c634ddcace8320dcc2485f0b12196e6bb6758bc20b5984fdb",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 3
+    },
+    {
+      "bundle_sha256": "22a5da2d8b918ef2852a117ec84129db89fedaaee531c5897298387d478c8f49",
+      "certificate_oid": "5174c11dc5386f6f15eaacc60609c432b9bfb002d67d461bbbe069233c6f7956",
+      "code": "8be730bd9d5bbb384c5fc17eb418ee0d0e7a52df4af368f4f39b35e0b80d8d83",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 3,
+      "independently_verified": true,
+      "known_at": 777,
+      "name": "ETG Directors & Private Office",
+      "output_digest": "72d3b71a970e95d44fbf77d4614cc188473176bb7a6de8faaa73752f348b3b7f",
+      "posted_source_rows": 2,
+      "proof_call": 514,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "c00992a683263c1452459b8003f49297deb9fde36226a3601e64b404d8a82f89",
+      "receipt_sha256": "bc1c97ec84fccfa02923d3aaecc46c4ad6770ea40eb204d17d69b8dbdee691ca",
+      "replayed_report_sha256": "b5a39a66ae59e29df3a733bbb8a060750f482df21963807536083e3c1a626835",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 2
+    },
+    {
+      "bundle_sha256": "1ae6e6d9a13b50731a20b18cacb8d1e2dd4c3b997360c3a6a20a71cc679e7d38",
+      "certificate_oid": "627c4adeb03e310e932ed41e828dd53c4adde18f0deeb4d8c3f7b844dbc7e815",
+      "code": "2ce49d613bf779289d784ad75231eb0c85a8adbafd1e1cd0efb8ecbed68a0639",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 3,
+      "independently_verified": true,
+      "known_at": 778,
+      "name": "ETG Portfolio Management",
+      "output_digest": "de1924532e9e9a5900ca4e9ac8ae90c26c34c7e47b66595618851f875b77b914",
+      "posted_source_rows": 3,
+      "proof_call": 516,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "27bffcf3886d8a97aee425ffe409e3edb8fd966d830bda990bdeb977454d78bb",
+      "receipt_sha256": "477680ab48f86f3ab975bc4b79a063244c6ee70fa8d625c9de34719377021729",
+      "replayed_report_sha256": "9cd673553423c132bc2b63fa02592d8efc5c7537d7e84b78a1829e84f1b4c588",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 3
+    },
+    {
+      "bundle_sha256": "73a5300fb25bf1e27a13b9c76294f5ba09d11fe14263339e59fd6ff78e86898d",
+      "certificate_oid": "59512fb96bda6d4b2a0bf335f450f63a7acb8020aea5f09c8204016afe6904d5",
+      "code": "6833a40241f9e4dcd111d194e152726ad8013dea11ed6c04947d157f5dc34d25",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 26,
+      "independently_verified": true,
+      "known_at": 779,
+      "name": "Estates",
+      "output_digest": "3037dc4848e5dca29ddffdd37b17615a7a0289a231c0cec9148d5fcf2953e926",
+      "posted_source_rows": 348,
+      "proof_call": 518,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "dea3ed223aa4a35a267978e9cb66ed3edd4e1ed4bc3daef388cd97e6b9e8c16f",
+      "receipt_sha256": "241e8600a7b36ef84acfa81820f7eee590374ead14fcfbbc8b529007deec3ea8",
+      "replayed_report_sha256": "02a820d25570f505c69ab9f57911fc5071d397f743f99b1dc8eed4ff7253d733",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 348
+    },
+    {
+      "bundle_sha256": "2843da9a13080f0185a1f0ef3ba987bc95810e4efdb8a81a75f2d1489589af96",
+      "certificate_oid": "8f1dc0b65567634460ca2f6153652dc2e34a420ea627adf148eff866060e5a42",
+      "code": "069082fbe5d0d480a645b179012ce35c74f494580276e4bad12849ef63f484ed",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 13,
+      "independently_verified": true,
+      "known_at": 780,
+      "name": "Fraud Investigation Service",
+      "output_digest": "04fa1ccb8c2fa0a5504aab73211f8ad32fafb7f912f2f67d6f0970b4583d0eb3",
+      "posted_source_rows": 19,
+      "proof_call": 520,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "aeb11beb20ccbe9b977af214f3f299c24366290ae81f13281204f4cf3c7176b7",
+      "receipt_sha256": "a892ef26bb769850365423bb73a467e2eb75416af0279f66065dec8cb46c346b",
+      "replayed_report_sha256": "6eb1a21d69ffbe7ce2e61c813601a0b3f665b040603e3df3a553400771d817d0",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 19
+    },
+    {
+      "bundle_sha256": "f084cbde153a877585aa6a5dd346b2d274ab5410a172cbcd8b92e2dc549d8c7d",
+      "certificate_oid": "a2357e62d10d5f67f50a2304903ef44b9826f3a0617b3023efd5cde294315269",
+      "code": "2031823f72043b2346b86ee6bec3da1cc148c8e7d533611748816791a8983dc0",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 7,
+      "independently_verified": true,
+      "known_at": 781,
+      "name": "Government Banking and Payments",
+      "output_digest": "63f2349aaa06e98afd4dd649c9d3c3423b846645e941a4ab537eb34a21b7e0c7",
+      "posted_source_rows": 10,
+      "proof_call": 522,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "8041efe43b3090fd3e05dfe9faed0f021e34043f786a9f946cd840a5ecc96172",
+      "receipt_sha256": "18355c8ea0579f6f7c6f829c7994a4caf5e3005ab2993088d87c0288a20b7ac6",
+      "replayed_report_sha256": "4f4e5c85197574058e011cb1e22a22f56f71609c0fa26f6044ea61677604a98b",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 10
+    },
+    {
+      "bundle_sha256": "3a8453be03f6ff57503a2a345374a55891de78930b88051b470c1888ab5d4253",
+      "certificate_oid": "53c106a28e1a58ab69ba69eb2d13df9974b7303096c2ba71404333c5b3e8fe90",
+      "code": "dd219ffd8645475f647a1f27e5fee6e8d008a4345c05441d010192ef4ded47cf",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 2,
+      "independently_verified": true,
+      "known_at": 782,
+      "name": "HMRC",
+      "output_digest": "bd6adfae5e6827caad801bbd09ec8f93de6661c525b21f0f1f1d76a1f5537ac8",
+      "posted_source_rows": 2,
+      "proof_call": 524,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "dcbb559b8efcc5053e2479438be6636070de559fd18e6da681b8f340fd5a8981",
+      "receipt_sha256": "5206eacfa5c1492aa9b0932122432fbba31304e9836c5e55282ddad97ebd0b32",
+      "replayed_report_sha256": "3a3d0d34ab880cad8654e8850ca0b226bf379f78a4484c9876a443c580b4865a",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 2
+    },
+    {
+      "bundle_sha256": "f0071ff08b943c35825b4065a2aff3772f3a47c508b78f37af94c92b1efc5854",
+      "certificate_oid": "3df590a05213f7bedd7e592cdae3fde02743b9da06bb6a9fef5bd8363822c3cf",
+      "code": "617e594b8ef85af505a15c2ca9cf82a4e3c544bf65d337172af5eac9759bbb56",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 5,
+      "independently_verified": true,
+      "known_at": 783,
+      "name": "HMRC Communications",
+      "output_digest": "985331d9f900947101b964a4b5ac26e4167e6dd03e37dfd898bef314b7a08528",
+      "posted_source_rows": 10,
+      "proof_call": 526,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "137952d201c5c37222ede24d4d7bf65e88b9406ed539f827f2cb4f3299a9fa72",
+      "receipt_sha256": "d79309cd095c2bcb5e85e7171217cfcb88f1567ffccb542269424a53d819e39a",
+      "replayed_report_sha256": "4a13eb886b41b9c36a6fd4b611279c5c44359499aa8b7c258a5fd3fa88b4c430",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 10
+    },
+    {
+      "bundle_sha256": "5b2dc22bf89963cb56ee2f19a5943f289fc0c8bfd285538f8a572659178f12a2",
+      "certificate_oid": "90ee84815bc16fb275fe4ca34b3328b7ec0ecad00bb81d65df249cb2ed11d9d0",
+      "code": "ba4629d18b3df23d8e6b0fcc850fffe364da6f1727c2363eb165d0caf54ea30a",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 6,
+      "independently_verified": true,
+      "known_at": 784,
+      "name": "HMRC Legal Group",
+      "output_digest": "2a97d9d44482229a50ffcf9172ab8aafef70d0fadc18886274db9a93f7839e40",
+      "posted_source_rows": 9,
+      "proof_call": 528,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "1a1c7a2d63fac7e9ed82222d67475d35c142b8c895d79018af0ce1ff1a280261",
+      "receipt_sha256": "1002b81731b9449a562f0a484fb60956af8a49975bb61a596794fa30399732b4",
+      "replayed_report_sha256": "95c89ebedc26321da65566dd7678532161fefba610b69ab86075a0d81e3e06f4",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 9
+    },
+    {
+      "bundle_sha256": "09df823f8a16416b4d4115cfe92a3eb0ab991039fc0e7116111fff8bc77f1617",
+      "certificate_oid": "bb57983e3c0a8b38f7fb9bf5fefe4d89e30541ae260ed535d7fedee066bcffdb",
+      "code": "c17ac8f273788a46fcfc8ef1686f81e37eda0832c1a52e13fb9dd1b52e9dc71f",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 9,
+      "independently_verified": true,
+      "known_at": 785,
+      "name": "HR",
+      "output_digest": "3d8a2a73df70d43e80eb957cdae5657d4527c5157d0f8008f204cc2640fb1e33",
+      "posted_source_rows": 37,
+      "proof_call": 530,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "dfbc0b71a92549e0c8482340262f50061ad3c17cec69cd7a249ec397fe08e33f",
+      "receipt_sha256": "b5de171e5d23b273862779ed29b1d345d26fedb0c969f6134504dd5ac778be3d",
+      "replayed_report_sha256": "a3220f6806b14d1b19088697812d8092770979d54e4ec00451d8ea935c7897c0",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 37
+    },
+    {
+      "bundle_sha256": "78ab3fd63dc227b6452c74d928c7690c50b98536b7368a674b2cd51533dbb76e",
+      "certificate_oid": "f22d8e4a8e108975bf6a3bf49f3e26b6d18824a8f54facb8936c14965024ce92",
+      "code": "dc97983aec97fc4aaa3aa4ea3ca41a7a8c1a9e8634c53bd771bef7f8f04f3d8d",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 2,
+      "independently_verified": true,
+      "known_at": 786,
+      "name": "Indirect Tax Directorate",
+      "output_digest": "9aa3455367a90333fa48b65041b768451062c1f9b8441888f90973b27aa87d8a",
+      "posted_source_rows": 1,
+      "proof_call": 532,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "bffcdec1281b9d1da4c7ea805eeedbfa27ca4f1ce257bc21004669e0f67c7945",
+      "receipt_sha256": "62b4a4dbfe2d4f9f5847b0f22a5b3ae699963a5fc866ef43de7dd05d2c234d47",
+      "replayed_report_sha256": "bda8b857cdeb5af1c502adecbe9ee9fd7cd6d3e7e9a7609d7318971a7fe78c90",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 1
+    },
+    {
+      "bundle_sha256": "4477ac31771964bcd1aaa13828a922ed226d9fbb862c249c3a13d8dfceaf38fe",
+      "certificate_oid": "4b74eb408f758f50d6e9cb9d2073efc1bfe8ce76267972216f976e6d77ca1409",
+      "code": "947182b3ab34a6c393d1cf8637a9e326f795affeb5461a59f454d4a3d6eeadc2",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 5,
+      "independently_verified": true,
+      "known_at": 787,
+      "name": "Individuals & Small Business Compliance",
+      "output_digest": "537293a2bff4ce04cd5073f96efb8c45381c171bbf6dd46d8630e0b2689f8402",
+      "posted_source_rows": 5,
+      "proof_call": 534,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "840dce6e7d4c9f239144d2ec682685afea0a757623796d7f72bc42ee71c53c95",
+      "receipt_sha256": "5791371ca6638e2a8e743022dcb67bad0476ac4c384d35b825fca7e2d235a62a",
+      "replayed_report_sha256": "8d77c73cc2c87eb630700d4ba75c92f7c16187ab6d87e2ed6b1628ba3b957073",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 5
+    },
+    {
+      "bundle_sha256": "5ae34a2de1417b8b570f63c6a686a9ca3686b37eb9efadfb459d7e0c5708a3f3",
+      "certificate_oid": "b9fb7dc108c9d7a6de937ef3fd49a89a1f7d584453136a275e800e396ad71280",
+      "code": "1124abcf2c64b1b268a8cc3b4d32e424ab083e0a83ad62803b2f7d4bffa080b6",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 2,
+      "independently_verified": true,
+      "known_at": 788,
+      "name": "Internal Audit",
+      "output_digest": "dc8a34cff97e910d69e24b843fee66561d024002a7dd2d91e5ac737ccee9f8e3",
+      "posted_source_rows": 1,
+      "proof_call": 536,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "6d70335e26cb1738b7f177836d34aea2ba1b07f9a456256b03586fe9e9d040c8",
+      "receipt_sha256": "105a9331d46ac2c1dfc0a5dfe2b315671942b4dc2bb8be93bb7886e1ec5147d8",
+      "replayed_report_sha256": "f64ce98c4542a669bd9c66a7921f82487349ce62d4c2caa61248fd9fa8c6343d",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 1
+    },
+    {
+      "bundle_sha256": "4f1f9b30c5a0dafe74fd12040d1c3ea6055367f1a6c4b3cafd2235c751351b67",
+      "certificate_oid": "42ac5b0d9b3bb84c193d58d1e8e5cf85ca7aa6a7b9c407377d3e97efb0834006",
+      "code": "7e227c7123b68f144d044d892cfc24c26320a50ab1baf7b1d332941255f1797e",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 5,
+      "independently_verified": true,
+      "known_at": 789,
+      "name": "Knowledge, Analysis & Intelligence",
+      "output_digest": "dc7d619c4cd9b40e4001063a7f1f43f068b8c5e6c9226e62f1f2da2703b11d35",
+      "posted_source_rows": 11,
+      "proof_call": 538,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "f6fbbffbbae7da75a603973b8300d2ececa3ce58c197cd34e3c5c7cb83fd9511",
+      "receipt_sha256": "b61dacf8db09fa2b2064349d1bcea7c8f50d9223bfff5500b422ac27eb9c2e30",
+      "replayed_report_sha256": "0cccf8f81e16ffc2b1e57b4f2ee16adc9bd6f804f6b9ec16f28246fd735ffea9",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 11
+    },
+    {
+      "bundle_sha256": "095f8f13c19113b83a97ab79398ad6a1c6860c180c1e79d3737ee9a6c8b54e4b",
+      "certificate_oid": "4ea6e3a3e32011d9b7bb8bc924b2b67c979fb42f7881c3d5c8d4ced6af5d8565",
+      "code": "f05208e0f93140e60d0ee4580ff4b8b5e5fa2871c987751ac7751a037b443565",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 3,
+      "independently_verified": true,
+      "known_at": 790,
+      "name": "Large Business Service",
+      "output_digest": "dd977efa6901bc2ff9d8e3a214cd97a70643eeb0f0f68038cd19a622398b8610",
+      "posted_source_rows": 2,
+      "proof_call": 540,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "ad1a0228b431adcee96b1c0908862bb787d32ab4f72dec708b69cdb2e8a5c161",
+      "receipt_sha256": "a5acce55c6e8b00a7a07b3845d749cd99f676332f60274dcb39c03d6c3381985",
+      "replayed_report_sha256": "b16b6dc93f6ed169f6c4c504cff915c882cf7c7575724c149cfc196f7d4a0fea",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 2
+    },
+    {
+      "bundle_sha256": "88c27c9d123d790aa6c2054cd5d35a305a161a93d9a786b329775dcab067a8a1",
+      "certificate_oid": "d9fd7f218278bbd94549271965ea1adf44b9ed0fcae61283d0fd4fdb9f213353",
+      "code": "3e3ea11a49e923ceb6ed8e910616a4dd2d1b28816a6e1ff31c20ae2abd90a802",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 13,
+      "independently_verified": true,
+      "known_at": 791,
+      "name": "Operational Excellence & Output Mgmt",
+      "output_digest": "169fbf8f0c1c89557360ed4835cac367ad79aae5669d2616bb69e881489cce03",
+      "posted_source_rows": 25,
+      "proof_call": 542,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "6f1f7bc24311edc70db727f0887a420993dbf3183e70578c5fc232f21513b1d7",
+      "receipt_sha256": "b8c73301ff605ca024336251dd62acf84e2480fe34a08020617ea7f32053ab50",
+      "replayed_report_sha256": "31fc7f8853874c450c5f9ce92d02592cf68e1475d4dc460fd4e414b718069660",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 25
+    },
+    {
+      "bundle_sha256": "b0b84ca0b3eaabdea0a0c141ad6d20c34feffd407d97c11bac4cd77f1a5d224b",
+      "certificate_oid": "56bd06f08574be10d0b38f101232a20f446a857b7a70a5a75723d9359fe2bba7",
+      "code": "3106a45a4e28cdcc0832b104e01a50a4394ac145f9912a6947f72f2c3ccdc6ef",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 3,
+      "independently_verified": true,
+      "known_at": 792,
+      "name": "PDC Customer Strategy & Tax Design",
+      "output_digest": "a0be87649a409abb48a0f896648119d4881c149e588531822219f3a4726eeb6f",
+      "posted_source_rows": 29,
+      "proof_call": 544,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "e7ea19d217784adb541482f47b64c07f75dda25817eeff8e0352306d1431def8",
+      "receipt_sha256": "80e82079fd9ff2f2838f66a7fe4bbf7be8713881c7fdc6d3de7ce8cfc5d80755",
+      "replayed_report_sha256": "b3fa0fb3fb3516886312ef4fdcc66dc1f1c0b7484cb6af87f551d6e53e70b9f6",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 29
+    },
+    {
+      "bundle_sha256": "326dcf8dec39f10120d4c3561efda97825d724645d00671d32ec733b9ffc7ab1",
+      "certificate_oid": "c4407693c579a2e7d815aa0c1eb56d72c0b9031ebef9980b101e0175b36e6b67",
+      "code": "b314d64b8332d19fede48a46b15ad86f00f2bc606a5196b48228c746d04ccaf3",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 2,
+      "independently_verified": true,
+      "known_at": 793,
+      "name": "PT Operations",
+      "output_digest": "8249ea9b7e40ba89fd35eec72fdf13986bf0fc75975f0aa16e3fcc960e246c78",
+      "posted_source_rows": 2,
+      "proof_call": 546,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "51859c86653c0ef21c4070a4af51ae88dabeb2dc26104e6df4e0e0b2ec9f325d",
+      "receipt_sha256": "292d9e0013bf5f2bba7185097fd84c00d0e6222d77990b1875951cdf5484de8a",
+      "replayed_report_sha256": "c04fe50021ab84f91a63e3c9638a1a1be0fa9484e70571b69c39a8baef1998ff",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 2
+    },
+    {
+      "bundle_sha256": "20c40c4391339b02c15480687d75306db12b49a318a0e7dc221fac07fbd2c1ce",
+      "certificate_oid": "19ebe9b5f88a49bd60166602ce5bd2b75eb12a3234b7cfded56c80464203640e",
+      "code": "828039694b6a836713f313a3bc90390625d7cd10d6831a2e8121509ca6e1dead",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 7,
+      "independently_verified": true,
+      "known_at": 794,
+      "name": "Programme and Operational Delivery",
+      "output_digest": "7365846c986ca9b34c62ff4382a415f2a3441d361b0cc6f32e3482a66d430067",
+      "posted_source_rows": 107,
+      "proof_call": 548,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "c2cb9f2934a3afd3e0e80230978f433315f75cc62115266215b74f93e6ec810a",
+      "receipt_sha256": "1f8bcd498baa305595d65577d4634441c98a12e60450d6c1c0f07085c1d3e355",
+      "replayed_report_sha256": "4d99cb6ad759f47581d359b2db6d79914a58f3fd365d5d016530166454e99f87",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 107
+    },
+    {
+      "bundle_sha256": "b405d60225763f30a0665a32e900abda886530b51f2ea7936f61c2cc8d64bb70",
+      "certificate_oid": "6e161e756f09bf79570aede9ca3782727c71e3305d59f745cfd030df3e1ec29b",
+      "code": "64a05a8d18bbadd9b13441a00bcbbe519a684608199c3ea8d865720f45503364",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 7,
+      "independently_verified": true,
+      "known_at": 795,
+      "name": "Risk & Intelligence",
+      "output_digest": "657f69f049b9ba768b807dad986300df8ab4f72786cdfabe03ab58b2ff6346b1",
+      "posted_source_rows": 20,
+      "proof_call": 550,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "7350931304e84daa2631c3a68d236e520510a770c58db99149a61e9bf7f7890b",
+      "receipt_sha256": "9d600aefc478a59f94725bd7fa8d1678718f8bf9223ac1f821b53917fa2e12e3",
+      "replayed_report_sha256": "7a34469bd1ba192af7e861d6b820e4d2b8ef633a1a233c5d47c19a13a7d337b5",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 20
+    },
+    {
+      "bundle_sha256": "5a897e9b8a85ea833fa8b86db1cfd7b920f78161286ac92044ccfc840850f3ae",
+      "certificate_oid": "a350ec4348bdd2941d1086987cbfd58e56301328809e4225ef4864f674e8f7df",
+      "code": "0798dbe25d4a057b5f4c7899b79e276066d0a546a2a84a681c9f946e47eb6947",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 3,
+      "independently_verified": true,
+      "known_at": 796,
+      "name": "Strategic Policy Into Delivery",
+      "output_digest": "8447b668ae46cef1e9ac430e62e9d44d31f5e806a726858d3fc542cafb3d9b89",
+      "posted_source_rows": 3,
+      "proof_call": 552,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "52ebe554520cbd606db8f84a0c2db0a3f1f3ace44f546f4a30122312a9e038fa",
+      "receipt_sha256": "bea66eb69ec4d4b63a573bac732409f9832bbea5366d78c228f8e0a1cd5bdf21",
+      "replayed_report_sha256": "7e507b220a8820fae72065a187ee591d15e991c1291c351b8c6d143b4a50a0b7",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 3
+    },
+    {
+      "bundle_sha256": "d16a427cd781d1a063e9a3c7602ab708b061f1814fc3db2fc4bf24c5f1bfdeaf",
+      "certificate_oid": "5c39c692885ae97608051b744f48c754b9a775b4a7520dea5437c7782ed3e703",
+      "code": "de16a95e75ccb591f5365a8eab3b0ec440f88d987aad63ea3ead7023110e5705",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 3,
+      "independently_verified": true,
+      "known_at": 797,
+      "name": "Surge & ODP",
+      "output_digest": "1c0cbf59ffb518c2d42cc76a77dc639ab5093489cec3c97e6de0206bc9af0372",
+      "posted_source_rows": 2,
+      "proof_call": 554,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "ccd35278816e35c8eb2bd00bb6d7eff211feb5beb1b135f069415ddea57af1c6",
+      "receipt_sha256": "4a2cfbfaa4364d56cdd75e5b858126019f926064bb33191710e9ffc031b704e0",
+      "replayed_report_sha256": "0e47021ee54451cae97453174833da18055e4c2fd6f682b677e48a9a67a0e90b",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 2
+    },
+    {
+      "bundle_sha256": "658474cac53e0bfaf1eac0e56f4444fb2bac7ffdf50dbb23bee68de7d555ef6c",
+      "certificate_oid": "e5ef6823c9363b7fe9568811def6eb3dcafdca1aca0a4a94a06acf1775b24120",
+      "code": "021a8c0d7a3ae625429d22daa0bac902eb615a51a64e2b933ffac392e2aa8cc6",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 9,
+      "independently_verified": true,
+      "known_at": 798,
+      "name": "Unity Business Services",
+      "output_digest": "748b0e44dbd0cbfed88b4abcf8014ebf7f8e35f130edf5e203d9ac5fed385e31",
+      "posted_source_rows": 19,
+      "proof_call": 556,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "214e587b027e36d178dd84970f9e7c5db13ee6e04763a6fb494fb86e6667805a",
+      "receipt_sha256": "88af91b69a4532de07dacac3830d3efb2c8076827ceb486d04e99d53f318718a",
+      "replayed_report_sha256": "ab2f0343c1826cf16c438c736eeb8c178eb08bf127cee973848f93451c7ca79a",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 19
+    },
+    {
+      "bundle_sha256": "03032d7de577f7974ddfce8591ee0d5f09256e2dc472208799156e801fc9f841",
+      "certificate_oid": "444c3536a50e08a85cfde49ff8ba7fcba74d2754622d90c1c92ba61b1c3160d4",
+      "code": "c7763a4a299bad01182d964eba117619ad8cbecf6bd5411ca5fb0875ce10e0da",
+      "historical_known_at": 754,
+      "independent_source_account_cells": 2,
+      "independently_verified": true,
+      "known_at": 799,
+      "name": "Wealthy & Mid-sized Business Compliance",
+      "output_digest": "0f836da467bb3935e24a4beda72f387dba36ab5884f6d7865ddf4b7241d581c0",
+      "posted_source_rows": 1,
+      "proof_call": 558,
+      "proof_exit": 0,
+      "proof_stdout_sha256": "26bad8669f03d93c4e229e16591ec44358919689276a81be8beffd87e1231236",
+      "receipt_sha256": "8b46b62a3b391d93205230f99ec8c4dcc5fe36554ecac23b9876c052ae979cbb",
+      "replayed_report_sha256": "edcc77e64854584a71bd344ab1ce1b1da77eb9f2c3dd1c8f3cb6fc3a3c6a48f4",
+      "source_population": {
+        "bind_leaf_index": 242,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_rows": 1
+    }
+  ],
+  "dataset": "hmrc-2025-03",
+  "document_custody": {
+    "attribution_map_attached_to_every_entry": true,
+    "boundary": "Automated distinct local fixture principals exercise review and approval law; these are not independent human reviewers or publisher attestations.",
+    "byte_exact_cold_readbacks": 7,
+    "fixture_review_attestations": 18,
+    "grade": "AgentUpload",
+    "original_and_model_documents": 18,
+    "readback_names": [
+      "expected_tb.json",
+      "legacy.csv",
+      "native_attribution.json",
+      "provenance.jsonl",
+      "raw.csv",
+      "receipt.json",
+      "records.jsonl"
+    ]
+  },
+  "execution": {
+    "approval_group_requests_including_retries": 6,
+    "batch_approvals": true,
+    "batch_evidence": true,
+    "bind_source": true,
+    "elapsed_seconds": 254.417,
+    "evidence_group_requests_including_retry": 3,
+    "native_calls": 561,
+    "native_exit_counts": {
+      "0": 558,
+      "8_expected_negative_controls": 3
+    },
+    "native_program_counts": {
+      "fa": 517,
+      "fa-verify": 44
+    },
+    "peak_rss": "UNMEASURED",
+    "primary_stage_requests": 2,
+    "stage_group_size": 64,
+    "timing_source": "Runner time.monotonic interval. One shared-development-host execution, not a controlled performance comparison.",
+    "transport": "direct_cli"
+  },
+  "failure_and_repair": {
+    "before_driver_sha256": "37d36d3215fb8292098fd3b491d244215516e29f594d224beef971b5b876fee4",
+    "cause": "Native dimension and party commands prepend default-key text to the full 64-character source identity, producing 86-byte dimension keys and 70-byte party keys beyond the 64-byte key bound.",
+    "correction": "Pass explicit --key equal to the existing 64-byte SHA256 code, whose input includes profile/dataset/kind/exact-label, for both registrations. Preserve each full source name and code; do not truncate identities, re-pin source bytes or change native limits.",
+    "failed_native_call": 4,
+    "failed_native_error": "model: `idempotency_key`: 1..=max_idempotency_key_bytes bytes",
+    "failed_native_exit": 5,
+    "failed_process_exit": 1,
+    "failed_run_commands": {
+      "bytes": 2243,
+      "path": "/workspace/scratch/63219534715b/validation/runs/hmrc-attribution-native-1/commands.jsonl",
+      "sha256": "ab880cb090717195e4f83d67572578040308674634d66f58db48057360111bee"
+    },
+    "failed_run_result": {
+      "bytes": 1528,
+      "path": "/workspace/scratch/63219534715b/validation/runs/hmrc-attribution-native-1/result.json",
+      "sha256": "d1d0d98d9ee64cffa76f2bab45ec0d70e18576ea40a09ca5053c0f0795a36e2d"
+    },
+    "verification": "The regression covers both registrations. Fresh run 2 registered all 202 identities, completed the full native import and passed all proofs. Failed run 1 remains intact."
+  },
+  "finalization": {
+    "action": "finalize",
+    "after_commit": 757,
+    "already_recorded": false,
+    "chunk_count": 127,
+    "control_entry": "c22880b10027e6401c0e8491c16fc299",
+    "from": "Open",
+    "immediately_before_commit": 756,
+    "native_call": 287,
+    "prior_staged_visibility_prefix": 754,
+    "recorded_at": 757,
+    "run_key": "public-expenditure-v1",
+    "run_vid": "481a199d2279add0bc9518bee016848e",
+    "tie_out_digest": "295c0f8d15ddeaa00f4b9c74151a01e138ce481538018cca84e344d4f02df814",
+    "to": "Finalized"
+  },
+  "format": "fa-public-data-native-execution-summary-v1",
+  "implementation": {
+    "executed_helpers": {
+      "tools/public-data/public_spend.py": {
+        "bytes": 29136,
+        "sha256": "b8142a53f45d395e5fed2ce588b4aeda91708c0e85caf8e08c8845f0fbb46c1a"
+      },
+      "tools/public-data/run_live.py": {
+        "bytes": 86009,
+        "sha256": "93db72c30fe0735e4f6111e3af84eb14ac4a8dcebddc5444db0af1e6a33cf267"
+      },
+      "tools/public-data/sources.toml": {
+        "bytes": 4124,
+        "sha256": "5aff0da79d6266f36513d8c07ab0b60ba41210c31bdf65768d08e3a7974b02c7"
+      }
+    },
+    "focused_test": {
+      "command": "python -B -m unittest discover -s tools/public-data/tests -p test_run_live.py -v",
+      "file": {
+        "bytes": 75084,
+        "sha256": "7013b1af9b80fe04716fb92f1443467b07586ac267c888532ab0a585e123636e"
+      },
+      "process_exit": 0,
+      "status": "PASS",
+      "tests": 43
+    },
+    "harness_basis": "Existing optional attribution feature from acd0e07 plus the focused explicit registration-key correction recorded here.",
+    "helper_identity_observation": "The correction was installed and tested before run 2 launch. These exact helper bytes were hashed after launch and remained unchanged through completion; no prelaunch helper-hash timestamp is asserted. The runner captured and guarded native executable identities before native execution.",
+    "native_build": {
+      "artifact_archive_sha256": "a3946ad20f1a0891c025fb3e071e8a03dc390ed8b13da2c5a49b6fca069aa7f0",
+      "artifact_id": 13210366143,
+      "artifact_name": "public-ledger-native-88286f8c41f3943fde51e76334b33db758422c95",
+      "binaries": {
+        "fa": {
+          "bytes": 235016792,
+          "sha256": "20200170403c9dd6a1d787796d1a63dc7578018598b23bdfc2f03c6fc50db788"
+        },
+        "fa_verify": {
+          "bytes": 20213496,
+          "sha256": "5f444d7a2fd39b970972487745cb3a95e79eb36f44d76119a2ad2c8cbe42d8ad"
+        }
+      },
+      "compiler": "nightly-2026-08-31",
+      "lock_git_oid": "bcc30a166ddaaa598635650be66018bd341b019d",
+      "provenance_files": {
+        "acquisition.json": {
+          "bytes": 275,
+          "sha256": "275fe55f4e36e3cf688b27ffb33a8f24bec361252219927dbfdd0ed7636ef914"
+        },
+        "artifacts/public-ledger/native-binaries.sha256": {
+          "bytes": 171,
+          "sha256": "e8bdd2fef43187aaab7f30dfd432f77e18a90d0e4c826505e48a95428399db35"
+        },
+        "artifacts/public-ledger/native-lock.txt": {
+          "bytes": 41,
+          "sha256": "7a2b745cd7da4313e68dde2e65a3acf91e0fbe39a3e42138c8e8df9b3f72c119"
+        },
+        "artifacts/public-ledger/native-source.txt": {
+          "bytes": 41,
+          "sha256": "d554906e7f9d40648cac3fc8055cd90fe0089ae57e2822951dff90d9b00a4494"
+        },
+        "github-workflow-evidence.json": {
+          "bytes": 5382,
+          "sha256": "3b7dd435f64e0658edc86ccabfabac7413a0b55738c5ad8b6a9665b8188c641d"
+        },
+        "verification.json": {
+          "bytes": 797,
+          "sha256": "1723cbe1b32467fa932fcbe10ed53fe1374b1c66e762422760af9934af5b9b69"
+        }
+      },
+      "source_commit": "88286f8c41f3943fde51e76334b33db758422c95",
+      "workflow_job_id": 125763882661,
+      "workflow_result": "success",
+      "workflow_url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41588158231"
+    }
+  },
+  "independent_check_artifacts": {
+    "result": {
+      "bytes": 49619,
+      "path": "/workspace/scratch/63219534715b/validation/logs/hmrc-attribution-native-2-independent-check.json",
+      "sha256": "7e05d5a2cf5c55aab5b910808d6b80677dd9a143f0476f234f0e93db07976ca9"
+    },
+    "script": {
+      "bytes": 10198,
+      "path": "/workspace/scratch/63219534715b/validation/check_hmrc_attribution_evidence.py",
+      "sha256": "4c103436d2873a0985ba991f0a5a1dc1bf4c9127f450fdff59c37d6c5ad742f4"
+    }
+  },
+  "independent_export_audit": {
+    "all_original_raw_fields_retained": true,
+    "dimension_controls": "All 252 area/account and 449 supplier/account gross debit, gross credit and net cells independently rebuilt from the original cells.",
+    "entries": 127,
+    "exact_fields": [
+      "native entry ID",
+      "leg ordinal",
+      "original effective date",
+      "original amount and sign",
+      "constructed account",
+      "GBP scale 2",
+      "native Migration class",
+      "description",
+      "full original source-row memo",
+      "migrated_from",
+      "native receipt sequence",
+      "cost_center value VID",
+      "party dimension-value VID"
+    ],
+    "legs": 2860,
+    "method": "Separate csv.DictReader/Decimal code read every original Windows-1252 cell, constructed the declared 12-row date groups, joined actual native prepared IDs and stage receipts, and compared every exported leg field. No production normalizer, checker or source oracle was imported.",
+    "native_export_sha256": "cf3abd5d7c4166ccb276c42b241b786ad440355e6dbe3fc077a31f1c83088793",
+    "source_observations": 1430,
+    "status": "PASS"
+  },
+  "independent_report_verification": {
+    "all_positive_exits": 0,
+    "all_positive_verdicts": "verified",
+    "checks_by_kind": {
+      "canonical_report": 43,
+      "checkpoint": 43,
+      "dimension_filter": 42,
+      "production_receipt": 43,
+      "report_bundle": 43,
+      "trial_balance_row": 387
+    },
+    "cost_center_reports": 42,
+    "positive_reports": 43,
+    "tampered_report": {
+      "call": 561,
+      "exit": 8,
+      "failed_checks": [
+        {
+          "check": "record_derivation",
+          "detail": {},
+          "reason": "Digest { which: \"proposal_digest\" }",
+          "result": "fail",
+          "scope": "recomputation"
+        }
+      ],
+      "stdout_sha256": "869efa0355732d88296e334698ed6320be8eba7c608bd0636c3d475e422fad30",
+      "verdict": "failed"
+    },
+    "total_checks": 601,
+    "verifier_calls": 44,
+    "whole_book_reports": 1
+  },
+  "native_attribution": "fa-public-spend-attribution-v1",
+  "native_commitments": {
+    "bundle_sha256": "691c3b643dc5d0724801d6d89d3db3cfe17b80784bbc025a2a953d30c8a9f0a9",
+    "certificate_digest": "86ce3f53c3489213f214e0d2d7d3899281a435ee6944a694d199d780e86f7f2e",
+    "checkpoint_public_key": "e4d78aed19845722b1f3d809e264bb3fceaf7b4584f37faf8e3a459ad66a300e",
+    "migration_run": "481a199d2279add0bc9518bee016848e",
+    "output_digest": "ae916ba7d97229dc9222b4ea37234809b3977aa90397637d427c526a3d15ed77",
+    "package_oid": "eeac4b4db3138da85f9976b9bbb5193a40c13d8adf45e5fff6a1c7ef66d8e0e2",
+    "period": "FY2025-P03"
+  },
+  "negative_controls": {
+    "attribution_only_export_mutations": [
+      {
+        "after": "1264b091f264b25a0faa31d791224342",
+        "before": "feda3d734e70a3143fbd15b185513906",
+        "changed_legs": 1,
+        "dimension": 2,
+        "exit": 8,
+        "file": "tampered-cost_center.csv",
+        "kind": "cost_center",
+        "native_call": 301,
+        "other_logical_fields_unchanged": true,
+        "sha256": "97ffa7b62498b5e7b2237c2f0617f23601421fbb20f666e204fe2d71a0284624",
+        "stdout_sha256": "e62e623613e082f0badbc912485752dfee5298bd86b3e16bc2bf2504b25f6d9e"
+      },
+      {
+        "after": "01d30ea0898cf79400c3fd98f495e074",
+        "before": "96cc8bfdf6774089702977f6d99b51c5",
+        "changed_legs": 1,
+        "dimension": 12,
+        "exit": 8,
+        "file": "tampered-party.csv",
+        "kind": "party",
+        "native_call": 302,
+        "other_logical_fields_unchanged": true,
+        "sha256": "b58119ecfe2cfc0bf35a8b2d9c0fdc6e3d8dd7829bc32df33c1de3021a406607",
+        "stdout_sha256": "6cf8c06dcc3b15e9722e2c2585f41e66d8224f384bae199acc6adcb9c8a6c780"
+      }
+    ],
+    "tampered_whole_book_report": {
+      "call": 561,
+      "exit": 8,
+      "failed_checks": [
+        {
+          "check": "record_derivation",
+          "detail": {},
+          "reason": "Digest { which: \"proposal_digest\" }",
+          "result": "fail",
+          "scope": "recomputation"
+        }
+      ],
+      "stdout_sha256": "869efa0355732d88296e334698ed6320be8eba7c608bd0636c3d475e422fad30",
+      "verdict": "failed"
+    }
+  },
+  "observed_process_exit": 0,
+  "process_evidence": {
+    "bytes": 1080,
+    "path": "/workspace/scratch/63219534715b/validation/logs/hmrc-attribution-native-2-process.json",
+    "sha256": "1c6747af0131e42e0040657767cc8835d83be5dc836cb7ec28753ae59854b8ef"
+  },
+  "recorded_utc": "2026-11-03T08:49:38.800653+00:00",
+  "registers": {
+    "cache_status": "verified",
+    "cells_checked": 135,
+    "drift": [],
+    "green": true,
+    "lag_entries": 0,
+    "pending_drift": [],
+    "period": "FY2025-P03",
+    "projection_errors": [],
+    "refold_digest": "46edc94e78b777be411a4a9c218747969474fd6a145ba8b937ea461d6deff258",
+    "stale": false,
+    "stored_digest": "46edc94e78b777be411a4a9c218747969474fd6a145ba8b937ea461d6deff258",
+    "verified_through": 757
+  },
+  "reproduce": {
+    "prepare": [
+      "python",
+      "-B",
+      "tools/public-data/public_spend.py",
+      "prepare",
+      "--dataset",
+      "hmrc-2025-03",
+      "--out",
+      "<new-prepared-directory>",
+      "--native-attribution"
+    ],
+    "run": [
+      "python",
+      "-B",
+      "tools/public-data/run_live.py",
+      "--prepared",
+      "<new-prepared-directory>",
+      "--dataset",
+      "hmrc-2025-03",
+      "--out",
+      "<new-native-directory>",
+      "--fa",
+      "<verified-fa>",
+      "--fa-verify",
+      "<verified-fa-verify>",
+      "--stage-group-size",
+      "64",
+      "--batch-approvals",
+      "--batch-evidence",
+      "--bind-source",
+      "--native-attribution"
+    ]
+  },
+  "retained_artifacts": {
+    "commands.jsonl": {
+      "bytes": 399920,
+      "path": "/workspace/scratch/63219534715b/validation/runs/hmrc-attribution-native-2/commands.jsonl",
+      "sha256": "049d8d070bb87b81f711ff67ccd35afe72f6d332f76435f165ca125230da1a08"
+    },
+    "native-attribution-identities.json": {
+      "bytes": 39197,
+      "path": "/workspace/scratch/63219534715b/validation/runs/hmrc-attribution-native-2/native-attribution-identities.json",
+      "sha256": "693b0f120c7f89a620bdf1358679694e6886ae064e9eb7924fe561ef0ab4927c"
+    },
+    "native.csv": {
+      "bytes": 1135014,
+      "path": "/workspace/scratch/63219534715b/validation/runs/hmrc-attribution-native-2/native.csv",
+      "sha256": "cf3abd5d7c4166ccb276c42b241b786ad440355e6dbe3fc077a31f1c83088793"
+    },
+    "replayed.report": {
+      "bytes": 21588,
+      "path": "/workspace/scratch/63219534715b/validation/runs/hmrc-attribution-native-2/replayed.report",
+      "sha256": "ac653d09055f0fdbd0b7ee97247328dde1fe10f4967bff232c78851ecb76795d"
+    },
+    "report.checkpoint": {
+      "bytes": 288,
+      "path": "/workspace/scratch/63219534715b/validation/runs/hmrc-attribution-native-2/report.checkpoint",
+      "sha256": "fd3c74399e3e6ba607b543004e3d0c75fadc5778dfb284d437a52d89e14810e9"
+    },
+    "result.json": {
+      "bytes": 86412,
+      "path": "/workspace/scratch/63219534715b/validation/runs/hmrc-attribution-native-2/result.json",
+      "sha256": "fa4d4d0b5f99d1ef55f47b4c66e82e13bf1c6ee81190403294227b646c367b0e"
+    },
+    "trial-balance.fab": {
+      "bytes": 1365954,
+      "path": "/workspace/scratch/63219534715b/validation/runs/hmrc-attribution-native-2/trial-balance.fab",
+      "sha256": "691c3b643dc5d0724801d6d89d3db3cfe17b80784bbc025a2a953d30c8a9f0a9"
+    },
+    "trial-balance.receipt": {
+      "bytes": 219,
+      "path": "/workspace/scratch/63219534715b/validation/runs/hmrc-attribution-native-2/trial-balance.receipt",
+      "sha256": "a51c857e023ae6eee01e822d44ed584f25ea7200a6ac8f6b477afed972ab5c23"
+    }
+  },
+  "source": {
+    "acquisition": "Fresh HTTPS retrieval through the supported public_spend.py prepare helper, with complete byte-count, SHA256, schema, date and exact source controls; preparation process exit 0 observed.",
+    "bytes": 213348,
+    "controls": {
+      "date_count": 21,
+      "duplicate_rows": 1,
+      "expense_area_count": 42,
+      "expense_type_count": 134,
+      "max_minor": "1507727368",
+      "max_transaction_rows": 12,
+      "min_minor": "-321224815",
+      "negative_minor": "-942246241",
+      "negative_rows": 125,
+      "net_minor": "28574458415",
+      "positive_minor": "29516704656",
+      "positive_rows": 1305,
+      "row_count": 1430,
+      "split_transaction_count": 71,
+      "supplier_count": 160,
+      "transaction_count": 1321,
+      "zero_rows": 0
+    },
+    "license_url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+    "prepared_files": {
+      "account_map.json": {
+        "bytes": 7833,
+        "sha256": "26ecca83972fd70fb80b1ae0a72dadb2c5e59b110cf147933a85a4f1344a5ea8"
+      },
+      "chart.json": {
+        "bytes": 21610,
+        "sha256": "91d0d804b19081c0f6a7f65e59bbf838752bc6c1df8f6b7b46defcc0d512f3c1"
+      },
+      "columns.toml": {
+        "bytes": 382,
+        "sha256": "f3f10c74dcf42de198655533c4efe12b54a63644d3285413370e16016e05636a"
+      },
+      "dimensions.json": {
+        "bytes": 274714,
+        "sha256": "e390bba2d8351e0e0ae1e5e4d33b541e80ba053d2e1a29416b27a7d1fd56c23c"
+      },
+      "expected_tb.json": {
+        "bytes": 165464,
+        "sha256": "e0d08ff47dc64472a584c99cecc8bfc7ff5b6031e4290a560a871826f224e092"
+      },
+      "legacy.csv": {
+        "bytes": 1080134,
+        "sha256": "37627e02b5841c58ed48427d1b4ceb05654b2281291d6370dd6c8bea86ddfa2a"
+      },
+      "native_attribution.json": {
+        "bytes": 179958,
+        "sha256": "1ff35cbc3886d47adc3c0623f20e96dd0627dbd876034438a53374df9bd19c1f"
+      },
+      "provenance.jsonl": {
+        "bytes": 1205098,
+        "sha256": "25ea4e4c810b4218c116fa702e16a2fd48919118352f76133749e197b8b92c26"
+      },
+      "raw.csv": {
+        "bytes": 213348,
+        "sha256": "eca3d42b3c8f6c8e1b4746fcd3614b6b65311fbd4a7900a96b3b269dc3006a2a"
+      },
+      "receipt.json": {
+        "bytes": 3467,
+        "sha256": "22c3397f09870a1b0bed2e93dea2f15ad2465ef27e2ec442e8cf2ecbef51b492"
+      },
+      "records.jsonl": {
+        "bytes": 1136333,
+        "sha256": "5293cfa390df75e27a2d91eea40e9d7cb664fb9a40b5083f15145ca1a2707485"
+      }
+    },
+    "publication_url": "https://www.gov.uk/government/publications/hmrc-spending-over-25000-march-2025",
+    "publisher": "HM Revenue & Customs",
+    "sha256": "eca3d42b3c8f6c8e1b4746fcd3614b6b65311fbd4a7900a96b3b269dc3006a2a",
+    "url": "https://assets.publishing.service.gov.uk/media/680fdb56b0d43971b07f5c76/HMRC_spending_over_25000_for_March_2025.csv"
+  },
+  "source_binding": {
+    "book_id": "cda0935960a884234e8c0cebee1b077d",
+    "complete": true,
+    "expected_chunks": 127,
+    "manifest_digest": "0ea7324310a585e0c8fc5f7914f77adef64c97e4a7ba8e058444f7ddb456adce",
+    "manifest_vid": "91e6cdbffae8a5f94004bf4f55458212",
+    "missing_chunks": [],
+    "package_commit": "059e796584448dbe676a18747192704bd7d67da6e3dbe650c2d1e634e024e60d",
+    "package_oid": "eeac4b4db3138da85f9976b9bbb5193a40c13d8adf45e5fff6a1c7ef66d8e0e2",
+    "recorded_chunks": 127,
+    "run_body_digest": "d017a5983c7e6041b0864e81d2be5a8e4bc54051393d5eae47a6ac4ef0ef6d9e",
+    "run_vid": "481a199d2279add0bc9518bee016848e",
+    "source_commit": "e8fcc850b9956bef4956ceb8dc30f51b91e93e4228890fe3f4df8b1351e0d4ed",
+    "source_oid": "6593e7b7ea8e2a308bb10eb3b75b35e1cad8964ff8dcf86c8a46e6a432794fc8",
+    "source_rows": 2860,
+    "unexpected_chunks": []
+  },
+  "source_binding_receipt": {
+    "already_recorded": false,
+    "control_entry": "9b808bababa5796116e728b6e2c7f4df",
+    "recorded_at": 244
+  },
+  "status": "PASS",
+  "transcript_integrity": {
+    "completed_commands": 561,
+    "matched_stderr_sha256": 561,
+    "matched_stdout_sha256": 561,
+    "missing_or_unfinished_commands": 0,
+    "retained_stdin_bytes_and_sha256_checked": 12,
+    "started_commands": 561
+  },
+  "whole_book_source_report": {
+    "bind_leaf_index": 242,
+    "major": 1,
+    "manifest_bytes": 6322,
+    "minor": 1,
+    "source_witnesses": 1
+  },
+  "workload": {
+    "accounts": 135,
+    "additional_exact_duplicate_rows": 1,
+    "bound_normalized_csv_rows": 2860,
+    "entries": 127,
+    "independent_area_account_cells": 252,
+    "independent_supplier_account_cells": 449,
+    "legs": 2860,
+    "native_cost_centers": 42,
+    "native_counterparties": 160,
+    "negative_source_rows": 125,
+    "publisher_rows": 1430,
+    "source_signed_total_GBP": "285744584.15",
+    "zero_source_rows": 0
+  }
+}

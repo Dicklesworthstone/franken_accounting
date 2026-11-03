@@ -1269,7 +1269,7 @@ impl Procedure for Layering {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1309,7 +1309,7 @@ impl Procedure for PartyLayering {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1404,7 +1404,12 @@ fn layering(
             let (layers, _) = fnx_cgse::collect_witnesses(|| {
                 fnx_algorithms::bfs_layers_directed(&dg, &start_node)
             });
-            if layers.len() <= min_hops {
+            // A chain of min_hops transfers visits min_hops + 1 distinct
+            // accounts, all reachable from its start. The number of BFS
+            // layers is the shortest-path depth instead, and one direct
+            // transfer to a later account would hide a longer chain.
+            let reachable: usize = layers.iter().map(Vec::len).sum();
+            if reachable <= min_hops {
                 continue;
             }
             let mut chain = vec![start_idx];

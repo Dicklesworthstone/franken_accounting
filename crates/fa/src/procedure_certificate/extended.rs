@@ -28,9 +28,10 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("graph.circular_flows", 1),
     // fa-b6xs: reads live postings and the REA parties this closure binds.
     ("graph.party_circular_flows", 1),
-    ("graph.layering", 1),
+    // Version 2 prunes a start node by the nodes reachable from it.
+    ("graph.layering", 2),
     // fa-b6xs: reads live postings and the REA parties this closure binds.
-    ("graph.party_layering", 1),
+    ("graph.party_layering", 2),
     ("graph.communities", 2),
     // fa-b6xs: reads live postings and the REA parties this closure binds.
     ("graph.party_communities", 1),
@@ -52,11 +53,13 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("party.master_changes", 1),
     ("payroll.ghost", 2),
     ("expense.capitalization", 2),
-    ("aging.inventory", 2),
+    // Version 3 nets supersession within the as-of window.
+    ("aging.inventory", 3),
     ("reversal.patterns", 1),
     ("confirm.coverage", 2),
-    ("solvency.balance_sheet_test", 2),
-    ("solvency.cash_flow_test", 2),
+    // Version 3 judges each position as of the effective date (fa-gebi, fa-ti99).
+    ("solvency.balance_sheet_test", 3),
+    ("solvency.cash_flow_test", 3),
     // fa-6l8g: version 3 attributes party cash through each party's own legs.
     ("lookback.preferences", 3),
     ("lookback.fraudulent_transfer", 1),

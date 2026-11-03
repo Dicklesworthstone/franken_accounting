@@ -1277,13 +1277,13 @@ meaning = "Minimum share of the scope's directed PAID volume a party takes part 
 
 [[procedure]]
 id = "graph.layering"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L35"
 tie_break = "entry_vid"
 complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
 calibration = "uncalibrated"
-summary = "Multi-hop pass-through chains of at least min_hops directed transfers within window_days through intermediary accounts that forward at least min_passthrough_bps of the incoming transfer without round-trip closure, backed by fnx DiGraph traversal and a CGSE witness."
+summary = "Multi-hop pass-through chains of at least min_hops directed transfers within window_days through intermediary accounts that forward at least min_passthrough_bps of the incoming transfer without round-trip closure, backed by fnx DiGraph traversal and a CGSE witness. Version 2 skips a start account only when fewer accounts than a chain needs (min_hops + 1) are reachable from it; version 1 skipped on the shortest-path depth, so one direct transfer to a later account of a chain hid the whole chain."
 
 [[parameter]]
 procedure = "graph.layering"
@@ -1305,13 +1305,13 @@ meaning = "Minimum basis points of incoming transfer forwarded at each intermedi
 
 [[procedure]]
 id = "graph.party_layering"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L66"
 tie_break = "entry_vid"
 complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
 calibration = "uncalibrated"
-summary = "graph.layering over the party-level PAID projection (plan §4.1 PAID, §11.4; fa-b6xs): each balanced (unit, legal entity) partition of a live posting allocated from its credit legs' parties to its debit legs' parties under the registered largest-remainder law, a leg naming no single party being the book's, self-flows dropped. Flags multi-hop pass-through chains of at least min_hops transfers within window_days through intermediary parties that forward at least min_passthrough_bps, with a CGSE witness, naming the parties. It sees a counterparty chain that runs through one clearing account, which the account-level graph cannot."
+summary = "graph.layering over the party-level PAID projection (plan §4.1 PAID, §11.4; fa-b6xs): each balanced (unit, legal entity) partition of a live posting allocated from its credit legs' parties to its debit legs' parties under the registered largest-remainder law, a leg naming no single party being the book's, self-flows dropped. Flags multi-hop pass-through chains of at least min_hops transfers within window_days through intermediary parties that forward at least min_passthrough_bps, with a CGSE witness, naming the parties. It sees a counterparty chain that runs through one clearing account, which the account-level graph cannot. Version 2 skips a start party only when fewer parties than a chain needs are reachable from it, as graph.layering v2 does."
 
 [[parameter]]
 procedure = "graph.party_layering"
@@ -1546,13 +1546,13 @@ summary = "Improper expense capitalization detector (WorldCom motif): entries th
 
 [[procedure]]
 id = "aging.inventory"
-version = 2
+version = 3
 claim = "statistical"
 evidence = "FA-EVID-L49"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Slow-moving and obsolete inventory aging (ASC 330 / IAS 2): accounts holding the `inventory` account role (registries/account_roles.toml, assigned with fa chart role) whose net debit balance has had no credit relief (cost-of-sales or relief movement) for more than stale_days civil days through the coordinate's effective date. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens."
+summary = "Slow-moving and obsolete inventory aging (ASC 330 / IAS 2): accounts holding the `inventory` account role (registries/account_roles.toml, assigned with fa chart role) whose net debit balance has had no credit relief (cost-of-sales or relief movement) for more than stale_days civil days through the coordinate's effective date. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens. Version 3 nets supersession within the as-of window, so a reversal or replacement dated after the effective date does not erase a position that was stale on it; version 2 netted over the whole snapshot."
 effective_through = "optional"
 
 [[parameter]]
@@ -1591,13 +1591,13 @@ meaning = "Minimum corroborated balance coverage in basis points (8000 = 80.00%)
 
 [[procedure]]
 id = "solvency.balance_sheet_test"
-version = 2
+version = 3
 claim = "statistical"
 evidence = "FA-EVID-L52"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Signed native balance-sheet screen: net assets include credit contra-assets and net liabilities include debit contra-liabilities; apply the declared haircut once to each unit's positive net asset basis, preserving negative bases. RegisterEquals assertions never override balances. Reports an exact deficit with complete citations; documented fair-value adjustments and legal conclusions are unsupported."
+summary = "Signed native balance-sheet screen: net assets include credit contra-assets and net liabilities include debit contra-liabilities; apply the declared haircut once to each unit's positive net asset basis, preserving negative bases. RegisterEquals assertions never override balances. Reports an exact deficit with complete citations; documented fair-value adjustments and legal conclusions are unsupported. Version 3 reads inline valuation inputs only from entries posted on or before the effective date, netted within that window; version 2 read every live entry, so a valuation dated after the effective date refused the run."
 effective_through = "optional"
 
 [[parameter]]
@@ -1608,13 +1608,13 @@ meaning = "Haircut in basis points applied after contra-account netting to each 
 
 [[procedure]]
 id = "solvency.cash_flow_test"
-version = 2
+version = 3
 claim = "statistical"
 evidence = "FA-EVID-L53"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Equitable cash-flow solvency test (ability to pay debts as they come due): compares the balances of the accounts holding the `cash` account role (registries/account_roles.toml, assigned with fa chart role) against open payable items and short-term obligations maturing within horizon_days of the coordinate's effective date. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens."
+summary = "Equitable cash-flow solvency test (ability to pay debts as they come due): compares the balances of the accounts holding the `cash` account role (registries/account_roles.toml, assigned with fa chart role) against open payable items and short-term obligations maturing within horizon_days of the coordinate's effective date. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens. Version 3 judges a scheduled obligation open as of the effective date, netting supersession within that window, so a payment or reversal dated later neither relieves it nor erases it; the unscheduled screen nets cash as of the effective date and liabilities through the horizon, each in its own window. Version 2 netted the whole snapshot and let settlements through the horizon relieve obligations without spending the cash that paid them."
 effective_through = "optional"
 
 [[parameter]]

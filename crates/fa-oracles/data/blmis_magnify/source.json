@@ -1,0 +1,704 @@
+{
+  "absent_column_rule": "Eleven-column accounts have no ninety-day column: its retained field is explicitly empty and decoded value None, never a fabricated source zero.",
+  "accounts": {
+    "1FN024": {
+      "footer": {
+        "cells": {
+          "deposits": "3,136,150",
+          "full_history": "(7,603,549) [4]",
+          "printed_balance": "(7,283,377)",
+          "six_year": "(2,450,000)",
+          "transfers_in": "682",
+          "transfers_out": "(2,816,661)",
+          "two_year": "(700,000)",
+          "withdrawals": "(7,603,549)"
+        },
+        "markers": [
+          {
+            "field": "full_history",
+            "marker": "[4]",
+            "raw_line_sha256": "39432c9be0d00e0990a9e2d0ac1a6e6599bb2246573c9d69a4284cc3b4ce91d8",
+            "source_line": 46
+          },
+          {
+            "field": "withdrawals",
+            "marker": "[4]",
+            "raw_line_sha256": "e0c3a9e21542b0fa306cf94b6948b0da92839a00b59d55d1f9aa3ef4f10d921d",
+            "source_line": 45
+          }
+        ],
+        "pdf_page": 119,
+        "raw_line_sha256": "39432c9be0d00e0990a9e2d0ac1a6e6599bb2246573c9d69a4284cc3b4ce91d8",
+        "source_line": 46
+      },
+      "footnotes": {
+        "[1]": {
+          "fact_id": "SRC-BLM-006:1FN024:footnote:1",
+          "meaning": "The trustee debits remaining principal rather than the full reported outward transfer; credited principal is a source oracle input.",
+          "normalized_text_sha256": "f9eca2d3368853bbe58df9d1143c71eb8407b4d0bf913fd03efc5305c82c973f",
+          "pdf_page": 119,
+          "role": "partial_out",
+          "source_line": 47,
+          "text_source_lines": [
+            48,
+            49
+          ]
+        },
+        "[2]": {
+          "fact_id": "SRC-BLM-006:1FN024:footnote:2",
+          "meaning": "The trustee assigns no principal to the reported outward transfer, describing the reported amount as fictitious profits.",
+          "normalized_text_sha256": "76c6305b3a298d356ca0b4abf297a69b827313be988db0f0aa9204aa74937d38",
+          "pdf_page": 119,
+          "role": "zero_out",
+          "source_line": 50,
+          "text_source_lines": [
+            51,
+            52
+          ]
+        },
+        "[3]": {
+          "fact_id": "SRC-BLM-006:1FN024:footnote:3",
+          "meaning": "The trustee assigns no principal to the reported inward transfer, describing the reported amount as fictitious profits.",
+          "normalized_text_sha256": "8caf39e8bb0c34079e3c9fe1afabcd8672ac862289283a43edc65e5d53d7cf1c",
+          "pdf_page": 119,
+          "role": "zero_in",
+          "source_line": 53,
+          "text_source_lines": [
+            54,
+            55
+          ]
+        },
+        "[4]": {
+          "fact_id": "SRC-BLM-006:1FN024:footnote:4",
+          "meaning": "The marked total includes initial transfers to defendants other than the account holder, with details referenced in Exhibit D.",
+          "normalized_text_sha256": "dfc44144e8e6e5dda3abdf9896f1291c22f7a7c1cb317786c395b41f5f4ed47c",
+          "pdf_page": 119,
+          "role": "other_recipients",
+          "source_line": 56,
+          "text_source_lines": [
+            57
+          ]
+        }
+      },
+      "headers": [
+        "Date",
+        "Transaction Description",
+        "Transaction Amount Reported in Customer Statement",
+        "Cash Deposits",
+        "Cash Withdrawals",
+        "Transfers of Principal In",
+        "Transfers of Principal Out",
+        "Balance of Principal",
+        "Two Year Transfers",
+        "Six Year Transfers",
+        "Full History Transfers"
+      ],
+      "pdf_pages": [
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119
+      ],
+      "rounding_note": {
+        "fact_id": "SRC-BLM-006:1FN024:rounding-note",
+        "meaning": "The source attributes possible differences in displayed totals to rounding; the helper does not establish the cause independently.",
+        "normalized_text_sha256": "40a3b907c6fa414ea00f1aa440a191a1e854ed33ba22c858843430b02f723a13",
+        "pdf_page": 119,
+        "source_line": 58
+      },
+      "row_count": 342,
+      "rows_per_page": [
+        45,
+        45,
+        45,
+        45,
+        45,
+        45,
+        45,
+        27
+      ],
+      "source_column_count": 11
+    },
+    "1FN025": {
+      "footer": {
+        "cells": {
+          "deposits": "-",
+          "full_history": "(4,745,822)",
+          "printed_balance": "(4,745,822)",
+          "six_year": "(150,000)",
+          "transfers_in": "-",
+          "transfers_out": "-",
+          "two_year": "-",
+          "withdrawals": "(4,745,822) [2]"
+        },
+        "markers": [
+          {
+            "field": "withdrawals",
+            "marker": "[2]",
+            "raw_line_sha256": "7f876eb04234e634e661b1b67abcf8f2ef3a5d83cf3cebef448c1aa4db4aee34",
+            "source_line": 31
+          },
+          {
+            "field": "full_history",
+            "marker": "[2]",
+            "raw_line_sha256": "782c77c513577e31d3cb9caf7b32b595ee1901ddb577e32e195f860688ae4c4d",
+            "source_line": 32
+          }
+        ],
+        "pdf_page": 121,
+        "raw_line_sha256": "7f876eb04234e634e661b1b67abcf8f2ef3a5d83cf3cebef448c1aa4db4aee34",
+        "source_line": 31
+      },
+      "footnotes": {
+        "[1]": {
+          "fact_id": "SRC-BLM-006:1FN025:footnote:1",
+          "meaning": "The trustee assigns no principal to the reported outward transfer, describing the reported amount as fictitious profits.",
+          "normalized_text_sha256": "76c6305b3a298d356ca0b4abf297a69b827313be988db0f0aa9204aa74937d38",
+          "pdf_page": 121,
+          "role": "zero_out",
+          "source_line": 36,
+          "text_source_lines": [
+            37,
+            38
+          ]
+        },
+        "[2]": {
+          "fact_id": "SRC-BLM-006:1FN025:footnote:2",
+          "meaning": "The marked total includes initial transfers to defendants other than the account holder, with details referenced in Exhibit D.",
+          "normalized_text_sha256": "dfc44144e8e6e5dda3abdf9896f1291c22f7a7c1cb317786c395b41f5f4ed47c",
+          "pdf_page": 121,
+          "role": "other_recipients",
+          "source_line": 39,
+          "text_source_lines": [
+            40
+          ]
+        }
+      },
+      "headers": [
+        "Date",
+        "Transaction Description",
+        "Transaction Amount Reported in Customer Statement",
+        "Cash Deposits",
+        "Cash Withdrawals",
+        "Transfers of Principal In",
+        "Transfers of Principal Out",
+        "Balance of Principal",
+        "Two Year Transfers",
+        "Six Year Transfers",
+        "Full History Transfers"
+      ],
+      "pdf_pages": [
+        120,
+        121
+      ],
+      "rounding_note": {
+        "fact_id": "SRC-BLM-006:1FN025:rounding-note",
+        "meaning": "The source attributes possible differences in displayed totals to rounding; the helper does not establish the cause independently.",
+        "normalized_text_sha256": "40a3b907c6fa414ea00f1aa440a191a1e854ed33ba22c858843430b02f723a13",
+        "pdf_page": 121,
+        "source_line": 41
+      },
+      "row_count": 58,
+      "rows_per_page": [
+        45,
+        13
+      ],
+      "source_column_count": 11
+    },
+    "1FN037": {
+      "footer": {
+        "cells": {
+          "deposits": "-",
+          "full_history": "(126,489,846)",
+          "ninety_day": "(1,900,000)",
+          "printed_balance": "(123,673,185)",
+          "six_year": "(77,580,000)",
+          "transfers_in": "2,816,661",
+          "transfers_out": "-",
+          "two_year": "(24,000,000)",
+          "withdrawals": "(126,489,846)"
+        },
+        "markers": [],
+        "pdf_page": 159,
+        "raw_line_sha256": "3cd70c1528856b4a0213aae442a3497424c715988a609dd192db56fa3e66b8b1",
+        "source_line": 23
+      },
+      "footnotes": {
+        "[1]": {
+          "fact_id": "SRC-BLM-006:1FN037:footnote:1",
+          "meaning": "The trustee credits remaining originating-account principal rather than the full reported inward transfer; the credited amount is a source oracle input.",
+          "normalized_text_sha256": "65a22295479e5ca4bf6b5bde60608347c430b86d116fcaf946fe0bfad8f291f6",
+          "pdf_page": 159,
+          "role": "partial_in",
+          "source_line": 25,
+          "text_source_lines": [
+            26,
+            27
+          ]
+        },
+        "[2]": {
+          "fact_id": "SRC-BLM-006:1FN037:footnote:2",
+          "meaning": "The trustee assigns no principal to the reported inward transfer, describing the reported amount as fictitious profits.",
+          "normalized_text_sha256": "8caf39e8bb0c34079e3c9fe1afabcd8672ac862289283a43edc65e5d53d7cf1c",
+          "pdf_page": 159,
+          "role": "zero_in",
+          "source_line": 28,
+          "text_source_lines": [
+            29,
+            30
+          ]
+        },
+        "[3]": {
+          "fact_id": "SRC-BLM-006:1FN037:footnote:3",
+          "meaning": "The trustee assigns no principal to the reported outward transfer, describing the reported amount as fictitious profits.",
+          "normalized_text_sha256": "76c6305b3a298d356ca0b4abf297a69b827313be988db0f0aa9204aa74937d38",
+          "pdf_page": 159,
+          "role": "zero_out",
+          "source_line": 31,
+          "text_source_lines": [
+            32,
+            33
+          ]
+        },
+        "[4]": {
+          "fact_id": "SRC-BLM-006:1FN037:footnote:4",
+          "meaning": "The trustee excludes starred tax withholdings within the stated six-year prefiling period from principal, explaining subsequent IRS refunds without dated refund entries.",
+          "normalized_text_sha256": "21d5993db7ad460f0d8c540503be631e4c35cf8d70b4b14acaf1b5d71d490c4f",
+          "pdf_page": 159,
+          "role": "withholding_refunds",
+          "source_line": 34,
+          "text_source_lines": [
+            35,
+            36
+          ]
+        }
+      },
+      "headers": [
+        "Date",
+        "Transaction Description",
+        "Transaction Amount Reported in Customer Statement",
+        "Cash Deposits",
+        "Cash Withdrawals",
+        "Transfers of Principal In",
+        "Transfers of Principal Out",
+        "Balance of Principal",
+        "90-Day Transfers",
+        "Two Year Transfers",
+        "Six Year Transfers",
+        "Full History Transfers"
+      ],
+      "pdf_pages": [
+        122,
+        123,
+        124,
+        125,
+        126,
+        127,
+        128,
+        129,
+        130,
+        131,
+        132,
+        133,
+        134,
+        135,
+        136,
+        137,
+        138,
+        139,
+        140,
+        141,
+        142,
+        143,
+        144,
+        145,
+        146,
+        147,
+        148,
+        149,
+        150,
+        151,
+        152,
+        153,
+        154,
+        155,
+        156,
+        157,
+        158,
+        159
+      ],
+      "rounding_note": {
+        "fact_id": "SRC-BLM-006:1FN037:rounding-note",
+        "meaning": "The source attributes possible differences in displayed totals to rounding; the helper does not establish the cause independently.",
+        "normalized_text_sha256": "40a3b907c6fa414ea00f1aa440a191a1e854ed33ba22c858843430b02f723a13",
+        "pdf_page": 159,
+        "source_line": 37
+      },
+      "row_count": 1927,
+      "rows_per_page": [
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        52,
+        3
+      ],
+      "source_column_count": 12
+    },
+    "1FN073": {
+      "footer": {
+        "cells": {
+          "deposits": "1,699,968",
+          "full_history": "(2,731,065)",
+          "printed_balance": "(1,031,098)",
+          "six_year": "(2,500,000)",
+          "transfers_in": "-",
+          "transfers_out": "-",
+          "two_year": "(2,500,000)",
+          "withdrawals": "(2,731,065)"
+        },
+        "markers": [],
+        "pdf_page": 160,
+        "raw_line_sha256": "aaa51e28c9510d1298ba61c73e9aced77afc6f68a9ad7672f7ed484c0b8dd80a",
+        "source_line": 26
+      },
+      "footnotes": {},
+      "headers": [
+        "Date",
+        "Transaction Description",
+        "Transaction Amount Reported in Customer Statement",
+        "Cash Deposits",
+        "Cash Withdrawals",
+        "Transfers of Principal In",
+        "Transfers of Principal Out",
+        "Balance of Principal",
+        "Two Year Transfers",
+        "Six Year Transfers",
+        "Full History Transfers"
+      ],
+      "pdf_pages": [
+        160
+      ],
+      "rounding_note": {
+        "fact_id": "SRC-BLM-006:1FN073:rounding-note",
+        "meaning": "The source attributes possible differences in displayed totals to rounding; the helper does not establish the cause independently.",
+        "normalized_text_sha256": "40a3b907c6fa414ea00f1aa440a191a1e854ed33ba22c858843430b02f723a13",
+        "pdf_page": 160,
+        "source_line": 29
+      },
+      "row_count": 6,
+      "rows_per_page": [
+        6
+      ],
+      "source_column_count": 11
+    },
+    "1FN097": {
+      "footer": {
+        "cells": {
+          "deposits": "99,980",
+          "full_history": "(421,770)",
+          "printed_balance": "(321,790)",
+          "six_year": "-",
+          "transfers_in": "-",
+          "transfers_out": "-",
+          "two_year": "-",
+          "withdrawals": "(421,770)"
+        },
+        "markers": [],
+        "pdf_page": 161,
+        "raw_line_sha256": "f771c3cb0b65765bc64a25afa7f8ae91ba431532cb3d632ad9b3ae59e1ff4fed",
+        "source_line": 24
+      },
+      "footnotes": {},
+      "headers": [
+        "Date",
+        "Transaction Description",
+        "Transaction Amount Reported in Customer Statement",
+        "Cash Deposits",
+        "Cash Withdrawals",
+        "Transfers of Principal In",
+        "Transfers of Principal Out",
+        "Balance of Principal",
+        "Two Year Transfers",
+        "Six Year Transfers",
+        "Full History Transfers"
+      ],
+      "pdf_pages": [
+        161
+      ],
+      "rounding_note": {
+        "fact_id": "SRC-BLM-006:1FN097:rounding-note",
+        "meaning": "The source attributes possible differences in displayed totals to rounding; the helper does not establish the cause independently.",
+        "normalized_text_sha256": "40a3b907c6fa414ea00f1aa440a191a1e854ed33ba22c858843430b02f723a13",
+        "pdf_page": 161,
+        "source_line": 28
+      },
+      "row_count": 4,
+      "rows_per_page": [
+        4
+      ],
+      "source_column_count": 11
+    },
+    "1FR051": {
+      "footer": {
+        "cells": {
+          "deposits": "500,000",
+          "full_history": "(11,730,019) [2]",
+          "printed_balance": "(11,230,019)",
+          "six_year": "(4,800,000)",
+          "transfers_in": "-",
+          "transfers_out": "-",
+          "two_year": "(2,600,000)",
+          "withdrawals": "(11,730,019)"
+        },
+        "markers": [
+          {
+            "field": "full_history",
+            "marker": "[2]",
+            "raw_line_sha256": "431bdf4ab8676ed53aef319d0619635125963d476a8838ff60b753bde2c590c5",
+            "source_line": 47
+          },
+          {
+            "field": "withdrawals",
+            "marker": "[2]",
+            "raw_line_sha256": "53b5bf51913ba2f6986f6f859e820e4fd6c91074b74742d61ca441e99f1e9a2b",
+            "source_line": 46
+          }
+        ],
+        "pdf_page": 162,
+        "raw_line_sha256": "431bdf4ab8676ed53aef319d0619635125963d476a8838ff60b753bde2c590c5",
+        "source_line": 47
+      },
+      "footnotes": {
+        "[1]": {
+          "fact_id": "SRC-BLM-006:1FR051:footnote:1",
+          "meaning": "The trustee assigns no principal to the reported inward transfer, describing the reported amount as fictitious profits.",
+          "normalized_text_sha256": "8caf39e8bb0c34079e3c9fe1afabcd8672ac862289283a43edc65e5d53d7cf1c",
+          "pdf_page": 162,
+          "role": "zero_in",
+          "source_line": 49,
+          "text_source_lines": [
+            50,
+            51
+          ]
+        },
+        "[2]": {
+          "fact_id": "SRC-BLM-006:1FR051:footnote:2",
+          "meaning": "The marked total includes initial transfers to defendants other than the account holder, with details referenced in Exhibit D.",
+          "normalized_text_sha256": "dfc44144e8e6e5dda3abdf9896f1291c22f7a7c1cb317786c395b41f5f4ed47c",
+          "pdf_page": 162,
+          "role": "other_recipients",
+          "source_line": 52,
+          "text_source_lines": [
+            53
+          ]
+        }
+      },
+      "headers": [
+        "Date",
+        "Transaction Description",
+        "Transaction Amount Reported in Customer Statement",
+        "Cash Deposits",
+        "Cash Withdrawals",
+        "Transfers of Principal In",
+        "Transfers of Principal Out",
+        "Balance of Principal",
+        "Two Year Transfers",
+        "Six Year Transfers",
+        "Full History Transfers"
+      ],
+      "pdf_pages": [
+        162
+      ],
+      "rounding_note": {
+        "fact_id": "SRC-BLM-006:1FR051:rounding-note",
+        "meaning": "The source attributes possible differences in displayed totals to rounding; the helper does not establish the cause independently.",
+        "normalized_text_sha256": "40a3b907c6fa414ea00f1aa440a191a1e854ed33ba22c858843430b02f723a13",
+        "pdf_page": 162,
+        "source_line": 55
+      },
+      "row_count": 27,
+      "rows_per_page": [
+        27
+      ],
+      "source_column_count": 11
+    }
+  },
+  "assertion_status": "trustee_computation in a complaint reproduced as an affidavit attachment; not a court finding",
+  "description_exception": {
+    "interpretation": "The source itself prints only the account annotation. Its reported-amount footnote [2] supplies the inward zero-principal interpretation; no description words are reconstructed.",
+    "literal": "(1FN024)",
+    "source_row_id": "SRC-BLM-006:1FN037:p134:l27"
+  },
+  "embedded_filing": {
+    "case": "10-05279",
+    "document": "143-2",
+    "exhibit": "B",
+    "filed_on": "2017-09-29"
+  },
+  "enclosing_filing": {
+    "case": "10-05279",
+    "description": "Published affidavit with an attached copy of the second amended complaint",
+    "document": "150",
+    "filed_on": "2017-10-30"
+  },
+  "extraction": {
+    "authoring_version": "pdftotext version 24.02.0",
+    "command": "pdftotext -layout -f 112 -l 162 - - < <pinned.pdf>",
+    "line_hash_basis": "SHA-256 of the exact UTF-8 extraction line without its newline",
+    "page_utf8_sha256": [
+      "912a644baa902fc15aba3f6b74602732d86bfb0457292ef7d16222cd4e55af94",
+      "e0d6761e0251fe4d35b514d8d86d6b9b586f4627e363f28e1395ca5968989ed8",
+      "bc3878949172408b54ac1751c9aad617a1805714bb18171d23d47e96d4701e69",
+      "2b4cebac6573d5b3137d7529bfee7a7af642a38030ed807408fb55db5b7f4c04",
+      "825017002f19d7ef53de1320d90062623770ea6cd0a50913c5e0e0f72cf337d7",
+      "49b4633a4d4245dc60b67a9ef9fdbef0578ead808557e522da2c22fdb422e837",
+      "b7e77651112b9188a208139389bf0d6d54c44863bacd5118783f841198ffb323",
+      "76abb1f52bf5c61680d5d5b220f13f2a3b59aedae0ffeb4c25942bb8ac1a090a",
+      "07a9cea1281efcea4d7352a096c5a0b2df01c12b16b1ea7b8d35801ab03677dd",
+      "c12d50fd4cfb8bf34d04762e3f5d3e236027e002c85b07c5cf46bd249459fd48",
+      "851dd05d0d7fa505e45ea8d577a726fc05e12c8433786258480d9f7c9df9062c",
+      "3d72cafd4d62328767bc394f58a77f5f87ec681aac83536931a01fdbc5cc9511",
+      "bbe124666dd6fbdc93e6b2c06432eba13dfa768faf005c0c7ebbc600e6c1c284",
+      "fa51c0d3646d83df1503b8851ad6453ad4e749647565c0cb813baa0fd53ad2a1",
+      "4bfac4557fc50e803ea522f3f82938312d2334270d60eee394835e4712dad566",
+      "dd1824bcf4b784144fb34fd48cc34d72f620abafceb36efd7b744adfc440b5f5",
+      "ecdfd43352b8358a62fdd26d5c34ccf4689495ee6a853c4323c1ad256464f5ca",
+      "2284419b390099c29b2110f42e5b1169169c299b2116053a4f74a9bbf1e605f7",
+      "f7643ef721b729acebd0aebd28773c63c3d39b1ce33559ac693ce44e2b8aa2af",
+      "18d5cbf5f11642660538084ceea728ca7f18606d0bc7d7be75103621eea00b58",
+      "38296f5beda1ded0d16eab7bd05f58692e51ed7df2523efb47d6c38d79d9ec87",
+      "91f86c29afb114fbc30b6b3a21f3a37e65c41767491a6203f947c0c6c5ab5d9f",
+      "46f6ad077857ec6dae6e0a1c6f81af5fe38b2186700dabc6965391a225cfbcb0",
+      "3a4184cb5074fae9189a36ff040b94563f36fab61709d55746015b75b1c43849",
+      "e7fd2675d84c02f63dd6ec17df39934da57d16be4a7896362236ba3b9b7fe88b",
+      "a180a882091c2f9d08039185ff78e4487db310591f944b16986741df0ef142b1",
+      "e88c26bae50a28d2b73315bf7490877b157012fe9d499f18a718f6c542992d04",
+      "61b2d2798795d8dab46a7dd21b110cc9a14bfdf9abe0c5a68f9060e3f0a72671",
+      "5ceb7edbe385fbd1e34002930e8cd5d30113040dd91cb95eb1ae0997b17a476c",
+      "f5e12329eab82b5cb7cdc3bcd35e6dd47f7af523f62bb7c8544f405faf420b0c",
+      "bd7dc886b5a8a7d23e189ce04c5e29113b980b523d5556a0a980f9c6eaba0462",
+      "ce5477b93e1425e0a9e0ee2be94bb1de2bfb3566f0d37fc3278f5dba94755c03",
+      "986be1029322e33f3f8a30ecc323f59af32f034998aa235d9e189e2ff1c496f0",
+      "6cead28e6b0b70905297e5d6f567b0ab2af47046cd538e0f9845e17fc588ba4b",
+      "432533691cb86ad1110a94b66f884b4f79d2fe37a03fa397b3e295d6eb6a3110",
+      "3ce34517bf55422f14829e15a827de8dceb922101a308cb7cb5651e07ab2bd3d",
+      "3fb12fc0c6f5cc00c638e72c03fa77b3652f3f5e7c8d679b9377f81e79de280b",
+      "5b71363f285200ac2a40ee7443e4343dc0de37de307662db649b2bf0cf49f9f5",
+      "3c8d8a5c5fc834240d20cd6ed1f9204c3595dcc533225b436d9e18f310de4ed6",
+      "a7caefc4fd04caa805cfa265578834f066bf732d33b2c6c593c12485b0a9a1be",
+      "8f1d91f1000cb927493abc96055bb02352db17e022317a7104e2abdf8d38b49e",
+      "9fe0f0e5fa8fd7aea3bd68ecfe77c6504ba9a9490fc4b57cb69b06a6be60588a",
+      "7deda7041113f7c99e0ab245487f305382523a474e2db4f6da6e46d8edf518f4",
+      "a90998558cfac5030e687ac4700e178ed6d127d9326a94f46c3da6d0e1438978",
+      "671101db6143ec15aa552d6de0f45b25d25eaf0f029af043ee045818e9a22c7b",
+      "f97c12278937a8d4130b6c33b062a61fc892de43423bb9a79d0ac4960876ff42",
+      "4a3b08101ab359e1c41fc61cf39ce9dc82debd9705b9086c3d8ce5dc62420e08",
+      "564e59258b933b6bb98829d7c9cf70ac777e370ffd57c85fe6cc7e5a9eb25ffa",
+      "01968f1c7f4e34c46091211bbb5529a319e17c47c04a13f6753b77c0fdb670da",
+      "9b13ec0d0013b5addcbf074947080fc763029780103c8f0b8dda5bece50e159b",
+      "9bed5c2d9956e6d5fa6ab0a8b11d651cac46a04f9542c23514cce3fe26b3664b"
+    ],
+    "utf8_sha256": "2528f349bc87df810e36b54f61179cd78118720d5ec21140ebb498d7052544ec"
+  },
+  "pdf_pages": [
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    118,
+    119,
+    120,
+    121,
+    122,
+    123,
+    124,
+    125,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    132,
+    133,
+    134,
+    135,
+    136,
+    137,
+    138,
+    139,
+    140,
+    141,
+    142,
+    143,
+    144,
+    145,
+    146,
+    147,
+    148,
+    149,
+    150,
+    151,
+    152,
+    153,
+    154,
+    155,
+    156,
+    157,
+    158,
+    159,
+    160,
+    161,
+    162
+  ],
+  "printed_amount_unit": "USD whole dollars",
+  "redistribution_basis": "Factual transaction cells and citation metadata only; full source PDF and account-holder headers are not committed.",
+  "row_id_basis": "Source citation, not an original transaction identifier: source id, account, physical PDF page and extraction line.",
+  "schema_version": 1,
+  "scope": "Every dated row of the six Magnify Exhibit B accounts: 2,364 observations. The pinned publisher-hosted affidavit contains an attached copy of the complaint's Exhibit B; original and enclosing docket identities are retained. These are trustee computations in a complaint, not a complete BLMIS general ledger or court findings. All eleven/twelve printed columns, positive corrections, source zero cells, 717 starred tax observations and arithmetic differences survive. Transfer principal is an explicit oracle input, not independently reproduced net equity. Analysis counterparts and the zero-before-first-row baseline are declared constructions. No dated IRS refunds, missing description text, absent lookback columns or balancing adjustments are invented.",
+  "source_bytes": 28947445,
+  "source_id": "SRC-BLM-006",
+  "source_row_count": 2364,
+  "source_sha256": "25055acd72befe051e8939b528ebcf47be996edcbaa04c712efeb3ebb8dba8ec",
+  "source_url": "https://www.madofftrustee.com/document/dockets/magnify_affidavit_opposingcounsel_10-05279_docket150.pdf",
+  "star_rule": "Only 1FN037's footnote [4] gives the literal withdrawal star a derived zero principal contribution; reported withholding amounts survive separately."
+}

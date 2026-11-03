@@ -1,9 +1,12 @@
-//! The profile's lexer. It mirrors the substrate's lexical rules exactly
-//! (fgdb-gql `graph_text::literal`): `'`, `"` and backtick spans close on
-//! their delimiter and double it to escape, `//` and `/* */` are comments,
-//! and words are `[A-Za-z_][A-Za-z0-9_]*`. A token records its bracket depth
-//! and its innermost enclosing open bracket, so clause analysis can tell the
-//! statement's root from a pattern, a map or a call's arguments.
+//! The profile's lexer. It mirrors the substrate's lexical rules (fgdb-gql
+//! `graph_text::literal`): `'` and `"` spans close on their delimiter and
+//! double it to escape, `//` and `/* */` are comments (their spans are
+//! recorded), and words are `[A-Za-z_][A-Za-z0-9_]*`. A backtick-quoted
+//! name, which the substrate reads as a plain word, is refused: the profile's
+//! checks read names as words and would otherwise pass it unread. A token
+//! records its bracket depth and its innermost enclosing open bracket, so
+//! clause analysis can tell the statement's root from a pattern, a map or a
+//! call's arguments.
 
 use crate::{Law, Refusal};
 
@@ -35,6 +38,8 @@ pub(crate) struct Token {
 pub(crate) struct Lexed<'a> {
     pub text: &'a str,
     pub tokens: Vec<Token>,
+    /// The byte spans of `//` and `/* */` comments, which no token covers.
+    pub comments: Vec<(usize, usize)>,
 }
 
 impl Lexed<'_> {
@@ -94,6 +99,7 @@ pub(crate) fn lex(text: &str) -> Result<Lexed<'_>, Refusal> {
     let bytes = text.as_bytes();
     let mut tokens: Vec<Token> = Vec::new();
     let mut open: Vec<usize> = Vec::new();
+    let mut comments: Vec<(usize, usize)> = Vec::new();
     let mut at = 0;
     while at < bytes.len() {
         let ch = text[at..].chars().next().unwrap_or(' ');
@@ -103,19 +109,32 @@ pub(crate) fn lex(text: &str) -> Result<Lexed<'_>, Refusal> {
         }
         let rest = &bytes[at..];
         if rest.starts_with(b"//") {
+            let start = at;
             at = text[at..].find('\n').map_or(text.len(), |line| at + line);
+            comments.push((start, at));
             continue;
         }
         if rest.starts_with(b"/*") {
+            let start = at;
             at = text[at + 2..]
                 .find("*/")
                 .map(|close| at + 2 + close + 2)
                 .ok_or_else(|| refused(at, "a block comment is never closed"))?;
+            comments.push((start, at));
             continue;
         }
         let start = at;
         let kind = match bytes[at] {
-            b'\'' | b'"' | b'`' => {
+            // A backtick quotes a name, not a string: the substrate reads
+            // `amount` as the word amount. The profile's checks read names as
+            // plain words, so a quoted name would pass them unread.
+            b'`' => {
+                return Err(refused(
+                    at,
+                    "a backtick-quoted name is not read by the accounting profile; write the name as a plain word",
+                ));
+            }
+            b'\'' | b'"' => {
                 let delimiter = bytes[at];
                 let mut end = at + 1;
                 loop {
@@ -206,7 +225,11 @@ pub(crate) fn lex(text: &str) -> Result<Lexed<'_>, Refusal> {
         };
         tokens.push(token);
     }
-    Ok(Lexed { text, tokens })
+    Ok(Lexed {
+        text,
+        tokens,
+        comments,
+    })
 }
 
 fn word_end(bytes: &[u8], mut at: usize) -> usize {

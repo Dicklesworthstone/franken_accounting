@@ -219,9 +219,11 @@ pub(crate) fn compile(
         &" ".repeat(after_start - call_start),
     );
     let analyzed = lex::lex(&analyzed)?;
-    let aggregates = law::check_with_amount_aliases(&analyzed, &[("open", leg)])?;
-    let (continuation, aggregation) = if aggregates {
-        let (cut, returned, plan) = aggregate::plan_with_amount_aliases(&analyzed, &[], &["open"])?;
+    let amounts = law::check_with_amount_aliases(&analyzed, &[("open", leg)])?;
+    let (continuation, aggregation) = if amounts.aggregated {
+        let mut names = vec!["open"];
+        names.extend(amounts.aliases.iter().map(String::as_str));
+        let (cut, returned, plan) = aggregate::plan_with_amount_aliases(&analyzed, &[], &names)?;
         (
             format!("{} {returned}", lexed.text[after_start..cut].trim()),
             Some(plan),
