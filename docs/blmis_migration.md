@@ -142,7 +142,11 @@ regenerated, and the negative does not require a fabricated transaction.
 That omission check proves why a matching trial balance alone cannot establish
 complete import: a transaction and its offset can both disappear without
 changing any monthly net. It is distinct from the plan's additional monetary
-native-chunk tie-out twin, which this driver does not claim to execute.
+native-chunk tie-out twin. The separate
+[seven-account monetary control](blmis_migration_negative.md) executes that
+boundary with matched complete populations: the original amount passes native
+finalization planning, while a balanced $1 alteration produces exactly 388
+monetary mismatches and `FA-REF-131` without activating either control book.
 
 Source and helper documents are explicitly `AgentUpload`; a separate local
 fixture principal records native Reviewed attestations. Two separately issued
@@ -201,10 +205,11 @@ comparator fixtures; they are never evidence that the accounting engine ran.
 The real PDF test covers the full 304-observation selection and 194 controls.
 
 This driver is a standalone execution workload. It does not claim completion
-of the case framework's entire M-T-03 bead, its separate native-chunk tie-out
-twin. The default four-account mode does not establish the seven-account mode
-described below. Native execution status
-is recorded by each actual run's `report.json` or `failure.json`.
+of the case framework's entire M-T-03 bead. The native-chunk monetary twin has
+its own [runner and execution evidence](blmis_migration_negative.md). The
+default four-account mode does not establish the seven-account mode described
+below. Native execution status is recorded by each actual run's `report.json`
+or `failure.json`.
 
 ## Recorded native execution — 2026-11-03
 
