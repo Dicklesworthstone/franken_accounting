@@ -312,6 +312,7 @@ results do not establish acceptance of the subsequent `9700db7` Rust storage cha
 | Glantz final-helper analytics recheck | The same completed book and source population | 37 | 43.562 | Exit 0; all seven strict comparisons and certificate replays passed |
 | Complete Square One pipeline | 1,050 / 340 / 710 | 986 | 396.186 | Exit 0; final helper unchanged throughout the run |
 | Hosted complete Glantz pipeline at `5a8f078` | 379 / 372 / 7 | 1,305 | 384.817 | Exit 0; final helper through fresh ingestion, posting and all proofs |
+| Magnify verified continuation | 2,364 / 1,586 / 778 | 1,210 new | 2,153.438 | Exit 0; revalidated prior execution and completed all remaining checks |
 
 The initial Glantz process imported the helper before its last strengthening.
 Its workpaper hashes the file on disk at serialization, which cannot establish
@@ -340,19 +341,19 @@ artifact retains the full analytics object inside `report.json`; its separate
 workpaper file was not uploaded. The execution record identifies this boundary
 and does not invent launch-time module snapshots.
 
-| Procedure | Glantz final recheck and hosted run | Square One |
-|---|---:|---:|
-| `jet.round_amounts` | 311 | 37 |
-| `jet.weekend` | 0 | 0 |
-| `duplicates.same_same_same` | 0 | 0 |
-| `duplicates.same_same_different` | 14 | 3 |
-| `numbers.relative_size_factor` | 1 | 0 |
-| `numbers.round_amount_density` | 2 | 0 |
-| `benford.first_digit` | 1 Info notice: population 372 < 500 | 1 Info notice: population 340 < 500 |
+| Procedure | Glantz final recheck and hosted run | Square One | Magnify continuation |
+|---|---:|---:|---:|
+| `jet.round_amounts` | 311 | 37 | 189 |
+| `jet.weekend` | 0 | 0 | 0 |
+| `duplicates.same_same_same` | 0 | 0 | 9 |
+| `duplicates.same_same_different` | 14 | 3 | 30 |
+| `numbers.relative_size_factor` | 1 | 0 | 2 |
+| `numbers.round_amount_density` | 2 | 0 | 2 |
+| `benford.first_digit` | 1 Info notice: population 372 < 500 | 1 Info notice: population 340 < 500 | 1 Low finding: population 1,586 |
 
 These counts matched the independent exact source predicates. Every final-helper
 certificate replay remained byte-identical after later findings were recorded.
-The complete accounting pipelines also checked all 372 and 340 posting retries,
+The Glantz and Square One accounting pipelines checked all 372 and 340 posting retries,
 17 and 10 annual controls, and 143 and 72 monthly registers, respectively.
 Standalone `fa-verify` accepted the original ADS exports with complete native
 leg identities on all 744 and 680 rows, then exited 8 for each amount-only and
@@ -370,13 +371,38 @@ the scope above; the Benford notices make no conformity claim.
 
 Magnify's initial native attempt stopped on `ENOSPC` after 2,949 complete
 command records, including all 1,586 fresh postings and 1,018 exact retries.
-Its final transcript line is truncated, and no completed report or analytics
-workpaper exists. The preserved attempt is explicitly incomplete. A separately
-labelled continuation is **RUNNING** after a successful 17-command native
-recovery preflight, including all six original certificate replays and complete
-PDF readback; its final analytics and proofs are not yet established.
-Reproduction commands and artifact hashes are in the execution record. Generated private keys, whole PDFs and native
-books are excluded from the committed summary.
+Its truncated transcript and empty failure file remain unchanged, and the
+initial attempt remains **INCOMPLETE**. No launch-time helper snapshot exists
+for that process; the continuation does not manufacture one.
+
+The separately pinned continuation finished **PASS**, exit 0, at
+`2026-11-03T16:36:25.518101+00:00`. It revalidated the complete original source,
+intents and receipts, replayed all six original certificates and six empty
+preimport prefixes against the copied native book, and cold-read the complete
+28,947,445-byte PDF. It reissued all 568 unconfirmed retries, completing the
+1,586-entry retry census, then checked 26 annual cumulative trial balances,
+all 272 monthly registers, projections, custody, signed checkpoint and both
+source-compared exports. All 3,172 exported legs passed standalone ADS
+verification; the amount-only and party-only mutations each exited 8.
+Its 1,210 new commands comprise 1,208 exit-0 results and those two expected
+refusals. Source, executable and helper pins matched before and after, and the
+original interrupted run remained unchanged. This is explicitly
+`continued_after_interruption`, with 2,153.438 driver seconds and 2,154.330
+wrapper seconds; it is not a fresh rerun of the original postings.
+
+Magnify's seven strict source predicates and certificate replays passed at
+prefix 1914. Benford's unchanged v2 procedure scored 1,586 debit observations:
+first-digit counts `[437, 283, 195, 161, 149, 108, 110, 76, 67]`, MAD
+`0.007606233`, chi-square `12.553396` with eight degrees of freedom, and KS
+`0.025494056`. Its Low severity is a record-silent procedure result under the
+limits above. The import retained 778 nonposting observations, including 717
+starred withholding observations, and all 2,252 discrepant printed balances.
+All 58 trustee transfer credits remain explicit source inputs; no independent
+legal transfer-credit calculation is claimed.
+
+Reproduction commands and artifact hashes are in the execution record.
+Generated private keys, whole PDFs and native books are excluded from the
+committed summary.
 
 ## Default single-account workload
 

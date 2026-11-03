@@ -534,10 +534,48 @@ register, projection, custody, CSV/ADS, standalone-proof and tamper assertions.
 
 The observed native recovery preflight passed **17 actual commands** at unchanged
 head **1913**, including exact readback of all **28,947,445 original bytes**.
-The remaining continuation was still executing when this helper was introduced;
-the execution record distinguishes the original failure, preflight and final
-outcome. Its 20 focused guard tests passed, including a secondary disk-full error
-while recording failure and a directory-creation ownership race.
+The separate continuation then completed **PASS** on 2026-11-03 at 16:36 UTC,
+with actual process exit zero. It executed **1,210 new native commands** in
+**2,153.438 seconds**, including the preflight, all **568 remaining exact
+retries**, all **26 annual cumulative trial balances**, all seven analytics
+procedures and certificate replays, and maintenance plus independent verification
+of all **272 posting-month registers**. Its earlier **1,018 acknowledged retries**
+were separately revalidated against the preserved transcript and copied native
+book, so all **1,586 monetary entries** have an exact-retry check.
+
+Both CSV and ADS export oracles matched all **3,172 balanced legs**, including
+their source text and party identities. The standalone verifier accepted the
+original ADS proof with exit **0**, rejected a one-cent amount change with exit
+**8**, and independently rejected a party-only identity change with exit **8**.
+All continuation helper, source and executable pins matched before and after
+execution, and the original interrupted output remained unchanged.
+
+The source-derived analytic results were:
+
+| Procedure | Observed source-checked result |
+|---|---:|
+| Round amounts, power 3 | 189 findings |
+| Weekend postings | 0 findings |
+| Same-day duplicate groups | 9 findings |
+| Nearby-date duplicate pairs, 30-day window | 30 findings |
+| Relative-size factors | 2 findings |
+| Round-amount density | 2 findings |
+| Benford first digits | One Low-severity observation; 1,586 scored observations |
+
+Benford's first-digit counts are `[437, 283, 195, 161, 149, 108, 110, 76, 67]`;
+its exact MAD is **0.007606233**, in the registered acceptable band. The scored
+population is the 1,586 monetary observations, not the broader native journal
+census that also contains control entries. Every procedure matched its
+independent source predicate and reproduced its certified historical bytes.
+These are statistical observations under the declared source assumptions;
+the standalone verifier's acceptance concerns the accounting export proof.
+
+The [execution record](../evidence/blmis/record_silent_validation_2026-11-03.json)
+retains the original failure, preflight and completed continuation as distinct
+results, with report, transcript, source and binary hashes. The helper's
+20 focused guard tests also passed, including a secondary disk-full error
+while recording failure and a directory-creation ownership race. The measured
+duration describes this continuation only and is not a throughput benchmark.
 
 A completed report explicitly records
 `execution_mode: continued_after_interruption`, with separate initial and

@@ -373,16 +373,22 @@ These scoped native results do not constitute a repository-wide release gate.
 
 ## Remaining high-value work
 
-The broader OMES driver now projects nonblank departments into native
-dimensions and keeps source blanks untagged. The four-account Development
-Finance Authority helper described here still retains its other chartfields
-as evidence without projecting them. Fund, class funding, program and project
-attribution need explicit source-to-dimension mappings where appropriate;
-their presence in retained CSV does not make them native queryable dimensions.
+The broader OMES driver now projects nonblank department, fund, product and
+project codes into their corresponding native dimensions and keeps source
+blanks untagged. The four-account Development Finance Authority helper described
+here retains its other chartfields as evidence without projecting them. Class
+funding and program have no established native dimension mapping; neither
+driver invents one. The [complete-chartfield execution record](../evidence/public_ledger/validation-2026-11-03-entry-fragments.json)
+separates successful museum/pension execution from the university storage
+failure and acceptance of the large-Entry repair.
 
 Grouped native staging and resumable orchestration reduce repeated intake and
-preserve completed chunk publications. They do not settle large-entry storage
-or million-line bulk migration acceptance (`fa-fdt` / `fa-zddh`). Import
+preserve completed chunk publications. The full university dimension vector
+exposed a 157-leg Entry above the native row limit; the
+[authenticated fragment implementation](public_ledger.md#preserve-large-entries-without-losing-source-detail)
+preserves that single Entry and every original leg. Its runtime acceptance is
+recorded separately. Million-line bulk migration acceptance (`fa-zddh`) remains
+open. Import
 preparation now offers an explicit `--bind-source` opt-in that binds an
 immutable native manifest before staging. For a bound run, finalization
 requires every proposal in the retained package in addition to the declared
