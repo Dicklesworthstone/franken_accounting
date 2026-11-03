@@ -172,7 +172,13 @@ pub struct LegacyColumnMap {
     pub debit_marker: String,
     pub credit_marker: String,
     pub unit_column: Option<String>,
+    /// Entry-level description in a generic CSV. Nonblank values for one entry
+    /// must match exactly; blank rows inherit the first populated value. When
+    /// this names the same column as `memo_column`, it instead supplies per-leg
+    /// text: every row retains its memo and the first populated memo supplies
+    /// the entry summary. An entry with no populated description uses its ID.
     pub description_column: Option<String>,
+    /// Per-leg text, which may differ between rows of the same entry.
     pub memo_column: Option<String>,
     pub entered_by_column: Option<String>,
     pub approved_by_column: Option<String>,
@@ -1422,6 +1428,8 @@ fn parse_tabular_csv_with_format(
     account_map: &AccountMap,
 ) -> Result<LegacyImportBatch, FormatError> {
     let fmt_name = format.registry_name();
+    let header_description = format == LegacyFormat::GenericCsv
+        && column_map.description_column != column_map.memo_column;
     for (kind, column) in &column_map.dimension_columns {
         if dimension_kind(kind).is_none() || column.trim().is_empty() || column.trim() != column {
             return Err(FormatError::Parse {
@@ -1764,11 +1772,9 @@ fn parse_tabular_csv_with_format(
                         source_approved_by: None,
                     },
                     effective_date: eff_date,
-                    description: if desc.trim().is_empty() {
-                        entry_id.to_owned()
-                    } else {
-                        desc.to_owned()
-                    },
+                    // Keep absence distinct from a supplied description equal
+                    // to the entry ID. Apply the ID fallback after all rows.
+                    description: String::new(),
                     legs: Vec::new(),
                     leg_dimensions: BTreeMap::new(),
                 },
@@ -1783,6 +1789,18 @@ fn parse_tabular_csv_with_format(
                     line_idx + 1
                 ),
             });
+        }
+        if !desc.trim().is_empty() {
+            if chunk.description.is_empty() {
+                chunk.description = desc.to_owned();
+            } else if header_description && chunk.description != desc {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!(
+                        "line {line_no}: conflicting header description for legacy entry {entry_id:?}; map per-line descriptions with memo_column"
+                    ),
+                });
+            }
         }
         merge_provenance_field(
             &mut chunk.provenance.source_recorded_at_ns,
@@ -1820,7 +1838,13 @@ fn parse_tabular_csv_with_format(
 
     let chunks: Vec<LegacyChunkEntry> = entry_order
         .into_iter()
-        .filter_map(|id| entries_by_id.remove(&id))
+        .filter_map(|id| {
+            let mut chunk = entries_by_id.remove(&id)?;
+            if chunk.description.is_empty() {
+                chunk.description = id;
+            }
+            Some(chunk)
+        })
         .collect();
 
     finalize_legacy_batch(
@@ -2747,9 +2771,9 @@ mod tests {
             "J-A,2025-12-31,1000,1234.56,\"  Café, Inc.  \",\"Invoice \"\"A\"\"\r\n",
             "# this is memo data, not a comment\"\r\n",
             "J-B,2025-12-30,5000,9.00,Expense,\"first\nsecond\"\r\n",
-            "J-A,2025-12-31,3000,-1000.00,Capital,\"  significant spaces  \"\r\n",
-            "J-A,2025-12-31,4000,-234.56,Revenue,\"\"\r\n",
-            "J-B,2025-12-30,1000,-9.00,Payment,last record without newline",
+            "J-A,2025-12-31,3000,-1000.00,\"  Café, Inc.  \",\"  significant spaces  \"\r\n",
+            "J-A,2025-12-31,4000,-234.56,\"  Café, Inc.  \",\"\"\r\n",
+            "J-B,2025-12-30,1000,-9.00,Expense,last record without newline",
         );
         let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
         assert_eq!(
@@ -2796,6 +2820,129 @@ mod tests {
         assert_eq!(batch.chunks, changed.chunks);
         assert_ne!(batch.source_bytes_digest, changed.source_bytes_digest);
         assert_ne!(batch.attestation_digest, changed.attestation_digest);
+    }
+
+    #[test]
+    fn legacy_csv_conflicting_header_description_is_refused_with_source_context() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("description_column = \"description\"\nmemo_column = \"memo\"\n");
+        // Preserve the original multiline regression source: it used to pass
+        // while silently dropping Capital, Revenue and Payment as headers.
+        let source = concat!(
+            "\u{feff}# retained source export\r\n",
+            "\"entry\",date,account,amount,description,memo\r\n",
+            "J-A,2025-12-31,1000,1234.56,\"  Café, Inc.  \",\"Invoice \"\"A\"\"\r\n",
+            "# this is memo data, not a comment\"\r\n",
+            "J-B,2025-12-30,5000,9.00,Expense,\"first\nsecond\"\r\n",
+            "J-A,2025-12-31,3000,-1000.00,Capital,\"  significant spaces  \"\r\n",
+            "J-A,2025-12-31,4000,-234.56,Revenue,\"\"\r\n",
+            "J-B,2025-12-30,1000,-9.00,Payment,last record without newline",
+        );
+        let error = parse_generic_csv(source, &columns, &units, &accounts)
+            .expect_err("a separate header description cannot silently lose source text");
+        let message = error.to_string();
+        assert!(message.contains("line 7: conflicting header description"));
+        assert!(message.contains("legacy entry \"J-A\""));
+        assert!(message.contains("memo_column"));
+    }
+
+    #[test]
+    fn legacy_csv_header_descriptions_merge_sparse_interleaved_rows_exactly() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("description_column = \"description\"\nmemo_column = \"memo\"\n");
+        let source = concat!(
+            "entry,date,account,amount,description,memo\n",
+            "J-A,2025-12-31,1000,125.00,\" \t \",\"  cash leg  \"\n",
+            "J-B,2025-12-30,5000,9.00,Expense,expense detail\n",
+            "J-A,2025-12-31,3000,-100.00,\"  Café, Inc.  \",capital detail\n",
+            "J-C,2025-12-29,1000,1.00,,blank header debit\n",
+            "J-B,2025-12-30,1000,-9.00,Expense,payment detail\n",
+            "J-A,2025-12-31,4000,-25.00,,revenue detail\n",
+            "J-C,2025-12-29,1000,-1.00,\"   \",blank header credit\n",
+        );
+        let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch.row_count, 7);
+        assert_eq!(batch.chunks.len(), 3);
+        assert_eq!(batch.chunks[0].provenance.source_id, "J-A");
+        assert_eq!(batch.chunks[0].description, "  Café, Inc.  ");
+        assert_eq!(batch.chunks[1].provenance.source_id, "J-B");
+        assert_eq!(batch.chunks[1].description, "Expense");
+        assert_eq!(batch.chunks[2].provenance.source_id, "J-C");
+        assert_eq!(batch.chunks[2].description, "J-C");
+        assert_eq!(
+            batch.chunks[0]
+                .legs
+                .iter()
+                .map(|leg| (leg.side, leg.amount.mantissa, leg.memo.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                (Side::Debit, 12_500, Some("  cash leg  ")),
+                (Side::Credit, 10_000, Some("capital detail")),
+                (Side::Credit, 2_500, Some("revenue detail")),
+            ]
+        );
+        assert_eq!(
+            batch
+                .trial_balance
+                .iter()
+                .map(|line| (line.account_code.as_str(), line.mantissa))
+                .collect::<Vec<_>>(),
+            [
+                ("1000", 11_600),
+                ("3000", -10_000),
+                ("4000", -2_500),
+                ("5000", 900)
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_csv_header_description_conflicts_preserve_whitespace_and_literal_ids() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("description_column = \"description\"\n");
+        for (first, later) in [("J-A", "Changed"), ("  Header  ", "Header")] {
+            let source = format!(
+                "entry,date,account,amount,description\nJ-A,2025-12-31,1000,1.00,\"{first}\"\nJ-A,2025-12-31,3000,-1.00,\"{later}\"\n"
+            );
+            let error = parse_generic_csv(&source, &columns, &units, &accounts).expect_err(
+                "nonblank headers must agree byte-for-byte, even when one equals the ID",
+            );
+            let message = error.to_string();
+            assert!(message.contains("line 3: conflicting header description"));
+            assert!(message.contains("legacy entry \"J-A\""));
+        }
+    }
+
+    #[test]
+    fn legacy_csv_shared_description_memo_column_preserves_each_leg() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("description_column = \"memo\"\nmemo_column = \"memo\"\n");
+        let source = concat!(
+            "entry,date,account,amount,memo\n",
+            "J-A,2025-12-31,1000,125.00,\"   \"\n",
+            "J-A,2025-12-31,3000,-100.00,\"  Capital, Café  \"\n",
+            "J-A,2025-12-31,4000,-25.00,\"Revenue\nline detail\"\n",
+        );
+        let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch.row_count, 3);
+        assert_eq!(batch.chunks.len(), 1);
+        assert_eq!(batch.chunks[0].description, "  Capital, Café  ");
+        assert_eq!(
+            batch.chunks[0]
+                .legs
+                .iter()
+                .map(|leg| (leg.side, leg.amount.mantissa, leg.memo.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                (Side::Debit, 12_500, None),
+                (Side::Credit, 10_000, Some("  Capital, Café  ")),
+                (Side::Credit, 2_500, Some("Revenue\nline detail")),
+            ]
+        );
     }
 
     #[test]
