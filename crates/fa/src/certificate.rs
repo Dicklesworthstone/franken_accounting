@@ -1220,6 +1220,27 @@ fn statements(at: CommitSeq, selection: &ReportSelection) -> Vec<String> {
     statements
 }
 
+// Append the storage closure instead of inserting it into the original family
+// selectors. Existing v1..v12 certificates retain their exact query order and
+// wire bytes; certificates whose prefix has fragments also attest those bytes.
+fn migration_fragment_statement(at: CommitSeq) -> String {
+    format!(
+        "MATCH (n:MigrationRunFragment) FOR SYSTEM_TIME AS OF SEQ {} RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+        at.0
+    )
+}
+
+fn migration_fragments_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    at: CommitSeq,
+) -> Result<bool, BookError> {
+    Ok(db
+        .vertices_at(at)
+        .map_err(fa_journal::KernelError::from)?
+        .iter()
+        .any(|row| row.labels.contains(&label::MIGRATION_RUN_FRAGMENT)))
+}
+
 fn input_snapshot(at: CommitSeq, selection: &ReportSelection, index: usize) -> CommitSeq {
     if let ReportSelection::CustomStatement(selected) = selection {
         let custom_offset = INPUTS.len()
@@ -1436,8 +1457,8 @@ impl ReportCertificate {
                 + usize::from(selection.bound_dimension().is_some())
                 + CUSTOM_STATEMENT_INPUTS
                     * usize::from(matches!(selection, ReportSelection::CustomStatement(_)));
-            let count = r.count(required_inputs, "native inputs")?;
-            if count != required_inputs {
+            let count = r.count(required_inputs + 1, "native inputs")?;
+            if count != required_inputs && count != required_inputs + 1 {
                 return Err(r.invalid("complete native input closure"));
             }
             let mut inputs = Vec::new();
@@ -1498,7 +1519,10 @@ impl ReportCertificate {
                 "TimeEvidence brackets do not resolve to the certified sequence",
             ));
         }
-        let expected = statements(self.known_at, &self.selection);
+        let mut expected = statements(self.known_at, &self.selection);
+        if self.inputs.len() == expected.len() + 1 {
+            expected.push(migration_fragment_statement(self.known_at));
+        }
         if self.inputs.len() != expected.len()
             || self
                 .inputs
@@ -1826,7 +1850,11 @@ fn certify_selected<V: Vfs + Clone>(
         )));
     }
     let mut inputs = Vec::new();
-    for statement in statements(at, &selection) {
+    let mut source_queries = statements(at, &selection);
+    if migration_fragments_at(db, at)? {
+        source_queries.push(migration_fragment_statement(at));
+    }
+    for statement in source_queries {
         query.checkpoint().map_err(BookError::Context)?;
         let (_, certificate) = db
             .execute_certified(
@@ -1945,6 +1973,16 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
     }
     if certificate.book_id != book.book_id {
         return Ok(Err(invalid("the certificate belongs to a different book")));
+    }
+    // An original inline-only certificate remains replayable at its original
+    // prefix. It cannot omit canonical storage fragments that already existed
+    // at that prefix, even if an attacker recomputes its outer content digest.
+    if certificate.inputs.len() == statements(certificate.known_at, &certificate.selection).len()
+        && migration_fragments_at(db, certificate.known_at)?
+    {
+        return Ok(Err(invalid(
+            "native input closure omits migration body fragments at the certified prefix",
+        )));
     }
     let current = match registry_digest(&certificate.selection) {
         Ok(closure) => closure,

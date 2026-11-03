@@ -45,6 +45,8 @@ const FREE: [&str; 6] = ["1000", "1200", "2000", "3000", "4000", "6000"];
 mod migration_limits;
 #[path = "migration/replay_resolutions.rs"]
 mod replay_resolutions;
+#[path = "migration/storage.rs"]
+mod storage;
 
 /// xorshift64*: deterministic, dependency-free.
 struct Rng(u64);

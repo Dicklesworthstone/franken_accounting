@@ -340,6 +340,7 @@ class Native:
         self.output = output
         self.book = output / "book"
         self.commands = 0
+        self.document_custody: list[dict] = []
         self.environment = dict(os.environ)
         self.environment.pop("FA_BOOK", None)
         self.environment.pop("FA_TOKEN", None)
@@ -396,6 +397,17 @@ class Native:
                 and reviewed["data"].get("claim") == "Reviewed"
                 and reviewed["data"].get("subject") == oid,
                 "source review did not attest the retained document")
+        review = reviewed["data"]
+        # A distinct test principal exercises the native review law. It is
+        # operated by this same harness, not an independent human auditor.
+        self.document_custody.append({
+            "file": path.name, "oid": oid, "doc_commit": document["doc_commit"],
+            "intake_grade": document["grade"], "self_sourced": document["self_sourced"],
+            "intake_recorded_at": document["recorded_at"],
+            "review_principal": SOURCE_REVIEWER, "review_claim": review["claim"],
+            "review_attestation_vid": review["attestation_vid"],
+            "review_recorded_at": review["recorded_at"],
+        })
         return oid
 
     def head(self) -> int:
@@ -666,6 +678,33 @@ def verify_prepared_legs(manifest: dict, run: dict, package: dict, department_va
                     f"native proposal differs from original source record {row['source_record']}")
 
 
+def verify_staged_group(event: dict, package: dict, run_vid: str, *, retry: bool = False) -> list[dict]:
+    require(event.get("event") == "migration_import_group_staged", "missing native grouped staging event")
+    result = event["data"]
+    chunks = package["chunks"]
+    require(result.get("package_oid") == package["package_oid"] and result.get("run_vid") == run_vid,
+            "native group refers to a different approved package or run")
+    require(result.get("atomic") is False, "grouped chunks must retain separate native publications")
+    require(result.get("selected_count") == result.get("completed_count")
+            == result.get("recorded_count") == result.get("chunk_count") == len(chunks),
+            "native group omitted or duplicated source chunks")
+    require(result.get("run_state") == ("Finalized" if retry else "Open")
+            and result.get("ready_to_finalize") is (not retry),
+            "native group returned an incorrect activation state")
+    receipts = result.get("chunks")
+    require(isinstance(receipts, list) and len(receipts) == len(chunks), "native group omitted chunk receipts")
+    sequences = set()
+    for index, (chunk, receipt) in enumerate(zip(chunks, receipts, strict=True)):
+        require(receipt.get("chunk_index") == index and receipt.get("entry_vid") == chunk["entry_vid"]
+                and receipt.get("proposal_digest") == chunk["proposal_digest"],
+                "native grouped receipt differs from an approved source proposal")
+        seq = receipt.get("recorded_at")
+        require(type(seq) is int and seq > 0 and seq not in sequences, "native group repeats a publication sequence")
+        sequences.add(seq)
+        require(receipt.get("already_recorded") is retry, "native grouped receipt misstates its retry status")
+    return receipts
+
+
 def verify_department_balances(native: Native, manifest: dict, before_finalize: int) -> list[dict]:
     cumulative = {row["code"]: defaultdict(int) for row in manifest["departments"]}
     cumulative_gross = {code: defaultdict(int) for code in cumulative}
@@ -740,6 +779,11 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
         run_vid = native.call("migrate", "open", "--intent", run_path)["data"]["run_vid"]
         intent = {"run": f"MR:{run_vid}", "source": f"D:{source_oid}", "format": "csv",
                   "column_map": COLUMN_MAP,
+                  # June 30 also belongs to year-end adjustment/closing periods.
+                  # Route each aggregate by its published fiscal period, not by
+                  # an ambiguous date or inferred closing-journal semantics.
+                  "entry_periods": {entry_id: f"FY2024-P{int(entry_id.split(':')[3]):02}"
+                                    for entry_id in run["entry_ids"]},
                   "account_map": {row["code"]: row["code"] for row in accounts}}
         intent_path = output / f"{name}-import.json"
         write_json(intent_path, intent)
@@ -757,14 +801,18 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
             require(native.head() == head, "preparation retry published another entry")
             checks.append("preparation_retry_is_idempotent")
         package_oid = package["package_oid"]
+        selection = []
         for chunk_index, chunk in enumerate(package["chunks"]):
             approvals = native.approve(chunk["proposal_digest"], "chunk-reviewer")
-            command = ["migrate", "import", "--action", "stage", "--package", package_oid,
-                       "--chunk", str(chunk_index), "--approval", approvals[0], "--approval", approvals[1]]
-            staged = native.call(*command)["data"]
-            require(staged["entry_vid"] == chunk["entry_vid"], "staged identity differs from approved proposal")
+            selection.append({"index": chunk_index, "approvals": approvals})
+        selection_path = output / f"{name}-stage.json"
+        write_json(selection_path, {"chunks": selection})
+        command = ["migrate", "import", "--action", "stage", "--package", package_oid,
+                   "--intent", selection_path]
+        receipts = verify_staged_group(native.call(*command), package, run_vid)
+        for staged in receipts:
             native.call("document", "attach", staged["entry_vid"], "--evidence", raw_oid, "--evidence", manifest_oid)
-            retries.append((command, staged["recorded_at"]))
+        retries.append((command, receipts, package, run_vid))
         shown = native.call("migrate", "import", "--action", "show", "--package", package_oid)["data"]
         require(shown["ties_out"] and shown["recorded_count"] == package["chunk_count"], "staged source does not tie out")
         prepared.append({"name": name, "run_vid": run_vid, "package_oid": package_oid})
@@ -806,12 +854,21 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
                        "department_certificates_replay_exact_robot_reports"])
     # Retry every saved chunk after finalization, across separate process opens.
     head = native.head()
-    for command, recorded_at in retries:
-        again = native.call(*command)["data"]
-        require(again["already_recorded"] and again["recorded_at"] == recorded_at, "finalized chunk retry changed result")
+    for command, receipts, package, run_vid in retries:
+        again = verify_staged_group(native.call(*command), package, run_vid, retry=True)
+        require([row["recorded_at"] for row in again] == [row["recorded_at"] for row in receipts],
+                "finalized grouped retry changed a publication identity")
     require(native.head() == head, "finalized retries appended duplicate history")
     checks.append("all_finalized_chunk_retries_are_idempotent")
     native.call("verify", "projections")
+    held = {row["oid"]: row for row in native.call("document", "list")["data"]["documents"]}
+    for intake in native.document_custody:
+        current = held.get(intake["oid"])
+        require(current is not None and current["grade"] == intake["intake_grade"]
+                and current["doc_commit"] == intake["doc_commit"]
+                and current["recorded_at"] == intake["intake_recorded_at"],
+                "review or migration changed the original document custody")
+    checks.append("native_upload_custody_preserved_and_fixture_reviews_recorded")
     native.call("checkpoint", "create", "--grant", "witness")
     native.call("verify", "accumulator")
     checks.extend(["native_projections_match_payloads", "signed_accumulator_checkpoint"])
@@ -848,7 +905,7 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
             "source_sha256": source.SOURCE_SHA256, "source_rows": manifest["source_rows"],
             "monetary_rows": manifest["monetary_rows"], "source_columns": manifest["source_columns"],
             "account_count": manifest["account_count"], "migration_runs": len(prepared),
-            "migration_entries": len(retries), "commands": native.commands, "checks": checks,
+            "migration_entries": len(entry_ids), "commands": native.commands, "checks": checks,
             "activity_cents": manifest["activity_cents"], "final_cumulative_cents": dict(cumulative),
              "department_value_count": len(department_values),
              "department_certificates": department_certificates,
@@ -858,6 +915,8 @@ def run_native(binary: Path, verifier: Path, output: Path, manifest: dict) -> di
             "export_source_oracles": export_oracles,
             "dimension_tamper_refusal": dimension_rejected, "dimension_tamper_mutation": dimension_mutation,
             "dimension_export_scope": "Exact native kind IDs and value VIDs, including explicit empty sets; source codes are checked separately against retained source and native registration, not inferred from a VID",
+            "document_custody": native.document_custody,
+            "document_review_scope": "Native AgentUpload custody is retained; Reviewed attestations use a distinct fixture principal operated by this same harness, not an independent human auditor",
             "approval_scope": "Distinct local test principals exercise native SoD; not independent human authentication",
             "review_scope": REVIEW_SCOPE,
             "trust_scope": "Verifier uses caller-trusted key of freshly created test book; no external authentication claim"}

@@ -15,6 +15,7 @@ registry_epoch_kind = 5
 register_checkpoint_kind = 6
 statement_definition_kind = 7
 period_plan_kind = 8
+migration_run_kind = 9
 
 # At/below one document Merkle leaf, preserve raw canonical bytes.
 # Above it, the root payload is fixed(manifest_format) || u16 kind ||
@@ -57,3 +58,8 @@ period_plan_kind = 8
 # PeriodPlan kind 8 retains the authenticated opening manifest atomically
 # with its PeriodControl. The exact record proves the original minted and
 # blocked outcomes on retry without reconstructing them from today's state.
+# MigrationRun kind 9 retains the canonical v1 run body without changing its
+# digest or control transcript. Its fragments use MigrationRunFragment, an
+# authoritative label preserved by scratch replay. The root's state may later
+# transition; reassembly pins its original immutable birth and authenticates
+# every fragment at the requested known-at, never at an invented current time.

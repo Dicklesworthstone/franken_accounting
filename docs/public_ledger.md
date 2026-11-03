@@ -23,11 +23,76 @@ the distinction between statement transfer amounts and trustee-credited principa
 Its acquisition, extraction, source controls and native replay have separate
 validation records; a successful source check does not establish a native pass.
 
-## Validation status
+## Native replay validation (2026-11-03)
 
-**All 59 public-ledger Python tests pass. Native end-to-end execution remains
-unverified.** The separate Development Finance Authority helper has 17 passing
-tests, for 76 passing helper tests across the two workloads.
+**Earlier account-level native replays passed for all three complete agency
+fixtures, including independent proof verification and rejection of a one-cent
+corrupted extract.** The current grouped-staging and department/export extensions
+require their own native replay; the measurements below do not validate them.
+The actual `fa` and `fa-verify` binaries executed 608 commands against fresh
+on-disk books. Every monthly account cell, cumulative account cell, and gross
+debit/credit account cell agreed with the original-source oracle.
+
+| Agency | Original rows | Native monetary legs | Migration entries | Native commands | Observed seconds |
+|---|---:|---:|---:|---:|---:|
+| `20400` — museum | 125 | 121 | 15 | 191 | 26.479 |
+| `31500` — pension system | 137 | 131 | 6 | 101 | 13.530 |
+| `66000` — university | 1,055 | 1,051 | 27 | 316 | 132.771 |
+
+The 14 zero-valued source rows remain in the original evidence and explicit
+manifest dispositions. All 1,303 nonzero source rows became individual monetary
+legs without netting opposing rows or inventing counterparts. Each run also
+checked preparation and finalized-stage retries, preactivation invisibility,
+historical reads, native registers, projection integrity, and a signed
+accumulator checkpoint. All 73 helper-uploaded source/control documents retained
+native self-sourced `AgentUpload` custody and received separate native `Reviewed`
+attestations from a distinct fixture principal. A final native inventory check
+confirmed that each document's original grade, commitment, and birth sequence
+remained unchanged. Durations are observations under concurrent diagnostic
+workloads, not performance benchmarks.
+
+Actual execution found and fixed two driver defects: document intake requires
+a MIME value without spaces, and June 30 must be routed explicitly to the
+source's normal fiscal period because it also belongs to year-end adjustment
+and closing periods. The driver now preserves the Windows-1252 declaration as
+`text/csv;charset=windows-1252` and supplies `entry_periods` for every source
+aggregate. The native refusal rules and reconciliation assertions were retained.
+
+Review also found an incorrect `HumanUpload` assertion in the original driver.
+That assertion was removed, and all three agencies were rerun from fresh books
+with native automatic-upload custody and explicit fixture review attestations.
+The results above are from those corrected runs. The document reviewer and
+approval principals are operated by this same harness: their native records
+exercise the review and separation-of-duties laws, and do not constitute
+independent human review or an audit.
+
+The [execution record](../evidence/public_ledger/validation-2026-11-03.json)
+contains per-agency results, checks, source and binary hashes, original report
+and command-transcript hashes, reproduction commands, the two initial native
+failures, and the superseded runs with incorrect asserted custody. Full
+generated books and private keys are not committed. The earlier
+[unverified validation record](../evidence/public_ledger/validation-2026-11-02.json)
+remains as a record of the previous build failures; it is superseded for these
+three native replays.
+
+Source acquisition and profiling had already verified the original
+113,856,733-byte distribution and all 373,357 rows. The 36 Python checks passed
+again after the driver repairs. Those helper checks, the separately executed
+705 targeted Rust tests, and these real-corpus runs are distinct evidence.
+None substitutes for Tier0 on the final exact committed tree, or establishes
+that the entire statewide publication is admissible as one balanced USD-cent
+ledger. **These native measurements precede grouped staging, department
+projection and the source/export dimension checks described below. They do not
+establish execution of those additional checks.**
+
+### Grouped staging and department extension validation boundary
+
+The department extension arrived concurrently with the native account-level
+validation. All 61 integrated public-ledger Python checks pass, covering
+source/export department negatives, grouped staging receipts, source custody and
+document review. Development Finance Authority helper validation is recorded
+separately. These helper checks do not establish a native grouped-staging or
+department PASS.
 
 The official 113,856,733-byte resource was downloaded through its actual HTTPS
 redirect and verified against the fixed SHA-256. The complete 373,357-row file
@@ -44,9 +109,9 @@ fixtures' monetary amounts or department codes. Negatives change only a
 department while preserving every monetary amount. They also check leading
 zeros, blank values, missing dimension tags, wrong native identities,
 zero-net/nonzero-gross activity, scope, export row coverage and order, declared
-dimension coverage, and exact report-replay comparisons. Constructed
-native-shaped payloads and exports in those tests are not evidence that the
-accounting engine or its real exporter ran.
+dimension coverage, grouped stage receipts and exact report-replay comparisons.
+Constructed native-shaped payloads and exports in those tests are not evidence
+that the accounting engine or its real exporter ran.
 
 The [first hosted replay](https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41544280544)
 at commit `14dc993adc6f63d8a77c41080c186a39af62731d` built both native binaries
@@ -61,14 +126,10 @@ runner changes, and it did not reach migration, reports, or proof verification.
 The upload path now also records its actual `AgentUpload` provenance and requires
 a native `Reviewed` attestation by a distinct local fixture principal before
 using each source or helper document. Misgraded receipts, reviews of a different
-document, and refused reviews fail the run. These boundary tests do not replace
-native execution. No current end-to-end replay or repository-wide gate PASS is
-claimed here.
-
-The [earlier validation record](../evidence/public_ledger/validation-2026-11-02.json)
-describes the original source-only implementation. Current native acceptance
-requires running the workflows below and inspecting their real
-`report.json` and `commands.jsonl` outputs.
+document, and refused reviews fail the run. The earlier account-level native
+PASS is not attributed to the grouped-staging and department extensions. Their
+acceptance requires running the workflows below and inspecting the actual
+`report.json` and `commands.jsonl`; no repository-wide gate PASS is claimed here.
 
 ## What the publisher actually provides
 
@@ -174,6 +235,14 @@ separate process, and records its arguments, exit status, stdout and stderr in
 the child process so an unrelated configured book or credential cannot redirect
 the exercise.
 
+Within each migration run, the driver obtains a separate approval pair for
+every source chunk and sends one retained selection to `migrate import --action
+stage --intent`. Complete source authentication is shared across the request;
+each chunk still has its own native publication and immutable receipt. The
+driver checks every approved identity and publication sequence, including a
+grouped retry after finalization. A later refusal does not undo earlier staged
+chunks, and no staged balance is activated before native finalization.
+
 To fetch and inspect the **entire** statewide distribution:
 
 ```bash
@@ -234,15 +303,21 @@ transcript and writes `failure.json`; it never emits a partial success report.
    stock. This is a scoped activity ledger starting with the publication, not
    an assertion that the real agency had zero assets before April. Source-
    derived cumulative account controls are retained as documents and declared
-   before import preparation. The native kernel computes its own tie-outs.
-6. **Retain approvals and evidence.** Original sources, normalized CSVs, manifests
-   and control documents are programmatic `AgentUpload` inputs. The driver checks
-   each native receipt's grade and obtains a `Reviewed` attestation from a distinct
-   local test principal. The native importer retains sealed proposals.
-   Two distinct local test principals approve each chunk and each
-   finalization. Original selected bytes and the transformation manifest are
-   attached as supplemental evidence to the staged entries. The harness checks
-   staging before activation and exact retry identities after finalization.
+   before import preparation. Each source aggregate is explicitly routed to its
+   published normal fiscal period, including June 30 where year-end periods
+   overlap. The native kernel computes its own tie-outs.
+6. **Retain custody, reviews, approvals and evidence.** Automatically acquired
+   or generated documents retain self-sourced `AgentUpload` provenance under a
+   named uploader; the driver checks each native receipt's grade and identity.
+   A distinct fixture principal records a native `Reviewed` attestation with
+   `approve` authority, without
+   changing the original document's custody. The native importer retains sealed
+   proposals. Two local fixture principals approve each chunk and finalization.
+   All these roles are operated by the same harness, not independent human
+   reviewers. Original selected bytes and the transformation manifest are
+   attached as supplemental evidence to staged entries. The harness checks
+   staging before activation, exact retries after finalization, and unchanged
+   original document grades, commitments and birth sequences.
 7. **Compare and verify.** Compare every monthly account cell and cumulative
    account cell to a separate integer-cent fold of the original source fields.
    Compare each department's monthly and cumulative account cells, including
@@ -383,10 +458,10 @@ The profile reports the affected groups and source ordinals for investigation.
 
 ## Verification boundaries and remaining work
 
-- A successful native run would establish the tested source-to-accounting-to-
-  extract checks for its complete published selection. Native execution is
-  still unverified as recorded above. Even a successful run would not establish
-  completeness of the publisher's internal system or original transaction history.
+- The three successful native runs establish the tested source-to-accounting-
+  to-extract checks for their complete published selections. They do not
+  establish completeness of the publisher's internal system or original
+  transaction history.
 - All chartfields remain available in retained evidence. Original account codes
   and nonblank departments are projected into the native chart and dimension
   values. Other chartfields are not yet native queryable dimensions.
