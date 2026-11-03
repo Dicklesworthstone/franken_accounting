@@ -134,6 +134,65 @@ fn assert_capital_cells(report: &VerifiedFunctionalTrialBalance, amount: Option<
 }
 
 #[test]
+fn large_canonical_run_bodies_are_verified_independently_of_native_storage() {
+    // A multi-period chart needs more than one native vertex row. The wire
+    // verifier receives the original canonical body and its Open commitment,
+    // never the producer's storage manifest or its fragment projections.
+    let mut body = Writer::default();
+    body.u16(1)
+        .fixed(&BOOK)
+        .bytes(b"functional-import")
+        .bytes(b"legacy")
+        .u8(2)
+        .fixed(&[0; 32])
+        .i32(10)
+        .count(0)
+        .count(10);
+    for month in 1..=10 {
+        body.bytes(format!("FY2025-P{month:02}").as_bytes())
+            .fixed(&[0; 32])
+            .count(135);
+        for account in 0..135 {
+            body.bytes(format!("account-{account:016x}").as_bytes())
+                .u32(0)
+                .i128(if account == 134 { -134 * 42 } else { 42 });
+        }
+    }
+    body.count(0).u8(1);
+    assert!(body.buf.len() > 64 * 1024 - 1024);
+    assert!(body.buf.len() < crate::envelope::MAX_RECORD_BYTES);
+    let (mut records, _) = history(2, true, 9);
+    records[2] = control(3, 0, run(), &body.buf);
+    records[4] = control(5, 1, run(), &body.buf);
+    let bodies = [(2, body.buf.as_slice())];
+    let (report, output) =
+        replay_migration_fixture(&records, Selection::AsOf(30), 5, &book(&[]), &[], &bodies)
+            .unwrap();
+    assert_capital_cells(&report, Some(42));
+    assert_eq!(
+        verify_packed(&records, 5, &[], &output, &bodies)
+            .unwrap()
+            .functional_trial_balance,
+        Some(report)
+    );
+    assert!(verify_packed(&records, 5, &[], &output, &[]).is_err());
+    let mut changed = body.buf.clone();
+    let late_byte = changed.len() - 6;
+    changed[late_byte] ^= 1;
+    assert!(verify_packed(&records, 5, &[], &output, &[(2, &changed)]).is_err());
+    assert!(
+        verify_packed(
+            &records,
+            5,
+            &[],
+            &output,
+            &[(2, &body.buf[..body.buf.len() - 1])]
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn migration_modes_activate_functional_stock_and_activity_at_finalize_only() {
     for (mode, sole, effective, counted) in [
         (0, false, 10, true),

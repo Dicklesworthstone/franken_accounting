@@ -543,8 +543,12 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     } else {
         7
     };
-    let inputs = r.count(expected_inputs, 4, "certificate.native_inputs")?;
-    if inputs != expected_inputs {
+    // Native certificates preserve their original ordered family closure and
+    // may append the MigrationRunFragment storage attestation. This reader
+    // authenticates the complete canonical run body against its Open control
+    // independently below; native query attestations are not outsider proofs.
+    let inputs = r.count(expected_inputs + 1, 4, "certificate.native_inputs")?;
+    if inputs != expected_inputs && inputs != expected_inputs + 1 {
         return Err(failed(
             "certificate_closure",
             "certificate must retain every native input attestation for its report family",

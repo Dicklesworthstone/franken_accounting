@@ -113,8 +113,9 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
     for row in db.vertices_at(at)? {
         cx.checkpoint().map_err(fgdb::WriteTxnError::Interrupted)?;
         if row.labels.contains(&label::MIGRATION_RUN) {
-            let payload = bytes(&row, property::FA_PAYLOAD, "MigrationRun payload")?;
-            let run = crate::migration::RunBody::decode(&payload)?;
+            let run = crate::migration::read_run_body_at(db, row.vid, at)?.ok_or_else(|| {
+                KernelError::Corrupt("selected migration body disappeared".into())
+            })?;
             let run_genesis = day_start_utc_ns(run.opening_date);
             genesis_utc_ns = Some(genesis_utc_ns.map_or(run_genesis, |g| g.max(run_genesis)));
             migration_seq =

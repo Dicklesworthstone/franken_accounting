@@ -20,8 +20,6 @@ use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
 use fa_journal::migration::{RunBody, RunMode, kind};
 use fa_journal::refusal::{Outcome, Refusal, exit};
-use fa_journal::rows::bytes;
-use fa_model::symbols::{label, property};
 use fa_model::{ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin};
 use fa_money::Side;
 use fgdb::Database;
@@ -530,25 +528,18 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
         // Only immutable body bytes are needed. read_run also decodes the
         // derived STATE mirror, so it is deliberately not used here: a
         // projection must neither authorize nor prevent the journal proof.
-        let Some(row) = db.vertex_at(*run, journal.through_seq)? else {
+        let Some(body) = fa_journal::migration::read_run_body_at(db, *run, journal.through_seq)?
+        else {
             return Ok(Err(refusal(format!(
                 "migration run {:032x} has no retained body",
                 run.0
             ))));
         };
-        if !row.labels.contains(&label::MIGRATION_RUN) {
-            return Ok(Err(refusal(format!(
-                "migration run {:032x} has no MigrationRun label",
-                run.0
-            ))));
-        }
-        let raw = bytes(&row, property::FA_PAYLOAD, "migration run body")?;
-        if raw.len() > MAX_BODY_BYTES {
+        if body.canonical_bytes()?.len() > MAX_BODY_BYTES {
             return Ok(Err(refusal(
                 "migration body exceeds the balance proof's 8 MiB limit",
             )));
         }
-        let body = RunBody::decode(&raw)?;
         if body.vid() != *run {
             return Ok(Err(refusal(format!(
                 "migration body does not derive run identity {:032x}",
