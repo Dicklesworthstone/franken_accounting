@@ -21,6 +21,7 @@ import sys
 import time
 
 import blmis_replay as replay
+import blmis_analytics as analytics
 import blmis_square_one as source
 import public_ledger as ledger
 
@@ -254,6 +255,7 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None, *,
     procedure = native.call("procedure", "run", replay.PONZI_PROCEDURE,
                             "--effective-through", rows[-1]["date"], "--known-at", known_at)
     principal_analysis = replay.check_glantz_principal_analysis(procedure, rows, known_at, include_transfers=True)
+    record_silent_analytics = analytics.run_native(native, rows, posted)
     for period in periods:
         native.call("registers", "advance", "--period", period)
         native.call("verify", "registers", "--period", period)
@@ -290,6 +292,7 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None, *,
             "source_diagnostics": source.verify_rows(rows, metadata), "source_comparison": comparison,
             "entry_receipts": posted, "ledger_certificate": certificate, "annual_controls": annual_controls,
             "source_account_party": party, "principal_analysis": principal_analysis,
+            "record_silent_analytics": record_silent_analytics,
             "document_custody": native.document_custody, "verified_register_periods": periods,
             "export_source_oracles": exports, "independent_verification": verified, "tamper_refusals": tamper_results,
             "commands": native.commands,
@@ -305,6 +308,7 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None, *,
                        "every_source_discrepancy_reported_without_tolerance_or_plug", "exact_certified_ledger_replay",
                        "immutable_preimport_prefix", "every_exact_retry_without_new_history",
                        "all_annual_source_controls", "native_principal_analysis", "all_posting_month_registers",
+                       "seven_record_silent_source_predicates_and_certified_replays",
                        "native_projections", "unchanged_original_document_custody", "signed_accumulator_checkpoint",
                        "all_exported_legs_text_and_party_dimensions_vs_source", "independent_ads_proofs",
                        "one_cent_tamper_rejected", "party_only_tamper_rejected"]}

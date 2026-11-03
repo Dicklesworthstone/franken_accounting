@@ -126,6 +126,13 @@ jobs:
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-formats --test formats_conformance canonical_csv --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/canonical-csv-tests.log
 
+      - name: Regress exact XBRL scales and duplicate facts
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-formats --test formats_conformance xbrl_ --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/xbrl-calculation-tests.log
+
       - name: Replay the complete finance-authority selection through native migration
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         shell: bash

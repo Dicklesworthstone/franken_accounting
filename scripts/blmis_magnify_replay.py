@@ -21,6 +21,7 @@ import sys
 import time
 
 import blmis_magnify as source
+import blmis_analytics as analytics
 import blmis_replay as replay
 from native_document_readback import readback_document
 import public_ledger as ledger
@@ -354,6 +355,7 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None, *,
                               "printed_controls": [control for controls in annual_controls.values()
                                                    for control in controls if control["at_date"] == at_date]})
     principal_analysis = replay.verify_glantz_principal_analysis(native, rows)
+    record_silent_analytics = analytics.run_native(native, rows, posted)
     for period in periods:
         native.call("registers", "advance", "--period", period)
         native.call("verify", "registers", "--period", period)
@@ -392,6 +394,7 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None, *,
             "entry_receipts": posted, "ledger_certificates": certificates, "annual_controls": annual_controls,
             "native_annual_controls": native_annual, "source_account_parties": parties,
             "principal_analysis": principal_analysis, "transfer_scope": transfers,
+            "record_silent_analytics": record_silent_analytics,
             "document_custody": native.document_custody, "original_document_readback": original_readback,
             "verified_register_periods": periods,
             "export_source_oracles": exports, "independent_verification": verified, "tamper_refusals": tamper_results,
@@ -409,6 +412,7 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None, *,
                        "every_printed_discrepancy_retained_without_tolerance_or_plug", "six_exact_certified_ledger_replays",
                        "six_immutable_preimport_prefixes", "every_exact_retry_without_new_history",
                        "all_26_annual_cumulative_trial_balances", "native_principal_analysis_with_role_history",
+                       "seven_record_silent_source_predicates_and_certified_replays",
                        "native_transfer_event_34_dollar_gap_retained", "all_posting_month_registers",
                        "native_projections", "unchanged_complete_original_document_custody", "signed_accumulator_checkpoint",
                        "every_exported_leg_text_and_party_dimension_vs_source", "independent_ads_proofs",

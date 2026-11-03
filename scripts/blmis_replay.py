@@ -22,6 +22,7 @@ import time
 import tomllib
 
 import blmis_source as source
+import blmis_analytics as analytics
 import public_ledger as ledger
 
 
@@ -642,6 +643,7 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None, *,
                 source.TRANSFER_ACCOUNT: sum(row["transfer_movement_cents"] for row in rows)}
     ledger.same_cells(native.tb(final_period), expected, "native final three-account source reconciliation")
     principal_analysis = verify_principal_analysis(native, rows)
+    record_silent_analytics = analytics.run_native(native, rows, posted)
     register_periods = sorted({f"FY{row['date'][:4]}-P{row['date'][5:7]}"
                                for row in rows if row["principal_movement_cents"]})
     for period in register_periods:
@@ -677,6 +679,7 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None, *,
             "entry_receipts": posted, "native_trial_balance_cents": expected,
             "annual_controls": annual_controls,
             "source_account_party": party, "principal_analysis": principal_analysis,
+            "record_silent_analytics": record_silent_analytics,
             "export_source_oracles": export_oracles,
             "verified_register_periods": register_periods,
             "independent_verification": verified, "tamper_refusal": refused, "tamper_mutation": mutation,
@@ -696,6 +699,7 @@ def run_native(binary: Path, verifier: Path, output: Path, pdf: Path | None, *,
                        "every_exact_retry_without_new_history", "native_registers_equal_fold", "native_projections",
                        "declared_source_account_party_and_roles", "native_principal_analysis_matches_printed_control",
                        "missing_transfer_role_exposes_source_gap", "historical_missing_role_analysis_unchanged",
+                       "seven_record_silent_source_predicates_and_certified_replays",
                        "every_exported_principal_and_counterpart_leg_matches_source",
                        "signed_accumulator_checkpoint", "independent_ads_verification",
                        "independent_ads_dimension_coverage_on_all_148_legs",
@@ -792,6 +796,7 @@ def run_glantz_native(binary: Path, verifier: Path, output: Path, pdf: Path | No
         ledger.same_cells(native.tb(f"FY{year}-P12"), expected, f"native all-account source control {at_date}")
         annual_controls.append({"at_date": at_date, "accounts": controls, "native_trial_balance_cents": expected})
     principal_analysis = verify_glantz_principal_analysis(native, rows)
+    record_silent_analytics = analytics.run_native(native, rows, posted)
     register_periods = sorted({f"FY{row['date'][:4]}-P{row['date'][5:7]}"
                                for row in rows if row["principal_movement_cents"]})
     for period in register_periods:
@@ -833,6 +838,7 @@ def run_glantz_native(binary: Path, verifier: Path, output: Path, pdf: Path | No
             "source_comparisons": comparisons, "ledger_certificates": certificates,
             "entry_receipts": posted, "annual_controls": annual_controls,
             "source_account_parties": parties, "principal_analysis": principal_analysis,
+            "record_silent_analytics": record_silent_analytics,
             "document_custody": native.document_custody,
             "recomputed_transfer_pairs": transfer_pairs,
             "unpaired_transfer_credit_scope": "The other 13 transfer rows retain trustee-credited principal as explicit inputs",
@@ -855,6 +861,7 @@ def run_glantz_native(binary: Path, verifier: Path, output: Path, pdf: Path | No
                        "every_exact_retry_without_new_history", "native_registers_equal_fold", "native_projections",
                        "all_six_native_party_bindings", "all_six_native_principal_outcomes",
                        "missing_transfer_role_control_for_all_accounts", "historical_missing_role_result_unchanged",
+                       "seven_record_silent_source_predicates_and_certified_replays",
                        "all_exported_money_and_party_dimensions_vs_original_source",
                        "signed_accumulator_checkpoint", "independent_ads_verification_and_dimension_coverage",
                        "one_cent_tamper_rejected", "party_only_tamper_rejected"]}
