@@ -1928,3 +1928,42 @@ These are authored repairs, with native re-execution and full qualification
 pending. The fourth failure, the FA-ART-LAB-04 witness mismatch, remains red;
 its hashes are unchanged while a bounded symbol-addition attribution probe
 runs. The original failure and all source boundaries remain retained.
+
+## 2026-11-03 — LAB04 witness drift attributed to three added symbols
+
+The original f6a34cf8 run and the repaired 75a4d58e library run both reached
+the unchanged LAB04 pin mismatch. On 75a4, all three other facade repairs
+passed: the complete library ran 709 passes and one failure, with no ignored
+or filtered tests. Its exact-tree Tier 0 also passed. Those results do not
+make the full repository green: its check and Clippy steps did not execute
+after worker initialization refusals.
+
+The attribution control starts from clean 7796e910, the old witness source,
+and overlays only `fa-model/src/symbols.rs` and `registries/symbols.toml`.
+Their entire diff is MigrationRunFragment=63, MigrationSource=64 and
+MigrationSourceFragment=65. Cargo manifests, lockfile, toolchain and
+foundation pins are unchanged. The original Genesis producer and every
+accounting, crash, retry and live-versus-lab assertion are unchanged.
+Its automatic RCH source identity ends in overlay fingerprint
+489a60f0bd347273da7353d012a825f8164d7e52f316c99c31fb12d71666ed10.
+
+The first attempt hit the original 1,800-second compile cap before execution.
+One identical continuation on the same hz4 worker executed the original
+36-run campaign and failed its old pin, as intended: zero passed, one failed,
+680 filtered. Its structured witness exactly matches f6: the same seed-list
+SHA-256, 36 schedules, one explored schedule class and all 36 observed
+BLAKE3 values. The counterfactual therefore attributes the changed witness
+to those declared symbol inputs, rather than to an accounting change hidden
+by replacing expected output.
+
+Only LAB04's observed hash vector and witness-source commit are updated in
+its existing manifest and registry row. Seeds, run count, schedule count,
+producer command, schema, all assertions and every other artifact stay fixed.
+The source is f6a34cf8, which actually produced these fields; that is not a
+claim that its whole library or repository passed. The old complete manifest
+and registry remain in Git blobs fd05cb4aa40be961e1f4eb6f75cdd1cc3e2d8390 and
+6e0d6c5eb95a78ffdde34ed334e1e569cbd3199e, with verified recovery copies retained.
+The original red logs are retained too. The updated producing test must
+actually pass before the campaign is reported repaired, and final-source
+repository qualification remains separate. This is witness maintenance,
+with no performance or new product-capability credit.
