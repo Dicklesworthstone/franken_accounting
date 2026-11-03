@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=ba398bfe8ff0c814117b758fed0d9690ef324773
+tree=77e00eb5a793214a6549fbd0abe4fc1ee3304c12
+lane=local
+host=hetzner1:Linux-x86_64
+worker=local
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=8
+check_status=PASS
+check_seconds=1068
+log_dir=/home/ubuntu/.codex/artifacts/fa-gap-work-20261031.lM8xfA/composed-ba398-tier0-detail-20261103
+recorded_utc=2026-11-03T09:42:10Z
