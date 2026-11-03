@@ -246,6 +246,12 @@ fn reclass_agrees_with_reference() {
         intent
     };
     let (k, o, r) = (&mut kernel, &mut oracle, &mut refs);
+    let mut unrelated = mv(1, "rc-unrelated-pair", "1200");
+    unrelated.legs.extend([
+        leg(fa_reference::Side::Debit, "1200", 50_000),
+        leg(fa_reference::Side::Credit, "1000", 50_000),
+    ]);
+    reclass_outcome(k, o, r, &unrelated, target, Err("FA-REF-185"));
     let first = reclass_outcome(
         k,
         o,

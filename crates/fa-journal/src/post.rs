@@ -5396,8 +5396,8 @@ fn reclassification_shape(message: impl Into<String>) -> Refusal {
         code::RECLASSIFICATION_SHAPE,
         exit::REFUSAL,
         message.into(),
-        "plan §8.2 (Reclassifies: a positive part of the target's legs moves to another account or dimension in the same unit; net effect is target plus the delta)",
-        "name one live committed target with supersession = [{ target: <EntryRef>, kind: Reclassifies, reason_code }], move out of its legs at most what earlier reclassifications left, to at least one other account or dimension: `fa reclass <target> --from <account> --to <account> --amount \"<amount>\" --reason <name>`",
+        "plan §8.2 (Reclassifies: a positive part of the target's legs moves to another account or dimension, preserving the released amount separately for each unit and original side; net effect is target plus the delta)",
+        "name one live committed target with supersession = [{ target: <EntryRef>, kind: Reclassifies, reason_code }], move out of its legs at most what earlier reclassifications left, and deliver exactly those amounts to new accounts or dimensions in the same unit and original side; omit unrelated balanced pairs: `fa reclass <target> --from <account> --to <account> --amount \"<amount>\" --reason <name>`",
     )
 }
 
