@@ -2358,3 +2358,33 @@ target: 17 passed, zero failed, ignored or filtered, remote exit 0 at
 23:10:50 UTC. The independent docs-sync command exited 0 with all four checks
 passing. These source checks are documentation maintenance; the full
 exact-tree repository gate still requires execution.
+
+## 2026-11-03 — GOLDEN-CHANGE: EntryFragment symbol changes certificate inputs
+
+The complete native cross-target executable on b932d46fa ran both original
+tests: the planted width/endian negative passed and the eight-vector test
+failed at its old trial-balance certificate pin. Its actual output preserved
+the register fold and all three canonical report-byte digests; only the three
+certificate digests and the evidence-bundle digest changed.
+
+Strict inverse b24313f3ea21456faea9acb590ba96e5186182bf has exactly two changed
+files against b932d46fa: remove EntryFragment=66 from the registered namespace
+and compiled SymbolTable, keeping the label constant, all storage/runtime code,
+fixture inputs and old digest assertions. Its unchanged original executable
+then passed both tests, zero ignored or filtered, on vmi1149989/x86_64:
+remote and wrapper exit 0, 23:23:30 UTC, 1,324,258 ms. All eight old vectors
+were restored. An earlier identical attempt reached the original 1,800-second
+compile cap and exited 137 before running any test; that failed attempt remains
+separate. Namespace initialization failures likewise supply no test evidence.
+
+Only the four certificate/bundle pins are updated to b932d46fa's actual
+output. The fold/report-byte pins, arithmetic/rounding/allocation/FX checks,
+repeat-execution comparison, eight assertions and planted encoding negative
+remain unchanged. The inverse is diagnostic recovery material, never product
+code; its verified recovery pack and both native transcripts are retained.
+
+This maintenance admits the same fixture with its actual symbol-66 namespace
+commitment and continues to reject changed canonical digests and the planted
+target-dependent encodings. It changes no accounting result or acceptance
+threshold. Corrected-source native execution and exact-tree Tier 0/Tier 1
+remain required; aarch64 remains unrun and fa-9p1c remains in progress.
