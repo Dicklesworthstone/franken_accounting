@@ -84,13 +84,52 @@ certificate_hashes_blake3 = ["d86cd8fc79cbd55738511b4885f321358435d7df4dc6085b47
 id = "FA-ART-LAB-04"
 kind = "lab-campaign"
 manifest_path = "evidence/lab_campaign/genesis_lab_and_live.toml"
-manifest_blake3 = "c94e2b217c4160129937fb85ca4232355cf0290f0103d9ce07b2f47622c53def"
+manifest_blake3 = "49a574f76c526ee343026b2d3089e996588d11a132fa5a2b872c9cf0d263cfa5"
 produced_by = "cargo test -p fa --lib book::tests::genesis_slice_is_green_under_lab_and_live_as_fa_art_lab_04"
-git_commit = "f6a34cf8e78127a07e724f6a8e6534292d511b94"
+git_commit = "b932d46fa9240a15e7f0da6e2550bbf5af0df3f9"
 summary = "The Genesis slice green under lab and live (fa-0fl, plan §19 G1, scoreboard G1-01): every Genesis row (GEN-01 … GEN-11) runs through the facade. The book is created, the chart and calendar installed, a balanced two-leg entry posted, projections verified, and registers advanced with balance = fold. An unbalanced proposal is refused FA-REF-001 with its one-cent per-unit gap, and an Original into a Closed period FA-REF-010 with its matrix cell; neither writes. The trial balance is certified and registers verified. After a crash and reopen the entry is whole and its retry AlreadyRecorded, and the certificate replays to the same trial balance bytes. Lab: 32 seeds under the lab runtime over a fault VFS (seeded sync latency; the crash loses every unfenced directory entry); a rerun seed is the same run. Live: seeds 1-4 on the production runtime over the host filesystem, with a process restart in place of the crash; each equals its lab seed in head, trial balance bytes, certificate bytes and March fold. 36 runs. The slice is one sequential single-writer task, so the lab saw one schedule class (explored_interleavings = 1); races are FA-ART-LAB-01's evidence. One BLAKE3 digest per run of its mode, seed, head, trial balance, certificate and fold, recomputed by the producing test on every run."
 seed_manifest_sha256 = "9dcccc323c290076c041a9ce37f4de1cb8e052f47c5e901a6cc26bf4cded606a"
 schedule_count = 36
 explored_interleavings = 1
-# Attributed after a clean-old-source + three-symbol counterfactual reproduced
-# every current field. Previous registry blob: 6e0d6c5eb95a78ffdde34ed334e1e569cbd3199e.
-certificate_hashes_blake3 = ["6bf1cdffeccd8e83caf3e9d65cfe52fd24bedea8f6c204561b460a00ae64cc4e", "ffd32d5b89fa524d7d2a996913c602bf52f56923fa7352ed9bb6cb41225cabf9", "442e9759d4dfbb666e8745c46b306817ef2007d4a18d97c49175fdf257176d47", "86a3974975b537c3f5b3e2d9476c7077ff543031a04a267db2294b15415442b4", "3cb4ebbed01da5df087c779ff020690abec79b6ae87fd9b295911ea44a414045", "6d4a59c64b5d36056dc88a35b2f9bf078ff62648f79632c713f9afb9a4b789d9", "fc3719bd51c388383879e38b059259435c5efa68583b5bbd4342e39e515e0407", "3e1ca5c9ad6dbe881d610b08f530c2b6a408291c24c2f0f33f38c1e1ef49e83e", "710bf985fda42f194da8bf0abd4fc3596fa5b96c84865650c4a3dbefe72bafc3", "ba65da95f8e009caadc4478e8f1d766d3bb2d5f6a2db5bb59571ecccdcabb80d", "fa904d7f24eecf195a4ff757622632c199d59a8c90e59c40482a4ca9ebff2788", "2e2217acf4440c15f6b6c510ac76c67ba29fd954d53a88e938b9685f4561ee30", "56e1e157808b4340be9e24f5909033236b08f59139989d6ca24431ff954b72e2", "99e48ffc1ceda365e50679a6db5b27cad20eb38f22db13a3c49cf0197778caa4", "20b07aaa3617e7516b1a2e79fe0b8aefc34aaed6be549e21d4040a272b3cfffb", "59a528c5bc6e861080f6cbe0fb97ac00c9328dc5cfc7747956fba121a6d3b24e", "fd16da89158515240c367735403be95b17cf5bc485772d51f5343d31a100b8cd", "54ff055eff74889e8ee92f4f403f9483cdecfde6ea55d219ac18c0b15dfb533b", "650e0d9909fb97c3b5ee4f87421a28b59b1487ffe9bfac24ee35b0b8b9e53958", "4212cd0ee75605abd4c0c30606cc2bef6f9ea85f7ad46cde60fff57793d391b2", "8774bab3f6ac6bf03398d6937b621a79b9440e6a3c68e0b792381a1a8bf6ab1e", "900eedbdd272127d09e9151952dac9af13fb66793183050d423bd7a0bdeba3d9", "785601529f45ea0e444bd7f4da91add34e3ef7f1b89a1374eda067e08eb28e58", "4da27ac95fb71c073c6b91d94f014e1bc6a40d712b9e86ddb1a0148145bd7662", "0de9c62f0e23d09517ce284824d6160c1dc47f0c594f1d7581b9b68722240d00", "12027a04b5422908fcbfe75f5db214a4cd862ad5583ba774376c3b491a62f0fa", "41c8ca5f71147193bd6c8aa232a2a92037675f3b572d150106e4c7ad89bf4afb", "4c64f5aa0622305d81e12cd075d344464d097997c7510788550f554407fc6d9e", "c044d0226d63dd11615be326d8947ca06d775d6f6c15f5be1824de84f7f6a551", "1dae70d7b7c82f9947f462438926d0ada925522a4f711fe59744515cfb7f443f", "ddbc39c37e7359e2281ef9493d64bd3de99747479d0b3f3c69c746359185cfdb", "e1a2bad84e174461b38e98d9d3f9bb61aaac28fb5dc99445c55c2911105faace", "fee41643bb01be938d4556091914e8e9fcb556a7e598459f26f45550e626c37d", "54326d764f3ae4da8d112c58eab6af485e5b6614d77832c1f1bb5df0f8d968f6", "b904a4165f4a1bc4fe66cd622037e670ffc2316c221232bc296d89f39016cc08", "a962fc85426ef5cf4da602453cc5e0ba3bb4934b35ce37a4dfd2a77acd1cb812"]
+# GOLDEN-CHANGE: b932's witness is attributed to EntryFragment symbol 66 by
+# b24313f3e, its otherwise unchanged two-file inverse. All 36 prior hashes
+# and every other campaign field are restored. Prior registry blob:
+# 1a1f88777efb9836b317bb617cf5a5f54f0cd24a (earlier: 6e0d6c5eb95a78ffdde34ed334e1e569cbd3199e).
+certificate_hashes_blake3 = [
+    "8d8de5051780c3c21dbf9afe3bf0806cf465691de23e99148ac553774ef8f61b",
+    "96b91f6821d620bac7cdc445db15024641e41aaa2d12a43f17ec6db0245bc502",
+    "fcc6552cbf112a96abef8a7f1aaee86656e991d445fb34d53cbc3be1c793f469",
+    "0f81a09c170c880d1ae244212c657b1f3246e1ede9b46900211e9d1fd590f6e8",
+    "db416210b6a010aac03da14bb92a8492462a6208b5256445761206d58627e27a",
+    "eb23635056974f8b9ba9e6bcf118fc1d13c79a94f7bd0b4cbfe11e0ebf6c7e3c",
+    "849741341f623feacaf67fcaba6a9244d16c8a61aac33e79c62f5b3b58ffd9d7",
+    "3dcb007cb9239d15648d02b02821d90190613928315932a3eb033a6265eb7741",
+    "b62ba8ddf373ef20309b5a6104dde76f9f6bf02e3bdbdd5a83af548c2ecedd05",
+    "3e25cca2b7290687abe0eec05c4ba68ecc474a69236c9f38b210f4fd92c1f0a0",
+    "f377c8516765cc4b0dfa990d603e53624d909f65a4ef70f6c94ee0a37a91e80f",
+    "20988e8e27c55c3114e9f6cdc6df3e82e2d00c510066e02c7a487300e3cacee9",
+    "f52b44b9fc5ec03af7c8af24db021459d7ece07d7b18ff9dcfd96fe740f9fab5",
+    "75af2b15f52bdd6917c34c640e2ab924aeb11ae10e67fae54cf732f5b5a551c2",
+    "6202646d9b9320177faba677531dc512a6637b24c0222317caec61294497299b",
+    "4b50c35545a283b67e934efdf63948fd1e6ec44e5a7ac8fffd9815ff09fa5cf6",
+    "8028e2bb1ed9bb456e433cd5d7b593bc5244c1276a4a4b87473b4dd5a612cf5d",
+    "de42d4967db0bdd2af4a406c8ed779c698de383f2446b0a2de71649e84a9dc58",
+    "411ea4200ac88b01f27433aa05ee53af6c7c269d3ad2edd918b821cd1b478982",
+    "1639e5bf98d29f88366d1c658dce70c0cc16d626cd0139adb550633d2cb85ff0",
+    "80993ac6c72423f170566afa9b8b19711da52cdf954bdcdc9fba57e469ae1610",
+    "3ea60b0bd5c8239d9856c2e40f611949f87de969c60d419bd058e8014c2c731d",
+    "75acf6cfd534474bfb22aae9d89c3184aafd8551ab3b4cea2aa5c0b2c178fb64",
+    "c268432f1b4fb20c50b957f8e3ca749f2dee67dd2fbfbe3a8b63bf5e3293cb1e",
+    "54d87ac772aff2f395fcb2d19b5e191bccdfb88d1dbb467c38aabf21db601360",
+    "77be8854349ea57da97c60ee2005eeb20ad8d4aa4348c58460c8b04e9a70dc17",
+    "ade804654c4b7c811211388eb602b145591beeee6b1879960e85065f1afeb3c6",
+    "ca25c66fc3b455bf4d82416fb53a9e4828b177e705de332e7737235b81b68f85",
+    "e711804f7938c33353b7c93624810ca68bd816ab69e047f8e7c755d1a7ef4466",
+    "2a07cb7d0e971f19ea80934500a588424e63a50ae7d65bdfcb4f8341d3c6bcd4",
+    "269337c969ee7675af91480b446fa6513ecb2db6fa9b463b793ac83014abb285",
+    "b3dc558498f753e70b59f3a8700a3163a6465cecff1f1ea2081019757a58b847",
+    "b138ca41ed857aec81ad5625308c4dcef29cadbb00e54205eb4532872fc41fcd",
+    "7758acf5e61e60bd32d67049cc803d8d3d57e770ad86b325ea5da147d07a5140",
+    "f7c4044879d380cac7db560f9a670b64a16c5ccbebc9b97721ec53d00b877410",
+    "fc6cef36b8990631c8cff2b5d49e234311a1db36f6e1ad3fbfa265a721d0d23b",
+]
