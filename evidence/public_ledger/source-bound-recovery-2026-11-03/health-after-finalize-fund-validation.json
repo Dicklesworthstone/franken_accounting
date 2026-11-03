@@ -1,0 +1,2781 @@
+{
+  "artifact_files": {
+    "checkpoint.bin": {
+      "bytes": 288,
+      "sha256": "2a56e6b16cf29547c4a1a617e238f79f7d259ff12f0e566cfba0e81e731d5b48"
+    },
+    "report.fab": {
+      "bytes": 202941,
+      "sha256": "c74a17145f0268e9848fd05dd33aba515703f00c6fb9e3b70e577eed55fd6953"
+    },
+    "report.receipt": {
+      "bytes": 219,
+      "sha256": "91f8f848af2fa9ec69fa4a7333b57133016257cbb748a906b0968dfe4c2dded9"
+    },
+    "trusted-public-key.txt": {
+      "bytes": 65,
+      "sha256": "9a734122a70f8600ff7b40587bfa131e57173dc0be6afca68f369a81051d1961"
+    }
+  },
+  "binary_and_input_sha256_after": {
+    "driver": "43ee04174028db1c6751d027af45791c2fa394af920dc71f44298e3ea5af684c",
+    "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+    "fa_verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+    "helper": "c58ecf6f87b69f553a5bb866da2d3581ab8f275495a9d01c1994dac063a64c89",
+    "normalizer": "c71fa2225f8e52d8ce85deb900d691306eff2e6f1e12e3ae8516654ae1548fd8",
+    "original_book": "0ae058504671fadb19058aed70008b6e8c5a67d4d71275bb88140b3bc3877430",
+    "recovery_pins": "83bace5fe570032a2da80f16e89ebf2c020c290560468963d2e09acb2ac533d5",
+    "report": "e4f2d461522e748c5b8cd6f792ff71af80e7d37af328ebed6b22ef461036ff36",
+    "source_manifest": "562ab096c1ae77c4d1cd0fcf6b7b74e7aabd3fa75580b338da9e84c0c6af1ec0"
+  },
+  "binary_and_input_sha256_before": {
+    "driver": "43ee04174028db1c6751d027af45791c2fa394af920dc71f44298e3ea5af684c",
+    "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+    "fa_verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+    "helper": "c58ecf6f87b69f553a5bb866da2d3581ab8f275495a9d01c1994dac063a64c89",
+    "normalizer": "c71fa2225f8e52d8ce85deb900d691306eff2e6f1e12e3ae8516654ae1548fd8",
+    "original_book": "0ae058504671fadb19058aed70008b6e8c5a67d4d71275bb88140b3bc3877430",
+    "recovery_pins": "83bace5fe570032a2da80f16e89ebf2c020c290560468963d2e09acb2ac533d5",
+    "report": "e4f2d461522e748c5b8cd6f792ff71af80e7d37af328ebed6b22ef461036ff36",
+    "source_manifest": "562ab096c1ae77c4d1cd0fcf6b7b74e7aabd3fa75580b338da9e84c0c6af1ec0"
+  },
+  "book_output": "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run",
+  "checkpoint_state": "b90dccce2f91168f2d534758d2f92bc63fad4a17eab55fb328d218caa1ff6ba4",
+  "closure": {
+    "additive_input_labels": [
+      "MigrationRunFragment",
+      "MigrationSource",
+      "MigrationSourceFragment",
+      "EntryFragment"
+    ],
+    "book": "708aeeff0adfab9baf1f4380bcaf66dd",
+    "branch": "00000000000000000000000000000000",
+    "bundle_major": 1,
+    "bundle_minor": 1,
+    "canonical_records": 78,
+    "certificate_digest": "2877c39dd9a11483a3c5fc2787aa5f454c521c1e70dea6bcd65f3bd769665d04",
+    "certificate_format": "fa:report-certificate:v8",
+    "dimension": "fund",
+    "dimension_value": "1000",
+    "journal_leaves": 60,
+    "known_at": 138,
+    "migration_run_bodies": 1,
+    "migration_source_witnesses": 1,
+    "native_input_count": 12,
+    "native_inputs": [
+      {
+        "facade": 4,
+        "snapshot": 138,
+        "statement": "MATCH (n:Account) FOR SYSTEM_TIME AS OF SEQ 138 RETURN n,n.code,n.name,n.account_type,n.normal_balance,n.posting,n.unit_policy,n.lower_bound,n.upper_bound,n.limit_scope,n._fa_payload,n.book_id ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 138,
+        "statement": "MATCH (n:Book) FOR SYSTEM_TIME AS OF SEQ 138 RETURN n,n._fa_payload,n.book_id,n.base_unit,n.symbols_digest,n.unit_table_digest ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 138,
+        "statement": "MATCH (n:Entry) FOR SYSTEM_TIME AS OF SEQ 138 RETURN n,n._fa_payload,n._fa_digest ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 138,
+        "statement": "MATCH (n:FiscalCalendar) FOR SYSTEM_TIME AS OF SEQ 138 RETURN n,n._fa_payload,n.calendar_id ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 138,
+        "statement": "MATCH (n:MigrationRun) FOR SYSTEM_TIME AS OF SEQ 138 RETURN n,n._fa_payload,n._fa_digest,n.state ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 138,
+        "statement": "MATCH (n:Period) FOR SYSTEM_TIME AS OF SEQ 138 RETURN n,n.code,n.calendar_id,n.fiscal_year,n.ordinal,n.period_kind,n.period_start,n.period_end,n.state ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 138,
+        "statement": "MATCH (n:Unit) FOR SYSTEM_TIME AS OF SEQ 138 RETURN n,n._fa_payload,n.unit_id,n.code,n.name,n.scale,n.version ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 138,
+        "statement": "MATCH (n:DimensionValue) FOR SYSTEM_TIME AS OF SEQ 138 WHERE n.dimension_id = 7 RETURN n,n._fa_payload,n.dimension_id ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 138,
+        "statement": "MATCH (n:MigrationRunFragment) FOR SYSTEM_TIME AS OF SEQ 138 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 138,
+        "statement": "MATCH (n:MigrationSource) FOR SYSTEM_TIME AS OF SEQ 138 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 138,
+        "statement": "MATCH (n:MigrationSourceFragment) FOR SYSTEM_TIME AS OF SEQ 138 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 138,
+        "statement": "MATCH (n:EntryFragment) FOR SYSTEM_TIME AS OF SEQ 138 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+        "trailing_bytes": 0
+      }
+    ],
+    "output": {
+      "account_nets": {
+        "101000": -22239729991,
+        "400000": 22527189308,
+        "411201": -1045583010,
+        "411210": -407846374,
+        "411219": -347299122,
+        "425848": -9103467175,
+        "428199": -2453305888,
+        "433144": -8748199,
+        "433199": -270000,
+        "441105": -30384614,
+        "455101": -199009933036,
+        "458105": -17418367526,
+        "459151": -39859855465,
+        "459199": -2967888636,
+        "472101": -3119600,
+        "473131": -257000,
+        "489199": -144000,
+        "511110": 945389262,
+        "511210": 15679600,
+        "511270": 71508,
+        "511310": 3099055,
+        "511420": 7364668,
+        "512110": 172981690,
+        "512230": 202996,
+        "513110": 58339169,
+        "513120": 13643839,
+        "513230": 103824137,
+        "513280": 2430043,
+        "513290": 21909261,
+        "513300": 33135097,
+        "515010": 16511776,
+        "515060": 15746025,
+        "515330": 348000,
+        "515350": 161888849,
+        "515360": 32842,
+        "515370": 130111837,
+        "515380": 278353023,
+        "515400": 5625000,
+        "515440": 156138170,
+        "515460": 53375000,
+        "515490": 112665229,
+        "515500": 2171675,
+        "515520": 31850,
+        "515540": 449573291,
+        "515560": 1132508941,
+        "515570": 12969752,
+        "515580": 2475594,
+        "515600": 256619737,
+        "515610": 294294,
+        "515620": 300229615,
+        "515640": 116972700,
+        "515650": 2236058,
+        "515660": 12025461,
+        "515750": 8480000,
+        "515780": 16162800,
+        "515800": 30186187,
+        "515990": 9196162,
+        "519130": 2201309,
+        "521110": 206402,
+        "521120": 162250,
+        "521140": 8465,
+        "521210": 14455,
+        "521220": 44645,
+        "521230": 127825,
+        "521240": 28776,
+        "521250": 42380,
+        "521260": 170511,
+        "521310": 883071,
+        "522110": 455423,
+        "522113": 39690,
+        "522120": 351510,
+        "522130": 583516,
+        "522131": 103549,
+        "522150": 1037816,
+        "531110": 2414,
+        "531120": 3093000,
+        "531130": 4223525,
+        "531150": 1034550,
+        "531160": 278781,
+        "531170": 95948358,
+        "531180": 124264,
+        "531210": 5000,
+        "531230": 1078350,
+        "531250": 255500,
+        "531260": 3989000,
+        "531350": 197008,
+        "531360": 529322,
+        "531370": 2839745,
+        "531420": 829757,
+        "531600": 2768000,
+        "531650": 29000,
+        "532110": 57781875,
+        "532130": 314900,
+        "532140": 1274283,
+        "532141": 463327,
+        "532142": 366191,
+        "532160": 1586791,
+        "532190": 166400,
+        "533100": 9340,
+        "533110": 57883550,
+        "533120": 642118,
+        "533140": 240593,
+        "533150": 4358521,
+        "533240": 94000,
+        "534290": 120251,
+        "534310": 11394,
+        "536130": 501620,
+        "536140": 257055,
+        "541120": 14725976,
+        "541130": 1941824,
+        "551110": 161793618,
+        "551120": 1731776001,
+        "551130": 284546414642,
+        "553190": 72213798,
+        "554230": 218750,
+        "562170": -2292350,
+        "621000": 31793559252,
+        "631100": -50862100752
+      },
+      "account_rows": 118,
+      "activity": false,
+      "dimension": "fund",
+      "effective_through": 19904,
+      "gross_cents": {
+        "101000:credit": 49831071968,
+        "101000:debit": 27591341977,
+        "400000:credit": 0,
+        "400000:debit": 22527189308,
+        "411201:credit": 1045583010,
+        "411201:debit": 0,
+        "411210:credit": 407846374,
+        "411210:debit": 0,
+        "411219:credit": 347299122,
+        "411219:debit": 0,
+        "425848:credit": 9103467175,
+        "425848:debit": 0,
+        "428199:credit": 2453305888,
+        "428199:debit": 0,
+        "433144:credit": 8748199,
+        "433144:debit": 0,
+        "433199:credit": 270000,
+        "433199:debit": 0,
+        "441105:credit": 30384614,
+        "441105:debit": 0,
+        "455101:credit": 199078279565,
+        "455101:debit": 68346529,
+        "458105:credit": 17418367526,
+        "458105:debit": 0,
+        "459151:credit": 39859855465,
+        "459151:debit": 0,
+        "459199:credit": 2967888636,
+        "459199:debit": 0,
+        "472101:credit": 3119600,
+        "472101:debit": 0,
+        "473131:credit": 257000,
+        "473131:debit": 0,
+        "489199:credit": 144000,
+        "489199:debit": 0,
+        "511110:credit": 0,
+        "511110:debit": 945389262,
+        "511210:credit": 0,
+        "511210:debit": 15679600,
+        "511270:credit": 0,
+        "511270:debit": 71508,
+        "511310:credit": 0,
+        "511310:debit": 3099055,
+        "511420:credit": 0,
+        "511420:debit": 7364668,
+        "512110:credit": 360,
+        "512110:debit": 172982050,
+        "512230:credit": 0,
+        "512230:debit": 202996,
+        "513110:credit": 0,
+        "513110:debit": 58339169,
+        "513120:credit": 0,
+        "513120:debit": 13643839,
+        "513230:credit": 0,
+        "513230:debit": 103824137,
+        "513280:credit": 0,
+        "513280:debit": 2430043,
+        "513290:credit": 0,
+        "513290:debit": 21909261,
+        "513300:credit": 0,
+        "513300:debit": 33135097,
+        "515010:credit": 0,
+        "515010:debit": 16511776,
+        "515060:credit": 0,
+        "515060:debit": 15746025,
+        "515330:credit": 0,
+        "515330:debit": 348000,
+        "515350:credit": 0,
+        "515350:debit": 161888849,
+        "515360:credit": 0,
+        "515360:debit": 32842,
+        "515370:credit": 0,
+        "515370:debit": 130111837,
+        "515380:credit": 0,
+        "515380:debit": 278353023,
+        "515400:credit": 0,
+        "515400:debit": 5625000,
+        "515440:credit": 0,
+        "515440:debit": 156138170,
+        "515460:credit": 0,
+        "515460:debit": 53375000,
+        "515490:credit": 0,
+        "515490:debit": 112665229,
+        "515500:credit": 0,
+        "515500:debit": 2171675,
+        "515520:credit": 0,
+        "515520:debit": 31850,
+        "515540:credit": 0,
+        "515540:debit": 449573291,
+        "515560:credit": 0,
+        "515560:debit": 1132508941,
+        "515570:credit": 0,
+        "515570:debit": 12969752,
+        "515580:credit": 0,
+        "515580:debit": 2475594,
+        "515600:credit": 0,
+        "515600:debit": 256619737,
+        "515610:credit": 0,
+        "515610:debit": 294294,
+        "515620:credit": 0,
+        "515620:debit": 300229615,
+        "515640:credit": 0,
+        "515640:debit": 116972700,
+        "515650:credit": 0,
+        "515650:debit": 2236058,
+        "515660:credit": 0,
+        "515660:debit": 12025461,
+        "515750:credit": 0,
+        "515750:debit": 8480000,
+        "515780:credit": 0,
+        "515780:debit": 16162800,
+        "515800:credit": 0,
+        "515800:debit": 30186187,
+        "515990:credit": 0,
+        "515990:debit": 9196162,
+        "519130:credit": 0,
+        "519130:debit": 2201309,
+        "521110:credit": 0,
+        "521110:debit": 206402,
+        "521120:credit": 0,
+        "521120:debit": 162250,
+        "521140:credit": 0,
+        "521140:debit": 8465,
+        "521210:credit": 2971,
+        "521210:debit": 17426,
+        "521220:credit": 9782,
+        "521220:debit": 54427,
+        "521230:credit": 26125,
+        "521230:debit": 153950,
+        "521240:credit": 5479,
+        "521240:debit": 34255,
+        "521250:credit": 21000,
+        "521250:debit": 63380,
+        "521260:credit": 0,
+        "521260:debit": 170511,
+        "521310:credit": 0,
+        "521310:debit": 883071,
+        "522110:credit": 0,
+        "522110:debit": 455423,
+        "522113:credit": 0,
+        "522113:debit": 39690,
+        "522120:credit": 0,
+        "522120:debit": 351510,
+        "522130:credit": 0,
+        "522130:debit": 583516,
+        "522131:credit": 70,
+        "522131:debit": 103619,
+        "522150:credit": 0,
+        "522150:debit": 1037816,
+        "531110:credit": 0,
+        "531110:debit": 2414,
+        "531120:credit": 0,
+        "531120:debit": 3093000,
+        "531130:credit": 0,
+        "531130:debit": 4223525,
+        "531150:credit": 0,
+        "531150:debit": 1034550,
+        "531160:credit": 0,
+        "531160:debit": 278781,
+        "531170:credit": 0,
+        "531170:debit": 95948358,
+        "531180:credit": 0,
+        "531180:debit": 124264,
+        "531210:credit": 0,
+        "531210:debit": 5000,
+        "531230:credit": 0,
+        "531230:debit": 1078350,
+        "531250:credit": 0,
+        "531250:debit": 255500,
+        "531260:credit": 0,
+        "531260:debit": 3989000,
+        "531350:credit": 0,
+        "531350:debit": 197008,
+        "531360:credit": 0,
+        "531360:debit": 529322,
+        "531370:credit": 0,
+        "531370:debit": 2839745,
+        "531420:credit": 0,
+        "531420:debit": 829757,
+        "531600:credit": 0,
+        "531600:debit": 2768000,
+        "531650:credit": 0,
+        "531650:debit": 29000,
+        "532110:credit": 0,
+        "532110:debit": 57781875,
+        "532130:credit": 0,
+        "532130:debit": 314900,
+        "532140:credit": 0,
+        "532140:debit": 1274283,
+        "532141:credit": 0,
+        "532141:debit": 463327,
+        "532142:credit": 0,
+        "532142:debit": 366191,
+        "532160:credit": 0,
+        "532160:debit": 1586791,
+        "532190:credit": 0,
+        "532190:debit": 166400,
+        "533100:credit": 0,
+        "533100:debit": 9340,
+        "533110:credit": 0,
+        "533110:debit": 57883550,
+        "533120:credit": 0,
+        "533120:debit": 642118,
+        "533140:credit": 0,
+        "533140:debit": 240593,
+        "533150:credit": 0,
+        "533150:debit": 4358521,
+        "533240:credit": 0,
+        "533240:debit": 94000,
+        "534290:credit": 0,
+        "534290:debit": 120251,
+        "534310:credit": 0,
+        "534310:debit": 11394,
+        "536130:credit": 0,
+        "536130:debit": 501620,
+        "536140:credit": 32636,
+        "536140:debit": 289691,
+        "541120:credit": 0,
+        "541120:debit": 14725976,
+        "541130:credit": 0,
+        "541130:debit": 1941824,
+        "551110:credit": 0,
+        "551110:debit": 161793618,
+        "551120:credit": 0,
+        "551120:debit": 1731776001,
+        "551130:credit": 200000,
+        "551130:debit": 284546614642,
+        "553190:credit": 0,
+        "553190:debit": 72213798,
+        "554230:credit": 0,
+        "554230:debit": 218750,
+        "562170:credit": 2292350,
+        "562170:debit": 0,
+        "621000:credit": 0,
+        "621000:debit": 31793559252,
+        "631100:credit": 50862100752,
+        "631100:debit": 0
+      },
+      "known_at": 138,
+      "periods": [
+        "FY2024-P12"
+      ],
+      "unit_code": "USD",
+      "unit_id": 0,
+      "unit_scale": 2,
+      "value": "1000",
+      "values": [
+        "1000"
+      ]
+    },
+    "scope": "Descriptive framing only; separate fa-verify establishes authentication.",
+    "selected": [
+      "FY2024-P12"
+    ]
+  },
+  "commands": [
+    {
+      "command": [
+        "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+        "--book",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout": "{\"authority\":{\"ops\":null,\"posture\":\"embedded-owner\",\"principal\":\"operator\",\"profile\":\"Human\"},\"book\":\"708aeeff0adfab9baf1f4380bcaf66dd\",\"certificate\":null,\"coordinate\":{\"branch\":\"trunk\",\"effective\":\"all\",\"known_at\":140,\"time_evidence\":null},\"data\":{\"accounts\":118,\"base_unit\":\"USD\",\"book_id\":\"708aeeff0adfab9baf1f4380bcaf66dd\",\"calendar\":\"fiscal\",\"entities\":[],\"periods\":15,\"periods_by_state\":{\"Locked\":15},\"units_registered\":13},\"event\":\"book\",\"next_actions\":[],\"v\":1,\"warnings\":[]}\n"
+    },
+    {
+      "command": [
+        "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+        "--book",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run/book",
+        "proof",
+        "signed-checkpoint",
+        "--state",
+        "latest",
+        "--out",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-fund/checkpoint.bin",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout": "{\"authority\":{\"ops\":null,\"posture\":\"embedded-owner\",\"principal\":\"operator\",\"profile\":\"Human\"},\"book\":\"708aeeff0adfab9baf1f4380bcaf66dd\",\"certificate\":null,\"coordinate\":{\"branch\":\"trunk\",\"effective\":\"all\",\"known_at\":139,\"time_evidence\":null},\"data\":{\"byte_len\":288,\"bytes\":null,\"checkpoint_bytes\":\"708aeeff0adfab9baf1f4380bcaf66dd000000000000000000000000000000008b000000000000004e000000000000009ce172966253bf8d2009c3a827bb8dcd983978deb6c7b1e01716858788e2cb00\",\"checkpoint_public_key\":\"ea463bd02365e651091ab5381a654fb42cdb10ddf7e12c57631ae7cb71c85363\",\"claim\":{},\"file\":\"/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-fund/checkpoint.bin\",\"kind\":\"signed-checkpoint\",\"leaf_count\":78,\"next_checkpoint_bytes\":null,\"next_state_oid\":null,\"recorded_at\":140,\"root\":\"9ce172966253bf8d2009c3a827bb8dcd983978deb6c7b1e01716858788e2cb00\",\"scope\":\"entry_prefix\",\"signatures\":\"ed25519\",\"state_oid\":\"b90dccce2f91168f2d534758d2f92bc63fad4a17eab55fb328d218caa1ff6ba4\",\"through_seq\":139,\"trust\":\"checkpoint_public_key\"},\"event\":\"proof_exported\",\"next_actions\":[],\"v\":1,\"warnings\":[]}\n"
+    },
+    {
+      "command": [
+        "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+        "--book",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run/book",
+        "bundle",
+        "produce",
+        "--certificate",
+        "C:2877c39dd9a11483a3c5fc2787aa5f454c521c1e70dea6bcd65f3bd769665d04",
+        "--state",
+        "b90dccce2f91168f2d534758d2f92bc63fad4a17eab55fb328d218caa1ff6ba4",
+        "--out",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-fund/report.fab",
+        "--receipt-out",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-fund/report.receipt",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout": "{\"authority\":{\"ops\":null,\"posture\":\"embedded-owner\",\"principal\":\"operator\",\"profile\":\"Human\"},\"book\":\"708aeeff0adfab9baf1f4380bcaf66dd\",\"certificate\":null,\"coordinate\":{\"branch\":\"trunk\",\"effective\":\"all\",\"known_at\":140,\"time_evidence\":null},\"data\":{\"balances\":0,\"byte_len\":202941,\"bytes\":null,\"checkpoint_public_key\":\"ea463bd02365e651091ab5381a654fb42cdb10ddf7e12c57631ae7cb71c85363\",\"digest\":\"acaf46cf885ac8b87ff3716592f9c8bdd4d2df4c2d1ec6efc26caf37a6f4999c\",\"file\":\"/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-fund/report.fab\",\"inline_documents\":false,\"receipt\":null,\"receipt_file\":\"/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-fund/report.receipt\",\"receipt_len\":219,\"report_units\":null,\"scope\":\"report\",\"verify\":\"fa-verify report <name> --key ea463bd02365e651091ab5381a654fb42cdb10ddf7e12c57631ae7cb71c85363 --receipt <name> --expect 2877c39dd9a11483a3c5fc2787aa5f454c521c1e70dea6bcd65f3bd769665d04\"},\"event\":\"bundle_produced\",\"next_actions\":[],\"v\":1,\"warnings\":[]}\n"
+    },
+    {
+      "command": [
+        "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+        "report",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-fund/report.fab",
+        "--key",
+        "ea463bd02365e651091ab5381a654fb42cdb10ddf7e12c57631ae7cb71c85363",
+        "--checkpoint",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-fund/checkpoint.bin",
+        "--receipt",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-fund/report.receipt",
+        "--expect",
+        "2877c39dd9a11483a3c5fc2787aa5f454c521c1e70dea6bcd65f3bd769665d04",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout": "{\"v\":1,\"tool\":\"fa-verify\",\"command\":\"report\",\"verdict\":\"verified\",\"checks\":[{\"check\":\"checkpoint\",\"scope\":\"signature\",\"result\":\"pass\",\"detail\":{\"oid\":\"0344c2fcb783b232fc13c4cac1254b0b9ab4663a44fe54bf4f69e88a9d9926be\",\"book_id\":\"708aeeff0adfab9baf1f4380bcaf66dd\",\"branch_id\":\"00000000000000000000000000000000\",\"through_seq\":139,\"leaf_count\":78,\"root\":\"9ce172966253bf8d2009c3a827bb8dcd983978deb6c7b1e01716858788e2cb00\",\"state_oid\":\"b90dccce2f91168f2d534758d2f92bc63fad4a17eab55fb328d218caa1ff6ba4\",\"scope_index_root\":\"9a9e19f8e62a37242b41e534fe374356e802f17b3ecaba76de081062ed73f832\",\"substrate_chain_commitment\":\"ab52bad8ef72fee2c94acdddc83c1ec661afeb4f25f9c7abadbe4f5af7495172\",\"signed_by\":[\"0299ef29573bc22ca9aa9dec4812b1ed1529e742dee22b87273037297512876f\"],\"not_judged\":[]},\"reason\":null},{\"check\":\"report_bundle\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"bundle_digest\":\"acaf46cf885ac8b87ff3716592f9c8bdd4d2df4c2d1ec6efc26caf37a6f4999c\",\"certificate_digest\":\"2877c39dd9a11483a3c5fc2787aa5f454c521c1e70dea6bcd65f3bd769665d04\",\"output_digest\":\"6eb9730f13399ee3ac062926fd1896b0f2838189da99af3ec439ba5e82b95886\",\"known_at\":138,\"effective_through\":19904,\"report_mode\":\"stock\",\"records\":78,\"rows\":118,\"unit_universe_source\":\"not-applicable\",\"native_read_attestations\":\"retained; not used as outsider proofs\"},\"reason\":null},{\"check\":\"dimension_filter\",\"scope\":\"authenticated_journal\",\"result\":\"pass\",\"detail\":{\"dimension\":\"fund\",\"value\":\"1000\",\"included_values\":[\"1000\"],\"selection\":\"tagged legs, including declared descendants\",\"monetary_footing\":\"not required for a filtered view\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"158741682838d22624f84d796f4e5c9e\",\"code\":\"101000\",\"unit\":0,\"debits\":\"27591341977\",\"credits\":\"49831071968\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"2268f5aac538462f8634ea75eb9a6fa3\",\"code\":\"400000\",\"unit\":0,\"debits\":\"22527189308\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"3716fde6fa1184a256016a11e91d3bcb\",\"code\":\"411201\",\"unit\":0,\"debits\":\"0\",\"credits\":\"1045583010\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"0dd5b2f5aba731810133eb9e71eb328f\",\"code\":\"411210\",\"unit\":0,\"debits\":\"0\",\"credits\":\"407846374\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"152c168f0c1666b73d19f7fe2a156023\",\"code\":\"411219\",\"unit\":0,\"debits\":\"0\",\"credits\":\"347299122\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"f1d0e18a0ff6bcf13b9217d035678f2d\",\"code\":\"425848\",\"unit\":0,\"debits\":\"0\",\"credits\":\"9103467175\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"6f0c6f4678cc9c3cc482dc46a69845bc\",\"code\":\"428199\",\"unit\":0,\"debits\":\"0\",\"credits\":\"2453305888\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"380b4ac8978e6a0fe50773f3ced9dea5\",\"code\":\"433144\",\"unit\":0,\"debits\":\"0\",\"credits\":\"8748199\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"70605dcce493d93c4e89ac9e7ac9ca69\",\"code\":\"433199\",\"unit\":0,\"debits\":\"0\",\"credits\":\"270000\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"333be222f939f65f48319bdee5fe2780\",\"code\":\"441105\",\"unit\":0,\"debits\":\"0\",\"credits\":\"30384614\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"f9beb2526c3d98aa4fa30e5d584eddf5\",\"code\":\"455101\",\"unit\":0,\"debits\":\"68346529\",\"credits\":\"199078279565\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"d2e45a2b0ffa2752de8d9b0b6b8294c2\",\"code\":\"458105\",\"unit\":0,\"debits\":\"0\",\"credits\":\"17418367526\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"405d9f5248bb48f6aa5368e2e1133c80\",\"code\":\"459151\",\"unit\":0,\"debits\":\"0\",\"credits\":\"39859855465\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"5af498b1c2659a5d423648b3fabda08d\",\"code\":\"459199\",\"unit\":0,\"debits\":\"0\",\"credits\":\"2967888636\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"a95ffa905829bfe189c228da4f638112\",\"code\":\"472101\",\"unit\":0,\"debits\":\"0\",\"credits\":\"3119600\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"993039b8c86aa77323154621e2f72a7e\",\"code\":\"473131\",\"unit\":0,\"debits\":\"0\",\"credits\":\"257000\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"7bcc67186900f39b40b393857d87ade2\",\"code\":\"489199\",\"unit\":0,\"debits\":\"0\",\"credits\":\"144000\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"caef1e0c09d26a6b213e88189f9a3850\",\"code\":\"511110\",\"unit\":0,\"debits\":\"945389262\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"844e2d4019a364b17fc406d6629c74b9\",\"code\":\"511210\",\"unit\":0,\"debits\":\"15679600\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"413a87dcefbbfcf3d3e7fbc4130c1691\",\"code\":\"511270\",\"unit\":0,\"debits\":\"71508\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"942afc3b50333cef83fd104a7c3fd441\",\"code\":\"511310\",\"unit\":0,\"debits\":\"3099055\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"7f0f32616596d49eb2e02b371ecc8df3\",\"code\":\"511420\",\"unit\":0,\"debits\":\"7364668\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"438db7eb3604e78a16100e1b9e6641dd\",\"code\":\"512110\",\"unit\":0,\"debits\":\"172982050\",\"credits\":\"360\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"6cc3518645e7b07859d67a10eda6ee2c\",\"code\":\"512230\",\"unit\":0,\"debits\":\"202996\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"4c915f12e55fb37cc3d8f952fc08e115\",\"code\":\"513110\",\"unit\":0,\"debits\":\"58339169\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"70e160aa4f153427fb27e1c0bf601e8b\",\"code\":\"513120\",\"unit\":0,\"debits\":\"13643839\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"1546ac78a91955e1f78d2ec98bdb4053\",\"code\":\"513230\",\"unit\":0,\"debits\":\"103824137\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"5b2b24892f4eddd39a71574114fbfcff\",\"code\":\"513280\",\"unit\":0,\"debits\":\"2430043\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"6cba9888ee09f86938866998b3b47f0d\",\"code\":\"513290\",\"unit\":0,\"debits\":\"21909261\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"5c47f490b49cec37d4a46a71ce4bfd26\",\"code\":\"513300\",\"unit\":0,\"debits\":\"33135097\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"02d0f12d566a19bba6a96adabc7a8e57\",\"code\":\"515010\",\"unit\":0,\"debits\":\"16511776\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"6f70bdccc86fff17b08c446cd6f06978\",\"code\":\"515060\",\"unit\":0,\"debits\":\"15746025\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"357ea12fe3b2b376a88519a556d979e6\",\"code\":\"515330\",\"unit\":0,\"debits\":\"348000\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"a47fb0c04b3414d0877c3fee1bb305a5\",\"code\":\"515350\",\"unit\":0,\"debits\":\"161888849\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"0b54ad3d55a6741840855c06c9e0612d\",\"code\":\"515360\",\"unit\":0,\"debits\":\"32842\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"3914b49a188d2e0919b73e979b4fad10\",\"code\":\"515370\",\"unit\":0,\"debits\":\"130111837\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"a3af2bab94ef155f4f7ea7f3bdd37e3e\",\"code\":\"515380\",\"unit\":0,\"debits\":\"278353023\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"f752932a984f9f95a20771aacc728e07\",\"code\":\"515400\",\"unit\":0,\"debits\":\"5625000\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"290d84d617a7eda98b185de0bd4667bd\",\"code\":\"515440\",\"unit\":0,\"debits\":\"156138170\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"ab7ca250451a1a3089bc85a6bc344376\",\"code\":\"515460\",\"unit\":0,\"debits\":\"53375000\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"450de53aaf1369994b0b703c9e33b1d8\",\"code\":\"515490\",\"unit\":0,\"debits\":\"112665229\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"0aba2314844ccdc3b114688a5c386a0c\",\"code\":\"515500\",\"unit\":0,\"debits\":\"2171675\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"2b16d56aebb9ecb055bc6f538d911efd\",\"code\":\"515520\",\"unit\":0,\"debits\":\"31850\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"daa28e18ac115a6968348c9a5c35de82\",\"code\":\"515540\",\"unit\":0,\"debits\":\"449573291\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"8b392f7494349d72e293cc7f61e0e93c\",\"code\":\"515560\",\"unit\":0,\"debits\":\"1132508941\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"7082da369e45e875eedf1058910dc271\",\"code\":\"515570\",\"unit\":0,\"debits\":\"12969752\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"bebb6731d56b6bd0a60812278846869d\",\"code\":\"515580\",\"unit\":0,\"debits\":\"2475594\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"4dee165ee8f577399c5ee7b0d170df96\",\"code\":\"515600\",\"unit\":0,\"debits\":\"256619737\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"ffd2508be11911b99d5f7a0d8aa57264\",\"code\":\"515610\",\"unit\":0,\"debits\":\"294294\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"9d6ae532f65e4ef3ea3e6c9639768766\",\"code\":\"515620\",\"unit\":0,\"debits\":\"300229615\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"f2d59a7353ffc8f864bfb6f7a9a3262d\",\"code\":\"515640\",\"unit\":0,\"debits\":\"116972700\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"ab929fed1f6ab74919d8910fdd70fac7\",\"code\":\"515650\",\"unit\":0,\"debits\":\"2236058\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"c771b80f230eff5800f840f3ce89a260\",\"code\":\"515660\",\"unit\":0,\"debits\":\"12025461\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"7f4d290c2721c710ff096e50eee23ec7\",\"code\":\"515750\",\"unit\":0,\"debits\":\"8480000\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"c8f42d18c15d07b81e4022d462d4a990\",\"code\":\"515780\",\"unit\":0,\"debits\":\"16162800\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"f4d52953f8dcb035a5d595f79b7a7f8c\",\"code\":\"515800\",\"unit\":0,\"debits\":\"30186187\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"82d82300c190ffb9a9753913a843e6e4\",\"code\":\"515990\",\"unit\":0,\"debits\":\"9196162\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"159d0e91e12145fb0693e22c36ae7043\",\"code\":\"519130\",\"unit\":0,\"debits\":\"2201309\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"7539deb62bc8507b5bd45a88c6e11ded\",\"code\":\"521110\",\"unit\":0,\"debits\":\"206402\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"8873bafd4960088c52119520ce0e3e30\",\"code\":\"521120\",\"unit\":0,\"debits\":\"162250\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"3be7b6d3113e8e7db0f64782153b9a91\",\"code\":\"521140\",\"unit\":0,\"debits\":\"8465\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"f22fea466a676ad700a57167e90a2478\",\"code\":\"521210\",\"unit\":0,\"debits\":\"17426\",\"credits\":\"2971\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"3be8f2c4c485d1fe5c5b5497ec182726\",\"code\":\"521220\",\"unit\":0,\"debits\":\"54427\",\"credits\":\"9782\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"30ec38010fbea1c656589c922f9de692\",\"code\":\"521230\",\"unit\":0,\"debits\":\"153950\",\"credits\":\"26125\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"a63553fb877b92d7c0643b3d4e4cc2b5\",\"code\":\"521240\",\"unit\":0,\"debits\":\"34255\",\"credits\":\"5479\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"04e5953cff707184116c73a73d987c04\",\"code\":\"521250\",\"unit\":0,\"debits\":\"63380\",\"credits\":\"21000\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"751a72d3495e61c52163dbc695616ae3\",\"code\":\"521260\",\"unit\":0,\"debits\":\"170511\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"1c40d03eeab7e24622fcddced1a7175e\",\"code\":\"521310\",\"unit\":0,\"debits\":\"883071\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"886f24e44f371a6a1eabea25bd96549c\",\"code\":\"522110\",\"unit\":0,\"debits\":\"455423\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"af0a99acb85bf208d6e1fcab6380a78a\",\"code\":\"522113\",\"unit\":0,\"debits\":\"39690\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"dc51970bcc2fa00d01b2ac08232dcf33\",\"code\":\"522120\",\"unit\":0,\"debits\":\"351510\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"2669cc905f8a199b2a797c770c196586\",\"code\":\"522130\",\"unit\":0,\"debits\":\"583516\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"d07d95be0b3b3b7a205de256fe71397f\",\"code\":\"522131\",\"unit\":0,\"debits\":\"103619\",\"credits\":\"70\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"668c44c3df5d8f2107feaeff2094a382\",\"code\":\"522150\",\"unit\":0,\"debits\":\"1037816\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"74a182375040aeedbf3ffc59934fd13a\",\"code\":\"531110\",\"unit\":0,\"debits\":\"2414\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"dfee1d58c2198736f180c2a2a9a6fa9c\",\"code\":\"531120\",\"unit\":0,\"debits\":\"3093000\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"88daeba4f0aa5113385103f5700d46d6\",\"code\":\"531130\",\"unit\":0,\"debits\":\"4223525\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"c574570ad3bd19b9afd5c448dda96271\",\"code\":\"531150\",\"unit\":0,\"debits\":\"1034550\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"42cdbdbf8dc9ef5138050f85215788d0\",\"code\":\"531160\",\"unit\":0,\"debits\":\"278781\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"4e50e138033073e0d2418e43dc9660fb\",\"code\":\"531170\",\"unit\":0,\"debits\":\"95948358\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"c366aac56af785389152806cb9d5de58\",\"code\":\"531180\",\"unit\":0,\"debits\":\"124264\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"e3365655ed12f55289ec0b21e10c3f89\",\"code\":\"531210\",\"unit\":0,\"debits\":\"5000\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"9b5f669de0428489d25f02f7a3c635da\",\"code\":\"531230\",\"unit\":0,\"debits\":\"1078350\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"b8dce19e8b27e0bacef692a0304b5753\",\"code\":\"531250\",\"unit\":0,\"debits\":\"255500\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"4feea1c3bf36209163728db1f120fb49\",\"code\":\"531260\",\"unit\":0,\"debits\":\"3989000\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"65039b8b331a5871302ff87c9c217f77\",\"code\":\"531350\",\"unit\":0,\"debits\":\"197008\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"a22de7ed162336e1bfdfac6dbc5f0fdb\",\"code\":\"531360\",\"unit\":0,\"debits\":\"529322\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"3f1d20e9c69c84492ee6b03d9f25c5fd\",\"code\":\"531370\",\"unit\":0,\"debits\":\"2839745\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"31c9934dbb6f878b30b8c4d35b69b454\",\"code\":\"531420\",\"unit\":0,\"debits\":\"829757\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"6989df62c5e7a9620fdadcc6959b62af\",\"code\":\"531600\",\"unit\":0,\"debits\":\"2768000\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"86d10c7876f44dfb1595a75dc8b72fc7\",\"code\":\"531650\",\"unit\":0,\"debits\":\"29000\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"7467b4ac47b14bd36bde58d0c73246d7\",\"code\":\"532110\",\"unit\":0,\"debits\":\"57781875\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"2a3c5693a7df1b93dadb9050915f8710\",\"code\":\"532130\",\"unit\":0,\"debits\":\"314900\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"b696b5b895d55e0f4d8bf5edff63c3c0\",\"code\":\"532140\",\"unit\":0,\"debits\":\"1274283\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"1c221a49d4157a3b9d123eae5ffb72b4\",\"code\":\"532141\",\"unit\":0,\"debits\":\"463327\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"532a659dad2c7aa856096a038305cc95\",\"code\":\"532142\",\"unit\":0,\"debits\":\"366191\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"ada1f8c92998d7450a066a3544d6ca0a\",\"code\":\"532160\",\"unit\":0,\"debits\":\"1586791\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"72db660900445fe66035d5dbb89306ac\",\"code\":\"532190\",\"unit\":0,\"debits\":\"166400\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"9b7c9c558cdb5fa199e04f0340c3a441\",\"code\":\"533100\",\"unit\":0,\"debits\":\"9340\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"e910507970492a427bc81fbf8682b6a3\",\"code\":\"533110\",\"unit\":0,\"debits\":\"57883550\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"534a0efb6432f43c13c8c4ed2f5e7d35\",\"code\":\"533120\",\"unit\":0,\"debits\":\"642118\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"a8565b4d1f9f820c20e453b5087162e3\",\"code\":\"533140\",\"unit\":0,\"debits\":\"240593\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"696fd0e27528c6f1f343911141b339f0\",\"code\":\"533150\",\"unit\":0,\"debits\":\"4358521\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"2960ae55bc91c5dc71f23e9e549f8b98\",\"code\":\"533240\",\"unit\":0,\"debits\":\"94000\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"a3dccd34d8b355cd57cefc9b51b8e37a\",\"code\":\"534290\",\"unit\":0,\"debits\":\"120251\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"b961c4ae9e297bd2ae7e0858d20f1182\",\"code\":\"534310\",\"unit\":0,\"debits\":\"11394\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"cf06a2346c6b8023f556d6037fca9143\",\"code\":\"536130\",\"unit\":0,\"debits\":\"501620\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"70eff7ec74c09c0ac6c3246ba120793c\",\"code\":\"536140\",\"unit\":0,\"debits\":\"289691\",\"credits\":\"32636\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"07b68dcc8ecc117557db9b66f9462843\",\"code\":\"541120\",\"unit\":0,\"debits\":\"14725976\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"8990776b93e60e0f211f3a7205bf0a4a\",\"code\":\"541130\",\"unit\":0,\"debits\":\"1941824\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"b8d22c7daa4d06189102aa167e8bec61\",\"code\":\"551110\",\"unit\":0,\"debits\":\"161793618\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"b635a44abb994470be22fb6adcf1b69a\",\"code\":\"551120\",\"unit\":0,\"debits\":\"1731776001\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"eb49eebfe37364f6bed651c098cda463\",\"code\":\"551130\",\"unit\":0,\"debits\":\"284546614642\",\"credits\":\"200000\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"cf821089504aac1df19e512adeb2c70a\",\"code\":\"553190\",\"unit\":0,\"debits\":\"72213798\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"8bcfe5af993573044879c1f69f37272d\",\"code\":\"554230\",\"unit\":0,\"debits\":\"218750\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"2f1a34a4bba81928aa12ffa2dc123fd4\",\"code\":\"562170\",\"unit\":0,\"debits\":\"0\",\"credits\":\"2292350\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"0f7f0c1fdceb09a7f9e75d7d2639cf57\",\"code\":\"621000\",\"unit\":0,\"debits\":\"31793559252\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"4c2ad70257fb4ec07415d25375d8f6e2\",\"code\":\"631100\",\"unit\":0,\"debits\":\"0\",\"credits\":\"50862100752\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"canonical_report\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"output_digest\":\"6eb9730f13399ee3ac062926fd1896b0f2838189da99af3ec439ba5e82b95886\"},\"reason\":null},{\"check\":\"production_receipt\",\"scope\":\"signature\",\"result\":\"pass\",\"detail\":{\"signed_by\":\"0299ef29573bc22ca9aa9dec4812b1ed1529e742dee22b87273037297512876f\"},\"reason\":null}],\"error\":null}\n"
+    }
+  ],
+  "dimension_requested": "fund",
+  "elapsed_seconds": 2.472,
+  "entry_fragments_required": false,
+  "expected_certificate": "2877c39dd9a11483a3c5fc2787aa5f454c521c1e70dea6bcd65f3bd769665d04",
+  "finished_utc": "2026-11-03T20:51:47.141097+00:00",
+  "independent_verifier": [
+    {
+      "checks": [
+        {
+          "check": "checkpoint",
+          "detail": {
+            "book_id": "708aeeff0adfab9baf1f4380bcaf66dd",
+            "branch_id": "00000000000000000000000000000000",
+            "leaf_count": 78,
+            "not_judged": [],
+            "oid": "0344c2fcb783b232fc13c4cac1254b0b9ab4663a44fe54bf4f69e88a9d9926be",
+            "root": "9ce172966253bf8d2009c3a827bb8dcd983978deb6c7b1e01716858788e2cb00",
+            "scope_index_root": "9a9e19f8e62a37242b41e534fe374356e802f17b3ecaba76de081062ed73f832",
+            "signed_by": [
+              "0299ef29573bc22ca9aa9dec4812b1ed1529e742dee22b87273037297512876f"
+            ],
+            "state_oid": "b90dccce2f91168f2d534758d2f92bc63fad4a17eab55fb328d218caa1ff6ba4",
+            "substrate_chain_commitment": "ab52bad8ef72fee2c94acdddc83c1ec661afeb4f25f9c7abadbe4f5af7495172",
+            "through_seq": 139
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "signature"
+        },
+        {
+          "check": "report_bundle",
+          "detail": {
+            "bundle_digest": "acaf46cf885ac8b87ff3716592f9c8bdd4d2df4c2d1ec6efc26caf37a6f4999c",
+            "certificate_digest": "2877c39dd9a11483a3c5fc2787aa5f454c521c1e70dea6bcd65f3bd769665d04",
+            "effective_through": 19904,
+            "known_at": 138,
+            "native_read_attestations": "retained; not used as outsider proofs",
+            "output_digest": "6eb9730f13399ee3ac062926fd1896b0f2838189da99af3ec439ba5e82b95886",
+            "records": 78,
+            "report_mode": "stock",
+            "rows": 118,
+            "unit_universe_source": "not-applicable"
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "dimension_filter",
+          "detail": {
+            "dimension": "fund",
+            "included_values": [
+              "1000"
+            ],
+            "monetary_footing": "not required for a filtered view",
+            "selection": "tagged legs, including declared descendants",
+            "value": "1000"
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "authenticated_journal"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "158741682838d22624f84d796f4e5c9e",
+            "code": "101000",
+            "credits": "49831071968",
+            "credits_pending": "0",
+            "debits": "27591341977",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "2268f5aac538462f8634ea75eb9a6fa3",
+            "code": "400000",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "22527189308",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "3716fde6fa1184a256016a11e91d3bcb",
+            "code": "411201",
+            "credits": "1045583010",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "0dd5b2f5aba731810133eb9e71eb328f",
+            "code": "411210",
+            "credits": "407846374",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "152c168f0c1666b73d19f7fe2a156023",
+            "code": "411219",
+            "credits": "347299122",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "f1d0e18a0ff6bcf13b9217d035678f2d",
+            "code": "425848",
+            "credits": "9103467175",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "6f0c6f4678cc9c3cc482dc46a69845bc",
+            "code": "428199",
+            "credits": "2453305888",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "380b4ac8978e6a0fe50773f3ced9dea5",
+            "code": "433144",
+            "credits": "8748199",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "70605dcce493d93c4e89ac9e7ac9ca69",
+            "code": "433199",
+            "credits": "270000",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "333be222f939f65f48319bdee5fe2780",
+            "code": "441105",
+            "credits": "30384614",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "f9beb2526c3d98aa4fa30e5d584eddf5",
+            "code": "455101",
+            "credits": "199078279565",
+            "credits_pending": "0",
+            "debits": "68346529",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "d2e45a2b0ffa2752de8d9b0b6b8294c2",
+            "code": "458105",
+            "credits": "17418367526",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "405d9f5248bb48f6aa5368e2e1133c80",
+            "code": "459151",
+            "credits": "39859855465",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "5af498b1c2659a5d423648b3fabda08d",
+            "code": "459199",
+            "credits": "2967888636",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "a95ffa905829bfe189c228da4f638112",
+            "code": "472101",
+            "credits": "3119600",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "993039b8c86aa77323154621e2f72a7e",
+            "code": "473131",
+            "credits": "257000",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "7bcc67186900f39b40b393857d87ade2",
+            "code": "489199",
+            "credits": "144000",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "caef1e0c09d26a6b213e88189f9a3850",
+            "code": "511110",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "945389262",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "844e2d4019a364b17fc406d6629c74b9",
+            "code": "511210",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "15679600",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "413a87dcefbbfcf3d3e7fbc4130c1691",
+            "code": "511270",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "71508",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "942afc3b50333cef83fd104a7c3fd441",
+            "code": "511310",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "3099055",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "7f0f32616596d49eb2e02b371ecc8df3",
+            "code": "511420",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "7364668",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "438db7eb3604e78a16100e1b9e6641dd",
+            "code": "512110",
+            "credits": "360",
+            "credits_pending": "0",
+            "debits": "172982050",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "6cc3518645e7b07859d67a10eda6ee2c",
+            "code": "512230",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "202996",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "4c915f12e55fb37cc3d8f952fc08e115",
+            "code": "513110",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "58339169",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "70e160aa4f153427fb27e1c0bf601e8b",
+            "code": "513120",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "13643839",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "1546ac78a91955e1f78d2ec98bdb4053",
+            "code": "513230",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "103824137",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "5b2b24892f4eddd39a71574114fbfcff",
+            "code": "513280",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "2430043",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "6cba9888ee09f86938866998b3b47f0d",
+            "code": "513290",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "21909261",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "5c47f490b49cec37d4a46a71ce4bfd26",
+            "code": "513300",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "33135097",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "02d0f12d566a19bba6a96adabc7a8e57",
+            "code": "515010",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "16511776",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "6f70bdccc86fff17b08c446cd6f06978",
+            "code": "515060",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "15746025",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "357ea12fe3b2b376a88519a556d979e6",
+            "code": "515330",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "348000",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "a47fb0c04b3414d0877c3fee1bb305a5",
+            "code": "515350",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "161888849",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "0b54ad3d55a6741840855c06c9e0612d",
+            "code": "515360",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "32842",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "3914b49a188d2e0919b73e979b4fad10",
+            "code": "515370",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "130111837",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "a3af2bab94ef155f4f7ea7f3bdd37e3e",
+            "code": "515380",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "278353023",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "f752932a984f9f95a20771aacc728e07",
+            "code": "515400",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "5625000",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "290d84d617a7eda98b185de0bd4667bd",
+            "code": "515440",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "156138170",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "ab7ca250451a1a3089bc85a6bc344376",
+            "code": "515460",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "53375000",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "450de53aaf1369994b0b703c9e33b1d8",
+            "code": "515490",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "112665229",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "0aba2314844ccdc3b114688a5c386a0c",
+            "code": "515500",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "2171675",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "2b16d56aebb9ecb055bc6f538d911efd",
+            "code": "515520",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "31850",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "daa28e18ac115a6968348c9a5c35de82",
+            "code": "515540",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "449573291",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "8b392f7494349d72e293cc7f61e0e93c",
+            "code": "515560",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "1132508941",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "7082da369e45e875eedf1058910dc271",
+            "code": "515570",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "12969752",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "bebb6731d56b6bd0a60812278846869d",
+            "code": "515580",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "2475594",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "4dee165ee8f577399c5ee7b0d170df96",
+            "code": "515600",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "256619737",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "ffd2508be11911b99d5f7a0d8aa57264",
+            "code": "515610",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "294294",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "9d6ae532f65e4ef3ea3e6c9639768766",
+            "code": "515620",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "300229615",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "f2d59a7353ffc8f864bfb6f7a9a3262d",
+            "code": "515640",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "116972700",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "ab929fed1f6ab74919d8910fdd70fac7",
+            "code": "515650",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "2236058",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "c771b80f230eff5800f840f3ce89a260",
+            "code": "515660",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "12025461",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "7f4d290c2721c710ff096e50eee23ec7",
+            "code": "515750",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "8480000",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "c8f42d18c15d07b81e4022d462d4a990",
+            "code": "515780",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "16162800",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "f4d52953f8dcb035a5d595f79b7a7f8c",
+            "code": "515800",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "30186187",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "82d82300c190ffb9a9753913a843e6e4",
+            "code": "515990",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "9196162",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "159d0e91e12145fb0693e22c36ae7043",
+            "code": "519130",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "2201309",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "7539deb62bc8507b5bd45a88c6e11ded",
+            "code": "521110",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "206402",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "8873bafd4960088c52119520ce0e3e30",
+            "code": "521120",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "162250",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "3be7b6d3113e8e7db0f64782153b9a91",
+            "code": "521140",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "8465",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "f22fea466a676ad700a57167e90a2478",
+            "code": "521210",
+            "credits": "2971",
+            "credits_pending": "0",
+            "debits": "17426",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "3be8f2c4c485d1fe5c5b5497ec182726",
+            "code": "521220",
+            "credits": "9782",
+            "credits_pending": "0",
+            "debits": "54427",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "30ec38010fbea1c656589c922f9de692",
+            "code": "521230",
+            "credits": "26125",
+            "credits_pending": "0",
+            "debits": "153950",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "a63553fb877b92d7c0643b3d4e4cc2b5",
+            "code": "521240",
+            "credits": "5479",
+            "credits_pending": "0",
+            "debits": "34255",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "04e5953cff707184116c73a73d987c04",
+            "code": "521250",
+            "credits": "21000",
+            "credits_pending": "0",
+            "debits": "63380",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "751a72d3495e61c52163dbc695616ae3",
+            "code": "521260",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "170511",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "1c40d03eeab7e24622fcddced1a7175e",
+            "code": "521310",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "883071",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "886f24e44f371a6a1eabea25bd96549c",
+            "code": "522110",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "455423",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "af0a99acb85bf208d6e1fcab6380a78a",
+            "code": "522113",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "39690",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "dc51970bcc2fa00d01b2ac08232dcf33",
+            "code": "522120",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "351510",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "2669cc905f8a199b2a797c770c196586",
+            "code": "522130",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "583516",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "d07d95be0b3b3b7a205de256fe71397f",
+            "code": "522131",
+            "credits": "70",
+            "credits_pending": "0",
+            "debits": "103619",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "668c44c3df5d8f2107feaeff2094a382",
+            "code": "522150",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "1037816",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "74a182375040aeedbf3ffc59934fd13a",
+            "code": "531110",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "2414",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "dfee1d58c2198736f180c2a2a9a6fa9c",
+            "code": "531120",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "3093000",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "88daeba4f0aa5113385103f5700d46d6",
+            "code": "531130",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "4223525",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "c574570ad3bd19b9afd5c448dda96271",
+            "code": "531150",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "1034550",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "42cdbdbf8dc9ef5138050f85215788d0",
+            "code": "531160",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "278781",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "4e50e138033073e0d2418e43dc9660fb",
+            "code": "531170",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "95948358",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "c366aac56af785389152806cb9d5de58",
+            "code": "531180",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "124264",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "e3365655ed12f55289ec0b21e10c3f89",
+            "code": "531210",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "5000",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "9b5f669de0428489d25f02f7a3c635da",
+            "code": "531230",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "1078350",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "b8dce19e8b27e0bacef692a0304b5753",
+            "code": "531250",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "255500",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "4feea1c3bf36209163728db1f120fb49",
+            "code": "531260",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "3989000",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "65039b8b331a5871302ff87c9c217f77",
+            "code": "531350",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "197008",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "a22de7ed162336e1bfdfac6dbc5f0fdb",
+            "code": "531360",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "529322",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "3f1d20e9c69c84492ee6b03d9f25c5fd",
+            "code": "531370",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "2839745",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "31c9934dbb6f878b30b8c4d35b69b454",
+            "code": "531420",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "829757",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "6989df62c5e7a9620fdadcc6959b62af",
+            "code": "531600",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "2768000",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "86d10c7876f44dfb1595a75dc8b72fc7",
+            "code": "531650",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "29000",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "7467b4ac47b14bd36bde58d0c73246d7",
+            "code": "532110",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "57781875",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "2a3c5693a7df1b93dadb9050915f8710",
+            "code": "532130",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "314900",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "b696b5b895d55e0f4d8bf5edff63c3c0",
+            "code": "532140",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "1274283",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "1c221a49d4157a3b9d123eae5ffb72b4",
+            "code": "532141",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "463327",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "532a659dad2c7aa856096a038305cc95",
+            "code": "532142",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "366191",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "ada1f8c92998d7450a066a3544d6ca0a",
+            "code": "532160",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "1586791",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "72db660900445fe66035d5dbb89306ac",
+            "code": "532190",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "166400",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "9b7c9c558cdb5fa199e04f0340c3a441",
+            "code": "533100",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "9340",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "e910507970492a427bc81fbf8682b6a3",
+            "code": "533110",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "57883550",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "534a0efb6432f43c13c8c4ed2f5e7d35",
+            "code": "533120",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "642118",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "a8565b4d1f9f820c20e453b5087162e3",
+            "code": "533140",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "240593",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "696fd0e27528c6f1f343911141b339f0",
+            "code": "533150",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "4358521",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "2960ae55bc91c5dc71f23e9e549f8b98",
+            "code": "533240",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "94000",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "a3dccd34d8b355cd57cefc9b51b8e37a",
+            "code": "534290",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "120251",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "b961c4ae9e297bd2ae7e0858d20f1182",
+            "code": "534310",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "11394",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "cf06a2346c6b8023f556d6037fca9143",
+            "code": "536130",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "501620",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "70eff7ec74c09c0ac6c3246ba120793c",
+            "code": "536140",
+            "credits": "32636",
+            "credits_pending": "0",
+            "debits": "289691",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "07b68dcc8ecc117557db9b66f9462843",
+            "code": "541120",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "14725976",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "8990776b93e60e0f211f3a7205bf0a4a",
+            "code": "541130",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "1941824",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "b8d22c7daa4d06189102aa167e8bec61",
+            "code": "551110",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "161793618",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "b635a44abb994470be22fb6adcf1b69a",
+            "code": "551120",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "1731776001",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "eb49eebfe37364f6bed651c098cda463",
+            "code": "551130",
+            "credits": "200000",
+            "credits_pending": "0",
+            "debits": "284546614642",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "cf821089504aac1df19e512adeb2c70a",
+            "code": "553190",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "72213798",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "8bcfe5af993573044879c1f69f37272d",
+            "code": "554230",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "218750",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "2f1a34a4bba81928aa12ffa2dc123fd4",
+            "code": "562170",
+            "credits": "2292350",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "0f7f0c1fdceb09a7f9e75d7d2639cf57",
+            "code": "621000",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "31793559252",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "4c2ad70257fb4ec07415d25375d8f6e2",
+            "code": "631100",
+            "credits": "50862100752",
+            "credits_pending": "0",
+            "debits": "0",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "canonical_report",
+          "detail": {
+            "output_digest": "6eb9730f13399ee3ac062926fd1896b0f2838189da99af3ec439ba5e82b95886"
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "production_receipt",
+          "detail": {
+            "signed_by": "0299ef29573bc22ca9aa9dec4812b1ed1529e742dee22b87273037297512876f"
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "signature"
+        }
+      ],
+      "command": "report",
+      "error": null,
+      "tool": "fa-verify",
+      "v": 1,
+      "verdict": "verified"
+    }
+  ],
+  "input_hashes_unchanged": true,
+  "invocation": [
+    "scripts/public_ledger_portable_proof.py",
+    "--run",
+    "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run",
+    "--out",
+    "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-fund",
+    "--fa",
+    "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+    "--fa-verify",
+    "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+    "--dimension",
+    "fund",
+    "--value",
+    "1000"
+  ],
+  "migration_entries": 3,
+  "original_book_identity": {
+    "base_unit": "USD",
+    "book_id": "708aeeff0adfab9baf1f4380bcaf66dd",
+    "calendar": "fiscal",
+    "entities": []
+  },
+  "original_source_control_comparison": {
+    "dimension": "fund",
+    "effective_through": "2024-06-30",
+    "nonzero_cells_compared": {
+      "account_nets": 118,
+      "gross_cents": 129
+    },
+    "period": "FY2024-P12",
+    "scope": "Verified native output compared with the completed replay's original-source oracle; no publisher-signature claim.",
+    "status": "PASS",
+    "value": "1000"
+  },
+  "proof_files_after_verification": {
+    "checkpoint.bin": {
+      "bytes": 288,
+      "sha256": "2a56e6b16cf29547c4a1a617e238f79f7d259ff12f0e566cfba0e81e731d5b48"
+    },
+    "report.fab": {
+      "bytes": 202941,
+      "sha256": "c74a17145f0268e9848fd05dd33aba515703f00c6fb9e3b70e577eed55fd6953"
+    },
+    "report.receipt": {
+      "bytes": 219,
+      "sha256": "91f8f848af2fa9ec69fa4a7333b57133016257cbb748a906b0968dfe4c2dded9"
+    }
+  },
+  "proof_files_before_verification": {
+    "checkpoint.bin": {
+      "bytes": 288,
+      "sha256": "2a56e6b16cf29547c4a1a617e238f79f7d259ff12f0e566cfba0e81e731d5b48"
+    },
+    "report.fab": {
+      "bytes": 202941,
+      "sha256": "c74a17145f0268e9848fd05dd33aba515703f00c6fb9e3b70e577eed55fd6953"
+    },
+    "report.receipt": {
+      "bytes": 219,
+      "sha256": "91f8f848af2fa9ec69fa4a7333b57133016257cbb748a906b0968dfe4c2dded9"
+    }
+  },
+  "selected_retained_certificate": {
+    "account_nets": {
+      "101000": -22239729991,
+      "400000": 22527189308,
+      "411201": -1045583010,
+      "411210": -407846374,
+      "411219": -347299122,
+      "425848": -9103467175,
+      "428199": -2453305888,
+      "433144": -8748199,
+      "433199": -270000,
+      "441105": -30384614,
+      "455101": -199009933036,
+      "458105": -17418367526,
+      "459151": -39859855465,
+      "459199": -2967888636,
+      "472101": -3119600,
+      "473131": -257000,
+      "489199": -144000,
+      "511110": 945389262,
+      "511210": 15679600,
+      "511270": 71508,
+      "511310": 3099055,
+      "511420": 7364668,
+      "512110": 172981690,
+      "512230": 202996,
+      "513110": 58339169,
+      "513120": 13643839,
+      "513230": 103824137,
+      "513280": 2430043,
+      "513290": 21909261,
+      "513300": 33135097,
+      "515010": 16511776,
+      "515060": 15746025,
+      "515330": 348000,
+      "515350": 161888849,
+      "515360": 32842,
+      "515370": 130111837,
+      "515380": 278353023,
+      "515400": 5625000,
+      "515440": 156138170,
+      "515460": 53375000,
+      "515490": 112665229,
+      "515500": 2171675,
+      "515520": 31850,
+      "515540": 449573291,
+      "515560": 1132508941,
+      "515570": 12969752,
+      "515580": 2475594,
+      "515600": 256619737,
+      "515610": 294294,
+      "515620": 300229615,
+      "515640": 116972700,
+      "515650": 2236058,
+      "515660": 12025461,
+      "515750": 8480000,
+      "515780": 16162800,
+      "515800": 30186187,
+      "515990": 9196162,
+      "519130": 2201309,
+      "521110": 206402,
+      "521120": 162250,
+      "521140": 8465,
+      "521210": 14455,
+      "521220": 44645,
+      "521230": 127825,
+      "521240": 28776,
+      "521250": 42380,
+      "521260": 170511,
+      "521310": 883071,
+      "522110": 455423,
+      "522113": 39690,
+      "522120": 351510,
+      "522130": 583516,
+      "522131": 103549,
+      "522150": 1037816,
+      "531110": 2414,
+      "531120": 3093000,
+      "531130": 4223525,
+      "531150": 1034550,
+      "531160": 278781,
+      "531170": 95948358,
+      "531180": 124264,
+      "531210": 5000,
+      "531230": 1078350,
+      "531250": 255500,
+      "531260": 3989000,
+      "531350": 197008,
+      "531360": 529322,
+      "531370": 2839745,
+      "531420": 829757,
+      "531600": 2768000,
+      "531650": 29000,
+      "532110": 57781875,
+      "532130": 314900,
+      "532140": 1274283,
+      "532141": 463327,
+      "532142": 366191,
+      "532160": 1586791,
+      "532190": 166400,
+      "533100": 9340,
+      "533110": 57883550,
+      "533120": 642118,
+      "533140": 240593,
+      "533150": 4358521,
+      "533240": 94000,
+      "534290": 120251,
+      "534310": 11394,
+      "536130": 501620,
+      "536140": 257055,
+      "541120": 14725976,
+      "541130": 1941824,
+      "551110": 161793618,
+      "551120": 1731776001,
+      "551130": 284546414642,
+      "553190": 72213798,
+      "554230": 218750,
+      "562170": -2292350,
+      "621000": 31793559252,
+      "631100": -50862100752
+    },
+    "certificate_oid": "2877c39dd9a11483a3c5fc2787aa5f454c521c1e70dea6bcd65f3bd769665d04",
+    "fund": "1000",
+    "gross_cents": {
+      "101000:credit": 49831071968,
+      "101000:debit": 27591341977,
+      "400000:debit": 22527189308,
+      "411201:credit": 1045583010,
+      "411210:credit": 407846374,
+      "411219:credit": 347299122,
+      "425848:credit": 9103467175,
+      "428199:credit": 2453305888,
+      "428199:debit": 0,
+      "433144:credit": 8748199,
+      "433199:credit": 270000,
+      "441105:credit": 30384614,
+      "441105:debit": 0,
+      "455101:credit": 199078279565,
+      "455101:debit": 68346529,
+      "458105:credit": 17418367526,
+      "459151:credit": 39859855465,
+      "459199:credit": 2967888636,
+      "472101:credit": 3119600,
+      "473131:credit": 257000,
+      "489199:credit": 144000,
+      "511110:debit": 945389262,
+      "511210:debit": 15679600,
+      "511270:debit": 71508,
+      "511310:debit": 3099055,
+      "511420:debit": 7364668,
+      "512110:credit": 360,
+      "512110:debit": 172982050,
+      "512230:debit": 202996,
+      "513110:debit": 58339169,
+      "513120:debit": 13643839,
+      "513230:debit": 103824137,
+      "513280:debit": 2430043,
+      "513290:debit": 21909261,
+      "513300:debit": 33135097,
+      "515010:debit": 16511776,
+      "515060:debit": 15746025,
+      "515330:debit": 348000,
+      "515350:debit": 161888849,
+      "515360:debit": 32842,
+      "515370:debit": 130111837,
+      "515380:debit": 278353023,
+      "515400:debit": 5625000,
+      "515440:debit": 156138170,
+      "515460:debit": 53375000,
+      "515490:debit": 112665229,
+      "515500:debit": 2171675,
+      "515520:debit": 31850,
+      "515540:debit": 449573291,
+      "515560:debit": 1132508941,
+      "515570:debit": 12969752,
+      "515580:debit": 2475594,
+      "515600:debit": 256619737,
+      "515610:debit": 294294,
+      "515620:debit": 300229615,
+      "515640:debit": 116972700,
+      "515650:debit": 2236058,
+      "515660:debit": 12025461,
+      "515750:debit": 8480000,
+      "515780:debit": 16162800,
+      "515800:debit": 30186187,
+      "515990:debit": 9196162,
+      "519130:debit": 2201309,
+      "521110:debit": 206402,
+      "521120:debit": 162250,
+      "521140:debit": 8465,
+      "521210:credit": 2971,
+      "521210:debit": 17426,
+      "521220:credit": 9782,
+      "521220:debit": 54427,
+      "521230:credit": 26125,
+      "521230:debit": 153950,
+      "521240:credit": 5479,
+      "521240:debit": 34255,
+      "521250:credit": 21000,
+      "521250:debit": 63380,
+      "521260:debit": 170511,
+      "521310:debit": 883071,
+      "522110:debit": 455423,
+      "522113:debit": 39690,
+      "522120:debit": 351510,
+      "522130:debit": 583516,
+      "522131:credit": 70,
+      "522131:debit": 103619,
+      "522150:debit": 1037816,
+      "531110:debit": 2414,
+      "531120:debit": 3093000,
+      "531130:debit": 4223525,
+      "531150:debit": 1034550,
+      "531160:debit": 278781,
+      "531170:debit": 95948358,
+      "531180:debit": 124264,
+      "531210:debit": 5000,
+      "531230:debit": 1078350,
+      "531250:debit": 255500,
+      "531260:debit": 3989000,
+      "531350:debit": 197008,
+      "531360:debit": 529322,
+      "531370:debit": 2839745,
+      "531420:debit": 829757,
+      "531600:debit": 2768000,
+      "531650:debit": 29000,
+      "532110:debit": 57781875,
+      "532130:debit": 314900,
+      "532140:debit": 1274283,
+      "532141:debit": 463327,
+      "532142:debit": 366191,
+      "532160:debit": 1586791,
+      "532190:debit": 166400,
+      "533100:debit": 9340,
+      "533110:debit": 57883550,
+      "533120:debit": 642118,
+      "533140:debit": 240593,
+      "533150:debit": 4358521,
+      "533240:debit": 94000,
+      "534290:debit": 120251,
+      "534310:debit": 11394,
+      "536130:debit": 501620,
+      "536140:credit": 32636,
+      "536140:debit": 289691,
+      "541120:debit": 14725976,
+      "541130:debit": 1941824,
+      "551110:debit": 161793618,
+      "551120:debit": 1731776001,
+      "551130:credit": 200000,
+      "551130:debit": 284546614642,
+      "553190:debit": 72213798,
+      "554230:debit": 218750,
+      "562170:credit": 2292350,
+      "562170:debit": 0,
+      "621000:debit": 31793559252,
+      "631100:credit": 50862100752
+    },
+    "period": "FY2024-P12"
+  },
+  "source_binding_selection": "canonical_recovery_pins",
+  "source_bound": true,
+  "source_bound_requested": null,
+  "source_rows": 1440,
+  "started_utc": "2026-11-03T20:51:44.669442+00:00",
+  "status": "PASS",
+  "trust_scope": "Caller-trusted public key of the fixture book; no external identity claim.",
+  "trusted_public_key": "ea463bd02365e651091ab5381a654fb42cdb10ddf7e12c57631ae7cb71c85363",
+  "value_requested": "1000",
+  "verified_proof_files_unchanged": true
+}

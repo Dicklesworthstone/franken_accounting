@@ -1,0 +1,68 @@
+{
+  "boundary": "partial-stage",
+  "driver_sha256": "43ee04174028db1c6751d027af45791c2fa394af920dc71f44298e3ea5af684c",
+  "executed_arguments": [
+    "migrate",
+    "import",
+    "--action",
+    "stage",
+    "--package",
+    "a2d2078c3c40357a0598712c32cc68f7605ff2f919d6e84754f7a01d9a319967",
+    "--chunk",
+    "0",
+    "--approval",
+    "d6b34fd9fc63775eb7853f565c20cfde",
+    "--approval",
+    "c6f2284214969bb6d968227e578fffc1"
+  ],
+  "interruption_helper_sha256": "05ca803edfc990dd39f5af3a179bcb2e2c6ca934a0e434c53141b7b93a9ad3e4",
+  "native_receipt": {
+    "authority": {
+      "ops": null,
+      "posture": "embedded-owner",
+      "principal": "operator",
+      "profile": "Human"
+    },
+    "book": "b8d496454bb5dd951759558583ee5298",
+    "certificate": null,
+    "coordinate": {
+      "branch": "trunk",
+      "effective": "all",
+      "known_at": 76,
+      "time_evidence": null
+    },
+    "data": {
+      "already_recorded": false,
+      "chunk_count": 3,
+      "chunk_index": 0,
+      "entry_vid": "3c08e428497939edc92f361a385608a7",
+      "package_oid": "a2d2078c3c40357a0598712c32cc68f7605ff2f919d6e84754f7a01d9a319967",
+      "proposal_digest": "7c7fabf96b5294492ccc082f36248f0ccd5c8ac42bbb91b5940e8f300884ccf6",
+      "ready_to_finalize": false,
+      "recorded_at": 76,
+      "recorded_count": 1,
+      "run_state": "Open",
+      "run_vid": "5b9ab78671a356999e0a79389703ee57"
+    },
+    "event": "migration_import_staged",
+    "next_actions": [],
+    "v": 1,
+    "warnings": []
+  },
+  "pins_sha256": "f2e260d86dc1d02921234d03a7497b05156aeb294d7773b68bf98175eb76a993",
+  "requested_arguments": [
+    "migrate",
+    "import",
+    "--action",
+    "stage",
+    "--package",
+    "a2d2078c3c40357a0598712c32cc68f7605ff2f919d6e84754f7a01d9a319967",
+    "--intent",
+    "/dev/fa-museum-partial-stage-69d8c2fe02b1-20261103/run/run-000-stage.json"
+  ],
+  "saved_complete_selection": "/dev/fa-museum-partial-stage-69d8c2fe02b1-20261103/run/run-000-stage.json",
+  "saved_complete_selection_sha256": "3659c85062761a7201eb67471478c569e3fc69dc9d82c70cd50ef6f5035de5ce",
+  "schema": "fa-public-ledger-controlled-interruption-v1",
+  "scope": "Controlled stop after a completed real native command; not a mid-transaction crash.",
+  "selected_chunk_count": 3
+}

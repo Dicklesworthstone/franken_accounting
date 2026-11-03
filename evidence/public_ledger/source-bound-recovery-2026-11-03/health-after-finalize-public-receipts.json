@@ -1,0 +1,957 @@
+{
+  "actual_finalization_retries": [
+    {
+      "action": "finalize",
+      "already_recorded": true,
+      "chunk_count": 0,
+      "control_entry": "983bb0d801987863d22872dddf1e17e7",
+      "from": "Open",
+      "recorded_at": 87,
+      "run_key": "omes-80700-run-000",
+      "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+      "tie_out_digest": "8a15c5b2f08eb12cfa9aa4861c7ef244258c8b88705e432ac37602d772d90803",
+      "to": "Finalized"
+    }
+  ],
+  "original_book_fact": {
+    "sha256": "0a1d19ac55224e59cf57210dd3deac2f6e17d6a455a59fba53f572825fe1bc44",
+    "value": {
+      "base_unit": "USD",
+      "book_id": "708aeeff0adfab9baf1f4380bcaf66dd",
+      "calendar": "fiscal",
+      "entities": []
+    }
+  },
+  "original_finalization_receipt": {
+    "authority": {
+      "ops": null,
+      "posture": "embedded-owner",
+      "principal": "operator",
+      "profile": "Human"
+    },
+    "book": "708aeeff0adfab9baf1f4380bcaf66dd",
+    "certificate": null,
+    "coordinate": {
+      "branch": "trunk",
+      "effective": "all",
+      "known_at": 87,
+      "time_evidence": null
+    },
+    "data": {
+      "action": "finalize",
+      "already_recorded": false,
+      "chunk_count": 3,
+      "control_entry": "983bb0d801987863d22872dddf1e17e7",
+      "from": "Open",
+      "recorded_at": 87,
+      "run_key": "omes-80700-run-000",
+      "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+      "tie_out_digest": "8a15c5b2f08eb12cfa9aa4861c7ef244258c8b88705e432ac37602d772d90803",
+      "to": "Finalized"
+    },
+    "event": "migration_controlled",
+    "next_actions": [],
+    "v": 1,
+    "warnings": []
+  },
+  "original_prepared_packages": [
+    {
+      "already_recorded": false,
+      "chunk_count": 3,
+      "chunks": [
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-04-30",
+          "effective_date": "2024-04-30",
+          "effective_period": "FY2024-P10",
+          "entry_vid": "6b3ac3934d8aa2e5264e9045d7cd0fb8",
+          "index": 0,
+          "leg_count": 453,
+          "proposal_digest": "eaae7ba72167834ff4a23928b7ad48ed7480d76481a7038bc2b966d69c180aab",
+          "recorded_at": null
+        },
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-05-31",
+          "effective_date": "2024-05-31",
+          "effective_period": "FY2024-P11",
+          "entry_vid": "9205bcd234c177cfbe9aad38f663f36c",
+          "index": 1,
+          "leg_count": 465,
+          "proposal_digest": "9454e649f0c38a1f9d11d806f70c373edb4cb3f390419699a9f1324341f3cccb",
+          "recorded_at": null
+        },
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-06-30",
+          "effective_date": "2024-06-30",
+          "effective_period": "FY2024-P12",
+          "entry_vid": "124e68744e221fbe98264e414056c86f",
+          "index": 2,
+          "leg_count": 487,
+          "proposal_digest": "1eebdb602b5943207c749e84f6737a86f4a7df486e98e7de62cc396f84182e1f",
+          "recorded_at": null
+        }
+      ],
+      "format": "csv",
+      "mode": "FullDetail",
+      "opening_date": "2024-07-01",
+      "opening_period": "FY2025-OPEN",
+      "package_commit": "343e0878719032ce5f74cad6ec4f35f5b18b2d7886ee336b4ee22f90c1906652",
+      "package_oid": "7c83bc1e923c02c93bbedd761e469847c3dc2f674127eb5e076d09bb4dea26ac",
+      "plan": null,
+      "recorded_at": 71,
+      "recorded_count": 0,
+      "row_count": 1405,
+      "run_body_digest": "1c8600872faa2b89b3e80a1f4c57464dae0fdb07a27e266066e18806245db667",
+      "run_key": "omes-80700-run-000",
+      "run_state": "Open",
+      "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+      "sole_opening_source": true,
+      "source_binding": {
+        "book_id": "708aeeff0adfab9baf1f4380bcaf66dd",
+        "complete": false,
+        "expected_chunks": 3,
+        "manifest_digest": "e7900c23d939975f4fcbafe109eb74a118eb600b122b439cc84855ee73058828",
+        "manifest_vid": "5f05e6e345e96f9832ccc76acf570abc",
+        "missing_chunks": [
+          "124e68744e221fbe98264e414056c86f",
+          "6b3ac3934d8aa2e5264e9045d7cd0fb8",
+          "9205bcd234c177cfbe9aad38f663f36c"
+        ],
+        "package_commit": "343e0878719032ce5f74cad6ec4f35f5b18b2d7886ee336b4ee22f90c1906652",
+        "package_oid": "7c83bc1e923c02c93bbedd761e469847c3dc2f674127eb5e076d09bb4dea26ac",
+        "recorded_chunks": 0,
+        "run_body_digest": "1c8600872faa2b89b3e80a1f4c57464dae0fdb07a27e266066e18806245db667",
+        "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+        "source_commit": "b427f887073e4a6babab6faf07c2407fe3b687afae8830f63f3389e12e7ce769",
+        "source_oid": "f91a9191f6f131ea2ef8608bb31d7bf5cf67232c4a63206bb409a828146b43a8",
+        "source_rows": 1405,
+        "unexpected_chunks": []
+      },
+      "source_binding_receipt": {
+        "already_recorded": false,
+        "control_entry": "4850b6e05a9b3f3ca8cabd7b31d8e7d8",
+        "recorded_at": 72
+      },
+      "source_commit": "b427f887073e4a6babab6faf07c2407fe3b687afae8830f63f3389e12e7ce769",
+      "source_oid": "f91a9191f6f131ea2ef8608bb31d7bf5cf67232c4a63206bb409a828146b43a8",
+      "ties_out": false
+    },
+    {
+      "already_recorded": true,
+      "chunk_count": 3,
+      "chunks": [
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-04-30",
+          "effective_date": "2024-04-30",
+          "effective_period": "FY2024-P10",
+          "entry_vid": "6b3ac3934d8aa2e5264e9045d7cd0fb8",
+          "index": 0,
+          "leg_count": 453,
+          "proposal_digest": "eaae7ba72167834ff4a23928b7ad48ed7480d76481a7038bc2b966d69c180aab",
+          "recorded_at": null
+        },
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-05-31",
+          "effective_date": "2024-05-31",
+          "effective_period": "FY2024-P11",
+          "entry_vid": "9205bcd234c177cfbe9aad38f663f36c",
+          "index": 1,
+          "leg_count": 465,
+          "proposal_digest": "9454e649f0c38a1f9d11d806f70c373edb4cb3f390419699a9f1324341f3cccb",
+          "recorded_at": null
+        },
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-06-30",
+          "effective_date": "2024-06-30",
+          "effective_period": "FY2024-P12",
+          "entry_vid": "124e68744e221fbe98264e414056c86f",
+          "index": 2,
+          "leg_count": 487,
+          "proposal_digest": "1eebdb602b5943207c749e84f6737a86f4a7df486e98e7de62cc396f84182e1f",
+          "recorded_at": null
+        }
+      ],
+      "format": "csv",
+      "mode": "FullDetail",
+      "opening_date": "2024-07-01",
+      "opening_period": "FY2025-OPEN",
+      "package_commit": "343e0878719032ce5f74cad6ec4f35f5b18b2d7886ee336b4ee22f90c1906652",
+      "package_oid": "7c83bc1e923c02c93bbedd761e469847c3dc2f674127eb5e076d09bb4dea26ac",
+      "plan": null,
+      "recorded_at": 71,
+      "recorded_count": 0,
+      "row_count": 1405,
+      "run_body_digest": "1c8600872faa2b89b3e80a1f4c57464dae0fdb07a27e266066e18806245db667",
+      "run_key": "omes-80700-run-000",
+      "run_state": "Open",
+      "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+      "sole_opening_source": true,
+      "source_binding": {
+        "book_id": "708aeeff0adfab9baf1f4380bcaf66dd",
+        "complete": false,
+        "expected_chunks": 3,
+        "manifest_digest": "e7900c23d939975f4fcbafe109eb74a118eb600b122b439cc84855ee73058828",
+        "manifest_vid": "5f05e6e345e96f9832ccc76acf570abc",
+        "missing_chunks": [
+          "124e68744e221fbe98264e414056c86f",
+          "6b3ac3934d8aa2e5264e9045d7cd0fb8",
+          "9205bcd234c177cfbe9aad38f663f36c"
+        ],
+        "package_commit": "343e0878719032ce5f74cad6ec4f35f5b18b2d7886ee336b4ee22f90c1906652",
+        "package_oid": "7c83bc1e923c02c93bbedd761e469847c3dc2f674127eb5e076d09bb4dea26ac",
+        "recorded_chunks": 0,
+        "run_body_digest": "1c8600872faa2b89b3e80a1f4c57464dae0fdb07a27e266066e18806245db667",
+        "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+        "source_commit": "b427f887073e4a6babab6faf07c2407fe3b687afae8830f63f3389e12e7ce769",
+        "source_oid": "f91a9191f6f131ea2ef8608bb31d7bf5cf67232c4a63206bb409a828146b43a8",
+        "source_rows": 1405,
+        "unexpected_chunks": []
+      },
+      "source_binding_receipt": {
+        "already_recorded": true,
+        "control_entry": "4850b6e05a9b3f3ca8cabd7b31d8e7d8",
+        "recorded_at": 72
+      },
+      "source_commit": "b427f887073e4a6babab6faf07c2407fe3b687afae8830f63f3389e12e7ce769",
+      "source_oid": "f91a9191f6f131ea2ef8608bb31d7bf5cf67232c4a63206bb409a828146b43a8",
+      "ties_out": false
+    }
+  ],
+  "recovery_pins_fact": {
+    "sha256": "1cd1317adac62ad8a9b214d34edc1dc9ac0be7b31efe57f2ea9268235df33de9",
+    "value": {
+      "agency": "80700",
+      "artifacts": {
+        "chart.json": "49740be9969a54e961f6eb263b625ebaf525f77314f93ffb9f92534d72323695",
+        "column_map.toml": "a4ff851b7fc855f21c724b5aef274b3ca17ffd72577d03bb3efd4e37f6fe0881",
+        "manifest.json": "562ab096c1ae77c4d1cd0fcf6b7b74e7aabd3fa75580b338da9e84c0c6af1ec0",
+        "original-agency.csv": "275781485e5e0a1744cad43912af2d048a8b4538b4de815fd23fadf30d599d28",
+        "run-000.csv": "504d7ebcca1e2ee79ed2e41b73f9c37159e78efdb87c80c57719f34ded9c1d9f"
+      },
+      "balance_boundary": "agency-period",
+      "bind_source": true,
+      "fa_path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+      "fa_verify_path": "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+      "format": "fa-public-ledger-recovery-v1",
+      "input_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+      "runtime": {
+        "driver_sha256": "43ee04174028db1c6751d027af45791c2fa394af920dc71f44298e3ea5af684c",
+        "fa_sha256": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+        "fa_verify_sha256": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+        "normalizer_sha256": "c71fa2225f8e52d8ce85deb900d691306eff2e6f1e12e3ae8516654ae1548fd8",
+        "python_version": [
+          3,
+          12,
+          14
+        ]
+      },
+      "source_path": "/workspace/scratch/69d8c2fe02b1/omes-fy2024-q4-full.csv"
+    }
+  },
+  "resumed_prepared_packages": [
+    {
+      "already_recorded": true,
+      "chunk_count": 3,
+      "chunks": [
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-04-30",
+          "effective_date": "2024-04-30",
+          "effective_period": "FY2024-P10",
+          "entry_vid": "6b3ac3934d8aa2e5264e9045d7cd0fb8",
+          "index": 0,
+          "leg_count": 453,
+          "proposal_digest": "eaae7ba72167834ff4a23928b7ad48ed7480d76481a7038bc2b966d69c180aab",
+          "recorded_at": 79
+        },
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-05-31",
+          "effective_date": "2024-05-31",
+          "effective_period": "FY2024-P11",
+          "entry_vid": "9205bcd234c177cfbe9aad38f663f36c",
+          "index": 1,
+          "leg_count": 465,
+          "proposal_digest": "9454e649f0c38a1f9d11d806f70c373edb4cb3f390419699a9f1324341f3cccb",
+          "recorded_at": 80
+        },
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-06-30",
+          "effective_date": "2024-06-30",
+          "effective_period": "FY2024-P12",
+          "entry_vid": "124e68744e221fbe98264e414056c86f",
+          "index": 2,
+          "leg_count": 487,
+          "proposal_digest": "1eebdb602b5943207c749e84f6737a86f4a7df486e98e7de62cc396f84182e1f",
+          "recorded_at": 81
+        }
+      ],
+      "format": "csv",
+      "mode": "FullDetail",
+      "opening_date": "2024-07-01",
+      "opening_period": "FY2025-OPEN",
+      "package_commit": "343e0878719032ce5f74cad6ec4f35f5b18b2d7886ee336b4ee22f90c1906652",
+      "package_oid": "7c83bc1e923c02c93bbedd761e469847c3dc2f674127eb5e076d09bb4dea26ac",
+      "plan": null,
+      "recorded_at": 71,
+      "recorded_count": 3,
+      "row_count": 1405,
+      "run_body_digest": "1c8600872faa2b89b3e80a1f4c57464dae0fdb07a27e266066e18806245db667",
+      "run_key": "omes-80700-run-000",
+      "run_state": "Finalized",
+      "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+      "sole_opening_source": true,
+      "source_binding": {
+        "book_id": "708aeeff0adfab9baf1f4380bcaf66dd",
+        "complete": true,
+        "expected_chunks": 3,
+        "manifest_digest": "e7900c23d939975f4fcbafe109eb74a118eb600b122b439cc84855ee73058828",
+        "manifest_vid": "5f05e6e345e96f9832ccc76acf570abc",
+        "missing_chunks": [],
+        "package_commit": "343e0878719032ce5f74cad6ec4f35f5b18b2d7886ee336b4ee22f90c1906652",
+        "package_oid": "7c83bc1e923c02c93bbedd761e469847c3dc2f674127eb5e076d09bb4dea26ac",
+        "recorded_chunks": 3,
+        "run_body_digest": "1c8600872faa2b89b3e80a1f4c57464dae0fdb07a27e266066e18806245db667",
+        "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+        "source_commit": "b427f887073e4a6babab6faf07c2407fe3b687afae8830f63f3389e12e7ce769",
+        "source_oid": "f91a9191f6f131ea2ef8608bb31d7bf5cf67232c4a63206bb409a828146b43a8",
+        "source_rows": 1405,
+        "unexpected_chunks": []
+      },
+      "source_binding_receipt": {
+        "already_recorded": true,
+        "control_entry": "4850b6e05a9b3f3ca8cabd7b31d8e7d8",
+        "recorded_at": 72
+      },
+      "source_commit": "b427f887073e4a6babab6faf07c2407fe3b687afae8830f63f3389e12e7ce769",
+      "source_oid": "f91a9191f6f131ea2ef8608bb31d7bf5cf67232c4a63206bb409a828146b43a8",
+      "ties_out": true
+    },
+    {
+      "already_recorded": true,
+      "chunk_count": 3,
+      "chunks": [
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-04-30",
+          "effective_date": "2024-04-30",
+          "effective_period": "FY2024-P10",
+          "entry_vid": "6b3ac3934d8aa2e5264e9045d7cd0fb8",
+          "index": 0,
+          "leg_count": 453,
+          "proposal_digest": "eaae7ba72167834ff4a23928b7ad48ed7480d76481a7038bc2b966d69c180aab",
+          "recorded_at": 79
+        },
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-05-31",
+          "effective_date": "2024-05-31",
+          "effective_period": "FY2024-P11",
+          "entry_vid": "9205bcd234c177cfbe9aad38f663f36c",
+          "index": 1,
+          "leg_count": 465,
+          "proposal_digest": "9454e649f0c38a1f9d11d806f70c373edb4cb3f390419699a9f1324341f3cccb",
+          "recorded_at": 80
+        },
+        {
+          "counts_after_finalize": true,
+          "document_date": "2024-06-30",
+          "effective_date": "2024-06-30",
+          "effective_period": "FY2024-P12",
+          "entry_vid": "124e68744e221fbe98264e414056c86f",
+          "index": 2,
+          "leg_count": 487,
+          "proposal_digest": "1eebdb602b5943207c749e84f6737a86f4a7df486e98e7de62cc396f84182e1f",
+          "recorded_at": 81
+        }
+      ],
+      "format": "csv",
+      "mode": "FullDetail",
+      "opening_date": "2024-07-01",
+      "opening_period": "FY2025-OPEN",
+      "package_commit": "343e0878719032ce5f74cad6ec4f35f5b18b2d7886ee336b4ee22f90c1906652",
+      "package_oid": "7c83bc1e923c02c93bbedd761e469847c3dc2f674127eb5e076d09bb4dea26ac",
+      "plan": null,
+      "recorded_at": 71,
+      "recorded_count": 3,
+      "row_count": 1405,
+      "run_body_digest": "1c8600872faa2b89b3e80a1f4c57464dae0fdb07a27e266066e18806245db667",
+      "run_key": "omes-80700-run-000",
+      "run_state": "Finalized",
+      "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+      "sole_opening_source": true,
+      "source_binding": {
+        "book_id": "708aeeff0adfab9baf1f4380bcaf66dd",
+        "complete": true,
+        "expected_chunks": 3,
+        "manifest_digest": "e7900c23d939975f4fcbafe109eb74a118eb600b122b439cc84855ee73058828",
+        "manifest_vid": "5f05e6e345e96f9832ccc76acf570abc",
+        "missing_chunks": [],
+        "package_commit": "343e0878719032ce5f74cad6ec4f35f5b18b2d7886ee336b4ee22f90c1906652",
+        "package_oid": "7c83bc1e923c02c93bbedd761e469847c3dc2f674127eb5e076d09bb4dea26ac",
+        "recorded_chunks": 3,
+        "run_body_digest": "1c8600872faa2b89b3e80a1f4c57464dae0fdb07a27e266066e18806245db667",
+        "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+        "source_commit": "b427f887073e4a6babab6faf07c2407fe3b687afae8830f63f3389e12e7ce769",
+        "source_oid": "f91a9191f6f131ea2ef8608bb31d7bf5cf67232c4a63206bb409a828146b43a8",
+        "source_rows": 1405,
+        "unexpected_chunks": []
+      },
+      "source_binding_receipt": {
+        "already_recorded": true,
+        "control_entry": "4850b6e05a9b3f3ca8cabd7b31d8e7d8",
+        "recorded_at": 72
+      },
+      "source_commit": "b427f887073e4a6babab6faf07c2407fe3b687afae8830f63f3389e12e7ce769",
+      "source_oid": "f91a9191f6f131ea2ef8608bb31d7bf5cf67232c4a63206bb409a828146b43a8",
+      "ties_out": true
+    }
+  ],
+  "retained_preactivation_fact": {
+    "sha256": "cd104315a67a2207ee67989fd7dc6bd9780141a492d76ccc13e09588f95b603f",
+    "value": {
+      "known_at": 84,
+      "packages": {
+        "run-000": {
+          "chunks": [
+            {
+              "entry_vid": "6b3ac3934d8aa2e5264e9045d7cd0fb8",
+              "proposal_digest": "eaae7ba72167834ff4a23928b7ad48ed7480d76481a7038bc2b966d69c180aab"
+            },
+            {
+              "entry_vid": "9205bcd234c177cfbe9aad38f663f36c",
+              "proposal_digest": "9454e649f0c38a1f9d11d806f70c373edb4cb3f390419699a9f1324341f3cccb"
+            },
+            {
+              "entry_vid": "124e68744e221fbe98264e414056c86f",
+              "proposal_digest": "1eebdb602b5943207c749e84f6737a86f4a7df486e98e7de62cc396f84182e1f"
+            }
+          ],
+          "package_oid": "7c83bc1e923c02c93bbedd761e469847c3dc2f674127eb5e076d09bb4dea26ac",
+          "recorded_at": [
+            79,
+            80,
+            81
+          ],
+          "run_body_digest": "1c8600872faa2b89b3e80a1f4c57464dae0fdb07a27e266066e18806245db667",
+          "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+          "source_binding": {
+            "book_id": "708aeeff0adfab9baf1f4380bcaf66dd",
+            "expected_chunks": 3,
+            "manifest_digest": "e7900c23d939975f4fcbafe109eb74a118eb600b122b439cc84855ee73058828",
+            "manifest_vid": "5f05e6e345e96f9832ccc76acf570abc",
+            "package_commit": "343e0878719032ce5f74cad6ec4f35f5b18b2d7886ee336b4ee22f90c1906652",
+            "package_oid": "7c83bc1e923c02c93bbedd761e469847c3dc2f674127eb5e076d09bb4dea26ac",
+            "run_body_digest": "1c8600872faa2b89b3e80a1f4c57464dae0fdb07a27e266066e18806245db667",
+            "run_vid": "fcda7b90a2d11ca7f354e678611af2c2",
+            "source_commit": "b427f887073e4a6babab6faf07c2407fe3b687afae8830f63f3389e12e7ce769",
+            "source_oid": "f91a9191f6f131ea2ef8608bb31d7bf5cf67232c4a63206bb409a828146b43a8",
+            "source_rows": 1405
+          },
+          "source_oid": "f91a9191f6f131ea2ef8608bb31d7bf5cf67232c4a63206bb409a828146b43a8"
+        }
+      }
+    }
+  },
+  "source_manifest_policy": {
+    "balance_boundary": "agency-period",
+    "balance_boundary_policy": "Each entire agency/fiscal-year/period/ACTUALS population is one reconstructed activity Entry. Fund/class partitions may have nonzero net; their source fields and exact controls are retained. No amount is split, netted, rounded or added, and neither periods nor agencies offset each other. This explicitly selected boundary is not an original journal identity or a fund-balancing assertion.",
+    "balance_group_columns": [
+      "FISCAL_YEAR",
+      "ACCOUNTING_PERIOD",
+      "LEDGER"
+    ],
+    "chart_policy": "OMES prefixes 1 Asset, 2 Liability, 3 Equity, 4 Revenue, 5 Expense; explicit 631100 Other Financing Sources/Uses -> Equity in the activity-only test book; explicit 621000 Appropriated Transfers Out -> Equity in the activity-only test book",
+    "format": "fa-public-ledger-replay-v1",
+    "input_kind": "complete_distribution",
+    "input_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+    "monetary_rows": 1405,
+    "original_selection_sha256": "275781485e5e0a1744cad43912af2d048a8b4538b4de815fd23fadf30d599d28",
+    "source_columns": 36,
+    "source_group_controls": [
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "19400"
+        ],
+        "net_mills": 0,
+        "rows": 3
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "19401"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "20000"
+        ],
+        "net_mills": -479860,
+        "rows": 385
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "20500"
+        ],
+        "net_mills": 0,
+        "rows": 4
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "23000"
+        ],
+        "net_mills": 0,
+        "rows": 7
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "23600"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "24000"
+        ],
+        "net_mills": 0,
+        "rows": 3
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "24500"
+        ],
+        "net_mills": 0,
+        "rows": 22
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "25000"
+        ],
+        "net_mills": 0,
+        "rows": 5
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "25500"
+        ],
+        "net_mills": 0,
+        "rows": 5
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "34000"
+        ],
+        "net_mills": 0,
+        "rows": 20
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "79901"
+        ],
+        "net_mills": 0,
+        "rows": 10
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "90000"
+        ],
+        "net_mills": 0,
+        "rows": 1
+      },
+      {
+        "key": [
+          "2024",
+          "10",
+          "ACTUALS",
+          "1000",
+          "99400"
+        ],
+        "net_mills": 479860,
+        "rows": 1
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "19400"
+        ],
+        "net_mills": 0,
+        "rows": 3
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "19401"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "20000"
+        ],
+        "net_mills": 0,
+        "rows": 388
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "20500"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "23000"
+        ],
+        "net_mills": 0,
+        "rows": 6
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "23600"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "24000"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "24500"
+        ],
+        "net_mills": 0,
+        "rows": 22
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "25000"
+        ],
+        "net_mills": 0,
+        "rows": 5
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "25500"
+        ],
+        "net_mills": 0,
+        "rows": 5
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "27000"
+        ],
+        "net_mills": 0,
+        "rows": 3
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "34000"
+        ],
+        "net_mills": 0,
+        "rows": 21
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "79901"
+        ],
+        "net_mills": 0,
+        "rows": 11
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "90000"
+        ],
+        "net_mills": 0,
+        "rows": 1
+      },
+      {
+        "key": [
+          "2024",
+          "11",
+          "ACTUALS",
+          "1000",
+          "99400"
+        ],
+        "net_mills": 0,
+        "rows": 1
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "19400"
+        ],
+        "net_mills": 0,
+        "rows": 3
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "19401"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "20000"
+        ],
+        "net_mills": 0,
+        "rows": 413
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "20500"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "23000"
+        ],
+        "net_mills": 0,
+        "rows": 6
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "23600"
+        ],
+        "net_mills": 0,
+        "rows": 2
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "24000"
+        ],
+        "net_mills": 0,
+        "rows": 3
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "24500"
+        ],
+        "net_mills": 0,
+        "rows": 22
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "25000"
+        ],
+        "net_mills": 0,
+        "rows": 5
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "25500"
+        ],
+        "net_mills": 0,
+        "rows": 5
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "34000"
+        ],
+        "net_mills": 0,
+        "rows": 20
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "79901"
+        ],
+        "net_mills": 0,
+        "rows": 11
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "90000"
+        ],
+        "net_mills": 0,
+        "rows": 1
+      },
+      {
+        "key": [
+          "2024",
+          "12",
+          "ACTUALS",
+          "1000",
+          "99400"
+        ],
+        "net_mills": 0,
+        "rows": 1
+      }
+    ],
+    "source_rows": 1440,
+    "source_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+    "source_url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv"
+  },
+  "source_manifest_sha256": "562ab096c1ae77c4d1cd0fcf6b7b74e7aabd3fa75580b338da9e84c0c6af1ec0"
+}

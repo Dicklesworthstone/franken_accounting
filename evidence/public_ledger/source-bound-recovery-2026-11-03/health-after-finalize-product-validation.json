@@ -1,0 +1,427 @@
+{
+  "artifact_files": {
+    "checkpoint.bin": {
+      "bytes": 288,
+      "sha256": "2a56e6b16cf29547c4a1a617e238f79f7d259ff12f0e566cfba0e81e731d5b48"
+    },
+    "report.fab": {
+      "bytes": 188415,
+      "sha256": "4c5f04a96e0ac142b84b54bba3f800feed6b516847d476feb951706f3673d657"
+    },
+    "report.receipt": {
+      "bytes": 219,
+      "sha256": "6a9ab6fb8438d367b7521c0b38e09d3827c8706d64af121c6d5e4ca2f507e629"
+    },
+    "trusted-public-key.txt": {
+      "bytes": 65,
+      "sha256": "9a734122a70f8600ff7b40587bfa131e57173dc0be6afca68f369a81051d1961"
+    }
+  },
+  "binary_and_input_sha256_after": {
+    "driver": "43ee04174028db1c6751d027af45791c2fa394af920dc71f44298e3ea5af684c",
+    "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+    "fa_verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+    "helper": "c58ecf6f87b69f553a5bb866da2d3581ab8f275495a9d01c1994dac063a64c89",
+    "normalizer": "c71fa2225f8e52d8ce85deb900d691306eff2e6f1e12e3ae8516654ae1548fd8",
+    "original_book": "0ae058504671fadb19058aed70008b6e8c5a67d4d71275bb88140b3bc3877430",
+    "recovery_pins": "83bace5fe570032a2da80f16e89ebf2c020c290560468963d2e09acb2ac533d5",
+    "report": "e4f2d461522e748c5b8cd6f792ff71af80e7d37af328ebed6b22ef461036ff36",
+    "source_manifest": "562ab096c1ae77c4d1cd0fcf6b7b74e7aabd3fa75580b338da9e84c0c6af1ec0"
+  },
+  "binary_and_input_sha256_before": {
+    "driver": "43ee04174028db1c6751d027af45791c2fa394af920dc71f44298e3ea5af684c",
+    "fa": "d1b1519656d03011414df019b8e4da9f0a2c834a756d50a309229ccc589c3b45",
+    "fa_verify": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+    "helper": "c58ecf6f87b69f553a5bb866da2d3581ab8f275495a9d01c1994dac063a64c89",
+    "normalizer": "c71fa2225f8e52d8ce85deb900d691306eff2e6f1e12e3ae8516654ae1548fd8",
+    "original_book": "0ae058504671fadb19058aed70008b6e8c5a67d4d71275bb88140b3bc3877430",
+    "recovery_pins": "83bace5fe570032a2da80f16e89ebf2c020c290560468963d2e09acb2ac533d5",
+    "report": "e4f2d461522e748c5b8cd6f792ff71af80e7d37af328ebed6b22ef461036ff36",
+    "source_manifest": "562ab096c1ae77c4d1cd0fcf6b7b74e7aabd3fa75580b338da9e84c0c6af1ec0"
+  },
+  "book_output": "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run",
+  "checkpoint_state": "b90dccce2f91168f2d534758d2f92bc63fad4a17eab55fb328d218caa1ff6ba4",
+  "closure": {
+    "additive_input_labels": [
+      "MigrationRunFragment",
+      "MigrationSource",
+      "MigrationSourceFragment",
+      "EntryFragment"
+    ],
+    "book": "708aeeff0adfab9baf1f4380bcaf66dd",
+    "branch": "00000000000000000000000000000000",
+    "bundle_major": 1,
+    "bundle_minor": 1,
+    "canonical_records": 78,
+    "certificate_digest": "f815ee6525eb3a57d4f926b8b3a5c2a24068e98e85fe1b22f6e8f1fbea75d879",
+    "certificate_format": "fa:report-certificate:v8",
+    "dimension": "product",
+    "dimension_value": "00",
+    "journal_leaves": 60,
+    "known_at": 134,
+    "migration_run_bodies": 1,
+    "migration_source_witnesses": 1,
+    "native_input_count": 12,
+    "native_inputs": [
+      {
+        "facade": 4,
+        "snapshot": 134,
+        "statement": "MATCH (n:Account) FOR SYSTEM_TIME AS OF SEQ 134 RETURN n,n.code,n.name,n.account_type,n.normal_balance,n.posting,n.unit_policy,n.lower_bound,n.upper_bound,n.limit_scope,n._fa_payload,n.book_id ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 134,
+        "statement": "MATCH (n:Book) FOR SYSTEM_TIME AS OF SEQ 134 RETURN n,n._fa_payload,n.book_id,n.base_unit,n.symbols_digest,n.unit_table_digest ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 134,
+        "statement": "MATCH (n:Entry) FOR SYSTEM_TIME AS OF SEQ 134 RETURN n,n._fa_payload,n._fa_digest ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 134,
+        "statement": "MATCH (n:FiscalCalendar) FOR SYSTEM_TIME AS OF SEQ 134 RETURN n,n._fa_payload,n.calendar_id ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 134,
+        "statement": "MATCH (n:MigrationRun) FOR SYSTEM_TIME AS OF SEQ 134 RETURN n,n._fa_payload,n._fa_digest,n.state ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 134,
+        "statement": "MATCH (n:Period) FOR SYSTEM_TIME AS OF SEQ 134 RETURN n,n.code,n.calendar_id,n.fiscal_year,n.ordinal,n.period_kind,n.period_start,n.period_end,n.state ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 134,
+        "statement": "MATCH (n:Unit) FOR SYSTEM_TIME AS OF SEQ 134 RETURN n,n._fa_payload,n.unit_id,n.code,n.name,n.scale,n.version ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 134,
+        "statement": "MATCH (n:DimensionValue) FOR SYSTEM_TIME AS OF SEQ 134 WHERE n.dimension_id = 5 RETURN n,n._fa_payload,n.dimension_id ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 134,
+        "statement": "MATCH (n:MigrationRunFragment) FOR SYSTEM_TIME AS OF SEQ 134 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 134,
+        "statement": "MATCH (n:MigrationSource) FOR SYSTEM_TIME AS OF SEQ 134 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 134,
+        "statement": "MATCH (n:MigrationSourceFragment) FOR SYSTEM_TIME AS OF SEQ 134 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+        "trailing_bytes": 0
+      },
+      {
+        "facade": 4,
+        "snapshot": 134,
+        "statement": "MATCH (n:EntryFragment) FOR SYSTEM_TIME AS OF SEQ 134 RETURN n,n._fa_payload,n._fa_digest,n.book_id ORDER BY n",
+        "trailing_bytes": 0
+      }
+    ],
+    "output": {
+      "account_nets": {
+        "521310": 633675
+      },
+      "account_rows": 1,
+      "activity": false,
+      "dimension": "product",
+      "effective_through": 19904,
+      "gross_cents": {
+        "521310:credit": 0,
+        "521310:debit": 633675
+      },
+      "known_at": 134,
+      "periods": [
+        "FY2024-P12"
+      ],
+      "unit_code": "USD",
+      "unit_id": 0,
+      "unit_scale": 2,
+      "value": "00",
+      "values": [
+        "00"
+      ]
+    },
+    "scope": "Descriptive framing only; separate fa-verify establishes authentication.",
+    "selected": [
+      "FY2024-P12"
+    ]
+  },
+  "commands": [
+    {
+      "command": [
+        "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+        "--book",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout": "{\"authority\":{\"ops\":null,\"posture\":\"embedded-owner\",\"principal\":\"operator\",\"profile\":\"Human\"},\"book\":\"708aeeff0adfab9baf1f4380bcaf66dd\",\"certificate\":null,\"coordinate\":{\"branch\":\"trunk\",\"effective\":\"all\",\"known_at\":140,\"time_evidence\":null},\"data\":{\"accounts\":118,\"base_unit\":\"USD\",\"book_id\":\"708aeeff0adfab9baf1f4380bcaf66dd\",\"calendar\":\"fiscal\",\"entities\":[],\"periods\":15,\"periods_by_state\":{\"Locked\":15},\"units_registered\":13},\"event\":\"book\",\"next_actions\":[],\"v\":1,\"warnings\":[]}\n"
+    },
+    {
+      "command": [
+        "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+        "--book",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run/book",
+        "proof",
+        "signed-checkpoint",
+        "--state",
+        "latest",
+        "--out",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-product/checkpoint.bin",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout": "{\"authority\":{\"ops\":null,\"posture\":\"embedded-owner\",\"principal\":\"operator\",\"profile\":\"Human\"},\"book\":\"708aeeff0adfab9baf1f4380bcaf66dd\",\"certificate\":null,\"coordinate\":{\"branch\":\"trunk\",\"effective\":\"all\",\"known_at\":139,\"time_evidence\":null},\"data\":{\"byte_len\":288,\"bytes\":null,\"checkpoint_bytes\":\"708aeeff0adfab9baf1f4380bcaf66dd000000000000000000000000000000008b000000000000004e000000000000009ce172966253bf8d2009c3a827bb8dcd983978deb6c7b1e01716858788e2cb00\",\"checkpoint_public_key\":\"ea463bd02365e651091ab5381a654fb42cdb10ddf7e12c57631ae7cb71c85363\",\"claim\":{},\"file\":\"/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-product/checkpoint.bin\",\"kind\":\"signed-checkpoint\",\"leaf_count\":78,\"next_checkpoint_bytes\":null,\"next_state_oid\":null,\"recorded_at\":140,\"root\":\"9ce172966253bf8d2009c3a827bb8dcd983978deb6c7b1e01716858788e2cb00\",\"scope\":\"entry_prefix\",\"signatures\":\"ed25519\",\"state_oid\":\"b90dccce2f91168f2d534758d2f92bc63fad4a17eab55fb328d218caa1ff6ba4\",\"through_seq\":139,\"trust\":\"checkpoint_public_key\"},\"event\":\"proof_exported\",\"next_actions\":[],\"v\":1,\"warnings\":[]}\n"
+    },
+    {
+      "command": [
+        "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+        "--book",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run/book",
+        "bundle",
+        "produce",
+        "--certificate",
+        "C:f815ee6525eb3a57d4f926b8b3a5c2a24068e98e85fe1b22f6e8f1fbea75d879",
+        "--state",
+        "b90dccce2f91168f2d534758d2f92bc63fad4a17eab55fb328d218caa1ff6ba4",
+        "--out",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-product/report.fab",
+        "--receipt-out",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-product/report.receipt",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout": "{\"authority\":{\"ops\":null,\"posture\":\"embedded-owner\",\"principal\":\"operator\",\"profile\":\"Human\"},\"book\":\"708aeeff0adfab9baf1f4380bcaf66dd\",\"certificate\":null,\"coordinate\":{\"branch\":\"trunk\",\"effective\":\"all\",\"known_at\":140,\"time_evidence\":null},\"data\":{\"balances\":0,\"byte_len\":188415,\"bytes\":null,\"checkpoint_public_key\":\"ea463bd02365e651091ab5381a654fb42cdb10ddf7e12c57631ae7cb71c85363\",\"digest\":\"9ba64bbc4a9f5f6ca6b3c18ab176709fa3ead9e63468d5d97d6d3168226f00ec\",\"file\":\"/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-product/report.fab\",\"inline_documents\":false,\"receipt\":null,\"receipt_file\":\"/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-product/report.receipt\",\"receipt_len\":219,\"report_units\":null,\"scope\":\"report\",\"verify\":\"fa-verify report <name> --key ea463bd02365e651091ab5381a654fb42cdb10ddf7e12c57631ae7cb71c85363 --receipt <name> --expect f815ee6525eb3a57d4f926b8b3a5c2a24068e98e85fe1b22f6e8f1fbea75d879\"},\"event\":\"bundle_produced\",\"next_actions\":[],\"v\":1,\"warnings\":[]}\n"
+    },
+    {
+      "command": [
+        "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+        "report",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-product/report.fab",
+        "--key",
+        "ea463bd02365e651091ab5381a654fb42cdb10ddf7e12c57631ae7cb71c85363",
+        "--checkpoint",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-product/checkpoint.bin",
+        "--receipt",
+        "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-product/report.receipt",
+        "--expect",
+        "f815ee6525eb3a57d4f926b8b3a5c2a24068e98e85fe1b22f6e8f1fbea75d879",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout": "{\"v\":1,\"tool\":\"fa-verify\",\"command\":\"report\",\"verdict\":\"verified\",\"checks\":[{\"check\":\"checkpoint\",\"scope\":\"signature\",\"result\":\"pass\",\"detail\":{\"oid\":\"0344c2fcb783b232fc13c4cac1254b0b9ab4663a44fe54bf4f69e88a9d9926be\",\"book_id\":\"708aeeff0adfab9baf1f4380bcaf66dd\",\"branch_id\":\"00000000000000000000000000000000\",\"through_seq\":139,\"leaf_count\":78,\"root\":\"9ce172966253bf8d2009c3a827bb8dcd983978deb6c7b1e01716858788e2cb00\",\"state_oid\":\"b90dccce2f91168f2d534758d2f92bc63fad4a17eab55fb328d218caa1ff6ba4\",\"scope_index_root\":\"9a9e19f8e62a37242b41e534fe374356e802f17b3ecaba76de081062ed73f832\",\"substrate_chain_commitment\":\"ab52bad8ef72fee2c94acdddc83c1ec661afeb4f25f9c7abadbe4f5af7495172\",\"signed_by\":[\"0299ef29573bc22ca9aa9dec4812b1ed1529e742dee22b87273037297512876f\"],\"not_judged\":[]},\"reason\":null},{\"check\":\"report_bundle\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"bundle_digest\":\"9ba64bbc4a9f5f6ca6b3c18ab176709fa3ead9e63468d5d97d6d3168226f00ec\",\"certificate_digest\":\"f815ee6525eb3a57d4f926b8b3a5c2a24068e98e85fe1b22f6e8f1fbea75d879\",\"output_digest\":\"6a1adfc15732fefa7ce3f3896c352d8289b35f2f72748905d033d583dfabe347\",\"known_at\":134,\"effective_through\":19904,\"report_mode\":\"stock\",\"records\":78,\"rows\":1,\"unit_universe_source\":\"not-applicable\",\"native_read_attestations\":\"retained; not used as outsider proofs\"},\"reason\":null},{\"check\":\"dimension_filter\",\"scope\":\"authenticated_journal\",\"result\":\"pass\",\"detail\":{\"dimension\":\"product\",\"value\":\"00\",\"included_values\":[\"00\"],\"selection\":\"tagged legs, including declared descendants\",\"monetary_footing\":\"not required for a filtered view\"},\"reason\":null},{\"check\":\"trial_balance_row\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"account\":\"1c40d03eeab7e24622fcddced1a7175e\",\"code\":\"521310\",\"unit\":0,\"debits\":\"633675\",\"credits\":\"0\",\"debits_pending\":\"0\",\"credits_pending\":\"0\"},\"reason\":null},{\"check\":\"canonical_report\",\"scope\":\"recomputation\",\"result\":\"pass\",\"detail\":{\"output_digest\":\"6a1adfc15732fefa7ce3f3896c352d8289b35f2f72748905d033d583dfabe347\"},\"reason\":null},{\"check\":\"production_receipt\",\"scope\":\"signature\",\"result\":\"pass\",\"detail\":{\"signed_by\":\"0299ef29573bc22ca9aa9dec4812b1ed1529e742dee22b87273037297512876f\"},\"reason\":null}],\"error\":null}\n"
+    }
+  ],
+  "dimension_requested": "product",
+  "elapsed_seconds": 2.876,
+  "entry_fragments_required": false,
+  "expected_certificate": "f815ee6525eb3a57d4f926b8b3a5c2a24068e98e85fe1b22f6e8f1fbea75d879",
+  "finished_utc": "2026-11-03T20:51:50.565038+00:00",
+  "independent_verifier": [
+    {
+      "checks": [
+        {
+          "check": "checkpoint",
+          "detail": {
+            "book_id": "708aeeff0adfab9baf1f4380bcaf66dd",
+            "branch_id": "00000000000000000000000000000000",
+            "leaf_count": 78,
+            "not_judged": [],
+            "oid": "0344c2fcb783b232fc13c4cac1254b0b9ab4663a44fe54bf4f69e88a9d9926be",
+            "root": "9ce172966253bf8d2009c3a827bb8dcd983978deb6c7b1e01716858788e2cb00",
+            "scope_index_root": "9a9e19f8e62a37242b41e534fe374356e802f17b3ecaba76de081062ed73f832",
+            "signed_by": [
+              "0299ef29573bc22ca9aa9dec4812b1ed1529e742dee22b87273037297512876f"
+            ],
+            "state_oid": "b90dccce2f91168f2d534758d2f92bc63fad4a17eab55fb328d218caa1ff6ba4",
+            "substrate_chain_commitment": "ab52bad8ef72fee2c94acdddc83c1ec661afeb4f25f9c7abadbe4f5af7495172",
+            "through_seq": 139
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "signature"
+        },
+        {
+          "check": "report_bundle",
+          "detail": {
+            "bundle_digest": "9ba64bbc4a9f5f6ca6b3c18ab176709fa3ead9e63468d5d97d6d3168226f00ec",
+            "certificate_digest": "f815ee6525eb3a57d4f926b8b3a5c2a24068e98e85fe1b22f6e8f1fbea75d879",
+            "effective_through": 19904,
+            "known_at": 134,
+            "native_read_attestations": "retained; not used as outsider proofs",
+            "output_digest": "6a1adfc15732fefa7ce3f3896c352d8289b35f2f72748905d033d583dfabe347",
+            "records": 78,
+            "report_mode": "stock",
+            "rows": 1,
+            "unit_universe_source": "not-applicable"
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "dimension_filter",
+          "detail": {
+            "dimension": "product",
+            "included_values": [
+              "00"
+            ],
+            "monetary_footing": "not required for a filtered view",
+            "selection": "tagged legs, including declared descendants",
+            "value": "00"
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "authenticated_journal"
+        },
+        {
+          "check": "trial_balance_row",
+          "detail": {
+            "account": "1c40d03eeab7e24622fcddced1a7175e",
+            "code": "521310",
+            "credits": "0",
+            "credits_pending": "0",
+            "debits": "633675",
+            "debits_pending": "0",
+            "unit": 0
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "canonical_report",
+          "detail": {
+            "output_digest": "6a1adfc15732fefa7ce3f3896c352d8289b35f2f72748905d033d583dfabe347"
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "recomputation"
+        },
+        {
+          "check": "production_receipt",
+          "detail": {
+            "signed_by": "0299ef29573bc22ca9aa9dec4812b1ed1529e742dee22b87273037297512876f"
+          },
+          "reason": null,
+          "result": "pass",
+          "scope": "signature"
+        }
+      ],
+      "command": "report",
+      "error": null,
+      "tool": "fa-verify",
+      "v": 1,
+      "verdict": "verified"
+    }
+  ],
+  "input_hashes_unchanged": true,
+  "invocation": [
+    "scripts/public_ledger_portable_proof.py",
+    "--run",
+    "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/run",
+    "--out",
+    "/dev/fa-health-after-finalize-69d8c2fe02b1-20261103/portable-product",
+    "--fa",
+    "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa",
+    "--fa-verify",
+    "/workspace/scratch/69d8c2fe02b1/native-artifacts-f3f1/native/target/debug/fa-verify",
+    "--dimension",
+    "product",
+    "--value",
+    "00"
+  ],
+  "migration_entries": 3,
+  "original_book_identity": {
+    "base_unit": "USD",
+    "book_id": "708aeeff0adfab9baf1f4380bcaf66dd",
+    "calendar": "fiscal",
+    "entities": []
+  },
+  "original_source_control_comparison": {
+    "dimension": "product",
+    "effective_through": "2024-06-30",
+    "nonzero_cells_compared": {
+      "account_nets": 1,
+      "gross_cents": 1
+    },
+    "period": "FY2024-P12",
+    "scope": "Verified native output compared with the completed replay's original-source oracle; no publisher-signature claim.",
+    "status": "PASS",
+    "value": "00"
+  },
+  "proof_files_after_verification": {
+    "checkpoint.bin": {
+      "bytes": 288,
+      "sha256": "2a56e6b16cf29547c4a1a617e238f79f7d259ff12f0e566cfba0e81e731d5b48"
+    },
+    "report.fab": {
+      "bytes": 188415,
+      "sha256": "4c5f04a96e0ac142b84b54bba3f800feed6b516847d476feb951706f3673d657"
+    },
+    "report.receipt": {
+      "bytes": 219,
+      "sha256": "6a9ab6fb8438d367b7521c0b38e09d3827c8706d64af121c6d5e4ca2f507e629"
+    }
+  },
+  "proof_files_before_verification": {
+    "checkpoint.bin": {
+      "bytes": 288,
+      "sha256": "2a56e6b16cf29547c4a1a617e238f79f7d259ff12f0e566cfba0e81e731d5b48"
+    },
+    "report.fab": {
+      "bytes": 188415,
+      "sha256": "4c5f04a96e0ac142b84b54bba3f800feed6b516847d476feb951706f3673d657"
+    },
+    "report.receipt": {
+      "bytes": 219,
+      "sha256": "6a9ab6fb8438d367b7521c0b38e09d3827c8706d64af121c6d5e4ca2f507e629"
+    }
+  },
+  "selected_retained_certificate": {
+    "account_nets": {
+      "521310": 633675
+    },
+    "certificate_oid": "f815ee6525eb3a57d4f926b8b3a5c2a24068e98e85fe1b22f6e8f1fbea75d879",
+    "gross_cents": {
+      "521310:debit": 633675
+    },
+    "period": "FY2024-P12",
+    "product": "00"
+  },
+  "source_binding_selection": "canonical_recovery_pins",
+  "source_bound": true,
+  "source_bound_requested": null,
+  "source_rows": 1440,
+  "started_utc": "2026-11-03T20:51:47.689199+00:00",
+  "status": "PASS",
+  "trust_scope": "Caller-trusted public key of the fixture book; no external identity claim.",
+  "trusted_public_key": "ea463bd02365e651091ab5381a654fb42cdb10ddf7e12c57631ae7cb71c85363",
+  "value_requested": "00",
+  "verified_proof_files_unchanged": true
+}
