@@ -84,7 +84,7 @@ certificate_hashes_blake3 = ["d86cd8fc79cbd55738511b4885f321358435d7df4dc6085b47
 id = "FA-ART-LAB-04"
 kind = "lab-campaign"
 manifest_path = "evidence/lab_campaign/genesis_lab_and_live.toml"
-manifest_blake3 = "49a574f76c526ee343026b2d3089e996588d11a132fa5a2b872c9cf0d263cfa5"
+manifest_blake3 = "8e9873da99bc97b14646699608d123eadcea23fe1bf418ca880bda1cd738b261"
 produced_by = "cargo test -p fa --lib book::tests::genesis_slice_is_green_under_lab_and_live_as_fa_art_lab_04"
 git_commit = "b932d46fa9240a15e7f0da6e2550bbf5af0df3f9"
 summary = "The Genesis slice green under lab and live (fa-0fl, plan §19 G1, scoreboard G1-01): every Genesis row (GEN-01 … GEN-11) runs through the facade. The book is created, the chart and calendar installed, a balanced two-leg entry posted, projections verified, and registers advanced with balance = fold. An unbalanced proposal is refused FA-REF-001 with its one-cent per-unit gap, and an Original into a Closed period FA-REF-010 with its matrix cell; neither writes. The trial balance is certified and registers verified. After a crash and reopen the entry is whole and its retry AlreadyRecorded, and the certificate replays to the same trial balance bytes. Lab: 32 seeds under the lab runtime over a fault VFS (seeded sync latency; the crash loses every unfenced directory entry); a rerun seed is the same run. Live: seeds 1-4 on the production runtime over the host filesystem, with a process restart in place of the crash; each equals its lab seed in head, trial balance bytes, certificate bytes and March fold. 36 runs. The slice is one sequential single-writer task, so the lab saw one schedule class (explored_interleavings = 1); races are FA-ART-LAB-01's evidence. One BLAKE3 digest per run of its mode, seed, head, trial balance, certificate and fold, recomputed by the producing test on every run."
@@ -95,41 +95,4 @@ explored_interleavings = 1
 # b24313f3e, its otherwise unchanged two-file inverse. All 36 prior hashes
 # and every other campaign field are restored. Prior registry blob:
 # 1a1f88777efb9836b317bb617cf5a5f54f0cd24a (earlier: 6e0d6c5eb95a78ffdde34ed334e1e569cbd3199e).
-certificate_hashes_blake3 = [
-    "8d8de5051780c3c21dbf9afe3bf0806cf465691de23e99148ac553774ef8f61b",
-    "96b91f6821d620bac7cdc445db15024641e41aaa2d12a43f17ec6db0245bc502",
-    "fcc6552cbf112a96abef8a7f1aaee86656e991d445fb34d53cbc3be1c793f469",
-    "0f81a09c170c880d1ae244212c657b1f3246e1ede9b46900211e9d1fd590f6e8",
-    "db416210b6a010aac03da14bb92a8492462a6208b5256445761206d58627e27a",
-    "eb23635056974f8b9ba9e6bcf118fc1d13c79a94f7bd0b4cbfe11e0ebf6c7e3c",
-    "849741341f623feacaf67fcaba6a9244d16c8a61aac33e79c62f5b3b58ffd9d7",
-    "3dcb007cb9239d15648d02b02821d90190613928315932a3eb033a6265eb7741",
-    "b62ba8ddf373ef20309b5a6104dde76f9f6bf02e3bdbdd5a83af548c2ecedd05",
-    "3e25cca2b7290687abe0eec05c4ba68ecc474a69236c9f38b210f4fd92c1f0a0",
-    "f377c8516765cc4b0dfa990d603e53624d909f65a4ef70f6c94ee0a37a91e80f",
-    "20988e8e27c55c3114e9f6cdc6df3e82e2d00c510066e02c7a487300e3cacee9",
-    "f52b44b9fc5ec03af7c8af24db021459d7ece07d7b18ff9dcfd96fe740f9fab5",
-    "75af2b15f52bdd6917c34c640e2ab924aeb11ae10e67fae54cf732f5b5a551c2",
-    "6202646d9b9320177faba677531dc512a6637b24c0222317caec61294497299b",
-    "4b50c35545a283b67e934efdf63948fd1e6ec44e5a7ac8fffd9815ff09fa5cf6",
-    "8028e2bb1ed9bb456e433cd5d7b593bc5244c1276a4a4b87473b4dd5a612cf5d",
-    "de42d4967db0bdd2af4a406c8ed779c698de383f2446b0a2de71649e84a9dc58",
-    "411ea4200ac88b01f27433aa05ee53af6c7c269d3ad2edd918b821cd1b478982",
-    "1639e5bf98d29f88366d1c658dce70c0cc16d626cd0139adb550633d2cb85ff0",
-    "80993ac6c72423f170566afa9b8b19711da52cdf954bdcdc9fba57e469ae1610",
-    "3ea60b0bd5c8239d9856c2e40f611949f87de969c60d419bd058e8014c2c731d",
-    "75acf6cfd534474bfb22aae9d89c3184aafd8551ab3b4cea2aa5c0b2c178fb64",
-    "c268432f1b4fb20c50b957f8e3ca749f2dee67dd2fbfbe3a8b63bf5e3293cb1e",
-    "54d87ac772aff2f395fcb2d19b5e191bccdfb88d1dbb467c38aabf21db601360",
-    "77be8854349ea57da97c60ee2005eeb20ad8d4aa4348c58460c8b04e9a70dc17",
-    "ade804654c4b7c811211388eb602b145591beeee6b1879960e85065f1afeb3c6",
-    "ca25c66fc3b455bf4d82416fb53a9e4828b177e705de332e7737235b81b68f85",
-    "e711804f7938c33353b7c93624810ca68bd816ab69e047f8e7c755d1a7ef4466",
-    "2a07cb7d0e971f19ea80934500a588424e63a50ae7d65bdfcb4f8341d3c6bcd4",
-    "269337c969ee7675af91480b446fa6513ecb2db6fa9b463b793ac83014abb285",
-    "b3dc558498f753e70b59f3a8700a3163a6465cecff1f1ea2081019757a58b847",
-    "b138ca41ed857aec81ad5625308c4dcef29cadbb00e54205eb4532872fc41fcd",
-    "7758acf5e61e60bd32d67049cc803d8d3d57e770ad86b325ea5da147d07a5140",
-    "f7c4044879d380cac7db560f9a670b64a16c5ccbebc9b97721ec53d00b877410",
-    "fc6cef36b8990631c8cff2b5d49e234311a1db36f6e1ad3fbfa265a721d0d23b",
-]
+certificate_hashes_blake3 = ["8d8de5051780c3c21dbf9afe3bf0806cf465691de23e99148ac553774ef8f61b", "96b91f6821d620bac7cdc445db15024641e41aaa2d12a43f17ec6db0245bc502", "fcc6552cbf112a96abef8a7f1aaee86656e991d445fb34d53cbc3be1c793f469", "0f81a09c170c880d1ae244212c657b1f3246e1ede9b46900211e9d1fd590f6e8", "db416210b6a010aac03da14bb92a8492462a6208b5256445761206d58627e27a", "eb23635056974f8b9ba9e6bcf118fc1d13c79a94f7bd0b4cbfe11e0ebf6c7e3c", "849741341f623feacaf67fcaba6a9244d16c8a61aac33e79c62f5b3b58ffd9d7", "3dcb007cb9239d15648d02b02821d90190613928315932a3eb033a6265eb7741", "b62ba8ddf373ef20309b5a6104dde76f9f6bf02e3bdbdd5a83af548c2ecedd05", "3e25cca2b7290687abe0eec05c4ba68ecc474a69236c9f38b210f4fd92c1f0a0", "f377c8516765cc4b0dfa990d603e53624d909f65a4ef70f6c94ee0a37a91e80f", "20988e8e27c55c3114e9f6cdc6df3e82e2d00c510066e02c7a487300e3cacee9", "f52b44b9fc5ec03af7c8af24db021459d7ece07d7b18ff9dcfd96fe740f9fab5", "75af2b15f52bdd6917c34c640e2ab924aeb11ae10e67fae54cf732f5b5a551c2", "6202646d9b9320177faba677531dc512a6637b24c0222317caec61294497299b", "4b50c35545a283b67e934efdf63948fd1e6ec44e5a7ac8fffd9815ff09fa5cf6", "8028e2bb1ed9bb456e433cd5d7b593bc5244c1276a4a4b87473b4dd5a612cf5d", "de42d4967db0bdd2af4a406c8ed779c698de383f2446b0a2de71649e84a9dc58", "411ea4200ac88b01f27433aa05ee53af6c7c269d3ad2edd918b821cd1b478982", "1639e5bf98d29f88366d1c658dce70c0cc16d626cd0139adb550633d2cb85ff0", "80993ac6c72423f170566afa9b8b19711da52cdf954bdcdc9fba57e469ae1610", "3ea60b0bd5c8239d9856c2e40f611949f87de969c60d419bd058e8014c2c731d", "75acf6cfd534474bfb22aae9d89c3184aafd8551ab3b4cea2aa5c0b2c178fb64", "c268432f1b4fb20c50b957f8e3ca749f2dee67dd2fbfbe3a8b63bf5e3293cb1e", "54d87ac772aff2f395fcb2d19b5e191bccdfb88d1dbb467c38aabf21db601360", "77be8854349ea57da97c60ee2005eeb20ad8d4aa4348c58460c8b04e9a70dc17", "ade804654c4b7c811211388eb602b145591beeee6b1879960e85065f1afeb3c6", "ca25c66fc3b455bf4d82416fb53a9e4828b177e705de332e7737235b81b68f85", "e711804f7938c33353b7c93624810ca68bd816ab69e047f8e7c755d1a7ef4466", "2a07cb7d0e971f19ea80934500a588424e63a50ae7d65bdfcb4f8341d3c6bcd4", "269337c969ee7675af91480b446fa6513ecb2db6fa9b463b793ac83014abb285", "b3dc558498f753e70b59f3a8700a3163a6465cecff1f1ea2081019757a58b847", "b138ca41ed857aec81ad5625308c4dcef29cadbb00e54205eb4532872fc41fcd", "7758acf5e61e60bd32d67049cc803d8d3d57e770ad86b325ea5da147d07a5140", "f7c4044879d380cac7db560f9a670b64a16c5ccbebc9b97721ec53d00b877410", "fc6cef36b8990631c8cff2b5d49e234311a1db36f6e1ad3fbfa265a721d0d23b"]
