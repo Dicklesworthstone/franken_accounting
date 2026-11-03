@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=4a085aa0e71cf74a85c1afd911749dea98ce3a9b
+tree=1945b7bb83abb41cab3b9cd99dad995045ac7e43
+lane=remote
+host=hetzner1:Linux-x86_64
+worker=hz2
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=7
+check_status=PASS
+check_seconds=952
+log_dir=/home/ubuntu/.codex/artifacts/fa-gap-work-20261031.lM8xfA/escrow-4a085-gate-tier0-20261103
+recorded_utc=2026-11-03T15:04:56Z
