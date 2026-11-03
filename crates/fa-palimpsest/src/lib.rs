@@ -445,11 +445,16 @@ pub fn validate_replacement_pair(
         ));
     }
 
+    // A replacement that keeps the native legs but values them at a corrected
+    // rate (new base amounts from new Rate evidence) does replace something:
+    // a Reversal never reprices (plan §4.4, §8.2), so this is the route the
+    // kernel and the CLI name for an FX correction.
     let same_as_target = target.legs.len() == replacement.legs.len()
         && target.legs.iter().zip(&replacement.legs).all(|(a, b)| {
             a.side == b.side
                 && a.account_ref == b.account_ref
                 && a.amount == b.amount
+                && a.base_amount == b.base_amount
                 && a.dimension_set == b.dimension_set
         });
     if same_as_target {
@@ -932,10 +937,23 @@ pub fn explain_lineage(
     }
 
     let root_live = is_node_live(root_vid)?;
-    let replaced_by = replaced_by_map
-        .get(&root_vid)
-        .copied()
-        .filter(|&rep_vid| is_node_live(rep_vid).unwrap_or(false));
+    // The live replacement at the end of the root's replacement chain. A
+    // Replacement is itself reversible, so it may have been reversed and
+    // replaced again: one level down would report the whole chain as fully
+    // reversed while its net positions are the latest replacement's legs.
+    let mut replaced_by = None;
+    let mut replaced = root_vid;
+    let mut chain_seen = BTreeSet::new();
+    while let Some(&rep_vid) = replaced_by_map.get(&replaced) {
+        if !chain_seen.insert(rep_vid) {
+            return Err(PalimpsestError::LineageCycle { vid: rep_vid });
+        }
+        if is_node_live(rep_vid)? {
+            replaced_by = Some(rep_vid);
+            break;
+        }
+        replaced = rep_vid;
+    }
     let fully_reversed = !root_live && replaced_by.is_none();
 
     Ok(Some(LineageReport {
@@ -1509,5 +1527,153 @@ mod tests {
         assert!(cert.lines.iter().all(|l| l.delta_net.abs() == 500));
         assert!(cert.verify_replay(&before, &after));
         assert!(!cert.verify_replay(&before, &before));
+    }
+
+    /// A Replacement that keeps the native legs but values them at a
+    /// corrected rate replaces something: it is the documented route for an
+    /// FX correction, since a Reversal never reprices. One identical in both
+    /// amount and value still replaces nothing.
+    #[test]
+    fn a_rate_only_replacement_is_a_replacement() {
+        let usd = UnitId(1);
+        let eur = UnitId(2);
+        let leg = |side, account, base| {
+            let mut leg = LegPayload::simple(side, VId(account), Amount::new(eur, 100));
+            leg.base_amount = Some(Amount::new(usd, base));
+            leg
+        };
+        let target = sample_payload(
+            EntryClass::ORIGINAL,
+            vec![leg(Side::Debit, 6000, 110), leg(Side::Credit, 1000, 110)],
+            Vec::new(),
+        )
+        .seal(Vec::new(), None)
+        .unwrap();
+        let target_ref = target.entry_ref(VId(20));
+        let reversal = sample_payload(
+            EntryClass::REVERSAL,
+            vec![leg(Side::Credit, 6000, 110), leg(Side::Debit, 1000, 110)],
+            vec![Supersession {
+                kind: SupersessionKind::Reverses,
+                target: target_ref,
+                reason_code: 2,
+            }],
+        )
+        .seal(Vec::new(), None)
+        .unwrap();
+        let replacement_at = |base| {
+            sample_payload(
+                EntryClass::REPLACEMENT,
+                vec![leg(Side::Debit, 6000, base), leg(Side::Credit, 1000, base)],
+                vec![Supersession {
+                    kind: SupersessionKind::Replaces,
+                    target: target_ref,
+                    reason_code: 2,
+                }],
+            )
+            .seal(Vec::new(), None)
+            .unwrap()
+        };
+        validate_replacement_pair(
+            &target.proposal,
+            target_ref,
+            &reversal.proposal,
+            &replacement_at(108).proposal,
+        )
+        .expect("a corrected rate is a replacement");
+        let error = validate_replacement_pair(
+            &target.proposal,
+            target_ref,
+            &reversal.proposal,
+            &replacement_at(110).proposal,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, PalimpsestError::InvalidReplacementPair(m) if m.contains("nothing is replaced")),
+            "{error:?}"
+        );
+    }
+
+    /// A Replacement is reversible, so it can be reversed and replaced in
+    /// turn. The lineage names the live replacement at the end of that chain
+    /// and is not fully reversed while it stands; it is once that last
+    /// replacement is reversed too.
+    #[test]
+    fn lineage_names_the_live_replacement_at_the_end_of_a_replacement_chain() {
+        let usd = UnitId(1);
+        let legs = |debit: u128, credit: u128| {
+            vec![
+                LegPayload::simple(Side::Debit, VId(debit), Amount::new(usd, 100)),
+                LegPayload::simple(Side::Credit, VId(credit), Amount::new(usd, 100)),
+            ]
+        };
+        let entry = |class, legs, supersession: Vec<Supersession>| {
+            sample_payload(class, legs, supersession)
+                .seal(Vec::new(), None)
+                .unwrap()
+        };
+        let edge = |kind, target| Supersession {
+            kind,
+            target,
+            reason_code: 2,
+        };
+        let original = entry(EntryClass::ORIGINAL, legs(6000, 1000), Vec::new());
+        let original_ref = original.entry_ref(VId(30));
+        let rev1 = entry(
+            EntryClass::REVERSAL,
+            legs(1000, 6000),
+            vec![edge(SupersessionKind::Reverses, original_ref)],
+        );
+        let rep1 = entry(
+            EntryClass::REPLACEMENT,
+            legs(6100, 1000),
+            vec![edge(SupersessionKind::Replaces, original_ref)],
+        );
+        let rep1_ref = rep1.entry_ref(VId(32));
+        let rev2 = entry(
+            EntryClass::REVERSAL,
+            legs(1000, 6100),
+            vec![edge(SupersessionKind::Reverses, rep1_ref)],
+        );
+        let rep2 = entry(
+            EntryClass::REPLACEMENT,
+            legs(6200, 1000),
+            vec![edge(SupersessionKind::Replaces, rep1_ref)],
+        );
+        let rep2_ref = rep2.entry_ref(VId(34));
+        let mut entries = vec![
+            (VId(30), original, CommitSeq(1)),
+            (VId(31), rev1, CommitSeq(2)),
+            (VId(32), rep1, CommitSeq(2)),
+            (VId(33), rev2, CommitSeq(3)),
+            (VId(34), rep2, CommitSeq(3)),
+        ];
+        for queried in [VId(30), VId(34)] {
+            let report = explain_lineage(&entries, queried, None)
+                .expect("lineage ok")
+                .expect("found");
+            assert_eq!(report.root_vid, VId(30));
+            assert_eq!(report.replaced_by, Some(VId(34)));
+            assert!(!report.fully_reversed);
+            let net: BTreeMap<VId, i128> = report
+                .net_positions
+                .iter()
+                .map(|p| (p.account_ref, p.net_debit))
+                .collect();
+            assert_eq!(net.get(&VId(6200)), Some(&100));
+            assert_eq!(net.get(&VId(6100)), Some(&0));
+            assert_eq!(net.get(&VId(6000)), Some(&0));
+        }
+        let rev3 = entry(
+            EntryClass::REVERSAL,
+            legs(1000, 6200),
+            vec![edge(SupersessionKind::Reverses, rep2_ref)],
+        );
+        entries.push((VId(35), rev3, CommitSeq(4)));
+        let report = explain_lineage(&entries, VId(30), None)
+            .expect("lineage ok")
+            .expect("found");
+        assert_eq!(report.replaced_by, None);
+        assert!(report.fully_reversed);
     }
 }
