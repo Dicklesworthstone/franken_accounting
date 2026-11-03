@@ -816,8 +816,14 @@ pub fn verify_ndjson_gl_stream(ndjson: &str) -> Result<usize, FormatError> {
             });
         }
     }
-    let expected_tag = format!("\"row_count\":{detail_rows}");
-    if !last.contains(&expected_tag) {
+    // The whole declared number, not a prefix of it: a footer of 12 does not
+    // count a stream of 1.
+    let declared = last.split_once("\"row_count\":").map(|(_, rest)| {
+        rest.split(|c: char| !c.is_ascii_digit())
+            .next()
+            .unwrap_or("")
+    });
+    if declared != Some(detail_rows.to_string().as_str()) {
         return Err(FormatError::Parse {
             format: FMT_NDJSON,
             detail: format!("footer row_count does not match {detail_rows} detail rows"),

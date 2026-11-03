@@ -227,6 +227,32 @@ impl TbCorpus {
     }
 }
 
+/// An exact i128 result, or the scenario refused when it overflows: a
+/// corpus is input, and a hostile amount must not wrap or panic.
+fn exact(scenario: &TbScenario, value: Option<i128>, what: &str) -> Result<i128, FormatError> {
+    value.ok_or_else(|| FormatError::TigerBeetleViolation {
+        scenario: scenario.id.clone(),
+        detail: format!("{what} overflows i128"),
+    })
+}
+
+/// The account a step names, refused when the scenario declares none.
+fn known(
+    scenario: &TbScenario,
+    accounts: &BTreeMap<String, TbAccountState>,
+    code: &str,
+    side: &str,
+) -> Result<(), FormatError> {
+    if accounts.contains_key(code) {
+        Ok(())
+    } else {
+        Err(FormatError::TigerBeetleViolation {
+            scenario: scenario.id.clone(),
+            detail: format!("unknown {side} account {code}"),
+        })
+    }
+}
+
 /// Evaluate a single [`TbScenario`] under FrankenAccounting's two-phase hold and
 /// worst-case reservation limit semantics.
 pub fn evaluate_scenario(scenario: &TbScenario) -> Result<TbScenarioResult, FormatError> {
@@ -253,20 +279,32 @@ pub fn evaluate_scenario(scenario: &TbScenario) -> Result<TbScenarioResult, Form
                         detail: format!("unknown debit account {debit_account}"),
                     }
                 })?;
-                let worst_case_debit = dr_acct.debits_posted + dr_acct.debits_pending + *amount
-                    - dr_acct.credits_posted;
+                known(scenario, &accounts, credit_account, "credit")?;
+                let worst_case_debit = exact(
+                    scenario,
+                    dr_acct
+                        .debits_posted
+                        .checked_add(dr_acct.debits_pending)
+                        .and_then(|v| v.checked_add(*amount))
+                        .and_then(|v| v.checked_sub(dr_acct.credits_posted)),
+                    "worst-case debit",
+                )?;
                 if dr_acct.max_debit_net > 0 && worst_case_debit > dr_acct.max_debit_net {
                     outcomes.push(format!("{id}:refused_exceeds_limit"));
                     continue;
                 }
-                accounts
-                    .get_mut(debit_account)
-                    .expect("checked")
-                    .debits_posted += *amount;
-                accounts
-                    .get_mut(credit_account)
-                    .expect("checked")
-                    .credits_posted += *amount;
+                let dr = accounts.get_mut(debit_account).expect("checked");
+                dr.debits_posted = exact(
+                    scenario,
+                    dr.debits_posted.checked_add(*amount),
+                    "debits posted",
+                )?;
+                let cr = accounts.get_mut(credit_account).expect("checked");
+                cr.credits_posted = exact(
+                    scenario,
+                    cr.credits_posted.checked_add(*amount),
+                    "credits posted",
+                )?;
                 outcomes.push(format!("{id}:committed"));
             }
             TbStep::Pending {
@@ -283,20 +321,32 @@ pub fn evaluate_scenario(scenario: &TbScenario) -> Result<TbScenarioResult, Form
                         detail: format!("unknown debit account {debit_account}"),
                     }
                 })?;
-                let worst_case_debit = dr_acct.debits_posted + dr_acct.debits_pending + *amount
-                    - dr_acct.credits_posted;
+                known(scenario, &accounts, credit_account, "credit")?;
+                let worst_case_debit = exact(
+                    scenario,
+                    dr_acct
+                        .debits_posted
+                        .checked_add(dr_acct.debits_pending)
+                        .and_then(|v| v.checked_add(*amount))
+                        .and_then(|v| v.checked_sub(dr_acct.credits_posted)),
+                    "worst-case debit",
+                )?;
                 if dr_acct.max_debit_net > 0 && worst_case_debit > dr_acct.max_debit_net {
                     outcomes.push(format!("{id}:refused_exceeds_limit"));
                     continue;
                 }
-                accounts
-                    .get_mut(debit_account)
-                    .expect("checked")
-                    .debits_pending += *amount;
-                accounts
-                    .get_mut(credit_account)
-                    .expect("checked")
-                    .credits_pending += *amount;
+                let dr = accounts.get_mut(debit_account).expect("checked");
+                dr.debits_pending = exact(
+                    scenario,
+                    dr.debits_pending.checked_add(*amount),
+                    "debits pending",
+                )?;
+                let cr = accounts.get_mut(credit_account).expect("checked");
+                cr.credits_pending = exact(
+                    scenario,
+                    cr.credits_pending.checked_add(*amount),
+                    "credits pending",
+                )?;
                 holds.insert(
                     id.clone(),
                     PendingHold {
@@ -339,11 +389,27 @@ pub fn evaluate_scenario(scenario: &TbScenario) -> Result<TbScenarioResult, Form
                 let cr = hold.credit_account.clone();
                 let reserved = hold.reserved_amount;
                 let dr_state = accounts.get_mut(&dr).expect("debit account");
-                dr_state.debits_pending -= reserved;
-                dr_state.debits_posted += *amount;
+                dr_state.debits_pending = exact(
+                    scenario,
+                    dr_state.debits_pending.checked_sub(reserved),
+                    "debits pending",
+                )?;
+                dr_state.debits_posted = exact(
+                    scenario,
+                    dr_state.debits_posted.checked_add(*amount),
+                    "debits posted",
+                )?;
                 let cr_state = accounts.get_mut(&cr).expect("credit account");
-                cr_state.credits_pending -= reserved;
-                cr_state.credits_posted += *amount;
+                cr_state.credits_pending = exact(
+                    scenario,
+                    cr_state.credits_pending.checked_sub(reserved),
+                    "credits pending",
+                )?;
+                cr_state.credits_posted = exact(
+                    scenario,
+                    cr_state.credits_posted.checked_add(*amount),
+                    "credits posted",
+                )?;
                 outcomes.push(format!("{id}:committed"));
             }
             TbStep::Void { id, pending_id, .. } => {
@@ -362,8 +428,18 @@ pub fn evaluate_scenario(scenario: &TbScenario) -> Result<TbScenarioResult, Form
                 let dr = hold.debit_account.clone();
                 let cr = hold.credit_account.clone();
                 let reserved = hold.reserved_amount;
-                accounts.get_mut(&dr).expect("debit").debits_pending -= reserved;
-                accounts.get_mut(&cr).expect("credit").credits_pending -= reserved;
+                let dr_state = accounts.get_mut(&dr).expect("debit");
+                dr_state.debits_pending = exact(
+                    scenario,
+                    dr_state.debits_pending.checked_sub(reserved),
+                    "debits pending",
+                )?;
+                let cr_state = accounts.get_mut(&cr).expect("credit");
+                cr_state.credits_pending = exact(
+                    scenario,
+                    cr_state.credits_pending.checked_sub(reserved),
+                    "credits pending",
+                )?;
                 outcomes.push(format!("{id}:committed"));
             }
             TbStep::Expire {
@@ -390,8 +466,18 @@ pub fn evaluate_scenario(scenario: &TbScenario) -> Result<TbScenarioResult, Form
                 let dr = hold.debit_account.clone();
                 let cr = hold.credit_account.clone();
                 let reserved = hold.reserved_amount;
-                accounts.get_mut(&dr).expect("debit").debits_pending -= reserved;
-                accounts.get_mut(&cr).expect("credit").credits_pending -= reserved;
+                let dr_state = accounts.get_mut(&dr).expect("debit");
+                dr_state.debits_pending = exact(
+                    scenario,
+                    dr_state.debits_pending.checked_sub(reserved),
+                    "debits pending",
+                )?;
+                let cr_state = accounts.get_mut(&cr).expect("credit");
+                cr_state.credits_pending = exact(
+                    scenario,
+                    cr_state.credits_pending.checked_sub(reserved),
+                    "credits pending",
+                )?;
                 outcomes.push(format!("{id}:committed"));
             }
         }

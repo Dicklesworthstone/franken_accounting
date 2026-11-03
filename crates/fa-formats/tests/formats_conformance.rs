@@ -2058,3 +2058,145 @@ fn a_version_only_oracle_binary_is_present_never_verified() {
         SubprocessOracleStatus::Unrun { .. }
     ));
 }
+
+/// fa-formats review: a Beancount or hledger account name keeps only letters,
+/// digits and dashes, so the code `1200.01` is written `Assets:A1200-01`.
+/// Its `open` (or `account`) directive carries the exact code, but legs and
+/// assertions were read back from the name, as `1200-01`, so a book with such
+/// a code could not be read back (or its legs moved to `1200-01`). Two codes
+/// that export to one name are refused, naming both.
+#[test]
+fn beancount_and_hledger_read_back_codes_their_names_cannot_spell() {
+    let units = UnitCatalog::embedded().expect("units.toml");
+    let base = sample_multi_unit_journal();
+    let respelled = |code: &str| {
+        if code == "1200" {
+            "1200.01".to_owned()
+        } else {
+            code.to_owned()
+        }
+    };
+    let rebuild = |accounts: Vec<FormatAccount>| {
+        let mut entries = base.entries.clone();
+        for leg in entries.iter_mut().flat_map(|e| e.legs.iter_mut()) {
+            leg.account_code = respelled(&leg.account_code);
+        }
+        let mut assertions = base.assertions.clone();
+        for assertion in &mut assertions {
+            assertion.account_code = respelled(&assertion.account_code);
+        }
+        FormatJournal::new(
+            &base.coordinate.book_name,
+            &base.coordinate.base_unit_code,
+            base.coordinate.base_unit_scale,
+            base.coordinate.effective_through,
+            base.coordinate.known_at_seq,
+            accounts,
+            entries,
+            assertions,
+        )
+        .expect("a valid journal")
+    };
+    let mut accounts = base.accounts.clone();
+    for account in &mut accounts {
+        account.code = respelled(&account.code);
+    }
+    let journal = rebuild(accounts.clone());
+    let expected = journal.fold_balances().expect("fa fold");
+    assert!(
+        expected.keys().any(|(account, _)| account == "1200.01"),
+        "{expected:?}"
+    );
+    for (format, read) in [
+        (
+            "beancount",
+            read_beancount(&write_beancount(&journal), &units),
+        ),
+        ("hledger", read_hledger(&write_hledger(&journal), &units)),
+    ] {
+        let read = read.unwrap_or_else(|e| panic!("{format}: {e}"));
+        let balances = read.fold_balances().expect("fold");
+        compare_balances_exact("acme-fy2026-p03", &expected, &balances)
+            .unwrap_or_else(|e| panic!("{format}: {e}"));
+    }
+
+    // `1200_01` exports to the same name as `1200.01`.
+    let mut colliding = accounts;
+    let mut twin = colliding
+        .iter()
+        .find(|a| a.code == "1200.01")
+        .cloned()
+        .expect("the respelled account");
+    twin.code = "1200_01".to_owned();
+    colliding.push(twin);
+    let journal = rebuild(colliding);
+    for (format, read) in [
+        (
+            "beancount",
+            read_beancount(&write_beancount(&journal), &units),
+        ),
+        ("hledger", read_hledger(&write_hledger(&journal), &units)),
+    ] {
+        let message = read.expect_err(format).to_string();
+        assert!(
+            message.contains("1200.01") && message.contains("1200_01"),
+            "{format}: {message}"
+        );
+    }
+}
+
+/// fa-formats review: the NDJSON footer's `row_count` was checked as a
+/// substring, so a footer of 12 counted a stream of 1 detail row.
+#[test]
+fn ndjson_gl_stream_footer_counts_its_rows_exactly() {
+    let journal = sample_multi_unit_journal();
+    let ndjson = write_ndjson_gl_stream(&journal).expect("write_ndjson_gl_stream");
+    assert_eq!(verify_ndjson_gl_stream(&ndjson).expect("verify"), 8);
+    let lines: Vec<&str> = ndjson.lines().filter(|l| !l.trim().is_empty()).collect();
+    let footer = lines[lines.len() - 1];
+    assert!(footer.contains("\"row_count\":8"), "{footer}");
+    let truncated = format!(
+        "{}\n{}\n{}\n",
+        lines[0],
+        lines[1],
+        footer.replace("\"row_count\":8", "\"row_count\":12")
+    );
+    assert!(verify_ndjson_gl_stream(&truncated).is_err());
+}
+
+/// fa-formats review: the TigerBeetle corpus evaluator looked up a step's
+/// credit account only by `expect` and summed balances unchecked, so a
+/// scenario naming an unknown credit account, or an amount near `i128::MAX`,
+/// panicked. Both are now refused as scenario violations.
+#[test]
+fn tigerbeetle_corpus_refuses_unknown_accounts_and_overflow_without_panicking() {
+    use fa_formats::tigerbeetle::{TbStep, evaluate_scenario};
+
+    let corpus = TbCorpus::embedded().expect("tigerbeetle_semantics.toml");
+    let base = corpus.scenarios[0].clone();
+    let account = base.accounts[0].code.clone();
+    let step = |credit: &str, amount: i128| TbStep::Post {
+        id: "planted".to_owned(),
+        debit_account: account.clone(),
+        credit_account: credit.to_owned(),
+        amount,
+        day: 0,
+    };
+    for (credit, amount, says) in [
+        ("NOPE", 1, "unknown credit account NOPE"),
+        (account.as_str(), i128::MAX, "overflows i128"),
+    ] {
+        let mut scenario = base.clone();
+        // No limit, so the planted amount reaches the arithmetic.
+        for state in &mut scenario.accounts {
+            state.max_debit_net = 0;
+        }
+        scenario.steps.push(step(credit, amount));
+        scenario.steps.push(step(credit, amount));
+        let err = evaluate_scenario(&scenario).expect_err(says);
+        assert!(
+            matches!(&err, FormatError::TigerBeetleViolation { detail, .. } if detail.contains(says)),
+            "{err:?}"
+        );
+    }
+}
