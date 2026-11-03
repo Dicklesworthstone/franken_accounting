@@ -12,13 +12,32 @@ Network access occurs only when explicitly preparing a dataset without a local
 
 ## Executed native coverage
 
-The complete HMRC March 2025 extract passed the actual native workflow on
+The complete HMRC March 2025 extract passed a fresh grouped native workflow on
 2026-11-03: **1,430 original records, 127 migration entries, 2,860 monetary legs,
-588 native calls and 402.144 seconds**. The retained
-[execution result](../../evidence/public_spend/hmrc-2025-03-native-2026-11-03.json)
-records all 18 completed checks, original-source and executable hashes, native
-document identities, certificate/checkpoint identities, and the verified bundle
-hash. The process exited zero; a separately corrupted bundle exited eight.
+463 native calls and 113.172 seconds**. The process exited zero using frozen
+binaries from `93714f772a6279c0ea233841d1d51dbe096d9ff1`, direct CLI transport,
+and two initial staging groups of at most 64 independently approved chunks,
+plus an exact first-group retry. The
+[new execution evidence](../../evidence/public_spend/hmrc-2025-03-grouped-confirmation-2026-11-03.json)
+retains the exact 20 completed checks, source/helper/executable identities,
+report/export/transcript hashes, native custody and finalization coordinates.
+It records 462 successful native calls and the expected exit eight when the
+standalone verifier rejected a deliberately modified report bundle.
+
+That run checked every dated exported leg and memo, exact gross and net account
+totals, retained source byte identity, staged and historical invisibility,
+original retry identities, certified replay and independent report verification.
+The earlier complete [native execution result](../../evidence/public_spend/hmrc-2025-03-native-2026-11-03.json)
+remains unchanged: 588 calls, 402.144 seconds and 18 completed checks. These are
+separate development-host observations, not a controlled speed comparison.
+
+The native report covers the explicitly modeled GBP expenditure and offset
+accounts. Supplier, area, reference and other original fields remain in retained
+source/provenance evidence and source-side controls; this runner does not claim
+that all those fields are native queryable dimension tags. The extract supplies
+no complete original general ledger, opening stocks or original double-entry
+counterparts. The independent verifier checks the resulting analysis book under
+its own trusted checkpoint key, not an HMRC-signed or audited set of accounts.
 
 Both complete datasets also passed actual HTTPS acquisition and deterministic
 source preparation. A native DWP completion is not established until its own
@@ -90,6 +109,41 @@ requests; their bytes are forwarded through stdin so the daemon needs no host
 filesystem grant. The result records the group size and number of staging
 requests, and the harness checks every receipt against the prepared source
 proposal, including retry sequences.
+
+### Approve a staging group without reopening the book for every proposal
+
+For direct CLI runs, add `--batch-approvals` to use the native
+[`approve --proposals` command](../../docs/approval_groups.md). This mode is
+explicit: an older binary that does not support it refuses the run. The runner
+does not silently fall back or change authority after a refusal.
+
+```bash
+python3 tools/public-data/run_live.py \
+  --prepared /tmp/fa-public-hmrc --dataset hmrc-2025-03 \
+  --out /tmp/fa-public-hmrc-batched \
+  --fa /absolute/path/to/fa --fa-verify /absolute/path/to/fa-verify \
+  --stage-group-size 64 --batch-approvals
+```
+
+Each staging group needs two native approval calls: one per separately issued
+reviewer token. Both receive the identical ordered digest array through stdin;
+each retains its exact bytes and native response in the transcript. The runner
+requires a complete ordered receipt list, the expected book and reviewer,
+distinct native approval identities, positive publication sequences and the
+correct security-policy/retry fields before constructing each chunk's pair of
+approvals. It explicitly retries both reviewers for the first group, requiring
+the original IDs and sequences and an unchanged book frontier. Cached receipts
+are only comparison evidence; every retry still reaches native authority checks.
+
+Approval publication remains per proposal. If either reviewer returns a
+committed prefix followed by a refusal, the run fails with that actual prefix
+retained. It does not stage the incomplete group, manufacture approvals, reissue
+tokens or use owner authority to continue. Separate finalization approval and
+activation are unchanged. `result.json` records the chosen mode and the actual
+number of approval-group requests, including the explicit first-group retry.
+The ordinary per-proposal path remains the default and supports existing
+binaries. Batch approval also works with `--fad` through the same bounded stdin
+contract, where the execution environment permits native daemon sockets.
 
 The same native interface can resume an interrupted import:
 

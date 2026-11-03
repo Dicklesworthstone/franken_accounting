@@ -8,6 +8,8 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "legacy_migration/approval_groups.rs"]
+mod approval_groups;
 #[path = "legacy_migration/grouped.rs"]
 mod grouped;
 #[path = "legacy_migration/limited_accounts.rs"]

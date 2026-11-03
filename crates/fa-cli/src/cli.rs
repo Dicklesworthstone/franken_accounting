@@ -5705,6 +5705,34 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// record an Approval binding a planned proposal's digest or a portable allocation/settlement
 /// review under the caller's capability.
 fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if let Some(input) = args.flag("--proposals") {
+        if args.positional.len() != 1
+            || args.flag_all("--proposals").len() != 1
+            || ["--proposal", "--review", "--digest"]
+                .iter()
+                .any(|flag| args.flag(flag).is_some())
+        {
+            return Err(usage(
+                "--proposals occurs once, takes no positional arguments, and cannot be combined with --proposal, --review or --digest",
+                APPROVAL_GROUP_EXAMPLE,
+            ));
+        }
+        // Parse the complete request before loading a key or publishing anything.
+        let digests = read_approval_group(&ctx.files, input)?;
+        let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
+        let capability = ctx.capability(args, &["approve"])?;
+        let mut book = ctx.books.open(args)?;
+        for digest in digests {
+            // Each native transaction rechecks current authority, revocation,
+            // policy epoch and signing key before its idempotency lookup.
+            let approved = match &key {
+                Some(key) => book.approve_signed(capability.clone(), digest, key)??,
+                None => book.approve(capability.clone(), digest)??,
+            };
+            emit_approved(&ctx.out, &book, approved)?;
+        }
+        return Ok(());
+    }
     if let Some(review_arg) = args.flag("--review") {
         if args.flag("--proposal").is_some() {
             return Err(usage(
@@ -5738,6 +5766,93 @@ fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         None => book.approve(capability, digest)??,
     };
     emit_approved(&ctx.out, &book, approved)
+}
+
+const APPROVAL_GROUP_EXAMPLE: &str = "fa approve --proposals '<JSON array of 64-hex digests>' --as <approver>, or --proposals - for stdin; at most 4096 unique digests and 1 MiB";
+const MAX_APPROVAL_GROUP_BYTES: usize = 1024 * 1024;
+const MAX_APPROVAL_GROUP_MEMBERS: usize = 4096;
+
+fn read_approval_group(files: &Files, input: &str) -> Result<Vec<[u8; 32]>, Fail> {
+    let oversized = || usage("approval group exceeds 1 MiB", APPROVAL_GROUP_EXAMPLE);
+    let bytes = if input == "-" {
+        match &files.stdin {
+            Stdin::Forwarded(bytes) => {
+                if bytes.len() > MAX_APPROVAL_GROUP_BYTES {
+                    return Err(oversized());
+                }
+                bytes.clone()
+            }
+            Stdin::Missing => {
+                return Err(usage(
+                    "--proposals - needs forwarded stdin",
+                    APPROVAL_GROUP_EXAMPLE,
+                ));
+            }
+            Stdin::Process => {
+                let mut bytes = Vec::new();
+                std::io::stdin()
+                    .lock()
+                    .take(MAX_APPROVAL_GROUP_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| {
+                        usage(
+                            format!("approval group stdin: {error}"),
+                            APPROVAL_GROUP_EXAMPLE,
+                        )
+                    })?;
+                bytes
+            }
+        }
+    } else {
+        if input.len() > MAX_APPROVAL_GROUP_BYTES {
+            return Err(oversized());
+        }
+        input.as_bytes().to_vec()
+    };
+    if bytes.len() > MAX_APPROVAL_GROUP_BYTES {
+        return Err(oversized());
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| usage("approval group must be UTF-8 JSON", APPROVAL_GROUP_EXAMPLE))?;
+    let Json::Arr(values) = json::parse(text).map_err(|error| {
+        usage(
+            format!("invalid approval group JSON: {error}"),
+            APPROVAL_GROUP_EXAMPLE,
+        )
+    })?
+    else {
+        return Err(usage(
+            "approval group must be a JSON array",
+            APPROVAL_GROUP_EXAMPLE,
+        ));
+    };
+    if values.is_empty() || values.len() > MAX_APPROVAL_GROUP_MEMBERS {
+        return Err(usage(
+            "approval group needs 1 to 4096 digests",
+            APPROVAL_GROUP_EXAMPLE,
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let text = value.as_str().ok_or_else(|| {
+                usage(
+                    format!("approval group member {index} must be a digest string"),
+                    APPROVAL_GROUP_EXAMPLE,
+                )
+            })?;
+            let digest = parse_digest(text, &format!("approval group member {index}"))?;
+            if !seen.insert(digest) {
+                return Err(usage(
+                    format!("duplicate approval group digest at member {index}"),
+                    APPROVAL_GROUP_EXAMPLE,
+                ));
+            }
+            Ok(digest)
+        })
+        .collect()
 }
 
 fn emit_approved(out: &Out, book: &Book, approved: fa_journal::Approved) -> Result<(), Fail> {

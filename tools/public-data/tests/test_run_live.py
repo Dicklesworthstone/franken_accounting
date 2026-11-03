@@ -34,6 +34,17 @@ def report() -> dict:
     ]}}
 
 
+def approval_events(principal: str, *, retry: bool = False) -> list[dict]:
+    """Explicit unit fixtures, never reported as native execution evidence."""
+    offset = run_live.REVIEWERS.index(principal) * 2
+    return [{"event": "approved", "book": "c" * 32,
+             "authority": {"principal": principal}, "coordinate": {"known_at": 50 + offset + index},
+             "data": {"approved_digest": proposal, "approval_vid": f"{offset + index + 1:032x}",
+                      "recorded_at": 50 + offset + index, "security_policy_epoch": None if retry else 0,
+                      "already_recorded": retry}}
+            for index, proposal in enumerate(["a" * 64, "b" * 64])]
+
+
 class LiveOracleControls(unittest.TestCase):
     @staticmethod
     def native_fixture(root: Path, *, daemon: bool = False):
@@ -152,6 +163,257 @@ class LiveOracleControls(unittest.TestCase):
         for invalid in (True, 1.0, 0, 4097):
             with self.subTest(size=invalid), self.assertRaisesRegex(run_live.CheckError, "must be an integer"):
                 run_live.Native(Path("fa"), Path("verify"), Path("unused"), 10, stage_group_size=invalid)
+
+    def test_approval_group_receipts_bind_every_digest_reviewer_book_and_publication(self):
+        proposals = ["a" * 64, "b" * 64]
+        principal = run_live.REVIEWERS[0]
+        good = approval_events(principal)
+        parameters = dict(principal=principal, book_id="c" * 32, previous={})
+        self.assertEqual(run_live.check_approval_group(good, proposals, **parameters),
+                         [event["data"] for event in good])
+        mutations = [
+            lambda events: events.pop(),
+            lambda events: events.append(copy.deepcopy(events[0])),
+            lambda events: events.reverse(),
+            lambda events: events[1].update(event="unrelated"),
+            lambda events: events[1].update(book="d" * 32),
+            lambda events: events[1]["authority"].update(principal=run_live.REVIEWERS[1]),
+            lambda events: events[1].update(authority=None),
+            lambda events: events[1]["data"].update(approved_digest="d" * 64),
+            lambda events: events[1]["data"].update(approval_vid=events[0]["data"]["approval_vid"]),
+            lambda events: events[1]["data"].update(approval_vid="not-a-native-id"),
+            lambda events: events[1]["data"].update(recorded_at=50),
+            lambda events: events[1]["data"].update(recorded_at=True),
+            lambda events: events[1]["data"].update(recorded_at=0),
+            lambda events: events[1]["data"].update(security_policy_epoch=True),
+            lambda events: events[1]["data"].update(security_policy_epoch=-1),
+            lambda events: events[1]["data"].update(already_recorded=0),
+            lambda events: events[1]["data"].update(already_recorded=True),
+            lambda events: events[1]["coordinate"].update(known_at=50),
+            lambda events: events[1]["coordinate"].update(known_at=True),
+        ]
+        for index, mutate in enumerate(mutations):
+            wrong = copy.deepcopy(good)
+            mutate(wrong)
+            with self.subTest(mutation=index), self.assertRaises(run_live.CheckError):
+                run_live.check_approval_group(wrong, proposals, **parameters)
+        # A second reviewer must not reuse the first reviewer's native receipt.
+        parameters["previous"] = {(principal, event["data"]["approved_digest"]): event["data"] for event in good}
+        parameters["principal"] = run_live.REVIEWERS[1]
+        second = approval_events(run_live.REVIEWERS[1])
+        run_live.check_approval_group(second, proposals, **parameters)
+        second[0]["data"]["approval_vid"] = good[0]["data"]["approval_vid"]
+        with self.assertRaisesRegex(run_live.CheckError, "share a native identity"):
+            run_live.check_approval_group(second, proposals, **parameters)
+
+    def test_approval_group_retries_require_original_ids_sequences_and_retry_envelopes(self):
+        principal = run_live.REVIEWERS[0]
+        original = approval_events(principal)
+        previous = {(principal, event["data"]["approved_digest"]): event["data"] for event in original}
+        retry = approval_events(principal, retry=True)
+        for event in retry:
+            event["coordinate"]["known_at"] = 120  # Current head, original receipt sequence.
+        proposals = ["a" * 64, "b" * 64]
+        parameters = dict(principal=principal, book_id="c" * 32, previous=previous)
+        run_live.check_approval_group(retry, proposals, **parameters)
+        mutations = [
+            lambda data: data.update(approval_vid="d" * 32),
+            lambda data: data.update(recorded_at=49),
+            lambda data: data.update(already_recorded=False),
+            lambda data: data.update(security_policy_epoch=0),
+            lambda data: data.pop("security_policy_epoch"),
+        ]
+        for index, mutate in enumerate(mutations):
+            wrong = copy.deepcopy(retry)
+            mutate(wrong[1]["data"])
+            with self.subTest(mutation=index), self.assertRaises(run_live.CheckError):
+                run_live.check_approval_group(wrong, proposals, **parameters)
+
+    def test_two_approval_calls_preserve_exact_stdin_tokens_pairs_and_retry_receipts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native = self.native_fixture(Path(directory))
+            native.batch_approvals, native.book_id = True, "c" * 32
+            native.reviewer_tokens = [native.out / f"{principal}.token" for principal in run_live.REVIEWERS]
+            proposals = ["a" * 64, "b" * 64]
+            expected = [[f"{1:032x}", f"{3:032x}"], [f"{2:032x}", f"{4:032x}"]]
+            observations = []
+            def execute(command, **kwargs):
+                token = Path(command[command.index("--token") + 1])
+                index = native.reviewer_tokens.index(token)
+                principal = run_live.REVIEWERS[index]
+                retry = len(observations) >= 2
+                observations.append((command, kwargs["input"]))
+                stdout = ("".join(json.dumps(event) + "\n" for event in approval_events(principal, retry=retry))).encode()
+                return run_live.subprocess.CompletedProcess(command, 0, stdout, b"")
+            with mock.patch.object(run_live.subprocess, "run", side_effect=execute):
+                self.assertEqual(native.approval_group(proposals), expected)
+                self.assertEqual(native.approval_group(proposals), expected)
+            self.assertEqual(native.approval_group_requests, 4)
+            self.assertEqual(len(native.approval_receipts), 4)
+            request = run_live.json_bytes(proposals)
+            for command, forwarded in observations:
+                self.assertEqual(forwarded, request)
+                self.assertIn("--proposals", command)
+                self.assertEqual(command[command.index("--proposals") + 1], "-")
+                self.assertNotIn("--as", command)
+                self.assertNotIn("--proposal", command)
+            starts = [json.loads(line) for line in (native.out / "commands.jsonl").read_text().splitlines()
+                      if json.loads(line)["state"] == "started"]
+            self.assertEqual(len(starts), 4)
+            for record in starts:
+                self.assertEqual(record["stdin_sha256"], run_live.digest(request))
+                self.assertEqual((native.out / record["stdin_path"]).read_bytes(), request)
+
+    def test_partial_approval_failure_keeps_actual_prefix_and_never_approves_second_reviewer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native = self.native_fixture(Path(directory))
+            native.batch_approvals, native.book_id = True, "c" * 32
+            native.reviewer_tokens = [native.out / f"{principal}.token" for principal in run_live.REVIEWERS]
+            prefix = json.dumps(approval_events(run_live.REVIEWERS[0])[0]).encode() + b"\n"
+            stdout = prefix + b'{"event":"error","data":{"message":"capability expired"}}\n'
+            completed = run_live.subprocess.CompletedProcess([], 6, stdout, b"authority refusal\n")
+            with mock.patch.object(run_live.subprocess, "run", return_value=completed) as execute:
+                with self.assertRaisesRegex(run_live.CheckError, "exited 6"):
+                    native.approval_group(["a" * 64, "b" * 64])
+                execute.assert_called_once()
+            self.assertEqual(native.approval_receipts, {})
+            self.assertEqual(native.approval_group_requests, 1)
+            self.assertEqual((native.out / "transcript/00001.stdout.jsonl").read_bytes(), stdout)
+            records = [json.loads(line) for line in (native.out / "commands.jsonl").read_text().splitlines()]
+            self.assertEqual(records[-1]["exit"], 6)
+            self.assertEqual(json.loads((native.out / records[0]["stdin_path"]).read_bytes()), ["a" * 64, "b" * 64])
+
+    def test_second_reviewer_failure_and_expired_retry_never_use_cached_approvals_as_success(self):
+        for fail_on_retry in (False, True):
+            with self.subTest(retry=fail_on_retry), tempfile.TemporaryDirectory() as directory:
+                native = self.native_fixture(Path(directory))
+                native.batch_approvals, native.book_id = True, "c" * 32
+                native.reviewer_tokens = [native.out / f"{principal}.token" for principal in run_live.REVIEWERS]
+                calls = []
+                def execute(command, **kwargs):
+                    calls.append(command)
+                    index = native.reviewer_tokens.index(Path(command[command.index("--token") + 1]))
+                    refuse = len(calls) == (3 if fail_on_retry else 2)
+                    events = approval_events(run_live.REVIEWERS[index])
+                    stdout = ("".join(json.dumps(event) + "\n" for event in events[:1 if refuse else 2])).encode()
+                    if refuse:
+                        stdout += b'{"event":"error","data":{"message":"authority revoked"}}\n'
+                    return run_live.subprocess.CompletedProcess(command, 6 if refuse else 0, stdout, b"")
+                with mock.patch.object(run_live.subprocess, "run", side_effect=execute):
+                    if fail_on_retry:
+                        native.approval_group(["a" * 64, "b" * 64])
+                    with self.assertRaisesRegex(run_live.CheckError, "exited 6"):
+                        native.approval_group(["a" * 64, "b" * 64])
+                self.assertEqual(len(calls), 3 if fail_on_retry else 2)
+                self.assertEqual(len(native.approval_receipts), 4 if fail_on_retry else 2)
+                retained = native.out / "transcript" / f"{len(calls):05d}.stdout.jsonl"
+                self.assertIn(b'"authority revoked"', retained.read_bytes())
+                self.assertTrue(all("--proposals" in command and "--token" in command
+                                    and "--as" not in command and "--grant" not in command for command in calls))
+
+    def test_batch_run_transposes_checked_reviewer_receipts_into_exact_native_stage_selection(self):
+        for via_daemon in (False, True):
+            with self.subTest(daemon=via_daemon), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                native = self.native_fixture(root, daemon=via_daemon)
+                native.batch_approvals, native.stage_group_size = True, 2
+                prepared = root / "prepared"
+                prepared.mkdir()
+                for name in ("raw.csv", "legacy.csv", "receipt.json", "provenance.jsonl",
+                             "records.jsonl", "expected_tb.json", "columns.toml"):
+                    (prepared / name).write_bytes(f"retained {name}\n".encode())
+                (prepared / "account_map.json").write_text("{}", encoding="utf-8")
+                expected = {**EXPECTED, "period_start": "2025-12-01", "entry_count": 2,
+                            "entries": [{"entry_id": "first"}, {"entry_id": "second"}]}
+                chunks = [{"entry_vid": "first", "proposal_digest": "a" * 64, "leg_count": 2},
+                          {"entry_vid": "second", "proposal_digest": "b" * 64, "leg_count": 2}]
+                real_one = native.one
+                def setup_or_stage(args, **kwargs):
+                    if args[:2] == ["book", "create"]:
+                        return {"book": "c" * 32, "data": {"book_id": "c" * 32}}
+                    if args[:2] == ["document", "read"]:
+                        Path(args[args.index("--out") + 1]).write_bytes((prepared / args[2]).read_bytes())
+                        return {"data": {"view": "full"}}
+                    if args[:2] == ["migrate", "open"]:
+                        return {"data": {"run_vid": "run"}}
+                    if args[:4] == ["migrate", "import", "--action", "prepare"]:
+                        return {"data": {"mode": "FullDetail", "sole_opening_source": True,
+                                         "chunks": chunks, "package_oid": "package", "already_recorded": True}}
+                    if args[:4] == ["migrate", "import", "--action", "stage"]:
+                        return real_one(args, **kwargs)
+                    if args[0] == "tb":
+                        return {"data": {"rows": []}}
+                    return {"data": {}}
+                def start_bulk():
+                    native.reviewer_tokens = [native.out / f"{principal}.token" for principal in run_live.REVIEWERS]
+                    if via_daemon:
+                        native.daemon = mock.Mock()
+                        native.daemon.poll.return_value = None
+                observed = []
+                def execute(command, **kwargs):
+                    observed.append((command, kwargs["input"]))
+                    if "--proposals" in command:
+                        index = native.reviewer_tokens.index(Path(command[command.index("--token") + 1]))
+                        events = approval_events(run_live.REVIEWERS[index], retry=len(observed) > 2)
+                        stdout = ("".join(json.dumps(event) + "\n" for event in events)).encode()
+                        return run_live.subprocess.CompletedProcess(command, 0, stdout, b"")
+                    # Stop at the actual stage transport after its exact request
+                    # has been written. This remains a constructed unit case.
+                    return run_live.subprocess.CompletedProcess(command, 6, b'{"event":"error"}\n', b"stage boundary\n")
+                with (
+                    mock.patch.object(native, "one", side_effect=setup_or_stage),
+                    mock.patch.object(native, "document", side_effect=lambda path, *_: path.name),
+                    mock.patch.object(native, "head", return_value=200),
+                    mock.patch.object(native, "start_bulk", side_effect=start_bulk),
+                    mock.patch.object(run_live.subprocess, "run", side_effect=execute),
+                    self.assertRaisesRegex(run_live.CheckError, "exited 6"),
+                ):
+                    run_live.run(native, prepared, "fixture", expected)
+                self.assertEqual(len(observed), 5)  # A/B, exact A/B retry, stage.
+                for command, request in observed[:4]:
+                    self.assertEqual(request, run_live.json_bytes(["a" * 64, "b" * 64]))
+                    self.assertEqual("--via" in command, via_daemon)
+                    self.assertEqual(command[command.index("--proposals") + 1], "-")
+                    self.assertNotIn("--as", command)
+                selection = {"chunks": [{"index": 0, "approvals": [f"{1:032x}", f"{3:032x}"]},
+                                         {"index": 1, "approvals": [f"{2:032x}", f"{4:032x}"]}]}
+                self.assertEqual(json.loads(observed[-1][1]), selection)
+                self.assertEqual((native.out / "stage-00000.json").read_bytes(), observed[-1][1])
+
+    def test_bad_approval_selection_or_missing_independent_tokens_refuses_before_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native = self.native_fixture(Path(directory))
+            native.batch_approvals, native.book_id = True, "c" * 32
+            native.reviewer_tokens = [native.out / "first.token", native.out / "second.token"]
+            invalid = [[], ["a" * 64] * 2, ["a" * 64, "not-a-digest"], ["a" * 64, 12],
+                       [f"{index:064x}" for index in range(4097)]]
+            with mock.patch.object(run_live.subprocess, "run") as execute:
+                for proposals in invalid:
+                    with self.subTest(size=len(proposals)), self.assertRaises(run_live.CheckError):
+                        native.approval_group(proposals)
+                native.reviewer_tokens = [native.out / "first.token"] * 2
+                with self.assertRaisesRegex(run_live.CheckError, "separately issued"):
+                    native.approval_group(["a" * 64])
+                execute.assert_not_called()
+            self.assertEqual(native.calls, 0)
+
+    def test_direct_batch_mode_issues_two_restricted_native_tokens_without_starting_daemon(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native = self.native_fixture(Path(directory))
+            native.batch_approvals = True
+            with mock.patch.object(native, "one", return_value={}) as issue:
+                native.start_bulk()
+            self.assertEqual(issue.call_count, 2)
+            self.assertIsNone(native.daemon)
+            self.assertEqual(len(set(native.reviewer_tokens)), 2)
+            for principal, call in zip(run_live.REVIEWERS, issue.call_args_list, strict=True):
+                args = call.args[0]
+                self.assertEqual(args[:2], ["capability", "issue"])
+                self.assertEqual(args[args.index("--holder") + 1], principal)
+                self.assertEqual([args[index + 1] for index, value in enumerate(args) if value == "--op"],
+                                 ["read", "approve"])
+            with self.assertRaisesRegex(run_live.CheckError, "already been issued"):
+                native.start_bulk()
 
     def test_group_selection_reaches_daemon_as_retained_stdin_and_failure_keeps_receipts(self):
         # Replace only the book setup and native subprocess. Exercise the actual

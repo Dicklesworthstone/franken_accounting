@@ -27,6 +27,9 @@ from typing import Any
 import public_spend
 
 
+REVIEWERS = ("public-data-fixture-reviewer-a", "public-data-fixture-reviewer-b")
+
+
 class CheckError(RuntimeError):
     """An observed native result or retained input broke the test contract."""
 
@@ -181,6 +184,56 @@ def check_staged_group(event: dict[str, Any], chunks: list[dict[str, Any]], *,
     return receipts
 
 
+def check_approval_group(events: list[dict[str, Any]], proposals: list[str], *,
+                         principal: str, book_id: str,
+                         previous: dict[tuple[str, str], dict[str, Any]]) -> list[dict[str, Any]]:
+    """Check each native receipt before using it as a migration approval.
+
+    The command publishes independently, so a refused later member can leave a
+    real approved prefix. Native.execute retains that output and refuses the
+    run; a zero exit still requires a complete ordered census and exact retry
+    identities here. Fixture principals remain distinct, automated test roles.
+    """
+    require(len(events) == len(proposals), "native approval group omitted or added a proposal receipt")
+    identifiers = {receipt["approval_vid"] for receipt in previous.values()}
+    sequences = {receipt["recorded_at"] for receipt in previous.values()}
+    receipts = []
+    for event, proposal in zip(events, proposals, strict=True):
+        require(event.get("event") == "approved", "native approval group emitted a different event")
+        require(event.get("book") == book_id, "native approval receipt belongs to another book")
+        authority = event.get("authority")
+        require(isinstance(authority, dict) and authority.get("principal") == principal,
+                "native approval receipt belongs to another reviewer")
+        receipt = body(event)
+        require(receipt.get("approved_digest") == proposal,
+                "native approval group changed proposal order or digest")
+        identifier, sequence = receipt.get("approval_vid"), receipt.get("recorded_at")
+        require(isinstance(identifier, str) and re.fullmatch(r"[0-9a-f]{32}", identifier) is not None,
+                "native approval has an invalid identifier")
+        require(type(sequence) is int and sequence > 0, "native approval has an invalid publication sequence")
+        coordinate = event.get("coordinate")
+        require(isinstance(coordinate, dict) and type(coordinate.get("known_at")) is int
+                and coordinate["known_at"] >= sequence, "native approval receipt is beyond its recorded coordinate")
+        prior = previous.get((principal, proposal))
+        if prior is None:
+            require(receipt.get("already_recorded") is False,
+                    "new source proposal unexpectedly returned an existing approval")
+            epoch = receipt.get("security_policy_epoch")
+            require(type(epoch) is int and epoch >= 0, "new approval has no valid security policy epoch")
+            require(identifier not in identifiers and sequence not in sequences,
+                    "different proposal approvals share a native identity")
+        else:
+            require(receipt.get("already_recorded") is True and "security_policy_epoch" in receipt
+                    and receipt["security_policy_epoch"] is None,
+                    "approval retry did not return an existing native receipt")
+            require(identifier == prior["approval_vid"] and sequence == prior["recorded_at"],
+                    "approval retry changed its original native identity")
+        identifiers.add(identifier)
+        sequences.add(sequence)
+        receipts.append(dict(receipt))
+    return receipts
+
+
 def check_export(path: Path, prepared: Path, expected: dict[str, Any]) -> dict[str, int]:
     """Compare every exported native leg, including its source identity and memo.
 
@@ -228,11 +281,16 @@ def check_export(path: Path, prepared: Path, expected: dict[str, Any]) -> dict[s
 
 class Native:
     def __init__(self, fa: Path, verifier: Path, out: Path, timeout: int, fad: Path | None = None,
-                 stage_group_size: int = 64):
+                 stage_group_size: int = 64, batch_approvals: bool = False):
         self.fa, self.verifier, self.out, self.timeout = fa, verifier, out, timeout
         require(type(stage_group_size) is int and 1 <= stage_group_size <= 4096,
                 "stage group size must be an integer between 1 and 4096")
         self.stage_group_size = stage_group_size
+        require(type(batch_approvals) is bool, "batch approvals must be explicitly enabled or disabled")
+        self.batch_approvals = batch_approvals
+        self.approval_group_requests = 0
+        self.approval_receipts: dict[tuple[str, str], dict[str, Any]] = {}
+        self.book_id: str | None = None
         self.fad = fad
         self.book = out / "book"
         self.calls = 0
@@ -348,7 +406,30 @@ class Native:
             return [body(self.one(["approve", "--proposal", proposal], token=token))["approval_vid"]
                     for token in self.reviewer_tokens]
         return [body(self.one(["approve", "--proposal", proposal, "--as", who]))["approval_vid"]
-                for who in ("public-data-fixture-reviewer-a", "public-data-fixture-reviewer-b")]
+                for who in REVIEWERS]
+
+    def approval_group(self, proposals: list[str]) -> list[list[str]]:
+        if not self.batch_approvals:
+            return [self.approvals(proposal) for proposal in proposals]
+        require(1 <= len(proposals) <= 4096
+                and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in proposals)
+                and len(set(proposals)) == len(proposals),
+                "approval group needs 1..4096 distinct native proposal digests")
+        require(isinstance(self.book_id, str) and re.fullmatch(r"[0-9a-f]{32}", self.book_id) is not None,
+                "approval group has no independently observed native book identity")
+        require(len(self.reviewer_tokens) == 2 and self.reviewer_tokens[0] != self.reviewer_tokens[1],
+                "approval group needs two separately issued reviewer tokens")
+        request = json_bytes(proposals)
+        by_reviewer = []
+        for principal, token in zip(REVIEWERS, self.reviewer_tokens, strict=True):
+            self.approval_group_requests += 1
+            events = self.execute(["approve", "--proposals", "-"], token=token, request_bytes=request)
+            receipts = check_approval_group(events, proposals, principal=principal, book_id=self.book_id,
+                                            previous=self.approval_receipts)
+            self.approval_receipts.update({(principal, proposal): receipt
+                                          for proposal, receipt in zip(proposals, receipts, strict=True)})
+            by_reviewer.append([receipt["approval_vid"] for receipt in receipts])
+        return [list(pair) for pair in zip(*by_reviewer, strict=True)]
 
     def start_bulk(self) -> None:
         """Optionally hold the same native book through its existing daemon.
@@ -357,16 +438,19 @@ class Native:
         enters the ordinary native migration admission path. Only the thousands
         of redundant file-store reopens inside the bulk loop are amortized.
         """
-        if self.fad is None:
+        if self.fad is None and not self.batch_approvals:
             return
         require(self.daemon is None, "native daemon is already running")
-        self.check_executable("fad")
-        for who in ("public-data-fixture-reviewer-a", "public-data-fixture-reviewer-b"):
+        require(not self.reviewer_tokens, "bulk reviewer tokens have already been issued")
+        for who in REVIEWERS:
             token = self.out / f"{who}.token"
             self.one(["capability", "issue", "--holder", who, "--profile", "human",
                       "--op", "read", "--op", "approve", "--out", str(token),
                       "--grant", "issue_capability", "--grant", "read", "--grant", "approve"])
             self.reviewer_tokens.append(token)
+        if self.fad is None:
+            return
+        self.check_executable("fad")
         self.calls += 1
         stem = f"{self.calls:05d}"
         stdout = self.out / "transcript" / f"{stem}.stdout.jsonl"
@@ -440,8 +524,9 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
     start = date.fromisoformat(expected["period_start"])
     period = f"FY{start.year}-P{start.month:02}"
     go_live = f"{start.year + 1}-01-01"
-    native.one(["book", "create", "--name", f"Published expenditure model: {dataset}",
-                "--base-unit", "GBP", "--opening-date", go_live])
+    created = native.one(["book", "create", "--name", f"Published expenditure model: {dataset}",
+                          "--base-unit", "GBP", "--opening-date", go_live])
+    native.book_id = created.get("book")
     native.one(["chart", "import", str(prepared / "chart.json")])
     native.one(["period", "create", "--fiscal-year", str(start.year)])
     docs = {}
@@ -504,9 +589,14 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
     stage_requests = 0
     for start in range(0, len(chunks), native.stage_group_size):
         selected = chunks[start:start + native.stage_group_size]
+        proposals = [chunk["proposal_digest"] for chunk in selected]
+        approved = native.approval_group(proposals)
+        if start == 0 and native.batch_approvals:
+            before = native.head()
+            require(native.approval_group(proposals) == approved, "approval group retry changed its reviewer pairs")
+            require(native.head() == before, "approval group retry published a duplicate")
         selection = []
-        for offset, chunk in enumerate(selected):
-            approvals = native.approvals(chunk["proposal_digest"])
+        for offset, approvals in enumerate(approved):
             selection.append({"index": start + offset, "approvals": approvals})
             if start + offset == 0:
                 first_approvals = approvals
@@ -596,6 +686,7 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
     return {"status": "PASS", "dataset": dataset, "source_sha256": digest((prepared / "raw.csv").read_bytes()),
             "source_stats": expected["source_stats"], "native_export": census, "native_calls": native.calls,
             "stage_group_size": native.stage_group_size, "stage_requests": stage_requests,
+            "batch_approvals": native.batch_approvals, "approval_group_requests": native.approval_group_requests,
             "period": period, "migration_run": run_vid, "package_oid": package, "documents": docs,
             "certificate_digest": certificate["oid"], "output_digest": certificate["output_digest"],
             "checkpoint_public_key": signed["checkpoint_public_key"], "bundle_sha256": digest(bundle_path.read_bytes()),
@@ -605,7 +696,9 @@ def run(native: Native, prepared: Path, dataset: str, expected: dict[str, Any]) 
                        "native_full_detail_tieout", "atomic_finalization", "historical_invisibility",
                        "exact_gross_and_net_by_account", "registers_equal_fold", "finalized_retry_without_publication",
                        "native_csv_export_verification", "every_dated_exported_leg_and_memo", "native_certificate_replay",
-                       "independent_fa_verify_report", "tampered_bundle_refused"],
+                       "independent_fa_verify_report", "tampered_bundle_refused"]
+                      + (["approval_groups_bound_to_each_digest_and_reviewer", "approval_group_retry_without_publication"]
+                         if native.batch_approvals else []),
             "boundary": "Complete published monthly expenditure extract under a declared offset-account model; not a complete original GL, independent human review, fraud finding, or audited trial balance."}
 
 
@@ -628,6 +721,8 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=300, help="per-native-command timeout in seconds")
     parser.add_argument("--stage-group-size", type=int, default=64,
                         help="independently approved chunks per source-authenticated request (1..4096; default 64)")
+    parser.add_argument("--batch-approvals", action="store_true",
+                        help="approve each staging group in two token-bound native calls; requires fa approve --proposals")
     args = parser.parse_args()
     if args.timeout < 1:
         parser.error("--timeout must be positive")
@@ -647,7 +742,7 @@ def main() -> int:
                            "may have committed; retry the exact retained selections. No unexecuted native check passed.")}
     code = 1
     try:
-        native = Native(args.fa, args.fa_verify, out, args.timeout, args.fad, args.stage_group_size)
+        native = Native(args.fa, args.fa_verify, out, args.timeout, args.fad, args.stage_group_size, args.batch_approvals)
         result = run(native, prepared, args.dataset, expected)
         code = 0
     except KeyboardInterrupt:
@@ -680,6 +775,8 @@ def main() -> int:
     result["native_calls"] = native.calls if native is not None else 0
     result["elapsed_seconds"] = round(time.monotonic() - started, 3)
     result["bulk_transport"] = "native_fad" if args.fad is not None else "direct_cli"
+    result["batch_approvals"] = args.batch_approvals
+    result["approval_group_requests"] = native.approval_group_requests if native is not None else 0
     write_new(out / "result.json", json_bytes(result))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return code
