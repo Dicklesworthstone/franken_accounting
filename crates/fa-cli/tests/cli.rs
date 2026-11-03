@@ -12905,6 +12905,40 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "the retained certificate replays every amount and citation"
     );
     assert_eq!(text(&doc(&out), "output_digest"), equity_output_digest);
+    let comparison_expectation = format!(
+        r#"{{"kind":"equity-roll-forward-diff","units":["USD"],"label":"ppa-current-period","from":"2026-04-01","through":"2026-04-30","known_at":{known_at},"after_known_at":{known_at},"issuance_accounts":[],"distribution_accounts":[]}}"#
+    );
+    let (code, out) = run(
+        true,
+        &[
+            "statement",
+            "diff",
+            "--before-certificate",
+            &equity_certificate,
+            "--after-certificate",
+            &equity_certificate,
+            "--expect",
+            &comparison_expectation,
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let comparison = doc(&out);
+    assert_eq!(field(&out, "event"), Some("equity_roll_forward_diff"));
+    assert_eq!(
+        text(&comparison, "before_certificate"),
+        text(&comparison, "after_certificate"),
+        "equal frontiers retain the identical original certificate: {out}"
+    );
+    assert_eq!(
+        arr(&comparison, "before_movements"),
+        arr(&comparison, "after_movements"),
+        "{out}"
+    );
+    for unit in arr(&comparison, "units") {
+        for line in arr(&unit, "lines") {
+            assert_eq!(text(&line, "delta"), "0.00 USD", "{out}");
+        }
+    }
     // Disclosed in a Disclosure document once another principal reviewed
     // it (fa-75j4 slice 5), then closed.
     let note = write(

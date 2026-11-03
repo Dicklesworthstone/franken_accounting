@@ -569,7 +569,27 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
     );
     let oid = format!("C:{}", text(&events[1], "oid"));
     assert!(text(&events[1], "replay_command").contains("equity-roll-forward-diff"));
-    let retained_at = head(&f.book);
+    let reader_token = f.dir.join("equity-comparison-reader.token");
+    ok(
+        &f.book,
+        &[
+            "capability",
+            "issue",
+            "--holder",
+            "equity-comparison-reader",
+            "--profile",
+            "human",
+            "--op",
+            "read",
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "read",
+            "--out",
+            reader_token.to_str().unwrap(),
+        ],
+    );
+    let before_read = head(&f.book);
     let current = ok(
         &f.book,
         &["certificate", "status", &oid, "--expect", &expected],
@@ -586,12 +606,38 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
             &after_oid,
             "--expect",
             &expected,
-            "--grant",
-            "read",
+            "--token",
+            reader_token.to_str().unwrap(),
         ],
     );
     assert_eq!(code, 0, "{read_only:?}");
     assert_eq!(read_only.len(), 1);
+    let retained_at = head(&f.book);
+    assert_eq!(
+        retained_at,
+        before_read + 1,
+        "the admitted token read journals exactly its AccessEvent"
+    );
+    let (code, refused) = many(
+        &f.book,
+        &[
+            "statement",
+            "diff",
+            "--before-certificate",
+            before_path.to_str().unwrap(),
+            "--after-certificate",
+            &after_oid,
+            "--expect",
+            &expected,
+            "--token",
+            reader_token.to_str().unwrap(),
+            "--certify",
+        ],
+    );
+    assert_eq!(code, 7, "{refused:?}");
+    assert_eq!(refused.len(), 1);
+    assert_eq!(text(&refused[0], "event"), "error");
+    assert_eq!(head(&f.book), retained_at);
     let output = f.dir.join("equity-diff.replayed");
     let (code, replayed) = many(
         &f.book,
@@ -621,7 +667,7 @@ fn equity_comparison_preserves_sources_request_and_portable_verification() {
     assert_eq!(
         head(&f.book),
         retained_at,
-        "read-only comparisons, replay and status publish nothing"
+        "comparison records only its AccessEvent; refused certification, replay and status publish nothing"
     );
 
     let refused_request = f.dir.join("refused-equity.request");
