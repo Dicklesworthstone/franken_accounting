@@ -475,7 +475,9 @@ mod tests {
     fn close_graph_release_preserves_only_the_literal_pre_release_symbol_table() {
         let current = SymbolTable::compiled();
         let mut previous = current.clone();
-        previous.labels.remove("CloseTask");
+        // The registry immediately before 94ef9dae0 ends at AssetSchedule=61.
+        // Later migration labels were never part of that pre-close release.
+        previous.labels.retain(|_, id| *id <= 61);
         previous.relations.remove("DEPENDS_ON");
         assert!(current.matches_label_prefix_digest(previous.digest()));
         for ceiling in [43, 46, 60] {
@@ -491,11 +493,15 @@ mod tests {
         changed_property.properties.insert("amount".into(), 69);
         let mut incomplete_release = previous;
         incomplete_release.labels.insert("CloseTask".into(), 62);
+        let mut gapped_later_release = current.clone();
+        gapped_later_release.labels.remove("CloseTask");
+        gapped_later_release.relations.remove("DEPENDS_ON");
         for incompatible in [
             missing_old_relation,
             reassigned_relation,
             changed_property,
             incomplete_release,
+            gapped_later_release,
         ] {
             assert!(!current.matches_label_prefix_digest(incompatible.digest()));
         }

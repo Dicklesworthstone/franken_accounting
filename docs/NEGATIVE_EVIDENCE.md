@@ -2037,3 +2037,20 @@ verdict. The earlier complete Genesis target passed 382 cases on e77291cb;
 that does not establish repaired-source Clippy or final full acceptance.
 The frozen 39f run continues as diagnostic evidence while this correction
 awaits its own exact-tree checks.
+
+## 2026-11-03 — Historical symbol fixture retained later labels
+
+The complete model library on 11305bf3 ran 76 passes and one failure. Its
+pre-close compatibility fixture removed CloseTask=62 and DEPENDS_ON=38
+from today's table, but retained migration labels 63–65. That combination
+was never a released table, and the unchanged production checker refused
+it. Comparison with the actual registry immediately before 94ef9dae0
+confirms 59 labels ending at AssetSchedule=61, the same 60 properties,
+and the same 37 earlier relations.
+
+The positive fixture now uses that historical label boundary. Every
+existing incompatibility assertion remains, and the formerly misclassified
+gapped table is an additional negative. Production compatibility, durable
+formats, digests and gates are unchanged. The original 76-pass/one-failure
+run is retained; repaired-source native execution and final gates remain
+required. This is fixture maintenance, not a new compatibility profile.
