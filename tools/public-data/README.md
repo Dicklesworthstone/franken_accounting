@@ -397,6 +397,82 @@ model**. They make no assertion that the department had no later activity or
 that the model equals its actual later closing balances. No source-month data
 is sampled or omitted to make the native run pass.
 
+### Import published suppliers and expense areas as native attribution
+
+Enable `--native-attribution` in both preparation and execution to retain the
+published supplier and expense-area fields on the native monetary legs:
+
+```bash
+python3 tools/public-data/public_spend.py prepare \
+  --dataset hmrc-2025-03 --out /tmp/fa-hmrc-attributed-source \
+  --native-attribution
+
+python3 tools/public-data/run_live.py \
+  --prepared /tmp/fa-hmrc-attributed-source --dataset hmrc-2025-03 \
+  --out /tmp/fa-hmrc-attributed-book \
+  --fa /absolute/path/to/fa --fa-verify /absolute/path/to/fa-verify \
+  --stage-group-size 64 --batch-approvals --batch-evidence --bind-source \
+  --native-attribution
+```
+
+The opt-in profile `fa-public-spend-attribution-v1` adds one native
+`cost_center` value for each exact published expense-area label and one native
+`Counterparty` for each exact published supplier label. Its 64-character codes
+are SHA-256 hashes of an unambiguous profile/dataset/kind/label tuple; the exact
+source label remains the object's name and appears in `native_attribution.json`.
+Case, whitespace and Unicode are significant, distinct labels cannot share a
+code, and a name over the native 256-byte bound is refused rather than
+truncated. These are source-label identities in the analysis book, not supplier
+master identifiers, tax identifiers, resolved legal entities or independently
+authenticated company records.
+
+Both the expenditure leg and its explicitly modeled offset carry the same
+cost-center and party tags. This is the declared model's attribution rule; it
+does not assert an undisclosed publisher counter-entry. Zero-only labels are
+still registered and represented in the source census, without creating a
+zero-valued monetary entry. Negative credits and repeated original rows keep
+their original signs and multiplicity. The legacy profile and its prepared
+files remain unchanged when the option is omitted. Passing the option on only
+one of the two commands refuses the preparation before book creation.
+
+The runner checks the complete native value inventory against original names
+and native creation receipts. It compares every prepared and exported leg's
+cost-center and Party **dimension-value** identities, including the modeled
+offsets, and independently checks gross debits, gross credits and net amounts
+for every area and supplier from the original CSV. A valid money total cannot
+mask a changed supplier or area. Two retained negative CSVs substitute exactly
+one native value, keeping every other logical field unchanged; native export
+verification must refuse each with exit eight.
+
+Every published expense area then receives its own native activity report,
+certified stock report, replay, and check at the original preactivation prefix.
+Each certificate is exported as a portable report and independently verified
+by `fa-verify`, including the exact cost-center selector. With `--bind-source`,
+every area proof must also retain the complete original migration source
+manifest, even though the report selects only that area. The runner performs
+this for all 42 HMRC areas or all 1,830 DWP areas; it has no hidden sample or
+limit. The latter is substantially more work than the whole-book DWP workflow.
+
+`result.json` retains each area's original name, code, source-row count,
+certificate/output digest, selected prefix, replay digest, portable-artifact
+hashes and independent verification result. The original source-label map is
+also uploaded, read back and attached as source evidence. To repeat a saved
+area's query, find its code in `native_attribution.json` or
+`native-attribution-identities.json`, then run:
+
+```bash
+fa --book /tmp/fa-hmrc-attributed-book/book tb --period FY2025-P03 \
+  --dimension cost_center=<exact-code> --certify --json
+```
+
+Supplier attribution is checked on every native leg and its exported gross/net
+cells. This workflow does not claim a certified `tb --dimension party=...`
+surface; that selector is not currently supported. The new helper's offline
+tests use explicitly synthetic observations for malformed and substituted
+attribution. Only a separately retained actual native run is execution evidence
+for the complete public corpus; the earlier 29-check runs above used the legacy
+unattributed profile.
+
 ## Prepare the complete source
 
 From the repository root:
@@ -542,6 +618,7 @@ One output directory represents one complete dataset:
 | `columns.toml` | Native legacy CSV column declaration, GBP unit and dataset-specific source-system identifier |
 | `expected_tb.json` | Independent raw-source Decimal fold by account, gross debit/credit movement, signed/net sided balances, counts and source-row groups |
 | `dimensions.json` | Independent source sums and counts by expense category, area, supplier, reference and date |
+| `native_attribution.json` (opt-in) | Exact label-to-native-code mapping, declared counterpart-tag policy, full source census and independent per-area/per-supplier account gross/net controls |
 | `receipt.json` | Source/publication/licence links, limits, all source controls and SHA-256/byte bindings for the other files |
 
 All monetary fields in JSON are **decimal strings containing integer pence**.

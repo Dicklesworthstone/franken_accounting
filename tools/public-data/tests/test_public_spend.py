@@ -6,6 +6,7 @@ They are labeled synthetic and never advertised as real-world test coverage.
 
 import copy
 import csv
+import hashlib
 import importlib.util
 import io
 import json
@@ -145,6 +146,86 @@ class SourceTests(unittest.TestCase):
 
 
 class BundleTests(unittest.TestCase):
+    def test_native_attribution_is_explicit_and_preserves_the_legacy_profile(self):
+        spec, raw = fixture()
+        legacy = public_spend.build_bundle(spec, raw)
+        self.assertEqual(legacy, public_spend.build_bundle(spec, raw, native_attribution=False))
+        self.assertNotIn("native_attribution.json", legacy)
+        attributed = public_spend.build_bundle(spec, raw, native_attribution=True)
+        for name in ("raw.csv", "records.jsonl", "provenance.jsonl", "chart.json", "account_map.json", "dimensions.json"):
+            self.assertEqual(attributed[name], legacy[name], name)
+        self.assertIn(b'[dimension_columns]\ncost_center = "cost_center_code"\nparty = "supplier_code"',
+                      attributed["columns.toml"])
+        profile = json.loads(attributed["native_attribution.json"])
+        self.assertEqual(profile["profile"], public_spend.ATTRIBUTION_PROFILE)
+        self.assertIn("not publisher identifiers", profile["policy"])
+        for name in ("expected_tb.json", "receipt.json"):
+            self.assertEqual(json.loads(attributed[name])["native_attribution"], profile["profile"])
+        with self.assertRaises(public_spend.DataError):
+            public_spend.build_bundle(spec, raw, native_attribution="true")
+
+    def test_both_modeled_legs_carry_exact_published_supplier_and_cost_center(self):
+        spec, raw = fixture()
+        bundle = public_spend.build_bundle(spec, raw, native_attribution=True)
+        attribution = json.loads(bundle["native_attribution.json"])
+        codes = {kind: {row["name"]: row["code"] for row in attribution[kind]}
+                 for kind in ("cost_centers", "suppliers")}
+        records = {row["row_id"]: row for row in jsonl(bundle["records.jsonl"])}
+        legs = list(csv.DictReader(io.StringIO(bundle["legacy.csv"].decode())))
+        self.assertEqual(len(legs), 10)
+        for leg in legs:
+            original = records[leg["memo"].removeprefix("source_row=")]
+            self.assertEqual(leg["cost_center_code"], codes["cost_centers"][original["expense_area"]])
+            self.assertEqual(leg["supplier_code"], codes["suppliers"][original["supplier"]])
+        north, south = attribution["cost_centers"]
+        self.assertEqual((north["name"], north["row_count"], north["posted_row_count"]), ("North", 3, 3))
+        self.assertEqual((north["positive_minor"], north["negative_minor"]), ("20050", "-2025"))
+        self.assertEqual((south["name"], south["row_count"], south["posted_row_count"]), ("South", 3, 2))
+        self.assertEqual((south["positive_minor"], south["negative_minor"]), ("1240", "0"))
+        cells = {row["account"]: row for row in north["accounts"]}
+        expense = cells[public_spend.expense_account("Travel")]
+        offset = cells[public_spend.OFFSET_ACCOUNT]
+        self.assertEqual((expense["debit_minor"], expense["credit_minor"], expense["signed_minor"]),
+                         ("20050", "2025", "18025"))
+        self.assertEqual((offset["debit_minor"], offset["credit_minor"], offset["signed_minor"]),
+                         ("2025", "20050", "-18025"))
+
+    def test_native_attribution_never_merges_case_whitespace_unicode_or_domains(self):
+        names = ["Cafe", "cafe", "Café", "Cafe ", " Cafe", "CAFE"]
+        code = public_spend.attribution_code
+        values = {code("test", "party", name) for name in names}
+        self.assertEqual(len(values), len(names))
+        self.assertTrue(all(len(value) == 64 and value.isascii() for value in values))
+        exact = json.dumps(["fa-public-spend-attribution-v1", "test", "party", "Café"],
+                           ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        self.assertEqual(code("test", "party", "Café"), hashlib.sha256(exact.encode("utf-8")).hexdigest())
+        self.assertNotEqual(code("test", "party", "Cafe"), code("other", "party", "Cafe"))
+        self.assertNotEqual(code("test", "party", "Cafe"), code("test", "cost_center", "Cafe"))
+        for name in ("", " ", "é" * 129):
+            with self.assertRaises(public_spend.DataError):
+                code("test", "party", name)
+
+    def test_native_attribution_retains_zero_only_labels_without_fabricating_legs(self):
+        spec, raw = fixture()
+        raw = raw.replace(b'Travel,South,"Caf\xe9, Ltd",P2,0.00', b'Travel,Zero only,Zero supplier,P2,0.00')
+        spec = repin(spec, raw)
+        spec["controls"] = {**spec["controls"], "expense_area_count": 3, "supplier_count": 3}
+        bundle = public_spend.build_bundle(spec, raw, native_attribution=True)
+        attribution = json.loads(bundle["native_attribution.json"])
+        for kind, name in (("cost_centers", "Zero only"), ("suppliers", "Zero supplier")):
+            zero = next(value for value in attribution[kind] if value["name"] == name)
+            self.assertEqual((zero["row_count"], zero["posted_row_count"]), (1, 0))
+            self.assertEqual((zero["positive_minor"], zero["negative_minor"]), ("0", "0"))
+            self.assertTrue(all(row["debit_minor"] == row["credit_minor"] == "0" for row in zero["accounts"]))
+            self.assertNotIn(zero["code"].encode(), bundle["legacy.csv"])
+        self.assertEqual(json.loads(bundle["expected_tb.json"])["leg_count"], 10)
+
+    def test_distinct_source_label_identity_collision_refuses_before_output(self):
+        spec, raw = fixture()
+        with mock.patch.object(public_spend, "attribution_code", return_value="a" * 64):
+            with self.assertRaisesRegex(public_spend.DataError, "collision"):
+                public_spend.build_bundle(spec, raw, native_attribution=True)
+
     def test_every_source_record_duplicate_and_zero_survives(self):
         spec, raw = fixture()
         bundle = public_spend.build_bundle(spec, raw)

@@ -70,6 +70,192 @@ SOURCE_INPUTS = {"book_id": "00112233445566778899aabbccddeeff", "run_vid": "1021
                  "source_rows": 4, "chunks": SOURCE_CHUNKS}
 
 
+def attributed_fixture():
+    """Synthetic native observations for adversarial helper controls only."""
+    from test_public_spend import fixture
+    spec, raw = fixture()
+    bundle = run_live.public_spend.build_bundle(spec, raw, native_attribution=True)
+    attribution = json.loads(bundle["native_attribution.json"])
+    cost_centers, parties = [], []
+    created = {"cost_center": {}, "party": {}}
+    for index, source in enumerate(attribution["cost_centers"]):
+        row = {"dimension": "cost_center", "dimension_id": 2, "code": source["code"], "name": source["name"],
+               "parent": None, "valid_from": None, "valid_to": None,
+               "vid": f"{index + 100:032x}", "recorded_at": index + 10}
+        cost_centers.append(row)
+        created["cost_center"][row["code"]] = {"value": copy.deepcopy(row), "already_recorded": False}
+    for index, source in enumerate(attribution["suppliers"]):
+        vid = f"{index + 200:032x}"
+        row = {"code": source["code"], "kind": "Counterparty", "dimension_id": 12,
+               "vid": vid, "dimension_value_vid": f"{index + 300:032x}", "created_at": index + 20,
+               "name": {"untrusted_content": source["name"], "source": "P:" + vid}}
+        parties.append(row)
+        created["party"][row["code"]] = {"target": vid, "recorded_at": index + 20, "already_recorded": False}
+    identities = run_live.check_attribution_inventory(attribution, cost_centers, parties, created)
+    return spec, raw, bundle, attribution, cost_centers, parties, created, identities
+
+
+def attributed_export(path, bundle, identities):
+    """Construct a labeled transport fixture; never an actual native export."""
+    normalized = list(csv.DictReader(io.StringIO(bundle["legacy.csv"].decode())))
+    expected = json.loads(bundle["expected_tb.json"])
+    fieldnames = ["entry_id", "line_no", "effective_date", "recorded_seq", "entry_class", "account_code",
+                  "side", "amount", "currency", "unit_scale", "description", "migrated_from", "memo", "dimension_set_v1"]
+    identifiers, ordinals = {}, {}
+    exported = []
+    for original in normalized:
+        source_id = original["entry_id"]
+        identifier = identifiers.setdefault(source_id, f"{len(identifiers) + 500:032x}")
+        ordinal = ordinals[source_id] = ordinals.get(source_id, 0) + 1
+        exported.append({"entry_id": identifier, "line_no": str(ordinal), "effective_date": original["effective_date"],
+                         "recorded_seq": "50", "entry_class": "12", "account_code": original["account_code"],
+                         "side": original["side"], "amount": original["amount"], "currency": "GBP", "unit_scale": "2",
+                         "description": original["description"], "migrated_from": expected["source_system"] + ":" + source_id,
+                         "memo": original["memo"], "dimension_set_v1": ";".join(
+                             f"{kind}:{vid}" for kind, vid in run_live.source_dimensions(original, identities))})
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        stream.write("# synthetic transport fixture; not native evidence\n")
+        writer = csv.DictWriter(stream, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(exported)
+    return exported
+
+
+class NativeAttributionControls(unittest.TestCase):
+    def test_prepared_profiles_refuse_a_switch_or_rehashed_attribution_map(self):
+        spec, raw, bundle, *_ = attributed_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_live.public_spend.write_bundle(root, bundle)
+            with mock.patch.object(run_live.public_spend, "load_sources", return_value={spec["id"]: spec}):
+                _, expected = run_live.verify_prepared(root, spec["id"], native_attribution=True)
+                self.assertEqual(expected["leg_count"], 10)
+                with self.assertRaises(run_live.CheckError):
+                    run_live.verify_prepared(root, spec["id"])
+                changed = json.loads((root / "native_attribution.json").read_bytes())
+                changed["suppliers"][0]["name"] = "another source label"
+                (root / "native_attribution.json").write_bytes(run_live.json_bytes(changed))
+                receipt = json.loads((root / "receipt.json").read_bytes())
+                receipt["files"]["native_attribution.json"] = {
+                    "sha256": run_live.digest((root / "native_attribution.json").read_bytes()),
+                    "bytes": (root / "native_attribution.json").stat().st_size,
+                }
+                (root / "receipt.json").write_bytes(run_live.json_bytes(receipt))
+                with self.assertRaises(run_live.CheckError):
+                    run_live.verify_prepared(root, spec["id"], native_attribution=True)
+
+    def test_inventory_binds_every_original_label_to_its_actual_native_value(self):
+        _, _, _, attribution, cost_centers, parties, created, good = attributed_fixture()
+        self.assertEqual(set(good), {"cost_center", "party"})
+        self.assertEqual(len(good["cost_center"]), 2)
+        self.assertEqual(len(good["party"]), 2)
+        for label in ("cost-name", "cost-parent", "party-name", "party-name-envelope", "party-kind",
+                      "party-object-instead-of-value", "party-value-alias", "party-created-at", "missing-party"):
+            costs, people = copy.deepcopy(cost_centers), copy.deepcopy(parties)
+            if label == "cost-name":
+                costs[0]["name"] = "another area"
+            elif label == "cost-parent":
+                costs[0]["parent"] = costs[1]["code"]
+            elif label == "party-name":
+                people[0]["name"]["untrusted_content"] = "Another supplier"
+            elif label == "party-name-envelope":
+                people[0]["name"] = people[0]["name"]["untrusted_content"]
+            elif label == "party-kind":
+                people[0]["kind"] = "Company"
+            elif label == "party-object-instead-of-value":
+                people[0]["dimension_value_vid"] = people[0]["vid"]
+            elif label == "party-value-alias":
+                people[0]["dimension_value_vid"] = people[1]["dimension_value_vid"]
+            elif label == "party-created-at":
+                people[0]["created_at"] += 1
+            else:
+                people.pop()
+            with self.subTest(label=label), self.assertRaises(run_live.CheckError):
+                run_live.check_attribution_inventory(attribution, costs, people, created)
+
+    def test_prepared_members_keep_exact_attribution_even_with_unchanged_money(self):
+        _, _, bundle, _, _, _, _, identities = attributed_fixture()
+        normalized = list(csv.DictReader(io.StringIO(bundle["legacy.csv"].decode())))
+        groups = {}
+        for original in normalized:
+            chunk = groups.setdefault(original["entry_id"], {
+                "index": len(groups), "effective_date": original["effective_date"], "legs": [], "leg_count": 0})
+            chunk["legs"].append({"index": chunk["leg_count"], "account": original["account_code"],
+                                  "side": {"D": "debit", "C": "credit"}[original["side"]],
+                                  "amount": original["amount"] + " GBP", "dimensions": [
+                                      {"dimension": kind, "value": vid}
+                                      for kind, vid in run_live.source_dimensions(original, identities)]})
+            chunk["leg_count"] += 1
+        chunks = list(groups.values())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "legacy.csv").write_bytes(bundle["legacy.csv"])
+            run_live.check_prepared_attribution(chunks, root, identities)
+            for dimension_index in (0, 1):
+                changed = copy.deepcopy(chunks)
+                kind = "cost_center" if dimension_index == 0 else "party"
+                old = changed[0]["legs"][0]["dimensions"][dimension_index]["value"]
+                replacement = next(value["value"] for value in identities[kind].values() if value["value"] != old)
+                changed[0]["legs"][0]["dimensions"][dimension_index]["value"] = replacement
+                with self.subTest(kind=kind), self.assertRaises(run_live.CheckError):
+                    run_live.check_prepared_attribution(changed, root, identities)
+            changed = copy.deepcopy(chunks)
+            changed[0]["legs"][1]["dimensions"] = []  # Losing only the modeled offset's tags still matters.
+            with self.assertRaises(run_live.CheckError):
+                run_live.check_prepared_attribution(changed, root, identities)
+
+    def test_every_exported_tag_and_original_dimension_gross_cell_is_required(self):
+        _, _, bundle, attribution, _, _, _, identities = attributed_fixture()
+        expected = json.loads(bundle["expected_tb.json"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "legacy.csv").write_bytes(bundle["legacy.csv"])
+            good = root / "native.csv"
+            original = attributed_export(good, bundle, identities)
+            self.assertEqual(run_live.check_export(good, root, expected, attribution=attribution, identities=identities),
+                             {"entries": 3, "legs": 10})
+            for kind in ("cost_center", "party"):
+                path = root / f"wrong-{kind}.csv"
+                mutation = run_live.tamper_export_attribution(good, path, kind, identities)
+                self.assertEqual(mutation["changed_legs"], 1)
+                modified = run_live.export_rows(path)
+                self.assertEqual([{key: value for key, value in row.items() if key != "dimension_set_v1"}
+                                  for row in original],
+                                 [{key: value for key, value in row.items() if key != "dimension_set_v1"}
+                                  for row in modified])
+                with self.subTest(kind=kind), self.assertRaises(run_live.CheckError):
+                    run_live.check_export(path, root, expected, attribution=attribution, identities=identities)
+            changed = copy.deepcopy(attribution)
+            for row in changed["cost_centers"][0]["accounts"]:
+                row["debit_minor"] = str(int(row["debit_minor"]) + 1)
+                row["credit_minor"] = str(int(row["credit_minor"]) + 1)
+            with self.assertRaisesRegex(run_live.CheckError, "gross/net"):
+                run_live.check_export(good, root, expected, attribution=changed, identities=identities)
+            with self.assertRaises(run_live.CheckError):
+                run_live.check_export(good, root, expected)
+
+    def test_dimension_codec_rejects_ambiguous_or_noncanonical_native_tags(self):
+        good = "2:" + "a" * 32 + ";12:" + "b" * 32
+        self.assertEqual(run_live.dimension_set(good), ((2, "a" * 32), (12, "b" * 32)))
+        for changed in (good.replace("2:", "02:", 1), good.upper(), good + ";", good + ";2:" + "c" * 32,
+                        good.replace(";12:", ";2:"), "4294967296:" + "a" * 32, good + " "):
+            with self.subTest(value=changed), self.assertRaises(run_live.CheckError):
+                run_live.dimension_set(changed)
+
+    def test_cost_center_scope_cannot_be_replaced_by_equal_aggregate_amounts(self):
+        value = {**copy.deepcopy(EXPECTED), "code": "c" * 64}
+        event = report()
+        event["data"]["dimension"] = {"dimension": "cost_center", "value": value["code"], "values": [value["code"]]}
+        run_live.check_cost_center_report(event, value)
+        for dimension in ({"dimension": "party", "value": value["code"], "values": [value["code"]]},
+                          {"dimension": "cost_center", "value": "d" * 64, "values": [value["code"]]},
+                          {"dimension": "cost_center", "value": value["code"], "values": [value["code"], "d" * 64]}):
+            changed = copy.deepcopy(event)
+            changed["data"]["dimension"] = dimension
+            with self.assertRaises(run_live.CheckError):
+                run_live.check_cost_center_report(changed, value)
+
+
 def source_binding_event(*, complete: bool = False, retry: bool = False) -> dict:
     """Constructed transport observations; no native acceptance is asserted."""
     binding = {key: value for key, value in SOURCE_INPUTS.items() if key != "chunks"}

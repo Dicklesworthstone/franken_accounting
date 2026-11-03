@@ -30,6 +30,16 @@ USER_AGENT = (
     "(+https://github.com/Dicklesworthstone/franken_accounting)"
 )
 MODEL = "published_expenditure_v1"
+ATTRIBUTION_PROFILE = "fa-public-spend-attribution-v1"
+ATTRIBUTION_POLICY = (
+    "Exact published supplier labels map to analysis Counterparty objects and "
+    "expense-area labels to cost_center values. Equal source strings share a "
+    "value; case, spaces and Unicode remain significant. Codes are dataset- and "
+    "kind-scoped SHA-256 identities, not publisher identifiers or independently "
+    "resolved legal entities. Both the expenditure leg and its declared modeled "
+    "offset carry the same tags. Zero observations remain in the source census "
+    "without monetary legs. No missing source attribution is inferred."
+)
 OFFSET_ACCOUNT = "published-payment-offset"
 MAX_ROWS_PER_ENTRY = 12
 UNIT = "GBP"
@@ -288,8 +298,60 @@ def independent_controls(spec: dict, raw: bytes) -> tuple[dict, list[tuple[dict,
     return stats, observations
 
 
-def build_bundle(spec: dict, raw: bytes) -> dict[str, bytes]:
+def attribution_code(dataset: str, kind: str, value: str) -> str:
+    """An exact source label's bounded native code, with unambiguous domains."""
+    if kind not in ("cost_center", "party") or not isinstance(value, str) or not value.strip():
+        raise DataError("native attribution requires a nonblank source label and registered kind")
+    if len(value.encode("utf-8")) > 256:
+        raise DataError("source attribution label exceeds the native 256-byte name bound; no truncation is permitted")
+    return sha256(json_bytes([ATTRIBUTION_PROFILE, dataset, kind, value]))
+
+
+def attribution_oracle(spec: dict, observations: list[tuple[dict, int]]) -> dict:
+    """Independent original-field folds, including zero-only source values.
+
+    No generated CSV, native tag or posting receipt supplies these expectations.
+    The expenditure/offset rule is the same explicit model as the whole-book TB.
+    """
+    result = {"profile": ATTRIBUTION_PROFILE, "policy": ATTRIBUTION_POLICY}
+    for kind, field, output in (("cost_center", "expense_area", "cost_centers"),
+                                ("party", "supplier", "suppliers")):
+        buckets: dict[str, dict] = {}
+        identities: dict[str, str] = {}
+        for row, amount in observations:
+            name = row[spec[f"{field}_column"]]
+            code = attribution_code(spec["id"], kind, name)
+            if identities.setdefault(code, name) != name:
+                raise DataError("native attribution digest collision between distinct source labels")
+            bucket = buckets.setdefault(name, {"code": code, "name": name, "row_count": 0,
+                                               "posted_row_count": 0, "positive_minor": 0,
+                                               "negative_minor": 0, "accounts": {}})
+            bucket["row_count"] += 1
+            bucket["posted_row_count"] += int(amount != 0)
+            bucket["positive_minor"] += max(amount, 0)
+            bucket["negative_minor"] += min(amount, 0)
+            for account, signed in ((expense_account(row[spec["expense_type_column"]]), amount),
+                                    (OFFSET_ACCOUNT, -amount)):
+                cell = bucket["accounts"].setdefault(account, [0, 0])
+                cell[0] += max(signed, 0)
+                cell[1] += max(-signed, 0)
+        values = []
+        for name, bucket in sorted(buckets.items()):
+            accounts = [{"account": account, "debit_minor": str(checked_minor(debit)),
+                         "credit_minor": str(checked_minor(credit)),
+                         "signed_minor": str(checked_minor(debit - credit))}
+                        for account, (debit, credit) in sorted(bucket["accounts"].items())]
+            values.append({**bucket, "accounts": accounts,
+                           "positive_minor": str(checked_minor(bucket["positive_minor"])),
+                           "negative_minor": str(checked_minor(bucket["negative_minor"]))})
+        result[output] = values
+    return result
+
+
+def build_bundle(spec: dict, raw: bytes, *, native_attribution: bool = False) -> dict[str, bytes]:
     """Return all exact files for one complete dataset; no I/O or clock reads."""
+    if type(native_attribution) is not bool:
+        raise DataError("native attribution must be explicitly enabled or disabled")
     records = decode_records(spec, raw)
     stats, oracle_rows = independent_controls(spec, raw)
     if [int(row["amount_minor"]) for row in records] != [value for _, value in oracle_rows]:
@@ -297,6 +359,11 @@ def build_bundle(spec: dict, raw: bytes) -> dict[str, bytes]:
     category_accounts = {row["expense_type"]: row["expense_account"] for row in records}
     if len(set(category_accounts.values())) != len(category_accounts):
         raise DataError("expense account digest-prefix collision")
+    attribution = attribution_oracle(spec, oracle_rows) if native_attribution else None
+    attribution_maps = {} if attribution is None else {
+        field: {value["name"]: value["code"] for value in attribution[collection]}
+        for field, collection in (("expense_area", "cost_centers"), ("supplier", "suppliers"))
+    }
 
     # Full source detail stays in records/provenance; bounded memos link each
     # imported leg to it. Grouping is model bookkeeping, never an assertion that
@@ -308,7 +375,8 @@ def build_bundle(spec: dict, raw: bytes) -> dict[str, bytes]:
     generated = io.StringIO(newline="")
     writer = csv.writer(generated, lineterminator="\n")
     writer.writerow(["entry_id", "effective_date", "account_code", "side", "amount",
-                     "currency", "description", "memo"])
+                     "currency", "description", "memo"]
+                    + (["cost_center_code", "supplier_code"] if native_attribution else []))
     links = {}
     entries = []
     for date, dated in sorted(grouped.items()):
@@ -326,7 +394,10 @@ def build_bundle(spec: dict, raw: bytes) -> dict[str, bytes]:
                     (OFFSET_ACCOUNT, "C" if minor > 0 else "D"),
                 ):
                     writer.writerow([entry_id, date, account, side, amount_text(abs(minor)),
-                                     UNIT, description, memo])
+                                     UNIT, description, memo]
+                                    + ([attribution_maps["expense_area"][record["expense_area"]],
+                                        attribution_maps["supplier"][record["supplier"]]]
+                                       if native_attribution else []))
                 links[record["row_id"]] = {
                     "entry_id": entry_id,
                     "expense_leg_ordinal": position * 2 + 1,
@@ -391,6 +462,8 @@ def build_bundle(spec: dict, raw: bytes) -> dict[str, bytes]:
         "posted_row_count": len(links), "zero_row_count": stats["zero_rows"],
         "entries": entries,
     }
+    if native_attribution:
+        expected["native_attribution"] = ATTRIBUTION_PROFILE
     dimension_output = {
         name: [{"value": value, "row_count": count, "positive_minor": str(checked_minor(positive)),
                 "negative_minor": str(checked_minor(negative)),
@@ -411,6 +484,10 @@ def build_bundle(spec: dict, raw: bytes) -> dict[str, bytes]:
         'description_column = "description"\n'
         'memo_column = "memo"\n'
     )
+    if native_attribution:
+        columns += ('\n[dimension_columns]\n'
+                    'cost_center = "cost_center_code"\n'
+                    'party = "supplier_code"\n')
     outputs = {
         "raw.csv": raw,
         "records.jsonl": jsonl_bytes(records),
@@ -422,6 +499,8 @@ def build_bundle(spec: dict, raw: bytes) -> dict[str, bytes]:
         "expected_tb.json": json_bytes(expected),
         "dimensions.json": json_bytes(dimension_output),
     }
+    if attribution is not None:
+        outputs["native_attribution.json"] = json_bytes(attribution)
     receipt = {
         "schema_version": 1, "model": MODEL, "model_boundary": MODEL_BOUNDARY,
         "dataset_id": spec["id"], "source_sha256": spec["sha256"],
@@ -436,6 +515,8 @@ def build_bundle(spec: dict, raw: bytes) -> dict[str, bytes]:
         "files": {name: {"sha256": sha256(content), "bytes": len(content)}
                   for name, content in sorted(outputs.items())},
     }
+    if native_attribution:
+        receipt["native_attribution"] = ATTRIBUTION_PROFILE
     outputs["receipt.json"] = json_bytes(receipt)
     return outputs
 
@@ -469,6 +550,8 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--dataset", required=True)
     prepare.add_argument("--source", type=Path, help="offline original CSV; still checks all manifest pins")
     prepare.add_argument("--out", type=Path, required=True)
+    prepare.add_argument("--native-attribution", action="store_true",
+                         help="retain exact supplier labels as native parties and expense areas as cost centers")
     args = parser.parse_args(argv)
     try:
         sources = load_sources(args.manifest)
@@ -481,7 +564,7 @@ def main(argv: list[str] | None = None) -> int:
             raise DataError(f"unknown dataset {args.dataset!r}; choose one of {sorted(sources)}")
         spec = sources[args.dataset]
         raw = acquire_source(spec, args.source)
-        files = build_bundle(spec, raw)
+        files = build_bundle(spec, raw, native_attribution=args.native_attribution)
         write_bundle(args.out, files)
         print(json.dumps({"status": "PASS", "dataset": args.dataset, "output": str(args.out),
                           "source_rows": spec["controls"]["row_count"],
