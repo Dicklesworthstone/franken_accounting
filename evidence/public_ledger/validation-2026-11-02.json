@@ -1,0 +1,135 @@
+{
+  "schema": "franken_accounting.public_ledger.validation.v1",
+  "recorded_date": "2026-11-02",
+  "status": "NATIVE_REPLAY_UNVERIFIED",
+  "scope": "Authentic Oklahoma OMES FY2024 Q4 published monthly activity; complete agency selections 20400, 31500, 66000.",
+  "source": {
+    "url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv",
+    "sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+    "size_bytes": 113856733,
+    "data_rows": 373357
+  },
+  "checks": [
+    {
+      "name": "public_ledger_python_suite",
+      "status": "PASS",
+      "command": "python3 -m unittest discover -s scripts/tests -p 'test_public_ledger*.py' -q",
+      "tests": 35,
+      "detail": "Source helper, normalization, independent Decimal oracle, native-output assertion helpers, and adversarial cases. Native-shaped helper fixtures are not native engine execution."
+    },
+    {
+      "name": "full_source_profile",
+      "status": "PASS",
+      "source_rows": 373357,
+      "agencies": 170,
+      "accounts": 908,
+      "profile": "omes-fy2024-q4-profile.json"
+    },
+    {
+      "name": "complete_agency_preparation",
+      "status": "PASS",
+      "agencies": [
+        {
+          "business_unit": "20400",
+          "source_rows": 125
+        },
+        {
+          "business_unit": "31500",
+          "source_rows": 137
+        },
+        {
+          "business_unit": "66000",
+          "source_rows": 1055
+        }
+      ],
+      "detail": "Source verification, exact normalization, retained dimensions, and source-derived controls completed without creating a native book."
+    },
+    {
+      "name": "python_compile",
+      "status": "PASS"
+    },
+    {
+      "name": "git_diff_check",
+      "status": "PASS",
+      "detail": "Completed against local code before the final documentation and validation-status additions."
+    },
+    {
+      "name": "rust_format",
+      "status": "PASS",
+      "command": "cargo fmt --all --check",
+      "tree_sha": "5d1875e093a959745cbf9dd7e3c011b0f1370579",
+      "detail": "No further Rust changes after this tree."
+    },
+    {
+      "name": "documentation_sync_before_readme_addition",
+      "status": "PASS",
+      "command": "bash scripts/docs_sync_check.sh",
+      "exit_code": 0,
+      "selftest_cases": 12,
+      "sync_checks": 4,
+      "detail": "Completed before the final public-ledger README section was added. The self-reported date basis was 2026-10-30."
+    },
+    {
+      "name": "standalone_verifier_build",
+      "status": "PASS",
+      "command": "cargo build --locked --offline -p fa-verify --bin fa-verify --jobs 1",
+      "exit_code": 0
+    },
+    {
+      "name": "standalone_verifier_help",
+      "status": "PASS",
+      "command": "target/debug/fa-verify --help",
+      "exit_code": 0,
+      "detail": "Executable availability only; no native accounting extract was verified in this session."
+    },
+    {
+      "name": "workspace_check",
+      "status": "BLOCKED",
+      "exit_code": 101,
+      "detail": "Dependency asupersync compilation terminated with SIGKILL in the 8 GiB environment."
+    },
+    {
+      "name": "legacy_rust_regression_tests",
+      "status": "UNRUN",
+      "command": "cargo test --locked --offline -p fa-formats --lib legacy::tests:: -- --nocapture",
+      "prerequisite_exit_code": 101,
+      "detail": "Tests never executed: dependency asupersync compilation terminated with SIGKILL."
+    },
+    {
+      "name": "native_cli_build",
+      "status": "BLOCKED",
+      "exit_code": 101,
+      "detail": "Serial, debug-disabled, dependency-opt0 retry still terminated while compiling asupersync with SIGKILL."
+    },
+    {
+      "name": "native_agency_replays",
+      "status": "UNRUN",
+      "agencies": [
+        "20400",
+        "31500",
+        "66000"
+      ],
+      "detail": "No runnable fa CLI was built. No native report.json PASS or native commands.jsonl success transcript exists from this session."
+    },
+    {
+      "name": "native_proof_and_tamper_verification",
+      "status": "UNRUN",
+      "detail": "The driver implements valid-export and one-cent-corruption checks, but they await a successful native replay."
+    },
+    {
+      "name": "tier0",
+      "status": "FAIL",
+      "exit_code": 1,
+      "format_status": "PASS",
+      "check_exit_code": 101,
+      "detail": "Filesystem exhaustion prevented retaining check diagnostics and the gate summary. No Tier0 PASS note exists; gate requirements were not changed."
+    }
+  ],
+  "limitations": [
+    "Published rows are monthly activity aggregates, not original transaction-level journals or audited trial balances.",
+    "The source-based controls do not independently attest the publisher's completeness or correctness.",
+    "All published ChartFields remain in evidence; the adapter currently projects original account codes into the native chart.",
+    "Complete native replay acceptance, including newly added Rust tests, remains outstanding.",
+    "No complete historical bankruptcy general ledger is claimed by this corpus."
+  ]
+}

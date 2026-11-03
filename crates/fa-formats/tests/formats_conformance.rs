@@ -16,7 +16,7 @@ use fa_formats::{
     },
     conformance::{ConformanceMatrix, ConformanceRow},
     csv_gl::{read_csv_gl, verify_ndjson_gl_stream, write_csv_gl, write_ndjson_gl_stream},
-    hex_encode, parse_exact_decimal,
+    format_dimension_set, hex_encode, parse_dimension_set, parse_exact_decimal,
     saft::{read_saft_xml, write_saft_xml},
     tigerbeetle::TbCorpus,
     verify_round_trip_identity,
@@ -116,6 +116,7 @@ fn sample_multi_unit_journal() -> FormatJournal {
             migrated_from: None,
             legs: vec![
                 FormatLeg {
+                    dimensions: Vec::new(),
                     account_code: "1000".to_owned(),
                     side: Side::Debit,
                     amount: Amount::new(UnitId(0), 250_000),
@@ -124,6 +125,7 @@ fn sample_multi_unit_journal() -> FormatJournal {
                     memo: Some("Seed wire USD".to_owned()),
                 },
                 FormatLeg {
+                    dimensions: Vec::new(),
                     account_code: "3000".to_owned(),
                     side: Side::Credit,
                     amount: Amount::new(UnitId(0), 250_000),
@@ -132,6 +134,7 @@ fn sample_multi_unit_journal() -> FormatJournal {
                     memo: None,
                 },
                 FormatLeg {
+                    dimensions: Vec::new(),
                     account_code: "1010".to_owned(),
                     side: Side::Debit,
                     amount: Amount::new(UnitId(1), 100_000),
@@ -140,6 +143,7 @@ fn sample_multi_unit_journal() -> FormatJournal {
                     memo: Some("Seed wire EUR".to_owned()),
                 },
                 FormatLeg {
+                    dimensions: Vec::new(),
                     account_code: "3000".to_owned(),
                     side: Side::Credit,
                     amount: Amount::new(UnitId(1), 100_000),
@@ -158,6 +162,7 @@ fn sample_multi_unit_journal() -> FormatJournal {
             migrated_from: None,
             legs: vec![
                 FormatLeg {
+                    dimensions: Vec::new(),
                     account_code: "1200".to_owned(),
                     side: Side::Debit,
                     amount: Amount::new(UnitId(0), 75_500),
@@ -166,6 +171,7 @@ fn sample_multi_unit_journal() -> FormatJournal {
                     memo: Some("INV-2026-042".to_owned()),
                 },
                 FormatLeg {
+                    dimensions: Vec::new(),
                     account_code: "4000".to_owned(),
                     side: Side::Credit,
                     amount: Amount::new(UnitId(0), 75_500),
@@ -184,6 +190,7 @@ fn sample_multi_unit_journal() -> FormatJournal {
             migrated_from: Some("LEGACY-QB-991".to_owned()),
             legs: vec![
                 FormatLeg {
+                    dimensions: Vec::new(),
                     account_code: "5000".to_owned(),
                     side: Side::Debit,
                     amount: Amount::new(UnitId(0), 18_250),
@@ -192,6 +199,7 @@ fn sample_multi_unit_journal() -> FormatJournal {
                     memo: None,
                 },
                 FormatLeg {
+                    dimensions: Vec::new(),
                     account_code: "2000".to_owned(),
                     side: Side::Credit,
                     amount: Amount::new(UnitId(0), 18_250),
@@ -446,6 +454,555 @@ fn aicpa_ads_and_oecd_saft_and_csv_gl_round_trip_identity_and_dropped_leg_negati
     let ndjson = write_ndjson_gl_stream(&journal).expect("write_ndjson_gl_stream");
     let streamed_rows = verify_ndjson_gl_stream(&ndjson).expect("verify_ndjson_gl_stream");
     assert_eq!(streamed_rows, 8);
+}
+
+#[test]
+fn canonical_csv_round_trip_preserves_quoted_source_text() {
+    let units = UnitCatalog::embedded().unwrap();
+    let original = sample_multi_unit_journal();
+    let plain = write_csv_gl(&original);
+    assert_eq!(write_csv_gl(&read_csv_gl(&plain, &units).unwrap()), plain);
+    let mut entries = original.entries.clone();
+    entries[0].entry_id = "#journal, \"one\"".into();
+    entries[0].description =
+        "  Café, \"entry\"\r\n# fa_account|injected|Bad|Asset|D\ncontinued  ".into();
+    entries[0].migrated_from = Some("Old,GL\nsource".into());
+    entries[0].legs[0].memo = Some(" memo\t\"quoted\", value\r\nsecond ".into());
+    let journal = FormatJournal::new(
+        &original.coordinate.book_name,
+        &original.coordinate.base_unit_code,
+        original.coordinate.base_unit_scale,
+        original.coordinate.effective_through,
+        original.coordinate.known_at_seq,
+        original.accounts.clone(),
+        entries,
+        original.assertions.clone(),
+    )
+    .unwrap();
+    let csv = write_csv_gl(&journal);
+    let marker = "\"#journal, \"\"one\"\"\"";
+    assert!(csv.contains(marker));
+    let read = read_csv_gl(&csv, &units).unwrap();
+    assert_eq!(
+        read, journal,
+        "all text and the original certificate survive"
+    );
+    verify_round_trip_identity("csv_gl_v1", &journal, &read).unwrap();
+    assert_eq!(write_csv_gl(&read), csv);
+    let malformed = csv.replacen(marker, &format!("{marker}suffix"), 1);
+    assert!(matches!(
+        read_csv_gl(&malformed, &units),
+        Err(FormatError::Parse { .. })
+    ));
+    let changed = csv.replacen("Café", "Changed", 1);
+    assert!(
+        read_csv_gl(&changed, &units).is_err(),
+        "changed source text must not retain its certificate"
+    );
+}
+
+#[test]
+fn canonical_csv_accepts_certified_old_unquoted_whitespace() {
+    let units = UnitCatalog::embedded().unwrap();
+    let original = sample_multi_unit_journal();
+    let mut entries = original.entries.clone();
+    entries[0].description = "  Historical memo  ".into();
+    entries[0].migrated_from = Some("  Source export  ".into());
+    let c = &original.coordinate;
+    let journal = FormatJournal::new(
+        &c.book_name,
+        &c.base_unit_code,
+        c.base_unit_scale,
+        c.effective_through,
+        c.known_at_seq,
+        original.accounts,
+        entries,
+        original.assertions,
+    )
+    .unwrap();
+    let modern = write_csv_gl(&journal);
+    // The old writer left middle-field whitespace unquoted; its original
+    // reader retained it and its certificate therefore binds that text.
+    let historical = modern
+        .replace("\"  Historical memo  \"", "  Historical memo  ")
+        .replace("\"  Source export  \"", "  Source export  ");
+    assert_ne!(historical, modern);
+    assert_eq!(read_csv_gl(&historical, &units).unwrap(), journal);
+}
+
+#[test]
+fn canonical_csv_old_literal_quotes_require_the_original_complete_certificate() {
+    let units = UnitCatalog::embedded().unwrap();
+    for description in ["He said \"hold\"", "\"archive\""] {
+        let original = sample_multi_unit_journal();
+        let mut entries = original.entries.clone();
+        entries[0].description = description.into();
+        let c = &original.coordinate;
+        let journal = FormatJournal::new(
+            &c.book_name,
+            &c.base_unit_code,
+            c.base_unit_scale,
+            c.effective_through,
+            c.known_at_seq,
+            original.accounts,
+            entries,
+            original.assertions,
+        )
+        .unwrap();
+        let modern = write_csv_gl(&journal);
+        let escaped = format!("\"{}\"", description.replace('"', "\"\""));
+        let historical = modern.replace(&escaped, description);
+        assert_ne!(historical, modern);
+        assert_eq!(read_csv_gl(&historical, &units).unwrap(), journal);
+        let changed = historical.replace(description, &format!("{description} changed"));
+        assert!(read_csv_gl(&changed, &units).is_err());
+
+        if description == "He said \"hold\"" {
+            // Interior unescaped quotes are invalid strict CSV. A fallback
+            // must not accept them with either original digest missing.
+            for field in [
+                format!(
+                    "|content_digest={}",
+                    hex_encode(&journal.coordinate.content_digest)
+                ),
+                format!(
+                    "|certificate_digest={}",
+                    hex_encode(&journal.coordinate.certificate_digest)
+                ),
+            ] {
+                let uncertified = historical.replace(&field, "");
+                assert_ne!(uncertified, historical);
+                assert!(read_csv_gl(&uncertified, &units).is_err());
+            }
+        }
+    }
+}
+
+#[test]
+fn canonical_csv_never_hides_changed_repeated_metadata_or_ignored_columns() {
+    let units = UnitCatalog::embedded().unwrap();
+    let journal = sample_multi_unit_journal();
+    let csv = write_csv_gl(&journal);
+    for column in [1, 2, 3, 4, 9, 10, 11] {
+        let mut lines: Vec<_> = csv.lines().map(str::to_owned).collect();
+        let row = lines
+            .iter_mut()
+            .find(|row| row.starts_with("E-0001,2,"))
+            .unwrap();
+        let mut fields: Vec<_> = row.split(',').map(str::to_owned).collect();
+        fields[column] = "changed\"forged".into();
+        *row = fields.join(",");
+        let changed = lines.join("\n");
+        assert!(read_csv_gl(&changed, &units).is_err(), "column {column}");
+    }
+    // Even syntactically valid redundant fields must agree.
+    for (column, value) in [(1, "1"), (9, "3"), (10, "Different description")] {
+        let mut lines: Vec<_> = csv.lines().map(str::to_owned).collect();
+        let row = lines
+            .iter_mut()
+            .find(|row| row.starts_with("E-0001,2,"))
+            .unwrap();
+        let mut fields: Vec<_> = row.split(',').map(str::to_owned).collect();
+        fields[column] = value.into();
+        *row = fields.join(",");
+        assert!(
+            read_csv_gl(&lines.join("\n"), &units).is_err(),
+            "column {column}"
+        );
+    }
+}
+
+fn dimensioned_journal() -> FormatJournal {
+    let original = sample_multi_unit_journal();
+    let mut entries = original.entries.clone();
+    entries[0].legs[0].dimensions = vec![(3, 0xab), (7, u128::MAX)];
+    entries[0].legs[1].dimensions = vec![(3, 0xac)];
+    entries[1].legs[0].dimensions = vec![(3, 0xab)];
+    let c = &original.coordinate;
+    FormatJournal::new(
+        &c.book_name,
+        &c.base_unit_code,
+        c.base_unit_scale,
+        c.effective_through,
+        c.known_at_seq,
+        original.accounts,
+        entries,
+        original.assertions,
+    )
+    .unwrap()
+}
+
+#[test]
+fn dimension_set_wire_is_bounded_exact_and_never_repairs_invalid_order() {
+    let canonical = "3:000000000000000000000000000000ab;7:ffffffffffffffffffffffffffffffff";
+    let dimensions = vec![(3, 0xab), (7, u128::MAX)];
+    assert_eq!(format_dimension_set(&dimensions), canonical);
+    assert_eq!(parse_dimension_set(canonical).unwrap(), dimensions);
+    assert_eq!(parse_dimension_set("").unwrap(), Vec::new());
+    assert_eq!(format_dimension_set(&[]), "");
+    for bad in [
+        "03:000000000000000000000000000000ab",
+        "+3:000000000000000000000000000000ab",
+        "-3:000000000000000000000000000000ab",
+        "4294967296:000000000000000000000000000000ab",
+        "3:000000000000000000000000000000AB",
+        "3:ab",
+        "3:0000000000000000000000000000000ab",
+        "3:000000000000000000000000000000ag",
+        "3:000000000000000000000000000000ab;",
+        " 3:000000000000000000000000000000ab",
+        "3:000000000000000000000000000000ab ",
+        "3:000000000000000000000000000000ab,7:ffffffffffffffffffffffffffffffff",
+        "3:000000000000000000000000000000ab;3:000000000000000000000000000000ac",
+        "7:ffffffffffffffffffffffffffffffff;3:000000000000000000000000000000ab",
+    ] {
+        assert!(parse_dimension_set(bad).is_err(), "{bad:?}");
+    }
+    let maximum: Vec<_> = (1_u32..=64).map(|kind| (kind, u128::from(kind))).collect();
+    assert_eq!(
+        parse_dimension_set(&format_dimension_set(&maximum)).unwrap(),
+        maximum
+    );
+    let mut too_many = maximum;
+    too_many.push((u32::MAX, u128::MAX));
+    assert!(parse_dimension_set(&format_dimension_set(&too_many)).is_err());
+    let unsorted = vec![(7, 0xff), (3, 0xab)];
+    let wire = format_dimension_set(&unsorted);
+    assert!(
+        wire.starts_with("7:"),
+        "a writer never repairs the supplied order"
+    );
+    assert!(parse_dimension_set(&wire).is_err());
+}
+
+#[test]
+fn dimension_content_commitment_binds_value_kind_entry_and_leg_without_changing_money() {
+    let plain = sample_multi_unit_journal();
+    let tagged = dimensioned_journal();
+    assert_ne!(
+        plain.coordinate.content_digest,
+        tagged.coordinate.content_digest
+    );
+    assert_eq!(
+        plain.fold_balances().unwrap(),
+        tagged.fold_balances().unwrap()
+    );
+    for mutation in 0..5 {
+        let mut changed = tagged.clone();
+        match mutation {
+            0 => changed.entries[0].legs[0].dimensions[0].1 ^= 1,
+            1 => changed.entries[0].legs[0].dimensions[0].0 = 2,
+            2 => changed.entries[0].legs[0].dimensions.clear(),
+            3 => {
+                let tags = std::mem::take(&mut changed.entries[0].legs[0].dimensions);
+                changed.entries[0].legs[2].dimensions = tags;
+            }
+            _ => {
+                let tags = std::mem::take(&mut changed.entries[0].legs[0].dimensions);
+                changed.entries[2].legs[0].dimensions = tags;
+            }
+        }
+        assert_eq!(
+            changed.fold_balances().unwrap(),
+            tagged.fold_balances().unwrap()
+        );
+        let digest = FormatJournal::compute_content_digest(
+            &changed.accounts,
+            &changed.entries,
+            &changed.assertions,
+        );
+        assert_ne!(
+            digest, tagged.coordinate.content_digest,
+            "mutation {mutation}"
+        );
+        assert!(tagged.coordinate.verify(&digest).is_err());
+    }
+    let mut cleared = tagged;
+    for entry in &mut cleared.entries {
+        for leg in &mut entry.legs {
+            leg.dimensions.clear();
+        }
+    }
+    assert_eq!(
+        FormatJournal::compute_content_digest(
+            &cleared.accounts,
+            &cleared.entries,
+            &cleared.assertions
+        ),
+        plain.coordinate.content_digest,
+        "empty dimensions have no additive digest bytes",
+    );
+    for invalid in [
+        vec![(3, 1), (3, 2)],
+        vec![(7, 1), (3, 2)],
+        (0..65).map(|id| (id, 1)).collect(),
+    ] {
+        let mut journal = plain.clone();
+        journal.entries[0].legs[0].dimensions = invalid;
+        assert!(journal.fold_balances().is_err());
+        assert!(write_ads_package(&journal).is_err());
+        assert!(write_ndjson_gl_stream(&journal).is_err());
+    }
+}
+
+#[test]
+fn dimension_interop_round_trips_exact_native_ids_including_untagged_legs() {
+    let units = UnitCatalog::embedded().unwrap();
+    let tagged = dimensioned_journal();
+    let csv = write_csv_gl(&tagged);
+    let ads = write_ads_package(&tagged).unwrap();
+    let saft = write_saft_xml(&tagged).unwrap();
+    let bean = write_beancount(&tagged);
+    for (format, read) in [
+        ("csv", read_csv_gl(&csv, &units).unwrap()),
+        ("ads", read_ads_package(&ads, &units).unwrap()),
+        ("saft", read_saft_xml(&saft, &units).unwrap()),
+        ("beancount", read_beancount(&bean, &units).unwrap()),
+    ] {
+        assert_eq!(
+            read, tagged,
+            "{format}: tag identity and source text survive"
+        );
+        verify_round_trip_identity(format, &tagged, &read).unwrap();
+    }
+    assert!(
+        csv.lines()
+            .next()
+            .unwrap()
+            .contains("|dimension_encoding=fa-dimension-ids-v1")
+    );
+    assert!(
+        ads.certificate_toml
+            .contains("dimension_encoding = \"fa-dimension-ids-v1\"\n")
+    );
+    assert!(
+        csv.lines()
+            .filter(|line| !line.starts_with('#'))
+            .all(|line| line.split(',').count() == 14)
+    );
+    assert!(
+        ads.gl_detail
+            .lines()
+            .all(|line| line.split('|').count() == 14)
+    );
+
+    // hledger has an intentionally narrower text profile. Its posting tags
+    // and exact monetary fold still survive, without claiming its missing
+    // memo, migrated-from, and assertion fields are an identity round trip.
+    let hledger = read_hledger(&write_hledger(&tagged), &units).unwrap();
+    assert_eq!(
+        hledger.fold_balances().unwrap(),
+        tagged.fold_balances().unwrap()
+    );
+    let tags = |journal: &FormatJournal| {
+        journal
+            .entries
+            .iter()
+            .flat_map(|e| e.legs.iter().map(|l| l.dimensions.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(tags(&hledger), tags(&tagged));
+
+    let ndjson = write_ndjson_gl_stream(&tagged).unwrap();
+    assert_eq!(verify_ndjson_gl_stream(&ndjson).unwrap(), 8);
+    assert!(
+        ndjson
+            .lines()
+            .next()
+            .unwrap()
+            .contains("\"dimension_encoding\":\"fa-dimension-ids-v1\"")
+    );
+    assert_eq!(ndjson.matches("\"dimensions\":").count(), 8);
+    assert!(ndjson.contains("\"dimensions\":[{\"dimension\":3,\"value\":\"000000000000000000000000000000ab\"},{\"dimension\":7,\"value\":\"ffffffffffffffffffffffffffffffff\"}]"));
+    assert!(ndjson.contains("\"dimensions\":[]}"));
+
+    let plain = sample_multi_unit_journal();
+    let old_csv = write_csv_gl(&plain);
+    let old_ads = write_ads_package(&plain).unwrap();
+    assert!(!old_csv.contains("dimension_encoding"));
+    assert!(
+        old_csv
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .all(|line| line.split(',').count() == 13)
+    );
+    assert!(!old_ads.certificate_toml.contains("dimension_encoding"));
+    assert!(
+        old_ads
+            .gl_detail
+            .lines()
+            .all(|line| line.split('|').count() == 13)
+    );
+    assert!(
+        !write_ndjson_gl_stream(&plain)
+            .unwrap()
+            .contains("\"dimensions\"")
+    );
+}
+
+#[test]
+fn dimension_csv_refuses_attribution_tampering_and_extension_downgrades() {
+    let units = UnitCatalog::embedded().unwrap();
+    let journal = dimensioned_journal();
+    let csv = write_csv_gl(&journal);
+    let wire = format_dimension_set(&journal.entries[0].legs[0].dimensions);
+    for changed in [
+        csv.replacen(&wire, &wire.replace("000ab", "000ad"), 1),
+        csv.replacen(
+            &wire,
+            &format!("{wire};3:000000000000000000000000000000ab"),
+            1,
+        ),
+        csv.replacen(
+            &wire,
+            "7:ffffffffffffffffffffffffffffffff;3:000000000000000000000000000000ab",
+            1,
+        ),
+        csv.replace("|dimension_encoding=fa-dimension-ids-v1", ""),
+        csv.replace(
+            "dimension_encoding=fa-dimension-ids-v1",
+            "dimension_encoding=unknown",
+        ),
+        csv.replace(
+            "|dimension_encoding=fa-dimension-ids-v1",
+            "|dimension_encoding=fa-dimension-ids-v1|dimension_encoding=fa-dimension-ids-v1",
+        ),
+        csv.replace(",dimension_set_v1", ""),
+        csv.replace(
+            &format!(
+                "|certificate_digest={}",
+                hex_encode(&journal.coordinate.certificate_digest)
+            ),
+            "",
+        ),
+    ] {
+        assert_ne!(changed, csv);
+        assert!(read_csv_gl(&changed, &units).is_err(), "{changed}");
+    }
+    let drop_columns = |all: bool| {
+        csv.lines()
+            .map(|line| {
+                if (!line.starts_with('#') && all) || line.starts_with("E-0001,1,") {
+                    line.rsplit_once(',').unwrap().0.to_owned()
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(
+        read_csv_gl(&drop_columns(false), &units).is_err(),
+        "a single row may not omit its declared tag set"
+    );
+    let downgraded = drop_columns(true).replace("|dimension_encoding=fa-dimension-ids-v1", "");
+    assert!(
+        read_csv_gl(&downgraded, &units).is_err(),
+        "stripping the entire extension cannot retain the original certificate"
+    );
+}
+
+#[test]
+fn dimension_ads_refuses_attribution_tampering_and_extension_downgrades() {
+    let units = UnitCatalog::embedded().unwrap();
+    let journal = dimensioned_journal();
+    let ads = write_ads_package(&journal).unwrap();
+    let wire = format_dimension_set(&journal.entries[0].legs[0].dimensions);
+    for replacement in [
+        wire.replace("000ab", "000ad"),
+        format!("{wire};3:000000000000000000000000000000ab"),
+        "7:ffffffffffffffffffffffffffffffff;3:000000000000000000000000000000ab".into(),
+    ] {
+        let mut changed = ads.clone();
+        changed.gl_detail = changed.gl_detail.replacen(&wire, &replacement, 1);
+        assert_ne!(changed.gl_detail, ads.gl_detail);
+        assert!(read_ads_package(&changed, &units).is_err());
+    }
+    for replacement in [
+        "",
+        "dimension_encoding = \"unknown\"\n",
+        "dimension_encoding = \"fa-dimension-ids-v1\"\ndimension_encoding = \"fa-dimension-ids-v1\"\n",
+    ] {
+        let mut changed = ads.clone();
+        changed.certificate_toml = changed.certificate_toml.replace(
+            "dimension_encoding = \"fa-dimension-ids-v1\"\n",
+            replacement,
+        );
+        assert!(read_ads_package(&changed, &units).is_err());
+    }
+    for all in [false, true] {
+        let mut changed = ads.clone();
+        changed.gl_detail = changed
+            .gl_detail
+            .lines()
+            .map(|line| {
+                if all || line.starts_with("E-0001|1|") {
+                    line.rsplit_once('|').unwrap().0
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if all {
+            changed.certificate_toml = changed
+                .certificate_toml
+                .replace("dimension_encoding = \"fa-dimension-ids-v1\"\n", "");
+        }
+        assert!(
+            read_ads_package(&changed, &units).is_err(),
+            "a removed dimension column is never an approved downgrade"
+        );
+    }
+}
+
+#[test]
+fn dimension_saft_and_beancount_refuse_changed_or_ambiguous_posting_tags() {
+    let units = UnitCatalog::embedded().unwrap();
+    let journal = dimensioned_journal();
+    let wire = format_dimension_set(&journal.entries[0].legs[0].dimensions);
+    let saft = write_saft_xml(&journal).unwrap();
+    let field = format!("<fa:DimensionSetV1>{wire}</fa:DimensionSetV1>");
+    for changed in [
+        saft.replacen(&wire, &wire.replace("000ab", "000ad"), 1),
+        saft.replacen(&field, "", 1),
+        saft.replacen(&field, &format!("{field}{field}"), 1),
+        saft.replacen(&field, &format!("<!-- {field} -->"), 1),
+        saft.replacen(&field, &format!("<![CDATA[{field}]]>"), 1),
+        saft.replacen(
+            &field,
+            &format!("<x xmlns:fa = \"urn:another:extension\">{field}</x>"),
+            1,
+        ),
+        saft.replacen(
+            &field,
+            &format!("<x xmlns:fa = 'urn:another:extension'>{field}</x>"),
+            1,
+        ),
+        saft.replacen(&field, &format!("{field}<fa:DimensionSetV1>"), 1),
+        saft.replace(
+            "urn:frankenaccounting:saft:extensions:v1",
+            "urn:another:extension",
+        ),
+        saft.replace(
+            "<fa:DimensionEncoding>fa-dimension-ids-v1</fa:DimensionEncoding>",
+            "",
+        ),
+    ] {
+        assert_ne!(changed, saft);
+        assert!(read_saft_xml(&changed, &units).is_err());
+    }
+    let bean = write_beancount(&journal);
+    let field = format!("    fa_dimensions_v1: \"{wire}\"\n");
+    for changed in [
+        bean.replacen(&wire, &wire.replace("000ab", "000ad"), 1),
+        bean.replacen(&field, "", 1),
+        bean.replacen(&field, &format!("{field}{field}"), 1),
+        bean.replacen(&field, &field.replacen("    ", "  ", 1), 1),
+    ] {
+        assert_ne!(changed, bean);
+        assert!(read_beancount(&changed, &units).is_err());
+    }
 }
 
 #[test]

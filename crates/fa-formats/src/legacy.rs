@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_journal::{BookContext, RunBody, RunMode, TrialBalanceLine};
 use fa_model::{
     EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef, Id128, LegPayload, Oid,
-    PeriodRef, account_vid,
+    PeriodRef, account_vid, dimension_kind, dimension_value_vid,
 };
 use fa_money::{Amount, Side, UnitId};
 use fa_time::DateDay;
@@ -172,20 +172,31 @@ pub struct LegacyColumnMap {
     pub debit_marker: String,
     pub credit_marker: String,
     pub unit_column: Option<String>,
+    /// Entry-level description in a generic CSV. Nonblank values for one entry
+    /// must match exactly; blank rows inherit the first populated value. When
+    /// this names the same column as `memo_column`, it instead supplies per-leg
+    /// text: every row retains its memo and the first populated memo supplies
+    /// the entry summary. An entry with no populated description uses its ID.
     pub description_column: Option<String>,
+    /// Per-leg text, which may differ between rows of the same entry.
     pub memo_column: Option<String>,
     pub entered_by_column: Option<String>,
     pub approved_by_column: Option<String>,
     pub account_mappings: BTreeMap<String, String>,
+    /// Registered dimension kind -> source column containing its value code.
+    /// Blank cells omit the dimension; nonblank codes are preserved exactly.
+    pub dimension_columns: BTreeMap<String, String>,
 }
 
 impl LegacyColumnMap {
-    /// Parse a declared column-map configuration file (TOML subset with `[columns]` and `[account_map]`).
+    /// Parse a declared column map (`[columns]`, `[account_map]` and optional
+    /// `[dimension_columns]`, for example `department = "Department"`).
     pub fn parse_toml(src: &str) -> Result<Self, FormatError> {
         const FMT: &str = "legacy_column_map.toml";
         let mut section = "";
         let mut cols: BTreeMap<String, String> = BTreeMap::new();
         let mut account_mappings: BTreeMap<String, String> = BTreeMap::new();
+        let mut dimension_columns: BTreeMap<String, String> = BTreeMap::new();
 
         for (line_idx, raw_line) in src.lines().enumerate() {
             let line = raw_line.trim();
@@ -194,11 +205,11 @@ impl LegacyColumnMap {
             }
             if line.starts_with('[') && line.ends_with(']') {
                 section = &line[1..line.len() - 1];
-                if !matches!(section, "columns" | "account_map") {
+                if !matches!(section, "columns" | "account_map" | "dimension_columns") {
                     return Err(FormatError::Parse {
                         format: FMT,
                         detail: format!(
-                            "line {}: unknown section [{section}] (expected [columns] or [account_map])",
+                            "line {}: unknown section [{section}] (expected [columns], [account_map] or [dimension_columns])",
                             line_idx + 1
                         ),
                     });
@@ -215,10 +226,43 @@ impl LegacyColumnMap {
             let v = unquote_toml_str(FMT, line_idx + 1, raw_v.trim())?;
             match section {
                 "" | "columns" => {
-                    cols.insert(k, v);
+                    if cols.insert(k.clone(), v).is_some() {
+                        return Err(FormatError::Parse {
+                            format: FMT,
+                            detail: format!("line {}: repeated column-map key {k:?}", line_idx + 1),
+                        });
+                    }
                 }
                 "account_map" => {
-                    account_mappings.insert(k, v);
+                    if account_mappings.insert(k.clone(), v).is_some() {
+                        return Err(FormatError::Parse {
+                            format: FMT,
+                            detail: format!(
+                                "line {}: repeated legacy account mapping {k:?}",
+                                line_idx + 1
+                            ),
+                        });
+                    }
+                }
+                "dimension_columns" => {
+                    if dimension_kind(&k).is_none() || v.trim().is_empty() || v.trim() != v {
+                        return Err(FormatError::Parse {
+                            format: FMT,
+                            detail: format!(
+                                "line {}: dimension mapping {k:?} must name a registered dimension kind and an exact nonblank source column",
+                                line_idx + 1
+                            ),
+                        });
+                    }
+                    if dimension_columns.insert(k.clone(), v).is_some() {
+                        return Err(FormatError::Parse {
+                            format: FMT,
+                            detail: format!(
+                                "line {}: repeated dimension column mapping {k:?}",
+                                line_idx + 1
+                            ),
+                        });
+                    }
                 }
                 _ => unreachable!(),
             }
@@ -286,6 +330,7 @@ impl LegacyColumnMap {
             entered_by_column: opt("entered_by_column"),
             approved_by_column: opt("approved_by_column"),
             account_mappings,
+            dimension_columns,
         })
     }
 
@@ -312,28 +357,161 @@ fn unquote_toml_str(format: &'static str, line_no: usize, s: &str) -> Result<Str
     }
 }
 
-fn parse_csv_fields(line: &str, sep: char) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut in_quotes = false;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '"' {
-            if in_quotes && chars.peek() == Some(&'"') {
-                current.push('"');
-                let _ = chars.next();
-            } else {
-                in_quotes = !in_quotes;
-            }
-        } else if c == sep && !in_quotes {
-            out.push(current.trim().to_owned());
-            current.clear();
-        } else {
-            current.push(c);
+/// Logical CSV records preserve quoted newlines and original field text.
+/// Legacy imports recognize comments only before their header; canonical
+/// exports also carry explicit metadata comments. The modes never reinterpret
+/// quoted text as metadata, and the original source supplies the import digest.
+pub(crate) struct CsvRecords<'a> {
+    remaining: &'a str,
+    line: usize,
+    preamble: bool,
+    comments: CsvComments,
+    format: &'static str,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CsvComments {
+    Preamble,
+    Metadata,
+}
+
+pub(crate) enum CsvRecord<'a> {
+    Comment { line: usize, text: &'a str },
+    Data { line: usize, fields: Vec<String> },
+}
+
+impl<'a> CsvRecords<'a> {
+    pub(crate) fn new(src: &'a str, format: &'static str, comments: CsvComments) -> Self {
+        Self {
+            remaining: src.strip_prefix('\u{feff}').unwrap_or(src),
+            line: 1,
+            preamble: true,
+            comments,
+            format,
         }
     }
-    out.push(current.trim().to_owned());
-    out
+
+    pub(crate) fn next_record(&mut self) -> Result<Option<CsvRecord<'a>>, FormatError> {
+        while !self.remaining.is_empty() {
+            let end = self
+                .remaining
+                .find(['\r', '\n'])
+                .unwrap_or(self.remaining.len());
+            let remaining = self.remaining;
+            let line = &remaining[..end];
+            let comment = (self.preamble || matches!(self.comments, CsvComments::Metadata))
+                && line.trim_start().starts_with('#');
+            if !line.trim().is_empty() && !comment {
+                break;
+            }
+            let suffix = &remaining[end..];
+            let newline_bytes = if suffix.starts_with("\r\n") {
+                2
+            } else {
+                usize::from(!suffix.is_empty())
+            };
+            self.remaining = &suffix[newline_bytes..];
+            let start_line = self.line;
+            self.line += usize::from(newline_bytes != 0);
+            if comment {
+                return Ok(Some(CsvRecord::Comment {
+                    line: start_line,
+                    text: line.trim(),
+                }));
+            }
+        }
+        if self.remaining.is_empty() {
+            return Ok(None);
+        }
+
+        let start_line = self.line;
+        let mut fields = Vec::new();
+        let mut field = String::new();
+        let mut quoted = false;
+        let mut closed_quote = false;
+        let mut chars = self.remaining.char_indices().peekable();
+        while let Some((offset, ch)) = chars.next() {
+            if quoted {
+                if ch == '"' {
+                    if chars.peek().is_some_and(|(_, next)| *next == '"') {
+                        let _ = chars.next();
+                        field.push('"');
+                    } else {
+                        quoted = false;
+                        closed_quote = true;
+                    }
+                } else {
+                    field.push(ch);
+                    if ch == '\r' {
+                        if chars.peek().is_some_and(|(_, next)| *next == '\n') {
+                            let _ = chars.next();
+                            field.push('\n');
+                        }
+                        self.line += 1;
+                    } else if ch == '\n' {
+                        self.line += 1;
+                    }
+                }
+                continue;
+            }
+            match ch {
+                ',' | '\r' | '\n' => {
+                    fields.push(std::mem::take(&mut field));
+                    closed_quote = false;
+                    if ch != ',' {
+                        let mut end = offset + ch.len_utf8();
+                        if ch == '\r' && chars.peek().is_some_and(|(_, next)| *next == '\n') {
+                            end += 1;
+                        }
+                        self.remaining = &self.remaining[end..];
+                        self.line += 1;
+                        self.preamble = false;
+                        return Ok(Some(CsvRecord::Data {
+                            line: start_line,
+                            fields,
+                        }));
+                    }
+                }
+                ' ' | '\t' if closed_quote => {}
+                '"' if !closed_quote && field.trim().is_empty() => {
+                    field.clear();
+                    quoted = true;
+                }
+                '"' => {
+                    return Err(FormatError::Parse {
+                        format: self.format,
+                        detail: format!(
+                            "line {} (record starts at line {start_line}): unexpected quote in an unquoted CSV field",
+                            self.line
+                        ),
+                    });
+                }
+                _ if closed_quote => {
+                    return Err(FormatError::Parse {
+                        format: self.format,
+                        detail: format!(
+                            "line {} (record starts at line {start_line}): unexpected text after a quoted CSV field",
+                            self.line
+                        ),
+                    });
+                }
+                _ => field.push(ch),
+            }
+        }
+        if quoted {
+            return Err(FormatError::Parse {
+                format: self.format,
+                detail: format!("line {start_line}: unterminated quoted CSV field"),
+            });
+        }
+        fields.push(field);
+        self.remaining = "";
+        self.preamble = false;
+        Ok(Some(CsvRecord::Data {
+            line: start_line,
+            fields,
+        }))
+    }
 }
 
 fn parse_date_flexible(format: &'static str, raw: &str) -> Result<DateDay, FormatError> {
@@ -388,6 +566,61 @@ pub struct LegacyChunkEntry {
     pub effective_date: DateDay,
     pub description: String,
     pub legs: Vec<FormatLeg>,
+    /// Sparse zero-based leg ordinals -> registered dimension kind/value codes.
+    /// This source projection belongs to legacy import, not canonical `FormatLeg`.
+    pub leg_dimensions: BTreeMap<usize, BTreeMap<String, String>>,
+}
+
+fn dimension_value_problem(kind: &str, code: &str) -> Option<String> {
+    // Reuse the native declaration's identifier contract. This validates a
+    // reference only; importing history never creates or renames its value.
+    fa_journal::dimension::DimensionValueSpec {
+        dimension: kind.to_owned(),
+        code: code.to_owned(),
+        name: code.to_owned(),
+        parent: None,
+        valid_from: None,
+        valid_to: None,
+    }
+    .problem()
+}
+
+impl LegacyChunkEntry {
+    fn validate_dimensions(&self, format: &'static str) -> Result<(), FormatError> {
+        if self.legs.iter().any(|leg| !leg.dimensions.is_empty()) {
+            return Err(FormatError::Parse {
+                format,
+                detail: format!(
+                    "entry {:?}: legacy migration requires explicit named dimension code mappings; native dimension value IDs belong to their source book and must not be silently copied or discarded",
+                    self.provenance.source_id
+                ),
+            });
+        }
+        for (ordinal, values) in &self.leg_dimensions {
+            if *ordinal >= self.legs.len() || values.is_empty() {
+                return Err(FormatError::Parse {
+                    format,
+                    detail: format!(
+                        "entry {:?}: dimension projection must name an existing leg and at least one value",
+                        self.provenance.source_id
+                    ),
+                });
+            }
+            for (kind, code) in values {
+                if let Some(problem) = dimension_value_problem(kind, code) {
+                    return Err(FormatError::Parse {
+                        format,
+                        detail: format!(
+                            "entry {:?}, leg {}: {problem}",
+                            self.provenance.source_id,
+                            ordinal + 1
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Complete result of parsing a legacy GL export: ordered `LegacyChunkEntry` items,
@@ -477,13 +710,26 @@ impl LegacyImportBatch {
     {
         let mut proposals = Vec::with_capacity(self.chunks.len());
         for (idx, chunk) in self.chunks.iter().enumerate() {
+            chunk.validate_dimensions(self.format.registry_name())?;
             let mut legs = Vec::with_capacity(chunk.legs.len());
-            for leg in &chunk.legs {
+            for (ordinal, leg) in chunk.legs.iter().enumerate() {
                 let mut payload = LegPayload::simple(
                     leg.side,
                     account_vid(book.book_id, &leg.account_code),
                     leg.amount,
                 );
+                if let Some(values) = chunk.leg_dimensions.get(&ordinal) {
+                    for (kind, code) in values {
+                        let kind = dimension_kind(kind).ok_or_else(|| FormatError::Parse {
+                            format: self.format.registry_name(),
+                            detail: format!("unregistered dimension kind {kind:?}"),
+                        })?;
+                        payload
+                            .dimension_set
+                            .push((kind.id, dimension_value_vid(book.book_id, kind.code, code)));
+                    }
+                    payload.dimension_set.sort_by_key(|(kind, _)| *kind);
+                }
                 payload.memo = leg.memo.as_deref().map(&mut seal).transpose()?;
                 legs.push(payload);
             }
@@ -572,6 +818,7 @@ fn finalize_legacy_batch(
 
     let mut tb_fold: BTreeMap<(String, UnitId), i128> = BTreeMap::new();
     for chunk in &chunks {
+        chunk.validate_dimensions(fmt_name)?;
         if chunk.legs.len() < 2 {
             return Err(FormatError::Parse {
                 format: fmt_name,
@@ -692,6 +939,25 @@ fn finalize_legacy_batch(
         att.update(l.account_code.as_bytes());
         att.update(&l.unit.0.to_le_bytes());
         att.update(&l.mantissa.to_le_bytes());
+    }
+    // Preserve dimension-free v1 attestations exactly. A dimension projection
+    // appends its own framed domain so changed mappings cannot share a digest.
+    if chunks.iter().any(|chunk| !chunk.leg_dimensions.is_empty()) {
+        att.update(b"fa:formats:legacy-import-dimensions:v1");
+        att.update(&(chunks.len() as u64).to_le_bytes());
+        for chunk in &chunks {
+            att.update(&(chunk.leg_dimensions.len() as u64).to_le_bytes());
+            for (ordinal, values) in &chunk.leg_dimensions {
+                att.update(&(*ordinal as u64).to_le_bytes());
+                att.update(&(values.len() as u64).to_le_bytes());
+                for (kind, code) in values {
+                    att.update(&(kind.len() as u64).to_le_bytes());
+                    att.update(kind.as_bytes());
+                    att.update(&(code.len() as u64).to_le_bytes());
+                    att.update(code.as_bytes());
+                }
+            }
+        }
     }
     let attestation_digest = att.finalize().0;
 
@@ -903,6 +1169,7 @@ pub fn parse_quickbooks_iif(
                         memo.to_owned()
                     },
                     legs: vec![FormatLeg {
+                        dimensions: Vec::new(),
                         account_code: acct,
                         side,
                         amount: Amount::new(uid, mantissa),
@@ -910,6 +1177,7 @@ pub fn parse_quickbooks_iif(
                         unit_scale: scale,
                         memo: (!memo.is_empty()).then(|| memo.to_owned()),
                     }],
+                    leg_dimensions: BTreeMap::new(),
                 });
             }
             "SPL" => {
@@ -978,6 +1246,7 @@ pub fn parse_quickbooks_iif(
                 };
                 let memo = get("MEMO");
                 entry.legs.push(FormatLeg {
+                    dimensions: Vec::new(),
                     account_code: acct,
                     side,
                     amount: Amount::new(uid, mantissa),
@@ -1058,6 +1327,7 @@ pub fn parse_quickbooks_csv(
         entered_by_column: Some("Created By".to_owned()),
         approved_by_column: None,
         account_mappings: BTreeMap::new(),
+        dimension_columns: BTreeMap::new(),
     };
     parse_tabular_csv_with_format(
         LegacyFormat::QuickBooksCsv,
@@ -1099,6 +1369,7 @@ pub fn parse_xero_csv(
         entered_by_column: Some("CreatedBy".to_owned()),
         approved_by_column: None,
         account_mappings: BTreeMap::new(),
+        dimension_columns: BTreeMap::new(),
     };
     parse_tabular_csv_with_format(LegacyFormat::XeroCsv, src, &col_map, units, account_map)
 }
@@ -1134,6 +1405,7 @@ pub fn parse_netsuite_csv(
         entered_by_column: Some("Created By".to_owned()),
         approved_by_column: Some("Approved By".to_owned()),
         account_mappings: BTreeMap::new(),
+        dimension_columns: BTreeMap::new(),
     };
     parse_tabular_csv_with_format(LegacyFormat::NetSuiteCsv, src, &col_map, units, account_map)
 }
@@ -1167,21 +1439,49 @@ fn parse_tabular_csv_with_format(
     account_map: &AccountMap,
 ) -> Result<LegacyImportBatch, FormatError> {
     let fmt_name = format.registry_name();
+    let header_description = format == LegacyFormat::GenericCsv
+        && column_map.description_column != column_map.memo_column;
+    for (kind, column) in &column_map.dimension_columns {
+        if dimension_kind(kind).is_none() || column.trim().is_empty() || column.trim() != column {
+            return Err(FormatError::Parse {
+                format: fmt_name,
+                detail: format!(
+                    "dimension mapping {kind:?} must name a registered dimension kind and an exact nonblank source column"
+                ),
+            });
+        }
+    }
     let mut header_idx: Option<BTreeMap<String, usize>> = None;
     let mut entry_order: Vec<String> = Vec::new();
     let mut entries_by_id: BTreeMap<String, LegacyChunkEntry> = BTreeMap::new();
     let mut row_count = 0usize;
 
-    for (line_idx, raw_line) in src.lines().enumerate() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
+    let mut records = CsvRecords::new(src, fmt_name, CsvComments::Preamble);
+    while let Some(record) = records.next_record()? {
+        let CsvRecord::Data {
+            line: line_no,
+            fields,
+        } = record
+        else {
             continue;
-        }
-        let fields = parse_csv_fields(line, ',');
+        };
+        let line_idx = line_no - 1;
         if header_idx.is_none() {
             let mut map = BTreeMap::new();
             for (i, h) in fields.iter().enumerate() {
-                map.insert(h.trim().to_owned(), i);
+                let name = h.trim();
+                if name.is_empty() {
+                    return Err(FormatError::Parse {
+                        format: fmt_name,
+                        detail: format!("line {line_no}: empty CSV header column {}", i + 1),
+                    });
+                }
+                if map.insert(name.to_owned(), i).is_some() {
+                    return Err(FormatError::Parse {
+                        format: fmt_name,
+                        detail: format!("line {line_no}: duplicate CSV header column {name:?}"),
+                    });
+                }
             }
             for req in [
                 &column_map.entry_id_column,
@@ -1198,18 +1498,93 @@ fn parse_tabular_csv_with_format(
                     });
                 }
             }
+            // The generic mapping is an explicit promise about this source,
+            // including its provenance columns. A misspelled mapped header
+            // must not silently discard author, reviewer, currency or memo.
+            // Built-in vendor formats allow their optional metadata columns
+            // to be absent, as older exports have always done.
+            if format == LegacyFormat::GenericCsv {
+                for column in [
+                    &column_map.recorded_at_column,
+                    &column_map.debit_column,
+                    &column_map.credit_column,
+                    &column_map.signed_amount_column,
+                    &column_map.side_column,
+                    &column_map.amount_column,
+                    &column_map.unit_column,
+                    &column_map.description_column,
+                    &column_map.memo_column,
+                    &column_map.entered_by_column,
+                    &column_map.approved_by_column,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    if !map.contains_key(column) {
+                        return Err(FormatError::Parse {
+                            format: fmt_name,
+                            detail: format!(
+                                "line {line_no}: missing declared CSV header column {column:?}"
+                            ),
+                        });
+                    }
+                }
+            }
+            for column in column_map.dimension_columns.values() {
+                if !map.contains_key(column) {
+                    return Err(FormatError::Parse {
+                        format: fmt_name,
+                        detail: format!(
+                            "line {line_no}: missing declared dimension CSV header column {column:?}"
+                        ),
+                    });
+                }
+            }
+            let has = |column: &Option<String>| {
+                column.as_ref().is_some_and(|name| map.contains_key(name))
+            };
+            if has(&column_map.debit_column) != has(&column_map.credit_column)
+                || has(&column_map.side_column) != has(&column_map.amount_column)
+            {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!("line {line_no}: CSV amount column pairs must both be present"),
+                });
+            }
+            if !has(&column_map.debit_column)
+                && !has(&column_map.signed_amount_column)
+                && !has(&column_map.side_column)
+            {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!(
+                        "line {line_no}: CSV header has no declared amount representation"
+                    ),
+                });
+            }
             header_idx = Some(map);
             continue;
         }
 
         let headers = header_idx.as_ref().unwrap();
-        let get = |col: &str| -> &str {
+        if fields.len() != headers.len() {
+            return Err(FormatError::Parse {
+                format: fmt_name,
+                detail: format!(
+                    "line {line_no}: CSV record has {} columns; header declares {}",
+                    fields.len(),
+                    headers.len()
+                ),
+            });
+        }
+        let get_text = |col: &str| -> &str {
             headers
                 .get(col)
                 .and_then(|&i| fields.get(i))
-                .map(|s| s.trim())
+                .map(String::as_str)
                 .unwrap_or("")
         };
+        let get = |col: &str| -> &str { get_text(col).trim() };
         let get_opt = |col: &Option<String>| -> &str { col.as_deref().map(get).unwrap_or("") };
 
         row_count += 1;
@@ -1280,7 +1655,15 @@ fn parse_tabular_csv_with_format(
             if signed > 0 {
                 (Side::Debit, signed)
             } else {
-                (Side::Credit, -signed)
+                (
+                    Side::Credit,
+                    signed.checked_neg().ok_or_else(|| FormatError::Overflow {
+                        format: fmt_name,
+                        detail: format!(
+                            "line {line_no}: signed CSV amount magnitude overflows i128"
+                        ),
+                    })?,
+                )
             }
         } else if !side_str.is_empty() || !amount_str.is_empty() {
             let side = if side_str.eq_ignore_ascii_case(&column_map.debit_marker) {
@@ -1319,8 +1702,48 @@ fn parse_tabular_csv_with_format(
             });
         };
 
-        let desc = get_opt(&column_map.description_column);
-        let memo = get_opt(&column_map.memo_column);
+        // Some real exports include both debit/credit columns and a signed
+        // amount (Xero's Gross, for example). All supplied representations
+        // must agree exactly; a priority order must not hide a contradiction.
+        if !signed_str.is_empty() {
+            let expected = if side == Side::Debit {
+                mantissa
+            } else {
+                -mantissa
+            };
+            if parse_exact_decimal(fmt_name, signed_str, scale)? != expected {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!("line {line_no}: conflicting CSV amount representations"),
+                });
+            }
+        }
+        if !side_str.is_empty() || !amount_str.is_empty() {
+            let marker = if side == Side::Debit {
+                &column_map.debit_marker
+            } else {
+                &column_map.credit_marker
+            };
+            if !side_str.eq_ignore_ascii_case(marker)
+                || parse_exact_decimal(fmt_name, amount_str, scale)? != mantissa
+            {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!("line {line_no}: conflicting CSV amount representations"),
+                });
+            }
+        }
+
+        let desc = column_map
+            .description_column
+            .as_deref()
+            .map(get_text)
+            .unwrap_or("");
+        let memo = column_map
+            .memo_column
+            .as_deref()
+            .map(get_text)
+            .unwrap_or("");
         let ts_ns = parse_legacy_timestamp_ns(fmt_name, get_opt(&column_map.recorded_at_column))?;
         let entered_by = {
             let v = get_opt(&column_map.entered_by_column);
@@ -1330,6 +1753,22 @@ fn parse_tabular_csv_with_format(
             let v = get_opt(&column_map.approved_by_column);
             (!v.is_empty()).then(|| v.to_owned())
         };
+        let mut dimensions = BTreeMap::new();
+        for (kind, column) in &column_map.dimension_columns {
+            let code = get_text(column);
+            if code.trim().is_empty() {
+                continue;
+            }
+            if let Some(problem) = dimension_value_problem(kind, code) {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!(
+                        "line {line_no}: dimension {kind:?}: {problem}; nonblank identifiers are never trimmed"
+                    ),
+                });
+            }
+            dimensions.insert(kind.clone(), code.to_owned());
+        }
 
         if !entries_by_id.contains_key(entry_id) {
             entry_order.push(entry_id.to_owned());
@@ -1344,12 +1783,11 @@ fn parse_tabular_csv_with_format(
                         source_approved_by: None,
                     },
                     effective_date: eff_date,
-                    description: if desc.is_empty() {
-                        entry_id.to_owned()
-                    } else {
-                        desc.to_owned()
-                    },
+                    // Keep absence distinct from a supplied description equal
+                    // to the entry ID. Apply the ID fallback after all rows.
+                    description: String::new(),
                     legs: Vec::new(),
+                    leg_dimensions: BTreeMap::new(),
                 },
             );
         }
@@ -1362,6 +1800,18 @@ fn parse_tabular_csv_with_format(
                     line_idx + 1
                 ),
             });
+        }
+        if !desc.trim().is_empty() {
+            if chunk.description.is_empty() {
+                chunk.description = desc.to_owned();
+            } else if header_description && chunk.description != desc {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!(
+                        "line {line_no}: conflicting header description for legacy entry {entry_id:?}; map per-line descriptions with memo_column"
+                    ),
+                });
+            }
         }
         merge_provenance_field(
             &mut chunk.provenance.source_recorded_at_ns,
@@ -1384,19 +1834,29 @@ fn parse_tabular_csv_with_format(
             line_idx + 1,
             "approved-by identity",
         )?;
+        if !dimensions.is_empty() {
+            chunk.leg_dimensions.insert(chunk.legs.len(), dimensions);
+        }
         chunk.legs.push(FormatLeg {
+            dimensions: Vec::new(),
             account_code,
             side,
             amount: Amount::new(uid, mantissa),
             unit_code: unit_code.to_owned(),
             unit_scale: scale,
-            memo: (!memo.is_empty()).then(|| memo.to_owned()),
+            memo: (!memo.trim().is_empty()).then(|| memo.to_owned()),
         });
     }
 
     let chunks: Vec<LegacyChunkEntry> = entry_order
         .into_iter()
-        .filter_map(|id| entries_by_id.remove(&id))
+        .filter_map(|id| {
+            let mut chunk = entries_by_id.remove(&id)?;
+            if chunk.description.is_empty() {
+                chunk.description = id;
+            }
+            Some(chunk)
+        })
         .collect();
 
     finalize_legacy_batch(
@@ -1695,6 +2155,7 @@ fn beancount_posting(
                 ),
             };
             txn.legs.push(FormatLeg {
+                dimensions: Vec::new(),
                 account_code,
                 side,
                 amount: Amount::new(uid, mantissa),
@@ -1740,6 +2201,7 @@ fn finish_ledger_txn(
                 std::cmp::Ordering::Less => (Side::Debit, net.checked_neg().ok_or_else(overflow)?),
             };
             legs.push(FormatLeg {
+                dimensions: Vec::new(),
                 account_code: account_code.clone(),
                 side,
                 amount: Amount::new(unit, mantissa),
@@ -1760,6 +2222,7 @@ fn finish_ledger_txn(
         effective_date: txn.date,
         description: txn.description,
         legs,
+        leg_dimensions: BTreeMap::new(),
     })
 }
 
@@ -2105,6 +2568,7 @@ fn hledger_posting(
         return Ok(());
     }
     txn.legs.push(FormatLeg {
+        dimensions: Vec::new(),
         account_code,
         side: if negative { Side::Credit } else { Side::Debit },
         amount: Amount::new(uid, magnitude),
@@ -2150,6 +2614,497 @@ mod tests {
         map.insert("090", "1000");
         map.insert("429", "5000");
         map
+    }
+
+    fn csv_columns(extra: &str) -> LegacyColumnMap {
+        LegacyColumnMap::parse_toml(&format!(
+            "[columns]\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\naccount_column = \"account\"\nsigned_amount_column = \"amount\"\n{extra}"
+        ))
+        .expect("declared columns")
+    }
+
+    #[test]
+    fn legacy_csv_dimensions_preserve_source_leg_identity_and_bind_the_projection() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns(
+            "memo_column = \"memo\"\n[dimension_columns]\nproduct = \"product\"\ndepartment = \"department\"\n",
+        );
+        let source = concat!(
+            "entry,date,account,amount,memo,department,product\r\n",
+            "A,2025-12-31,1000,12.50,\"first\r\nsecond\",0100001,01\r\n",
+            "B,2025-12-31,1000,2.00,other,8800001,\r\n",
+            "A,2025-12-31,3000,-12.50,capital, ,\r\n",
+            "B,2025-12-31,3000,-2.00,capital,8800001,\r\n",
+        );
+        let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch.row_count, 4);
+        assert_eq!(batch.chunks[0].provenance.source_id, "A");
+        assert_eq!(batch.chunks[1].provenance.source_id, "B");
+        assert_eq!(batch.chunks[0].leg_dimensions.len(), 1);
+        assert_eq!(batch.chunks[0].leg_dimensions[&0]["department"], "0100001");
+        assert_eq!(batch.chunks[0].leg_dimensions[&0]["product"], "01");
+        assert_eq!(batch.chunks[1].leg_dimensions[&1]["department"], "8800001");
+        assert_eq!(
+            batch.chunks[0].legs[0].memo.as_deref(),
+            Some("first\r\nsecond")
+        );
+
+        let book = BookContext {
+            book_id: Id128([0x64; 16]),
+            calendar: FiscalCalendar::monthly("cal", 1, 1).unwrap(),
+            units: UnitRegistry::with_defaults(),
+            seal_key: SealKey([0x44; 32]),
+            symbols: SymbolTable::compiled(),
+        };
+        let mut counter = 0_u64;
+        let proposals = batch
+            .to_chunk_proposals_with_sealer(
+                &book,
+                VId(1),
+                DateDay::parse("2026-01-01").unwrap(),
+                Some("FY2026-OPEN"),
+                PRINCIPAL,
+                Oid([0x82; 32]),
+                Vec::new(),
+                |text| {
+                    counter += 1;
+                    let mut salt = [0x91; 32];
+                    salt[..8].copy_from_slice(&counter.to_le_bytes());
+                    let mut nonce = [0x92; 24];
+                    nonce[..8].copy_from_slice(&counter.to_le_bytes());
+                    Ok::<_, FormatError>(Erasable::seal(
+                        &text.to_owned(),
+                        None,
+                        &book.seal_key,
+                        salt,
+                        nonce,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            proposals[0].legs[0].dimension_set,
+            vec![
+                (
+                    3,
+                    dimension_value_vid(book.book_id, "department", "0100001")
+                ),
+                (5, dimension_value_vid(book.book_id, "product", "01")),
+            ]
+        );
+        assert!(proposals[0].legs[1].dimension_set.is_empty());
+
+        // Interop's raw native IDs are book-local. A programmatic caller
+        // cannot hide them inside a legacy leg and have import discard them
+        // or mistake them for codes in the destination book.
+        let mut foreign_ids = batch.clone();
+        foreign_ids.chunks[0].legs[0].dimensions = vec![(3, 0xab)];
+        let mut sealed = 0;
+        let error = foreign_ids
+            .to_chunk_proposals_with_sealer(
+                &book,
+                VId(1),
+                DateDay::parse("2026-01-01").unwrap(),
+                Some("FY2026-OPEN"),
+                PRINCIPAL,
+                Oid([0x82; 32]),
+                Vec::new(),
+                |_| {
+                    sealed += 1;
+                    Err::<Erasable<String>, _>(FormatError::Parse {
+                        format: "test",
+                        detail: "sealer must not be reached".into(),
+                    })
+                },
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("explicit named dimension code mappings")
+        );
+        assert_eq!(
+            sealed, 0,
+            "no approval proposal or private commitment was generated"
+        );
+
+        let mut no_projection = columns.clone();
+        no_projection.dimension_columns.clear();
+        let plain = parse_generic_csv(source, &no_projection, &units, &accounts).unwrap();
+        assert_eq!(batch.source_bytes_digest, plain.source_bytes_digest);
+        assert_eq!(batch.trial_balance, plain.trial_balance);
+        assert_ne!(batch.attestation_digest, plain.attestation_digest);
+        let mut reassigned = columns;
+        reassigned
+            .dimension_columns
+            .insert("department".into(), "product".into());
+        let changed = parse_generic_csv(source, &reassigned, &units, &accounts).unwrap();
+        assert_ne!(batch.attestation_digest, changed.attestation_digest);
+    }
+
+    #[test]
+    fn legacy_csv_empty_dimension_projection_preserves_dimension_free_attestations() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let source = "entry,date,account,amount,department\nA,2025-12-31,1000,1.00, \nA,2025-12-31,3000,-1.00,\n";
+        let plain = parse_generic_csv(source, &csv_columns(""), &units, &accounts).unwrap();
+        let mapped = parse_generic_csv(
+            source,
+            &csv_columns("[dimension_columns]\ndepartment = \"department\"\n"),
+            &units,
+            &accounts,
+        )
+        .unwrap();
+        assert_eq!(
+            plain, mapped,
+            "absent values do not change historical import bytes or digests"
+        );
+    }
+
+    #[test]
+    fn legacy_csv_dimension_mappings_refuse_ambiguity_missing_columns_and_invalid_codes() {
+        for declaration in [
+            "[dimension_columns]\ndepartment = \"department\"\ndepartment = \"other\"\n",
+            "[dimension_columns]\nunknown_kind = \"department\"\n",
+            "[dimension_columns]\nparty = \"party\"\n",
+            "[dimension_columns]\ndepartment = \" \"\n",
+            "[dimension_columns]\ndepartment = \" department\"\n",
+        ] {
+            let text = format!(
+                "[columns]\nentry_id_column=\"entry\"\neffective_date_column=\"date\"\naccount_column=\"account\"\nsigned_amount_column=\"amount\"\n{declaration}"
+            );
+            assert!(LegacyColumnMap::parse_toml(&text).is_err(), "{declaration}");
+        }
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("[dimension_columns]\ndepartment = \"department\"\n");
+        let missing =
+            "entry,date,account,amount\nA,2025-12-31,1000,1.00\nA,2025-12-31,3000,-1.00\n";
+        let error = parse_generic_csv(missing, &columns, &units, &accounts).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing declared dimension CSV header")
+        );
+        for invalid_code in [" 0100001", "0100001 ", "01 00001", "café", "01\t00001"] {
+            let source = format!(
+                "entry,date,account,amount,department\nA,2025-12-31,1000,1.00,{invalid_code}\nA,2025-12-31,3000,-1.00,\n"
+            );
+            let error = parse_generic_csv(&source, &columns, &units, &accounts).unwrap_err();
+            assert!(
+                error.to_string().contains("line 2: dimension"),
+                "{invalid_code:?}: {error}"
+            );
+        }
+        let mut batch = parse_generic_csv(
+            "entry,date,account,amount,department\nA,2025-12-31,1000,1.00,0100001\nA,2025-12-31,3000,-1.00,\n",
+            &columns, &units, &accounts,
+        ).unwrap();
+        let values = batch.chunks[0].leg_dimensions[&0].clone();
+        batch.chunks[0].leg_dimensions.insert(2, values);
+        assert!(
+            batch.chunks[0].validate_dimensions("csv").is_err(),
+            "no dimension may silently lose its source leg"
+        );
+    }
+
+    #[test]
+    fn legacy_csv_multiline_records_preserve_exact_text_and_interleaved_entries() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("description_column = \"description\"\nmemo_column = \"memo\"\n");
+        let source = concat!(
+            "\u{feff}# retained source export\r\n",
+            "\"entry\",date,account,amount,description,memo\r\n",
+            "J-A,2025-12-31,1000,1234.56,\"  Café, Inc.  \",\"Invoice \"\"A\"\"\r\n",
+            "# this is memo data, not a comment\"\r\n",
+            "J-B,2025-12-30,5000,9.00,Expense,\"first\nsecond\"\r\n",
+            "J-A,2025-12-31,3000,-1000.00,\"  Café, Inc.  \",\"  significant spaces  \"\r\n",
+            "J-A,2025-12-31,4000,-234.56,\"  Café, Inc.  \",\"\"\r\n",
+            "J-B,2025-12-30,1000,-9.00,Expense,last record without newline",
+        );
+        let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(
+            batch.row_count, 5,
+            "logical source rows, not physical lines"
+        );
+        assert_eq!(batch.chunks.len(), 2);
+        assert_eq!(batch.chunks[0].provenance.source_id, "J-A");
+        assert_eq!(batch.chunks[1].provenance.source_id, "J-B");
+        assert_eq!(batch.chunks[0].description, "  Café, Inc.  ");
+        assert_eq!(
+            batch.chunks[0].legs[0].memo.as_deref(),
+            Some("Invoice \"A\"\r\n# this is memo data, not a comment")
+        );
+        assert_eq!(
+            batch.chunks[0].legs[1].memo.as_deref(),
+            Some("  significant spaces  ")
+        );
+        assert_eq!(batch.chunks[0].legs[2].memo, None);
+        assert_eq!(
+            batch.chunks[1].legs[0].memo.as_deref(),
+            Some("first\nsecond")
+        );
+        let balances: Vec<_> = batch
+            .trial_balance
+            .iter()
+            .map(|line| (line.account_code.as_str(), line.mantissa))
+            .collect();
+        assert_eq!(
+            balances,
+            [
+                ("1000", 122_556),
+                ("3000", -100_000),
+                ("4000", -23_456),
+                ("5000", 900)
+            ]
+        );
+        let replay = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch, replay);
+        // Only the record separator changes: the source commitment must still
+        // change even though the monetary interpretation is identical.
+        let changed = source.replacen("export\r\n", "export\n", 1);
+        let changed = parse_generic_csv(&changed, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch.chunks, changed.chunks);
+        assert_ne!(batch.source_bytes_digest, changed.source_bytes_digest);
+        assert_ne!(batch.attestation_digest, changed.attestation_digest);
+    }
+
+    #[test]
+    fn legacy_csv_conflicting_header_description_is_refused_with_source_context() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("description_column = \"description\"\nmemo_column = \"memo\"\n");
+        // Preserve the original multiline regression source: it used to pass
+        // while silently dropping Capital, Revenue and Payment as headers.
+        let source = concat!(
+            "\u{feff}# retained source export\r\n",
+            "\"entry\",date,account,amount,description,memo\r\n",
+            "J-A,2025-12-31,1000,1234.56,\"  Café, Inc.  \",\"Invoice \"\"A\"\"\r\n",
+            "# this is memo data, not a comment\"\r\n",
+            "J-B,2025-12-30,5000,9.00,Expense,\"first\nsecond\"\r\n",
+            "J-A,2025-12-31,3000,-1000.00,Capital,\"  significant spaces  \"\r\n",
+            "J-A,2025-12-31,4000,-234.56,Revenue,\"\"\r\n",
+            "J-B,2025-12-30,1000,-9.00,Payment,last record without newline",
+        );
+        let error = parse_generic_csv(source, &columns, &units, &accounts)
+            .expect_err("a separate header description cannot silently lose source text");
+        let message = error.to_string();
+        assert!(message.contains("line 7: conflicting header description"));
+        assert!(message.contains("legacy entry \"J-A\""));
+        assert!(message.contains("memo_column"));
+    }
+
+    #[test]
+    fn legacy_csv_header_descriptions_merge_sparse_interleaved_rows_exactly() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("description_column = \"description\"\nmemo_column = \"memo\"\n");
+        let source = concat!(
+            "entry,date,account,amount,description,memo\n",
+            "J-A,2025-12-31,1000,125.00,\" \t \",\"  cash leg  \"\n",
+            "J-B,2025-12-30,5000,9.00,Expense,expense detail\n",
+            "J-A,2025-12-31,3000,-100.00,\"  Café, Inc.  \",capital detail\n",
+            "J-C,2025-12-29,1000,1.00,,blank header debit\n",
+            "J-B,2025-12-30,1000,-9.00,Expense,payment detail\n",
+            "J-A,2025-12-31,4000,-25.00,,revenue detail\n",
+            "J-C,2025-12-29,1000,-1.00,\"   \",blank header credit\n",
+        );
+        let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch.row_count, 7);
+        assert_eq!(batch.chunks.len(), 3);
+        assert_eq!(batch.chunks[0].provenance.source_id, "J-A");
+        assert_eq!(batch.chunks[0].description, "  Café, Inc.  ");
+        assert_eq!(batch.chunks[1].provenance.source_id, "J-B");
+        assert_eq!(batch.chunks[1].description, "Expense");
+        assert_eq!(batch.chunks[2].provenance.source_id, "J-C");
+        assert_eq!(batch.chunks[2].description, "J-C");
+        assert_eq!(
+            batch.chunks[0]
+                .legs
+                .iter()
+                .map(|leg| (leg.side, leg.amount.mantissa, leg.memo.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                (Side::Debit, 12_500, Some("  cash leg  ")),
+                (Side::Credit, 10_000, Some("capital detail")),
+                (Side::Credit, 2_500, Some("revenue detail")),
+            ]
+        );
+        assert_eq!(
+            batch
+                .trial_balance
+                .iter()
+                .map(|line| (line.account_code.as_str(), line.mantissa))
+                .collect::<Vec<_>>(),
+            [
+                ("1000", 11_600),
+                ("3000", -10_000),
+                ("4000", -2_500),
+                ("5000", 900)
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_csv_header_description_conflicts_preserve_whitespace_and_literal_ids() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("description_column = \"description\"\n");
+        for (first, later) in [("J-A", "Changed"), ("  Header  ", "Header")] {
+            let source = format!(
+                "entry,date,account,amount,description\nJ-A,2025-12-31,1000,1.00,\"{first}\"\nJ-A,2025-12-31,3000,-1.00,\"{later}\"\n"
+            );
+            let error = parse_generic_csv(&source, &columns, &units, &accounts).expect_err(
+                "nonblank headers must agree byte-for-byte, even when one equals the ID",
+            );
+            let message = error.to_string();
+            assert!(message.contains("line 3: conflicting header description"));
+            assert!(message.contains("legacy entry \"J-A\""));
+        }
+    }
+
+    #[test]
+    fn legacy_csv_shared_description_memo_column_preserves_each_leg() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("description_column = \"memo\"\nmemo_column = \"memo\"\n");
+        let source = concat!(
+            "entry,date,account,amount,memo\n",
+            "J-A,2025-12-31,1000,125.00,\"   \"\n",
+            "J-A,2025-12-31,3000,-100.00,\"  Capital, Café  \"\n",
+            "J-A,2025-12-31,4000,-25.00,\"Revenue\nline detail\"\n",
+        );
+        let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch.row_count, 3);
+        assert_eq!(batch.chunks.len(), 1);
+        assert_eq!(batch.chunks[0].description, "  Capital, Café  ");
+        assert_eq!(
+            batch.chunks[0]
+                .legs
+                .iter()
+                .map(|leg| (leg.side, leg.amount.mantissa, leg.memo.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                (Side::Debit, 12_500, None),
+                (Side::Credit, 10_000, Some("  Capital, Café  ")),
+                (Side::Credit, 2_500, Some("Revenue\nline detail")),
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_csv_refuses_malformed_quotes_and_reports_physical_source_lines() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("memo_column = \"memo\"\n");
+        for (memo, diagnostic) in [
+            ("unquoted\"text", "unexpected quote"),
+            ("\"closed\"suffix", "unexpected text"),
+            ("\"never closed", "unterminated quoted CSV field"),
+        ] {
+            let source = format!(
+                "entry,date,account,amount,memo\nJ1,2025-12-31,1000,10.00,{memo}\nJ1,2025-12-31,3000,-10.00,credit\n"
+            );
+            let error = parse_generic_csv(&source, &columns, &units, &accounts)
+                .expect_err("malformed quoting must not be repaired into a balanced entry");
+            assert!(matches!(error, FormatError::Parse { detail, .. }
+                if detail.contains("line 2") && detail.contains(diagnostic)));
+        }
+        let source = concat!(
+            "entry,date,account,amount,memo\r\n",
+            "J1,2025-12-31,1000,10.00,\"first\r\nsecond\"\r\n",
+            "J1,2026-01-01,3000,-10.00,credit\r\n",
+        );
+        let error = parse_generic_csv(source, &columns, &units, &accounts).unwrap_err();
+        assert!(matches!(error, FormatError::Parse { detail, .. }
+            if detail.contains("line 4") && detail.contains("conflicting effective date")));
+    }
+
+    #[test]
+    fn legacy_csv_refuses_duplicate_empty_and_ragged_columns() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("memo_column = \"memo\"\n");
+        for (source, diagnostic) in [
+            (
+                "entry,date,account,amount,memo, account\nJ1,2025-12-31,1000,10.00,cash,1000\nJ1,2025-12-31,3000,-10.00,equity,3000\n",
+                "duplicate CSV header",
+            ),
+            (
+                "entry,date,account,amount,memo,\nJ1,2025-12-31,1000,10.00,cash,\nJ1,2025-12-31,3000,-10.00,equity,\n",
+                "empty CSV header",
+            ),
+            (
+                "entry,date,account,amount,memo\nJ1,2025-12-31,1000,10.00\nJ1,2025-12-31,3000,-10.00,equity\n",
+                "line 2: CSV record has 4 columns; header declares 5",
+            ),
+            (
+                "entry,date,account,amount,memo\nJ1,2025-12-31,1000,10.00,cash,ignored\nJ1,2025-12-31,3000,-10.00,equity\n",
+                "line 2: CSV record has 6 columns; header declares 5",
+            ),
+        ] {
+            let error = parse_generic_csv(source, &columns, &units, &accounts).unwrap_err();
+            assert!(matches!(error, FormatError::Parse { detail, .. }
+                if detail.contains(diagnostic)));
+        }
+    }
+
+    #[test]
+    fn legacy_csv_requires_every_explicit_mapping_without_erasing_metadata() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let source =
+            "entry,date,account,amount\nJ1,2025-12-31,1000,10.00\nJ1,2025-12-31,3000,-10.00\n";
+        parse_generic_csv(source, &csv_columns(""), &units, &accounts).unwrap();
+        for mapping in [
+            "recorded_at_column",
+            "unit_column",
+            "description_column",
+            "memo_column",
+            "entered_by_column",
+            "approved_by_column",
+        ] {
+            let columns = csv_columns(&format!("{mapping} = \"absent\"\n"));
+            let error = parse_generic_csv(source, &columns, &units, &accounts).unwrap_err();
+            assert!(matches!(error, FormatError::Parse { detail, .. }
+                if detail.contains("line 1") && detail.contains("missing declared CSV header column \"absent\"")));
+        }
+        let minimum = source.replace("-10.00", "-1701411834604692317316873037158841057.28");
+        assert!(
+            parse_generic_csv(&minimum, &csv_columns(""), &units, &accounts).is_err(),
+            "the magnitude of i128::MIN cannot become a positive credit"
+        );
+    }
+
+    #[test]
+    fn vendor_csv_keeps_optional_metadata_and_alternate_xero_amount_layouts() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let quickbooks = "Transaction ID,Date,Account,Debit,Credit\nJ1,2025-12-31,1000,10.00,\nJ1,2025-12-31,3000,,10.00\n";
+        let qb = parse_quickbooks_csv(quickbooks, &units, &accounts, "USD").unwrap();
+        assert_eq!(qb.chunks[0].provenance.source_entered_by, None);
+        let netsuite = quickbooks.replace("Transaction ID", "Internal ID");
+        let ns = parse_netsuite_csv(&netsuite, &units, &accounts, "USD").unwrap();
+        assert_eq!(ns.trial_balance, qb.trial_balance);
+        let xero = "JournalNumber,JournalDate,AccountCode,Gross\nJ1,2025-12-31,1000,10.00\nJ1,2025-12-31,3000,-10.00\n";
+        let xero = parse_xero_csv(xero, &units, &accounts, "USD").unwrap();
+        assert_eq!(xero.trial_balance, qb.trial_balance);
+        let xero_debits = quickbooks
+            .replace("Transaction ID", "JournalNumber")
+            .replace("Date", "JournalDate")
+            .replace("Account", "AccountCode");
+        assert_eq!(
+            parse_xero_csv(&xero_debits, &units, &accounts, "USD")
+                .unwrap()
+                .trial_balance,
+            qb.trial_balance
+        );
+        let partial_pair = "Transaction ID,Date,Account,Debit\nJ1,2025-12-31,1000,10.00\n";
+        let error = parse_quickbooks_csv(partial_pair, &units, &accounts, "USD").unwrap_err();
+        assert!(matches!(error, FormatError::Parse { detail, .. }
+            if detail.contains("CSV amount column pairs must both be present")));
     }
 
     #[test]
@@ -2283,6 +3238,187 @@ ENTRY-1,2025-12-31,,4000,-25.00,Revenue,,
                     if detail.contains("line 4") && detail.contains(field)
             ));
         }
+    }
+
+    fn real_world_csv_columns(extra: &str) -> LegacyColumnMap {
+        LegacyColumnMap::parse_toml(&format!(
+            "[columns]\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\naccount_column = \"account\"\nsigned_amount_column = \"amount\"\nmemo_column = \"memo\"\n{extra}"
+        ))
+        .expect("explicit CSV columns")
+    }
+
+    #[test]
+    fn legacy_csv_preserves_multiline_records_bom_quotes_ids_and_exact_large_amounts() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = real_world_csv_columns(
+            "recorded_at_column = \"recorded\"\nentered_by_column = \"entered\"\napproved_by_column = \"approved\"\n",
+        );
+        let source = concat!(
+            "\u{feff}# source comment, with an unmatched quote: \"\r\n",
+            "entry,date,account,amount,memo,recorded,entered,approved\r\n",
+            "\"000001,part \"\"A\"\"\",2025-12-31,1000,90071992547409.93,\"  café, \"\"proof\"\"\r\n",
+            "# this is retained evidence, not a comment\n",
+            "last line  \",2025-12-31T10:00:00Z,Alice,Carol\r\n",
+            "#OTHER,2025-12-31,1000,0.01,small debit,,,\r\n",
+            "#OTHER,2025-12-31,3000,-0.01,small credit,,,\r\n",
+            "\"000001,part \"\"A\"\"\",2025-12-31,3000,-90071992547409.93,\"credit, account\",,,",
+        );
+        let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch.row_count, 4, "physical lines are not source rows");
+        assert_eq!(batch.chunks.len(), 2);
+        let first = &batch.chunks[0];
+        assert_eq!(first.provenance.source_id, "000001,part \"A\"");
+        assert_eq!(first.legs.len(), 2);
+        assert_eq!(first.legs[0].amount.mantissa, 9_007_199_254_740_993);
+        assert_eq!(first.legs[1].amount.mantissa, 9_007_199_254_740_993);
+        assert_eq!(first.legs[0].side, Side::Debit);
+        assert_eq!(first.legs[1].side, Side::Credit);
+        assert_eq!(
+            first.legs[0].memo.as_deref(),
+            Some("  café, \"proof\"\r\n# this is retained evidence, not a comment\nlast line  ")
+        );
+        assert_eq!(first.legs[1].memo.as_deref(), Some("credit, account"));
+        assert_eq!(first.provenance.source_entered_by.as_deref(), Some("Alice"));
+        assert_eq!(
+            first.provenance.source_approved_by.as_deref(),
+            Some("Carol")
+        );
+        assert_eq!(batch.chunks[1].provenance.source_id, "#OTHER");
+        assert_eq!(batch.trial_balance[0].mantissa, 9_007_199_254_740_994);
+
+        // The parser never normalizes the retained source commitment, even
+        // when an LF-only source happens to yield the same monetary legs.
+        let lf_only =
+            parse_generic_csv(&source.replace("\r\n", "\n"), &columns, &units, &accounts).unwrap();
+        assert_ne!(batch.source_bytes_digest, lf_only.source_bytes_digest);
+
+        let changed = source.replace("\"credit, account\",,,", "\"credit, account\",,Mallory,");
+        let error = parse_generic_csv(&changed, &columns, &units, &accounts).unwrap_err();
+        assert!(matches!(error, FormatError::Parse { detail, .. }
+            if detail.contains("line 8") && detail.contains("entered-by identity")));
+    }
+
+    #[test]
+    fn legacy_csv_refuses_malformed_quotes_duplicate_headers_and_ragged_rows() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = real_world_csv_columns("");
+        let header = "entry,date,account,amount,memo\n";
+        for (source, reason) in [
+            (
+                format!("{header}E\"1,2025-12-31,1000,1.00,memo\n"),
+                "unexpected quote",
+            ),
+            (
+                format!("{header}\"E1\"junk,2025-12-31,1000,1.00,memo\n"),
+                "unexpected text",
+            ),
+            (
+                format!("{header}E1,2025-12-31,1000,1.00,\"never closed\n"),
+                "unterminated quoted",
+            ),
+            (
+                "entry,date,account,amount, amount ,memo\n".to_owned(),
+                "duplicate CSV header",
+            ),
+            (
+                format!("{header}E1,2025-12-31,1000,1.00\n"),
+                "record has 4 columns; header declares 5",
+            ),
+            (
+                format!("{header}E1,2025-12-31,1000,1.00,memo,discarded\n"),
+                "record has 6 columns; header declares 5",
+            ),
+        ] {
+            let error = parse_generic_csv(&source, &columns, &units, &accounts)
+                .expect_err("malformed records must never silently become a different ledger");
+            assert!(
+                matches!(error, FormatError::Parse { detail, .. }
+                if detail.contains(reason)),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_csv_requires_declared_generic_metadata_but_keeps_vendor_optional_columns() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let source = "entry,date,account,amount,memo\nE1,2025-12-31,1000,1.00,cash\nE1,2025-12-31,3000,-1.00,capital\n";
+        for key in [
+            "recorded_at_column",
+            "unit_column",
+            "description_column",
+            "entered_by_column",
+            "approved_by_column",
+        ] {
+            let columns = real_world_csv_columns(&format!("{key} = \"misspelled\"\n"));
+            let error = parse_generic_csv(source, &columns, &units, &accounts).unwrap_err();
+            assert!(matches!(error, FormatError::Parse { detail, .. }
+                if detail.contains("missing declared CSV header column") && detail.contains("misspelled")));
+        }
+        let qb = "Transaction ID,Date,Account,Debit,Credit\n001,2025-12-31,1000,1.00,\n001,2025-12-31,3000,,1.00\n";
+        let batch = parse_quickbooks_csv(qb, &units, &accounts, "USD").unwrap();
+        assert_eq!(batch.chunks[0].provenance.source_id, "001");
+        assert_eq!(batch.chunks[0].provenance.source_entered_by, None);
+        assert_eq!(batch.chunks[0].legs[0].amount.mantissa, 100);
+
+        // A typo cannot change an explicit map by silently taking its last value.
+        for repeated in [
+            "entry_id_column = \"other\"\n",
+            "[account_map]\n\"legacy\" = \"1000\"\n\"legacy\" = \"3000\"\n",
+        ] {
+            assert!(LegacyColumnMap::parse_toml(&format!(
+                "[columns]\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\naccount_column = \"account\"\nsigned_amount_column = \"amount\"\n{repeated}"
+            )).is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_csv_checks_every_supplied_amount_representation() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = real_world_csv_columns(
+            "debit_column = \"debit\"\ncredit_column = \"credit\"\nside_column = \"side\"\namount_column = \"magnitude\"\n",
+        );
+        let source = concat!(
+            "entry,date,account,amount,memo,debit,credit,side,magnitude\n",
+            "E1,2025-12-31,1000,12.34,cash,12.34,,D,12.34\n",
+            "E1,2025-12-31,3000,-12.34,capital,,12.34,C,12.34\n",
+        );
+        let batch = parse_generic_csv(source, &columns, &units, &accounts).unwrap();
+        assert_eq!(batch.chunks[0].legs[0].amount.mantissa, 1_234);
+        for changed in [
+            source.replace(",1000,12.34,", ",1000,12.35,"),
+            source.replace(",3000,-12.34,", ",3000,12.34,"),
+            source.replace(",D,12.34", ",C,12.34"),
+            source.replace(",C,12.34", ",C,12.35"),
+        ] {
+            let error = parse_generic_csv(&changed, &columns, &units, &accounts).unwrap_err();
+            assert!(matches!(error, FormatError::Parse { detail, .. }
+                if detail.contains("conflicting CSV amount representations")));
+        }
+        for token in ["1.234", "1e2", "NaN", "Inf"] {
+            let changed = source.replace(",1000,12.34,", &format!(",1000,{token},"));
+            assert!(
+                parse_generic_csv(&changed, &columns, &units, &accounts).is_err(),
+                "even a secondary amount must be exact: {token}"
+            );
+        }
+
+        // Xero legitimately repeats a signed Gross beside debit/credit; that
+        // representation stays accepted when every supplied value agrees.
+        let xero = "JournalNumber,JournalDate,AccountCode,Debit,Credit,Gross\n0001,2025-12-31,090,12.34,,12.34\n0001,2025-12-31,200,,12.34,-12.34\n";
+        assert_eq!(
+            parse_xero_csv(xero, &units, &accounts, "USD")
+                .unwrap()
+                .row_count,
+            2
+        );
+        assert!(
+            parse_xero_csv(&xero.replace(",-12.34", ",12.34"), &units, &accounts, "USD").is_err()
+        );
     }
 
     #[test]

@@ -6,6 +6,6 @@ version = 1
 kind = "harness_selftest"
 scope = "the runner's exact_gap N evaluation: a mechanism-explained gap and a zero-gap twin target"
 claims = []
-capabilities = ["verb:post", "procedure:ponzi.net_investment@4"]
+capabilities = ["verb:post", "procedure:ponzi.net_investment@5"]
 pinned_commit = "60d7b6c0a"
 variants = ["native"]

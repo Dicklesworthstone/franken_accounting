@@ -385,6 +385,70 @@ pub struct FormatLeg {
     pub unit_code: String,
     pub unit_scale: u8,
     pub memo: Option<String>,
+    /// Exact native `(dimension kind, value identity)` pairs, sorted by kind.
+    /// Empty is an untagged leg; codes and names require a separate dictionary.
+    pub dimensions: Vec<(u32, u128)>,
+}
+
+/// Additive format extension for exact native dimension identities.
+pub const DIMENSION_ENCODING: &str = "fa-dimension-ids-v1";
+pub const MAX_FORMAT_DIMENSIONS: usize = fa_model::limits::MAX_DIMENSIONS_PER_LEG;
+
+/// Serialize in the supplied order, without sorting or repairing a public
+/// struct. Valid journals carry at most 64 strictly increasing kind IDs.
+pub fn format_dimension_set(dimensions: &[(u32, u128)]) -> String {
+    dimensions
+        .iter()
+        .map(|(kind, value)| format!("{kind}:{value:032x}"))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn validate_dimension_set(dimensions: &[(u32, u128)]) -> Result<(), FormatError> {
+    if dimensions.len() > MAX_FORMAT_DIMENSIONS
+        || dimensions.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+    {
+        return Err(FormatError::Parse {
+            format: "dimension_set_v1",
+            detail: "dimension sets require at most 64 unique kind IDs in increasing order".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Decode the canonical `kind:32-lowercase-hex;kind:32-lowercase-hex` wire.
+/// An empty field is untagged. No whitespace, numeric coercion, duplicate
+/// kinds, ordering repair, unknown separators, or trailing data is accepted.
+pub fn parse_dimension_set(text: &str) -> Result<Vec<(u32, u128)>, FormatError> {
+    let bad = || {
+        FormatError::Parse {
+        format: "dimension_set_v1",
+        detail: "expected increasing u32 kind IDs and exactly 32 lowercase hex value IDs, separated by semicolons".into(),
+    }
+    };
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut dimensions = Vec::new();
+    for item in text.split(';') {
+        if dimensions.len() == MAX_FORMAT_DIMENSIONS {
+            return Err(bad());
+        }
+        let (kind, value) = item.split_once(':').ok_or_else(bad)?;
+        let id = kind.parse::<u32>().map_err(|_| bad())?;
+        if kind != id.to_string()
+            || value.len() != 32
+            || !value
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        {
+            return Err(bad());
+        }
+        let value = u128::from_str_radix(value, 16).map_err(|_| bad())?;
+        dimensions.push((id, value));
+    }
+    validate_dimension_set(&dimensions)?;
+    Ok(dimensions)
 }
 
 /// Canonical journal entry in an interop journal.
@@ -433,6 +497,23 @@ pub struct RoundTripIdentityProof {
 }
 
 impl FormatJournal {
+    /// Whether the additive dimension extension is required in an export.
+    pub fn has_dimensions(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.legs.iter().any(|leg| !leg.dimensions.is_empty()))
+    }
+
+    /// Validate the exact tag sets without changing their identities or order.
+    pub fn validate_dimensions(&self) -> Result<(), FormatError> {
+        for entry in &self.entries {
+            for leg in &entry.legs {
+                validate_dimension_set(&leg.dimensions)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Construct a `FormatJournal` with a freshly computed `ExportCoordinate` certificate.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -615,12 +696,42 @@ impl FormatJournal {
                 }
             }
         }
+        // The base encoding and historical dimension-free digests are
+        // unchanged. Explicit ordinals bind each tag set to its exact leg;
+        // monetary equality cannot hide attribution changes or moved tags.
+        let dimensional: Vec<_> = entries
+            .iter()
+            .enumerate()
+            .flat_map(|(entry_index, entry)| {
+                entry
+                    .legs
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(leg_index, leg)| {
+                        (!leg.dimensions.is_empty()).then_some((entry_index, leg_index, leg))
+                    })
+            })
+            .collect();
+        if !dimensional.is_empty() {
+            h.update(b"fa:formats:leg-dimensions:v1");
+            h.update(&(dimensional.len() as u64).to_le_bytes());
+            for (entry_index, leg_index, leg) in dimensional {
+                h.update(&(entry_index as u64).to_le_bytes());
+                h.update(&(leg_index as u64).to_le_bytes());
+                h.update(&(leg.dimensions.len() as u64).to_le_bytes());
+                for (kind, value) in &leg.dimensions {
+                    h.update(&kind.to_le_bytes());
+                    h.update(&value.to_le_bytes());
+                }
+            }
+        }
         h.finalize().0
     }
 
     /// Verify every entry's per-unit double-entry balance (`FA-INV-01`) and
     /// compute exact signed `(Dr - Cr)` balances per `(account_code, unit_code)`.
     pub fn fold_balances(&self) -> Result<BTreeMap<(String, String), i128>, FormatError> {
+        self.validate_dimensions()?;
         if self
             .accounts
             .iter()

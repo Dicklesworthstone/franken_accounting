@@ -2862,8 +2862,8 @@ fields = ["index:int", "entry_vid:hex", "proposal_digest:hex", "effective_date:d
 
 [[shape]]
 name = "legacy_migration_leg"
-doc = "One mapped leg of a retained migration proposal; amount is positive in its native unit and side gives debit or credit."
-fields = ["index:int", "account:string", "side:string", "amount:amount"]
+doc = "One mapped leg of a retained migration proposal; amount is positive in its native unit and side gives debit or credit. Dimensions carry registered native kind/value identities projected from explicitly declared source columns; an empty array means no mapped values."
+fields = ["index:int", "account:string", "side:string", "amount:amount", "dimensions:[batch_plan_dimension]"]
 
 [[shape]]
 name = "migration_mismatch"
@@ -3235,8 +3235,8 @@ fields = ["oid:hex", "kind:string", "mime:string", "grade:string", "size:int", "
 
 [[shape]]
 name = "party_summary"
-doc = "One party: its code, kind, vertex id, opened name (untrusted text, null when erased) and recorded sequence."
-fields = ["code:string", "kind:string", "vid:hex", "name:untrusted_text?", "created_at:seq"]
+doc = "One party: its code, kind, vertex id, native party dimension id and DimensionValue vertex id, opened name (untrusted text, null when erased) and recorded sequence. Exported leg dimensions name dimension_value_vid, not the Party vid; both identities are book-local."
+fields = ["code:string", "kind:string", "vid:hex", "dimension_id:int", "dimension_value_vid:hex", "name:untrusted_text?", "created_at:seq"]
 
 [[shape]]
 name = "legal_entity_summary"

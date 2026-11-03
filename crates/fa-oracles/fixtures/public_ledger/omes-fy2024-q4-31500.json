@@ -1,0 +1,1549 @@
+{
+  "source_url": "https://data.ok.gov/dataset/dd1ecf41-4abc-4886-ab0f-b84d7662d8d4/resource/0c2a7e42-610e-4f1d-826f-f6b267fba68a/download/ledger_fy24_qtr4.csv",
+  "source_sha256": "141e2d5524f6aa9d25c7331bc56f623f43da9a1f00cdfee42b7c5f3ccf6fc0fe",
+  "subset_sha256": "2d60b56cd29ef0e426054cd6107962286b2ad92b1633d29d91bb32a139cd4249",
+  "subset_bytes": 41712,
+  "encoding": "windows-1252",
+  "business_unit": "31500",
+  "name": "FIREFIGHTERS PENS. & RET. SYST.",
+  "rows": 137,
+  "fields": [
+    "BUSINESS_UNIT",
+    "OCP_AGNCY_NAME",
+    "LEDGER",
+    "FISCAL_YEAR",
+    "ACCOUNTING_PERIOD",
+    "FUND_CODE",
+    "FUNDDESCR",
+    "CLASS_FLD",
+    "CLASSDESCR",
+    "DEPTID",
+    "DEPTDESCR",
+    "ACCOUNT",
+    "ACCTDESCR",
+    "OPERATING_UNIT",
+    "OPERUNITDESCR",
+    "PRODUCT",
+    "PRODUCTDESCR",
+    "PROGRAM_CODE",
+    "PGMDESCR",
+    "BUDGET_REF",
+    "CHARTFIELD1",
+    "CF1DESCR",
+    "CHARTFIELD2",
+    "CF2DESCR",
+    "PROJECT_ID",
+    "PROJDESCR",
+    "SUM(L.POSTED_TOTAL_AMT)",
+    "BUDGET_REF_1",
+    "ACTIVITY",
+    "ACTVDESCR",
+    "RESTYPE",
+    "RESDESCR",
+    "RCAT",
+    "RCATDESCR",
+    "RSUBCAT",
+    "RSUBCATDESCR"
+  ],
+  "distinct_values": {
+    "BUSINESS_UNIT": 1,
+    "OCP_AGNCY_NAME": 1,
+    "LEDGER": 1,
+    "FISCAL_YEAR": 1,
+    "ACCOUNTING_PERIOD": 3,
+    "FUND_CODE": 1,
+    "FUNDDESCR": 1,
+    "CLASS_FLD": 4,
+    "CLASSDESCR": 4,
+    "DEPTID": 4,
+    "DEPTDESCR": 4,
+    "ACCOUNT": 51,
+    "ACCTDESCR": 51,
+    "OPERATING_UNIT": 1,
+    "OPERUNITDESCR": 1,
+    "PRODUCT": 1,
+    "PRODUCTDESCR": 1,
+    "PROGRAM_CODE": 2,
+    "PGMDESCR": 1,
+    "BUDGET_REF": 2,
+    "CHARTFIELD1": 1,
+    "CF1DESCR": 1,
+    "CHARTFIELD2": 1,
+    "CF2DESCR": 1,
+    "PROJECT_ID": 1,
+    "PROJDESCR": 1,
+    "SUM(L.POSTED_TOTAL_AMT)": 112,
+    "BUDGET_REF_1": 2,
+    "ACTIVITY": 1,
+    "ACTVDESCR": 1,
+    "RESTYPE": 1,
+    "RESDESCR": 1,
+    "RCAT": 1,
+    "RCATDESCR": 1,
+    "RSUBCAT": 1,
+    "RSUBCATDESCR": 1
+  },
+  "periods": [
+    {
+      "fiscal_year": "2024",
+      "period": "10",
+      "rows": 47,
+      "positive_rows": 39,
+      "negative_rows": 6,
+      "zero_rows": 2,
+      "positive": "81012895.84",
+      "negative": "-81012895.84",
+      "subcent_rows": 0,
+      "name": "FIREFIGHTERS PENS. & RET. SYST.",
+      "net": "0.00"
+    },
+    {
+      "fiscal_year": "2024",
+      "period": "11",
+      "rows": 42,
+      "positive_rows": 34,
+      "negative_rows": 6,
+      "zero_rows": 2,
+      "positive": "117324561.36",
+      "negative": "-117324561.36",
+      "subcent_rows": 0,
+      "name": "FIREFIGHTERS PENS. & RET. SYST.",
+      "net": "0.00"
+    },
+    {
+      "fiscal_year": "2024",
+      "period": "12",
+      "rows": 48,
+      "positive_rows": 40,
+      "negative_rows": 6,
+      "zero_rows": 2,
+      "positive": "64322096.91",
+      "negative": "-64322096.91",
+      "subcent_rows": 0,
+      "name": "FIREFIGHTERS PENS. & RET. SYST.",
+      "net": "0.00"
+    }
+  ],
+  "account_totals": [
+    {
+      "period": "10",
+      "account": "101000",
+      "description": "Cash - Combining Trial Balance",
+      "net": "5327275.31"
+    },
+    {
+      "period": "10",
+      "account": "413101",
+      "description": "Insurance Premium Tax",
+      "net": "-9319043.64"
+    },
+    {
+      "period": "10",
+      "account": "455101",
+      "description": "Federal Grants-In-Aid",
+      "net": "-63365.4"
+    },
+    {
+      "period": "10",
+      "account": "484121",
+      "description": "LocGov-Employee Retirement Pln",
+      "net": "-9878423.89"
+    },
+    {
+      "period": "10",
+      "account": "488172",
+      "description": "Other Inter Xfer frm Optg Fd.",
+      "net": "-3000000"
+    },
+    {
+      "period": "10",
+      "account": "489199",
+      "description": "Other Non-Revenue Receipts",
+      "net": "-21159035.26"
+    },
+    {
+      "period": "10",
+      "account": "511110",
+      "description": "Sals-Regular Pay",
+      "net": "83919.78"
+    },
+    {
+      "period": "10",
+      "account": "511210",
+      "description": "Longevity Pay-State Employees",
+      "net": "626"
+    },
+    {
+      "period": "10",
+      "account": "511420",
+      "description": "Excess Benefit Allowance",
+      "net": "915.86"
+    },
+    {
+      "period": "10",
+      "account": "512110",
+      "description": "Insur.Prem-Hlth-Life-State Pln",
+      "net": "10263.18"
+    },
+    {
+      "period": "10",
+      "account": "512210",
+      "description": "Unemployment Compen.-Payroll",
+      "net": "320.64"
+    },
+    {
+      "period": "10",
+      "account": "513110",
+      "description": "Employer Share-FICA",
+      "net": "5150.14"
+    },
+    {
+      "period": "10",
+      "account": "513120",
+      "description": "Employer Share-MQFE/FICA",
+      "net": "1204.46"
+    },
+    {
+      "period": "10",
+      "account": "513230",
+      "description": "Employer Share OPERS",
+      "net": "8976.22"
+    },
+    {
+      "period": "10",
+      "account": "513280",
+      "description": "Employer Match-AdFeeSt.Annuity",
+      "net": "172.14"
+    },
+    {
+      "period": "10",
+      "account": "513290",
+      "description": "St.Match-Ad Fee-Def Contr",
+      "net": "2118.3"
+    },
+    {
+      "period": "10",
+      "account": "513300",
+      "description": "Ret.Savings-Def Contr Plan",
+      "net": "2863.76"
+    },
+    {
+      "period": "10",
+      "account": "514410",
+      "description": "Retir & Disability-Non-Payroll",
+      "net": "21197150.04"
+    },
+    {
+      "period": "10",
+      "account": "515010",
+      "description": "Offices Of Lawyers",
+      "net": "23479.11"
+    },
+    {
+      "period": "10",
+      "account": "515060",
+      "description": "Acctg,Tax,Books,Payroll Svc",
+      "net": "3444.33"
+    },
+    {
+      "period": "10",
+      "account": "515370",
+      "description": "Computer Facilities Mgmt Svc",
+      "net": "16080"
+    },
+    {
+      "period": "10",
+      "account": "515380",
+      "description": "Other Computer Related Svc",
+      "net": "2355.04"
+    },
+    {
+      "period": "10",
+      "account": "515400",
+      "description": "Admin Mgmt-Gen.Mgmt Consulting",
+      "net": "320338.39"
+    },
+    {
+      "period": "10",
+      "account": "515410",
+      "description": "HR-Exec. Search Consulting Svc",
+      "net": "3850"
+    },
+    {
+      "period": "10",
+      "account": "515580",
+      "description": "Business Support Services",
+      "net": "90"
+    },
+    {
+      "period": "10",
+      "account": "515590",
+      "description": "Document Preparation Services",
+      "net": "244"
+    },
+    {
+      "period": "10",
+      "account": "519130",
+      "description": "Flexible Benefits-Adminis.",
+      "net": "140.44"
+    },
+    {
+      "period": "10",
+      "account": "521210",
+      "description": "Out of State Mileage-Priv.Veh.",
+      "net": "280.06"
+    },
+    {
+      "period": "10",
+      "account": "521230",
+      "description": "Out-of-State Meals-Subsistence",
+      "net": "159.5"
+    },
+    {
+      "period": "10",
+      "account": "521260",
+      "description": "Out-of-State Lodging",
+      "net": "700.29"
+    },
+    {
+      "period": "10",
+      "account": "521310",
+      "description": "Travel Reimb.-Non-State Empls.",
+      "net": "2442.32"
+    },
+    {
+      "period": "10",
+      "account": "531130",
+      "description": "Telecommunication Services",
+      "net": "1577.5"
+    },
+    {
+      "period": "10",
+      "account": "531150",
+      "description": "Printing & Binding Contrs",
+      "net": "2266.4"
+    },
+    {
+      "period": "10",
+      "account": "531180",
+      "description": "Bank Service Charges",
+      "net": "30"
+    },
+    {
+      "period": "10",
+      "account": "532110",
+      "description": "Rent of Office Space",
+      "net": "3654.12"
+    },
+    {
+      "period": "10",
+      "account": "532140",
+      "description": "Rent-Equipment And Machinery",
+      "net": "1045.65"
+    },
+    {
+      "period": "10",
+      "account": "532160",
+      "description": "Rent-Elec Data Processing Eq.",
+      "net": "279.82"
+    },
+    {
+      "period": "10",
+      "account": "533140",
+      "description": "Mtce-Rep.-DP Equip-Vendor",
+      "net": "213.96"
+    },
+    {
+      "period": "10",
+      "account": "536110",
+      "description": "Meeting Refreshments",
+      "net": "325.94"
+    },
+    {
+      "period": "10",
+      "account": "536140",
+      "description": "Office Supplies (Expendable)",
+      "net": "37.88"
+    },
+    {
+      "period": "10",
+      "account": "553190",
+      "description": "Refunds-Overpayment Charges",
+      "net": "9319043.64"
+    },
+    {
+      "period": "10",
+      "account": "561230",
+      "description": "Purchase of Sec & Other Invest",
+      "net": "7076833.97"
+    },
+    {
+      "period": "11",
+      "account": "101000",
+      "description": "Cash - Combining Trial Balance",
+      "net": "-1479486.58"
+    },
+    {
+      "period": "11",
+      "account": "413101",
+      "description": "Insurance Premium Tax",
+      "net": "-28540797.8"
+    },
+    {
+      "period": "11",
+      "account": "455101",
+      "description": "Federal Grants-In-Aid",
+      "net": "-5431.53"
+    },
+    {
+      "period": "11",
+      "account": "484121",
+      "description": "LocGov-Employee Retirement Pln",
+      "net": "-8077120.71"
+    },
+    {
+      "period": "11",
+      "account": "489199",
+      "description": "Other Non-Revenue Receipts",
+      "net": "-21299187.35"
+    },
+    {
+      "period": "11",
+      "account": "511110",
+      "description": "Sals-Regular Pay",
+      "net": "83919.78"
+    },
+    {
+      "period": "11",
+      "account": "511420",
+      "description": "Excess Benefit Allowance",
+      "net": "915.86"
+    },
+    {
+      "period": "11",
+      "account": "512110",
+      "description": "Insur.Prem-Hlth-Life-State Pln",
+      "net": "10263.18"
+    },
+    {
+      "period": "11",
+      "account": "512210",
+      "description": "Unemployment Compen.-Payroll",
+      "net": "143.34"
+    },
+    {
+      "period": "11",
+      "account": "513110",
+      "description": "Employer Share-FICA",
+      "net": "5111.31"
+    },
+    {
+      "period": "11",
+      "account": "513120",
+      "description": "Employer Share-MQFE/FICA",
+      "net": "1195.38"
+    },
+    {
+      "period": "11",
+      "account": "513230",
+      "description": "Employer Share OPERS",
+      "net": "8976.22"
+    },
+    {
+      "period": "11",
+      "account": "513280",
+      "description": "Employer Match-AdFeeSt.Annuity",
+      "net": "172.14"
+    },
+    {
+      "period": "11",
+      "account": "513290",
+      "description": "St.Match-Ad Fee-Def Contr",
+      "net": "2074.48"
+    },
+    {
+      "period": "11",
+      "account": "513300",
+      "description": "Ret.Savings-Def Contr Plan",
+      "net": "2804.29"
+    },
+    {
+      "period": "11",
+      "account": "514410",
+      "description": "Retir & Disability-Non-Payroll",
+      "net": "21362350.43"
+    },
+    {
+      "period": "11",
+      "account": "515010",
+      "description": "Offices Of Lawyers",
+      "net": "34740"
+    },
+    {
+      "period": "11",
+      "account": "515380",
+      "description": "Other Computer Related Svc",
+      "net": "2355.04"
+    },
+    {
+      "period": "11",
+      "account": "515400",
+      "description": "Admin Mgmt-Gen.Mgmt Consulting",
+      "net": "1261062.79"
+    },
+    {
+      "period": "11",
+      "account": "515580",
+      "description": "Business Support Services",
+      "net": "135"
+    },
+    {
+      "period": "11",
+      "account": "515590",
+      "description": "Document Preparation Services",
+      "net": "367.5"
+    },
+    {
+      "period": "11",
+      "account": "515990",
+      "description": "Other Svcs-exc.Pub.Admin.",
+      "net": "249"
+    },
+    {
+      "period": "11",
+      "account": "519130",
+      "description": "Flexible Benefits-Adminis.",
+      "net": "140.44"
+    },
+    {
+      "period": "11",
+      "account": "521110",
+      "description": "In-State Mileage-Motor Vehicle",
+      "net": "217.08"
+    },
+    {
+      "period": "11",
+      "account": "521310",
+      "description": "Travel Reimb.-Non-State Empls.",
+      "net": "1192.45"
+    },
+    {
+      "period": "11",
+      "account": "522150",
+      "description": "Registration - Agency Direct",
+      "net": "2380"
+    },
+    {
+      "period": "11",
+      "account": "531130",
+      "description": "Telecommunication Services",
+      "net": "475.2"
+    },
+    {
+      "period": "11",
+      "account": "531150",
+      "description": "Printing & Binding Contrs",
+      "net": "2286"
+    },
+    {
+      "period": "11",
+      "account": "531180",
+      "description": "Bank Service Charges",
+      "net": "50"
+    },
+    {
+      "period": "11",
+      "account": "532110",
+      "description": "Rent of Office Space",
+      "net": "3654.12"
+    },
+    {
+      "period": "11",
+      "account": "532160",
+      "description": "Rent-Elec Data Processing Eq.",
+      "net": "272.98"
+    },
+    {
+      "period": "11",
+      "account": "533140",
+      "description": "Mtce-Rep.-DP Equip-Vendor",
+      "net": "266.5"
+    },
+    {
+      "period": "11",
+      "account": "536110",
+      "description": "Meeting Refreshments",
+      "net": "506.63"
+    },
+    {
+      "period": "11",
+      "account": "536140",
+      "description": "Office Supplies (Expendable)",
+      "net": "250.58"
+    },
+    {
+      "period": "11",
+      "account": "541130",
+      "description": "Data Processing Software",
+      "net": "1063.5"
+    },
+    {
+      "period": "11",
+      "account": "553190",
+      "description": "Refunds-Overpayment Charges",
+      "net": "28540797.8"
+    },
+    {
+      "period": "11",
+      "account": "561230",
+      "description": "Purchase of Sec & Other Invest",
+      "net": "8071634.95"
+    },
+    {
+      "period": "12",
+      "account": "101000",
+      "description": "Cash - Combining Trial Balance",
+      "net": "-285051.69"
+    },
+    {
+      "period": "12",
+      "account": "413101",
+      "description": "Insurance Premium Tax",
+      "net": "-1532380.19"
+    },
+    {
+      "period": "12",
+      "account": "455101",
+      "description": "Federal Grants-In-Aid",
+      "net": "-11122.73"
+    },
+    {
+      "period": "12",
+      "account": "484121",
+      "description": "LocGov-Employee Retirement Pln",
+      "net": "-7354244.46"
+    },
+    {
+      "period": "12",
+      "account": "489199",
+      "description": "Other Non-Revenue Receipts",
+      "net": "-23120775.23"
+    },
+    {
+      "period": "12",
+      "account": "511110",
+      "description": "Sals-Regular Pay",
+      "net": "83919.78"
+    },
+    {
+      "period": "12",
+      "account": "511210",
+      "description": "Longevity Pay-State Employees",
+      "net": "426"
+    },
+    {
+      "period": "12",
+      "account": "511420",
+      "description": "Excess Benefit Allowance",
+      "net": "915.86"
+    },
+    {
+      "period": "12",
+      "account": "512110",
+      "description": "Insur.Prem-Hlth-Life-State Pln",
+      "net": "10263.18"
+    },
+    {
+      "period": "12",
+      "account": "512210",
+      "description": "Unemployment Compen.-Payroll",
+      "net": "54.12"
+    },
+    {
+      "period": "12",
+      "account": "513110",
+      "description": "Employer Share-FICA",
+      "net": "5137.73"
+    },
+    {
+      "period": "12",
+      "account": "513120",
+      "description": "Employer Share-MQFE/FICA",
+      "net": "1201.57"
+    },
+    {
+      "period": "12",
+      "account": "513230",
+      "description": "Employer Share OPERS",
+      "net": "8976.22"
+    },
+    {
+      "period": "12",
+      "account": "513280",
+      "description": "Employer Match-AdFeeSt.Annuity",
+      "net": "172.14"
+    },
+    {
+      "period": "12",
+      "account": "513290",
+      "description": "St.Match-Ad Fee-Def Contr",
+      "net": "2104.3"
+    },
+    {
+      "period": "12",
+      "account": "513300",
+      "description": "Ret.Savings-Def Contr Plan",
+      "net": "2844.76"
+    },
+    {
+      "period": "12",
+      "account": "514410",
+      "description": "Retir & Disability-Non-Payroll",
+      "net": "23139895.12"
+    },
+    {
+      "period": "12",
+      "account": "515010",
+      "description": "Offices Of Lawyers",
+      "net": "27552.2"
+    },
+    {
+      "period": "12",
+      "account": "515060",
+      "description": "Acctg,Tax,Books,Payroll Svc",
+      "net": "12352"
+    },
+    {
+      "period": "12",
+      "account": "515380",
+      "description": "Other Computer Related Svc",
+      "net": "2355.04"
+    },
+    {
+      "period": "12",
+      "account": "515400",
+      "description": "Admin Mgmt-Gen.Mgmt Consulting",
+      "net": "90781.8"
+    },
+    {
+      "period": "12",
+      "account": "515410",
+      "description": "HR-Exec. Search Consulting Svc",
+      "net": "16000"
+    },
+    {
+      "period": "12",
+      "account": "515540",
+      "description": "Other Prof, Sc. & Tech.Svc",
+      "net": "75"
+    },
+    {
+      "period": "12",
+      "account": "515580",
+      "description": "Business Support Services",
+      "net": "90"
+    },
+    {
+      "period": "12",
+      "account": "515590",
+      "description": "Document Preparation Services",
+      "net": "278.25"
+    },
+    {
+      "period": "12",
+      "account": "515990",
+      "description": "Other Svcs-exc.Pub.Admin.",
+      "net": "249"
+    },
+    {
+      "period": "12",
+      "account": "519130",
+      "description": "Flexible Benefits-Adminis.",
+      "net": "140.44"
+    },
+    {
+      "period": "12",
+      "account": "521310",
+      "description": "Travel Reimb.-Non-State Empls.",
+      "net": "764.28"
+    },
+    {
+      "period": "12",
+      "account": "522110",
+      "description": "OutofSt Pur Trans Cst Agcy Dir",
+      "net": "1783.36"
+    },
+    {
+      "period": "12",
+      "account": "531130",
+      "description": "Telecommunication Services",
+      "net": "468.74"
+    },
+    {
+      "period": "12",
+      "account": "531150",
+      "description": "Printing & Binding Contrs",
+      "net": "291.61"
+    },
+    {
+      "period": "12",
+      "account": "531160",
+      "description": "Advertising",
+      "net": "375"
+    },
+    {
+      "period": "12",
+      "account": "531180",
+      "description": "Bank Service Charges",
+      "net": "35"
+    },
+    {
+      "period": "12",
+      "account": "531260",
+      "description": "Membership in Organizations",
+      "net": "605"
+    },
+    {
+      "period": "12",
+      "account": "532110",
+      "description": "Rent of Office Space",
+      "net": "3654.12"
+    },
+    {
+      "period": "12",
+      "account": "532160",
+      "description": "Rent-Elec Data Processing Eq.",
+      "net": "270.06"
+    },
+    {
+      "period": "12",
+      "account": "533120",
+      "description": "Mtce-Rep.-Equipment-Vendors",
+      "net": "143.21"
+    },
+    {
+      "period": "12",
+      "account": "533140",
+      "description": "Mtce-Rep.-DP Equip-Vendor",
+      "net": "299.44"
+    },
+    {
+      "period": "12",
+      "account": "536110",
+      "description": "Meeting Refreshments",
+      "net": "305.88"
+    },
+    {
+      "period": "12",
+      "account": "536140",
+      "description": "Office Supplies (Expendable)",
+      "net": "850.24"
+    },
+    {
+      "period": "12",
+      "account": "541130",
+      "description": "Data Processing Software",
+      "net": "1802.03"
+    },
+    {
+      "period": "12",
+      "account": "553190",
+      "description": "Refunds-Overpayment Charges",
+      "net": "1532380.19"
+    },
+    {
+      "period": "12",
+      "account": "561230",
+      "description": "Purchase of Sec & Other Invest",
+      "net": "7353761.63"
+    }
+  ],
+  "source_records": [
+    {
+      "record_index": 13659,
+      "physical_line_start": 13660,
+      "physical_line_end": 13660
+    },
+    {
+      "record_index": 13660,
+      "physical_line_start": 13661,
+      "physical_line_end": 13661
+    },
+    {
+      "record_index": 13661,
+      "physical_line_start": 13662,
+      "physical_line_end": 13662
+    },
+    {
+      "record_index": 13662,
+      "physical_line_start": 13663,
+      "physical_line_end": 13663
+    },
+    {
+      "record_index": 13663,
+      "physical_line_start": 13664,
+      "physical_line_end": 13664
+    },
+    {
+      "record_index": 13664,
+      "physical_line_start": 13665,
+      "physical_line_end": 13665
+    },
+    {
+      "record_index": 13665,
+      "physical_line_start": 13666,
+      "physical_line_end": 13666
+    },
+    {
+      "record_index": 13666,
+      "physical_line_start": 13667,
+      "physical_line_end": 13667
+    },
+    {
+      "record_index": 13667,
+      "physical_line_start": 13668,
+      "physical_line_end": 13668
+    },
+    {
+      "record_index": 13668,
+      "physical_line_start": 13669,
+      "physical_line_end": 13669
+    },
+    {
+      "record_index": 13669,
+      "physical_line_start": 13670,
+      "physical_line_end": 13670
+    },
+    {
+      "record_index": 13670,
+      "physical_line_start": 13671,
+      "physical_line_end": 13671
+    },
+    {
+      "record_index": 13671,
+      "physical_line_start": 13672,
+      "physical_line_end": 13672
+    },
+    {
+      "record_index": 13672,
+      "physical_line_start": 13673,
+      "physical_line_end": 13673
+    },
+    {
+      "record_index": 13673,
+      "physical_line_start": 13674,
+      "physical_line_end": 13674
+    },
+    {
+      "record_index": 13674,
+      "physical_line_start": 13675,
+      "physical_line_end": 13675
+    },
+    {
+      "record_index": 13675,
+      "physical_line_start": 13676,
+      "physical_line_end": 13676
+    },
+    {
+      "record_index": 13676,
+      "physical_line_start": 13677,
+      "physical_line_end": 13677
+    },
+    {
+      "record_index": 13677,
+      "physical_line_start": 13678,
+      "physical_line_end": 13678
+    },
+    {
+      "record_index": 13678,
+      "physical_line_start": 13679,
+      "physical_line_end": 13679
+    },
+    {
+      "record_index": 13679,
+      "physical_line_start": 13680,
+      "physical_line_end": 13680
+    },
+    {
+      "record_index": 13680,
+      "physical_line_start": 13681,
+      "physical_line_end": 13681
+    },
+    {
+      "record_index": 13681,
+      "physical_line_start": 13682,
+      "physical_line_end": 13682
+    },
+    {
+      "record_index": 13682,
+      "physical_line_start": 13683,
+      "physical_line_end": 13683
+    },
+    {
+      "record_index": 13683,
+      "physical_line_start": 13684,
+      "physical_line_end": 13684
+    },
+    {
+      "record_index": 13684,
+      "physical_line_start": 13685,
+      "physical_line_end": 13685
+    },
+    {
+      "record_index": 13685,
+      "physical_line_start": 13686,
+      "physical_line_end": 13686
+    },
+    {
+      "record_index": 13686,
+      "physical_line_start": 13687,
+      "physical_line_end": 13687
+    },
+    {
+      "record_index": 13687,
+      "physical_line_start": 13688,
+      "physical_line_end": 13688
+    },
+    {
+      "record_index": 60349,
+      "physical_line_start": 60350,
+      "physical_line_end": 60350
+    },
+    {
+      "record_index": 60350,
+      "physical_line_start": 60351,
+      "physical_line_end": 60351
+    },
+    {
+      "record_index": 60351,
+      "physical_line_start": 60352,
+      "physical_line_end": 60352
+    },
+    {
+      "record_index": 60352,
+      "physical_line_start": 60353,
+      "physical_line_end": 60353
+    },
+    {
+      "record_index": 60353,
+      "physical_line_start": 60354,
+      "physical_line_end": 60354
+    },
+    {
+      "record_index": 60354,
+      "physical_line_start": 60355,
+      "physical_line_end": 60355
+    },
+    {
+      "record_index": 60355,
+      "physical_line_start": 60356,
+      "physical_line_end": 60356
+    },
+    {
+      "record_index": 60356,
+      "physical_line_start": 60357,
+      "physical_line_end": 60357
+    },
+    {
+      "record_index": 60357,
+      "physical_line_start": 60358,
+      "physical_line_end": 60358
+    },
+    {
+      "record_index": 60358,
+      "physical_line_start": 60359,
+      "physical_line_end": 60359
+    },
+    {
+      "record_index": 60359,
+      "physical_line_start": 60360,
+      "physical_line_end": 60360
+    },
+    {
+      "record_index": 60360,
+      "physical_line_start": 60361,
+      "physical_line_end": 60361
+    },
+    {
+      "record_index": 60361,
+      "physical_line_start": 60362,
+      "physical_line_end": 60362
+    },
+    {
+      "record_index": 60362,
+      "physical_line_start": 60363,
+      "physical_line_end": 60363
+    },
+    {
+      "record_index": 106969,
+      "physical_line_start": 106970,
+      "physical_line_end": 106970
+    },
+    {
+      "record_index": 106970,
+      "physical_line_start": 106971,
+      "physical_line_end": 106971
+    },
+    {
+      "record_index": 106971,
+      "physical_line_start": 106972,
+      "physical_line_end": 106972
+    },
+    {
+      "record_index": 106972,
+      "physical_line_start": 106973,
+      "physical_line_end": 106973
+    },
+    {
+      "record_index": 106973,
+      "physical_line_start": 106974,
+      "physical_line_end": 106974
+    },
+    {
+      "record_index": 106974,
+      "physical_line_start": 106975,
+      "physical_line_end": 106975
+    },
+    {
+      "record_index": 106975,
+      "physical_line_start": 106976,
+      "physical_line_end": 106976
+    },
+    {
+      "record_index": 106976,
+      "physical_line_start": 106977,
+      "physical_line_end": 106977
+    },
+    {
+      "record_index": 106977,
+      "physical_line_start": 106978,
+      "physical_line_end": 106978
+    },
+    {
+      "record_index": 106978,
+      "physical_line_start": 106979,
+      "physical_line_end": 106979
+    },
+    {
+      "record_index": 106979,
+      "physical_line_start": 106980,
+      "physical_line_end": 106980
+    },
+    {
+      "record_index": 106980,
+      "physical_line_start": 106981,
+      "physical_line_end": 106981
+    },
+    {
+      "record_index": 106981,
+      "physical_line_start": 106982,
+      "physical_line_end": 106982
+    },
+    {
+      "record_index": 106982,
+      "physical_line_start": 106983,
+      "physical_line_end": 106983
+    },
+    {
+      "record_index": 106983,
+      "physical_line_start": 106984,
+      "physical_line_end": 106984
+    },
+    {
+      "record_index": 106984,
+      "physical_line_start": 106985,
+      "physical_line_end": 106985
+    },
+    {
+      "record_index": 106985,
+      "physical_line_start": 106986,
+      "physical_line_end": 106986
+    },
+    {
+      "record_index": 106986,
+      "physical_line_start": 106987,
+      "physical_line_end": 106987
+    },
+    {
+      "record_index": 106987,
+      "physical_line_start": 106988,
+      "physical_line_end": 106988
+    },
+    {
+      "record_index": 153919,
+      "physical_line_start": 153920,
+      "physical_line_end": 153920
+    },
+    {
+      "record_index": 153920,
+      "physical_line_start": 153921,
+      "physical_line_end": 153921
+    },
+    {
+      "record_index": 153921,
+      "physical_line_start": 153922,
+      "physical_line_end": 153922
+    },
+    {
+      "record_index": 153922,
+      "physical_line_start": 153923,
+      "physical_line_end": 153923
+    },
+    {
+      "record_index": 153923,
+      "physical_line_start": 153924,
+      "physical_line_end": 153924
+    },
+    {
+      "record_index": 153924,
+      "physical_line_start": 153925,
+      "physical_line_end": 153925
+    },
+    {
+      "record_index": 153925,
+      "physical_line_start": 153926,
+      "physical_line_end": 153926
+    },
+    {
+      "record_index": 153926,
+      "physical_line_start": 153927,
+      "physical_line_end": 153927
+    },
+    {
+      "record_index": 153927,
+      "physical_line_start": 153928,
+      "physical_line_end": 153928
+    },
+    {
+      "record_index": 153928,
+      "physical_line_start": 153929,
+      "physical_line_end": 153929
+    },
+    {
+      "record_index": 153929,
+      "physical_line_start": 153930,
+      "physical_line_end": 153930
+    },
+    {
+      "record_index": 153930,
+      "physical_line_start": 153931,
+      "physical_line_end": 153931
+    },
+    {
+      "record_index": 153931,
+      "physical_line_start": 153932,
+      "physical_line_end": 153932
+    },
+    {
+      "record_index": 153932,
+      "physical_line_start": 153933,
+      "physical_line_end": 153933
+    },
+    {
+      "record_index": 200803,
+      "physical_line_start": 200804,
+      "physical_line_end": 200804
+    },
+    {
+      "record_index": 200804,
+      "physical_line_start": 200805,
+      "physical_line_end": 200805
+    },
+    {
+      "record_index": 200805,
+      "physical_line_start": 200806,
+      "physical_line_end": 200806
+    },
+    {
+      "record_index": 200806,
+      "physical_line_start": 200807,
+      "physical_line_end": 200807
+    },
+    {
+      "record_index": 200807,
+      "physical_line_start": 200808,
+      "physical_line_end": 200808
+    },
+    {
+      "record_index": 200808,
+      "physical_line_start": 200809,
+      "physical_line_end": 200809
+    },
+    {
+      "record_index": 200809,
+      "physical_line_start": 200810,
+      "physical_line_end": 200810
+    },
+    {
+      "record_index": 200810,
+      "physical_line_start": 200811,
+      "physical_line_end": 200811
+    },
+    {
+      "record_index": 200811,
+      "physical_line_start": 200812,
+      "physical_line_end": 200812
+    },
+    {
+      "record_index": 200812,
+      "physical_line_start": 200813,
+      "physical_line_end": 200813
+    },
+    {
+      "record_index": 200813,
+      "physical_line_start": 200814,
+      "physical_line_end": 200814
+    },
+    {
+      "record_index": 200814,
+      "physical_line_start": 200815,
+      "physical_line_end": 200815
+    },
+    {
+      "record_index": 200815,
+      "physical_line_start": 200816,
+      "physical_line_end": 200816
+    },
+    {
+      "record_index": 200816,
+      "physical_line_start": 200817,
+      "physical_line_end": 200817
+    },
+    {
+      "record_index": 200817,
+      "physical_line_start": 200818,
+      "physical_line_end": 200818
+    },
+    {
+      "record_index": 200818,
+      "physical_line_start": 200819,
+      "physical_line_end": 200819
+    },
+    {
+      "record_index": 200819,
+      "physical_line_start": 200820,
+      "physical_line_end": 200820
+    },
+    {
+      "record_index": 200820,
+      "physical_line_start": 200821,
+      "physical_line_end": 200821
+    },
+    {
+      "record_index": 200821,
+      "physical_line_start": 200822,
+      "physical_line_end": 200822
+    },
+    {
+      "record_index": 200822,
+      "physical_line_start": 200823,
+      "physical_line_end": 200823
+    },
+    {
+      "record_index": 200823,
+      "physical_line_start": 200824,
+      "physical_line_end": 200824
+    },
+    {
+      "record_index": 200824,
+      "physical_line_start": 200825,
+      "physical_line_end": 200825
+    },
+    {
+      "record_index": 200825,
+      "physical_line_start": 200826,
+      "physical_line_end": 200826
+    },
+    {
+      "record_index": 247589,
+      "physical_line_start": 247590,
+      "physical_line_end": 247590
+    },
+    {
+      "record_index": 247590,
+      "physical_line_start": 247591,
+      "physical_line_end": 247591
+    },
+    {
+      "record_index": 247591,
+      "physical_line_start": 247592,
+      "physical_line_end": 247592
+    },
+    {
+      "record_index": 247592,
+      "physical_line_start": 247593,
+      "physical_line_end": 247593
+    },
+    {
+      "record_index": 247593,
+      "physical_line_start": 247594,
+      "physical_line_end": 247594
+    },
+    {
+      "record_index": 247594,
+      "physical_line_start": 247595,
+      "physical_line_end": 247595
+    },
+    {
+      "record_index": 247595,
+      "physical_line_start": 247596,
+      "physical_line_end": 247596
+    },
+    {
+      "record_index": 247596,
+      "physical_line_start": 247597,
+      "physical_line_end": 247597
+    },
+    {
+      "record_index": 247597,
+      "physical_line_start": 247598,
+      "physical_line_end": 247598
+    },
+    {
+      "record_index": 247598,
+      "physical_line_start": 247599,
+      "physical_line_end": 247599
+    },
+    {
+      "record_index": 247599,
+      "physical_line_start": 247600,
+      "physical_line_end": 247600
+    },
+    {
+      "record_index": 247600,
+      "physical_line_start": 247601,
+      "physical_line_end": 247601
+    },
+    {
+      "record_index": 247601,
+      "physical_line_start": 247602,
+      "physical_line_end": 247602
+    },
+    {
+      "record_index": 247602,
+      "physical_line_start": 247603,
+      "physical_line_end": 247603
+    },
+    {
+      "record_index": 294098,
+      "physical_line_start": 294099,
+      "physical_line_end": 294099
+    },
+    {
+      "record_index": 294099,
+      "physical_line_start": 294100,
+      "physical_line_end": 294100
+    },
+    {
+      "record_index": 294100,
+      "physical_line_start": 294101,
+      "physical_line_end": 294101
+    },
+    {
+      "record_index": 294101,
+      "physical_line_start": 294102,
+      "physical_line_end": 294102
+    },
+    {
+      "record_index": 294102,
+      "physical_line_start": 294103,
+      "physical_line_end": 294103
+    },
+    {
+      "record_index": 294103,
+      "physical_line_start": 294104,
+      "physical_line_end": 294104
+    },
+    {
+      "record_index": 294104,
+      "physical_line_start": 294105,
+      "physical_line_end": 294105
+    },
+    {
+      "record_index": 294105,
+      "physical_line_start": 294106,
+      "physical_line_end": 294106
+    },
+    {
+      "record_index": 294106,
+      "physical_line_start": 294107,
+      "physical_line_end": 294107
+    },
+    {
+      "record_index": 294107,
+      "physical_line_start": 294108,
+      "physical_line_end": 294108
+    },
+    {
+      "record_index": 294108,
+      "physical_line_start": 294109,
+      "physical_line_end": 294109
+    },
+    {
+      "record_index": 294109,
+      "physical_line_start": 294110,
+      "physical_line_end": 294110
+    },
+    {
+      "record_index": 294110,
+      "physical_line_start": 294111,
+      "physical_line_end": 294111
+    },
+    {
+      "record_index": 294111,
+      "physical_line_start": 294112,
+      "physical_line_end": 294112
+    },
+    {
+      "record_index": 294112,
+      "physical_line_start": 294113,
+      "physical_line_end": 294113
+    },
+    {
+      "record_index": 294113,
+      "physical_line_start": 294114,
+      "physical_line_end": 294114
+    },
+    {
+      "record_index": 340592,
+      "physical_line_start": 340593,
+      "physical_line_end": 340593
+    },
+    {
+      "record_index": 340593,
+      "physical_line_start": 340594,
+      "physical_line_end": 340594
+    },
+    {
+      "record_index": 340594,
+      "physical_line_start": 340595,
+      "physical_line_end": 340595
+    },
+    {
+      "record_index": 340595,
+      "physical_line_start": 340596,
+      "physical_line_end": 340596
+    },
+    {
+      "record_index": 340596,
+      "physical_line_start": 340597,
+      "physical_line_end": 340597
+    },
+    {
+      "record_index": 340597,
+      "physical_line_start": 340598,
+      "physical_line_end": 340598
+    },
+    {
+      "record_index": 340598,
+      "physical_line_start": 340599,
+      "physical_line_end": 340599
+    },
+    {
+      "record_index": 340599,
+      "physical_line_start": 340600,
+      "physical_line_end": 340600
+    }
+  ],
+  "multiline_record_count": 0
+}

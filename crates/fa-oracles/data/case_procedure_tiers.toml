@@ -316,18 +316,24 @@ reads_evidence = false
 reader_reads_evidence = false
 second_reader_reads_evidence = false
 
-# StormyLion: each investor's own attributed cash and investor movement; cohort (earliest inflow over all parties) only in narrative
-# MaroonCat: each investor's (party, unit) finding is S-party (cutoff.rs:2555-2738), but the same run's per-unit unresolved_attribution finding sums unattributed cash book-wide and cuts its entry cites by count (cutoff.rs:1751-1754, 2775-2782); a lower-vid unresolved filler pushes target entries out of the cites. It is S-party if the projection is restricted to investor findings
+# GPT-root-20261103: the whole procedure is A because unresolved_attribution sums
+# unattributed cash per unit across the book and truncates the combined cites.
+# Individual principal amounts are per party; cohort text is not this A basis.
+# GPT-principal-review-20261103: independently read v5 without the prior tier row;
+# S-party for the case projection of an investor's amount, which depends only on
+# its posted cash/principal margins and entry partitions; cohort text is excluded.
+# Preserve the more conservative whole-procedure A on this scope disagreement.
+# Both readers found no document, evidence or attestation reads.
 [[tier]]
 procedure = "ponzi.net_investment"
-version = 4
-row_digest = "0c63800dc17f0d397f08813dc2e9e754ca32d94bf52f70148657570f70add38e"
+version = 5
+row_digest = "7f828e28437ec472114658e374312ff503eb4d17fc4d01dbf19ca06aff380d44"
 tier = "A"
-code_location = "crates/fa-lantern/src/cutoff.rs:2683"
-reader = "StormyLion"
-reader_tier = "S-party"
-second_reader = "MaroonCat"
-second_reader_tier = "A"
+code_location = "crates/fa-lantern/src/cutoff.rs:2731"
+reader = "GPT-root-20261103"
+reader_tier = "A"
+second_reader = "GPT-principal-review-20261103"
+second_reader_tier = "S-party"
 disagreement = true
 reads_evidence = false
 reader_reads_evidence = false

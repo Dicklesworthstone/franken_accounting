@@ -4620,6 +4620,18 @@ fn ads_checks(report: &AdsReport, name: &'static str) -> Vec<Check> {
         ("tb_rows", n(report.tb_rows)),
         ("chart_rows", report.chart_rows.map_or(Json::Null, n)),
         (
+            "dimension_rows",
+            report.dimension_rows.map_or(Json::Null, n),
+        ),
+        (
+            "dimension_coverage",
+            s(if report.dimension_rows.is_some() {
+                "complete_native_leg_identities"
+            } else {
+                "not_authenticated"
+            }),
+        ),
+        (
             "units",
             Json::List(
                 report
@@ -5926,6 +5938,41 @@ mod tests {
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"))
         };
         run(&args, &read)
+    }
+
+    #[test]
+    fn extract_dimension_coverage_is_explicit_in_json_and_human_reports() {
+        // This tests presentation of the report's coverage field. The frozen
+        // signed bundle supplies an authentic bundle report, not new goldens.
+        let fs = files();
+        let bytes = unhex(std::str::from_utf8(&fs["bundle_prefix"]).unwrap()).unwrap();
+        let trusted = key(&key_hex()).unwrap_or_else(|_| panic!("pinned key is malformed"));
+        let bundle = verify_bundle(&bytes, &[trusted], None).unwrap();
+        assert!(bundle.verified());
+        let mut extract = AdsReport::new(bundle, "2026-03-31".into(), Some(7));
+        for (coverage, expected, label) in [
+            (None, "null", "not_authenticated"),
+            (Some(2), "2", "complete_native_leg_identities"),
+            (Some(0), "0", "complete_native_leg_identities"),
+        ] {
+            extract.dimension_rows = coverage;
+            let checks = ads_checks(&extract, "ads_extract");
+            let json = report("ads", true, &checks).stdout;
+            assert!(
+                json.contains(&format!("\"dimension_rows\":{expected}")),
+                "{json}"
+            );
+            assert!(
+                json.contains(&format!("\"dimension_coverage\":\"{label}\"")),
+                "{json}"
+            );
+            let human = report("ads", false, &checks).stdout;
+            assert!(
+                human.contains(&format!("dimension_rows: {expected}")),
+                "{human}"
+            );
+            assert!(human.contains(label), "{human}");
+        }
     }
 
     /// `bundle` grades every predicate: the pinned bundles verify with the

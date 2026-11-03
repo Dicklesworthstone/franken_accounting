@@ -24,6 +24,7 @@ use crate::bundle::BundleError;
 const DECLARATION: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
 /// The SAF-T 2.00 namespace of the root `AuditFile`.
 pub const NAMESPACE: &str = "urn:OECD:StandardAuditFile-Taxation/2.00";
+const DIMENSION_NAMESPACE: &str = "urn:frankenaccounting:saft:extensions:v1";
 /// The profile nests five levels; anything deeper is not it.
 const MAX_DEPTH: usize = 8;
 
@@ -154,12 +155,20 @@ impl Parser<'_> {
         let n = self
             .rest()
             .bytes()
-            .take_while(|b| b.is_ascii_alphanumeric() || matches!(*b, b'_' | b'-'))
+            .take_while(|b| b.is_ascii_alphanumeric() || matches!(*b, b'_' | b'-' | b':'))
             .count();
         if n == 0 {
             return Err("an element or attribute name outside the SAF-T profile".into());
         }
         let name = self.rest()[..n].to_string();
+        if name.contains(':')
+            && !matches!(
+                name.as_str(),
+                "xmlns:fa" | "fa:DimensionEncoding" | "fa:DimensionSetV1"
+            )
+        {
+            return Err("an XML namespace prefix outside the SAF-T profile".into());
+        }
         self.i += n;
         Ok(name)
     }
@@ -189,6 +198,9 @@ impl Parser<'_> {
             let value = unescape(&self.rest()[..end])?;
             self.i += end + 1;
             attributes.push((key, value));
+        }
+        if depth > 0 && !attributes.is_empty() {
+            return Err(format!("<{name}> has attributes outside the SAF-T profile"));
         }
         let mut children = Vec::new();
         let mut text = String::new();
@@ -239,8 +251,18 @@ fn read(xml: &str) -> Result<Node, String> {
     if p.i != body.len() {
         return Err("content follows </AuditFile>".into());
     }
-    if root.name != "AuditFile" || root.attributes != [("xmlns".to_string(), NAMESPACE.to_string())]
-    {
+    let namespaces_valid = root
+        .attributes
+        .iter()
+        .filter(|(key, value)| key == "xmlns" && value == NAMESPACE)
+        .count()
+        == 1
+        && root.attributes.iter().all(|(key, value)| {
+            (key == "xmlns" && value == NAMESPACE)
+                || (key == "xmlns:fa" && value == DIMENSION_NAMESPACE)
+        })
+        && root.attributes.len() <= 2;
+    if root.name != "AuditFile" || !namespaces_valid {
         return Err(format!(
             "the root is not a SAF-T 2.00 AuditFile in {NAMESPACE}"
         ));
@@ -267,7 +289,7 @@ fn side(node: &Node, name: &str) -> Result<&'static str, String> {
     }
 }
 
-fn transactions(entries: &Node) -> Result<Vec<Extracted>, String> {
+fn transactions(entries: &Node, dimensions: bool) -> Result<Vec<Extracted>, String> {
     entries
         .all("Transaction")
         .map(|t| {
@@ -293,6 +315,7 @@ fn transactions(entries: &Node) -> Result<Vec<Extracted>, String> {
                     "CreditAmount",
                     "CurrencyCode",
                     "Memo",
+                    "fa:DimensionSetV1",
                 ])?;
                 let record: u32 = number(line, "RecordID")?;
                 if usize::try_from(record).ok() != i.checked_add(1) {
@@ -318,6 +341,15 @@ fn transactions(entries: &Node) -> Result<Vec<Extracted>, String> {
                 let mantissa = ads::exact(amount, scale).ok_or_else(|| {
                     format!("SAF-T transaction {id} line {record}: `{amount}` is not an exact amount")
                 })?;
+                let dimensions = match (dimensions, line.optional("fa:DimensionSetV1")?) {
+                    (true, Some(value)) => Some(ads::dimension_set(leaf(value)?)?),
+                    (false, None) => None,
+                    _ => {
+                        return Err(format!(
+                            "SAF-T transaction {id} line {record}: its dimension set and header encoding marker disagree"
+                        ));
+                    }
+                };
                 rows.push(Row {
                     journal_id: id.clone(),
                     line: record,
@@ -329,6 +361,7 @@ fn transactions(entries: &Node) -> Result<Vec<Extracted>, String> {
                     mantissa,
                     unit: line.text_of("CurrencyCode")?.to_string(),
                     scale,
+                    dimensions,
                 });
             }
             Ok(Extracted {
@@ -429,9 +462,18 @@ fn stated(doc: &Node) -> Result<Stated, String> {
         "KnownAtSeq",
         "ContentDigest",
         "CertificateDigest",
+        "fa:DimensionEncoding",
     ])?;
     if header.text_of("AuditFileVersion")? != "2.00" {
         return Err("the SAF-T header's AuditFileVersion is not 2.00".into());
+    }
+    let dimensions = match header.optional("fa:DimensionEncoding")? {
+        Some(marker) if leaf(marker)? == ads::DIMENSION_ENCODING => true,
+        Some(_) => return Err("the SAF-T header's dimension encoding is unsupported".into()),
+        None => false,
+    };
+    if dimensions != doc.attributes.iter().any(|(key, _)| key == "xmlns:fa") {
+        return Err("the SAF-T dimension namespace and encoding marker disagree".into());
     }
     let entries = doc
         .child("GeneralLedgerEntries")?
@@ -444,7 +486,8 @@ fn stated(doc: &Node) -> Result<Stated, String> {
         known_at_seq: number(header, "KnownAtSeq").ok(),
         entry_count: number(entries, "NumberOfEntries").ok(),
         account_scope: None,
-        entries: transactions(entries),
+        dimension_encoding: dimensions,
+        entries: transactions(entries, dimensions),
         balances: masters.child("BalanceAssertions").and_then(assertions),
         chart: masters.child("GeneralLedgerAccounts").and_then(accounts),
     })
@@ -497,6 +540,57 @@ mod tests {
         format!(
             "{DECLARATION}\n<AuditFile xmlns=\"{NAMESPACE}\">\n  <Header>\n    <AuditFileVersion>2.00</AuditFileVersion>\n    <SelectionEndDate>2026-03-31</SelectionEndDate>\n    <KnownAtSeq>9</KnownAtSeq>\n  </Header>\n  <MasterFiles>\n    <GeneralLedgerAccounts>\n      <Account><AccountID>1000</AccountID><AccountDescription>Cash &amp; equivalents</AccountDescription><AccountType>Asset</AccountType><NormalSide>Debit</NormalSide></Account>\n    </GeneralLedgerAccounts>\n    <BalanceAssertions>\n      <Assertion><AccountID>1000</AccountID><AsOfDate>2026-03-31</AsOfDate><Side>Debit</Side><Amount>12.34</Amount><CurrencyCode>USD</CurrencyCode></Assertion>\n    </BalanceAssertions>\n  </MasterFiles>\n  <GeneralLedgerEntries>\n    <NumberOfEntries>1</NumberOfEntries>\n    <Transaction><TransactionID>t1</TransactionID><TransactionDate>2026-03-10</TransactionDate><RecordedSeq>7</RecordedSeq><EntryClass>1</EntryClass><Description>a &lt;b&gt;</Description>{lines}</Transaction>\n  </GeneralLedgerEntries>\n</AuditFile>\n"
         )
+    }
+
+    #[test]
+    fn dimension_extension_is_namespaced_uniform_and_canonical() {
+        let tag = "<fa:DimensionSetV1>3:00000000000000000000000000000011</fa:DimensionSetV1>";
+        let empty = "<fa:DimensionSetV1></fa:DimensionSetV1>";
+        let first = LINE.replace("</Line>", &format!("{tag}</Line>"));
+        let second = LINE
+            .replace("<RecordID>1", "<RecordID>2")
+            .replace("1000", "3000")
+            .replace("DebitAmount", "CreditAmount")
+            .replace("</Line>", &format!("{empty}</Line>"));
+        let marker = "<fa:DimensionEncoding>fa-dimension-ids-v1</fa:DimensionEncoding>";
+        let xmlns = format!(" xmlns:fa=\"{DIMENSION_NAMESPACE}\"");
+        let good = file(&format!("{first}{second}"))
+            .replace(
+                &format!("xmlns=\"{NAMESPACE}\""),
+                &format!("xmlns=\"{NAMESPACE}\"{xmlns}"),
+            )
+            .replace("</Header>", &format!("{marker}</Header>"));
+        let checked = stated(&read(&good).unwrap()).unwrap();
+        assert!(checked.dimension_encoding);
+        let entries = checked.entries.unwrap();
+        assert_eq!(entries[0].rows[0].dimensions, Some(vec![(3, 17)]));
+        assert_eq!(entries[0].rows[1].dimensions, Some(vec![]));
+        for bad in [
+            good.replace(&xmlns, ""),
+            good.replace(DIMENSION_NAMESPACE, "urn:other"),
+            good.replace(marker, ""),
+            good.replace("fa-dimension-ids-v1", "fa-dimension-ids-v2"),
+            good.replace(marker, &format!("{marker}{marker}")),
+            good.replace(empty, ""),
+            good.replace(tag, &format!("{tag}{tag}")),
+            good.replace("fa:DimensionSetV1", "DimensionSetV1"),
+            good.replace(
+                "00000000000000000000000000000011",
+                "000000000000000000000000000000AA",
+            ),
+            good.replace("<Line>", "<Line xmlns:fa=\"urn:other\">"),
+        ] {
+            assert!(
+                read(&bad)
+                    .and_then(|doc| stated(&doc))
+                    .and_then(|stated| stated.entries)
+                    .is_err(),
+                "{bad}"
+            );
+        }
+        let legacy = stated(&read(&file(LINE)).unwrap()).unwrap();
+        assert!(!legacy.dimension_encoding);
+        assert!(legacy.entries.unwrap()[0].rows[0].dimensions.is_none());
     }
 
     #[test]

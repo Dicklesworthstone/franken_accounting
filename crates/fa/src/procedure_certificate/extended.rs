@@ -60,7 +60,7 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     // fa-6l8g: version 3 attributes party cash through each party's own legs.
     ("lookback.preferences", 3),
     ("lookback.fraudulent_transfer", 1),
-    ("ponzi.net_investment", 4),
+    ("ponzi.net_investment", 5),
     ("distribution.rising_tide", 4),
     ("distribution.pro_rata", 4),
     ("damages.attested_baseline", 1),

@@ -7,17 +7,28 @@ use fa_money::{Amount, Side};
 
 use crate::{
     ExportCoordinate, FormatAccount, FormatAssertion, FormatEntry, FormatError, FormatJournal,
-    FormatLeg, UnitCatalog, format_account_type, format_date_iso, format_exact_decimal, hex_decode,
-    hex_encode, parse_account_type, parse_date_iso, parse_exact_decimal,
+    FormatLeg, UnitCatalog, format_account_type, format_date_iso, format_dimension_set,
+    format_exact_decimal, hex_decode, hex_encode, parse_account_type, parse_date_iso,
+    parse_dimension_set, parse_exact_decimal,
 };
 
 const FMT: &str = "oecd_saft_v2";
+const DIMENSION_NAMESPACE: &str = "urn:frankenaccounting:saft:extensions:v1";
+const DIMENSION_ENCODING: &str = "fa-dimension-ids-v1";
 
 /// Write a [`FormatJournal`] as a canonical OECD SAF-T v2.0 XML document.
 pub fn write_saft_xml(journal: &FormatJournal) -> Result<String, FormatError> {
+    journal.validate_dimensions()?;
+    let dimensions = journal.has_dimensions();
     let mut xml = String::new();
     xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    xml.push_str("<AuditFile xmlns=\"urn:OECD:StandardAuditFile-Taxation/2.00\">\n");
+    if dimensions {
+        xml.push_str(&format!(
+            "<AuditFile xmlns=\"urn:OECD:StandardAuditFile-Taxation/2.00\" xmlns:fa=\"{DIMENSION_NAMESPACE}\">\n"
+        ));
+    } else {
+        xml.push_str("<AuditFile xmlns=\"urn:OECD:StandardAuditFile-Taxation/2.00\">\n");
+    }
     xml.push_str("  <Header>\n");
     xml.push_str("    <AuditFileVersion>2.00</AuditFileVersion>\n");
     xml.push_str(&format!(
@@ -48,6 +59,11 @@ pub fn write_saft_xml(journal: &FormatJournal) -> Result<String, FormatError> {
         "    <CertificateDigest>{}</CertificateDigest>\n",
         hex_encode(&journal.coordinate.certificate_digest)
     ));
+    if dimensions {
+        xml.push_str(&format!(
+            "    <fa:DimensionEncoding>{DIMENSION_ENCODING}</fa:DimensionEncoding>\n"
+        ));
+    }
     xml.push_str("  </Header>\n");
 
     xml.push_str("  <MasterFiles>\n");
@@ -160,6 +176,12 @@ pub fn write_saft_xml(journal: &FormatJournal) -> Result<String, FormatError> {
             if let Some(memo) = &leg.memo {
                 xml.push_str(&format!("        <Memo>{}</Memo>\n", xml_escape(memo)));
             }
+            if dimensions {
+                xml.push_str(&format!(
+                    "        <fa:DimensionSetV1>{}</fa:DimensionSetV1>\n",
+                    format_dimension_set(&leg.dimensions)
+                ));
+            }
             xml.push_str("      </Line>\n");
         }
         xml.push_str("    </Transaction>\n");
@@ -174,6 +196,65 @@ pub fn write_saft_xml(journal: &FormatJournal) -> Result<String, FormatError> {
 /// coordinate certificate.
 pub fn read_saft_xml(xml: &str, units: &UnitCatalog) -> Result<FormatJournal, FormatError> {
     let header_block = extract_first_block(FMT, xml, "Header")?;
+    let encoding = extract_all_blocks(header_block, "fa:DimensionEncoding");
+    let dimensions = match encoding.as_slice() {
+        [] => false,
+        [value] if *value == DIMENSION_ENCODING => true,
+        _ => {
+            return Err(FormatError::Parse {
+                format: FMT,
+                detail: "duplicate or unsupported dimension encoding".into(),
+            });
+        }
+    };
+    // These identities are an explicit FrankenAccounting extension. Never
+    // interpret a similarly named element in another namespace as a tag.
+    if dimensions {
+        // This reader accepts our canonical export profile. Its scalar
+        // extractors must never mistake commented/CDATA markup for actual
+        // dimension elements or accept a namespace shadow on a nested tag.
+        // Literal source text is XML-escaped by the writer and stays valid.
+        if xml.contains("<!")
+            || xml.match_indices("<?").any(|(offset, _)| {
+                offset != xml.len() - xml.trim_start().len() || !xml[offset..].starts_with("<?xml ")
+            })
+            || xml.matches("<fa:DimensionEncoding>").count() != 1
+            || xml.matches("</fa:DimensionEncoding>").count() != 1
+        {
+            return Err(FormatError::Parse {
+                format: FMT,
+                detail: "dimension exports require literal canonical elements without comments, CDATA or extra processing instructions".into(),
+            });
+        }
+        let root = xml
+            .split_once("<AuditFile ")
+            .and_then(|(_, rest)| rest.split_once('>'))
+            .map(|(attributes, _)| attributes)
+            .ok_or_else(|| FormatError::Parse {
+                format: FMT,
+                detail: "dimension extension requires an AuditFile root".into(),
+            })?;
+        let namespace_declarations: usize = xml
+            .split('<')
+            .skip(1)
+            .map(|markup| markup.split('>').next().unwrap_or_default())
+            .map(|tag| tag.matches("xmlns:fa").count())
+            .sum();
+        if root.matches("xmlns:fa=").count() != 1
+            || !root.contains(&format!("xmlns:fa=\"{DIMENSION_NAMESPACE}\""))
+            || namespace_declarations != 1
+        {
+            return Err(FormatError::Parse {
+                format: FMT,
+                detail: "dimension extension namespace is missing, different or rebound".into(),
+            });
+        }
+    } else if xml.contains("fa:DimensionSetV1") || xml.contains("fa:DimensionEncoding") {
+        return Err(FormatError::Parse {
+            format: FMT,
+            detail: "dimension elements require the registered encoding in Header".into(),
+        });
+    }
     let book_name = xml_unescape(extract_first_block(FMT, header_block, "CompanyName")?);
     let base_unit_code = xml_unescape(extract_first_block(
         FMT,
@@ -331,6 +412,17 @@ pub fn read_saft_xml(xml: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
             let memo = extract_first_block(FMT, line_block, "Memo")
                 .ok()
                 .map(xml_unescape);
+            let dimension_fields = extract_all_blocks(line_block, "fa:DimensionSetV1");
+            let dimension_set = match (dimensions, dimension_fields.as_slice()) {
+                (false, []) => Vec::new(),
+                (true, [value]) => parse_dimension_set(value)?,
+                _ => {
+                    return Err(FormatError::Parse {
+                        format: FMT,
+                        detail: "every extended Line requires exactly one dimension set".into(),
+                    });
+                }
+            };
             legs.push(FormatLeg {
                 account_code,
                 side,
@@ -338,6 +430,7 @@ pub fn read_saft_xml(xml: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
                 unit_code,
                 unit_scale,
                 memo,
+                dimensions: dimension_set,
             });
         }
         entries.push(FormatEntry {
@@ -351,6 +444,16 @@ pub fn read_saft_xml(xml: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
         });
     }
 
+    let leg_count = entries.iter().flat_map(|entry| &entry.legs).count();
+    if dimensions
+        && (xml.matches("<fa:DimensionSetV1>").count() != leg_count
+            || xml.matches("</fa:DimensionSetV1>").count() != leg_count)
+    {
+        return Err(FormatError::Parse {
+            format: FMT,
+            detail: "dimension elements must occur exactly once on each posting Line".into(),
+        });
+    }
     if entries.len() != declared_count {
         return Err(FormatError::Parse {
             format: FMT,

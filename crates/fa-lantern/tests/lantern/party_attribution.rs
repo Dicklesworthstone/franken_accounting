@@ -12,6 +12,9 @@ use fa_lantern::cutoff::{
 };
 use fa_model::{EntryClass, EntryRef, PARTY_DIMENSION, Settlement};
 
+#[path = "investor_transfers.rs"]
+mod investor_transfers;
+
 /// Registers a party; its dimension value.
 fn party(h: &Harness, snapshot: &mut Snapshot, code: &str) -> VId {
     let party = fa_model::party_vid(h.book.book_id, code);
@@ -608,7 +611,7 @@ fn ponzi_vendor_refund_party_is_never_an_investor() {
     assert_eq!(a.len(), 1, "{:?}", r.findings);
     assert_eq!((a[0].0, a[0].1), ("net_equity_claim", 10_000));
     assert_eq!(r.findings.len(), 1, "{:?}", r.findings);
-    assert!(r.findings.iter().all(|f| f.version == 4));
+    assert!(r.findings.iter().all(|f| f.version == 5));
 
     for procedure in [
         Box::new(DistributionProRata::with(

@@ -872,15 +872,12 @@ fn parse_source(
                     "use the parser and registry matching the book; do not round or coerce amounts",
                 ));
             }
-            if accounts
-                .iter()
-                .any(|account| account.code == leg.account_code && account.limit.is_some())
-            {
-                return Err(usage(
-                    "native Migration does not support balance-limited target accounts",
-                    "use the native supported migration chart; do not remove account limits to force an import",
-                ));
-            }
+            // Balance-limited accounts are ordinary migration targets. A
+            // staged chunk is invisible and must not consume availability;
+            // native Finalize judges the entire counted run against the
+            // current limit cells and reservations in its one transaction.
+            // Checking a chunk or an import-time balance here would reject
+            // valid historical sequences and race intervening live postings.
         }
     }
     if run.body.mode == RunMode::OpeningOnly && batch.trial_balance != run.body.lines {
@@ -1654,6 +1651,10 @@ fn fields(book: &Book, loaded: &Loaded) -> Result<Vec<(&'static str, Json)>, Fai
                             "amount",
                             s(render_amount(leg.amount, &book.context().units)?),
                         ),
+                        (
+                            "dimensions",
+                            crate::cli::plan_dimensions_json(&leg.dimension_set),
+                        ),
                     ]))
                 })
                 .collect::<Result<Vec<_>, Fail>>()?;
@@ -1790,12 +1791,27 @@ fn review_text(book: &Book, loaded: &Loaded) -> Result<String, Fail> {
                 lines.push("  retained historical detail; excluded from balances and open items after finalization".into());
             }
         }
-        for (leg, source) in proposal.legs.iter().zip(&source.legs) {
+        for (ordinal, (leg, source_leg)) in proposal.legs.iter().zip(&source.legs).enumerate() {
+            let dimensions =
+                source
+                    .leg_dimensions
+                    .get(&ordinal)
+                    .map_or_else(String::new, |values| {
+                        format!(
+                            " [{}]",
+                            values
+                                .iter()
+                                .map(|(kind, code)| format!("{kind}={code}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    });
             lines.push(format!(
-                "  {} {} {}",
+                "  {} {} {}{}",
                 side_name(leg.side),
-                source.account_code,
-                render_amount(leg.amount, &book.context().units)?
+                source_leg.account_code,
+                render_amount(leg.amount, &book.context().units)?,
+                dimensions,
             ));
         }
     }

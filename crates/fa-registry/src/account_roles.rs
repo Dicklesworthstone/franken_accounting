@@ -189,7 +189,7 @@ mod tests {
         );
         assert_eq!(
             roles.listing(),
-            "suspense, intercompany, receivable, payable, fixed_asset, accrued_expense, inventory, cash, investor_capital, payroll, intercompany_activity, investment_in_subsidiary, contributed_capital, noncontrolling_interest, noncontrolling_interest_income, retained_earnings"
+            "suspense, intercompany, receivable, payable, fixed_asset, accrued_expense, inventory, cash, investor_capital, investor_transfer, payroll, intercompany_activity, investment_in_subsidiary, contributed_capital, noncontrolling_interest, noncontrolling_interest_income, retained_earnings"
         );
         assert!(roles.get("payable").is_some_and(|r| !r.admits("Asset")));
         assert!(roles.get("cash").is_some_and(|r| r.consumers.len() == 7));
@@ -207,6 +207,36 @@ mod tests {
         let retained = roles.get("retained_earnings").expect("retained earnings");
         assert!(retained.admits("Equity") && !retained.admits("Revenue"));
         assert_eq!(retained.verbs, vec!["case"]);
+    }
+
+    #[test]
+    fn investor_transfer_is_an_explicit_clearing_role_only_for_net_investment() {
+        let roles = AccountRoles::embedded().expect("account_roles.toml");
+        let transfer = roles.get("investor_transfer").expect("investor transfer");
+        assert_eq!(transfer.account_types, ["Asset", "Liability"]);
+        assert_eq!(transfer.consumers, ["ponzi.net_investment"]);
+        assert!(transfer.verbs.is_empty());
+        for account_type in account_types_embedded().unwrap() {
+            assert_eq!(
+                transfer.admits(&account_type.name),
+                matches!(account_type.name.as_str(), "Asset" | "Liability"),
+                "transfer clearing must not classify {} as principal or cash",
+                account_type.name
+            );
+        }
+        assert!(
+            roles
+                .get("cash")
+                .unwrap()
+                .consumers
+                .contains(&"distribution.rising_tide".into())
+                && roles
+                    .get("investor_capital")
+                    .unwrap()
+                    .consumers
+                    .contains(&"distribution.pro_rata".into()),
+            "the distribution procedures retain their existing cash/capital populations"
+        );
     }
 
     #[test]

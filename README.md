@@ -432,6 +432,79 @@ proof class are recorded in [the conformance matrix](docs/conformance/ads_saft_x
 Current-source execution status must be taken from the corresponding gate,
 not from this format description.
 
+### Dimension-preserving accounting extracts
+
+Native journal exports retain each leg's exact dimension kind and value
+identities. Canonical CSV, ADS, SAF-T, NDJSON, Beancount and hledger carry an
+additive, versioned representation; exports without dimensions retain their
+existing bytes and content digests. A dimension-only change changes the
+extended journal digest even when every monetary amount is unchanged.
+
+ADS and SAF-T proof verification compares these tags with the authenticated
+native proposals. The verifier reports `dimension_rows` when that comparison
+is available. Historical exports without the extension remain readable and
+report `null` for this coverage; a successful monetary check alone does not
+establish departmental attribution. The public-ledger driver requires the
+stronger check and independently compares the export with original source
+rows, including a negative case that changes only a dimension value.
+
+The exported values are book-local native identities. Human-readable names
+and codes remain separate metadata; importing into another book requires an
+explicit mapping, and native legacy preparation refuses transplanted IDs.
+These representations are FrankenAccounting extensions, not a claim that
+external accounting tools or the underlying audit standards interpret them.
+Their exact wire and digest rules are recorded in
+[`registries/formats.toml`](registries/formats.toml).
+
+### Authentic public-ledger replay
+
+The [public-ledger workflow](docs/public_ledger.md) adds checksum-pinned
+acquisition of Oklahoma OMES's FY2024 Q4 general-ledger publication and complete
+agency fixtures for a pension system, a university, and a museum. It preserves
+the original source fields and exact amounts, refuses unbalanced or subcent
+selections, and provides a native migration-to-report-to-proof replay driver.
+
+Generic CSV mappings can project registered native dimensions through an
+optional `[dimension_columns]` section. The public replay driver preserves
+original department codes, checks every native leg's attribution, and compares
+monthly and cumulative departmental net and gross balances to the source.
+Blank department values remain untagged; leading zeros remain significant.
+
+The entire 373,357-row publication has been profiled; normalization and all 55
+public-ledger Python checks pass. Together with the 17 Development Finance
+Authority helper checks below, 72 Python tests pass. **Native replay remains
+unverified:** prerequisite Rust compilation exceeded the execution
+environment's memory limit. The documentation
+records the validation boundary and the commands needed to complete it. These
+published records are monthly activity aggregates, with their actual detail
+retained; they do not contain the agencies' original transaction-level journals
+or opening balances.
+
+A complementary [complete Development Finance Authority regression](docs/public_ledger_workload.md)
+retains all 312 source records with original byte-offset lineage and prepares
+306 exact legs in 104 balanced groups for one native migration run. Its 17
+Python checks and full-resource versus retained-slice byte parity passed. The
+new Rust regression covers staging, independent approvals, activation,
+source-derived balances, known-at visibility and certified report replay;
+native execution remains pending the required build and test gates.
+
+The [complete published BLMIS account workload](docs/blmis_glantz_workload.md)
+retains all 75 dated observations in Glantz Exhibit B-2, including the printed
+running principal balances and trustee-credited transfers. Its native driver
+posts the 74 monetary rows, reconciles every source observation, replays a
+retained ledger certificate, and verifies proof-bearing exports. The declared
+analysis accounts and the source's credited transfer amounts are explicit
+inputs; this is not an original BLMIS double-entry ledger or an independent
+net-equity determination.
+
+`ponzi.net_investment` version 5 adds the named `posted_principal_transfer_v1`
+rule. It keeps cash and transferred principal separate, recognizes explicitly
+marked clearing transfers and fully attributed investor-to-investor entries,
+and refuses ambiguous marked transfers. On this source account, omitting the
+credited transfers changes the closing result by $3,462,634. The workload
+documentation records the executable controls and current native validation
+status, including the version boundary for earlier procedure certificates.
+
 ### Bank CSV downloads
 
 Bank downloads can use an explicit column, date and amount declaration:

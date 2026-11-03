@@ -236,7 +236,7 @@ ref = "G-4"
 [[step]]
 seq = 6
 kind = "finding_record"
-ref = "ponzi.net_investment@4"
+ref = "ponzi.net_investment@5"
 principal = "examiner-1"
 
 [[default]]

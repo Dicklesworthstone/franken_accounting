@@ -1,7 +1,8 @@
-# Twin gap fixture expectations: ponzi.net_investment@4 attributes cash-role legs only, so A's
-# net investment misses the 300.00 of principal B transferred to A without cash: the procedure's
-# value on G-A differs from A's sourced principal by exactly 300.00. C, with no transfer, is the
-# twin target, where the gap is 0 (the shape of M-N-01). Sourced values are fixture values.
+# Twin gap fixture expectations: v5 now counts the direct B-to-A transfer, so
+# the original 300.00 gap claim below must FAIL on the unmodified native book.
+# The exact-gap harness selftests deliberately misattribute the recipient to B
+# to recover a 300.00 gap against A's declared 1,300.00 source principal. C's
+# unchanged 500.00 is the zero-gap twin. All values are synthetic fixture inputs.
 
 [[expectation]]
 id = "twins_gap-N-01"
@@ -12,8 +13,8 @@ basis = ["G-A", "G-C", "G-T"]
 kind = "exact_gap"
 target = "G-A"
 procedure = "ponzi.net_investment"
-version = 4
-mechanism = "crates/fa-lantern/src/cutoff.rs:2531"
+version = 5
+mechanism = "crates/fa-lantern/src/cutoff/investor_transfers.rs:40"
 twin_kind = "mutation"
 twin_expect = "gap_zero"
 gap_amount = "300.00"

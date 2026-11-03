@@ -702,6 +702,14 @@ fn party_list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("kind", s(p.kind.name())),
                 ("vid", s(format!("{:032x}", p.vid.0))),
                 (
+                    "dimension_id",
+                    Json::Int(i128::from(fa_model::PARTY_DIMENSION)),
+                ),
+                (
+                    "dimension_value_vid",
+                    s(format!("{:032x}", p.dimension_value_vid.0)),
+                ),
+                (
                     "name",
                     untrusted_text_json(
                         p.name

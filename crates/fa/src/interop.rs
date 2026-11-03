@@ -180,6 +180,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                         amount: leg.amount,
                         unit_code: leg_unit.code.clone(),
                         unit_scale: leg_unit.scale,
+                        dimensions: leg
+                            .dimension_set
+                            .iter()
+                            .map(|(kind, value)| (*kind, value.0))
+                            .collect(),
                         memo: leg
                             .memo
                             .as_ref()

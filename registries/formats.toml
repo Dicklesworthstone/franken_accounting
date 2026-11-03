@@ -15,6 +15,31 @@
 # fa:formats:account-roles:v1, with length-prefixed account/role counts and
 # strings. Role-free journals keep their original digest and metadata bytes.
 # These are this repository's extensions, not external standards conformance.
+#
+# Additive native dimension extension v1: each posting retains its sorted,
+# unique (u32 kind ID, u128 value VID) set, bounded by max_dimensions_per_leg.
+# The text wire is decimal-kind:32-lowercase-hex-value, joined by semicolons;
+# an empty field represents an untagged leg. Identities are book-local, not
+# inferred human-readable codes or a portable dimension dictionary.
+# CSV adds dimension_set_v1; ADS adds FA_Dimension_Set_V1 and the coordinate
+# marker dimension_encoding = "fa-dimension-ids-v1". Both extended tables
+# carry a field on every row. SAF-T declares
+# xmlns:fa="urn:frankenaccounting:saft:extensions:v1", fa:DimensionEncoding
+# in Header and fa:DimensionSetV1 on every Line. Beancount uses posting-level
+# fa_dimensions_v1 metadata; hledger uses a posting comment of that name.
+# NDJSON declares dimension_encoding in its header and adds structured
+# dimensions to every detail row. The existing NDJSON checker establishes
+# framing/counts only; it does not independently authenticate those tags.
+# Journal content digests append fa:formats:leg-dimensions:v1 only when at
+# least one leg has dimensions: u64-LE nonempty-leg count, then each leg's
+# zero-based entry ordinal, leg ordinal and dimension count as u64-LE,
+# followed by its ordered u32-LE kind/u128-LE value pairs. Dimension-free
+# journals retain their original digest and transport bytes.
+# Offline ADS/SAF-T verification compares extended sets to authenticated
+# native proposals. Legacy projections remain readable but have no claimed
+# dimension coverage (dimension_rows = null); removing the extension cannot
+# retain the stronger claim. Native import into a different book still
+# requires explicit code mapping; these VIDs must never be transplanted.
 
 schema_version = 1
 

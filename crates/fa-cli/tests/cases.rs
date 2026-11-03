@@ -2150,7 +2150,8 @@ fn benford_below_its_minimum_as_an_n_fails_its_twin() {
 }
 
 /// The twin gap fixture (`crates/fa-oracles/tests/fixtures/twins_gap/`): an
-/// exact_gap N on ponzi.net_investment@4 (A11c; the shape of M-N-01).
+/// exact_gap N on ponzi.net_investment@5 (A11c; the shape of M-N-01).
+/// Its old cash-only gap claim must now fail on the unmodified history.
 const TWINS_GAP: [(&str, &str); 5] = [
     (
         "case.toml",
@@ -2174,13 +2175,25 @@ const TWINS_GAP: [(&str, &str); 5] = [
     ),
 ];
 
-/// ponzi.net_investment@4 attributes cash-role legs only: A's value
-/// (1,000.00) misses the 300.00 of principal B moved to A without cash, so
-/// the gap from A's sourced 1,300.00 is exactly 300.00; C, with no
-/// transfer, shows gap 0.
+// This counterfactual misattributes the transfer's receiving leg to B. It
+// becomes a same-investor reclassification: A remains at 1,000.00, exactly
+// 300.00 below its declared source principal, while C's 500.00 is unchanged.
+// Keep this explicit: the real B-to-A transfer is recognized by version 5.
+const MISATTRIBUTED_PRINCIPAL_RECIPIENT: PlantedEdit = PlantedEdit {
+    file: "books/native.toml",
+    old: "party = \"INV-A\"\n\n[[step]]",
+    new: "party = \"INV-B\"\n\n[[step]]",
+};
+
+/// A controlled attribution error still exercises the exact-gap evaluator.
 #[test]
 fn exact_gap_n_passes_when_the_gap_equals_the_mechanism_amount() {
-    let o = match run_files("twins_gap", &TWINS_GAP, &[], HARNESS_VERBS) {
+    let o = match run_files(
+        "twins_gap",
+        &TWINS_GAP,
+        &[MISATTRIBUTED_PRINCIPAL_RECIPIENT],
+        HARNESS_VERBS,
+    ) {
         Ok(o) => o,
         Err(o) if o.rows_ok => *o,
         Err(o) => panic!("{}", o.text()),
@@ -2205,6 +2218,7 @@ fn exact_gap_n_whose_gaps_disagree_reports_fail() {
         "twins_gap",
         &TWINS_GAP,
         &[
+            MISATTRIBUTED_PRINCIPAL_RECIPIENT,
             PlantedEdit {
                 file: "expectations.toml",
                 old: "gap_amount = \"300.00\"",
@@ -2223,6 +2237,21 @@ fn exact_gap_n_whose_gaps_disagree_reports_fail() {
         o.row("twins_gap-N-01"),
         Some(
             "FAIL twins_gap-N-01 N native G-A/default kind=exact_gap gap=300.00 twin=mutation:gap:100.00 reason=expected gap=250.00 observed gap=300.00; expected the twin target G-C gap=0 observed gap=100.00"
+        ),
+        "{}",
+        o.text()
+    );
+}
+
+/// A repaired product gap cannot keep passing its obsolete absence claim.
+#[test]
+fn exact_gap_n_refuses_to_claim_a_recognized_principal_transfer_is_missing() {
+    let o = run_files("twins_gap", &TWINS_GAP, &[], HARNESS_VERBS)
+        .expect_err("v5 recognizes B's principal transfer to A");
+    assert_eq!(
+        o.row("twins_gap-N-01"),
+        Some(
+            "FAIL twins_gap-N-01 N native G-A/default kind=exact_gap gap=0.00 twin=mutation:gap:0.00 reason=expected gap=300.00 observed gap=0.00"
         ),
         "{}",
         o.text()

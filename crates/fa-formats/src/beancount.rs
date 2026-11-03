@@ -4,7 +4,7 @@
 //! No floating-point numbers are permitted; every posting amount and balance
 //! assertion is parsed and formatted as an exact fixed-scale `fa_money::Amount`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
 use fa_model::{AccountType, EntryClass};
@@ -13,8 +13,9 @@ use fa_time::DateDay;
 
 use crate::{
     FormatAccount, FormatAssertion, FormatEntry, FormatError, FormatJournal, FormatLeg,
-    UnitCatalog, format_account_type, format_date_iso, format_exact_decimal, hex_decode,
-    hex_encode, normal_side_for_type, parse_account_type, parse_date_iso, parse_exact_decimal,
+    UnitCatalog, format_account_type, format_date_iso, format_dimension_set, format_exact_decimal,
+    hex_decode, hex_encode, normal_side_for_type, parse_account_type, parse_date_iso,
+    parse_dimension_set, parse_exact_decimal,
 };
 
 /// Map a FrankenAccounting `AccountType` to one of Beancount's 5 root account
@@ -152,6 +153,12 @@ pub fn write_beancount(journal: &FormatJournal) -> String {
                 None => {
                     out.push_str(&format!("  {bc_acct}  {amt_str} {}\n", leg.unit_code));
                 }
+            }
+            if !leg.dimensions.is_empty() {
+                out.push_str(&format!(
+                    "    fa_dimensions_v1: \"{}\"\n",
+                    format_dimension_set(&leg.dimensions)
+                ));
             }
         }
         out.push('\n');
@@ -317,6 +324,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
             let mut class = EntryClass::ORIGINAL;
             let mut migrated_from = None;
             let mut legs = Vec::new();
+            let mut dimensioned_legs = BTreeSet::new();
 
             i += 1;
             while i < lines.len() && (lines[i].starts_with("  ") || lines[i].starts_with('\t')) {
@@ -339,6 +347,22 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
                     class = EntryClass(tag);
                 } else if let Some(v) = body.strip_prefix("fa_migrated_from:") {
                     migrated_from = Some(unquote(FMT, v.trim())?);
+                } else if let Some(v) = body.strip_prefix("fa_dimensions_v1:") {
+                    let ordinal = legs
+                        .len()
+                        .checked_sub(1)
+                        .ok_or_else(|| FormatError::Parse {
+                            format: FMT,
+                            detail: "dimension metadata precedes its posting".into(),
+                        })?;
+                    if !lines[i].starts_with("    ") || !dimensioned_legs.insert(ordinal) {
+                        return Err(FormatError::Parse {
+                            format: FMT,
+                            detail: "duplicate or non-posting dimension metadata".into(),
+                        });
+                    }
+                    let leg: &mut FormatLeg = &mut legs[ordinal];
+                    leg.dimensions = parse_dimension_set(&unquote(FMT, v.trim())?)?;
                 } else {
                     let (posting_part, memo) = match body.split_once("; memo:") {
                         Some((p, m)) => (p.trim(), Some(m.trim().to_owned())),
@@ -382,6 +406,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
                         unit_code,
                         unit_scale,
                         memo,
+                        dimensions: Vec::new(),
                     });
                 }
                 i += 1;
@@ -493,7 +518,15 @@ pub fn write_hledger(journal: &FormatJournal) -> String {
                 Side::Credit => -leg.amount.mantissa,
             };
             let amt_str = format_exact_decimal(signed_mantissa, leg.unit_scale);
-            out.push_str(&format!("    {hl_acct}    {amt_str} {}\n", leg.unit_code));
+            if leg.dimensions.is_empty() {
+                out.push_str(&format!("    {hl_acct}    {amt_str} {}\n", leg.unit_code));
+            } else {
+                out.push_str(&format!(
+                    "    {hl_acct}    {amt_str} {}  ; fa_dimensions_v1:{}\n",
+                    leg.unit_code,
+                    format_dimension_set(&leg.dimensions)
+                ));
+            }
         }
         out.push('\n');
     }
@@ -622,6 +655,13 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
                 if body.is_empty() {
                     break;
                 }
+                let dimensions = match body.split_once(';') {
+                    Some((_, comment)) => match comment.trim().strip_prefix("fa_dimensions_v1:") {
+                        Some(value) => parse_dimension_set(value)?,
+                        None => Vec::new(),
+                    },
+                    None => Vec::new(),
+                };
                 let p_tokens: Vec<&str> = body
                     .split(';')
                     .next()
@@ -663,6 +703,7 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
                     unit_code,
                     unit_scale,
                     memo: None,
+                    dimensions,
                 });
                 i += 1;
             }
