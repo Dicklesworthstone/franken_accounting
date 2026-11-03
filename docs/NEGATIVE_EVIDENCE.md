@@ -1968,6 +1968,20 @@ actually pass before the campaign is reported repaired, and final-source
 repository qualification remains separate. This is witness maintenance,
 with no performance or new product-capability credit.
 
+The actual `registry-check` binary target on e77291cb then ran sixteen
+passes and one failure. Its first workspace error was the LAB04 manifest's
+enclosing file checksum: ba398bfe updated the attributed vectors and source
+but omitted that binding. The registered BLAKE3 still said
+70c24c236480b7604b0a03bfb8fdcc4371c4fc68d639960af8fadf37cee3c051;
+the unchanged validator read the manifest bytes and computed
+c94e2b217c4160129937fb85ca4232355cf0290f0103d9ce07b2f47622c53def.
+Only that file binding is corrected. The manifest itself, every campaign
+vector, source commit, seed, count and oracle stay fixed. This omission was
+mine; the original sixteen-pass/one-failure execution remains retained.
+The binding repair does not establish a passing campaign or registry gate:
+both still require their actual repaired-source executions. The registry
+gate had not reached the later prose-claims checks when it refused here.
+
 ## 2026-11-03 — Cash-flow prefix admission needs both dispatch stages
 
 The issued-token regression first ran on clean 2bc74616 plus only its new
