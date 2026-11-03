@@ -2092,7 +2092,22 @@ fn period_activity_served_at_inner<V: asupersync::fs::Vfs + Clone>(
     for code in &selected {
         match maintained_fold_at(db, cx, book, code, &accounts, seq)? {
             Some(head) => {
-                add_cells(&mut sums, &head.fold)?;
+                match add_cells(&mut sums, &head.fold) {
+                    Ok(()) => {}
+                    Err(RegisterError::Overflow) => {
+                        // As in `maintained_sums`: only the literal fold can
+                        // name the source entry of an overflowing
+                        // cross-period cell.
+                        return Ok((
+                            report_at(db, book, selected.clone(), seq, None, &[], None)?,
+                            Served::Literal(
+                                "combined maintained cells require a literal capacity diagnosis"
+                                    .into(),
+                            ),
+                        ));
+                    }
+                    Err(error) => return Err(error),
+                }
                 served.push((code.clone(), head.served_at, head.tail_entries));
             }
             None if period_has_postings_at(db, period_at(db, book, code, seq)?.vid, seq)? => {
