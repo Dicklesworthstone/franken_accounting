@@ -133,6 +133,16 @@ jobs:
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-formats --test formats_conformance xbrl_ --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/xbrl-calculation-tests.log
 
+      - name: Regress lossless bank-feed JSON and native source readback
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-verbs --lib json::tests:: --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/shared-json-tests.log
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-formats --lib fwc::tests:: --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/bank-feed-json-tests.log
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test bank plaid_ --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/plaid-native-tests.log
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test bank fwc --jobs 1 -- --nocapture 2>&1 | tee artifacts/public-ledger/fwc-native-tests.log
+
       - name: Regress large Entry storage and atomic staged readers
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         shell: bash

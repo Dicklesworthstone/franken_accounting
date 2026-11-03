@@ -31,6 +31,7 @@ pub mod deposit;
 pub mod entry;
 pub mod erasable;
 pub mod ids;
+pub mod json;
 pub mod limits;
 pub mod lot_disposal;
 pub mod migration_source;

@@ -663,6 +663,20 @@ debit/credit columns, explicit date formats, and dot or comma decimals. See
 [declared CSV layouts](docs/bank_csv_layouts.md) for a complete example and the
 inline MCP form. Omitting `--layout` keeps the canonical twelve-column parser.
 
+### Lossless normalized bank feeds
+
+Saved `plaid-sync` responses and supervised `fwc` intake use structural JSON
+decoding for the normalized `fwc.robot.v1` envelope. Escaped quotes, Unicode and
+braces in counterparties or payment references retain their exact decoded
+meaning. Every transaction-array member must be a complete declared row;
+duplicate decoded keys, duplicate transaction IDs, trailing data and unsupported
+fields are refused. An offsetting payment pair remains two observations even
+when its amounts cancel. Exact decimal-string money, original source bytes and
+bank-line source links are preserved. Warehouse receipts use the same decoder.
+The [bank-feed guide](docs/fwc_bank_feed.md) gives the supported schema, saved-feed
+import command and current runtime-validation boundary. Raw Plaid change streams
+and live external receipt authentication are outside that normalized profile.
+
 ### Reviewed close runs
 
 An existing draft can become a durable close task after its complete rehearsal

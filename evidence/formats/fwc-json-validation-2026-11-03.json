@@ -1,0 +1,257 @@
+{
+  "checks": [
+    {
+      "argv": [
+        "cargo",
+        "+nightly-2026-08-31",
+        "check",
+        "-p",
+        "fa-model",
+        "-p",
+        "fa-verbs",
+        "-p",
+        "fa-formats",
+        "--all-targets",
+        "--locked",
+        "-Z",
+        "bindeps",
+        "-Z",
+        "git=shallow-deps",
+        "--jobs",
+        "1"
+      ],
+      "elapsed_seconds": 27.212,
+      "executed_tests": 0,
+      "execution_record": {
+        "path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/fwc-affected-all-targets-check.execution.json",
+        "sha256": "605d7e03f7f559bfbcabf362beed6c2e05e4eb11ffc1b3349e050493003a451e"
+      },
+      "exit_code": 0,
+      "finished_utc": "2026-11-03T16:45:07.412062+00:00",
+      "log": {
+        "bytes": 1409,
+        "path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/fwc-affected-all-targets-check.log",
+        "sha256": "9d4092090505e26be6d2e3c717265ea4386b3f065ce51d6db6a0c2522a3ae564"
+      },
+      "name": "fwc-affected-all-targets-check",
+      "scope": "Metadata compilation only; no test execution.",
+      "source_pins_unchanged": true,
+      "started_utc": "2026-11-03T16:44:40.200084+00:00",
+      "status": "PASS"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+nightly-2026-08-31",
+        "check",
+        "-p",
+        "fa-cli",
+        "--test",
+        "bank",
+        "--locked",
+        "-Z",
+        "bindeps",
+        "-Z",
+        "git=shallow-deps",
+        "--jobs",
+        "1"
+      ],
+      "elapsed_seconds": 39.342,
+      "executed_tests": 0,
+      "execution_record": {
+        "path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/fwc-fa-cli-bank-check.execution.json",
+        "sha256": "2a1b76513c0fffafba104135b94b0914e7133952d6f0c8f2d50c2ad84c8cdad1"
+      },
+      "exit_code": 0,
+      "finished_utc": "2026-11-03T16:50:27.433455+00:00",
+      "log": {
+        "bytes": 1488,
+        "path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/fwc-fa-cli-bank-check.log",
+        "sha256": "102a1f144f910fc026f76366623d8e28299afcd3b924aa957002fadc2b427511"
+      },
+      "name": "fwc-fa-cli-bank-check",
+      "scope": "Metadata compilation only; no test execution.",
+      "source_pins_unchanged": true,
+      "started_utc": "2026-11-03T16:49:48.091026+00:00",
+      "status": "PASS"
+    },
+    {
+      "compile_argv": [
+        "rustc",
+        "--edition=2024",
+        "--test",
+        "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/fwc-shared-codec-compatibility/shared_codec_compatibility.rs",
+        "-o",
+        "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/fwc-shared-codec-compatibility/shared_codec_compatibility"
+      ],
+      "compile_exit_code": 0,
+      "execution_record": {
+        "path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/fwc-shared-codec-compatibility/execution.json",
+        "sha256": "e1fd378b55fbccfca33e1eb3d6e9a5ebbe262cd9beff165a0b66e6f7d98d4c56"
+      },
+      "failed_tests": 0,
+      "filtered_out_tests": 0,
+      "finished_utc": "2026-11-03T16:45:16.592253+00:00",
+      "harness": {
+        "path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/fwc-shared-codec-compatibility/shared_codec_compatibility.rs",
+        "sha256": "2af81499b27f439515a39b14647f22fa5b97ab2ffd4339e7d42a8704e5669c96",
+        "source": "#![forbid(unsafe_code)]\nextern crate self as fa_model;\n#[path = \"/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/crates/fa-model/src/json.rs\"]\npub mod json;\n#[path = \"/dev/shm/franken-accounting-preserved-69d8c2fe02b1/repo/crates/fa-verbs/src/json.rs\"]\nmod retained_fa_verbs_json;\n"
+      },
+      "ignored_tests": 0,
+      "name": "shared-codec-compatibility-runtime",
+      "passed_tests": 11,
+      "run_argv": [
+        "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/fwc-shared-codec-compatibility/shared_codec_compatibility",
+        "--nocapture"
+      ],
+      "scope": "Shared pure JSON codec compatibility runtime only. Exact source modules included by path; not Cargo package, FWC parser, or full native acceptance.",
+      "source_pins_unchanged": true,
+      "started_utc": "2026-11-03T16:45:16.217679+00:00",
+      "status": "PASS",
+      "test_exit_code": 0,
+      "test_log": {
+        "bytes": 1174,
+        "path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/fwc-shared-codec-compatibility/tests.log",
+        "sha256": "efaa9aa8a8979b052163c68e1f9472b666dd52a0c859cc657c0bf818a7679d2a"
+      },
+      "test_names": [
+        "retained_fa_verbs_json::tests::integer_grammar_and_full_i128_domain",
+        "retained_fa_verbs_json::tests::duplicate_detection_uses_decoded_keys_at_every_object_depth",
+        "retained_fa_verbs_json::tests::malformed_unicode_is_never_replaced_or_accepted_as_a_signed_hex_number",
+        "retained_fa_verbs_json::tests::raw_and_escaped_identifiers_have_identical_canonical_bytes",
+        "retained_fa_verbs_json::tests::rejects_all_unescaped_controls_but_round_trips_escaped_controls",
+        "retained_fa_verbs_json::tests::nesting_limit_and_truncated_tokens_fail_without_panicking",
+        "retained_fa_verbs_json::tests::round_trips_and_refuses_floats",
+        "retained_fa_verbs_json::tests::toon_spec_primitives_and_accounting_amounts_golden_vectors",
+        "retained_fa_verbs_json::tests::toon_spec_objects_golden_vectors",
+        "retained_fa_verbs_json::tests::toon_spec_arrays_primitive_tabular_nested_and_objects_golden_vectors",
+        "retained_fa_verbs_json::tests::surrogate_pairs_preserve_non_bmp_identifiers"
+      ]
+    }
+  ],
+  "claim_limits": [
+    "The direct source-path harness tests only the unchanged shared pure codec and its retained consumer assertions; it is not a mock FWC harness or a Cargo-package runtime pass.",
+    "The queued or running f3f1/ec3 workflows predate this FWC change and cannot validate its runtime behavior.",
+    "This record is not a whole-workspace, Tier 0, whole-tree, or production engine acceptance verdict."
+  ],
+  "environment": {
+    "lane": "local; rch unavailable",
+    "profiles": {
+      "dev_debug": 0,
+      "jobs": 1,
+      "test_debug": 0
+    },
+    "resource_note": "Original overlay was full. All build outputs and logs used tmpfs. Cargo warned that its optional global last-use cache database could not be updated; metadata compilation completed successfully. No dependency, feature, or lockfile weakening.",
+    "target_directory": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/fwc-native-validation-target",
+    "toolchain": "rustc 1.100.0-nightly (908501772 2026-08-30)\nbinary: rustc\ncommit-hash: 90850177249efe0321573c569aec5d12b257f8d6\ncommit-date: 2026-08-30\nhost: x86_64-unknown-linux-gnu\nrelease: 1.100.0-nightly\nLLVM version: 23.1.0\n"
+  },
+  "format": "fa:fwc-json-validation:v1",
+  "hosted_observation": {
+    "observed_utc": "2026-11-03 16:50:49 UTC",
+    "runs": [
+      {
+        "conclusion": null,
+        "includes_this_fwc_patch": false,
+        "run_id": 41671252725,
+        "source_commit": "ec3d3706696ea4bcda3219283da69e3103891eb7",
+        "status": "pending",
+        "updated_at": "2026-11-03T16:09:25Z",
+        "url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41671252725"
+      },
+      {
+        "conclusion": null,
+        "includes_this_fwc_patch": false,
+        "run_id": 41664093934,
+        "source_commit": "f3f1d66b25f9b01535efa9de74e38cb600b08a59",
+        "status": "in_progress",
+        "updated_at": "2026-11-03T16:48:01Z",
+        "url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41664093934"
+      },
+      {
+        "conclusion": "cancelled",
+        "includes_this_fwc_patch": false,
+        "run_id": 41659105021,
+        "source_commit": "9700db7711c91cc959983b3d04e06772829d943e",
+        "status": "completed",
+        "updated_at": "2026-11-03T16:03:35Z",
+        "url": "https://github.com/Dicklesworthstone/franken_accounting/actions/runs/41659105021"
+      }
+    ]
+  },
+  "native_package_runtime": {
+    "fa_cli_bank_saved_feed": {
+      "attempted": false,
+      "executed_tests": 0,
+      "new_declared_test_compiled": "plaid_json_escaped_text_survives_native_retention_retry_and_structural_refusals",
+      "reason": "Targeted Cargo metadata compilation passed; runtime awaits a capable native build.",
+      "status": "UNRUN"
+    },
+    "fa_formats_fwc": {
+      "attempted": false,
+      "declared_test_names": [
+        "fixture_plaid_transactions_sync_payload_parses_to_golden_bank_lines_and_links_document",
+        "normalized_plaid_json_preserves_escaped_text_and_raw_source_links",
+        "normalized_plaid_json_requires_exact_field_scope_and_types",
+        "normalized_plaid_json_rejects_malformed_duplicate_and_trailing_data",
+        "normalized_plaid_json_never_skips_array_members_or_undeclared_data",
+        "normalized_plaid_json_checks_money_without_float_or_type_coercion",
+        "normalized_plaid_json_preserves_complete_ordered_transaction_census",
+        "normalized_plaid_json_refuses_duplicate_or_empty_transaction_identities",
+        "missing_fwc_binary_returns_exit_4_environment_refusal_with_install_hint_never_fake",
+        "warehouse_export_receipt_round_trips_as_control_record_for_snowflake_bigquery_and_s3",
+        "warehouse_receipt_decodes_strings_and_keeps_exact_response_commitment",
+        "warehouse_receipt_refuses_nested_shadowed_duplicate_and_extra_data"
+      ],
+      "declared_tests_compiled": 12,
+      "executed_tests": 0,
+      "reason": "The actual package requires the same resource-blocked asupersync codegen; no repeated full build was attempted.",
+      "status": "UNRUN"
+    },
+    "fa_verbs_json": {
+      "argv": [
+        "cargo",
+        "+nightly-2026-08-31",
+        "test",
+        "-p",
+        "fa-verbs",
+        "--lib",
+        "json::tests::",
+        "--locked",
+        "-Z",
+        "bindeps",
+        "-Z",
+        "git=shallow-deps",
+        "--jobs",
+        "1"
+      ],
+      "executed_tests": 0,
+      "execution_record": {
+        "path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/fwc-fa-verbs-json-tests.execution.json",
+        "sha256": "4e762f20c424df7695fa0f76ba4abc0c2e135fe991c1627fc6b7944e16f1040e"
+      },
+      "exit_code": 130,
+      "log": {
+        "path": "/dev/shm/franken-accounting-preserved-69d8c2fe02b1/runs/fwc-fa-verbs-json-tests.log",
+        "sha256": "9abdc71632185498a8b585f9945875e0d581658f88209e4c655da9dcfcbecbe1"
+      },
+      "reason": "Stopped after dependency graph unexpectedly entered known resource-blocked asupersync full codegen; no native tests executed.",
+      "status": "UNRUN"
+    }
+  },
+  "recorded_utc": "2026-11-03T16:52:05.616315+00:00",
+  "scope": "Frozen FWC parser and shared JSON relocation: affected Cargo metadata compilation plus exact-source pure codec compatibility runtime. Full FWC and native CLI behavior remain unexecuted locally.",
+  "source": {
+    "all_measured_check_source_pins_unchanged": true,
+    "cargo_lock_sha256": "e62ced364aaf38003a28b3e394f63a06b82c33594a367bdd108d63f71e9eb3ac",
+    "checkout_head_at_recording": "873440e4f8378c30e53f04f702958b204fb66896",
+    "whole_checkout_verdict": false,
+    "working_tree_patch_identified_by_sha256": {
+      "crates/fa-cli/tests/bank.rs": "d2651f1a8a3f23a8186954d609547030a80cad4a012b2982d1d899c7191fd735",
+      "crates/fa-formats/src/fwc.rs": "b611afd93e2f04657e3493570f2bc7bd6bb6c63698d4ed1247c7a1564731a23d",
+      "crates/fa-model/src/json.rs": "4052ea0760ab8c015cdd8cea815c8ecdd55dbd73a925af6d30dfa7615882cff2",
+      "crates/fa-model/src/lib.rs": "785c815651a42f550084591660f93036ed2aa3014bb66415ee54cc88f53d9aac",
+      "crates/fa-verbs/src/json.rs": "8b672c09e56e39bd3252c59d19d0082245a6e8f15918c5b15963806b1d160070"
+    }
+  },
+  "status": "PARTIAL"
+}

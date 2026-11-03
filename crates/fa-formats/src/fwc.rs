@@ -12,10 +12,18 @@
 //!   receipt hash recorded; each parsed `BankLine` links via `DERIVED_FROM` to
 //!   the raw payload `Document`; every warehouse export emits a canonical
 //!   `WarehouseExportReceipt` control record.
+//!
+//! The parser accepts the normalized `fwc.robot.v1` envelope illustrated by
+//! the retained fixture, with exact declared envelope and transaction fields.
+//! This is not the raw Plaid API schema. Parsing checks source representation,
+//! exact amounts and continuity; it does not authenticate a live connector or
+//! establish that its declared receipt hash was issued by an external service.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
+use fa_model::json::{Json, parse};
 use fa_model::{DecodeError, EncodeError, Oid, Reader, Writer, domain_digest};
 use fa_money::{Amount, Side};
 use fa_time::DateDay;
@@ -241,44 +249,99 @@ pub fn compute_fwc_payload_document_oid(raw_payload: &[u8]) -> Oid {
     Oid(domain_digest(b"fa:docket:fwc-payload:v1", &[raw_payload]))
 }
 
-fn extract_json_string_field<'a>(
-    block: &'a str,
+fn parse_json_document(text: &str, format: &'static str) -> Result<Json, FormatError> {
+    parse(text).map_err(|error| {
+        // The shared integer-only decoder rejects these tokens before it can
+        // produce a tree. Keep the established FloatForbidden diagnostic;
+        // this byte span is only for reporting an already refused token and
+        // never substitutes for structural JSON decoding or money parsing.
+        if error
+            .message
+            .starts_with("fractional or exponent numbers are not accepted;")
+        {
+            let bytes = text.as_bytes();
+            let mut start = error.offset;
+            while start > 0 && matches!(bytes[start - 1], b'0'..=b'9' | b'-') {
+                start -= 1;
+            }
+            let mut end = error.offset;
+            while end < bytes.len()
+                && !matches!(
+                    bytes[end],
+                    b',' | b'}' | b']' | b' ' | b'\n' | b'\r' | b'\t'
+                )
+            {
+                end += 1;
+            }
+            FormatError::FloatForbidden {
+                format,
+                token: text[start..end].to_owned(),
+            }
+        } else {
+            FormatError::Parse {
+                format,
+                detail: error.to_string(),
+            }
+        }
+    })
+}
+
+fn exact_json_object(
+    value: &Json,
+    required: &[&str],
+    context: &str,
+    format: &'static str,
+) -> Result<(), FormatError> {
+    let Json::Obj(fields) = value else {
+        return Err(FormatError::Parse {
+            format,
+            detail: format!("{context} must be a JSON object"),
+        });
+    };
+    for (key, _) in fields {
+        if !required.contains(&key.as_str()) {
+            return Err(FormatError::Parse {
+                format,
+                detail: format!("unsupported field `{key}` in {context}"),
+            });
+        }
+    }
+    for key in required {
+        if value.get(key).is_none() {
+            return Err(FormatError::Parse {
+                format,
+                detail: format!("missing required field `{key}` in {context}"),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn json_string_field<'a>(
+    object: &'a Json,
     key: &str,
     format: &'static str,
 ) -> Result<&'a str, FormatError> {
-    let pattern = format!("\"{key}\"");
-    let pos = block.find(&pattern).ok_or_else(|| FormatError::Parse {
+    let value = object.get(key).ok_or_else(|| FormatError::Parse {
         format,
         detail: format!("missing required field `{key}`"),
     })?;
-    let after_key = &block[pos + pattern.len()..];
-    let colon = after_key.find(':').ok_or_else(|| FormatError::Parse {
-        format,
-        detail: format!("malformed field `{key}`: missing ':'"),
-    })?;
-    let val_part = after_key[colon + 1..].trim_start();
-    if !val_part.starts_with('"') {
-        let token_end = val_part
-            .find(|c: char| c == ',' || c == '}' || c.is_ascii_whitespace())
-            .unwrap_or(val_part.len());
-        let token = &val_part[..token_end];
+    value.as_str().ok_or_else(|| {
         if key == "amount" || key == "opening_balance" || key == "closing_balance" {
-            return Err(FormatError::FloatForbidden {
+            FormatError::FloatForbidden {
                 format,
-                token: token.to_owned(),
-            });
+                token: value.render(),
+            }
+        } else {
+            FormatError::Parse {
+                format,
+                detail: format!(
+                    "field `{key}` must be a JSON string, got {}",
+                    value.render()
+                ),
+            }
         }
-        return Err(FormatError::Parse {
-            format,
-            detail: format!("field `{key}` must be a JSON string, got {token:?}"),
-        });
-    }
-    let rest = &val_part[1..];
-    let end_quote = rest.find('"').ok_or_else(|| FormatError::Parse {
-        format,
-        detail: format!("unterminated string in field `{key}`"),
-    })?;
-    Ok(&rest[..end_quote])
+    })
 }
 
 fn parse_32_byte_hex(
@@ -297,9 +360,27 @@ pub fn parse_fwc_plaid_transactions_sync(
     units: &UnitCatalog,
 ) -> Result<FwcBankFeedImportResult, FormatError> {
     const FMT: &str = "fwc_plaid_transactions_sync_v1";
+    let payload = parse_json_document(payload_json, FMT)?;
+    exact_json_object(
+        &payload,
+        &[
+            "robot_schema_version",
+            "connector",
+            "operation",
+            "receipt_hash",
+            "account_id",
+            "sequence_number",
+            "currency",
+            "statement_date",
+            "opening_balance",
+            "closing_balance",
+            "transactions",
+        ],
+        "normalized bank feed envelope",
+        FMT,
+    )?;
 
-    let robot_schema_version =
-        extract_json_string_field(payload_json, "robot_schema_version", FMT)?.to_owned();
+    let robot_schema_version = json_string_field(&payload, "robot_schema_version", FMT)?.to_owned();
     if robot_schema_version != FWC_ROBOT_SCHEMA_VERSION {
         return Err(FormatError::Parse {
             format: FMT,
@@ -308,30 +389,30 @@ pub fn parse_fwc_plaid_transactions_sync(
             ),
         });
     }
-    let connector = extract_json_string_field(payload_json, "connector", FMT)?;
+    let connector = json_string_field(&payload, "connector", FMT)?;
     if connector != "plaid" {
         return Err(FormatError::Parse {
             format: FMT,
             detail: format!("expected connector \"plaid\", got {connector:?}"),
         });
     }
-    let operation = extract_json_string_field(payload_json, "operation", FMT)?;
+    let operation = json_string_field(&payload, "operation", FMT)?;
     if operation != "transactions_sync" {
         return Err(FormatError::Parse {
             format: FMT,
             detail: format!("expected operation \"transactions_sync\", got {operation:?}"),
         });
     }
-    let receipt_hex = extract_json_string_field(payload_json, "receipt_hash", FMT)?;
+    let receipt_hex = json_string_field(&payload, "receipt_hash", FMT)?;
     let fwc_receipt_hash = parse_32_byte_hex(receipt_hex, "receipt_hash", FMT)?;
 
-    let account_id = extract_json_string_field(payload_json, "account_id", FMT)?.to_owned();
-    let seq_str = extract_json_string_field(payload_json, "sequence_number", FMT)?;
+    let account_id = json_string_field(&payload, "account_id", FMT)?.to_owned();
+    let seq_str = json_string_field(&payload, "sequence_number", FMT)?;
     let sequence_number: u64 = seq_str.parse().map_err(|_| FormatError::Parse {
         format: FMT,
         detail: format!("invalid sequence_number {seq_str:?}"),
     })?;
-    let currency = extract_json_string_field(payload_json, "currency", FMT)?.to_owned();
+    let currency = json_string_field(&payload, "currency", FMT)?.to_owned();
     let (unit_id, scale) =
         units
             .lookup_code(&currency)
@@ -339,61 +420,57 @@ pub fn parse_fwc_plaid_transactions_sync(
                 format: FMT,
                 unit: currency.clone(),
             })?;
-    let statement_date = parse_date_iso(
-        FMT,
-        extract_json_string_field(payload_json, "statement_date", FMT)?,
-    )?;
+    let statement_date = parse_date_iso(FMT, json_string_field(&payload, "statement_date", FMT)?)?;
     let opening_balance = parse_exact_decimal(
         FMT,
-        extract_json_string_field(payload_json, "opening_balance", FMT)?,
+        json_string_field(&payload, "opening_balance", FMT)?,
         scale,
     )?;
     let closing_balance = parse_exact_decimal(
         FMT,
-        extract_json_string_field(payload_json, "closing_balance", FMT)?,
+        json_string_field(&payload, "closing_balance", FMT)?,
         scale,
     )?;
 
-    let tx_key = "\"transactions\"";
-    let tx_pos = payload_json
-        .find(tx_key)
+    let transactions = payload
+        .get("transactions")
+        .and_then(Json::as_arr)
         .ok_or_else(|| FormatError::Parse {
             format: FMT,
-            detail: "missing `transactions` array".into(),
+            detail: "`transactions` must be a JSON array".into(),
         })?;
-    let after_tx = &payload_json[tx_pos + tx_key.len()..];
-    let arr_start = after_tx.find('[').ok_or_else(|| FormatError::Parse {
-        format: FMT,
-        detail: "malformed `transactions` array".into(),
-    })?;
-    let arr_end = after_tx.rfind(']').ok_or_else(|| FormatError::Parse {
-        format: FMT,
-        detail: "unterminated `transactions` array".into(),
-    })?;
-    let arr_body = &after_tx[arr_start + 1..arr_end];
 
     let payload_document_oid = compute_fwc_payload_document_oid(payload_json.as_bytes());
     let mut lines = Vec::new();
     let mut derived_line_links = Vec::new();
+    let mut transaction_ids = BTreeSet::new();
 
-    let mut cursor = arr_body;
-    while let Some(obj_start) = cursor.find('{') {
-        let after_start = &cursor[obj_start + 1..];
-        let obj_end = after_start.find('}').ok_or_else(|| FormatError::Parse {
-            format: FMT,
-            detail: "unterminated transaction object in `transactions`".into(),
-        })?;
-        let obj_str = &after_start[..obj_end];
-        cursor = &after_start[obj_end + 1..];
-
-        let _tx_id = extract_json_string_field(obj_str, "transaction_id", FMT)?;
-        let booking_date = parse_date_iso(
+    for (index, transaction) in transactions.iter().enumerate() {
+        exact_json_object(
+            transaction,
+            &[
+                "transaction_id",
+                "booking_date",
+                "value_date",
+                "direction",
+                "amount",
+                "counterparty",
+                "reference",
+            ],
+            &format!("transaction {}", index + 1),
             FMT,
-            extract_json_string_field(obj_str, "booking_date", FMT)?,
         )?;
-        let value_date =
-            parse_date_iso(FMT, extract_json_string_field(obj_str, "value_date", FMT)?)?;
-        let direction = extract_json_string_field(obj_str, "direction", FMT)?;
+        let transaction_id = json_string_field(transaction, "transaction_id", FMT)?;
+        if transaction_id.is_empty() || !transaction_ids.insert(transaction_id) {
+            return Err(FormatError::Parse {
+                format: FMT,
+                detail: "transaction_id must be nonempty and unique within the feed".into(),
+            });
+        }
+        let booking_date =
+            parse_date_iso(FMT, json_string_field(transaction, "booking_date", FMT)?)?;
+        let value_date = parse_date_iso(FMT, json_string_field(transaction, "value_date", FMT)?)?;
+        let direction = json_string_field(transaction, "direction", FMT)?;
         let side = match direction {
             "credit" => Side::Credit,
             "debit" => Side::Debit,
@@ -406,15 +483,18 @@ pub fn parse_fwc_plaid_transactions_sync(
                 });
             }
         };
-        let amount_mantissa = parse_exact_decimal(
-            FMT,
-            extract_json_string_field(obj_str, "amount", FMT)?,
-            scale,
-        )?;
-        let counterparty = extract_json_string_field(obj_str, "counterparty", FMT)?.to_owned();
-        let reference = extract_json_string_field(obj_str, "reference", FMT)?.to_owned();
+        let amount_mantissa =
+            parse_exact_decimal(FMT, json_string_field(transaction, "amount", FMT)?, scale)?;
+        let counterparty = json_string_field(transaction, "counterparty", FMT)?.to_owned();
+        let reference = json_string_field(transaction, "reference", FMT)?.to_owned();
 
-        let line_ordinal = (lines.len() as u32) + 1;
+        let line_ordinal = u32::try_from(index)
+            .ok()
+            .and_then(|ordinal| ordinal.checked_add(1))
+            .ok_or_else(|| FormatError::Overflow {
+                format: FMT,
+                detail: "bank line ordinal overflow".into(),
+            })?;
         let amount = Amount::new(unit_id, amount_mantissa);
         let line_digest = compute_bank_line_digest(
             &account_id,
@@ -546,6 +626,8 @@ pub fn fetch_fwc_payload(
 
 /// Construct and validate a [`WarehouseExportReceipt`] control record from a certified
 /// report payload, its certificate digest, and the `fwc` warehouse response JSON.
+/// The normalized response has exactly `robot_schema_version`, `connector` and
+/// `receipt_hash`; the raw response bytes remain the content-addressed source.
 pub fn build_warehouse_export_receipt(
     connector: WarehouseConnector,
     destination_ref: &str,
@@ -560,8 +642,15 @@ pub fn build_warehouse_export_receipt(
             detail: "destination_ref must not be empty".into(),
         });
     }
+    let response = parse_json_document(fwc_response_json, FMT)?;
+    exact_json_object(
+        &response,
+        &["robot_schema_version", "connector", "receipt_hash"],
+        "normalized warehouse receipt envelope",
+        FMT,
+    )?;
     let robot_schema_version =
-        extract_json_string_field(fwc_response_json, "robot_schema_version", FMT)?.to_owned();
+        json_string_field(&response, "robot_schema_version", FMT)?.to_owned();
     if robot_schema_version != FWC_ROBOT_SCHEMA_VERSION {
         return Err(FormatError::Parse {
             format: FMT,
@@ -570,7 +659,7 @@ pub fn build_warehouse_export_receipt(
             ),
         });
     }
-    let resp_connector = extract_json_string_field(fwc_response_json, "connector", FMT)?;
+    let resp_connector = json_string_field(&response, "connector", FMT)?;
     if resp_connector != connector.as_str() {
         return Err(FormatError::Parse {
             format: FMT,
@@ -580,7 +669,7 @@ pub fn build_warehouse_export_receipt(
             ),
         });
     }
-    let receipt_hex = extract_json_string_field(fwc_response_json, "receipt_hash", FMT)?;
+    let receipt_hex = json_string_field(&response, "receipt_hash", FMT)?;
     let fwc_receipt_hash = parse_32_byte_hex(receipt_hex, "receipt_hash", FMT)?;
 
     let mut report_hasher = Hasher::new();
@@ -660,6 +749,30 @@ pub fn invoke_fwc_warehouse_export(
 mod tests {
     use super::*;
 
+    fn replace_field(object: &mut Json, key: &str, value: Json) {
+        let Json::Obj(fields) = object else {
+            panic!("fixture field owner must be an object");
+        };
+        fields.iter_mut().find(|(name, _)| name == key).unwrap().1 = value;
+    }
+
+    fn edit_fixture_transactions(edit: impl FnOnce(&mut Vec<Json>)) -> String {
+        let mut payload = parse(FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON).unwrap();
+        let Json::Obj(fields) = &mut payload else {
+            panic!("fixture envelope must be an object");
+        };
+        let Json::Arr(transactions) = &mut fields
+            .iter_mut()
+            .find(|(key, _)| key == "transactions")
+            .unwrap()
+            .1
+        else {
+            panic!("fixture transactions must be an array");
+        };
+        edit(transactions);
+        payload.render()
+    }
+
     #[test]
     fn fixture_plaid_transactions_sync_payload_parses_to_golden_bank_lines_and_links_document() {
         let units = UnitCatalog::embedded().unwrap();
@@ -713,6 +826,306 @@ mod tests {
             parse_fwc_plaid_transactions_sync(&bad_float, &units),
             Err(FormatError::FloatForbidden { .. })
         ));
+    }
+
+    #[test]
+    fn normalized_plaid_json_preserves_escaped_text_and_raw_source_links() {
+        let units = UnitCatalog::embedded().unwrap();
+        let escaped = FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON
+            .replace(
+                r#""Acme Corp""#,
+                r#""Acme \"Holdings\" \u00e9 \ud83d\ude80 } { [ ]""#,
+            )
+            .replace(
+                r#""INV-100""#,
+                r#""INV\\archive\/\u0037\" [transactions] } {""#,
+            )
+            .replace(r#""Cloud Hosting Inc""#, r#""Cloud {region} \"EU\"""#)
+            .replace(r#""BILL-200""#, r#""BILL\n200\t\u20ac""#);
+        let result = parse_fwc_plaid_transactions_sync(&escaped, &units).unwrap();
+        assert_eq!(result.extract.lines.len(), 2);
+        assert_eq!(
+            result.extract.lines[0].counterparty,
+            "Acme \"Holdings\" é 🚀 } { [ ]"
+        );
+        assert_eq!(
+            result.extract.lines[0].reference,
+            "INV\\archive/7\" [transactions] } {"
+        );
+        assert_eq!(
+            result.extract.lines[1].counterparty,
+            "Cloud {region} \"EU\""
+        );
+        assert_eq!(result.extract.lines[1].reference, "BILL\n200\t€");
+        assert_eq!(result.extract.lines[0].amount.mantissa, 50_000);
+        assert_eq!(result.extract.lines[1].amount.mantissa, 25_000);
+        assert_eq!(result.extract.closing_balance, 125_000);
+
+        let literal = escaped
+            .replace(r"\u00e9", "é")
+            .replace(r"\ud83d\ude80", "🚀")
+            .replace(r"\u0037", "7")
+            .replace(r"\u20ac", "€");
+        let equivalent = parse_fwc_plaid_transactions_sync(&literal, &units).unwrap();
+        assert_eq!(equivalent.extract, result.extract);
+        assert_eq!(equivalent.fwc_receipt_hash, result.fwc_receipt_hash);
+        assert_ne!(equivalent.payload_document_oid, result.payload_document_oid);
+        for (payload, feed) in [(&escaped, &result), (&literal, &equivalent)] {
+            assert_eq!(
+                feed.payload_document_oid,
+                compute_fwc_payload_document_oid(payload.as_bytes())
+            );
+            assert_eq!(feed.derived_line_links.len(), 2);
+            for (index, link) in feed.derived_line_links.iter().enumerate() {
+                assert_eq!(link.line_ordinal, u32::try_from(index + 1).unwrap());
+                assert_eq!(link.source_document_oid, feed.payload_document_oid);
+                assert_eq!(link.line_digest, feed.extract.lines[index].line_digest);
+                assert_eq!(link.relation, "DERIVED_FROM");
+            }
+        }
+    }
+
+    #[test]
+    fn normalized_plaid_json_requires_exact_field_scope_and_types() {
+        let units = UnitCatalog::embedded().unwrap();
+        let fixture = FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON;
+        let cases = [
+            format!("[{fixture}]"),
+            format!(r#"{{"payload":{fixture}}}"#),
+            fixture
+                .replace("  \"connector\": \"plaid\",\n", "")
+                .replace(
+                    r#""account_id": "plaid-acct-chk-1010""#,
+                    r#""account_id": {"connector":"plaid"}"#,
+                ),
+            fixture.replace(
+                r#""amount": "500.00","#,
+                r#""metadata": {"amount":"500.00"},"#,
+            ),
+            fixture.replace(r#""connector": "plaid""#, r#""connector": ["plaid"]"#),
+            fixture.replace(r#""sequence_number": "1""#, r#""sequence_number": 1"#),
+            fixture.replace(r#""counterparty": "Acme Corp""#, r#""counterparty": null"#),
+            fixture.replace(r#""reference": "INV-100""#, r#""reference": true"#),
+            fixture.replace(r#""value_date": "2026-03-11""#, r#""value_date": {}"#),
+        ];
+        for (index, payload) in cases.iter().enumerate() {
+            assert!(
+                matches!(
+                    parse_fwc_plaid_transactions_sync(payload, &units),
+                    Err(FormatError::Parse { .. })
+                ),
+                "accepted wrong-scope/type case {index}"
+            );
+        }
+
+        let mut payload = parse(fixture).unwrap();
+        for wrong_type in [Json::Null, Json::Str("[]".into()), Json::Obj(Vec::new())] {
+            replace_field(&mut payload, "transactions", wrong_type);
+            assert!(matches!(
+                parse_fwc_plaid_transactions_sync(&payload.render(), &units),
+                Err(FormatError::Parse { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn normalized_plaid_json_rejects_malformed_duplicate_and_trailing_data() {
+        let units = UnitCatalog::embedded().unwrap();
+        let fixture = FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON;
+        let cases = [
+            format!("{fixture} {{}}"),
+            format!("{fixture} null"),
+            fixture.replace("},\n    {", "}\n    {"),
+            fixture.replace("\n  ]", ",\n  ]"),
+            fixture.replace(r#""Acme Corp""#, r#""Acme\q""#),
+            fixture.replace(r#""Acme Corp""#, r#""Acme\uD800""#),
+            fixture.replace(r#""Acme Corp""#, r#""Acme\uDC00""#),
+            fixture.replace(r#""Acme Corp""#, "\"Acme\nCorp\""),
+            fixture.replace(
+                r#""connector": "plaid""#,
+                r#""connector": "plaid", "connector": "plaid""#,
+            ),
+            fixture.replace(
+                r#""connector": "plaid""#,
+                r#""connector": "plaid", "\u0063onnector": "other""#,
+            ),
+            fixture.replace(
+                r#""amount": "500.00""#,
+                r#""amount": "500.00", "\u0061mount": "0.00""#,
+            ),
+            fixture.replace(
+                r#""reference": "INV-100""#,
+                r#""reference": "INV-100", "reference": "DIFFERENT""#,
+            ),
+        ];
+        for (index, payload) in cases.iter().enumerate() {
+            assert!(
+                matches!(
+                    parse_fwc_plaid_transactions_sync(payload, &units),
+                    Err(FormatError::Parse { .. })
+                ),
+                "accepted malformed/duplicate case {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalized_plaid_json_never_skips_array_members_or_undeclared_data() {
+        let units = UnitCatalog::embedded().unwrap();
+        for unexpected in [
+            Json::Null,
+            Json::Bool(true),
+            Json::Int(7),
+            Json::Str("ignored transaction".into()),
+            Json::Arr(Vec::new()),
+            Json::Obj(Vec::new()),
+        ] {
+            let payload = edit_fixture_transactions(|rows| rows.insert(1, unexpected));
+            assert!(matches!(
+                parse_fwc_plaid_transactions_sync(&payload, &units),
+                Err(FormatError::Parse { .. })
+            ));
+        }
+        let nested = edit_fixture_transactions(|rows| {
+            rows[0] = Json::Arr(vec![rows[0].clone()]);
+        });
+        assert!(matches!(
+            parse_fwc_plaid_transactions_sync(&nested, &units),
+            Err(FormatError::Parse { .. })
+        ));
+        for payload in [
+            FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON.replace(
+                r#""transactions": ["#,
+                r#""removed": [{"transaction_id":"omitted"}], "transactions": ["#,
+            ),
+            FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON.replace(
+                r#""reference": "INV-100""#,
+                r#""reference": "INV-100", "modified_amount": "999.00""#,
+            ),
+        ] {
+            assert!(matches!(
+                parse_fwc_plaid_transactions_sync(&payload, &units),
+                Err(FormatError::Parse { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn normalized_plaid_json_checks_money_without_float_or_type_coercion() {
+        let units = UnitCatalog::embedded().unwrap();
+        for (field, original) in [
+            ("amount", "500.00"),
+            ("opening_balance", "1000.00"),
+            ("closing_balance", "1250.00"),
+        ] {
+            for token in ["500", "500.00", "5e2", "-5E+2", "null", "true", "[]", "{}"] {
+                let payload = FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON.replace(
+                    &format!("\"{field}\": \"{original}\""),
+                    &format!("\"{field}\": {token}"),
+                );
+                let error = parse_fwc_plaid_transactions_sync(&payload, &units).unwrap_err();
+                assert!(
+                    matches!(error, FormatError::FloatForbidden { token: ref actual, .. } if actual == token),
+                    "wrong refusal for {field}={token}: {error:?}"
+                );
+            }
+        }
+        let scientific = FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON
+            .replace(r#""amount": "500.00""#, r#""amount": "5e2""#);
+        assert!(matches!(
+            parse_fwc_plaid_transactions_sync(&scientific, &units),
+            Err(FormatError::FloatForbidden { .. })
+        ));
+    }
+
+    #[test]
+    fn normalized_plaid_json_preserves_complete_ordered_transaction_census() {
+        let units = UnitCatalog::embedded().unwrap();
+        let dropped = edit_fixture_transactions(|rows| {
+            rows.remove(1);
+        });
+        assert!(matches!(
+            parse_fwc_plaid_transactions_sync(&dropped, &units),
+            Err(FormatError::BankContinuity { .. })
+        ));
+        let extra = edit_fixture_transactions(|rows| {
+            let mut added = rows[0].clone();
+            replace_field(
+                &mut added,
+                "transaction_id",
+                Json::Str("extra-credit".into()),
+            );
+            rows.push(added);
+        });
+        assert!(matches!(
+            parse_fwc_plaid_transactions_sync(&extra, &units),
+            Err(FormatError::BankContinuity { .. })
+        ));
+
+        // An offsetting pair cannot be silently skipped just because the
+        // source still balances. Both additional observations must survive.
+        let balanced_extra = edit_fixture_transactions(|rows| {
+            let mut credit = rows[0].clone();
+            replace_field(
+                &mut credit,
+                "transaction_id",
+                Json::Str("extra-credit".into()),
+            );
+            replace_field(&mut credit, "reference", Json::Str("EXTRA-CREDIT".into()));
+            let mut debit = credit.clone();
+            replace_field(
+                &mut debit,
+                "transaction_id",
+                Json::Str("extra-debit".into()),
+            );
+            replace_field(&mut debit, "direction", Json::Str("debit".into()));
+            replace_field(&mut debit, "reference", Json::Str("EXTRA-DEBIT".into()));
+            rows.extend([credit, debit]);
+        });
+        let result = parse_fwc_plaid_transactions_sync(&balanced_extra, &units).unwrap();
+        assert_eq!(result.extract.lines.len(), 4);
+        assert_eq!(result.derived_line_links.len(), 4);
+        let census: Vec<_> = result
+            .extract
+            .lines
+            .iter()
+            .map(|line| {
+                (
+                    line.line_ordinal,
+                    line.side,
+                    line.amount.mantissa,
+                    line.reference.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            census,
+            [
+                (1, Side::Credit, 50_000, "INV-100"),
+                (2, Side::Debit, 25_000, "BILL-200"),
+                (3, Side::Credit, 50_000, "EXTRA-CREDIT"),
+                (4, Side::Debit, 50_000, "EXTRA-DEBIT"),
+            ]
+        );
+        assert_eq!(result.extract.closing_balance, 125_000);
+        for (index, link) in result.derived_line_links.iter().enumerate() {
+            assert_eq!(link.line_ordinal, u32::try_from(index + 1).unwrap());
+            assert_eq!(link.line_digest, result.extract.lines[index].line_digest);
+            assert_eq!(link.source_document_oid, result.payload_document_oid);
+        }
+    }
+
+    #[test]
+    fn normalized_plaid_json_refuses_duplicate_or_empty_transaction_identities() {
+        let units = UnitCatalog::embedded().unwrap();
+        for replacement in ["plaid-tx-001", ""] {
+            let payload =
+                FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON.replace("plaid-tx-002", replacement);
+            assert!(matches!(
+                parse_fwc_plaid_transactions_sync(&payload, &units),
+                Err(FormatError::Parse { .. })
+            ));
+        }
     }
 
     #[test]
@@ -809,6 +1222,110 @@ mod tests {
                 connector.as_str(),
                 dest,
                 hex_encode(&control_oid.0)
+            );
+        }
+    }
+
+    #[test]
+    fn warehouse_receipt_decodes_strings_and_keeps_exact_response_commitment() {
+        let plain = r#"{
+            "robot_schema_version":"fwc.robot.v1",
+            "connector":"snowflake",
+            "receipt_hash":"11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff"
+        }"#;
+        let escaped = plain
+            .replace("fwc.robot.v1", r"fwc.robot.\u00761")
+            .replace("snowflake", r"snow\u0066lake")
+            .replace("receipt_hash", r"receipt_\u0068ash")
+            .replace("112233", r"\u003112233");
+        let receipt = build_warehouse_export_receipt(
+            WarehouseConnector::Snowflake,
+            "AUDIT.REPORTS",
+            b"certified-report-bytes",
+            [0x42; 32],
+            plain,
+        )
+        .unwrap();
+        let decoded = build_warehouse_export_receipt(
+            WarehouseConnector::Snowflake,
+            "AUDIT.REPORTS",
+            b"certified-report-bytes",
+            [0x42; 32],
+            &escaped,
+        )
+        .unwrap();
+        assert_eq!(decoded.robot_schema_version, "fwc.robot.v1");
+        assert_eq!(decoded.connector, receipt.connector);
+        assert_eq!(decoded.destination_ref, receipt.destination_ref);
+        assert_eq!(decoded.report_digest, receipt.report_digest);
+        assert_eq!(
+            decoded.report_certificate_digest,
+            receipt.report_certificate_digest
+        );
+        assert_eq!(decoded.fwc_receipt_hash, receipt.fwc_receipt_hash);
+        assert_ne!(decoded.payload_document_oid, receipt.payload_document_oid);
+        assert_eq!(
+            decoded.payload_document_oid,
+            compute_fwc_payload_document_oid(escaped.as_bytes())
+        );
+        assert_eq!(
+            WarehouseExportReceipt::decode_canonical(&decoded.canonical_bytes().unwrap()).unwrap(),
+            decoded
+        );
+    }
+
+    #[test]
+    fn warehouse_receipt_refuses_nested_shadowed_duplicate_and_extra_data() {
+        let valid = r#"{
+            "robot_schema_version":"fwc.robot.v1",
+            "connector":"snowflake",
+            "receipt_hash":"11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff"
+        }"#;
+        let cases = [
+            format!("[{valid}]"),
+            format!(r#"{{"nested":{valid}}}"#),
+            format!("{valid} {{}}"),
+            valid.replace(r#""connector":"snowflake""#, r#""connector":"s3""#),
+            valid.replace(r#""connector":"snowflake""#, r#""connector":null"#),
+            valid.replace(r#""connector":"snowflake""#, r#""connector":"snow\qflake""#),
+            valid.replace(
+                r#""connector":"snowflake""#,
+                r#""connector":"snowflake", "connector":"snowflake""#,
+            ),
+            valid.replace(
+                r#""connector":"snowflake""#,
+                r#""connector":"snowflake", "\u0063onnector":"s3""#,
+            ),
+            valid.replace(
+                r#""connector":"snowflake""#,
+                r#""connector":"snowflake", "transactions":[]"#,
+            ),
+            valid.replace(
+                r#""receipt_hash":"11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff""#,
+                r#""receipt_hash":{"receipt_hash":"11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff"}"#,
+            ),
+            valid.replace(
+                r#""receipt_hash":"11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff""#,
+                r#""receipt_hash":7"#,
+            ),
+            valid.replace(
+                r#""robot_schema_version":"fwc.robot.v1""#,
+                r#""robot_schema_version":"fwc.robot.v2""#,
+            ),
+        ];
+        for (index, response) in cases.iter().enumerate() {
+            assert!(
+                matches!(
+                    build_warehouse_export_receipt(
+                        WarehouseConnector::Snowflake,
+                        "AUDIT.REPORTS",
+                        b"certified-report-bytes",
+                        [0x42; 32],
+                        response,
+                    ),
+                    Err(FormatError::Parse { .. })
+                ),
+                "accepted invalid warehouse response {index}"
             );
         }
     }

@@ -3833,6 +3833,203 @@ fn a_plaid_transactions_sync_payload_imports_and_matches_like_a_statement() {
     );
 }
 
+/// A saved normalized fwc.robot.v1 response keeps decoded bank-line text and
+/// its original escaped source bytes through real native import and reopen.
+/// This tests the saved-envelope boundary; it does not invoke a live connector.
+#[test]
+fn plaid_json_escaped_text_survives_native_retention_retry_and_structural_refusals() {
+    const PLAID: &str =
+        include_str!("../../fa-formats/corpora/fwc_plaid_transactions_sync_fixture.json");
+    let payload = PLAID
+        .replace(
+            r#""Acme Corp""#,
+            r#""Acme \"Holdings\" \u00e9 \ud83d\ude80 } { [ ]""#,
+        )
+        .replace(
+            r#""INV-100""#,
+            r#""INV\\archive\/\u0037\" [transactions] } {""#,
+        )
+        .replace(r#""Cloud Hosting Inc""#, r#""Cloud {region} \"EU\"""#)
+        .replace(r#""BILL-200""#, r#""BILL\n200\t\u20ac""#);
+    assert_ne!(payload, PLAID, "the legal escaped source changes apply");
+    let f = Fixture::new();
+    let before = head(&f.book);
+    let imported = f.import("escaped-plaid.json", "plaid-sync", &payload);
+    let receipt = data(&imported);
+    assert_eq!(text(&imported, "event"), "bank_imported");
+    assert_eq!(text(receipt, "bank_format"), "plaid-sync");
+    assert_eq!(integer(receipt, "line_count"), 2);
+    assert_eq!(text(receipt, "opening_balance"), "1000.00 USD");
+    assert_eq!(text(receipt, "closing_balance"), "1250.00 USD");
+    assert_eq!(receipt.get("already_recorded"), Some(&Json::Bool(false)));
+    let published = head(&f.book);
+    assert_eq!(
+        published,
+        before + 1,
+        "the complete import is one publication"
+    );
+    assert_eq!(integer(receipt, "recorded_at"), published);
+    let line_oids = rows(receipt, "line_oids");
+    assert_eq!(line_oids.len(), 2);
+    assert_ne!(line_oids[0], line_oids[1]);
+    let manifest = text(receipt, "manifest_oid");
+
+    let source = ok_privileged(
+        &f.book,
+        &["document", "read", text(receipt, "statement_oid")],
+    );
+    assert_eq!(text(data(&source), "kind"), "BankStatement");
+    assert_eq!(
+        text(data(&source).get("text").unwrap(), "untrusted_content"),
+        payload,
+        "cold readback preserves the original escaped JSON bytes"
+    );
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+    assert_eq!(integer(data(&matched), "line_count"), 2);
+    let bank_lines = rows(data(&matched), "proposals");
+    assert_eq!(
+        bank_lines.len(),
+        2,
+        "every source transaction survives reopen"
+    );
+    for (index, (date, value_date, direction, amount, counterparty, reference)) in [
+        (
+            "2026-03-10",
+            "2026-03-11",
+            "inflow",
+            "500.00 USD",
+            "Acme \"Holdings\" é 🚀 } { [ ]",
+            "INV\\archive/7\" [transactions] } {",
+        ),
+        (
+            "2026-03-15",
+            "2026-03-16",
+            "outflow",
+            "250.00 USD",
+            "Cloud {region} \"EU\"",
+            "BILL\n200\t€",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let row = &bank_lines[index];
+        assert_eq!(
+            integer(row, "line_ordinal"),
+            i128::try_from(index + 1).unwrap()
+        );
+        assert_eq!(text(row, "booking_date"), date);
+        assert_eq!(text(row, "value_date"), value_date);
+        assert_eq!(text(row, "direction"), direction);
+        assert_eq!(text(row, "amount"), amount);
+        assert_eq!(
+            text(row, "line_document_oid"),
+            line_oids[index].as_str().unwrap()
+        );
+        let line_source = format!("D:{}", text(row, "line_document_oid"));
+        for (field, expected) in [("counterparty", counterparty), ("reference", reference)] {
+            let value = row.get(field).unwrap();
+            assert_eq!(text(value, "untrusted_content"), expected);
+            assert_eq!(text(value, "source"), line_source);
+        }
+    }
+    assert_eq!(
+        head(&f.book),
+        published,
+        "source and bank-line reads do not publish"
+    );
+
+    let repeated = f.import("escaped-plaid-retry.json", "plaid-sync", &payload);
+    assert_eq!(
+        data(&repeated).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    for field in [
+        "manifest_oid",
+        "statement_oid",
+        "statement_commit",
+        "line_oids",
+        "line_count",
+        "receipt_hash",
+        "recorded_at",
+    ] {
+        assert_eq!(
+            data(&repeated).get(field),
+            receipt.get(field),
+            "stable retry {field}"
+        );
+    }
+    assert_eq!(
+        head(&f.book),
+        published,
+        "exact retry publishes no new history"
+    );
+    let held = ok(&f.book, &["document", "list"]);
+    for (name, invalid, expected_error) in [
+        (
+            "duplicate-plaid-field.json",
+            payload.replace(
+                r#""amount": "500.00""#,
+                r#""amount": "500.00", "\u0061mount": "500.00""#,
+            ),
+            "duplicate",
+        ),
+        (
+            "trailing-plaid-data.json",
+            format!("{payload} true"),
+            "trailing characters",
+        ),
+        (
+            "extra-plaid-array-member.json",
+            payload.replace(r#""transactions": ["#, r#""transactions": [null,"#),
+            "transaction 1 must be a JSON object",
+        ),
+    ] {
+        assert_ne!(invalid, payload, "{name}: the planted change applies");
+        let path = f.file(name, &invalid);
+        let (exit, refused) = run(
+            &f.book,
+            &[
+                "bank",
+                "import",
+                &path,
+                "--bank-format",
+                "plaid-sync",
+                "--account",
+                "1000",
+            ],
+        );
+        assert_eq!(exit, 2, "{name}: {}", refused.render());
+        assert!(
+            refused.render().contains(expected_error),
+            "{name}: {}",
+            refused.render()
+        );
+        assert_eq!(
+            head(&f.book),
+            published,
+            "{name}: refusal publishes nothing"
+        );
+        let after = ok(&f.book, &["document", "list"]);
+        assert_eq!(
+            data(&after),
+            data(&held),
+            "{name}: original document census is unchanged"
+        );
+        let reopened = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
+        assert_eq!(
+            rows(data(&reopened), "proposals"),
+            bank_lines,
+            "{name}: native bank-line census is unchanged"
+        );
+        assert_eq!(
+            head(&f.book),
+            published,
+            "{name}: verification is read-only"
+        );
+    }
+}
+
 /// fa-lzrn: `fa bank fetch --connector plaid` runs the host's `fwc` (here a
 /// stand-in on a private PATH that checks its exact argv) after admission,
 /// and retains its payload as a plaid-sync statement. Importing the same
