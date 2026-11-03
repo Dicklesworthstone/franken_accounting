@@ -4737,6 +4737,15 @@ fn bundle_checks(report: &BundleReport) -> Vec<Check> {
             Grade::Unrun(why) => (Verdict::Unrun, Some(why.clone())),
         };
         let mut detail = vec![("subject", s(&c.subject))];
+        if c.check == "payload_disclosure" {
+            // These are the disclosure predicate's facts, with its own
+            // pass/fail/unrun grade, not a trusted claim from the header.
+            detail.extend([
+                ("distinct_journal_records", n(m.leaf_count)),
+                ("selected_entries", n(report.summary.entries)),
+                ("balance_proofs", n(report.summary.balances.len() as u64)),
+            ]);
+        }
         if c.check == "production_receipt"
             && let Some(r) = &report.receipt
         {

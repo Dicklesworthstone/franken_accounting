@@ -2,9 +2,11 @@
 //! Appendix A `Bundle` and `ProductionReceipt`), on the producer's side.
 //!
 //! ```text
-//! bundle   = bytes("fa:bundle:v1") ‖ format_major u16 (1) ‖ format_minor u16 (0)
+//! bundle   = bytes("fa:bundle:v1") ‖ format_major u16 (1) ‖ format_minor u16
 //!          ‖ manifest ‖ bytes(TransparencyCheckpoint) ‖ completeness proof
-//!          ‖ list(entry) ‖ list(balance) ‖ bytes(manifest_md)
+//!          ‖ list(entry) ‖ list(balance)
+//!          ‖ [format 1.1/1.2: list(bytes(approval record)) ‖ list(key leaf)]
+//!          ‖ bytes(manifest_md)
 //! manifest = book_id [16] ‖ branch_id [16] ‖ through_seq u64 ‖ leaf_count u64
 //!          ‖ checkpoint_oid [32]
 //!          ‖ scope:        1 Prefix
@@ -18,8 +20,9 @@
 //!                    | scope 3: list(bytes(LeafEnvelope) ‖ list([32] accumulator path))
 //! entry    = leaf_index u64 ‖ proposal_len u32 ‖ bytes(record) ‖ list(stub),
 //!            strictly ascending by leaf_index; only journal entries (leaf
-//!            kind 1): evidence records are bound by the completeness
-//!            proof's envelopes, and a bundle discloses no evidence payload
+//!            kind 1). A scoped bundle's balance proofs disclose every
+//!            checkpoint record payload, including evidence and access
+//!            records, as format 1.2 states
 //! stub     = doc_commit [32] ‖ kind u8 ‖ length u64 ‖ chunk_root [32]
 //!            ‖ opt(bytes(document)), strictly ascending by doc_commit
 //! balance  = bytes(fold_domain) ‖ fold_version u16 ‖ bytes(BalanceProof)
@@ -70,12 +73,15 @@
 //! hold the documents each entry's own evidence list cites (no events,
 //! rules, approvals, supplemental evidence or attestations); there are no
 //! redacted views, register cells, statements, certificates or findings.
-//! A bundle whose in-scope entries cite an approval is version 1.1 (bead
-//! fa-kae): after the balances it carries each cited approval's stored
+//! A scoped bundle with balances is version 1.2, declaring the complete
+//! checkpoint payload disclosure those proofs require. Otherwise a bundle
+//! whose in-scope entries cite an approval is version 1.1 (bead fa-kae).
+//! Both versions carry, after the balances, each cited approval's stored
 //! record, ascending by identity, and every key generation in the prefix of
 //! each principal with a signed approval among them, each with its
-//! inclusion path, ascending by leaf. Any other bundle stays 1.0, byte for
-//! byte.
+//! inclusion path, ascending by leaf. In 1.2 the approval/key lists are empty
+//! when the selected entries cite no approval. Bundles with neither scoped
+//! balances nor cited approvals stay 1.0, byte for byte.
 //! The facade's detached receipt carries the checkpoint's authenticated
 //! TimeEvidence reference, when present. It names the observation within the
 //! covered prefix, not a newly asserted physical production timestamp; later
@@ -100,11 +106,14 @@ use crate::{code, scope};
 
 pub const BUNDLE_FORMAT: &[u8] = b"fa:bundle:v1";
 pub const BUNDLE_DIGEST_DOMAIN: &[u8] = b"fa:bundle:v1";
-/// The fa-verify format a bundle targets: 1.0, or 1.1 when its in-scope
-/// entries cite an approval.
+/// The fa-verify format a bundle targets: 1.2 for a scoped bundle with
+/// balances, otherwise 1.1 when its in-scope entries cite an approval,
+/// and 1.0 otherwise. Format 1.2 declares the balance proofs' complete
+/// checkpoint payload disclosure and carries the approval/key lists too.
 pub const FORMAT_MAJOR: u16 = 1;
 pub const FORMAT_MINOR: u16 = 0;
 pub const FORMAT_MINOR_APPROVALS: u16 = 1;
+pub const FORMAT_MINOR_DISCLOSURE: u16 = 2;
 pub const RECEIPT_FORMAT: &[u8] = b"fa:production-receipt:v1";
 pub const RECEIPT_DIGEST_DOMAIN: &[u8] = b"fa:production-receipt:v1";
 pub const RECEIPT_SIGNATURE_DOMAIN: &[u8] = b"fa:production-receipt-signature:v1";
@@ -252,9 +261,10 @@ impl Manifest<'_> {
     }
 
     /// The text `fa-verify` regenerates and compares byte for byte.
-    /// `approvals` is version 1.1's (records, signed records, key records).
+    /// `approvals` is version 1.1/1.2's (records, signed records, key records).
     fn markdown(
         &self,
+        minor: u16,
         entries: usize,
         documents: usize,
         inline: usize,
@@ -294,14 +304,21 @@ impl Manifest<'_> {
                 String::from_utf8_lossy(BALANCE_FOLD_DOMAIN)
             )
         };
-        let (minor, approvals) = match approvals {
-            None => (FORMAT_MINOR, String::new()),
-            Some((records, signed, keys)) => (
-                FORMAT_MINOR_APPROVALS,
+        let approvals = match approvals {
+            None => String::new(),
+            Some((records, signed, keys)) => {
                 format!(
                     "- Approvals: {records} cited, {signed} signed, with {keys} principal key records\n"
-                ),
-            ),
+                )
+            }
+        };
+        let disclosure = if minor == FORMAT_MINOR_DISCLOSURE {
+            format!(
+                "- Payload disclosure: whole_checkpoint_prefix; all {} distinct checkpoint journal record payloads, including records outside the entry selection, evidence and access records. Each balance proof also carries any required migration witnesses.\n",
+                self.leaf_count
+            )
+        } else {
+            String::new()
         };
         format!(
             "# FrankenAccounting evidence bundle\n\
@@ -316,6 +333,7 @@ impl Manifest<'_> {
              - Entries: {entries}, with their payloads\n\
              - Documents: {documents} cited, {inline} included\n\
              - Balances: {balances}{laws}\n\
+             {disclosure}\
              {approvals}\
              \n\
              Verify: fa-verify bundle <this file> --key <the book's checkpoint public key> [--receipt <its production receipt>]\n\
@@ -648,8 +666,9 @@ pub fn assemble(
 /// other in v1: the bundle itself carries every entry payload those proofs'
 /// selection rests on, and a non-entry leaf is excluded on its signed
 /// envelope kind. An account or entries bundle cannot, so its balances
-/// are payload-complete v3, carrying every prefix record; the facade admits
-/// whole-book read before assembling any bundle. `approvals` holds the
+/// are payload-complete v3/v4, carrying every prefix record; format 1.2
+/// declares that whole-prefix disclosure separately from the entry selection.
+/// The facade admits whole-book read before assembling any bundle. `approvals` holds the
 /// stored record of each approval [`cited_approvals`] names; a cited one
 /// that is absent is refused.
 pub fn assemble_with_runs(
@@ -731,7 +750,14 @@ pub fn assemble_with_runs(
         records.push(record);
     }
     let keys = key_leaves(journal, statement.book_id, &signers)?;
-    let approval_counts = (!cited.is_empty()).then_some((records.len(), signed, keys.len()));
+    let minor = if complete && !balances.is_empty() {
+        FORMAT_MINOR_DISCLOSURE
+    } else if !cited.is_empty() {
+        FORMAT_MINOR_APPROVALS
+    } else {
+        FORMAT_MINOR
+    };
+    let approval_counts = (minor != FORMAT_MINOR).then_some((records.len(), signed, keys.len()));
 
     let scope = match &request.scope {
         BundleScope::Prefix => Scope::Prefix,
@@ -760,6 +786,7 @@ pub fn assemble_with_runs(
         .filter(|s| s.inline.is_some())
         .count();
     let markdown = manifest.markdown(
+        minor,
         entries.len(),
         documents,
         inline,
@@ -772,11 +799,6 @@ pub fn assemble_with_runs(
             + entries.iter().map(|e| e.2.len() + 64).sum::<usize>()
             + balances.iter().map(Vec::len).sum::<usize>(),
     );
-    let minor = if approval_counts.is_some() {
-        FORMAT_MINOR_APPROVALS
-    } else {
-        FORMAT_MINOR
-    };
     w.bytes(BUNDLE_FORMAT).u16(FORMAT_MAJOR).u16(minor);
     manifest.encode(&mut w);
     w.bytes(&checkpoint.bytes);
