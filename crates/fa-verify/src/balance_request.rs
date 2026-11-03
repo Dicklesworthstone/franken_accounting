@@ -156,6 +156,9 @@ mod tests {
     use crate::codec::Writer;
 
     fn proof(format: &[u8], scope: BalanceScope) -> (Vec<u8>, Checkpoint) {
+        if format == crate::migration_balance::BALANCE_FORMAT_V4 {
+            return crate::migration_balance::source_bound_fixture(scope);
+        }
         let checkpoint = Checkpoint {
             book_id: [1; 16],
             branch_id: [0; 16],
@@ -180,9 +183,6 @@ mod tests {
         if format != crate::balance::BALANCE_FORMAT {
             w.count(0);
         }
-        if format == crate::migration_balance::BALANCE_FORMAT_V4 {
-            w.count(0);
-        }
         (w.buf, checkpoint)
     }
 
@@ -194,13 +194,24 @@ mod tests {
         }
     }
 
-    fn expectation(scope: BalanceScope) -> BalanceExpectation {
-        BalanceExpectation {
-            scope,
-            amounts: Some(BalanceAmounts {
+    fn amounts(format: &[u8]) -> BalanceAmounts {
+        if format == crate::migration_balance::BALANCE_FORMAT_V4 {
+            BalanceAmounts {
+                debits: 5000,
+                credits: 5000,
+            }
+        } else {
+            BalanceAmounts {
                 debits: 0,
                 credits: 0,
-            }),
+            }
+        }
+    }
+
+    fn expectation(format: &[u8], scope: BalanceScope) -> BalanceExpectation {
+        BalanceExpectation {
+            scope,
+            amounts: Some(amounts(format)),
         }
     }
 
@@ -218,7 +229,7 @@ mod tests {
         for format in formats() {
             let (bytes, anchor) = proof(format, scope());
             let original = bytes.clone();
-            let wanted = expectation(scope());
+            let wanted = expectation(format, scope());
             let report = verify_balance_for(&bytes, &anchor, &wanted).unwrap();
             assert_eq!(report, crate::verify_balance(&bytes, &anchor).unwrap());
             assert_eq!(bytes, original);
@@ -236,7 +247,7 @@ mod tests {
     #[test]
     fn valid_proofs_for_other_accounts_or_units_do_not_satisfy_the_request() {
         for format in formats() {
-            let wanted = expectation(scope());
+            let wanted = expectation(format, scope());
             for actual in [
                 BalanceScope {
                     account: 11,
@@ -286,10 +297,13 @@ mod tests {
                 };
                 let (bytes, anchor) = proof(format, actual);
                 for requested in cutoffs {
-                    let wanted = expectation(BalanceScope {
-                        effective_through: requested,
-                        ..scope()
-                    });
+                    let wanted = expectation(
+                        format,
+                        BalanceScope {
+                            effective_through: requested,
+                            ..scope()
+                        },
+                    );
                     let result = verify_balance_for(&bytes, &anchor, &wanted);
                     if supplied == requested {
                         assert!(result.is_ok());
@@ -305,7 +319,7 @@ mod tests {
     fn exact_gross_columns_reject_offsetting_wrong_amounts_and_extremes() {
         for format in formats() {
             let (bytes, anchor) = proof(format, scope());
-            for amounts in [
+            for wrong_amounts in [
                 BalanceAmounts {
                     debits: 1,
                     credits: 0,
@@ -319,6 +333,20 @@ mod tests {
                     debits: 7,
                     credits: 7,
                 },
+                // A source-bound v4 proof has nonzero offsetting gross
+                // columns; erasing both still preserves its zero net.
+                BalanceAmounts {
+                    debits: if format == crate::migration_balance::BALANCE_FORMAT_V4 {
+                        0
+                    } else {
+                        5000
+                    },
+                    credits: if format == crate::migration_balance::BALANCE_FORMAT_V4 {
+                        0
+                    } else {
+                        5000
+                    },
+                },
                 BalanceAmounts {
                     debits: i128::MAX,
                     credits: i128::MAX,
@@ -329,19 +357,13 @@ mod tests {
                 },
             ] {
                 let wanted = BalanceExpectation {
-                    amounts: Some(amounts),
-                    ..expectation(scope())
+                    amounts: Some(wrong_amounts),
+                    ..expectation(format, scope())
                 };
                 match verify_balance_for(&bytes, &anchor, &wanted).unwrap_err() {
                     BalanceExpectationError::Amounts { expected, actual } => {
-                        assert_eq!(expected, amounts);
-                        assert_eq!(
-                            actual,
-                            BalanceAmounts {
-                                debits: 0,
-                                credits: 0
-                            }
-                        );
+                        assert_eq!(expected, wrong_amounts);
+                        assert_eq!(actual, amounts(format));
                     }
                     error => assert!(
                         matches!(error, BalanceExpectationError::Amounts { .. }),
@@ -356,7 +378,7 @@ mod tests {
     fn matching_claims_never_bypass_proof_or_checkpoint_verification() {
         for format in formats() {
             let (bytes, anchor) = proof(format, scope());
-            let wanted = expectation(scope());
+            let wanted = expectation(format, scope());
             for end in 0..bytes.len() {
                 assert!(matches!(
                     verify_balance_for(&bytes[..end], &anchor, &wanted),
@@ -422,7 +444,8 @@ mod tests {
                 crate::verify_balance(&w.buf, &anchor).unwrap().scope,
                 "membership_only"
             );
-            let error = verify_balance_for(&w.buf, &anchor, &expectation(scope())).unwrap_err();
+            let error =
+                verify_balance_for(&w.buf, &anchor, &expectation(format, scope())).unwrap_err();
             assert!(matches!(
                 error,
                 BalanceExpectationError::Assurance {
