@@ -2477,18 +2477,29 @@ pub(crate) fn bound_command_rule(
 
 /// A bound command that reads a book and does not judge its own reach
 /// reaches the whole book at the head (doctrine 8, fa-0x0), so a token
-/// carrying any scope caveat is refused before the book is opened, never
-/// answered with a filtered result.
+/// carrying a coordinate caveat is refused before the book is opened, never
+/// answered with a filtered result. An actual payload class known from the
+/// command is judged separately without narrowing any other coordinate.
 fn bound_scope_refusal(
     capability: &Capability,
     ops: &[fa_policy::Op],
     judged: bool,
+    class: Option<EntryClass>,
     command: &str,
 ) -> Result<(), Refusal> {
     if judged || ops.is_empty() {
         return Ok(());
     }
-    fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None).map_err(|denial| {
+    let reach = fa_policy::Reach::whole_book(true);
+    let admission = match class {
+        Some(class) => fa_policy::reach_class(capability, &reach, None, class),
+        None => fa_policy::reach(capability, &reach, None),
+    };
+    admission.map_err(|denial| {
+        let known_class_refusal = class.is_some() && matches!(
+            &denial,
+            fa_policy::Denial::OutOfScope { caveat: "classes", .. }
+        );
         let mut refusal = fa_journal::policy::refusal(&denial);
         let judging: std::collections::BTreeSet<&str> = crate::verbs::registry()
             .map(|reg| {
@@ -2503,12 +2514,26 @@ fn bound_scope_refusal(
             "`{command}` reaches the whole book at its head: {}",
             refusal.message
         );
-        refusal.fix = format!(
-            "a scoped capability runs only the commands that judge their own reach (fa {}); ask the book's steward for a capability without scope caveats to run `{command}`",
-            judging.into_iter().collect::<Vec<_>>().join(", fa ")
-        );
+        if !known_class_refusal {
+            refusal.fix = format!(
+                "a scoped capability runs only the commands that judge their own reach (fa {}); ask the book's steward for a capability without scope caveats to run `{command}`",
+                judging.into_iter().collect::<Vec<_>>().join(", fa ")
+            );
+        }
         refusal
     })
+}
+
+/// These handlers always construct a PeriodControl payload. Naming its class
+/// narrows no other coordinate: the front door still judges whole-book reach
+/// before the handler reads the period to derive its default key.
+fn bound_payload_class(verb: &str, args: &Args) -> Option<EntryClass> {
+    (verb == "period"
+        && matches!(
+            args.positional.get(1).map(String::as_str),
+            Some("open" | "soft-close" | "close" | "lock" | "reopen")
+        ))
+    .then_some(EntryClass::PERIOD_CONTROL)
 }
 
 /// Each `[[bound]]` rule's ops as `fa_policy::Op`s, resolved once. A rule
@@ -2596,6 +2621,7 @@ pub fn bound_command_admissible(
         authority.capability(),
         required,
         judged,
+        bound_payload_class(verb, args),
         &command_name(verb, sub),
     ) {
         return Err(format!("{} ({})", refusal.message, refusal.code));
@@ -2711,6 +2737,7 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
         authority.capability(),
         required,
         judged,
+        bound_payload_class(&verb.name, args),
         &command_name(&verb.name, sub),
     )?;
     Ok(())

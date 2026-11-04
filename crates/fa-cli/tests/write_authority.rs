@@ -1863,6 +1863,19 @@ fn requires_dry_run_operator_tokens_refuse_control_and_metadata_writes_but_allow
         );
     }
 
+    let journal = |book: &Book| {
+        let fa::QuerySelection::Native(query) =
+            fa::compile_query("MATCH (e:Entry) RETURN e,e._fa_payload AS payload ORDER BY e")
+                .unwrap()
+                .selection
+        else {
+            panic!("the journal population query must be native");
+        };
+        book.query_native(&query, book.head().unwrap(), None)
+            .unwrap()
+            .unwrap()
+            .rows
+    };
     let writes = [
         argv(&[
             "period",
@@ -1899,23 +1912,71 @@ fn requires_dry_run_operator_tokens_refuse_control_and_metadata_writes_but_allow
         !m.dir.join("unrehearsed.cert").exists(),
         "refused certificate production must create no output file"
     );
-    for words in [
-        argv(&["tb", "--period", "FY2026-P03"]),
-        argv(&["recover", "outcomes", "--dry-run"]),
-        argv(&["period", "open", "FY2026-P04", "--dry-run"]),
-        argv(&[
-            "period",
-            "close",
-            "FY2026-P03",
-            "--reason",
-            "Scheduled",
-            "--dry-run",
-        ]),
+    for (words, access_command) in [
+        (argv(&["tb", "--period", "FY2026-P03"]), Some("tb")),
+        (argv(&["recover", "outcomes", "--dry-run"]), None),
+        (
+            argv(&["period", "open", "FY2026-P04", "--dry-run"]),
+            Some("period open"),
+        ),
+        (
+            argv(&[
+                "period",
+                "close",
+                "FY2026-P03",
+                "--reason",
+                "Scheduled",
+                "--dry-run",
+            ]),
+            Some("period close"),
+        ),
     ] {
         let before = m.book.head().unwrap();
+        let entries = journal(&m.book);
+        let periods = m.book.periods().unwrap();
         let (exit, out) = m.bound(&authorities[0], &words);
         assert_eq!(exit, 0, "{words:?}: {out:?}");
-        assert_eq!(m.book.head().unwrap(), before, "{words:?} published");
+        let access = m.book.access_log(before).unwrap();
+        if let Some(command) = access_command {
+            assert_eq!(access.len(), 1, "{words:?} owes exactly one access receipt");
+            let access = &access[0];
+            assert_eq!(access.record.command, command);
+            assert_eq!(access.record.principal, principal_vid(HOLDER));
+            assert_eq!(access.record.principal_name, HOLDER);
+            assert_eq!(
+                access.record.capability_commitment,
+                authorities[0].capability().commitment().unwrap()
+            );
+            let mut requested = words.clone();
+            requested.push("--json".to_string());
+            assert_eq!(
+                access.record.request_digest,
+                fa::access_log::request_digest(&requested)
+            );
+            assert_eq!(access.observed_at, before);
+            assert_eq!(access.recorded_at.0, before.0 + 1);
+            assert_eq!(
+                m.book.head().unwrap(),
+                access.recorded_at,
+                "{words:?} publishes only its access receipt"
+            );
+        } else {
+            assert!(
+                access.is_empty(),
+                "{words:?} is a nonpublishing recovery preview"
+            );
+            assert_eq!(m.book.head().unwrap(), before, "{words:?} published");
+        }
+        assert_eq!(
+            journal(&m.book),
+            entries,
+            "{words:?} changed journal entries"
+        );
+        assert_eq!(
+            m.book.periods().unwrap(),
+            periods,
+            "{words:?} changed periods"
+        );
     }
     let before = m.book.head().unwrap();
     let recovery = argv(&[

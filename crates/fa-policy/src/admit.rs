@@ -633,11 +633,12 @@ mod tests {
                 ..
             })
         ));
-        let agent = Capability::new(VId(1), Profile::Agent, &[Op::Close], VId(1))
+        let agent = Capability::new(VId(1), Profile::Agent, &[Op::Post], VId(1))
             .unwrap()
             .with_requires_dry_run();
+        let agent_intent = intent(VId(1), &[]);
         assert_eq!(
-            admit_preparation(&agent, &control, &Reach::whole_book(true), None, None),
+            admit_preparation(&agent, &agent_intent, &Reach::whole_book(true), None, None),
             Err(Denial::AgentOnTrunk)
         );
     }

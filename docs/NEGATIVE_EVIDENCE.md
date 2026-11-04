@@ -2452,3 +2452,28 @@ The separate 953b25b compile gate and policy/CLI packet reached their original
 1,800-second caps with exit 137 before tests executed. They provide no compile
 PASS or test credit. Corrected-source native execution, exact-tree Tier 0 and
 the complete Tier 1 proof remain required.
+
+The corrected 6b76ebdb candidate passed the exact-tree format/all-target compile
+gate. Its complete authority packet still exited 101: operator tokens 15/1,
+write authority 2/1, bank matches 53/0, Genesis 392/0 and journal policy 82/0.
+Both original armed scope controls and the missing matrix coverage passed.
+The CLI library separately passed 82/0; policy passed 45/1 because the added
+Agent fixture tried to construct a forbidden Close capability. That fixture
+now uses an allowed Post capability and keeps the Agent-on-trunk refusal.
+
+The remaining class failure was a front-door whole-book judgment over an
+unknown class, before the period handler's actual PeriodControl check.
+Both bound-admission callers now supply that known payload class only for
+period transition commands. Every other whole-book coordinate check remains;
+the registry's scope rules are not exempted or broadened.
+
+The remaining preview assertion incorrectly forbade the mandatory AccessEvent
+required by plan §9.7 and the existing operator-token plan-delivery controls.
+Its admission split is explicit: an ordinary read or period-plan delivery may
+publish exactly its one access receipt, with the original principal, capability,
+command and observed/recorded sequence. The complete Entry identities and
+payloads and all period rows must remain unchanged. Missing, wrong or extra
+receipts and accounting changes remain failures. The recovery preview keeps
+its original no-publication requirement. A planted missing-receipt execution
+and corrected native/full-gate execution are required before this test repair
+can be treated as qualified; no missing receipt is a passing read.
