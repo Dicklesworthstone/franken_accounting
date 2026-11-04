@@ -528,14 +528,25 @@ fn pending_batches_recheck_capacity_after_an_intervening_publication() {
 
 #[test]
 fn pending_batch_publication_keeps_a_fitting_changed_prefix() {
-    for (disjoint, independent_evidence) in [(false, false), (true, false), (true, true)] {
+    for (disjoint, independent_evidence, independent_period) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (true, true, true),
+    ] {
         let mut fixture = Fixture::new();
         let other = disjoint.then(|| fixture.another_pair());
+        if independent_period {
+            fixture.open_april();
+        }
         let first = fixture.batch(b"fitting-first", vec![fixture.hold(b"fitting-first-hold")]);
         let mut hold = fixture.hold(b"fitting-delayed-hold");
         if let Some((cash, rent)) = other {
             hold.legs[0].account_ref = rent;
             hold.legs[1].account_ref = cash;
+        }
+        if independent_period {
+            hold.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
         }
         if independent_evidence {
             let document = crate::evidence::Document {
@@ -566,21 +577,26 @@ fn pending_batch_publication_keeps_a_fitting_changed_prefix() {
         fixture.commit(&first, first_stage).unwrap();
         let before = fixture.db.frontier().unwrap();
         let result = fixture.commit(&delayed, delayed_stage);
-        if independent_evidence {
+        if independent_period {
             result.expect("a fitting batch with unchanged point witnesses survives a new prefix");
         } else {
             // Reusing the source document changes its retained point witness,
-            // including when the accounts differ. Fitting final capacity does
-            // not authorize ignoring an invalidated document witness.
-            let refusal = result.expect_err("changed document witnesses must still conflict");
+            // including when the accounts differ. Separate documents still
+            // share the period point. Fitting final capacity cannot authorize
+            // ignoring either invalidated dependency.
+            let refusal = result.expect_err("changed document or period witnesses must conflict");
             assert_eq!(
                 (refusal.code, refusal.exit),
                 (code::CONFLICT, exit::CONFLICT)
             );
             assert!(refusal.message.contains("witness"));
-            let document = crate::evidence::document_vid(&fixture.evidence[0].document_oid);
+            let changed = if independent_evidence {
+                fa_model::period_vid(&fixture.book.calendar.id, "FY2026-P03")
+            } else {
+                crate::evidence::document_vid(&fixture.evidence[0].document_oid)
+            };
             assert!(
-                refusal.message.contains(&format!("VId({})", document.0)),
+                refusal.message.contains(&format!("VId({})", changed.0)),
                 "{refusal}"
             );
             assert_eq!(fixture.db.frontier().unwrap(), before);
@@ -592,10 +608,11 @@ fn pending_batch_publication_keeps_a_fitting_changed_prefix() {
             fixture.db.frontier().unwrap(),
         )
         .unwrap();
-        let expected = if independent_evidence { 2 } else { 1 };
+        let counts = summary.cells.unwrap().pending_counts;
+        assert_eq!(counts.get("FY2026-P03"), Some(&1),);
         assert_eq!(
-            summary.cells.unwrap().pending_counts.get("FY2026-P03"),
-            Some(&expected),
+            counts.get("FY2026-P04").copied().unwrap_or_default(),
+            usize::from(independent_period),
         );
     }
 }

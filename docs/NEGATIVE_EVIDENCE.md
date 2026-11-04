@@ -41,8 +41,13 @@ source document. Diagnostic `9db316b7` retained every assertion and printed
 the failed vertex: LabelId(16), the retained fixture Invoice document at
 VId(111580638931722348158306021880142259661), not an account or period.
 Both shared-document cases correctly conflict after the first publication.
-The positive case now has distinct accounts and a separately retained source
-document before either transaction is prepared. The first attempt was refused
+Separating accounts and the source document still failed on `b8fa97b3`.
+Unchanged-assertion diagnostic `713dcf85` identified the second point as
+VId(199322935102087367386372612645850268979), LabelId(8), FY2026-P03.
+The positive case now also uses the independently opened April period before
+either transaction is prepared. Three shared-document/period cases remain
+strict conflict negatives, with exact changed-vertex identities and no
+publication. The first attempt was refused
 by the offloader with exit103 before execution and earns no test credit.
 The diagnostic is preserved and excluded from product ancestry.
 
@@ -72,8 +77,9 @@ checks remain. The pending-prefix fixture also expected a commit after changing
 a retained document it had read. The original shared-source case now requires
 the observed FCW conflict and no publication. Changing only the accounts was
 insufficient; the later diagnostic above identifies that mistaken assumption.
-The distinct-account, distinct-document case must succeed with the exact
-native pending count. The point-witness law is unchanged.
+The distinct-account, distinct-document, distinct-period case must succeed
+with exactly one native pending count in each period. The point-witness law
+is unchanged.
 
 Finally, the scheduler classified every conditional Reversal cell using only
 its default `post` operation. Execution now tests the actual admitted executor
