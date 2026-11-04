@@ -2388,3 +2388,30 @@ commitment and continues to reject changed canonical digests and the planted
 target-dependent encodings. It changes no accounting result or acceptance
 threshold. Corrected-source native execution and exact-tree Tier 0/Tier 1
 remain required; aarch64 remains unrun and fa-9p1c remains in progress.
+
+## 2026-11-04 — Lifecycle fixture declared a retired assertion-drift version
+
+Commit 6857b70cf upgraded `recon.assertion_drift` and the lifecycle fixture's
+capability selector to v2, but left `lifecycle-D-01`'s explicit `version = 1`.
+The original oracle test on 3fcd06ad reproduced the defect: one executed test
+failed at fixture loading, with `DanglingKey` because
+`recon.assertion_drift@1` is not a current registry row. Compilation succeeded;
+430 other tests were filtered. Remote/wrapper exit 101 at 23:58:29 UTC,
+43,564 ms. This is an actual fixture failure, not a compiler or zero-run result.
+
+Only that explicit version becomes 2, agreeing with the existing selector and
+registry. The 20,000-minor-unit expectation, scale, Critical severity, account,
+attestation and period citations remain unchanged. The strict loader and all
+original tests remain intact. A read-only search of 21 fixture files and 19
+procedure/version rows found no further selector mismatch; that search supplies
+no native procedure qualification. The corrected oracle and CLI case consumers
+still require execution.
+
+The earlier full 3fcd run was deliberately interrupted after formatting and
+143 Python unit tests passed. Its exact RCH check child was cooperatively
+cancelled and acknowledged with exit 143 before the driver was terminated.
+The capture then failed independent verification because it never reached
+`QUALITY GATE RED`; the wrapper exited 2. Its raw logs are retained, with no
+published valid verdict or resume credit. The separate original Tier 0 reached
+its unchanged 1,800-second compile cap: remote 137 after 1,804,185 ms, format
+PASS/check FAIL, wrapper 1. Neither result authorizes a fold, push or closure.

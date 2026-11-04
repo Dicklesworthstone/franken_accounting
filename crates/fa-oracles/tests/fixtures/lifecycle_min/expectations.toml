@@ -51,7 +51,7 @@ basis = ["D-1"]
 granularity = "journal_entry"
 capabilities = ["procedure:recon.assertion_drift@2"]
 procedure = "recon.assertion_drift"
-version = 1
+version = 2
 
 [[target]]
 expectation = "lifecycle-D-01"
