@@ -669,30 +669,42 @@ const fn bytes_scalar_encoded_len(raw_len: usize) -> usize {
 /// turns a commit-time foundation error (`CapsuleError::Recovery`, exit 5)
 /// into a deterministic `FA-REF-201` refusal (exit 3) naming the member and
 /// recommended split count before any write is published.
+///
+/// Totals are adjusted only for the row being changed. The per-member budget
+/// check is constant-time rather than re-counting the entire staged prefix
+/// (fa-q7vt). The pinned substrate retains every submitted relation coordinate,
+/// including empty ones after property changes cancel or fold into a creation
+/// in another coordinate. Its framing remains charged even with no net rows.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TemplateByteTracker {
-    fixed_relations: std::collections::BTreeSet<fgdb_delta_types::RelationId>,
-    fixed_row_bytes: usize,
-    created_vertices: std::collections::BTreeMap<
-        VId,
-        (
-            fgdb_delta_types::RelationId,
-            usize,
-            std::collections::BTreeMap<fgdb_delta_types::PropertyKeyId, usize>,
-        ),
-    >,
+    relations: std::collections::BTreeSet<fgdb_delta_types::RelationId>,
+    row_bytes: usize,
+    created_vertices: std::collections::BTreeMap<VId, CreatedVertexBytes>,
     property_updates:
         std::collections::BTreeMap<(VId, fgdb_delta_types::PropertyKeyId), PropertyUpdate>,
 }
 
-/// A staged property update: its relation, and the value before and after.
-type PropertyUpdate = (
-    fgdb_delta_types::RelationId,
-    Option<CanonicalScalar>,
-    Option<CanonicalScalar>,
-);
+#[derive(Clone, Debug)]
+struct CreatedVertexBytes {
+    row_bytes: usize,
+    props: std::collections::BTreeMap<fgdb_delta_types::PropertyKeyId, usize>,
+}
+
+/// The original value remains the comparison basis across repeated updates.
+/// A change back to that value contributes no row; its coordinate remains.
+#[derive(Clone, Debug)]
+struct PropertyUpdate {
+    before: Option<CanonicalScalar>,
+    before_len: usize,
+    row_bytes: usize,
+}
 
 impl TemplateByteTracker {
+    fn add_row(&mut self, relation: fgdb_delta_types::RelationId, bytes: usize) {
+        self.relations.insert(relation);
+        self.row_bytes += bytes;
+    }
+
     pub(crate) fn create_vertex(
         &mut self,
         relation: fgdb_delta_types::RelationId,
@@ -717,8 +729,15 @@ impl TemplateByteTracker {
         labels_len: usize,
         props: impl IntoIterator<Item = (fgdb_delta_types::PropertyKeyId, usize)>,
     ) {
-        self.created_vertices
-            .insert(vid, (relation, labels_len, props.into_iter().collect()));
+        let props: std::collections::BTreeMap<_, _> = props.into_iter().collect();
+        let row_bytes = 38 + 8 * labels_len + props.values().map(|len| 12 + len).sum::<usize>();
+        let previous = self
+            .created_vertices
+            .insert(vid, CreatedVertexBytes { row_bytes, props });
+        if let Some(previous) = previous {
+            self.row_bytes -= previous.row_bytes;
+        }
+        self.add_row(relation, row_bytes);
     }
 
     pub(crate) fn record_entry_outcome_claim(
@@ -848,9 +867,8 @@ impl TemplateByteTracker {
         if bytes.len() <= object::CHUNK_BYTES {
             return;
         }
-        self.fixed_relations.insert(relation);
         for part in bytes.chunks(object::CHUNK_BYTES) {
-            self.fixed_row_bytes += 156 + bytes_scalar_encoded_len(part.len());
+            self.add_row(relation, 156 + bytes_scalar_encoded_len(part.len()));
         }
     }
 
@@ -859,12 +877,12 @@ impl TemplateByteTracker {
         relation: fgdb_delta_types::RelationId,
         props: &[(fgdb_delta_types::PropertyKeyId, CanonicalScalar)],
     ) {
-        self.fixed_relations.insert(relation);
-        self.fixed_row_bytes += 75
+        let bytes = 75
             + props
                 .iter()
                 .map(|(_, v)| 12 + v.encode().expect("canonical scalar").len())
                 .sum::<usize>();
+        self.add_row(relation, bytes);
     }
 
     pub(crate) fn set_vertex_property(
@@ -875,41 +893,45 @@ impl TemplateByteTracker {
         before: Option<CanonicalScalar>,
         after: Option<CanonicalScalar>,
     ) {
-        if let Some((_, _, props)) = self.created_vertices.get_mut(&vid) {
-            match after {
-                Some(value) => {
-                    props.insert(key, value.encode().expect("canonical scalar").len());
-                }
-                None => {
-                    props.remove(&key);
-                }
-            }
+        self.relations.insert(relation);
+        if let Some(created) = self.created_vertices.get_mut(&vid) {
+            let after_len = after
+                .as_ref()
+                .map(|value| value.encode().expect("canonical scalar").len());
+            let before_len = match after_len {
+                Some(len) => created.props.insert(key, len),
+                None => created.props.remove(&key),
+            };
+            let removed = before_len.map_or(0, |len| 12 + len);
+            let added = after_len.map_or(0, |len| 12 + len);
+            created.row_bytes = created.row_bytes - removed + added;
+            self.row_bytes = self.row_bytes - removed + added;
             return;
         }
-        self.property_updates
+        let update = self
+            .property_updates
             .entry((vid, key))
-            .and_modify(|(_, _, latest_after)| *latest_after = after.clone())
-            .or_insert((relation, before, after));
+            .or_insert_with(|| PropertyUpdate {
+                before_len: opt_scalar_len(before.as_ref()),
+                before,
+                row_bytes: 0,
+            });
+        let previous_bytes = update.row_bytes;
+        let row_bytes = if update.before == after {
+            0
+        } else {
+            30 + update.before_len + opt_scalar_len(after.as_ref())
+        };
+        update.row_bytes = row_bytes;
+        self.row_bytes = self.row_bytes - previous_bytes + row_bytes;
     }
 
     #[must_use]
     pub(crate) fn total_bytes(&self) -> usize {
-        let mut relations = self.fixed_relations.clone();
-        let mut row_bytes = self.fixed_row_bytes;
-        for (relation, labels_len, props) in self.created_vertices.values() {
-            relations.insert(*relation);
-            row_bytes += 38 + 8 * labels_len + props.values().map(|len| 12 + len).sum::<usize>();
-        }
-        for (relation, before, after) in self.property_updates.values() {
-            if before != after {
-                relations.insert(*relation);
-                row_bytes += 30 + opt_scalar_len(before.as_ref()) + opt_scalar_len(after.as_ref());
-            }
-        }
-        if relations.is_empty() && row_bytes == 0 {
+        if self.relations.is_empty() {
             0
         } else {
-            70 + 53 * relations.len() + row_bytes
+            70 + 53 * self.relations.len() + self.row_bytes
         }
     }
 }
@@ -2669,6 +2691,295 @@ pub(crate) mod tests {
             deltas[0].canonical_bytes().expect("canonical_bytes").len(),
             tracked_template_bytes + 24
         );
+    }
+
+    #[test]
+    fn template_byte_tracker_rewrites_match_every_native_transaction_prefix() {
+        let runtime = RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(Budget::INFINITE);
+        let ctx = PurposeContexts::narrow_runtime_root(&root);
+        let bytes = |len| scalar_bytes("tracker fixture", vec![42; len]).unwrap();
+        let edits = [
+            (
+                relation::IN_BATCH,
+                VId(1),
+                property::GENERATION,
+                Some(CanonicalScalar::Int(7)),
+            ),
+            (
+                relation::IN_BATCH,
+                VId(1),
+                property::GENERATION,
+                Some(CanonicalScalar::Int(8)),
+            ),
+            (
+                relation::IN_BATCH,
+                VId(2),
+                property::GENERATION,
+                Some(CanonicalScalar::Int(9)),
+            ),
+            // Both net rows disappear; the empty IN_BATCH frame remains.
+            (
+                relation::IN_BATCH,
+                VId(1),
+                property::GENERATION,
+                Some(CanonicalScalar::Int(7)),
+            ),
+            (
+                relation::IN_BATCH,
+                VId(2),
+                property::GENERATION,
+                Some(CanonicalScalar::Int(7)),
+            ),
+            (relation::IN_BATCH, VId(1), property::GENERATION, None),
+            (
+                relation::IN_BATCH,
+                VId(1),
+                property::GENERATION,
+                Some(bytes(32)),
+            ),
+            (
+                relation::IN_BATCH,
+                VId(1),
+                property::GENERATION,
+                Some(CanonicalScalar::Int(7)),
+            ),
+            // Returning this property to absence must retain the fixed edge.
+            (
+                relation::POSTS_TO,
+                VId(1),
+                property::TARGET_REF,
+                Some(bytes(8)),
+            ),
+            (relation::POSTS_TO, VId(1), property::TARGET_REF, None),
+            // Updates fold into the creation, but still introduce IN_BOOK.
+            (
+                relation::IN_BOOK,
+                VId(3),
+                property::FA_PAYLOAD,
+                Some(bytes(64)),
+            ),
+            (relation::IN_BOOK, VId(3), property::FA_PAYLOAD, None),
+            (
+                relation::IN_BOOK,
+                VId(3),
+                property::TARGET_REF,
+                Some(bytes(9)),
+            ),
+            (
+                relation::IN_BOOK,
+                VId(3),
+                property::TARGET_REF,
+                Some(bytes(7)),
+            ),
+            (relation::IN_BOOK, VId(3), property::TARGET_REF, None),
+            // Removing an update cannot remove a relation with a created row.
+            (
+                relation::HAS_LEG,
+                VId(1),
+                property::FA_PAYLOAD,
+                Some(bytes(7)),
+            ),
+            (relation::HAS_LEG, VId(1), property::FA_PAYLOAD, None),
+            (
+                relation::HAS_LEG,
+                VId(1),
+                property::FA_PAYLOAD,
+                Some(bytes(9)),
+            ),
+        ];
+        for prefix in 0..=edits.len() {
+            let mut db = runtime
+                .block_on(Database::open_memory(
+                    &ctx.commit(),
+                    DatabaseKeys::new([81; 32], DatabaseSecurityNamespaceId([82; 32]), [83; 32]),
+                ))
+                .unwrap();
+            let mut seed = WriteBatch::new(relation::IN_BOOK);
+            for vid in [VId(1), VId(2)] {
+                seed.create_vertex(
+                    vid,
+                    vec![label::ACCOUNT],
+                    vec![
+                        (property::GENERATION, CanonicalScalar::Int(7)),
+                        (property::FA_PAYLOAD, bytes(9)),
+                    ],
+                );
+            }
+            runtime.block_on(db.write(&ctx.commit(), seed)).unwrap();
+            let basis = db.frontier().unwrap();
+            let mut txn = db.begin(&ctx.txn()).unwrap();
+            let mut tracker = TemplateByteTracker::default();
+            let props = vec![(property::FA_PAYLOAD, bytes(7))];
+            let mut created = WriteBatch::new(relation::HAS_LEG);
+            created.create_vertex(VId(3), vec![label::ACCOUNT], props.clone());
+            tracker.create_vertex(relation::HAS_LEG, VId(3), 1, &props);
+            let mut edge = WriteBatch::new(relation::POSTS_TO);
+            edge.add_edge(fgdb_types::EId(4), VId(3), VId(1), vec![]);
+            tracker.add_edge(relation::POSTS_TO, &[]);
+            txn.write_ordered(&mut db, vec![created, edge]).unwrap();
+            for (relation, vid, key, after) in &edits[..prefix] {
+                let before = txn.vertex_property(&db, *vid, *key).unwrap();
+                tracker.set_vertex_property(*relation, *vid, *key, before, after.clone());
+                let mut stage = WriteBatch::new(*relation);
+                stage.set_vertex_property(*vid, *key, after.clone());
+                txn.write_ordered(&mut db, vec![stage]).unwrap();
+            }
+            runtime
+                .block_on(txn.commit(&mut db, &ctx.commit()))
+                .unwrap();
+            let deltas: Vec<_> = db.delta_since(basis).unwrap().collect();
+            assert_eq!(deltas.len(), 1, "prefix {prefix}");
+            assert_eq!(
+                tracker.total_bytes() + 24,
+                deltas[0].canonical_bytes().unwrap().len(),
+                "prefix {prefix}: coalesced rows and relation framing must match the substrate",
+            );
+        }
+    }
+
+    #[test]
+    fn template_byte_tracker_empty_rewrites_and_replaced_vertices_keep_coordinate_framing() {
+        let mut tracker = TemplateByteTracker::default();
+        assert_eq!(tracker.total_bytes(), 0);
+        let set = |tracker: &mut TemplateByteTracker, before, after| {
+            tracker.set_vertex_property(
+                relation::IN_BOOK,
+                VId(1),
+                property::GENERATION,
+                Some(CanonicalScalar::Int(before)),
+                Some(CanonicalScalar::Int(after)),
+            );
+        };
+        set(&mut tracker, 7, 7);
+        let empty_coordinate = 70 + 53;
+        assert_eq!(tracker.total_bytes(), empty_coordinate);
+        set(&mut tracker, 7, 8);
+        let changed = tracker.total_bytes();
+        assert!(changed > 0);
+        set(&mut tracker, 8, 7);
+        assert_eq!(tracker.total_bytes(), empty_coordinate);
+        set(&mut tracker, 7, 9);
+        assert_eq!(tracker.total_bytes(), changed);
+        set(&mut tracker, 9, 7);
+        assert_eq!(tracker.total_bytes(), empty_coordinate);
+
+        let mut tracker = TemplateByteTracker::default();
+        tracker.create_vertex_lens(relation::HAS_LEG, VId(2), 2, [(property::FA_PAYLOAD, 100)]);
+        tracker.create_vertex_lens(relation::POSTS_TO, VId(3), 1, []);
+        tracker.create_vertex_lens(relation::POSTS_TO, VId(2), 0, [(property::GENERATION, 9)]);
+        let mut final_rows = TemplateByteTracker::default();
+        final_rows.create_vertex(relation::POSTS_TO, VId(3), 1, &[]);
+        final_rows.create_vertex(
+            relation::POSTS_TO,
+            VId(2),
+            0,
+            &[(property::GENERATION, CanonicalScalar::Int(9))],
+        );
+        assert_eq!(tracker.total_bytes(), final_rows.total_bytes() + 53);
+        assert_eq!(tracker.relations.len(), 2);
+    }
+
+    #[test]
+    fn template_byte_tracker_matches_inline_and_chunked_outcome_bytes() {
+        let runtime = RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(Budget::INFINITE);
+        let ctx = PurposeContexts::narrow_runtime_root(&root);
+        let inline_members = (object::CHUNK_BYTES - 52) / 48;
+        for members in [
+            inline_members,
+            inline_members + 1,
+            fa_model::limits::MAX_BATCH_ENTRIES,
+        ] {
+            let mut db = runtime
+                .block_on(Database::open_memory(
+                    &ctx.commit(),
+                    DatabaseKeys::new([84; 32], DatabaseSecurityNamespaceId([85; 32]), [86; 32]),
+                ))
+                .unwrap();
+            let body = OutcomeBody {
+                request_digest: [87; 32],
+                entries: (0..members)
+                    .map(|i| EntryRef {
+                        vid: VId(i as u128 + 10),
+                        entry_digest: [88; 32],
+                    })
+                    .collect(),
+            };
+            let mut stage = WriteBatch::new(relation::IN_BATCH);
+            let mut tracker = TemplateByteTracker::default();
+            stage_outcome_tracked(
+                &ctx.query(),
+                &mut stage,
+                &mut tracker,
+                Id128([89; 16]),
+                VId(1),
+                &body,
+            )
+            .unwrap();
+            let basis = db.frontier().unwrap();
+            runtime.block_on(db.write(&ctx.commit(), stage)).unwrap();
+            let deltas: Vec<_> = db.delta_since(basis).unwrap().collect();
+            assert_eq!(deltas.len(), 1);
+            assert_eq!(
+                tracker.total_bytes() + 24,
+                deltas[0].canonical_bytes().unwrap().len(),
+                "{members} members: all fragment rows and one relation frame must be counted",
+            );
+        }
+    }
+
+    #[test]
+    fn template_byte_tracker_checks_one_hundred_thousand_staged_rows() {
+        // Query after every mutation, as batch admission does. Recounting the
+        // growing prefix makes this fixture quadratic even without storage.
+        // This exercises only byte accounting, not a larger permitted batch.
+        const ROWS: usize = 100_000;
+        let mut tracker = TemplateByteTracker::default();
+        let scalar = CanonicalScalar::Int(7);
+        let scalar_len = scalar.encode().unwrap().len();
+        let vertex_bytes = 38 + 8 + 12 + scalar_len;
+        let update_bytes = 30 + 2 * (5 + scalar_len);
+        for i in 0..ROWS {
+            tracker.create_vertex(
+                relation::HAS_LEG,
+                VId(i as u128),
+                1,
+                &[(property::GENERATION, scalar.clone())],
+            );
+            let relations = if i == 0 { 1 } else { 2 };
+            assert_eq!(
+                tracker.total_bytes(),
+                70 + 53 * relations + vertex_bytes * (i + 1) + update_bytes * i,
+                "after creation {i}",
+            );
+            tracker.set_vertex_property(
+                relation::IN_BOOK,
+                VId((ROWS + i) as u128),
+                property::GENERATION,
+                Some(scalar.clone()),
+                Some(CanonicalScalar::Int(8)),
+            );
+            assert_eq!(
+                tracker.total_bytes(),
+                70 + 2 * 53 + (vertex_bytes + update_bytes) * (i + 1),
+                "after update {i}",
+            );
+        }
+        for remaining in (0..ROWS).rev() {
+            tracker.set_vertex_property(
+                relation::IN_BOOK,
+                VId((ROWS + remaining) as u128),
+                property::GENERATION,
+                Some(CanonicalScalar::Int(8)),
+                Some(scalar.clone()),
+            );
+            assert_eq!(
+                tracker.total_bytes(),
+                70 + 2 * 53 + vertex_bytes * ROWS + update_bytes * remaining,
+                "after restoring update {remaining}",
+            );
+        }
     }
 
     #[test]
