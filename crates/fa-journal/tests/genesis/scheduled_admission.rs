@@ -929,6 +929,113 @@ fn account_effectivity_is_judged_at_reversal_date_and_close_races_conflict() {
 }
 
 #[test]
+fn agent_operator_closed_reversal_requires_an_independent_human_approval() {
+    let mut h = fixture();
+    let original = h
+        .post(h.request(
+            h.proposal(
+                h.rent_legs(100),
+                b"agent-operator-source",
+                EntryClass::ORIGINAL,
+            ),
+            &["post"],
+        ))
+        .unwrap()
+        .entry_ref();
+    let march = h.march.clone();
+    h.transition(
+        &march,
+        PeriodTransition::SoftClose,
+        b"softclose-agent-source",
+    )
+    .unwrap();
+    h.transition(&march, PeriodTransition::Close, b"close-agent-source")
+        .unwrap();
+    let reversal = h.reversal_of(original, 100, b"agent-operator-reversal");
+    let mut request = h.request(reversal.clone(), &["post", "post_closed"]);
+    request.capability = request
+        .capability
+        .with_operator_kind(fa_policy::OperatorKind::Agent)
+        .unwrap();
+    let before = h.db.frontier().unwrap();
+    let refusal = h.post(request.clone()).unwrap_err();
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        (fa_policy::denial::code::SOD, exit::SAFETY)
+    );
+    assert!(refusal.message.contains("Human approver"), "{refusal}");
+    assert!(refusal.cite.contains("reversal-closed"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert!(h.db.vertex(reversal_vid(original.vid)).unwrap().is_none());
+    request.approvals = vec![h.approve_transition(reversal.proposal_digest().unwrap())];
+    let posted = h.post(request).unwrap();
+    assert!(matches!(posted, Posted::Committed { .. }));
+    assert_eq!(posted.entry_ref().vid, reversal_vid(original.vid));
+    assert_leg_projections(&h);
+}
+
+#[test]
+fn closed_reversal_sweep_requires_system_authority_even_for_an_agent_operator() {
+    let mut h = fixture();
+    let target = accrue(&mut h, 100, b"closed-system-accrual");
+    open(&mut h, &closer(), b"open-before-system-reversal").unwrap();
+    let april_period = h.april.clone();
+    h.transition(
+        &april_period,
+        PeriodTransition::SoftClose,
+        b"softclose-before-system-reversal",
+    )
+    .unwrap();
+    h.transition(
+        &april_period,
+        PeriodTransition::Close,
+        b"close-before-system-reversal",
+    )
+    .unwrap();
+    tick(&mut h, april(), 126);
+    let before = h.db.frontier().unwrap();
+    let system = fa_journal::rows::system_principal(h.book.book_id);
+    for kind in [
+        fa_policy::OperatorKind::Human,
+        fa_policy::OperatorKind::Agent,
+    ] {
+        // Possession of the System principal ID and the posting ops does not
+        // promote a Human base capability to the sweep's System authority.
+        let capability = Capability::new(
+            system,
+            Profile::Human,
+            &[Op::Post, Op::PostClosed],
+            PRINCIPAL,
+        )
+        .unwrap()
+        .with_operator_kind(kind)
+        .unwrap();
+        let refusal = sweep(&mut h, capability).unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (code::CAPABILITY, exit::SAFETY)
+        );
+        assert!(refusal.message.contains("System principal"), "{refusal}");
+        assert_eq!(h.db.frontier().unwrap(), before);
+        assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+    }
+    let capability = Capability::new(
+        system,
+        Profile::System,
+        &[Op::Post, Op::PostClosed],
+        PRINCIPAL,
+    )
+    .unwrap();
+    let batch = sweep(&mut h, capability).unwrap().unwrap();
+    assert_eq!(batch.minted.len(), 1);
+    assert_eq!(batch.minted[0].0, target);
+    assert_eq!(batch.minted[0].1.vid, reversal_vid(target.vid));
+    assert!(batch.blocked.is_empty());
+    assert!(verify_schedules(&h.db, &h.book).unwrap().is_green());
+    assert_leg_projections(&h);
+}
+
+#[test]
 fn automatic_effects_enforce_post_ceiling_class_scope_dry_run_and_revocation() {
     let mut h = fixture();
     let target = accrue(&mut h, 100, b"governed-accrual");

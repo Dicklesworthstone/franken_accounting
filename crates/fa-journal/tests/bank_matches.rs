@@ -1372,6 +1372,60 @@ fn metadata_cap(principal: VId) -> Capability {
 }
 
 #[test]
+fn agent_operator_may_read_bank_history_but_cannot_record_a_human_correction() {
+    let mut h = Harness::new();
+    let entry = h.entry(&[10_000], "WIRE", b"cash");
+    let (import, line) = h.imported("WIRE", 10_000, b"statement");
+    let request = h.request(import, line, entry, 0);
+    let confirmed = h.confirm(&cap(CONFIRMER), request).unwrap();
+    let human = metadata_cap(VId(9));
+    let agent = human
+        .clone()
+        .with_operator_kind(fa_policy::OperatorKind::Agent)
+        .unwrap();
+    assert_eq!(agent.profile(), Profile::Human);
+    assert_eq!(agent.sod_profile(), Profile::Agent);
+    let before = h.head();
+    for target in [
+        decision_ref(&confirmed),
+        BankDecisionRef {
+            vid: VId(0),
+            digest: [0; 32],
+        },
+    ] {
+        let refused = h.unmatch(&agent, target).unwrap_err();
+        assert_eq!(
+            (refused.code, refused.exit),
+            (fa_policy::denial::code::SOD, refusal::exit::SAFETY)
+        );
+        assert!(
+            refused.message.contains("Agent-profile capability"),
+            "{refused}"
+        );
+        assert_eq!(refused.cite, "sod_policy.toml#bank_match_corrector");
+        assert_eq!(h.head(), before);
+    }
+    let history = h.history(&agent, None).unwrap();
+    assert_eq!(history.active, vec![confirmed.clone()]);
+    assert!(history.unmatches.is_empty());
+    assert_eq!(h.head(), before);
+
+    let corrected = h.unmatch(&human, decision_ref(&confirmed)).unwrap();
+    assert_eq!(corrected.unmatch.unmatched_by, human.holder());
+    assert_eq!(corrected.unmatch.unmatching_profile, Profile::Human);
+    assert_eq!(corrected.recorded_at, CommitSeq(before.0 + 1));
+    let after = h.head();
+    let refused = h.unmatch(&agent, decision_ref(&confirmed)).unwrap_err();
+    assert_eq!(refused.code, fa_policy::denial::code::SOD);
+    assert_eq!(h.head(), after, "a retry still requires a human operator");
+    let history = h.history(&agent, None).unwrap();
+    assert!(history.active.is_empty());
+    assert_eq!(history.confirmations, vec![confirmed]);
+    assert_eq!(history.unmatches, vec![corrected]);
+    assert_eq!(h.head(), after);
+}
+
+#[test]
 fn explicit_unmatch_preserves_original_facts_and_reconfirms_with_immutable_generations() {
     let mut h = Harness::new();
     let entry = h.entry(&[10_000], "WIRE", b"cash");

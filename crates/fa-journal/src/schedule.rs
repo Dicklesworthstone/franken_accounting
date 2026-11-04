@@ -1556,10 +1556,7 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
     let classes = EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let matrix =
         Admissibility::embedded(&classes).map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let executor = Party {
-        principal: req.principal_ref,
-        profile: req.capability.profile(),
-    };
+    let executor = Party::for_capability(req.principal_ref, &req.capability);
     let mut mints = Mints::new();
     let mut processed = 0usize;
     for s in &due {

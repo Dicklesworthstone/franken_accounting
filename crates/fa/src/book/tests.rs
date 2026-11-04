@@ -4186,7 +4186,8 @@ fn checkpoint_requires_its_holder_witness_authority_and_current_capability() {
     let principal = VId(45);
     let witness = PolicyCapability::embedded(principal, &["witness"]).unwrap();
     let reader = PolicyCapability::embedded(principal, &["read"]).unwrap();
-    let agent = PolicyCapability::new(principal, Profile::Agent, &[Op::Witness], VId(1)).unwrap();
+    assert!(PolicyCapability::new(principal, Profile::Agent, &[Op::Witness], VId(1)).is_err());
+    let agent = PolicyCapability::new(principal, Profile::Agent, &[Op::Read], VId(1)).unwrap();
     for (actor, cap, code) in [
         (principal, reader, "FA-REF-011"),
         (VId(46), witness.clone(), "FA-REF-011"),
@@ -4400,16 +4401,16 @@ fn register_maintenance_requires_explicit_current_whole_book_authority() {
                 "FA-REF-014",
             ),
             (
-                "Agent profile cannot write trunk",
+                "Agent profile has no maintenance authority",
                 principal,
                 Capability::new(
                     principal,
                     Profile::Agent,
-                    &[Op::Read, Op::Verify, Op::Maintain],
+                    &[Op::Read, Op::Verify],
                     principal,
                 )
                 .unwrap(),
-                "FA-REF-013",
+                "FA-REF-011",
             ),
         ] {
             let result = write(&mut book, actor, &capability, period).unwrap();
