@@ -5729,6 +5729,27 @@ impl Book {
         ))
     }
 
+    /// Export an original native AR/AP reconciliation for independent replay.
+    /// Current whole-book Read and Produce authority are required. `expected`
+    /// supplies the recipient's exact code, control account, civil cutoff and
+    /// fixed recorded prefix; the outer certificate and both registry closures
+    /// remain unchanged. Returns `None` if the selected checkpoint is absent.
+    pub fn produce_native_subledger_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::NativeSubledgerCertificate,
+        expected: &crate::NativeSubledgerRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.produce_native_subledger_bundle(
+                &purposes, principal, capability, state, certificate, expected,
+            )
+        ))
+    }
+
     /// Produce an evidence bundle (plan §13.2) and its detached production
     /// receipt. The bundle is produced against the journaled state `state`
     /// (default: the latest), whose checkpoint is recomputed from the

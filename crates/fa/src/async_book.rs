@@ -171,6 +171,10 @@ enum ReportBundleCertificate<'a> {
         certificate: &'a crate::DueDateAgingReconciliationCertificate,
         expected: &'a crate::AgingReconciliationRequest,
     },
+    NativeSubledger {
+        certificate: &'a crate::NativeSubledgerCertificate,
+        expected: &'a crate::NativeSubledgerRequest,
+    },
 }
 
 impl<'a> ReportBundleCertificate<'a> {
@@ -211,6 +215,7 @@ impl<'a> ReportBundleCertificate<'a> {
             Self::DueDateAgingReconciliation { certificate, .. } => {
                 certificate.aging_source().source()
             }
+            Self::NativeSubledger { certificate, .. } => certificate.source_certificate(),
         }
     }
 }
@@ -5241,6 +5246,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export the complete native party-detail/control reconciliation over its
+    /// original signed prefix. The recipient independently fixes the subledger
+    /// code, control account, civil cutoff and recorded sequence in `expected`.
+    pub async fn produce_native_subledger_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::NativeSubledgerCertificate,
+        expected: &crate::NativeSubledgerRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::NativeSubledger {
+                certificate,
+                expected,
+            },
+        )
+        .await
+    }
+
     async fn produce_report_bundle_inner(
         &mut self,
         cx: &PurposeContexts,
@@ -5599,6 +5629,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
                 None
             }
+            ReportBundleCertificate::NativeSubledger {
+                certificate,
+                expected,
+            } => {
+                if let Err(refusal) =
+                    self.replay_native_subledger(cx, principal, capability, certificate, expected)?
+                {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
         };
         let closure_frontier = certificate
             .time_selection
@@ -5638,6 +5679,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 | ReportBundleCertificate::AgingReconciliation { .. }
                 | ReportBundleCertificate::AgingPortfolio { .. }
                 | ReportBundleCertificate::DueDateAgingReconciliation { .. }
+                | ReportBundleCertificate::NativeSubledger { .. }
         ) || matches!(
             &certificate.selection,
             crate::ReportSelection::OpenItems { .. }
@@ -5676,19 +5718,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         } else {
             None
         };
-        let registries = if let ReportBundleCertificate::Procedure(procedure) = report {
-            let Some(registries) = registries else {
-                return Err(KernelError::Corrupt(
-                    "procedure proof lost its native registry closure".into(),
-                )
-                .into());
-            };
-            match procedure.offline_registry_documents(registries) {
-                Ok(registries) => Some(registries),
-                Err(refusal) => return Ok(Err(refusal)),
+        let registries = match report {
+            ReportBundleCertificate::Procedure(procedure) => {
+                let Some(registries) = registries else {
+                    return Err(KernelError::Corrupt(
+                        "procedure proof lost its native registry closure".into(),
+                    )
+                    .into());
+                };
+                match procedure.offline_registry_documents(registries) {
+                    Ok(registries) => Some(registries),
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
             }
-        } else {
-            registries
+            ReportBundleCertificate::NativeSubledger { certificate, .. } => {
+                let Some(registries) = registries else {
+                    return Err(KernelError::Corrupt(
+                        "native-subledger proof lost its native registry closure".into(),
+                    )
+                    .into());
+                };
+                match certificate.offline_registry_documents(registries) {
+                    Ok(registries) => Some(registries),
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            _ => registries,
         };
         if let Some(crate::ReportOutput::ExplainBalance(explanation)) = &replayed
             && let Err(refusal) = crate::certificate::check_explanation_reasons_at(
@@ -5982,6 +6037,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
             }
             ReportBundleCertificate::DueDateAgingReconciliation { certificate, .. } => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::NativeSubledger { certificate, .. } => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,
                     Err(refusal) => return Ok(Err(refusal)),

@@ -147,6 +147,42 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
 }
 
 impl NativeSubledgerCertificate {
+    /// Preserve both the original native registry closure and the additional
+    /// designation/party identity laws bound by this outer certificate.
+    pub(crate) fn offline_registry_documents(
+        &self,
+        mut native: Vec<(String, Vec<u8>)>,
+    ) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
+        self.validate()?;
+        let expected = ["account_types", "entry_classes", "units", "foundations"];
+        if native.iter().map(|(name, _)| name.as_str()).ne(expected) {
+            return Err(invalid(
+                "portable native-subledger reconciliation requires its complete original four-document native registry closure",
+            ));
+        }
+        for (name, text) in REGISTRIES {
+            let canonical = fa_registry::toml::parse(text)
+                .map_err(|error| {
+                    invalid(format!("embedded registry {name} does not parse: {error}"))
+                })?
+                .canonical_bytes();
+            if *name == "entry_classes" {
+                if native[1].1 != canonical {
+                    return Err(Refusal::new(
+                        fa_notary::code::SCOPE_UNSUPPORTED,
+                        exit::REFUSAL,
+                        "the native source and subledger certificate bind different entry-class registry documents",
+                        "plan §5.6 / §13.6 (both original registry closures must be authenticated)",
+                        "retain the original source and reconciliation environments; replay locally until their exact shared entry-class registry can be exported without substitution",
+                    ));
+                }
+            } else {
+                native.push(((*name).to_string(), canonical));
+            }
+        }
+        Ok(native)
+    }
+
     #[must_use]
     pub fn source_certificate(&self) -> &ReportCertificate {
         &self.source

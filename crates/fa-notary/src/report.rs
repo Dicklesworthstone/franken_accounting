@@ -1,5 +1,6 @@
 //! Portable native and dimension-filtered trial balances, statements, open
-//! items, summary accounts, balance explanations, aging, roll-forwards, round-amount procedures and direct cash flow over
+//! items, summary accounts, balance explanations, aging, native subledger
+//! reconciliations, roll-forwards, round-amount procedures and direct cash flow over
 //! a payload-complete checkpoint.
 //!
 //! This is the linear complete-prefix fallback from plan §13.1/§13.3. The
@@ -43,7 +44,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, summary trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, v11/v12 custom statement, native statement-diff, v6/v7 one-book consolidation, jet.round_amounts v1 procedure, effective-date aging, roll-forward, equity roll-forward or equity comparison, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, summary trial-balance, native-subledger reconciliation, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, v11/v12 custom statement, native statement-diff, v6/v7 one-book consolidation, jet.round_amounts v1 procedure, effective-date aging, roll-forward, equity roll-forward or equity comparison, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -139,6 +140,11 @@ pub fn assemble(
 /// documents. Those definitions support independent reproduction of the
 /// findings, exact work and complete decision card. Other procedures, input
 /// handles and effective cutoffs are not part of this profile.
+/// Native subledger reconciliations retain their exact outer certificate and
+/// native AsOf source, appending control_payload and symbols to the four native
+/// registry documents. The shared entry_classes document belongs to both
+/// independently checked registry closures. Party detail and the designation
+/// are reconstructed from the authenticated complete prefix.
 /// V2 appends a list of (registry name, canonical registry document) frames;
 /// existing v1 trial-balance bytes remain unchanged.
 pub fn assemble_with_registries(
@@ -154,6 +160,7 @@ pub fn assemble_with_registries(
         || custom_statement_diff_certificate(certificate)
         || custom_statement_trace_certificate(certificate);
     let procedure = procedure_certificate(certificate);
+    let native_subledger = native_subledger_certificate(certificate);
     let expected: &[&str] = if explanation {
         &[
             "account_types",
@@ -179,6 +186,15 @@ pub fn assemble_with_registries(
             "procedures",
             "sod_policy",
         ]
+    } else if native_subledger {
+        &[
+            "account_types",
+            "entry_classes",
+            "units",
+            "foundations",
+            "control_payload",
+            "symbols",
+        ]
     } else {
         &["account_types", "entry_classes", "units", "foundations"]
     };
@@ -189,6 +205,7 @@ pub fn assemble_with_registries(
         || aging_certificate(certificate)
         || lots_certificate(certificate)
         || procedure
+        || native_subledger
         || due_date_aging_certificate(certificate)
         || reconciliation_certificate(certificate)
         || roll_forward_certificate(certificate)
@@ -210,7 +227,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, five including rounding_laws for custom statements, or six including procedures and sod_policy for jet.round_amounts v1",
+            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, five including rounding_laws for custom statements, six including procedures and sod_policy for jet.round_amounts v1, or six including control_payload and symbols for native subledger reconciliation",
         )));
     }
     assemble_inner(
@@ -526,6 +543,55 @@ fn summary_certificate(certificate: &[u8]) -> bool {
         Ok(matches!(native.u8("report selector")?, 0..=2))
     };
     header().unwrap_or(false)
+}
+
+/// Route the existing native-subledger wrapper only with its exact, sequence-
+/// selected trunk AsOf source. This is framing admission, not verification of
+/// party detail or the declaration: native replay precedes export and the
+/// independent verifier reconstructs every output row from the signed prefix.
+fn native_subledger_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "native subledger format")? != b"fa:native-subledger-certificate:v1" {
+            return Ok(false);
+        }
+        let source = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "native subledger source")?;
+        if !certificate_format(source, b"fa:report-certificate:v1") {
+            return Ok(false);
+        }
+        let mut native = Reader::new(source);
+        native.fixed::<{ b"fa:report-certificate:v1".len() }>("report format")?;
+        native.str(128, "report scope")?;
+        native.str(128, "report authority")?;
+        if native.str(128, "report output format")? != "fa:trial-balance:v1" {
+            return Ok(false);
+        }
+        native.fixed::<16>("report book")?;
+        if native.fixed::<16>("report branch")? != [0; 16] {
+            return Ok(false);
+        }
+        let known_at = native.u64("report known-at")?;
+        if known_at == 0 || native.u8("report selector")? != 1 {
+            return Ok(false);
+        }
+        let through = native.i32("report cutoff")?;
+        if reader.str(64, "subledger code")?.is_empty() {
+            return Ok(false);
+        }
+        reader.u128("subledger control")?;
+        if reader.i32("subledger cutoff")? != through || reader.u64("subledger prefix")? != known_at
+        {
+            return Ok(false);
+        }
+        reader.fixed::<32>("subledger registries")?;
+        reader.u128("subledger producer")?;
+        reader.fixed::<32>("subledger capability")?;
+        let output = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "subledger output")?;
+        reader.fixed::<32>("subledger certificate digest")?;
+        reader.finish()?;
+        Ok(output.starts_with(b"fa:native-subledger-reconciliation:v1"))
+    };
+    certificate.len() <= MAX_REPORT_BUNDLE_BYTES && header().unwrap_or(false)
 }
 
 fn aging_certificate_with_format(certificate: &[u8], format: &[u8]) -> bool {
@@ -891,6 +957,7 @@ fn assemble_inner(
                 || aging_certificate(certificate)
                 || lots_certificate(certificate)
                 || procedure_certificate(certificate)
+                || native_subledger_certificate(certificate)
                 || due_date_aging_certificate(certificate)
                 || reconciliation_certificate(certificate)
                 || roll_forward_certificate(certificate)
@@ -909,7 +976,7 @@ fn assemble_inner(
                 || consolidation::profile(certificate, journal, known_at).is_some()))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v13 functional dimension trial balance, v11/v12 custom statement, v6/v7 one-book consolidation, jet.round_amounts v1 procedure, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, equity roll-forward or equity comparison, direct, policy, split or indirect cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, summary trial balance, native-subledger reconciliation, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v13 functional dimension trial balance, v11/v12 custom statement, v6/v7 one-book consolidation, jet.round_amounts v1 procedure, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, equity roll-forward or equity comparison, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()

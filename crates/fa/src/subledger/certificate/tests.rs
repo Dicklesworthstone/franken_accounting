@@ -9,6 +9,8 @@ use fa_time::FiscalCalendar;
 
 const PRINCIPAL: VId = VId(151);
 
+mod offline;
+
 fn fixture() -> (Book, NativeSubledgerRequest, Capability) {
     let usd = UnitRegistry::embedded().unwrap().lookup("USD").unwrap();
     let mut book = Book::create_memory(
