@@ -3,6 +3,13 @@
 //!
 //! No floating-point numbers are permitted; every posting amount and balance
 //! assertion is parsed and formatted as an exact fixed-scale `fa_money::Amount`.
+//!
+//! Source newlines and delimiters are data, never additional directives. Both
+//! formats retain unsafe book names in `fa_book_name_hex_v1` comments. Beancount
+//! uses standard quoted-string escapes and `fa_memo_hex_v1` posting metadata for
+//! control/whitespace-sensitive memos. Hledger's unquoted grammar uses optional
+//! `fa_code_hex_v1`, `fa_name_hex_v1`, `fa_entry_id_hex_v1`, and
+//! `fa_description_hex_v1` tags; each value is exact UTF-8 encoded as hex.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
@@ -10,6 +17,13 @@ use std::process::Command;
 use fa_model::{AccountType, EntryClass};
 use fa_money::{Amount, Side};
 use fa_time::DateDay;
+
+mod text;
+
+use self::text::{
+    beancount_memo_suffix, escape_quotes, hledger_description, inline_text_metadata,
+    write_book_name,
+};
 
 use crate::{
     FormatAccount, FormatAssertion, FormatEntry, FormatError, FormatJournal, FormatLeg,
@@ -97,10 +111,7 @@ impl AccountNames {
 pub fn write_beancount(journal: &FormatJournal) -> String {
     let mut out = String::new();
     out.push_str("; FrankenAccounting Beancount v3 export (fa-formats, bead fa-npi)\n");
-    out.push_str(&format!(
-        "; fa_book_name: {}\n",
-        journal.coordinate.book_name
-    ));
+    write_book_name(&mut out, &journal.coordinate.book_name);
     out.push_str(&format!(
         "; fa_base_unit: {}@{}\n",
         journal.coordinate.base_unit_code, journal.coordinate.base_unit_scale
@@ -130,10 +141,18 @@ pub fn write_beancount(journal: &FormatJournal) -> String {
         journal.coordinate.base_unit_code
     ));
 
-    let open_day = journal
-        .entries
-        .first()
-        .map_or(DateDay(0), |e| DateDay(e.effective_date.0.min(0)));
+    // Recorded order need not be effective-date order, especially in imported
+    // legacy books. Every account must be open before its earliest use.
+    let open_day = DateDay(
+        journal
+            .entries
+            .iter()
+            .map(|entry| entry.effective_date.0)
+            .chain(journal.assertions.iter().map(|assertion| assertion.as_of.0))
+            .chain(std::iter::once(0))
+            .min()
+            .unwrap_or(0),
+    );
     let open_date_str = format_date_iso(open_day);
     let mut acct_type_by_code = BTreeMap::new();
     for acct in &journal.accounts {
@@ -178,17 +197,11 @@ pub fn write_beancount(journal: &FormatJournal) -> String {
                 Side::Credit => -leg.amount.mantissa,
             };
             let amt_str = format_exact_decimal(signed_mantissa, leg.unit_scale);
-            match &leg.memo {
-                Some(memo) => {
-                    out.push_str(&format!(
-                        "  {bc_acct}  {amt_str} {} ; memo:{}\n",
-                        leg.unit_code, memo
-                    ));
-                }
-                None => {
-                    out.push_str(&format!("  {bc_acct}  {amt_str} {}\n", leg.unit_code));
-                }
-            }
+            out.push_str(&format!(
+                "  {bc_acct}  {amt_str} {}{}",
+                leg.unit_code,
+                beancount_memo_suffix(leg.memo.as_deref())
+            ));
             if !leg.dimensions.is_empty() {
                 out.push_str(&format!(
                     "    fa_dimensions_v1: \"{}\"\n",
@@ -253,6 +266,8 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
             let c = comment.trim();
             if let Some(v) = c.strip_prefix("fa_book_name:") {
                 book_name = v.trim().to_owned();
+            } else if let Some(v) = c.strip_prefix("fa_book_name_hex_v1:") {
+                book_name = decode_text_hex(FMT, v.trim())?;
             } else if let Some(v) = c.strip_prefix("fa_base_unit:") {
                 if let Some((code, scale_s)) = v.trim().split_once('@') {
                     base_unit_code = code.trim().to_owned();
@@ -384,6 +399,19 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
                     class = EntryClass(tag);
                 } else if let Some(v) = body.strip_prefix("fa_migrated_from:") {
                     migrated_from = Some(unquote(FMT, v.trim())?);
+                } else if let Some(v) = body.strip_prefix("fa_memo_hex_v1:") {
+                    let leg: &mut FormatLeg =
+                        legs.last_mut().ok_or_else(|| FormatError::Parse {
+                            format: FMT,
+                            detail: "memo metadata precedes its posting".into(),
+                        })?;
+                    if !lines[i].starts_with("    ") || leg.memo.is_some() {
+                        return Err(FormatError::Parse {
+                            format: FMT,
+                            detail: "duplicate or non-posting memo metadata".into(),
+                        });
+                    }
+                    leg.memo = Some(decode_text_hex(FMT, &unquote(FMT, v.trim())?)?);
                 } else if let Some(v) = body.strip_prefix("fa_dimensions_v1:") {
                     let ordinal = legs
                         .len()
@@ -495,10 +523,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
 pub fn write_hledger(journal: &FormatJournal) -> String {
     let mut out = String::new();
     out.push_str("; FrankenAccounting hledger export (fa-formats, bead fa-npi)\n");
-    out.push_str(&format!(
-        "; fa_book_name: {}\n",
-        journal.coordinate.book_name
-    ));
+    write_book_name(&mut out, &journal.coordinate.book_name);
     out.push_str(&format!(
         "; fa_base_unit: {}@{}\n",
         journal.coordinate.base_unit_code, journal.coordinate.base_unit_scale
@@ -525,24 +550,27 @@ pub fn write_hledger(journal: &FormatJournal) -> String {
         acct_type_by_code.insert(acct.code.as_str(), acct.account_type);
         let hl_acct = to_beancount_account_name(acct.account_type, &acct.code);
         out.push_str(&format!(
-            "account {hl_acct}  ; fa_code:{} fa_type:{}{} fa_name:{}\n",
-            acct.code,
+            "account {hl_acct}  ; {} fa_type:{}{} {}\n",
+            inline_text_metadata("fa_code", &acct.code, true),
             format_account_type(acct.account_type),
             if acct.roles.is_empty() {
                 String::new()
             } else {
                 format!(" fa_roles_v1:{}", acct.roles.join(","))
             },
-            acct.name
+            inline_text_metadata("fa_name", &acct.name, false)
         ));
     }
     out.push('\n');
 
     for entry in &journal.entries {
         let date_str = format_date_iso(entry.effective_date);
+        let (description, description_metadata) = hledger_description(&entry.description);
         out.push_str(&format!(
-            "{date_str} * {}  ; fa_entry_id:{} fa_seq:{} fa_class:{}\n",
-            entry.description, entry.entry_id, entry.recorded_seq, entry.class.0
+            "{date_str} * {description}  ; {} fa_seq:{} fa_class:{}{description_metadata}\n",
+            inline_text_metadata("fa_entry_id", &entry.entry_id, true),
+            entry.recorded_seq,
+            entry.class.0
         ));
         for leg in &entry.legs {
             let acct_ty = acct_type_by_code
@@ -595,6 +623,8 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
             let c = comment.trim();
             if let Some(v) = c.strip_prefix("fa_book_name:") {
                 book_name = v.trim().to_owned();
+            } else if let Some(v) = c.strip_prefix("fa_book_name_hex_v1:") {
+                book_name = decode_text_hex(FMT, v.trim())?;
             } else if let Some(v) = c.strip_prefix("fa_base_unit:") {
                 if let Some((code, scale_s)) = v.trim().split_once('@') {
                     base_unit_code = code.trim().to_owned();
@@ -624,12 +654,21 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
             let mut name = code.clone();
             let mut roles = Vec::new();
             if let Some(c) = comment_opt {
-                if let Some((_, after_name)) = c.split_once("fa_name:") {
+                // fa_name is the final free-text field. Its contents are
+                // source evidence, never additional fa_code/fa_type tags.
+                let metadata = if let Some((before_name, after_name)) = c.split_once(" fa_name:") {
                     name = after_name.trim().to_owned();
-                }
-                for tok in c.split_whitespace() {
+                    before_name
+                } else {
+                    c
+                };
+                for tok in metadata.split_whitespace() {
                     if let Some(v) = tok.strip_prefix("fa_code:") {
                         code = v.to_owned();
+                    } else if let Some(v) = tok.strip_prefix("fa_code_hex_v1:") {
+                        code = decode_text_hex(FMT, v)?;
+                    } else if let Some(v) = tok.strip_prefix("fa_name_hex_v1:") {
+                        name = decode_text_hex(FMT, v)?;
                     } else if let Some(v) = tok.strip_prefix("fa_type:") {
                         acct_type = parse_account_type(FMT, v)?;
                     } else if let Some(v) = tok.strip_prefix("fa_roles_v1:") {
@@ -659,7 +698,7 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
                 Some((h, c)) => (h.trim(), Some(c.trim())),
                 None => (trimmed, None),
             };
-            let description = header_main
+            let mut description = header_main
                 .splitn(3, char::is_whitespace)
                 .nth(2)
                 .unwrap_or("")
@@ -672,6 +711,10 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
                 for tok in c.split_whitespace() {
                     if let Some(v) = tok.strip_prefix("fa_entry_id:") {
                         entry_id = v.to_owned();
+                    } else if let Some(v) = tok.strip_prefix("fa_entry_id_hex_v1:") {
+                        entry_id = decode_text_hex(FMT, v)?;
+                    } else if let Some(v) = tok.strip_prefix("fa_description_hex_v1:") {
+                        description = decode_text_hex(FMT, v)?;
                     } else if let Some(v) = tok.strip_prefix("fa_seq:") {
                         recorded_seq = v.parse().map_err(|_| FormatError::Parse {
                             format: FMT,
@@ -859,18 +902,10 @@ fn infer_account_type_from_beancount(bc_acct: &str) -> Result<AccountType, Forma
     }
 }
 
-fn escape_quotes(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+fn decode_text_hex(format: &'static str, text: &str) -> Result<String, FormatError> {
+    text::decode_text_hex(text).map_err(|detail| FormatError::Parse { format, detail })
 }
 
-fn unquote(format: &'static str, s: &str) -> Result<String, FormatError> {
-    let t = s.trim();
-    if t.len() < 2 || !t.starts_with('"') || !t.ends_with('"') {
-        return Err(FormatError::Parse {
-            format,
-            detail: format!("expected quoted string, got {t:?}"),
-        });
-    }
-    let inner = &t[1..t.len() - 1];
-    Ok(inner.replace("\\\"", "\"").replace("\\\\", "\\"))
+fn unquote(format: &'static str, text: &str) -> Result<String, FormatError> {
+    text::unquote(text).map_err(|detail| FormatError::Parse { format, detail })
 }

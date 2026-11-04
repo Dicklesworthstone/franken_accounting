@@ -12,6 +12,12 @@ This implements a bounded part of plan §16.3 / `fa-sa4w`. The
 result below is separately executed evidence, and does not close the bead's
 requirement to cover every fixture, lots and documented valuation divergences.
 
+The related [source-text repair and regression record](plaintext-source-text.md)
+documents a native memo that became additional Beancount postings and a
+semicolon-truncated hledger description. Its production text codecs have
+separate compiled tests; that record explicitly distinguishes them from the
+whole-crate/native rebuild that the session's memory limit prevented.
+
 ## Executed public-data result
 
 On 2026-11-03 all three tools accepted the complete HMRC March 2025 published

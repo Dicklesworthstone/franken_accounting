@@ -157,7 +157,8 @@ First [prepare the complete sources](#prepare-the-complete-source). Build the
 repository's real `fa` and `fa-verify` binaries with the pinned Rust toolchain:
 
 ```bash
-cargo build --locked -p fa-cli --bin fa -p fa-verify --bin fa-verify -p fad --bin fad
+cargo +nightly-2026-08-31 build --locked -Z bindeps -Z git=shallow-deps \
+  -p fa-cli --bin fa -p fa-verify --bin fa-verify -p fad --bin fad
 ```
 
 Then run, using `target/debug/fa` and `target/debug/fa-verify` from that build:

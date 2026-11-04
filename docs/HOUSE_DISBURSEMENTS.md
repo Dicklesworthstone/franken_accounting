@@ -207,7 +207,8 @@ are not overwritten.
 Build the repository's actual binaries with its pinned Rust toolchain:
 
 ```bash
-cargo build --locked -p fa-cli --bin fa -p fa-verify --bin fa-verify
+cargo +nightly-2026-08-31 build --locked -Z bindeps -Z git=shallow-deps \
+  -p fa-cli --bin fa -p fa-verify --bin fa-verify
 
 python3 -B scripts/house_disbursements_replay.py \
   --prepared /tmp/fa-house-cao --out /tmp/fa-house-cao-native \
