@@ -211,6 +211,13 @@ fn admitted_chain<V: Vfs + Clone>(
     Ok(Ok(fa_notary::chain(db, None)?))
 }
 
+/// The checkpoint and account/effective bounds of migration witness discovery.
+pub(crate) struct MigrationBalanceSelection {
+    pub(crate) state: Oid,
+    pub(crate) account: Option<VId>,
+    pub(crate) effective_through: DateDay,
+}
+
 /// The exact cells touched by migration entries in a selected checkpoint,
 /// including chunks whose open or abandoned run currently hides them.
 /// An extract needs a balance witness over these cells to prove which chunks
@@ -224,10 +231,13 @@ pub(crate) fn migration_balance_requests<V: Vfs + Clone>(
     signer: &dyn fa_notary::CheckpointSigner,
     principal: VId,
     capability: &Capability,
-    state: Oid,
-    account: Option<VId>,
-    effective_through: DateDay,
+    selection: MigrationBalanceSelection,
 ) -> Outcome<Vec<fa_notary::BalanceRequest>> {
+    let MigrationBalanceSelection {
+        state,
+        account,
+        effective_through,
+    } = selection;
     let states = match admitted_chain(db, ctx, book, signer, principal, capability)? {
         Ok(states) => states,
         Err(refusal) => return Ok(Err(refusal)),

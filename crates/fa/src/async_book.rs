@@ -6310,9 +6310,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 &self.signer,
                 principal,
                 capability,
-                state,
-                account,
-                effective_through,
+                crate::proof::MigrationBalanceSelection {
+                    state,
+                    account,
+                    effective_through,
+                },
             )
         })
     }
