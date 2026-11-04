@@ -221,7 +221,8 @@ impl fmt::Display for Refusal {
 /// Refusal codes this crate emits. The catalog (`refusal_catalog.toml`) is a
 /// later bead; until it lands these constants are the registry.
 pub mod code {
-    /// A gross native or functional register column would exceed its bound.
+    /// A gross native/functional column or a period's unresolved-hold
+    /// continuation would exceed its registered representability bound.
     pub const REGISTER_CAPACITY: &str = "FA-REF-198";
     /// A batch or multi-entry transaction's canonical `LogicalDeltaTemplate`
     /// would exceed `limits.toml` `max_batch_template_bytes` (`14,439,152` B,

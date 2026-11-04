@@ -617,7 +617,7 @@ impl PreparedPost {
                         refusal.message
                     ),
                     "plan §5.2 (register capacity at publication)",
-                    "re-plan against the current journal; reduce gross activity if the fresh plan exceeds register capacity",
+                    "re-plan against the current journal; reduce gross activity or resolve existing holds in the affected period if the fresh plan exceeds register capacity",
                 )
             } else {
                 refusal
