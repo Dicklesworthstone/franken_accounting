@@ -3,6 +3,7 @@
 
 use super::*;
 use fa_journal::evidence::{EvidenceAttached, SupplementalEvidence, attach_evidence};
+use fa_journal::post::read_entry;
 use fa_model::{EntryRef, Supersession, SupersessionKind};
 use fa_verify::evidence::inventory::production::documents::{
     DocumentContent, verify_document_prefix_for,
