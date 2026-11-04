@@ -136,6 +136,18 @@ fn bank_drift_v3_replays_original_cash_after_authorized_drift_and_cold_reopen() 
     assert!(clean.report.findings.is_empty());
     assert_eq!(clean.report.coordinate.known_at, before);
     assert_eq!(f.head(), before);
+    assert_eq!(
+        f.book
+            .procedure_certificate_status(
+                &f.cx(),
+                PRINCIPAL,
+                &cap(&["read", "reconcile"]),
+                &clean.certificate,
+            )
+            .unwrap()
+            .unwrap(),
+        ProcedureCertificateStatus::Current { checked_at: before }
+    );
     let bytes = clean.certificate.canonical_bytes().unwrap();
     assert_eq!(
         ProcedureCertificate::decode(&bytes).unwrap(),
@@ -222,6 +234,24 @@ fn bank_drift_v3_replays_original_cash_after_authorized_drift_and_cold_reopen() 
         .unwrap();
     assert_eq!(replayed.output, clean.certificate.output);
     assert_eq!(replayed.known_at, before);
+    let status = f
+        .runtime
+        .block_on(reopened.procedure_certificate_status_with_history(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read", "reconcile"]),
+            &clean.certificate,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        status,
+        ProcedureCertificateStatus::Changed {
+            checked_at: head,
+            current: Box::new(drift.report.clone()),
+        },
+        "cold-bank status reconstructs the current cash from native history"
+    );
     assert_eq!(
         reopened.head(&cx).unwrap(),
         head,
@@ -366,6 +396,17 @@ fn bank_v3_scope_precedes_native_history_and_restored_damage_cannot_replay() {
     let missing = f
         .book
         .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &certificate)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(missing.code, fa_journal::refusal::code::CAPABILITY);
+    let missing = f
+        .runtime
+        .block_on(f.book.procedure_certificate_status_with_history(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read"]),
+            &certificate,
+        ))
         .unwrap()
         .unwrap_err();
     assert_eq!(missing.code, fa_journal::refusal::code::CAPABILITY);

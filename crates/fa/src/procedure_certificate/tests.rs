@@ -507,6 +507,16 @@ fn intact_rehashed_false_output_is_not_mistaken_for_a_successful_replay() {
         .unwrap_err();
     assert_eq!(refusal.exit, exit::VERIFICATION);
     assert!(refusal.message.contains("does not replay"));
+    let refusal = f
+        .book
+        .procedure_certificate_status(&f.cx(), PRINCIPAL, &cap(&["read"]), &intact)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.exit, exit::VERIFICATION);
+    assert!(
+        refusal.message.contains("does not replay"),
+        "freshness cannot bless a self-consistent fabricated historical result"
+    );
 }
 
 #[test]
@@ -537,6 +547,18 @@ fn authority_and_full_scope_are_current_not_inherited_from_the_saved_producer() 
             r.code,
             crate::certificate::code::CERTIFICATE_INVALID,
             "authority precedes decoder"
+        );
+        let mut damaged = c.clone();
+        damaged.output.push(0);
+        let r = f
+            .book
+            .procedure_certificate_status(&f.cx(), PRINCIPAL, &cap, &damaged)
+            .unwrap()
+            .unwrap_err();
+        assert_ne!(
+            r.code,
+            crate::certificate::code::CERTIFICATE_INVALID,
+            "current scope precedes freshness and its historical validation"
         );
     }
     assert!(
@@ -676,6 +698,133 @@ fn revocation_after_certification_cannot_be_undone_by_a_historical_selector() {
         .unwrap_err();
     assert_ne!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
     assert!(refusal.message.to_lowercase().contains("revok"));
+    let refusal = f
+        .book
+        .procedure_certificate_status(&cx, PRINCIPAL, &reader, &certificate)
+        .unwrap()
+        .unwrap_err();
+    assert_ne!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+    assert!(refusal.message.to_lowercase().contains("revok"));
+}
+
+#[test]
+fn procedure_status_is_current_after_retention_and_changed_after_a_backdated_post() {
+    let mut f = Fixture::new(104);
+    let (source, _) = f.post(1, "3000", "1000", 100_000, false);
+    let certified = f.certify(&f.request("jet.round_amounts", source));
+    assert_eq!(certified.report.findings.len(), 1);
+    let cx = f.cx();
+    let certificate = &certified.certificate;
+    let original_at = f.head();
+    assert_eq!(
+        f.book
+            .procedure_certificate_status(&cx, PRINCIPAL, &cap(&["read"]), certificate)
+            .unwrap()
+            .unwrap(),
+        ProcedureCertificateStatus::Current {
+            checked_at: original_at
+        }
+    );
+    let bytes = certificate.canonical_bytes().unwrap();
+    f.runtime
+        .block_on(f.book.retain_report_artifact(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &bytes,
+            Some(certificate.digest()),
+        ))
+        .unwrap()
+        .unwrap();
+    let retained_at = f.head();
+    assert!(retained_at > original_at);
+    let after_retention = f.certify(&f.request("jet.round_amounts", source));
+    assert_ne!(
+        after_retention.report.inputs_digest,
+        certified.report.inputs_digest
+    );
+    assert_ne!(
+        after_retention.report.findings_digest,
+        certified.report.findings_digest
+    );
+    assert_eq!(
+        f.book
+            .procedure_certificate_status(&cx, PRINCIPAL, &cap(&["read"]), certificate)
+            .unwrap()
+            .unwrap(),
+        ProcedureCertificateStatus::Current {
+            checked_at: retained_at
+        },
+        "the two frontier-bound digests alone do not change the analytic result"
+    );
+    assert_eq!(
+        f.head(),
+        retained_at,
+        "checking freshness publishes nothing"
+    );
+
+    f.post(1, "3000", "1000", 200_000, false);
+    let head = f.head();
+    let status = f
+        .book
+        .procedure_certificate_status(&cx, PRINCIPAL, &cap(&["read"]), certificate)
+        .unwrap()
+        .unwrap();
+    let ProcedureCertificateStatus::Changed {
+        checked_at,
+        current,
+    } = status
+    else {
+        panic!("the new round posting must change the certified run");
+    };
+    assert_eq!(checked_at, head);
+    assert_eq!(current.coordinate.known_at, head);
+    assert_eq!(current.findings.len(), 2);
+    assert!(current.population > certified.report.population);
+    assert_ne!(current.decision_card, certified.report.decision_card);
+    assert!(
+        encode_run(&current).is_ok(),
+        "current commitments remain intact"
+    );
+    assert_eq!(
+        f.book
+            .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), certificate)
+            .unwrap()
+            .unwrap(),
+        certified.report,
+        "Changed is not a claim that the historical result stopped replaying"
+    );
+    assert_eq!(f.head(), head);
+}
+
+#[test]
+fn procedure_status_keeps_population_evidence_outside_the_effective_cutoff() {
+    let mut f = Fixture::new(105);
+    let (source, _) = f.post(1, "3000", "1000", 100, false);
+    let mut request = f.request("aging.open_items", source);
+    request.effective_through = Some(day(10));
+    let certified = f.certify(&request);
+    f.post(20, "3000", "1000", 70, false);
+    let head = f.head();
+    let status = f
+        .book
+        .procedure_certificate_status(&f.cx(), PRINCIPAL, &cap(&["read"]), &certified.certificate)
+        .unwrap()
+        .unwrap();
+    let ProcedureCertificateStatus::Changed {
+        checked_at,
+        current,
+    } = status
+    else {
+        panic!("population and decision evidence are part of freshness");
+    };
+    assert_eq!(checked_at, head);
+    assert_eq!(current.coordinate.effective_through, Some(day(10)));
+    assert_eq!(current.findings, certified.report.findings);
+    assert_eq!(current.work, certified.report.work);
+    assert!(current.population > certified.report.population);
+    assert_ne!(current.decision_card, certified.report.decision_card);
+    assert_eq!(f.head(), head);
 }
 
 #[test]

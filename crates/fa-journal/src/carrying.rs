@@ -149,7 +149,7 @@ pub(crate) fn unsupported_batch() -> Refusal {
         exit::REFUSAL,
         "this compound operation cannot combine source-bound foreign settlements",
         "plan §5.10 (complete aggregate carrying-value dependency)",
-        "commit each settlement alone, or use an FX-only atomic batch or native draft of distinct existing target legs; paired replacement, mixed batches, and case promotion remain unsupported",
+        "use distinct existing FX targets with independent, nonapplying Original companions outside their source and valuation accounts; companion applications, reversals and adjustments, paired replacement, and case promotion require separate publication",
     )
 }
 

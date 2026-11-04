@@ -247,6 +247,19 @@ fn analytic_artifacts_replay_after_reopen_with_no_partial_output_or_new_authorit
         .collect()
     }; // close the AsyncBook before independent CLI processes take the lease.
     assert_eq!(head(), before);
+    let original = certificates[0].canonical_bytes().unwrap();
+    let (exit, stdout, events) = call(&path, &["certificate", "status", "-"], Some(&original));
+    assert_eq!(exit, 0, "{stdout}");
+    assert_eq!(events.len(), 1);
+    assert_eq!(text(&events[0], "event"), "certificate_status");
+    assert_eq!(text(data(&events[0]), "status"), "Current");
+    assert_eq!(number(data(&events[0]), "known_at"), i128::from(before.0));
+    assert_eq!(number(data(&events[0]), "checked_at"), i128::from(before.0));
+    assert_eq!(
+        text(events[0].get("coordinate").unwrap(), "effective"),
+        "through:2026-01-31"
+    );
+    assert_eq!(head(), before, "freshness is a read");
     post(
         &path,
         &dir,
@@ -264,6 +277,26 @@ fn analytic_artifacts_replay_after_reopen_with_no_partial_output_or_new_authorit
         let bytes = certificate.canonical_bytes().unwrap();
         let file = dir.join(format!("procedure-{i}.cert"));
         std::fs::write(&file, &bytes).unwrap();
+        let status = ok(&path, &["certificate", "status", file.to_str().unwrap()]);
+        assert_eq!(status.len(), 1);
+        assert_eq!(text(&status[0], "event"), "certificate_status");
+        assert_eq!(text(&status[0], "certificate"), hex(certificate.digest()));
+        assert_eq!(text(data(&status[0]), "status"), "Changed");
+        assert_eq!(number(data(&status[0]), "known_at"), i128::from(before.0));
+        assert_eq!(number(data(&status[0]), "checked_at"), i128::from(after.0));
+        assert_eq!(
+            text(status[0].get("coordinate").unwrap(), "effective"),
+            "through:2026-01-31"
+        );
+        assert_eq!(
+            data(&status[0])
+                .get("later_entries")
+                .and_then(Json::as_arr)
+                .unwrap()
+                .len(),
+            0,
+            "procedure freshness does not invent a monetary supersession list"
+        );
         let args = ["replay", file.to_str().unwrap()];
         let (exit, stdout, events) = call(&path, &args, None);
         assert_eq!(exit, 0, "{stdout}");
@@ -315,6 +348,15 @@ fn analytic_artifacts_replay_after_reopen_with_no_partial_output_or_new_authorit
                 events.len(),
                 1,
                 "no partial results on failure: {error_output}"
+            );
+            assert_eq!(text(&events[0], "event"), "error");
+            let (exit, error_output, events) =
+                call(&path, &["certificate", "status", "-"], Some(bad));
+            assert_eq!(exit, 8, "{error_output}");
+            assert_eq!(
+                events.len(),
+                1,
+                "no freshness event before historical validity"
             );
             assert_eq!(text(&events[0], "event"), "error");
         }

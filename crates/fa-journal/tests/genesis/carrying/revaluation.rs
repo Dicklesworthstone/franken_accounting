@@ -11,6 +11,172 @@ use fa_reference::fx::{
 };
 use fgdb_types::CommitSeq;
 
+#[test]
+fn mixed_fx_batches_protect_declared_valuation_leaves_before_any_revaluation() {
+    for (fx_first, route_month) in [(false, 3), (true, 3), (false, 4), (true, 4)] {
+        let mut f = RevaluedFixture::with_routes_from(Side::Debit, &[(3, 10)], day(route_month, 1));
+        let target = f.targets[0];
+        let fx = f
+            .prepare(target, 1, day(3, 15), b"mixed-routed-fx")
+            .unwrap()
+            .into_proposal();
+        assert!(fx.legs.iter().all(|leg| leg.account_ref != f.valuation));
+        let mut legs = f.f.h.rent_legs(1);
+        legs[0].account_ref = f.valuation;
+        let plain =
+            f.f.h
+                .proposal(legs, b"mixed-valuation-leg", EntryClass::ORIGINAL);
+        let members = if fx_first {
+            vec![fx.clone(), plain]
+        } else {
+            vec![plain, fx.clone()]
+        };
+        let batch = f.f.h.batch(b"mixed-valuation-dependency", members);
+        let before = f.f.h.db.frontier().unwrap();
+        let rows = f.f.h.db.vertices().unwrap();
+        let refusal = f.f.post_fx_batch(batch).unwrap_err();
+        assert_eq!(refusal.code, "FA-REF-071");
+        assert!(refusal.message.contains("source or valuation account"));
+        assert_eq!(f.f.h.db.frontier().unwrap(), before);
+        assert_eq!(f.f.h.db.vertices().unwrap(), rows);
+        assert_eq!(f.position(target, None).carrying_base, 10);
+
+        // The same native amount on an independent expense account is
+        // admissible; sharing the settlement's cash account is safe.
+        let plain = f.f.h.proposal(
+            f.f.h.rent_legs(1),
+            b"mixed-valuation-leg",
+            EntryClass::ORIGINAL,
+        );
+        let members = if fx_first {
+            vec![fx, plain]
+        } else {
+            vec![plain, fx]
+        };
+        let batch = f.f.h.batch(b"mixed-valuation-dependency", members);
+        let posted = f.f.post_fx_batch(batch).unwrap();
+        assert_eq!(posted.recorded_at.0, before.0 + 1);
+        assert_eq!(f.position(target, None).carrying_base, 7);
+        f.f.verify();
+    }
+}
+
+#[test]
+fn fx_batch_offsets_cannot_post_into_another_members_dedicated_valuation_leaf() {
+    for offset_first in [false, true] {
+        let mut f = RevaluedFixture::new(Side::Debit, &[(3, 10)]);
+        let target = f.targets[0];
+        let mut offset_request = f.f.fx_request(f.f.target, 1);
+        offset_request.settlement_account = f.valuation;
+        let stripped = Cx::detached_cancel_context();
+        let mut budget =
+            ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+        let offset = prepare_fx_settlement(
+            &f.f.h.db,
+            &f.f.h.ctx(),
+            &f.f.h.book,
+            &Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
+            &offset_request,
+            f.f.h
+                .proposal(vec![], b"valuation-offset-fx", EntryClass::ORIGINAL),
+            &mut budget,
+        )
+        .unwrap()
+        .unwrap()
+        .into_proposal();
+        let other = f
+            .prepare(target, 1, day(3, 15), b"protected-routed-fx")
+            .unwrap()
+            .into_proposal();
+        assert_ne!(
+            offset.legs[0].settles[0].target,
+            other.legs[0].settles[0].target
+        );
+        let members = if offset_first {
+            vec![offset, other.clone()]
+        } else {
+            vec![other.clone(), offset]
+        };
+        let batch = f.f.h.batch(b"cross-source-valuation-offset", members);
+        let before = f.f.h.db.frontier().unwrap();
+        let rows = f.f.h.db.vertices().unwrap();
+        let refusal = f.f.post_fx_batch(batch).unwrap_err();
+        assert_eq!(refusal.code, "FA-REF-071");
+        assert!(refusal.message.contains("source or valuation account"));
+        assert_eq!(f.f.h.db.frontier().unwrap(), before);
+        assert_eq!(f.f.h.db.vertices().unwrap(), rows);
+        assert_eq!(f.position(target, None).carrying_base, 10);
+        assert_eq!(f.f.carrying().open_base.mantissa, 1);
+
+        let independent = f.f.prepare(1, b"valuation-offset-fx").into_proposal();
+        let members = if offset_first {
+            vec![independent, other]
+        } else {
+            vec![other, independent]
+        };
+        let batch = f.f.h.batch(b"cross-source-valuation-offset", members);
+        let posted = f.f.post_fx_batch(batch).unwrap();
+        assert_eq!(posted.recorded_at.0, before.0 + 1);
+        assert_eq!(f.position(target, None).carrying_base, 7);
+        assert_eq!(f.f.carrying().open_base.mantissa, 0);
+        f.f.verify();
+    }
+}
+
+#[test]
+fn mixed_fx_batches_preserve_exact_allocated_releases_for_shared_valuation_leaves() {
+    for include_native in [false, true] {
+        let mut f = RevaluedFixture::new(Side::Debit, &[(3, 10), (3, 10)]);
+        let allocation = f.revaluation(13, 3, 3, true).unwrap();
+        f.post_revaluation(allocation, b"batch-allocated-revaluation");
+        let first = f
+            .prepare(f.targets[0], 1, day(4, 15), b"batch-first-allocated-fx")
+            .unwrap()
+            .into_proposal();
+        let second = f
+            .prepare(f.targets[1], 1, day(4, 15), b"batch-second-allocated-fx")
+            .unwrap()
+            .into_proposal();
+        assert!(first.legs.iter().any(|leg| leg.account_ref == f.valuation));
+        assert!(second.legs.iter().any(|leg| leg.account_ref == f.valuation));
+        let mut members = vec![first];
+        if include_native {
+            let mut plain = f.f.h.proposal(
+                f.f.h.rent_legs(1),
+                b"batch-independent-allocated-companion",
+                EntryClass::ORIGINAL,
+            );
+            plain.effective_date = day(4, 15);
+            members.push(plain);
+        }
+        members.push(second);
+        let batch = f.f.h.batch(b"batch-shared-allocated-valuation", members);
+        let before = f.f.h.db.frontier().unwrap();
+        assert_eq!(f.functional_net(f.valuation), 6);
+        let posted = f.f.post_fx_batch(batch.clone()).unwrap();
+        assert_eq!(posted.recorded_at.0, before.0 + 1);
+        assert_eq!(posted.entries.len(), if include_native { 3 } else { 2 });
+        for target in &f.targets {
+            assert_eq!(
+                f.position(*target, None),
+                OracleRevaluedCarrying {
+                    native: 2,
+                    historical_base: 7,
+                    carrying_base: 9,
+                }
+            );
+        }
+        assert_eq!(f.functional_net(f.valuation), 4);
+        f.f.verify();
+        let rows = f.f.h.db.vertices().unwrap();
+        let retried = f.f.post_fx_batch(batch).unwrap();
+        assert_eq!(retried.entries, posted.entries);
+        assert_eq!(retried.recorded_at, posted.recorded_at);
+        assert_eq!(f.f.h.db.frontier().unwrap(), posted.recorded_at);
+        assert_eq!(f.f.h.db.vertices().unwrap(), rows);
+    }
+}
+
 fn day(month: u8, value: u8) -> DateDay {
     DateDay::from_ymd(2026, month, value).unwrap()
 }
@@ -25,6 +191,10 @@ struct RevaluedFixture {
 
 impl RevaluedFixture {
     fn new(side: Side, items: &[(i128, i128)]) -> Self {
+        Self::with_routes_from(side, items, day(3, 1))
+    }
+
+    fn with_routes_from(side: Side, items: &[(i128, i128)], routes_from: DateDay) -> Self {
         // The existing fixture's unrelated invoice exercises isolation: the
         // allocated population is the declared Single(EUR) source below.
         let mut f = fixture(1, 1);
@@ -87,7 +257,7 @@ impl RevaluedFixture {
                 &Capability::embedded(PRINCIPAL, &["read", "schema_change"]).unwrap(),
                 FxRevaluationRoutesRequest {
                     principal: PRINCIPAL,
-                    effective_from: day(3, 1),
+                    effective_from: routes_from,
                     routes: [(
                         source,
                         FxRevaluationRoute {
