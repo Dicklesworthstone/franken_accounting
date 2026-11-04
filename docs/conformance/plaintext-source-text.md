@@ -96,7 +96,7 @@ The eight whole-format regressions in
 `crates/fa-formats/tests/plaintext_text.rs` additionally cover exact journal
 identity, posting counts, hledger metadata isolation and legacy account-opening
 dates. They should be run with the complete crate and followed by a fresh
-native build and the external oracle:
+native build and a Beancount/hledger comparison:
 
 ```bash
 cargo +nightly-2026-08-31 test --locked \

@@ -241,7 +241,9 @@ actual operations:
    amount, description and memo; verify each native export certificate.
 8. Certify and replay the quarter report, produce a source-bound portable proof,
    verify it with the separate `fa-verify` executable under the retained test
-   checkpoint key, and refuse a deliberately damaged proof.
+   checkpoint key, and refuse a deliberately damaged proof. Its authenticated
+   prefix and balance checks follow FA-INV-14.seq-range-complete and
+   FA-INV-04.outsider-recomputation.
 
 Every trial-balance response must identify the exact requested book, period,
 effective cutoff, stock mode and known-at prefix. Equal amounts at different
@@ -253,14 +255,15 @@ All command arguments, exits, stdout/stderr and executable identities are
 retained alongside `result.json`. A missing executable is `UNRUN`, and any
 failed check is `FAIL`; source preparation cannot stand in for native success.
 The proof authenticates the resulting analysis book under its trusted local
-key, not a House-signed or audited set of accounts.
+key under FA-INV-14.seq-range-complete, not a House-signed or audited set of
+accounts.
 The standalone verifier checks the normalized 7,710-row migration witness and
 native report; the source adapter separately reconciles the 3,855 original
 publisher observations to the House's printed controls. `fa-verify` does not
 independently parse the House's CSV publication format.
 
 Install the real external tools as described in the
-[plaintext external oracle guide](conformance/plaintext-external-oracle.md),
+[plaintext comparison guide](conformance/plaintext-external-oracle.md),
 then compare the three untouched, same-coordinate native exports:
 
 ```bash
