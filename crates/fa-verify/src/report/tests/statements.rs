@@ -1055,8 +1055,7 @@ fn a_signed_statement_minor_cannot_be_upgraded_with_an_empty_manifest_list() {
     let changed = with_empty_source_manifest_list(&bytes);
     assert_eq!(
         verify_report_expected(&changed, &[key], Some(&checkpoint), None, Some(&trusted))
-            .err()
-            .expect("a checkpoint and certificate cannot authorize a noncanonical minor")
+            .expect_err("a checkpoint and certificate cannot authorize a noncanonical minor")
             .predicate,
         "supported_report"
     );
