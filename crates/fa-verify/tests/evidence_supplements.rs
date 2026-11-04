@@ -497,3 +497,221 @@ fn document_byte_and_count_limits_are_enforced_before_prefix_authentication() {
         Err(DocumentProductionError::Limit("document count")),
     ));
 }
+
+fn framed_vid(domain: &[u8], parts: &[&[u8]]) -> u128 {
+    let mut wire = fixture::Wire::default();
+    for part in parts {
+        wire.bytes(part);
+    }
+    let digest = fa_verify::blake3::hash_parts(domain, &[&wire.0]);
+    u128::from_le_bytes(digest[..16].try_into().unwrap())
+}
+
+fn intent_origin() -> Vec<u8> {
+    let mut wire = fixture::Wire::default();
+    wire.u8(0).fixed(&[9; 32]).u16(1);
+    wire.0
+}
+
+fn identity_proposal(
+    class: u16,
+    origin: &[u8],
+    pending: &[u8],
+    extensions: &[(u16, &[u8])],
+) -> Vec<u8> {
+    let original = fixture::proposal(&[]);
+    // This independent fixture's Intent origin is 1 + 32 + 2 bytes. Preserve
+    // its key, principal, entry framing and zero original citation list.
+    let origin_end = original.count_offset - 17;
+    let mut proposal = original.bytes[..origin_end - 35].to_vec();
+    proposal[36..38].copy_from_slice(&class.to_le_bytes());
+    proposal.extend_from_slice(origin);
+    proposal.extend_from_slice(&original.bytes[origin_end..original.tail_offset]);
+    let mut tail = fixture::Wire::default();
+    tail.u32(0) // supersession
+        .fixed(pending)
+        .u32(0) // external IDs
+        .u32(0) // tags
+        .u32(extensions.len() as u32);
+    for (tag, bytes) in extensions {
+        tail.u16(*tag).bytes(bytes);
+    }
+    proposal.extend_from_slice(&tail.0);
+    proposal
+}
+
+fn identity_journal(proposal: Vec<u8>, vid: u128) -> Journal {
+    let record = supplement_fixture::proposal_record(proposal, 7);
+    let target = Target {
+        vid,
+        digest: record.envelope.record_digest,
+    };
+    Journal::new(
+        &[record, supplement(target, &fixture::citations(), 11, 8)],
+        11,
+    )
+}
+
+fn assert_specialized_identity(proposal: Vec<u8>, expected_vid: u128) {
+    let correct = identity_journal(proposal.clone(), expected_vid);
+    let report = verify_supplemented_evidence_prefix_for(
+        &correct.prefix,
+        &correct.checkpoint,
+        &correct.scope(),
+    )
+    .unwrap();
+    assert_eq!(report.supplements[0].entry_vid, expected_vid);
+    let (_, ordinary) = posting(7, 7, 20_527, &[]);
+    assert_ne!(ordinary.vid, expected_vid);
+    let false_identity = identity_journal(proposal, ordinary.vid);
+    verify_prefix_with_records(&false_identity.prefix, &false_identity.checkpoint).unwrap();
+    assert!(
+        verify_supplemented_evidence_prefix_for(
+            &false_identity.prefix,
+            &false_identity.checkpoint,
+            &false_identity.scope(),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn migrated_targets_use_the_migration_run_namespace_not_the_preparer_key() {
+    let run = 601u128;
+    let mut origin = fixture::Wire::default();
+    origin
+        .u8(2)
+        .u128(run)
+        .bytes(b"legacy")
+        .fixed(&[0; 32]) // source ID: canonical erasable string
+        .u8(0)
+        .fixed(&[0; 24])
+        .bytes(b"legacy-row")
+        .u8(0) // source-recorded timestamp
+        .u8(0) // source preparer
+        .u8(0) // source approver
+        .fixed(&[21; 32]); // import batch
+    let vid = framed_vid(
+        b"fa:vid:migration-entry:v1",
+        &[&fixture::BOOK, &run.to_le_bytes(), b"evidence-inventory"],
+    );
+    assert_specialized_identity(identity_proposal(12, &origin.0, &[0], &[]), vid);
+    // A valid origin cannot silently turn an ordinary Original into a
+    // Migration target. The immutable class is part of this identity law.
+    let wrong_class = identity_journal(identity_proposal(1, &origin.0, &[0], &[]), vid);
+    verify_prefix_with_records(&wrong_class.prefix, &wrong_class.checkpoint).unwrap();
+    assert!(
+        verify_supplemented_evidence_prefix_for(
+            &wrong_class.prefix,
+            &wrong_class.checkpoint,
+            &wrong_class.scope(),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn resolution_targets_use_the_pending_target_identity_not_the_preparer_key() {
+    let pending_target = 602u128;
+    let mut pending = fixture::Wire::default();
+    pending
+        .u8(1)
+        .u8(0) // no timeout on the resolution
+        .u8(1)
+        .u128(pending_target)
+        .fixed(&[22; 32])
+        .u8(1)
+        .u8(3) // Posts: both original ordinals
+        .u32(2)
+        .u16(0)
+        .u16(1);
+    let digest =
+        fa_verify::blake3::hash_parts(b"fa:vid:resolution:v1", &[&pending_target.to_le_bytes()]);
+    let vid = u128::from_le_bytes(digest[..16].try_into().unwrap());
+    assert_specialized_identity(identity_proposal(3, &intent_origin(), &pending.0, &[]), vid);
+    let missing = identity_journal(identity_proposal(3, &intent_origin(), &[0], &[]), vid);
+    verify_prefix_with_records(&missing.prefix, &missing.checkpoint).unwrap();
+    assert!(
+        verify_supplemented_evidence_prefix_for(
+            &missing.prefix,
+            &missing.checkpoint,
+            &missing.scope()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn recurring_targets_bind_the_occurrence_index_and_matching_schedule_origin() {
+    let schedule = 603u128;
+    let index = 41u64;
+    let tick = 604u128;
+    let mut origin = fixture::Wire::default();
+    origin.u8(5).u128(schedule).u8(0).u128(tick);
+    let mut occurrence = fixture::Wire::default();
+    occurrence.u16(1).u128(schedule).u64(index).u128(tick);
+    let vid = framed_vid(
+        b"fa:vid:recurring:v1",
+        &[&schedule.to_le_bytes(), &index.to_le_bytes()],
+    );
+    assert_specialized_identity(
+        identity_proposal(1, &origin.0, &[0], &[(31, &occurrence.0)]),
+        vid,
+    );
+    let mut other_origin = fixture::Wire::default();
+    other_origin.u8(5).u128(schedule).u8(0).u128(tick + 1);
+    for proposal in [
+        identity_proposal(1, &other_origin.0, &[0], &[(31, &occurrence.0)]),
+        identity_proposal(1, &origin.0, &[0], &[]),
+    ] {
+        let wrong = identity_journal(proposal, vid);
+        verify_prefix_with_records(&wrong.prefix, &wrong.checkpoint).unwrap();
+        assert!(
+            verify_supplemented_evidence_prefix_for(
+                &wrong.prefix,
+                &wrong.checkpoint,
+                &wrong.scope()
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn replacement_and_control_targets_refuse_instead_of_guessing_a_key_identity() {
+    let (_, ordinary) = posting(7, 7, 20_527, &[]);
+    for (class, proposal) in [
+        (5, identity_proposal(5, &intent_origin(), &[0], &[])),
+        (19, fixture::control_proposal(&[], 19).bytes),
+    ] {
+        let unrelated = Journal::new(
+            &[supplement_fixture::proposal_record(proposal.clone(), 7)],
+            7,
+        );
+        assert!(
+            verify_supplemented_evidence_prefix_for(
+                &unrelated.prefix,
+                &unrelated.checkpoint,
+                &unrelated.scope(),
+            )
+            .unwrap()
+            .supplements
+            .is_empty()
+        );
+        // Even a digest-correct claim of the historical ordinary-key VID is
+        // insufficient for a family whose target identity is unsupported.
+        let referenced = identity_journal(proposal, ordinary.vid);
+        verify_prefix_with_records(&referenced.prefix, &referenced.checkpoint).unwrap();
+        assert!(matches!(
+            verify_supplemented_evidence_prefix_for(
+                &referenced.prefix,
+                &referenced.checkpoint,
+                &referenced.scope(),
+            ),
+            Err(EvidenceProductionError::UnsupportedTargetIdentity {
+                class: actual,
+                ..
+            }) if actual == class,
+        ));
+    }
+}

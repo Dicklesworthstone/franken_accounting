@@ -4935,3 +4935,6 @@ fn a_state_that_moves_its_evidence_boundary_is_found() {
 
 #[path = "notary/access_events.rs"]
 mod access_events;
+
+#[path = "notary/supplemented_production.rs"]
+mod supplemented_production;
