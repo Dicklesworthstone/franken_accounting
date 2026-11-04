@@ -1208,10 +1208,12 @@ fn period_close_rechecks_the_original_agent_and_independent_human_approval() {
         let original = h.post(original);
         let planner = Capability::new(
             AGENT,
-            Profile::Agent,
+            Profile::Human,
             &[Op::Read, Op::Post, Op::PostClosed],
             OWNER,
         )
+        .unwrap()
+        .with_operator_kind(fa_policy::OperatorKind::Agent)
         .unwrap();
         h.open("closed-reversal", planner.clone());
         let mut reversal = h.proposal(1_000, b"undo", EntryClass::REVERSAL, AGENT);

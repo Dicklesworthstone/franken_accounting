@@ -1928,10 +1928,7 @@ fn prepare_transition_in<V: asupersync::fs::Vfs + Clone>(
     // every cited approval is a witnessed Approval of exactly this proposal
     // under the current epoch, judged by the registered rule.
     let key = fa_policy::sod::control_key("PeriodControl", Some(from), name);
-    let preparer = Party {
-        principal: principal_ref,
-        profile: capability.profile(),
-    };
+    let preparer = Party::for_capability(principal_ref, capability);
     if let Err(r) = policy::authorize_approvals(
         &txn,
         db,

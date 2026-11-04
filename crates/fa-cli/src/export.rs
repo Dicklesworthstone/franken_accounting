@@ -232,47 +232,76 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )));
         }
         let journal = book.format_journal(through, Some(seq))?;
-        // A migration chunk counts only when its run makes it visible, and
-        // fa-verify learns that from migration-aware balance proofs, which
-        // carry the run bodies (fa-mv0f). So a proved whole-chart extract is
-        // produced again at the same state with a balance over every chart
-        // account in every unit its legs use, cut off at the extract's
-        // cutoff. That covers each cell a chunk, visible or not, could touch,
-        // and is a second witness of every Trial_Balance row.
-        if account.is_none()
-            && let Some((first, key)) = proved.take()
-        {
+        // A migration chunk counts only when its run makes it visible.
+        // Derive witness cells from the authenticated checkpoint, including
+        // hidden chunks and units absent from the visible extract. An
+        // account selection needs only its actual cells; whole-chart
+        // exports retain their other balance witnesses as well.
+        if let Some((first, key)) = proved.take() {
             let book_id = book.context().book_id;
-            let mut units: std::collections::BTreeSet<u32> = journal
-                .entries
+            let account_vid = account.map(|code| fa_model::account_vid(book_id, code));
+            let state = first.checkpoint.checkpoint.body.state_oid;
+            let migration_cells = book.migration_balance_requests(
+                capability.holder(),
+                &capability,
+                state,
+                account_vid,
+                through,
+            )??;
+            let mut cells: std::collections::BTreeSet<_> = migration_cells
                 .iter()
-                .flat_map(|e| e.legs.iter().map(|l| l.amount.unit.0))
+                .map(|request| (request.account, request.unit))
                 .collect();
-            units.insert(book.spec()?.base_unit.0);
-            let balances = journal
-                .accounts
-                .iter()
-                .flat_map(|a| {
-                    let vid = fa_model::account_vid(book_id, &a.code);
-                    units.iter().map(move |unit| fa::BalanceRequest {
-                        account: vid,
-                        unit: *unit,
+            if account.is_none() {
+                let mut units: std::collections::BTreeSet<u32> = journal
+                    .entries
+                    .iter()
+                    .flat_map(|e| e.legs.iter().map(|l| l.amount.unit.0))
+                    .collect();
+                units.insert(book.spec()?.base_unit.0);
+                for declared in &journal.accounts {
+                    let vid = fa_model::account_vid(book_id, &declared.code);
+                    cells.extend(units.iter().map(|unit| (vid, *unit)));
+                }
+            }
+            if cells.is_empty() {
+                proved = Some((first, key));
+            } else {
+                let scope = account_vid.map_or(fa::BundleScope::Prefix, |account| {
+                    fa::BundleScope::Index(fa::ScopeRequest::Account {
+                        account,
+                        from: i32::MIN,
+                        to: through.0,
+                    })
+                });
+                let balances = cells
+                    .into_iter()
+                    .map(|(account, unit)| fa::BalanceRequest {
+                        account,
+                        unit,
                         effective_through: Some(through.0),
                     })
-                })
-                .collect();
-            let request = fa::BundleRequest {
-                scope: fa::BundleScope::Prefix,
-                balances,
-                inline_documents: false,
-            };
-            let state = first.checkpoint.checkpoint.body.state_oid;
-            let again = book
-                .produce_bundle(capability.holder(), &capability, Some(state), &request)??
-                .ok_or_else(|| {
-                    Fail::Internal("the proof state is no longer on the checkpoint chain".into())
-                })?;
-            proved = Some((again, key));
+                    .collect();
+                let request = fa::BundleRequest {
+                    scope,
+                    balances,
+                    inline_documents: false,
+                };
+                let again = book
+                    .produce_bundle(capability.holder(), &capability, Some(state), &request)??
+                    .ok_or_else(|| {
+                        Fail::Internal(
+                            "the proof state is no longer on the checkpoint chain".into(),
+                        )
+                    })?;
+                if account.is_some() {
+                    ctx.out.warn(format!(
+                        "this account's migration balance proofs disclose all {} distinct checkpoint-prefix journal records and required migration witnesses; the bundle manifest declares this whole-prefix payload disclosure separately from the account's complete entry selection",
+                        again.checkpoint.checkpoint.body.statement.leaf_count,
+                    ));
+                }
+                proved = Some((again, key));
+            }
         }
         match account {
             None => journal,
@@ -284,21 +313,6 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })?,
         }
     };
-    // One account's proof is its scope-index run: it holds no migration
-    // run's lifecycle controls and no balance, so fa-verify cannot decide
-    // whether a migration entry in it counts (fa-mv0f), and refuses it.
-    let chunks = journal
-        .entries
-        .iter()
-        .filter(|e| e.class == fa_model::EntryClass::MIGRATION)
-        .count();
-    if with_proofs && account.is_some() && chunks > 0 {
-        ctx.out.warn(format!(
-            "this account's extract holds {chunks} migration {} whose run visibility its account bundle cannot prove, so fa-verify ads will refuse {}; the whole-chart extract (no --account) carries the balances that prove it",
-            if chunks == 1 { "entry" } else { "entries" },
-            if chunks == 1 { "it" } else { "them" },
-        ));
-    }
     let activity = if format == "xbrl" {
         Some(book.xbrl_report_inputs(
             journal.coordinate.effective_through,

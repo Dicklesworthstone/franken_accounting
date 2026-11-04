@@ -501,6 +501,12 @@ fn assert_charge(
             text(&rows(data(review), "legs")[index], "account_vid"),
             format!("{:032x}", account.0)
         );
+        let shown = rows(&rows(data(review), "legs")[index], "dimensions");
+        assert_eq!(shown.len(), proposal.legs[index].dimension_set.len());
+        for (shown, (dimension, value)) in shown.iter().zip(&proposal.legs[index].dimension_set) {
+            assert_eq!(integer(shown, "dimension"), i128::from(*dimension));
+            assert_eq!(text(shown, "value"), format!("{:032x}", value.0));
+        }
     }
     let basis = proposal.asset_charge_basis().unwrap().unwrap();
     assert_eq!(basis.through_period.code, period);
@@ -1301,4 +1307,156 @@ fn asset_register_tracks_recorded_balances_and_reversals_without_writes() {
     assert_eq!(text(&retried, "event"), "recorded");
     assert_eq!(text(data(&retried), "vid"), charge_vid);
     assert_eq!(head(&f.book), after_source_reversal);
+}
+
+#[test]
+fn dimensioned_acquisitions_retain_attribution_in_charge_review_plan_and_posting() {
+    for (kind, verb) in [("depreciation", "depreciate"), ("amortization", "amortize")] {
+        let mut f = Fixture::new();
+        for (dimension, value) in [
+            ("cost_center", "MACHINING"),
+            ("cost_center", "SALES"),
+            ("department", "OPS"),
+        ] {
+            ok(
+                &f.book,
+                "declare source dimensions",
+                &["dimension", "add", dimension, value, "--name", value],
+            );
+        }
+        for account in ["1500", "6100", "1590"] {
+            for dimension in ["cost_center", "department"] {
+                ok(
+                    &f.book,
+                    "require acquisition and charge attribution",
+                    &["dimension", "require", dimension, account],
+                );
+            }
+        }
+        let source_path = f.path("dimensioned-acquisition.json");
+        std::fs::write(
+            &source_path,
+            r#"{"effective_date":"2026-01-05","idempotency_key":"dimensioned-acquisition","legs":[
+                {"side":"debit","account":"1500","amount":"100.00 USD",
+                 "dimensions":{"cost_center":"MACHINING","department":"OPS"}},
+                {"side":"credit","account":"1000","amount":"100.00 USD"}
+            ]}"#,
+        )
+        .unwrap();
+        let source = ok(
+            &f.book,
+            "post attributed acquisition",
+            &["post", "--intent", &source_path, "--evidence", &f.evidence],
+        );
+        f.acquisition = text(data(&source), "vid").into();
+        let acquisition = f.entry(&f.acquisition);
+        let dimensions = acquisition.proposal.legs[0].dimension_set.clone();
+        assert_eq!(dimensions.len(), 2);
+        assert!(acquisition.proposal.legs[1].dimension_set.is_empty());
+        let (_, _, spec) = f.schedule("dimensioned", kind, "0.00 USD");
+        let review = f.review(verb, "dimensioned", FIRST, "dimensioned-january");
+        let intent = assert_charge(&review, &spec, "33.33 USD", FIRST, "2026-01-31");
+        for leg in &intent.proposal().legs {
+            assert_eq!(leg.dimension_set, dimensions);
+        }
+
+        // A newly sealed review cannot redirect the charge to another valid
+        // center even when the forged debit and credit still balance.
+        let mut proposal = intent.proposal().clone();
+        let cost_center = fa_model::dimension_kind("cost_center").unwrap().id;
+        let sales = fa_model::dimension_value_vid(proposal.book_id, "cost_center", "SALES");
+        for leg in &mut proposal.legs {
+            for (dimension, value) in &mut leg.dimension_set {
+                if *dimension == cost_center {
+                    *value = sales;
+                }
+            }
+        }
+        let forged = PostIntent::new(proposal, Vec::new()).unwrap();
+        let forged_bytes = hex(&forged.canonical_bytes().unwrap());
+        let forged_digest = hex(&forged.digest().unwrap());
+        let before = head(&f.book);
+        let refused = call(
+            &f.book,
+            "refuse redirected asset charge",
+            &[verb, "--review", &forged_bytes, "--digest", &forged_digest],
+            2,
+        );
+        assert_eq!(text(data(&refused), "refusal_id"), code::STRUCTURE);
+        assert_eq!(head(&f.book), before);
+
+        let (path, plan) = f.plan(verb, &review, "dimensioned-january.plan");
+        assert_eq!(plan.proposal(), intent.proposal());
+        let posted = f.commit(&path);
+        assert_eq!(
+            f.entry(text(data(&posted), "vid")).proposal,
+            *intent.proposal()
+        );
+        let retry_head = head(&f.book);
+        let retry = f.post_review(verb, &review);
+        assert_eq!(text(data(&retry), "vid"), text(data(&posted), "vid"));
+        assert_eq!(head(&f.book), retry_head);
+        assert_eq!(f.entry(&f.acquisition), acquisition);
+
+        let tb = ok(
+            &f.book,
+            "read asset charges by source center",
+            &[
+                "tb",
+                "--period",
+                FIRST,
+                "--dimension",
+                "cost_center=MACHINING",
+            ],
+        );
+        for (account, debit, credit) in [
+            ("6100", "33.33 USD", "0.00 USD"),
+            ("1590", "0.00 USD", "33.33 USD"),
+        ] {
+            let row = rows(data(&tb), "rows")
+                .iter()
+                .find(|row| text(row, "code") == account)
+                .unwrap();
+            assert_eq!(text(row, "debits"), debit);
+            assert_eq!(text(row, "credits"), credit);
+        }
+
+        let february = f.review(verb, "dimensioned", "FY2026-P02", "dimensioned-february");
+        assert_charge(&february, &spec, "33.34 USD", "FY2026-P02", "2026-02-28");
+        ok(
+            &f.book,
+            "close source center after January",
+            &[
+                "dimension",
+                "close",
+                "cost_center",
+                "MACHINING",
+                "--on",
+                "2026-02-01",
+            ],
+        );
+        let before = head(&f.book);
+        let refused = call(
+            &f.book,
+            "recheck current dimension effectivity for retained charge",
+            &[
+                verb,
+                "--review",
+                text(data(&february), "bytes"),
+                "--digest",
+                text(data(&february), "review_digest"),
+            ],
+            3,
+        );
+        assert_eq!(
+            text(data(&refused), "refusal_id"),
+            code::DIMENSION_NOT_EFFECTIVE
+        );
+        assert_eq!(head(&f.book), before);
+        ok(
+            &f.book,
+            "verify dimensioned acquisition and exact charge history",
+            &["verify", "schedules"],
+        );
+    }
 }

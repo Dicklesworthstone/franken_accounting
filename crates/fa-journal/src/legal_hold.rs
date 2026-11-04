@@ -793,10 +793,7 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
     }
     let epoch = epoch_witness(&txn, db)?;
     let key = fa_policy::sod::control_key("HoldControl", None, "Place");
-    let preparer = Party {
-        principal: req.principal,
-        profile: capability.profile(),
-    };
+    let preparer = Party::for_capability(req.principal, capability);
     if let Err(r) = authorize_approvals(&txn, db, book, &[], &digest, epoch, &key, 0, preparer)? {
         txn.abort();
         return Ok(Err(r));
@@ -1031,10 +1028,7 @@ pub async fn release_legal_hold<V: asupersync::fs::Vfs + Clone>(
     }
     let epoch = epoch_witness(&txn, db)?;
     let key = fa_policy::sod::control_key("HoldControl", None, "Release");
-    let preparer = Party {
-        principal: plan.principal_ref,
-        profile: capability.profile(),
-    };
+    let preparer = Party::for_capability(plan.principal_ref, capability);
     if let Err(r) =
         authorize_approvals(&txn, db, book, approvals, &digest, epoch, &key, 0, preparer)?
     {

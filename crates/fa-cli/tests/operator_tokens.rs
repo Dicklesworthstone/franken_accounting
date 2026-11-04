@@ -22,6 +22,8 @@ const ISSUER: &str = "operator-token-issuer";
 
 #[path = "operator_tokens/classes.rs"]
 mod classes;
+#[path = "operator_tokens/post_review_approval.rs"]
+mod post_review_approval;
 
 fn directory() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);

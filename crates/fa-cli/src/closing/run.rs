@@ -303,6 +303,7 @@ pub(super) fn execute(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--plan",
             "--plan-out",
             "--approval",
+            "--rehearsal",
         ],
         &[],
     )?;
@@ -395,7 +396,24 @@ pub(super) fn execute(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
-    let execution = book.execute_close_run(name, capability, description, transition)??;
+    let rehearsal = args
+        .flag("--rehearsal")
+        .map(|value| {
+            let digits = value.strip_prefix("C:").unwrap_or(value);
+            let digest = parse_digest(digits, "--rehearsal")?;
+            let artifact = book.read_report_artifact(principal, &capability, &digest)??;
+            fa::CloseRunRehearsalCertificate::decode(&artifact.canonical_bytes()?)
+                .map_err(Fail::Refusal)
+        })
+        .transpose()?;
+    let rehearsal_digest = rehearsal
+        .as_ref()
+        .map_or(Json::Null, |certificate| s(hex(certificate.digest())));
+    let execution = if let Some(certificate) = &rehearsal {
+        book.execute_reviewed_close_run(name, capability, description, certificate, transition)??
+    } else {
+        book.execute_close_run(name, capability, description, transition)??
+    };
     ctx.out.at_book(&book)?;
     ctx.out
         .effective(format!("period:{}", execution.run.body.period));
@@ -420,6 +438,7 @@ pub(super) fn execute(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ("state", s(state)),
         ("completed", Json::Arr(completed)),
         ("pending_task", pending),
+        ("rehearsal", rehearsal_digest),
     ];
     if let Some(CloseRunStop::Refused { refusal, .. }) = &execution.stop {
         // A nonzero refusal carries durable partial progress, never a success
@@ -430,8 +449,19 @@ pub(super) fn execute(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ))));
     }
     let mut human = summary(&execution.run);
+    let resume_review = if rehearsal.is_some() {
+        if matches!(
+            &execution.stop,
+            Some(CloseRunStop::TransitionRequired { .. } | CloseRunStop::TransitionReview { .. })
+        ) {
+            human.push_str(&format!("\nReview the remaining state with fa close dry-run --run {name} --certify. Use its fresh digest with --rehearsal when resuming; completed task receipts are retained."));
+        }
+        " --rehearsal C:<fresh-digest>"
+    } else {
+        ""
+    };
     if let Some(CloseRunStop::TransitionRequired { task, .. }) = &execution.stop {
-        human.push_str(&format!("\nReview the ready period task: fa close step --run {name} --task {task} --key <key> --reason <registered-reason> --dry-run --plan-out <file>. Then resume with close run --run {name} --task {task} --plan <file> and any required independent approvals."));
+        human.push_str(&format!("\nReview the ready period task: fa close step --run {name} --task {task} --key <key> --reason <registered-reason> --dry-run --plan-out <file>. Then resume with close run --run {name}{resume_review} --task {task} --plan <file> --yes and any required independent approvals."));
     }
     ctx.out.event("close_run_progress", fields, &human);
     if let Some(CloseRunStop::TransitionReview {
@@ -451,7 +481,7 @@ pub(super) fn execute(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("from", s(plan.from.name())), ("to", s(plan.to.name())),
             ("proposal_digest", s(hex(&proposal_digest))), ("bytes", s(hex(&bytes))),
             ("file", args.flag("--plan-out").map_or(Json::Null, s)),
-        ], &format!("close {name}/{task}: {} → {}; review proposal {}, then resume with these unchanged plan bytes and the transition's required approvals", plan.from.name(), plan.to.name(), hex(&proposal_digest)));
+        ], &format!("close {name}/{task}: {} → {}; review proposal {}, then resume with close run --run {name}{resume_review} --task {task} --plan <file> --yes using these unchanged plan bytes and the transition's required approvals", plan.from.name(), plan.to.name(), hex(&proposal_digest)));
     }
     Ok(())
 }

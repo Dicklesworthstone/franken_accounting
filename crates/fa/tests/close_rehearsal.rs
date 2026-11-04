@@ -252,6 +252,46 @@ impl Fixture {
             .unwrap()
             .unwrap();
     }
+
+    fn later_entry(&mut self, key: &[u8], opposite: bool, pending: bool) {
+        let mut proposal = self
+            .book
+            .draft_entries(&planner(), FIRST)
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .proposal;
+        proposal.principal_ref = ADMIN;
+        proposal.idempotency_key = key.to_vec();
+        if opposite {
+            for leg in &mut proposal.legs {
+                leg.side = match leg.side {
+                    Side::Debit => Side::Credit,
+                    Side::Credit => Side::Debit,
+                };
+            }
+        }
+        if pending {
+            proposal.class = EntryClass::PENDING;
+            proposal.pending = Some(fa_model::Pending {
+                timeout_ns: None,
+                resolution_of: None,
+                disposition: None,
+            });
+        }
+        proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+        self.book
+            .post(fa_journal::PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                capability: cap(ADMIN, &["post"]),
+                plan_certificate: None,
+            })
+            .unwrap()
+            .unwrap();
+    }
 }
 
 #[test]
@@ -369,6 +409,78 @@ fn independent_reviews_that_overspend_together_refuse_without_partial_effects() 
         .unwrap();
     assert!(!run.complete);
     assert!(run.tasks.iter().all(|task| task.completion.is_none()));
+}
+
+#[test]
+fn close_execution_refuses_combined_overspend_before_any_task_publishes() {
+    let mut f = Fixture::new(Some(-1_000));
+    f.start(600, 600, true);
+    let head = f.book.head().unwrap();
+    let baseline = f.book.trial_balance(&[PERIOD.into()]).unwrap();
+    let first = f.book.draft(FIRST).unwrap().unwrap();
+    let second = f.book.draft(SECOND).unwrap().unwrap();
+    for _ in 0..2 {
+        let execution = f
+            .book
+            .execute_close_run(RUN, executor(), "Execute the complete close", None)
+            .unwrap()
+            .unwrap();
+        assert!(execution.completed.is_empty());
+        assert!(!execution.run.complete);
+        assert!(
+            execution
+                .run
+                .tasks
+                .iter()
+                .all(|task| task.completion.is_none())
+        );
+        let Some(fa::CloseRunStop::Refused { task, refusal }) = execution.stop else {
+            panic!("the combined limit violation must stop the entire invocation");
+        };
+        assert_eq!(task, "a-second");
+        assert_eq!(refusal.code, fa_journal::refusal::code::AVAILABILITY_LOWER);
+        assert_eq!(f.book.head().unwrap(), head);
+        assert_eq!(f.book.trial_balance(&[PERIOD.into()]).unwrap(), baseline);
+        assert_eq!(f.book.draft(FIRST).unwrap().unwrap(), first);
+        assert_eq!(f.book.draft(SECOND).unwrap().unwrap(), second);
+    }
+}
+
+#[test]
+fn close_execution_rehearses_remaining_tasks_at_the_exact_limit_without_reapplying_receipts() {
+    let mut f = Fixture::new(Some(-1_000));
+    f.start(600, 400, false);
+    f.execute("z-first");
+    let before = f.book.head().unwrap();
+    let execution = f
+        .book
+        .execute_close_run(RUN, executor(), "Resume the close at its exact limit", None)
+        .unwrap()
+        .unwrap();
+    assert!(execution.run.complete);
+    assert!(execution.stop.is_none());
+    assert_eq!(execution.completed.len(), 1);
+    assert_eq!(execution.completed[0].task, "a-second");
+    assert_eq!(f.book.head().unwrap(), CommitSeq(before.0 + 1));
+    let balance = f.book.trial_balance(&[PERIOD.into()]).unwrap();
+    let cash = balance.rows.iter().find(|row| row.code == "1000").unwrap();
+    assert_eq!((cash.debits, cash.credits), (0, 1_000));
+    assert_eq!((cash.debits_pending, cash.credits_pending), (0, 0));
+    let report = f
+        .book
+        .close_run_rehearsal(REVIEWER, &cap(REVIEWER, &["read"]), RUN)
+        .unwrap()
+        .unwrap();
+    assert!(report.complete_on_trunk);
+    assert!(report.rows.is_empty());
+    let retry = f
+        .book
+        .execute_close_run(RUN, executor(), "Retry the completed close", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(retry.run, execution.run);
+    assert!(retry.completed.is_empty());
+    assert_eq!(f.book.head().unwrap(), CommitSeq(before.0 + 1));
 }
 
 #[test]
@@ -827,4 +939,501 @@ fn malformed_or_unknown_close_rehearsal_containers_are_refused() {
     w.bytes(CLOSE_RUN_REHEARSAL_CERTIFICATE_FORMAT)
         .bytes(b"not a native certificate");
     assert!(CloseRunRehearsalCertificate::decode(&w.finish().unwrap()).is_err());
+}
+
+#[test]
+fn reviewed_close_execution_accepts_retention_and_an_independent_certificate_producer() {
+    let mut f = Fixture::new(None);
+    f.start(1_000, 250, true);
+    let reviewer = cap(ADMIN, &["read", "produce"]);
+    let certified = f
+        .book
+        .certify_close_run_rehearsal(ADMIN, &reviewer, RUN)
+        .unwrap()
+        .unwrap();
+    assert_ne!(certified.certificate.producer(), executor().holder());
+    f.book
+        .retain_close_run_rehearsal(ADMIN, &reviewer, &certified.certificate)
+        .unwrap()
+        .unwrap();
+    let retained_at = f.book.head().unwrap();
+    assert!(retained_at > certified.certificate.known_at());
+    let execution = f
+        .book
+        .execute_reviewed_close_run(
+            RUN,
+            executor(),
+            "Execute the selected complete review",
+            &certified.certificate,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        execution
+            .completed
+            .iter()
+            .map(|task| task.task.as_str())
+            .collect::<Vec<_>>(),
+        ["z-first", "a-second"]
+    );
+    assert!(matches!(
+        execution.stop,
+        Some(fa::CloseRunStop::TransitionRequired { task, .. }) if task == "period"
+    ));
+    assert!(!execution.run.complete);
+    assert_eq!(f.book.head().unwrap(), CommitSeq(retained_at.0 + 2));
+    let balance = f.book.trial_balance(&[PERIOD.into()]).unwrap();
+    let cash = balance.rows.iter().find(|row| row.code == "1000").unwrap();
+    assert_eq!((cash.debits, cash.credits), (0, 1_250));
+    assert_eq!((cash.debits_pending, cash.credits_pending), (0, 0));
+}
+
+#[test]
+fn reviewed_close_execution_rejects_offsetting_posted_and_pending_baseline_changes() {
+    for pending in [false, true] {
+        let mut f = Fixture::new(None);
+        f.start(1_000, 250, false);
+        let certified = f
+            .book
+            .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
+            .unwrap()
+            .unwrap();
+        f.later_entry(b"later-outflow", false, pending);
+        f.later_entry(b"later-inflow", true, pending);
+        let head = f.book.head().unwrap();
+        let baseline = f.book.trial_balance(&[PERIOD.into()]).unwrap();
+        let cash = baseline.rows.iter().find(|row| row.code == "1000").unwrap();
+        assert_eq!(cash.debits, cash.credits, "posted net is unchanged");
+        assert_eq!(
+            cash.debits_pending, cash.credits_pending,
+            "pending net is unchanged"
+        );
+        let first = f.book.draft(FIRST).unwrap().unwrap();
+        let second = f.book.draft(SECOND).unwrap().unwrap();
+        let refusal = f
+            .book
+            .execute_reviewed_close_run(
+                RUN,
+                executor(),
+                "An old net balance is insufficient",
+                &certified.certificate,
+                None,
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (
+                fa_journal::refusal::code::PLAN_INVALIDATED,
+                fa_journal::exit::CONFLICT,
+            ),
+            "{refusal}"
+        );
+        assert!(refusal.fix.contains("close dry-run"));
+        assert_eq!(f.book.head().unwrap(), head);
+        assert_eq!(f.book.trial_balance(&[PERIOD.into()]).unwrap(), baseline);
+        assert_eq!(f.book.draft(FIRST).unwrap().unwrap(), first);
+        assert_eq!(f.book.draft(SECOND).unwrap().unwrap(), second);
+        assert_eq!(
+            f.book
+                .replay_close_run_rehearsal(REVIEWER, &producer(), &certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.report,
+            "a stale execution review remains valid historical evidence"
+        );
+        let current = f
+            .book
+            .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
+            .unwrap()
+            .unwrap();
+        let execution = f
+            .book
+            .execute_reviewed_close_run(
+                RUN,
+                executor(),
+                "Execute the newly reviewed baseline",
+                &current.certificate,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(execution.run.complete);
+        assert_eq!(execution.completed.len(), 2);
+    }
+}
+
+#[test]
+fn reviewed_close_execution_requires_new_reviews_after_partial_and_complete_progress() {
+    let mut f = Fixture::new(Some(-1_000));
+    f.start(600, 400, false);
+    let original = f
+        .book
+        .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
+        .unwrap()
+        .unwrap();
+    f.execute("z-first");
+    let partial_at = f.book.head().unwrap();
+    let refusal = f
+        .book
+        .execute_reviewed_close_run(
+            RUN,
+            executor(),
+            "The original review predates a completion",
+            &original.certificate,
+            None,
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, fa_journal::refusal::code::PLAN_INVALIDATED);
+    assert_eq!(f.book.head().unwrap(), partial_at);
+
+    let partial = f
+        .book
+        .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        partial.report.tasks[0].outcome,
+        CloseTaskRehearsalOutcome::AlreadyCompleted(_)
+    ));
+    let execution = f
+        .book
+        .execute_reviewed_close_run(
+            RUN,
+            executor(),
+            "Resume the reviewed remaining work",
+            &partial.certificate,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(execution.run.complete);
+    assert_eq!(execution.completed.len(), 1);
+    assert_eq!(execution.completed[0].task, "a-second");
+    assert_eq!(f.book.head().unwrap(), CommitSeq(partial_at.0 + 1));
+    let complete_at = f.book.head().unwrap();
+    let refusal = f
+        .book
+        .execute_reviewed_close_run(
+            RUN,
+            executor(),
+            "Completion cannot bypass the selected review",
+            &partial.certificate,
+            None,
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, fa_journal::refusal::code::PLAN_INVALIDATED);
+    assert_eq!(f.book.head().unwrap(), complete_at);
+
+    let complete = f
+        .book
+        .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
+        .unwrap()
+        .unwrap();
+    assert!(complete.report.complete_on_trunk);
+    let retry = f
+        .book
+        .execute_reviewed_close_run(
+            RUN,
+            executor(),
+            "A current completed review returns the durable result",
+            &complete.certificate,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(retry.run, execution.run);
+    assert!(retry.completed.is_empty());
+    assert!(retry.stop.is_none());
+    assert_eq!(f.book.head().unwrap(), complete_at);
+}
+
+#[test]
+fn reviewed_close_execution_preserves_native_approvals_and_receipt_only_freshness() {
+    let mut f = Fixture::new(None);
+    f.book
+        .transition_period(
+            PERIOD,
+            PeriodTransition::Close,
+            ADMIN,
+            1,
+            b"close-before-reviewed-lock",
+            &cap(ADMIN, &["close"]),
+        )
+        .unwrap()
+        .unwrap();
+    f.book
+        .start_close_run(
+            executor(),
+            RUN,
+            PERIOD,
+            vec![ReviewedCloseTask {
+                id: "period".into(),
+                depends_on: Vec::new(),
+                action: ReviewedCloseAction::PeriodTransition(PeriodTransition::Lock),
+            }],
+            "Review the terminal lock",
+        )
+        .unwrap()
+        .unwrap();
+    let certified = f
+        .book
+        .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
+        .unwrap()
+        .unwrap();
+    let plan = f
+        .book
+        .plan_close_task_transition(
+            RUN,
+            "period",
+            &executor(),
+            3,
+            b"reviewed-lock",
+            "Audit complete",
+        )
+        .unwrap()
+        .unwrap();
+    let digest = f.book.plan_digest(&plan).unwrap().unwrap();
+    // Retention after native planning must not invalidate either review.
+    f.book
+        .retain_close_run_rehearsal(REVIEWER, &producer(), &certified.certificate)
+        .unwrap()
+        .unwrap();
+    let mut input = fa::CloseRunTransition::Reviewed {
+        task: "period".into(),
+        plan: Box::new(plan),
+        approvals: Vec::new(),
+    };
+    let before = f.book.head().unwrap();
+    let missing = f
+        .book
+        .execute_reviewed_close_run(
+            RUN,
+            executor(),
+            "A combined certificate supplies no approval",
+            &certified.certificate,
+            Some(input.clone()),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        missing.stop,
+        Some(fa::CloseRunStop::Refused { .. })
+    ));
+    assert!(missing.completed.is_empty());
+    assert_eq!(f.book.head().unwrap(), before);
+    let approval = f
+        .book
+        .approve(cap(ADMIN, &["approve"]), digest)
+        .unwrap()
+        .unwrap()
+        .approval();
+    let fa::CloseRunTransition::Reviewed { approvals, .. } = &mut input else {
+        unreachable!();
+    };
+    approvals.push(approval);
+    let execution = f
+        .book
+        .execute_reviewed_close_run(
+            RUN,
+            executor(),
+            "The same monetary review survives an independent approval",
+            &certified.certificate,
+            Some(input.clone()),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(execution.run.complete);
+    assert_eq!(execution.completed.len(), 1);
+    let completed_at = f.book.head().unwrap();
+    assert!(matches!(
+        f.book
+            .certificate_status(certified.certificate.trunk())
+            .unwrap()
+            .unwrap(),
+        fa::CertificateStatus::Current { .. }
+    ));
+    let refusal = f
+        .book
+        .execute_reviewed_close_run(
+            RUN,
+            executor(),
+            "An unchanged trial balance cannot hide a changed receipt",
+            &certified.certificate,
+            Some(input.clone()),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, fa_journal::refusal::code::PLAN_INVALIDATED);
+    assert_eq!(f.book.head().unwrap(), completed_at);
+    let current = f
+        .book
+        .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
+        .unwrap()
+        .unwrap();
+    let retry = f
+        .book
+        .execute_reviewed_close_run(
+            RUN,
+            executor(),
+            "Authenticate the exact original transition retry",
+            &current.certificate,
+            Some(input.clone()),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(retry.run, execution.run);
+    assert!(retry.completed.is_empty());
+    assert_eq!(f.book.head().unwrap(), completed_at);
+    let fa::CloseRunTransition::Reviewed { plan, .. } = &mut input else {
+        unreachable!();
+    };
+    plan.reason_code = 1;
+    assert!(
+        f.book
+            .execute_reviewed_close_run(
+                RUN,
+                executor(),
+                "A completed review cannot ignore a changed native plan",
+                &current.certificate,
+                Some(input),
+            )
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(f.book.head().unwrap(), completed_at);
+}
+
+#[test]
+fn reviewed_close_execution_replays_every_certificate_binding_before_publication() {
+    let mut f = Fixture::new(None);
+    f.start(1_000, 250, true);
+    let certified = f
+        .book
+        .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
+        .unwrap()
+        .unwrap();
+    let head = f.book.head().unwrap();
+    for change in ["graph", "map", "output"] {
+        let forged = rehashed(&certified.certificate, change);
+        let refusal = f
+            .book
+            .execute_reviewed_close_run(
+                RUN,
+                executor(),
+                "A valid container digest is not a reviewed close",
+                &forged,
+                None,
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, fa::certificate::code::CERTIFICATE_INVALID);
+        assert_eq!(f.book.head().unwrap(), head);
+    }
+    let forged = rehashed(&certified.certificate, "output");
+    let denied = f
+        .book
+        .execute_reviewed_close_run(
+            "unobserved-run",
+            cap(REVIEWER, &["read"]),
+            "Check authority before observing run or certificate",
+            &forged,
+            None,
+        )
+        .unwrap()
+        .unwrap_err();
+    assert!(denied.message.contains("close"), "{denied}");
+    assert_eq!(f.book.head().unwrap(), head);
+
+    f.book
+        .start_close_run(
+            executor(),
+            "different-close",
+            PERIOD,
+            vec![ReviewedCloseTask {
+                id: "period".into(),
+                depends_on: Vec::new(),
+                action: ReviewedCloseAction::PeriodTransition(PeriodTransition::SoftClose),
+            }],
+            "A distinct graph cannot consume the first graph's certificate",
+        )
+        .unwrap()
+        .unwrap();
+    let before_wrong_run = f.book.head().unwrap();
+    let refusal = f
+        .book
+        .execute_reviewed_close_run(
+            "different-close",
+            executor(),
+            "The explicit run must match the selected review",
+            &certified.certificate,
+            None,
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, fa_journal::refusal::code::STRUCTURE);
+    assert_eq!(f.book.head().unwrap(), before_wrong_run);
+}
+
+#[test]
+fn reviewed_close_execution_rechecks_current_draft_membership_and_executor_authority() {
+    let mut f = Fixture::new(None);
+    f.start(1_000, 250, false);
+    let certified = f
+        .book
+        .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
+        .unwrap()
+        .unwrap();
+    f.plan(SECOND, 25, b"added-after-combined-review");
+    let changed_at = f.book.head().unwrap();
+    assert!(
+        f.book
+            .execute_reviewed_close_run(
+                RUN,
+                executor(),
+                "A historical replay cannot admit changed current membership",
+                &certified.certificate,
+                None,
+            )
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(f.book.head().unwrap(), changed_at);
+    assert!(
+        f.book
+            .close_run_status(RUN, &executor())
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .tasks
+            .iter()
+            .all(|task| task.completion.is_none())
+    );
+    f.book
+        .revoke_capability(
+            cap(ADMIN, &["issue_capability"]),
+            executor().commitment().unwrap(),
+            day(),
+            b"revoke-reviewed-close-executor",
+            "The selected certificate cannot restore live authority",
+        )
+        .unwrap()
+        .unwrap();
+    let revoked_at = f.book.head().unwrap();
+    let refusal = f
+        .book
+        .execute_reviewed_close_run(
+            RUN,
+            executor(),
+            "Revocation precedes historical and current review checks",
+            &certified.certificate,
+            None,
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-023");
+    assert_eq!(f.book.head().unwrap(), revoked_at);
 }

@@ -1,0 +1,1147 @@
+{
+  "blocked_whole_crate_attempt": {
+    "command": "#!/usr/bin/env bash\nset -euo pipefail\ncd /workspace/scratch/50fa1275d487/franken_accounting\nexport PATH=/root/.cargo/bin:$PATH\nexport CARGO_BUILD_JOBS=1\nexport CARGO_PROFILE_DEV_DEBUG=0\nexport CARGO_PROFILE_TEST_DEBUG=0\ncargo +nightly-2026-08-31 test --locked \\\n  -Z bindeps -Z git=shallow-deps -Z codegen-backend -Z profile-hint-mostly-unused \\\n  --config 'profile.dev.package.asupersync.codegen-backend=\"cranelift\"' \\\n  --config 'profile.test.package.asupersync.codegen-backend=\"cranelift\"' \\\n  --config 'profile.dev.package.asupersync.hint-mostly-unused=true' \\\n  --config 'profile.test.package.asupersync.hint-mostly-unused=true' \\\n  --config 'profile.dev.package.asupersync.opt-level=0' \\\n  --config 'profile.test.package.asupersync.opt-level=0' \\\n  --config 'profile.dev.package.fnx-algorithms.opt-level=0' \\\n  --config 'profile.test.package.fnx-algorithms.opt-level=0' \\\n  -p fa-formats --test plaintext_text -- --nocapture\n",
+    "command_script": "/tmp/fa-formats-test-lowmem.sh",
+    "compiler": "rustc 1.100.0-nightly (908501772 2026-08-30)\nbinary: rustc\ncommit-hash: 90850177249efe0321573c569aec5d12b257f8d6\ncommit-date: 2026-08-30\nhost: x86_64-unknown-linux-gnu\nrelease: 1.100.0-nightly\nLLVM version: 23.1.0\n",
+    "exit_code": 101,
+    "failure": "Pinned asupersync dependency compiler terminated by SIGKILL before fa-formats compilation.",
+    "git_base": "2cfb15fc0ac4289555ee2ee562de9cccf650e383",
+    "log": "/workspace/scratch/50fa1275d487/plaintext-repaired-unused-hint.log",
+    "log_sha256": "26acd431f54a15a77c1ea4df14b2634367d17eccc223624eb883e21eccf5633c",
+    "scope": "Real fa-formats source and full pinned dependencies. asupersync codegen uses exact pinned Cranelift preview and hint-mostly-unused; no substituted dependency or test.",
+    "source_sha256": {
+      "Cargo.lock": "e62ced364aaf38003a28b3e394f63a06b82c33594a367bdd108d63f71e9eb3ac",
+      "crates/fa-formats/src/beancount.rs": "c3b13a9214600158e4d977ba7319a295e50754f0defc64ed7f16c7cd7443ec12",
+      "crates/fa-formats/tests/plaintext_text.rs": "055ca2f080fecbf98d5547bf5b178ec994e565832a49d0a9f5379f1d937003a4",
+      "rust-toolchain.toml": "50ebba01eb3679ec984620994ff870731011fca0db20750d0a9993550ba2eda6"
+    },
+    "status": "blocked; no native regression test executed",
+    "validation_not_reached": [
+      "fa-formats source compilation",
+      "plaintext_text regression execution",
+      "full fa-formats test execution",
+      "fresh fa build",
+      "repaired native export external differential"
+    ]
+  },
+  "compiled_production_codec": {
+    "compile_command": [
+      "/root/.rustup/toolchains/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc",
+      "--edition",
+      "2024",
+      "--test",
+      "crates/fa-formats/src/beancount/text.rs",
+      "-o",
+      "/workspace/scratch/50fa1275d487/plaintext-codec-tests"
+    ],
+    "compiler": "rustc 1.100.0-nightly (908501772 2026-08-30)\nbinary: rustc\ncommit-hash: 90850177249efe0321573c569aec5d12b257f8d6\ncommit-date: 2026-08-30\nhost: x86_64-unknown-linux-gnu\nrelease: 1.100.0-nightly\nLLVM version: 23.1.0\n",
+    "full_crate_integration": "UNRUN: asupersync compiler repeatedly terminated by SIGKILL before fa-formats was reached; eight whole-journal integration tests and native fa rebuild did not run",
+    "scope": "std-only production text codec; not a rebuilt native ledger or whole-crate test",
+    "source_sha256": {
+      "crates/fa-formats/src/beancount.rs": "a82bdd7660bd4470e72fdd4c2b2afd97cde6701b9e88580ed0fb8019f4e03273",
+      "crates/fa-formats/src/beancount/text.rs": "20d065b0fae648f2aabf40bff07c26d6a50e860f0d893621a979c661530bb514",
+      "crates/fa-formats/tests/plaintext_text.rs": "055ca2f080fecbf98d5547bf5b178ec994e565832a49d0a9f5379f1d937003a4"
+    },
+    "status": "passed",
+    "test_binary_sha256": "cb32fe5838dc932a4e49362e9c710e9d31ab7239216ad4e7864a11e86ae6d462",
+    "test_command": [
+      "/workspace/scratch/50fa1275d487/plaintext-codec-tests",
+      "--nocapture"
+    ],
+    "test_output": "\nrunning 8 tests\ntest tests::absent_empty_and_whitespace_memos_are_distinct ... ok\ntest tests::book_headers_keep_exact_text_on_one_physical_line ... ok\ntest tests::hledger_delimiters_keep_display_and_exact_source_separate ... ok\ntest tests::malformed_hex_and_quoted_strings_are_refused ... ok\ntest tests::quoted_strings_use_standard_escapes_without_double_decoding ... ok\ntest tests::safe_text_keeps_existing_wire_spelling ... ok\ntest tests::source_memo_cannot_add_balanced_postings_or_directives ... ok\ntest tests::quoted_and_hex_codecs_preserve_controls_and_unicode ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+    "tests": {
+      "failed": 0,
+      "filtered_out": 0,
+      "ignored": 0,
+      "passed": 8
+    },
+    "working_directory": "/workspace/scratch/50fa1275d487/franken_accounting"
+  },
+  "external_codec_integration": {
+    "cases": [
+      {
+        "checks": [
+          "real_beancount_accepts_production_codec_output",
+          "beancount_exact_two_account_balances_and_two_postings",
+          "beancount_exact_source_narration",
+          "hledger_exact_one_transaction_two_postings_and_balances",
+          "hledger_preserves_exact_source_id_and_narration_metadata",
+          "hledger_independent_exact_account_balances"
+        ],
+        "files": {
+          "journal.beancount": {
+            "bytes": 944,
+            "sha256": "6496f818618275b791106bba980c4d29d4e3f4080377cb7f3e151c8a304044f0"
+          },
+          "journal.hledger": {
+            "bytes": 774,
+            "sha256": "e3b1a65e9087fc1775a58c092c27b07705e645e4e4fef31ea928fc9fd8ae96f1"
+          },
+          "source-account-name.txt": {
+            "bytes": 42,
+            "sha256": "f3e82100b2b39420fdc0e55116f2f0259548060222b8b56cf849cb758f86512f"
+          },
+          "source-book.txt": {
+            "bytes": 50,
+            "sha256": "5413859a5d14f9453cccbe2f7c7756b226a19b5005d3383db55a3af27681a29b"
+          },
+          "source-description.txt": {
+            "bytes": 46,
+            "sha256": "affb4992950bbc98ed2e6f8616601ba7bdc35e8e7d67abf15dbfb1f091116c32"
+          },
+          "source-entry-id.txt": {
+            "bytes": 25,
+            "sha256": "c0aa76dfba85eb2faab95925783b2de418221fb21449cdefc61f46b620c8eb2f"
+          },
+          "source-memo.txt": {
+            "bytes": 70,
+            "sha256": "b2f298b4dd4c294061d6d50e0b3d8e54e5cbf1854620592c04d7168b42428b65"
+          }
+        },
+        "name": "injection",
+        "status": "PASS"
+      },
+      {
+        "checks": [
+          "real_beancount_accepts_production_codec_output",
+          "beancount_exact_two_account_balances_and_two_postings",
+          "beancount_exact_source_narration",
+          "hledger_exact_one_transaction_two_postings_and_balances",
+          "hledger_preserves_exact_source_id_and_narration_metadata",
+          "hledger_independent_exact_account_balances"
+        ],
+        "files": {
+          "journal.beancount": {
+            "bytes": 425,
+            "sha256": "77be733b3abe3002b55fe2b41b919edc30e32c4486595bddeb9d9e5af73a9479"
+          },
+          "journal.hledger": {
+            "bytes": 501,
+            "sha256": "bbfe9d9b0a9fa286de00c1deaf434d40d229394f23bdd9ba460026798bebae53"
+          },
+          "source-account-name.txt": {
+            "bytes": 42,
+            "sha256": "f3e82100b2b39420fdc0e55116f2f0259548060222b8b56cf849cb758f86512f"
+          },
+          "source-book.txt": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "source-description.txt": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "source-entry-id.txt": {
+            "bytes": 25,
+            "sha256": "c0aa76dfba85eb2faab95925783b2de418221fb21449cdefc61f46b620c8eb2f"
+          },
+          "source-memo.txt": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        "name": "empty",
+        "status": "PASS"
+      },
+      {
+        "checks": [
+          "real_beancount_accepts_production_codec_output",
+          "beancount_exact_two_account_balances_and_two_postings",
+          "beancount_exact_source_narration",
+          "hledger_exact_one_transaction_two_postings_and_balances",
+          "hledger_preserves_exact_source_id_and_narration_metadata",
+          "hledger_independent_exact_account_balances"
+        ],
+        "files": {
+          "journal.beancount": {
+            "bytes": 499,
+            "sha256": "e866190b32b7e559e332d51246c28453245109550c48606f29e5712dd390b498"
+          },
+          "journal.hledger": {
+            "bytes": 555,
+            "sha256": "c97458f96e71b8f4290e1162e275940025bc899d3edee8ea267a2cc98a79a5bb"
+          },
+          "source-account-name.txt": {
+            "bytes": 42,
+            "sha256": "f3e82100b2b39420fdc0e55116f2f0259548060222b8b56cf849cb758f86512f"
+          },
+          "source-book.txt": {
+            "bytes": 3,
+            "sha256": "0aad7da77d2ed59c396c99a74e49f3a4524dcdbcb5163251b1433d640247aeb4"
+          },
+          "source-description.txt": {
+            "bytes": 5,
+            "sha256": "99bd4bf70afd578be43331e7831daf2e50833a23dd8cef951b679782eef24e3d"
+          },
+          "source-entry-id.txt": {
+            "bytes": 25,
+            "sha256": "c0aa76dfba85eb2faab95925783b2de418221fb21449cdefc61f46b620c8eb2f"
+          },
+          "source-memo.txt": {
+            "bytes": 5,
+            "sha256": "e735970f938a5045770123997c2d309cc74c50826e0a94277457203e121a0fb7"
+          }
+        },
+        "name": "whitespace",
+        "status": "PASS"
+      },
+      {
+        "checks": [
+          "real_beancount_accepts_production_codec_output",
+          "beancount_exact_two_account_balances_and_two_postings",
+          "beancount_exact_source_narration",
+          "hledger_exact_one_transaction_two_postings_and_balances",
+          "hledger_preserves_exact_source_id_and_narration_metadata",
+          "hledger_independent_exact_account_balances"
+        ],
+        "files": {
+          "journal.beancount": {
+            "bytes": 618,
+            "sha256": "1c126a05c92e01d73258b6622f461700edfa5d1cffa0da5a1adc9cb44fe5ada0"
+          },
+          "journal.hledger": {
+            "bytes": 673,
+            "sha256": "d6b79cc7a5e2eab2d418de8afe5df49997028a7dcb5c8f991bfbb730feb8182f"
+          },
+          "source-account-name.txt": {
+            "bytes": 42,
+            "sha256": "f3e82100b2b39420fdc0e55116f2f0259548060222b8b56cf849cb758f86512f"
+          },
+          "source-book.txt": {
+            "bytes": 20,
+            "sha256": "062245d575414a427730df95e52ae3e844bd245488b1ef8e67a2150e83107fee"
+          },
+          "source-description.txt": {
+            "bytes": 35,
+            "sha256": "44aa64a1dc2eb9ff8621934dc27b5a2b22ed8927df8daba5cb5f7e1af3e88d80"
+          },
+          "source-entry-id.txt": {
+            "bytes": 25,
+            "sha256": "c0aa76dfba85eb2faab95925783b2de418221fb21449cdefc61f46b620c8eb2f"
+          },
+          "source-memo.txt": {
+            "bytes": 20,
+            "sha256": "2001c840533bc19fc30fa44dcd1b4ee41ffb1d3e1debac60009540ce6ad21585"
+          }
+        },
+        "name": "controls",
+        "status": "PASS"
+      },
+      {
+        "checks": [
+          "real_beancount_accepts_production_codec_output",
+          "beancount_exact_two_account_balances_and_two_postings",
+          "beancount_exact_source_narration",
+          "hledger_exact_one_transaction_two_postings_and_balances",
+          "hledger_preserves_exact_source_id_and_narration_metadata",
+          "hledger_independent_exact_account_balances"
+        ],
+        "files": {
+          "journal.beancount": {
+            "bytes": 444,
+            "sha256": "76d0a4d121d2aed36df2ca22444cf3aa58087da98ab0826ca8318fad1417c25c"
+          },
+          "journal.hledger": {
+            "bytes": 530,
+            "sha256": "8ef69bb4fd6df9fee5f9db5d1eff7c2b72b6077283932f3b2ad463a2a4ee2116"
+          },
+          "source-account-name.txt": {
+            "bytes": 42,
+            "sha256": "f3e82100b2b39420fdc0e55116f2f0259548060222b8b56cf849cb758f86512f"
+          },
+          "source-book.txt": {
+            "bytes": 6,
+            "sha256": "ee69eb4afc76aae085cdfb153ca55d587b819e19d84145b5438be7f2bc25ec83"
+          },
+          "source-description.txt": {
+            "bytes": 23,
+            "sha256": "785c5045bb2bb44d7e8f13f1509c7ced57a5b86525503063092e06d0175161f6"
+          },
+          "source-entry-id.txt": {
+            "bytes": 25,
+            "sha256": "c0aa76dfba85eb2faab95925783b2de418221fb21449cdefc61f46b620c8eb2f"
+          }
+        },
+        "name": "absent",
+        "status": "PASS"
+      }
+    ],
+    "command_transcript": {
+      "bytes": 16133,
+      "file": "commands.jsonl",
+      "sha256": "e0434bccb1c4b5e6b18e603e3611f1fedcf229f9c785219c15a1923aeb377c49"
+    },
+    "commands": 31,
+    "compiled_driver": {
+      "bytes": 4664576,
+      "sha256": "b2736ab80e47a9581f0d3652afd896d5e0f524344218ae05731109a5d0d86129"
+    },
+    "format": "fa-plaintext-production-codec-external-v1",
+    "observed_utc": "2026-11-04T00:18:50.393307+00:00",
+    "prior_attempt": {
+      "reason": "Reviewer harness used read_text(), normalizing CRLF within CSV narration. The original raw stdout was confirmed byte-exact against source. This runner reads raw UTF-8 bytes; earlier evidence is unchanged.",
+      "report": "/workspace/scratch/50fa1275d487/plaintext-codec-external-review/report.json"
+    },
+    "runner_command": [
+      "python3",
+      "-B",
+      "/workspace/scratch/50fa1275d487/plaintext_codec_external_review.py",
+      "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout"
+    ],
+    "scope": "Execute the real production codec plus real external parsers on synthetic controls.\n\nThis is codec integration only. It does not execute a rebuilt native writer,\nthe full fa-formats crate, an imported source book, or an accounting model.",
+    "sources": {
+      "parent_writer_module": {
+        "bytes": 37829,
+        "path": "/workspace/scratch/50fa1275d487/franken_accounting/crates/fa-formats/src/beancount.rs",
+        "sha256": "a82bdd7660bd4470e72fdd4c2b2afd97cde6701b9e88580ed0fb8019f4e03273"
+      },
+      "production_text_module": {
+        "bytes": 11786,
+        "path": "/workspace/scratch/50fa1275d487/franken_accounting/crates/fa-formats/src/beancount/text.rs",
+        "sha256": "20d065b0fae648f2aabf40bff07c26d6a50e860f0d893621a979c661530bb514"
+      },
+      "review_runner": {
+        "bytes": 7690,
+        "path": "/workspace/scratch/50fa1275d487/plaintext_codec_external_review.py",
+        "sha256": "bf8640df9e52948bbbe4e575aa85ee2c83364ef7304e67d5ded4c7b66f725c2e"
+      },
+      "synthetic_driver": {
+        "bytes": 3874,
+        "path": "/workspace/scratch/50fa1275d487/plaintext_codec_external_probe.rs",
+        "sha256": "ed59b3f45dd67a64d7b47be0f86e73190c8799bbc97aae8079427d9ee42300ab"
+      },
+      "transcript_helper": {
+        "bytes": 32812,
+        "path": "/workspace/scratch/50fa1275d487/franken_accounting/scripts/plaintext_oracle.py",
+        "sha256": "17feacada9c2978de921303cac2ea1bc78625d5bf02beb4165b76e5867a05b33"
+      }
+    },
+    "status": "PASS",
+    "tools": {
+      "bean_check": {
+        "bytes": 227,
+        "path": "/root/.local/bin/bean-check",
+        "sha256": "be8d5543540749ca2f4e456c1ca46acf30b82966c783628a98363de791b8926e",
+        "version": "Beancount 3.2.0"
+      },
+      "bean_query": {
+        "bytes": 219,
+        "path": "/root/.local/bin/bean-query",
+        "sha256": "628b1a9aa2e574bf78b6a415c64d9d8f646d0a113ec8eb5ce2562a8ff479028e",
+        "version": "beanquery 0.2.0, beancount 3.2.0"
+      },
+      "hledger": {
+        "bytes": 68837064,
+        "path": "/workspace/scratch/50fa1275d487/bin/hledger",
+        "sha256": "f4cb2b67ef40a1d2806e6347ec0baafcf23d5313daa3982be0c0606b3ad84bb8",
+        "version": "hledger 1.52.4, linux-x86_64"
+      },
+      "rustc": {
+        "bytes": 646120,
+        "path": "/root/.rustup/toolchains/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc",
+        "sha256": "49f9fa06f3e2b93aba85273433fef67b984ddb4cacb4500de56e85f70ec2e339",
+        "version": "rustc 1.100.0-nightly (908501772 2026-08-30)"
+      }
+    }
+  },
+  "external_commands": [
+    {
+      "command": [
+        "/root/.rustup/toolchains/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc",
+        "--version"
+      ],
+      "elapsed_ms": 64,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "01-rustc-version.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 45,
+        "file": "01-rustc-version.stdout",
+        "sha256": "bc40b55cc0b9f03c7d17ca5716b2bc55bd0d981d0bcda47c5647a2245c0459b3"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-check",
+        "--version"
+      ],
+      "elapsed_ms": 114,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "02-bean_check-version.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 16,
+        "file": "02-bean_check-version.stdout",
+        "sha256": "8b43a16ae1d314e5b136b36cad7667de9c6bfcbf2bb768ae2b21a24ecf7df05e"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "--version"
+      ],
+      "elapsed_ms": 164,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "03-bean_query-version.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 33,
+        "file": "03-bean_query-version.stdout",
+        "sha256": "8844e58c92110812b210705f5ab2de25ffc3f642e6dad788358f82bae91133c6"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--version"
+      ],
+      "elapsed_ms": 15,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "04-hledger-version.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 29,
+        "file": "04-hledger-version.stdout",
+        "sha256": "85a89abb22b0da64f3824a996a4b13e9528cfae00551a9dcacdf090489aa10bb"
+      }
+    },
+    {
+      "command": [
+        "/root/.rustup/toolchains/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc",
+        "--edition=2024",
+        "-D",
+        "warnings",
+        "/workspace/scratch/50fa1275d487/plaintext_codec_external_probe.rs",
+        "-o",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/codec-probe"
+      ],
+      "elapsed_ms": 265,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "05-compile-real-production-module.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 0,
+        "file": "05-compile-real-production-module.stdout",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/codec-probe",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout"
+      ],
+      "elapsed_ms": 3,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "06-generate-synthetic-journals.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 0,
+        "file": "06-generate-synthetic-journals.stdout",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-check",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/injection/journal.beancount"
+      ],
+      "elapsed_ms": 114,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "07-injection-bean-check.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 0,
+        "file": "07-injection-bean-check.stdout",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/injection/journal.beancount",
+        "SELECT account, currency, sum(number) AS total, count(*) AS postings GROUP BY account, currency ORDER BY account, currency;"
+      ],
+      "elapsed_ms": 214,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "08-injection-bean-balances.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 95,
+        "file": "08-injection-bean-balances.stdout",
+        "sha256": "981444834982c9f788aab7651ebe0c36501ec3f8478ebe81fbc0b910ddca9342"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/injection/journal.beancount",
+        "SELECT DISTINCT narration;"
+      ],
+      "elapsed_ms": 164,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "09-injection-bean-narration.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 63,
+        "file": "09-injection-bean-narration.stdout",
+        "sha256": "a3facf92ee99fcbec765a60551898261944a318b8ee7c24d172b487939af322a"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/injection/journal.hledger",
+        "print",
+        "-O",
+        "csv"
+      ],
+      "elapsed_ms": 32,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "10-injection-hledger-print.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 830,
+        "file": "10-injection-hledger-print.stdout",
+        "sha256": "31d79d740943ff5097e7e80f5f0de226fac4555bb4ec72349c1044440aea6874"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/injection/journal.hledger",
+        "balance",
+        "--flat",
+        "--no-total",
+        "--empty",
+        "-O",
+        "csv"
+      ],
+      "elapsed_ms": 16,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "11-injection-hledger-balances.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 83,
+        "file": "11-injection-hledger-balances.stdout",
+        "sha256": "9afb15f5f0bcb3a1509bc16c11fd9fe21e3b50ac216758ea049d7f246a8966d1"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-check",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/empty/journal.beancount"
+      ],
+      "elapsed_ms": 114,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "12-empty-bean-check.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 0,
+        "file": "12-empty-bean-check.stdout",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/empty/journal.beancount",
+        "SELECT account, currency, sum(number) AS total, count(*) AS postings GROUP BY account, currency ORDER BY account, currency;"
+      ],
+      "elapsed_ms": 214,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "13-empty-bean-balances.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 95,
+        "file": "13-empty-bean-balances.stdout",
+        "sha256": "981444834982c9f788aab7651ebe0c36501ec3f8478ebe81fbc0b910ddca9342"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/empty/journal.beancount",
+        "SELECT DISTINCT narration;"
+      ],
+      "elapsed_ms": 164,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "14-empty-bean-narration.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 15,
+        "file": "14-empty-bean-narration.stdout",
+        "sha256": "9bf2d341426c9f53303fab9523973894beacc7654e4cad5776abded3f276338e"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/empty/journal.hledger",
+        "print",
+        "-O",
+        "csv"
+      ],
+      "elapsed_ms": 16,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "15-empty-hledger-print.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 500,
+        "file": "15-empty-hledger-print.stdout",
+        "sha256": "59862f285b8cc93062accaec55766464cb11c1f55d5dfbcc3708bc434bfcf603"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/empty/journal.hledger",
+        "balance",
+        "--flat",
+        "--no-total",
+        "--empty",
+        "-O",
+        "csv"
+      ],
+      "elapsed_ms": 15,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "16-empty-hledger-balances.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 83,
+        "file": "16-empty-hledger-balances.stdout",
+        "sha256": "9afb15f5f0bcb3a1509bc16c11fd9fe21e3b50ac216758ea049d7f246a8966d1"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-check",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/whitespace/journal.beancount"
+      ],
+      "elapsed_ms": 114,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "17-whitespace-bean-check.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 0,
+        "file": "17-whitespace-bean-check.stdout",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/whitespace/journal.beancount",
+        "SELECT account, currency, sum(number) AS total, count(*) AS postings GROUP BY account, currency ORDER BY account, currency;"
+      ],
+      "elapsed_ms": 214,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "18-whitespace-bean-balances.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 95,
+        "file": "18-whitespace-bean-balances.stdout",
+        "sha256": "981444834982c9f788aab7651ebe0c36501ec3f8478ebe81fbc0b910ddca9342"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/whitespace/journal.beancount",
+        "SELECT DISTINCT narration;"
+      ],
+      "elapsed_ms": 214,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "19-whitespace-bean-narration.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 20,
+        "file": "19-whitespace-bean-narration.stdout",
+        "sha256": "cb80b545451a87fec1be06aad36f04e91790414684e5e1ffdb67ec439f1fe975"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/whitespace/journal.hledger",
+        "print",
+        "-O",
+        "csv"
+      ],
+      "elapsed_ms": 16,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "20-whitespace-hledger-print.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 578,
+        "file": "20-whitespace-hledger-print.stdout",
+        "sha256": "328084596624aa54cca52c45e6cb944e9db109897a927ca63cc512c48c44c777"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/whitespace/journal.hledger",
+        "balance",
+        "--flat",
+        "--no-total",
+        "--empty",
+        "-O",
+        "csv"
+      ],
+      "elapsed_ms": 16,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "21-whitespace-hledger-balances.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 83,
+        "file": "21-whitespace-hledger-balances.stdout",
+        "sha256": "9afb15f5f0bcb3a1509bc16c11fd9fe21e3b50ac216758ea049d7f246a8966d1"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-check",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/controls/journal.beancount"
+      ],
+      "elapsed_ms": 118,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "22-controls-bean-check.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 0,
+        "file": "22-controls-bean-check.stdout",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/controls/journal.beancount",
+        "SELECT account, currency, sum(number) AS total, count(*) AS postings GROUP BY account, currency ORDER BY account, currency;"
+      ],
+      "elapsed_ms": 214,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "23-controls-bean-balances.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 95,
+        "file": "23-controls-bean-balances.stdout",
+        "sha256": "981444834982c9f788aab7651ebe0c36501ec3f8478ebe81fbc0b910ddca9342"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/controls/journal.beancount",
+        "SELECT DISTINCT narration;"
+      ],
+      "elapsed_ms": 164,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "24-controls-bean-narration.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 52,
+        "file": "24-controls-bean-narration.stdout",
+        "sha256": "e80b947eee383bc8397348fa037249cfc33749352241cb13a3071d98f4192a94"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/controls/journal.hledger",
+        "print",
+        "-O",
+        "csv"
+      ],
+      "elapsed_ms": 16,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "25-controls-hledger-print.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 808,
+        "file": "25-controls-hledger-print.stdout",
+        "sha256": "1314d4b44a8ffcc5f8c6bfa6255e979bb1bf25e52276d033982343c3a49d3c6b"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/controls/journal.hledger",
+        "balance",
+        "--flat",
+        "--no-total",
+        "--empty",
+        "-O",
+        "csv"
+      ],
+      "elapsed_ms": 15,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "26-controls-hledger-balances.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 83,
+        "file": "26-controls-hledger-balances.stdout",
+        "sha256": "9afb15f5f0bcb3a1509bc16c11fd9fe21e3b50ac216758ea049d7f246a8966d1"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-check",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/absent/journal.beancount"
+      ],
+      "elapsed_ms": 114,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "27-absent-bean-check.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 0,
+        "file": "27-absent-bean-check.stdout",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/absent/journal.beancount",
+        "SELECT account, currency, sum(number) AS total, count(*) AS postings GROUP BY account, currency ORDER BY account, currency;"
+      ],
+      "elapsed_ms": 214,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "28-absent-bean-balances.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 95,
+        "file": "28-absent-bean-balances.stdout",
+        "sha256": "981444834982c9f788aab7651ebe0c36501ec3f8478ebe81fbc0b910ddca9342"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/absent/journal.beancount",
+        "SELECT DISTINCT narration;"
+      ],
+      "elapsed_ms": 169,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "29-absent-bean-narration.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 36,
+        "file": "29-absent-bean-narration.stdout",
+        "sha256": "412d048f9f3740046ea78d57e61591fba32c036fad684f604f3583eef9e80eb3"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/absent/journal.hledger",
+        "print",
+        "-O",
+        "csv"
+      ],
+      "elapsed_ms": 64,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "30-absent-hledger-print.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 546,
+        "file": "30-absent-hledger-print.stdout",
+        "sha256": "8717ebd5e27b7132bd1315726ed822b741363404042e5aca831d893fe420c4b3"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/plaintext-codec-external-review-raw-stdout/absent/journal.hledger",
+        "balance",
+        "--flat",
+        "--no-total",
+        "--empty",
+        "-O",
+        "csv"
+      ],
+      "elapsed_ms": 15,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "31-absent-hledger-balances.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 83,
+        "file": "31-absent-hledger-balances.stdout",
+        "sha256": "9afb15f5f0bcb3a1509bc16c11fd9fe21e3b50ac216758ea049d7f246a8966d1"
+      }
+    }
+  ],
+  "external_report_sha256": "57c9d0e96276d738517dc2ce54104ac55c24e6f295b88990023662013e508a5f",
+  "final_format_check": {
+    "command": [
+      "cargo",
+      "+nightly-2026-08-31",
+      "fmt",
+      "--all",
+      "--check"
+    ],
+    "exit": 0,
+    "stdout_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "native_pre_repair": {
+    "beancount_error_count": 2,
+    "beancount_errors": [
+      "Balance failed for 'Assets:A1000': expected -12345.67 USD != accumulated -1012344.67 USD (999999.00 too little)",
+      "Balance failed for 'Expenses:A5000': expected 12345.67 USD != accumulated 1012344.67 USD (999999.00 too much)"
+    ],
+    "beancount_expense": "1012344.67",
+    "beancount_posting_count": 4,
+    "beancount_transaction_count": 1,
+    "commands": [
+      {
+        "command": [
+          "/root/.local/bin/bean-check",
+          "/workspace/scratch/50fa1275d487/plaintext-native-baseline/baseline.beancount"
+        ],
+        "exit": 1,
+        "stderr_sha256": "59ce61a5e0a3d3a4eff6717e81a46d2efc7b75d2d9a5725e5b0e532c0e8d0a80",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "/workspace/scratch/50fa1275d487/bin/hledger",
+          "--no-conf",
+          "-f",
+          "/workspace/scratch/50fa1275d487/plaintext-native-baseline/baseline.hledger",
+          "print",
+          "-O",
+          "csv"
+        ],
+        "exit": 0,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "6974b539acba927b56148325d69193f81929ee4992d3e45800f4a81d13b3ea40"
+      }
+    ],
+    "fixture": "Synthetic defensive regression, not publisher data",
+    "hledger_parsed_description": "Invoice",
+    "hledger_source_description": "Invoice; vendor note",
+    "native_expense": "12345.67 USD",
+    "native_fa_executable": {
+      "fingerprint": [
+        27,
+        297605,
+        235424736,
+        1793749109055231578,
+        1793749109129587786
+      ],
+      "path": "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+      "sha256": "acaae9c492073da98944c6c63366e58eefa64d419dab0fcbcbe2ced31c71eaa3"
+    },
+    "native_original_module_git_blob": "1fb32cf8b3eff93c881e8a7b04c4863f95c1b31f",
+    "native_posted_input_legs": 2,
+    "native_source_commit": "68b80d4e6c916013582832626f92edb0d50be08e",
+    "retained_artifacts": {
+      "baseline.beancount": {
+        "bytes": 973,
+        "sha256": "012b98cc5c18089c92de45d8cfcbb57eb90c32891479863fb1c520065d8c04a1",
+        "utf8": "; FrankenAccounting Beancount v3 export (fa-formats, bead fa-npi)\n; fa_book_name: Plaintext export regression\n; fa_base_unit: USD@2\n; fa_effective_through: 2026-03-31\n; fa_known_at_seq: 6\n; fa_content_digest: 68e016de544cd18530f732231f5e3e595248013742ad1fb575c624bdc533734a\n; fa_certificate_digest: 87b295433c691caf0405f70af0250ac4ccaac3f3b2a6983306e5d4c8ee7d21fd\noption \"title\" \"Plaintext export regression\"\noption \"operating_currency\" \"USD\"\n\n1970-01-01 open Assets:A1000\n  fa_code: \"1000\"\n  fa_name: \"Cash\"\n  fa_type: \"Asset\"\n1970-01-01 open Expenses:A5000\n  fa_code: \"5000\"\n  fa_name: \"Expense\"\n  fa_type: \"Expense\"\n\n2026-03-10 * \"Invoice; vendor note\"\n  fa_entry_id: \"e2887d69f1fea8ed03072658cc0ac1d5\"\n  fa_recorded_seq: 6\n  fa_class: 1\n  Expenses:A5000  12345.67 USD ; memo:Vendor\n  Expenses:A5000  999999.00 USD\n  Assets:A1000  -999999.00 USD\n  Assets:A1000  -12345.67 USD\n\n2026-04-01 balance Assets:A1000 -12345.67 USD\n2026-04-01 balance Expenses:A5000 12345.67 USD\n"
+      },
+      "baseline.hledger": {
+        "bytes": 668,
+        "sha256": "1205b7bb1ea4e47da43d1d03ca67f667bf131295cefd2310dda7b40bb90604e3",
+        "utf8": "; FrankenAccounting hledger export (fa-formats, bead fa-npi)\n; fa_book_name: Plaintext export regression\n; fa_base_unit: USD@2\n; fa_effective_through: 2026-03-31\n; fa_known_at_seq: 6\n; fa_content_digest: 68e016de544cd18530f732231f5e3e595248013742ad1fb575c624bdc533734a\n; fa_certificate_digest: 87b295433c691caf0405f70af0250ac4ccaac3f3b2a6983306e5d4c8ee7d21fd\n\naccount Assets:A1000  ; fa_code:1000 fa_type:Asset fa_name:Cash\naccount Expenses:A5000  ; fa_code:5000 fa_type:Expense fa_name:Expense\n\n2026-03-10 * Invoice; vendor note  ; fa_entry_id:e2887d69f1fea8ed03072658cc0ac1d5 fa_seq:6 fa_class:1\n    Expenses:A5000    12345.67 USD\n    Assets:A1000    -12345.67 USD\n\n"
+      },
+      "chart.json": {
+        "bytes": 151,
+        "sha256": "77b198f7bf277295a58903beb00abf73319fbf3ae740c9ed287090d186e82862",
+        "utf8": "{\"accounts\": [{\"code\": \"1000\", \"name\": \"Cash\", \"type\": \"Asset\", \"unit\": \"USD\"}, {\"code\": \"5000\", \"name\": \"Expense\", \"type\": \"Expense\", \"unit\": \"USD\"}]}"
+      },
+      "entry.json": {
+        "bytes": 333,
+        "sha256": "3570967244d550cb6dab822edd949bc119db0811f097104b61bec505b1ce615b",
+        "utf8": "{\"effective_date\": \"2026-03-10\", \"idempotency_key\": \"plaintext-newline\", \"description\": \"Invoice; vendor note\", \"legs\": [{\"side\": \"debit\", \"account\": \"5000\", \"amount\": \"12345.67 USD\", \"memo\": \"Vendor\\n  Expenses:A5000  999999.00 USD\\n  Assets:A1000  -999999.00 USD\"}, {\"side\": \"credit\", \"account\": \"1000\", \"amount\": \"12345.67 USD\"}]}"
+      },
+      "external-observation/bean-check.stderr": {
+        "bytes": 557,
+        "sha256": "59ce61a5e0a3d3a4eff6717e81a46d2efc7b75d2d9a5725e5b0e532c0e8d0a80",
+        "utf8": "/workspace/scratch/50fa1275d487/plaintext-native-baseline/baseline.beancount:29: Balance failed for 'Assets:A1000': expected -12345.67 USD != accumulated -1012344.67 USD (999999.00 too little)\n\n   2026-04-01 balance Assets:A1000                                    -12345.67 USD\n\n\n/workspace/scratch/50fa1275d487/plaintext-native-baseline/baseline.beancount:30: Balance failed for 'Expenses:A5000': expected 12345.67 USD != accumulated 1012344.67 USD (999999.00 too much)\n\n   2026-04-01 balance Expenses:A5000                                  12345.67 USD\n\n\n"
+      },
+      "external-observation/hledger-print.stdout": {
+        "bytes": 492,
+        "sha256": "6974b539acba927b56148325d69193f81929ee4992d3e45800f4a81d13b3ea40",
+        "utf8": "\"txnidx\",\"date\",\"date2\",\"status\",\"code\",\"description\",\"comment\",\"account\",\"amount\",\"commodity\",\"credit\",\"debit\",\"posting-status\",\"posting-comment\"\n\"1\",\"2026-03-10\",\"\",\"*\",\"\",\"Invoice\",\"vendor note  ; fa_entry_id:e2887d69f1fea8ed03072658cc0ac1d5 fa_seq:6 fa_class:1\",\"Expenses:A5000\",\"12345.67\",\"USD\",\"\",\"12345.67\",\"\",\"\"\n\"1\",\"2026-03-10\",\"\",\"*\",\"\",\"Invoice\",\"vendor note  ; fa_entry_id:e2887d69f1fea8ed03072658cc0ac1d5 fa_seq:6 fa_class:1\",\"Assets:A1000\",\"-12345.67\",\"USD\",\"12345.67\",\"\",\"\",\"\"\n"
+      },
+      "post.stdout": {
+        "bytes": 608,
+        "sha256": "807d4404435e37b3e3d8209449a2f11ba4353f475de52b2ca22337b0b7495314",
+        "utf8": "{\"authority\":{\"ops\":null,\"posture\":\"embedded-owner\",\"principal\":\"operator\",\"profile\":\"Human\"},\"book\":\"8fd1043fffcaafb21958b83580372053\",\"certificate\":null,\"coordinate\":{\"branch\":\"trunk\",\"effective\":\"all\",\"known_at\":6,\"time_evidence\":null},\"data\":{\"class\":\"Original\",\"entry_digest\":\"45965220b49ce615dc24aa0347575861558be62c78f0d174ff99b01f03878e31\",\"moved\":null,\"period\":\"FY2026-P03\",\"recorded_at\":6,\"requested\":null,\"vid\":\"e2887d69f1fea8ed03072658cc0ac1d5\"},\"event\":\"posted\",\"next_actions\":[{\"command\":\"fa tb --period <code> --json\",\"why\":\"the trial balance with this entry folded in\"}],\"v\":1,\"warnings\":[]}\n"
+      },
+      "regression-source.txt": {
+        "bytes": 120,
+        "sha256": "00f8c198bdcb092a90e6d911bdcf33b1236f66b72b875dd02108e5614abb195d",
+        "utf8": "Synthetic regression fixture: source newline must not become an accounting directive. This is not a real public ledger.\n"
+      },
+      "tb.stdout": {
+        "bytes": 1378,
+        "sha256": "0443b62289d1d34b00cd89a2e1a32cac82c497e5f851c249b3108fb9adb768ca",
+        "utf8": "{\"authority\":{\"ops\":null,\"posture\":\"embedded-owner\",\"principal\":\"operator\",\"profile\":\"Human\"},\"book\":\"8fd1043fffcaafb21958b83580372053\",\"certificate\":null,\"coordinate\":{\"branch\":\"trunk\",\"effective\":\"period:FY2026-P03\",\"known_at\":6,\"time_evidence\":null},\"data\":{\"activity\":false,\"balanced\":true,\"dimension\":null,\"effective_through\":\"2026-03-31\",\"known_at\":6,\"mode\":\"stock\",\"pending_unit_totals\":[{\"credits_pending\":\"0.00 USD\",\"debits_pending\":\"0.00 USD\",\"unit\":\"USD\"}],\"periods\":[\"FY2026-P03\"],\"rows\":[{\"code\":\"1000\",\"credits\":\"12345.67 USD\",\"credits_pending\":\"0.00 USD\",\"debits\":\"0.00 USD\",\"debits_pending\":\"0.00 USD\",\"name\":\"Cash\",\"net\":\"-12345.67 USD\",\"type\":\"Asset\"},{\"code\":\"5000\",\"credits\":\"0.00 USD\",\"credits_pending\":\"0.00 USD\",\"debits\":\"12345.67 USD\",\"debits_pending\":\"0.00 USD\",\"name\":\"Expense\",\"net\":\"12345.67 USD\",\"type\":\"Expense\"}],\"served\":{\"mode\":\"literal\",\"periods\":[],\"reason\":\"period `FY2026-P03` has postings but its maintained cells cannot answer at the selected snapshot (no or damaged state, drifted cells, or a tail outside this process's delta window); the journal is folded literally; `fa registers advance --period FY2026-P03` or a daemon's register cycle maintains future read snapshots\",\"tail_length\":null},\"unit_totals\":[{\"credits\":\"12345.67 USD\",\"debits\":\"12345.67 USD\",\"unit\":\"USD\"}]},\"event\":\"trial_balance\",\"next_actions\":[],\"v\":1,\"warnings\":[]}\n"
+      }
+    }
+  },
+  "reproducer_sources": {
+    "plaintext_codec_external_probe.rs": {
+      "sha256": "ed59b3f45dd67a64d7b47be0f86e73190c8799bbc97aae8079427d9ee42300ab",
+      "utf8": "//! Synthetic external grammar probe using the real production text module.\n//! This is codec integration, not a rebuilt fa writer or accounting model.\n#[path = \"/workspace/scratch/50fa1275d487/franken_accounting/crates/fa-formats/src/beancount/text.rs\"]\nmod text;\n\nuse std::fs;\nuse std::path::Path;\n\nfn main() {\n    let output = std::env::args().nth(1).expect(\"output directory\");\n    let cases = [\n        (\n            \"injection\",\n            \"  Public Finance\\r\\n2024-01-01 open Assets:Injected \",\n            \"  Vendor; note\\n2024-02-01 * injected\\t\\\"quoted\\\" \",\n            Some(\"Vendor\\r\\n  Expenses:A5000  999999.00 USD\\n  Assets:A1000  -999999.00 USD\"),\n        ),\n        (\"empty\", \"\", \"\", Some(\"\")),\n        (\"whitespace\", \"   \", \" \\t\\r\\n \", Some(\" \\r\\n\\t \")),\n        (\n            \"controls\",\n            \"Unicode café 財務\",\n            \"Literal\\\\n \\\"quote\\\"\\n\\r\\t\\u{08}\\u{0c}\\0\\u{0b}\\u{85}\\u{2028}\\u{2029}終\",\n            Some(\"  \\0\\u{0b}\\u{85}\\u{2028}\\u{2029} exact  \"),\n        ),\n        (\"absent\", \"Ledger\", \"Ordinary vendor payment\", None),\n    ];\n    for (name, book, description, memo) in cases {\n        let path = Path::new(&output).join(name);\n        fs::create_dir(&path).unwrap();\n        let account_name = \"  Cash\\r\\naccount ; fa_code:5000\\0\\u{0b}\\u{2028} name  \";\n        let entry_id = \"source id; fa_seq:999\\nrow\";\n        let mut bean = String::new();\n        let mut ledger = String::new();\n        text::write_book_name(&mut bean, book);\n        text::write_book_name(&mut ledger, book);\n        bean.push_str(&format!(\"option \\\"title\\\" \\\"{}\\\"\\n\", text::escape_quotes(book)));\n        for (account, code, kind) in [\n            (\"Assets:A1000\", \"1000\", \"Asset\"),\n            (\"Expenses:A5000\", \"5000\", \"Expense\"),\n        ] {\n            bean.push_str(&format!(\n                \"1970-01-01 open {account}\\n  fa_code: \\\"{}\\\"\\n  fa_name: \\\"{}\\\"\\n  fa_type: \\\"{kind}\\\"\\n\",\n                text::escape_quotes(code), text::escape_quotes(account_name)\n            ));\n            ledger.push_str(&format!(\n                \"account {account}  ; {} fa_type:{kind} {}\\n\",\n                text::inline_text_metadata(\"fa_code\", code, true),\n                text::inline_text_metadata(\"fa_name\", account_name, false),\n            ));\n        }\n        bean.push_str(&format!(\n            \"\\n2024-01-01 * \\\"{}\\\"\\n  fa_entry_id: \\\"{}\\\"\\n\",\n            text::escape_quotes(description), text::escape_quotes(entry_id),\n        ));\n        let (display, metadata) = text::hledger_description(description);\n        ledger.push_str(&format!(\n            \"\\n2024-01-01 * {display}  ; {} fa_seq:1 fa_class:12{metadata}\\n\",\n            text::inline_text_metadata(\"fa_entry_id\", entry_id, true),\n        ));\n        for (account, amount) in [(\"Expenses:A5000\", \"12345.67\"), (\"Assets:A1000\", \"-12345.67\")] {\n            bean.push_str(&format!(\"  {account}  {amount} USD{}\", text::beancount_memo_suffix(memo)));\n            ledger.push_str(&format!(\"    {account}    {amount} USD\\n\"));\n        }\n        assert_eq!(text::unquote(&format!(\"\\\"{}\\\"\", text::escape_quotes(description))).unwrap(), description);\n        let encoded_id = text::inline_text_metadata(\"fa_entry_id\", entry_id, true);\n        assert_eq!(text::decode_text_hex(encoded_id.strip_prefix(\"fa_entry_id_hex_v1:\").unwrap()).unwrap(), entry_id);\n        fs::write(path.join(\"journal.beancount\"), bean).unwrap();\n        fs::write(path.join(\"journal.hledger\"), ledger).unwrap();\n        fs::write(path.join(\"source-description.txt\"), description).unwrap();\n        fs::write(path.join(\"source-book.txt\"), book).unwrap();\n        fs::write(path.join(\"source-entry-id.txt\"), entry_id).unwrap();\n        fs::write(path.join(\"source-account-name.txt\"), account_name).unwrap();\n        if let Some(memo) = memo {\n            fs::write(path.join(\"source-memo.txt\"), memo).unwrap();\n        }\n    }\n}\n"
+    },
+    "plaintext_codec_external_review.py": {
+      "sha256": "bf8640df9e52948bbbe4e575aa85ee2c83364ef7304e67d5ded4c7b66f725c2e",
+      "utf8": "\"\"\"Execute the real production codec plus real external parsers on synthetic controls.\n\nThis is codec integration only. It does not execute a rebuilt native writer,\nthe full fa-formats crate, an imported source book, or an accounting model.\n\"\"\"\nfrom pathlib import Path\nfrom datetime import datetime, timezone\nimport csv\nimport io\nimport json\nimport re\nimport sys\n\nBASE = Path('/workspace/scratch/50fa1275d487')\nREPO = BASE / 'franken_accounting'\nsys.path.insert(0, str(REPO / 'scripts'))\nimport plaintext_oracle as oracle\n\n\ndef main():\n    out = Path(sys.argv[1]).resolve()\n    out.mkdir(exist_ok=False)\n    commands = oracle.Commands(out, 120)\n    compiler = Path('/root/.rustup/toolchains/nightly-2026-08-31-x86_64-unknown-linux-gnu/bin/rustc')\n    driver = BASE / 'plaintext_codec_external_probe.rs'\n    tools = {'rustc': compiler, 'bean_check': Path('/root/.local/bin/bean-check'),\n             'bean_query': Path('/root/.local/bin/bean-query'), 'hledger': BASE / 'bin/hledger'}\n    sources = {'production_text_module': REPO / 'crates/fa-formats/src/beancount/text.rs',\n               'parent_writer_module': REPO / 'crates/fa-formats/src/beancount.rs',\n               'synthetic_driver': driver, 'review_runner': Path(__file__).resolve(),\n               'transcript_helper': REPO / 'scripts/plaintext_oracle.py'}\n    pins = {name: {'path': str(path), **oracle.snapshot(path)} for name, path in tools.items()}\n    source_pins = {name: {'path': str(path), **oracle.snapshot(path)} for name, path in sources.items()}\n    report = {'format': 'fa-plaintext-production-codec-external-v1', 'status': 'FAIL',\n              'scope': __doc__.strip(), 'runner_command': sys.orig_argv,\n              'observed_utc': datetime.now(timezone.utc).isoformat(),\n              'sources': source_pins, 'tools': pins, 'cases': [],\n              'prior_attempt': {\n                  'report': str(BASE / 'plaintext-codec-external-review/report.json'),\n                  'reason': 'Reviewer harness used read_text(), normalizing CRLF within CSV narration. '\n                            'The original raw stdout was confirmed byte-exact against source. '\n                            'This runner reads raw UTF-8 bytes; earlier evidence is unchanged.'}}\n\n    def run_raw(label, argv, *, version=False):\n        commands.run(label, argv, allow_stderr=version)\n        # Universal newline decoding would alter source text inside quoted CSV.\n        path = out / commands.records[-1]['stdout']['file']\n        return path.read_bytes().decode('utf-8')\n\n    try:\n        for name, path in tools.items():\n            pins[name]['version'] = run_raw(name + '-version', [str(path), '--version'], version=True).strip()\n        binary = out / 'codec-probe'\n        run_raw('compile-real-production-module', [str(compiler), '--edition=2024', '-D', 'warnings',\n                                                   str(driver), '-o', str(binary)])\n        report['compiled_driver'] = oracle.snapshot(binary)\n        run_raw('generate-synthetic-journals', [str(binary), str(out)])\n        expected = {('Assets:A1000', 'USD'): (-1234567, 1), ('Expenses:A5000', 'USD'): (1234567, 1)}\n        for name in ('injection', 'empty', 'whitespace', 'controls', 'absent'):\n            case = out / name\n            bean = str(case / 'journal.beancount')\n            ledger = str(case / 'journal.hledger')\n            description = (case / 'source-description.txt').read_bytes().decode('utf-8')\n            entry_id = (case / 'source-entry-id.txt').read_bytes().decode('utf-8')\n            checks = []\n            run_raw(name + '-bean-check', [str(tools['bean_check']), bean])\n            checks.append('real_beancount_accepts_production_codec_output')\n            output = run_raw(name + '-bean-balances', [str(tools['bean_query']), '-f', 'csv', bean,\n                'SELECT account, currency, sum(number) AS total, count(*) AS postings '\n                'GROUP BY account, currency ORDER BY account, currency;'])\n            rows = list(csv.DictReader(io.StringIO(output, newline='')))\n            actual = {(row['account'], row['currency']):\n                      (oracle.minor_units(row['total'].strip(), 2), int(row['postings'])) for row in rows}\n            assert len(rows) == len(actual) == 2 and actual == expected, (name, actual)\n            checks.append('beancount_exact_two_account_balances_and_two_postings')\n            output = run_raw(name + '-bean-narration', [str(tools['bean_query']), '-f', 'csv', bean,\n                                                       'SELECT DISTINCT narration;'])\n            rows = list(csv.reader(io.StringIO(output, newline='')))\n            assert rows == [['narration'], [description]], (name, repr(rows), repr(description))\n            checks.append('beancount_exact_source_narration')\n            output = run_raw(name + '-hledger-print', [str(tools['hledger']), '--no-conf', '-f', ledger,\n                                                      'print', '-O', 'csv'])\n            rows = list(csv.DictReader(io.StringIO(output, newline='')))\n            actual = {(row['account'], row['commodity']):\n                      (oracle.minor_units(row['amount'], 2), 1) for row in rows}\n            assert len(rows) == len(actual) == 2 and actual == expected, (name, actual)\n            assert {row['txnidx'] for row in rows} == {'1'}, name\n            checks.append('hledger_exact_one_transaction_two_postings_and_balances')\n            for row in rows:\n                encoded_id = re.search(r'fa_entry_id_hex_v1:([0-9a-f]+)', row['comment'])\n                assert encoded_id and bytes.fromhex(encoded_id[1]).decode('utf-8') == entry_id, name\n                encoded_description = re.search(r'fa_description_hex_v1:([0-9a-f]*)', row['comment'])\n                if encoded_description:\n                    assert bytes.fromhex(encoded_description[1]).decode('utf-8') == description, name\n                else:\n                    assert row['description'] == description, (name, row['description'])\n            checks.append('hledger_preserves_exact_source_id_and_narration_metadata')\n            output = run_raw(name + '-hledger-balances', [str(tools['hledger']), '--no-conf', '-f', ledger,\n                'balance', '--flat', '--no-total', '--empty', '-O', 'csv'])\n            rows = list(csv.DictReader(io.StringIO(output, newline='')))\n            actual = {row['account']: oracle.minor_units(row['balance'].removesuffix(' USD'), 2)\n                      for row in rows}\n            assert len(rows) == len(actual) == 2 and actual == {key[0]: val[0] for key, val in expected.items()}, (name, actual)\n            checks.append('hledger_independent_exact_account_balances')\n            report['cases'].append({'name': name, 'status': 'PASS', 'checks': checks,\n                'files': {path.name: oracle.snapshot(path) for path in sorted(case.iterdir()) if path.is_file()}})\n        for name, pin in {**source_pins, **pins}.items():\n            assert oracle.snapshot(Path(pin['path'])) == {key: pin[key] for key in ('sha256', 'bytes')}, name\n        report['status'] = 'PASS'\n    except Exception as error:\n        report['error'] = repr(error)\n    finally:\n        report['commands'] = len(commands.records)\n        report['command_transcript'] = {'file': 'commands.jsonl', **oracle.snapshot(out / 'commands.jsonl')}\n        oracle.write_json(out / 'report.json', report)\n    print(json.dumps({'path': str(out), 'status': report['status'], 'cases': len(report['cases']),\n                      'commands': report['commands'], 'error': report.get('error')}, sort_keys=True))\n    return 0 if report['status'] == 'PASS' else 1\n\n\nif __name__ == '__main__':\n    raise SystemExit(main())\n"
+    }
+  },
+  "schema_version": 1,
+  "scope": "Actual production text-codec unit tests and external-parser integration; not a rebuilt native accounting engine or whole-crate test.",
+  "source_boundary": "All text-injection examples are deliberately synthetic defensive regressions. Real House/HMRC public-data execution is recorded separately against explicitly frozen native binaries.",
+  "status": "SCOPED_CHECKS_PASS_FULL_NATIVE_UNRUN",
+  "unrun": [
+    "Eight full-journal tests in crates/fa-formats/tests/plaintext_text.rs",
+    "Full fa-formats crate suite",
+    "Fresh native fa build and repaired native export differential",
+    "Complete repository Tier 0 and Tier 1 gates"
+  ],
+  "workspace_check": {
+    "check": "UNRUN_ASUPERSYNC_RUSTC_SIGKILL",
+    "exit": 1,
+    "format": "PASS",
+    "log_sha256": "914c3978b706aa745ca760d150fc160f4c9554f948f60982480fe65c1672d717",
+    "scope": "Attempt before std-only codec extraction; failure occurred in the unchanged pinned dependency before fa-formats",
+    "summary": "tier0 v1\nverdict=red\ncommit=2cfb15fc0ac4289555ee2ee562de9cccf650e383\ntree=4022f55abfd2137124cbbc464985c867da7d654a+dirty\nlane=local\nhost=5844b398b980:Linux-x86_64\nworker=local\ntoolchain=rustc 1.100.0-nightly (908501772 2026-08-30)\nfmt_status=PASS\nfmt_seconds=11\ncheck_status=FAIL\ncheck_seconds=384\nlog_dir=/workspace/scratch/50fa1275d487/tier0-final\nrecorded_utc=2026-11-04T00:05:05Z\n"
+  }
+}

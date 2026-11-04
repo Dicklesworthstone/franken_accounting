@@ -1136,10 +1136,7 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         epoch,
         &key,
         0,
-        fa_policy::sod::Party {
-            principal: principal_ref,
-            profile: capability.profile(),
-        },
+        fa_policy::sod::Party::for_capability(principal_ref, capability),
     )? {
         txn.abort();
         return Ok(Err(refusal));

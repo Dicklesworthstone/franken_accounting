@@ -2833,6 +2833,7 @@ impl Formats {
             "tigerbeetle_corpus_v1",
             "aicpa_ads_gl_v2",
             "aicpa_ads_gl_v3",
+            "aicpa_ads_gl_v4",
             "oecd_saft_v2",
             "xbrl_gl_instance_v1",
             "csv_gl_v1",
@@ -2934,9 +2935,8 @@ mod tests {
         assert_eq!(fx_laws.application_difference_kinds.len(), 5);
 
         let formats = Formats::embedded().expect("formats.toml");
-        // Row 25 (fwc_plaid_transactions_sync_v1) is fa bank import's
-        // plaid-sync reader (fa-lzrn).
-        assert_eq!(formats.rows.len(), 25);
+        // Row 26 preserves assertion-free journals with a derived ADS trial balance.
+        assert_eq!(formats.rows.len(), 26);
     }
 
     #[test]

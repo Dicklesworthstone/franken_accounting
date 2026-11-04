@@ -985,10 +985,14 @@ mod tests {
         assert_eq!(ordinary.capability(), strict.capability());
         assert_eq!(ordinary.envelope_json(), strict.envelope_json());
 
-        // These operations are legal in the base Agent vocabulary but
-        // exceed MCP's ceilings. None makes an AI operator Human.
+        // The Agent base profile rejects these operations structurally.
+        // Broader base profiles with Agent provenance still obey MCP's ceiling.
         for op in [Op::Witness, Op::PostClosed, Op::Migrate, Op::Hold] {
-            for profile in [Profile::Agent, Profile::Human, Profile::System] {
+            assert!(
+                Capability::new(principal_vid("holder"), Profile::Agent, &[op], VId(1)).is_err(),
+                "{op} exceeds the Agent profile ceiling"
+            );
+            for profile in [Profile::Human, Profile::System] {
                 let capability = Capability::new(principal_vid("holder"), profile, &[op], VId(1))
                     .unwrap()
                     .with_operator_kind(fa_policy::OperatorKind::Agent)

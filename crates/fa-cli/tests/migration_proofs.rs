@@ -57,15 +57,21 @@ fn directory() -> PathBuf {
 
 struct Fixture {
     path: PathBuf,
-    usd: UnitId,
+    unit: UnitId,
     evidence: EvidenceRef,
 }
 
 impl Fixture {
     fn new() -> Self {
+        Self::in_unit("USD")
+    }
+
+    fn in_unit(code: &str) -> Self {
         let path = directory().join("book");
         let keys = BookKeys::for_development(91);
-        let usd = UnitRegistry::embedded().unwrap().lookup("USD").unwrap();
+        let units = UnitRegistry::embedded().unwrap();
+        let usd = units.lookup("USD").unwrap();
+        let unit = units.lookup(code).unwrap();
         let mut book = Book::create_dir(
             &path,
             keys.clone(),
@@ -90,7 +96,7 @@ impl Fixture {
                 account_type,
                 normal_balance,
                 is_leaf: true,
-                unit_policy: UnitPolicy::Single(usd),
+                unit_policy: UnitPolicy::Single(unit),
                 parent_code: None,
                 limit: None,
             })
@@ -160,12 +166,12 @@ impl Fixture {
             mime: "text/csv".into(),
             grade: 3,
             retrieved_by: PREPARER,
-            bytes: b"account,unit,net\n1000,USD,5000\n3000,USD,-5000\n".to_vec(),
+            bytes: format!("account,unit,net\n1000,{code},5000\n3000,{code},-5000\n").into_bytes(),
         };
         book.add_document(&source).unwrap().unwrap();
         Self {
             path,
-            usd,
+            unit,
             evidence: source.evidence_ref(1),
         }
     }
@@ -198,7 +204,7 @@ impl Fixture {
                 .into_iter()
                 .map(|(account, mantissa)| TrialBalanceLine {
                     account_code: account.into(),
-                    unit: self.usd,
+                    unit: self.unit,
                     mantissa,
                 })
                 .collect(),
@@ -229,12 +235,12 @@ impl Fixture {
             LegPayload::simple(
                 Side::Debit,
                 account_vid(BOOK_ID, "1000"),
-                Amount::new(self.usd, 5_000),
+                Amount::new(self.unit, 5_000),
             ),
             LegPayload::simple(
                 Side::Credit,
                 account_vid(BOOK_ID, "3000"),
-                Amount::new(self.usd, 5_000),
+                Amount::new(self.unit, 5_000),
             ),
         ];
         let proposal = EntryPayload {
@@ -311,6 +317,8 @@ impl Fixture {
 
     fn export(&self, state: &StoredState, account: &str, cutoff: Option<&str>) -> Vec<u8> {
         let state_oid = fa_verify::blake3::hex(&state.oid.0);
+        let units = UnitRegistry::embedded().unwrap();
+        let unit = &units.get(self.unit).unwrap().code;
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fa"));
         cmd.arg("--book").arg(&self.path).args([
             "proof",
@@ -320,7 +328,7 @@ impl Fixture {
             "--account",
             account,
             "--unit",
-            "USD",
+            unit,
             "--json",
         ]);
         if let Some(day) = cutoff {
@@ -346,7 +354,7 @@ impl Fixture {
             state: Some(state.oid),
             kind: ProofKind::Balance {
                 account: account_vid(BOOK_ID, account),
-                unit: self.usd,
+                unit: self.unit,
                 effective_through: cutoff.map(|day| DateDay::parse(day).unwrap()),
             },
         };
@@ -485,7 +493,7 @@ fn migration_proof_export_keeps_read_and_produce_authority_mandatory() {
         state: Some(state.oid),
         kind: ProofKind::Balance {
             account: account_vid(BOOK_ID, "1000"),
-            unit: fixture.usd,
+            unit: fixture.unit,
             effective_through: None,
         },
     };
@@ -524,11 +532,20 @@ impl AdsPackage {
 
     /// [`Self::export`] with `extra` arguments, and the envelope's warnings.
     fn export_with(fixture: &Fixture, extra: &[&str]) -> (Self, Vec<String>) {
-        let out = fixture.path.parent().unwrap().join("ads");
+        Self::export_at(fixture, "ads", "2026-12-31", extra)
+    }
+
+    fn export_at(
+        fixture: &Fixture,
+        name: &str,
+        cutoff: &str,
+        extra: &[&str],
+    ) -> (Self, Vec<String>) {
+        let out = fixture.path.parent().unwrap().join(name);
         let output = Command::new(env!("CARGO_BIN_EXE_fa"))
             .arg("--book")
             .arg(&fixture.path)
-            .args(["export", "ads", "--as-of", "2026-12-31", "--out"])
+            .args(["export", "ads", "--as-of", cutoff, "--out"])
             .arg(&out)
             .args(["--with-proofs", "--json"])
             .args(extra)
@@ -538,7 +555,13 @@ impl AdsPackage {
         let stdout = String::from_utf8(output.stdout).unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(0), "{stdout}\n{stderr}");
-        let line = json::parse(stdout.lines().next().unwrap()).unwrap();
+        let lines: Vec<_> = stdout.lines().collect();
+        assert_eq!(lines.len(), 1, "{stdout}\n{stderr}");
+        fa_cli::verbs::registry()
+            .unwrap()
+            .check_line(lines[0])
+            .unwrap();
+        let line = json::parse(lines[0]).unwrap();
         let warnings = match line.get("warnings") {
             Some(Json::Arr(items)) => items
                 .iter()
@@ -633,39 +656,61 @@ fn proved_ads_extracts_count_a_chunk_exactly_when_its_run_was_finalized() {
     );
 }
 
-/// fa-mv0f: one account's proved extract over a migrated account is refused
-/// offline, naming what its bundle lacks. The account's scope-index run holds
-/// that account's entries only: no lifecycle control of the migration run and
-/// no balance, so nothing in it decides whether the run makes the chunk
-/// visible. The export says so when it writes the package. The whole-chart
-/// extract of the same book verifies (the test above).
+/// Keep the old missing-witness control: a validly signed account selection
+/// without migration balance witnesses must still fail extract verification.
+/// The supported CLI now supplies those witnesses, so construct the deficient
+/// bundle explicitly instead of expecting an incomplete export from it.
 #[test]
 fn an_account_extract_over_a_migrated_account_is_refused_naming_what_its_bundle_lacks() {
     let fixture = Fixture::new();
     let mut book = fixture.open();
     let run = fixture.stage(&mut book);
     Fixture::terminal(&mut book, run, kind::FINALIZE);
-    Fixture::checkpoint(&mut book);
+    let state = Fixture::checkpoint(&mut book);
+    let plain = book
+        .produce_bundle(
+            PREPARER,
+            &capability(&["read", "produce"]),
+            Some(state.oid),
+            &fa::BundleRequest {
+                scope: fa::BundleScope::Index(fa::ScopeRequest::Account {
+                    account: account_vid(BOOK_ID, "1000"),
+                    from: i32::MIN,
+                    to: DateDay::parse("2026-12-31").unwrap().0,
+                }),
+                balances: Vec::new(),
+                inline_documents: false,
+            },
+        )
+        .unwrap()
+        .unwrap()
+        .unwrap();
     drop(book);
-    let (package, warnings) = AdsPackage::export_with(&fixture, &["--account", "1000"]);
+    let (mut package, _) = AdsPackage::export_with(&fixture, &["--account", "1000"]);
     assert!(
         !AdsPackage::migration_rows(&package.gl).is_empty(),
         "{}",
         package.gl
     );
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.contains("1 migration entry") && w.contains("(no --account)")),
-        "{warnings:?}"
-    );
+    let supported = package.verify(&package.gl);
+    assert!(supported.verified(), "{:?}", supported.failures);
+    package.bundle = plain.bundle.bytes;
+    package.receipt = plain.receipt;
+    let bundle =
+        fa_verify::bundle::verify_bundle(&package.bundle, &[package.key], Some(&package.receipt))
+            .unwrap();
+    assert!(bundle.verified(), "{:?}", bundle.checks);
     let report = package.verify(&package.gl);
     assert!(!report.verified());
     assert!(
-        report.failures.iter().any(|f| f.contains(
-            "an account bundle carries neither its run's lifecycle controls nor a migration-aware balance"
-        )),
+        report
+            .failures
+            .iter()
+            .any(|f| f.contains("no migration-aware balance over this account's cells")),
         "{:?}",
         report.failures
     );
 }
+
+#[path = "migration_proofs/scoped.rs"]
+mod scoped;

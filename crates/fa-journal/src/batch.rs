@@ -1584,6 +1584,7 @@ pub(crate) async fn commit_batch_with_crash<V: Vfs + Clone>(
         outcome: ovid,
         entries,
         periods,
+        prepared,
         template_tracker,
         aggregate,
         ..
@@ -1610,6 +1611,38 @@ pub(crate) async fn commit_batch_with_crash<V: Vfs + Clone>(
     {
         txn.abort();
         return Ok(Err(refusal));
+    }
+    if txn.basis() != db.frontier()? {
+        // Period-wide hold capacity, like gross register representability,
+        // can change without touching this batch's point-read accounts. A
+        // delayed publication must judge the whole atomic result at the
+        // current prefix while retaining every original admission witness.
+        let capacity_entries: Vec<_> = entries
+            .iter()
+            .zip(&prepared)
+            .map(|(reference, entry)| (reference.vid, entry))
+            .collect();
+        if let Err(refusal) =
+            crate::register_capacity::admit_publication(db, ctx, book.book_id, &capacity_entries)?
+        {
+            let refusal = if refusal.code == code::REGISTER_CAPACITY {
+                Refusal::new(
+                    code::CONFLICT,
+                    exit::CONFLICT,
+                    format!(
+                        "a publication after prepared prefix {} exhausted register capacity: {}",
+                        txn.basis().0,
+                        refusal.message,
+                    ),
+                    "plan §5.3–§5.4 (register and pending-hold capacity at publication)",
+                    "re-plan the whole batch against the current journal; reduce gross activity or resolve existing holds in the affected period if the fresh plan exceeds capacity",
+                )
+            } else {
+                refusal
+            };
+            txn.abort();
+            return Ok(Err(refusal));
+        }
     }
     match txn.commit_with_crash(db, &commit, crash_at).await {
         Ok(seq) => Ok(Ok(BatchPosted {
@@ -2121,7 +2154,7 @@ pub async fn commit_batch_plan<V: Vfs + Clone>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use asupersync::Budget;
     use asupersync::runtime::RuntimeBuilder;
@@ -2263,7 +2296,7 @@ mod tests {
         ));
     }
 
-    fn setup_batch_test_book() -> (
+    pub(crate) fn setup_batch_test_book() -> (
         asupersync::runtime::Runtime,
         asupersync::Cx,
         Database<MemVfs>,
@@ -2429,7 +2462,7 @@ mod tests {
         )
     }
 
-    fn make_entry_intent(
+    pub(crate) fn make_entry_intent(
         book: &BookContext,
         usd: fa_money::UnitId,
         cash: VId,

@@ -11,7 +11,10 @@ use fa_model::{ApprovalRef, CloseTaskBodyAction};
 use fa_policy::{Capability, Intent, Op, Reach};
 use fa_time::PeriodTransition;
 
-use crate::{Book, BookError, Outcome};
+use crate::{
+    Book, BookError, CertificateStatus, CloseRunRehearsal, CloseRunRehearsalCertificate,
+    CloseTaskRehearsalOutcome, Outcome,
+};
 
 /// The independently selected evidence or period action for a close task.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,6 +102,45 @@ fn invalid(message: impl Into<String>) -> Refusal {
         "plan §7.5 (resumable execution of immutable reviewed close tasks)",
         "inspect close status; supply a task-specific review request or its unchanged native plan and independent approvals",
     )
+}
+
+const REVIEW_FIX: &str = "review the current result with `fa close dry-run --run <name> --certify --json`, then execute with `fa close run --run <name> --rehearsal C:<full-digest> --yes` and any required native transition plan and approvals";
+
+fn review_invalidated(name: &str, message: &str) -> Refusal {
+    Refusal::new(
+        fa_journal::refusal::code::PLAN_INVALIDATED,
+        fa_journal::exit::CONFLICT,
+        message,
+        "plan §7.5 (execute the same reviewed combined close)",
+        REVIEW_FIX,
+    )
+    .at("run", name)
+}
+
+/// Retaining a certificate or an approval advances the source prefix without
+/// changing the reviewed accounting work. Only those source/scratch coordinates
+/// may differ: task order, native identities, completed receipts, every posted
+/// and pending row, and completion/transition states remain exact.
+fn same_reviewed_rehearsal(reviewed: &CloseRunRehearsal, mut current: CloseRunRehearsal) -> bool {
+    if current.seq_map_digest.is_some() != reviewed.seq_map_digest.is_some() {
+        return false;
+    }
+    current.source_known_at = reviewed.source_known_at;
+    current.seq_map_digest = reviewed.seq_map_digest;
+    current.rehearsal_known_at = reviewed.rehearsal_known_at;
+    for (current, reviewed) in current.tasks.iter_mut().zip(&reviewed.tasks) {
+        if let (
+            CloseTaskRehearsalOutcome::Rehearsed { recorded_at, .. },
+            CloseTaskRehearsalOutcome::Rehearsed {
+                recorded_at: reviewed_at,
+                ..
+            },
+        ) = (&mut current.outcome, &reviewed.outcome)
+        {
+            *recorded_at = *reviewed_at;
+        }
+    }
+    current == *reviewed
 }
 
 fn corrupt(message: &str) -> BookError {
@@ -224,8 +266,12 @@ impl Book {
     /// rechecks current authority before publication. This call never creates
     /// approvals and never executes a newly generated transition proposal.
     ///
-    /// Invalid request input and initial authorization fail before any task
-    /// executes. A task refusal is returned in [`CloseRunExecution::stop`],
+    /// Invalid request input, initial authorization and the combined rehearsal
+    /// of all unfinished draft tasks fail before any task executes. Independent
+    /// reviews alone cannot establish that the drafts are compatible: together
+    /// they may overspend a limit, settle the same item or claim the same key.
+    /// The native rehearsal runs them in this executor's dependency order.
+    /// A task refusal is returned in [`CloseRunExecution::stop`],
     /// together with progress already committed by earlier tasks. Foundation
     /// failures and cancellation propagate as outer errors; those same
     /// receipts remain available through [`Book::close_run_status`] on retry.
@@ -235,6 +281,47 @@ impl Book {
         capability: Capability,
         description: &str,
         transition_input: Option<CloseRunTransition>,
+    ) -> Outcome<CloseRunExecution> {
+        self.execute_close_run_with_rehearsal(name, capability, description, transition_input, None)
+    }
+
+    /// Execute only the combined close selected by the caller's reviewed
+    /// certificate. Full historical replay and current native rehearsal must
+    /// agree on the graph, task receipts, exact effects and monetary result.
+    /// Later relevant postings invalidate the review even when they offset.
+    ///
+    /// Certificate retention and approval publications alone do not invalidate
+    /// it. Any changed task completion requires a fresh combined review of the
+    /// remaining run, including for a completed-run retry. The caller still
+    /// needs current execution authority and the terminal task's native plan
+    /// and independent approvals. Certificate producer metadata grants none.
+    ///
+    /// This call holds the same owned book writer lease through verification
+    /// and execution. It does not journal a run-level certificate attachment.
+    pub fn execute_reviewed_close_run(
+        &mut self,
+        name: &str,
+        capability: Capability,
+        description: &str,
+        rehearsal: &CloseRunRehearsalCertificate,
+        transition_input: Option<CloseRunTransition>,
+    ) -> Outcome<CloseRunExecution> {
+        self.execute_close_run_with_rehearsal(
+            name,
+            capability,
+            description,
+            transition_input,
+            Some(rehearsal),
+        )
+    }
+
+    fn execute_close_run_with_rehearsal(
+        &mut self,
+        name: &str,
+        capability: Capability,
+        description: &str,
+        transition_input: Option<CloseRunTransition>,
+        rehearsal: Option<&CloseRunRehearsalCertificate>,
     ) -> Outcome<CloseRunExecution> {
         let admission =
             fa_policy::admit_read(&capability, capability.holder(), self.context().book_id)
@@ -267,6 +354,46 @@ impl Book {
                 "the close execution description exceeds its byte bound",
             )));
         }
+        if let Some(rehearsal) = rehearsal {
+            if rehearsal.name() != name {
+                return Ok(Err(Refusal::new(
+                    fa_journal::refusal::code::STRUCTURE,
+                    fa_journal::exit::USAGE,
+                    "the selected combined close rehearsal names a different run",
+                    "plan §7.5 (the selected certificate binds this close run)",
+                    REVIEW_FIX,
+                )
+                .at("run", name)));
+            }
+            let reviewed = match self.replay_close_run_rehearsal(
+                capability.holder(),
+                &capability,
+                rehearsal,
+            )? {
+                Ok(reviewed) => reviewed,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            match self.certificate_status(rehearsal.trunk())? {
+                Ok(CertificateStatus::Current { .. }) => {}
+                Ok(CertificateStatus::SupersededBy { .. }) => {
+                    return Ok(Err(review_invalidated(
+                        name,
+                        "the selected close rehearsal's monetary baseline has later relevant entries",
+                    )));
+                }
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+            let current = match self.close_run_rehearsal(capability.holder(), &capability, name)? {
+                Ok(current) => current,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if !same_reviewed_rehearsal(&reviewed, current) {
+                return Ok(Err(review_invalidated(
+                    name,
+                    "the current close tasks, completion receipts or exact monetary result differ from the selected combined rehearsal",
+                )));
+            }
+        }
         if let Some(input) = &transition_input {
             if let Err(refusal) = validate_transition(self, &run, &capability, input)? {
                 return Ok(Err(refusal));
@@ -296,6 +423,44 @@ impl Book {
                     Err(refusal) => return Ok(Err(refusal)),
                 }
             }
+        }
+        // Validate the whole remaining monetary sequence before publishing its
+        // first task. This Book owns the writer lease throughout this call;
+        // native execution still rechecks authority, witnesses and exact effects
+        // at each task's transaction boundary. Historical receipts remain the
+        // source of truth on restart and are never applied twice in scratch.
+        if rehearsal.is_none()
+            && run.tasks.iter().any(|task| {
+                task.completion.is_none()
+                    && run.body.tasks.iter().any(|body| {
+                        body.id == task.id
+                            && matches!(body.action, CloseTaskBodyAction::PromoteDraft { .. })
+                    })
+            })
+            && let Err(refusal) =
+                self.close_run_rehearsal(capability.holder(), &capability, name)?
+        {
+            let task = refusal.detail.as_ref().and_then(|detail| {
+                detail
+                    .at
+                    .iter()
+                    .find_map(|(key, value)| match (key, value) {
+                        (&"task", fa_journal::refusal::Locus::Text(id))
+                            if run.body.tasks.iter().any(|task| task.id == *id) =>
+                        {
+                            Some(id.clone())
+                        }
+                        _ => None,
+                    })
+            });
+            return Ok(match task {
+                Some(task) => Ok(CloseRunExecution {
+                    run,
+                    completed: Vec::new(),
+                    stop: Some(CloseRunStop::Refused { task, refusal }),
+                }),
+                None => Err(refusal),
+            });
         }
         let mut completed = Vec::new();
         for _ in 0..fa_model::limits::MAX_CLOSE_RUN_TASKS {

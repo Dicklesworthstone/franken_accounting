@@ -622,10 +622,7 @@ pub async fn create_recurring<V: Vfs + Clone>(
         epoch,
         &key,
         0,
-        Party {
-            principal: capability.holder(),
-            profile: capability.profile(),
-        },
+        Party::for_capability(capability.holder(), capability),
     )? {
         txn.abort();
         return Ok(Err(r));
@@ -1148,10 +1145,7 @@ pub async fn cancel_recurring<V: Vfs + Clone>(
         epoch,
         &key,
         0,
-        Party {
-            principal: capability.holder(),
-            profile: capability.profile(),
-        },
+        Party::for_capability(capability.holder(), capability),
     )? {
         txn.abort();
         return Ok(Err(r));

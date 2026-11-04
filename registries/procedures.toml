@@ -1441,13 +1441,14 @@ meaning = "Maximum civil days between overlapping counterparty receipts/applicat
 
 [[procedure]]
 id = "recon.attested_register_compare"
-version = 1
+version = 2
 claim = "invariant"
 evidence = "FA-EVID-L43"
 tie_break = "account_vid"
-complexity = "O(legs log legs)"
+complexity = "O(legs log legs + (attestations + instruments) × legs)"
 calibration = "uncalibrated"
-summary = "Exact reconciliation between Instrument vertices that mirror GL accounts (and RegisterEquals attestations) and the journal fold at the snapshot coordinate: any divergence between a mirrored instrument/attested register cell and the posted account balance is an invariant violation. One book against what was attested about it; plan §12.2's recon.book_to_book (book against book, every difference explained by rule version) waits for multi-book (fa-259c). Registered as recon.book_to_book before fa-kxc4."
+summary = "Exact comparison of every RegisterEquals claim with gross posted activity in its own (account, period, unit, declared legal entity, as-of day) cell. Distinct attestations remain distinct baselines; reversals contribute in their own period and never erase an earlier posting. Only the legal-entity dimension selects the declared entity, an untagged leg belongs to the sole declared balancing entity, and an absent claim entity denotes the unassigned cell rather than all entities. Unknown claim entities refuse. Findings cite the attestation and every contributing entry; citation overflow refuses the complete run. A claim remains a historical fact at its evaluated prefix, which this comparison does not re-execute. The effective cutoff selects eligible claims without changing their individual as-of days and also bounds the separate live-posting Instrument unit-consistency check. Plan §12.2's recon.book_to_book is a distinct multi-book procedure. Version 1 used live supersession and informational entity metadata, which could misstate an attested cell. Registered as recon.book_to_book before fa-kxc4."
+effective_through = "optional"
 
 [[procedure]]
 id = "recon.bank_statement_drift"
@@ -1763,13 +1764,13 @@ meaning = "Explicit distributable cash pool in unit mantissa (0 = use the book's
 
 [[procedure]]
 id = "damages.attested_baseline"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L59"
 tie_break = "account_vid"
-complexity = "O(legs log legs)"
+complexity = "O(legs log legs + attestations × legs)"
 calibration = "uncalibrated"
-summary = "Per-account and per-period deltas between actual live postings and a baseline taken from RegisterEquals attestations or superseded/restated original folds. Plan §11.6's damages.but_for (the certified delta between a counterfactual scenario and trunk) is fa scenario diff --certify. Registered as damages.but_for before fa-kxc4."
+summary = "Per-claim absolute deltas from each RegisterEquals baseline to gross posted activity in its exact (account, period, unit, declared legal entity, as-of day) cell. Every attestation is preserved, including different cutoffs and evaluated prefixes for the same cell; no entity's claim overwrites another's. Reversals contribute in their own period, the legal-entity dimension alone selects an entity, untagged legs belong to the sole declared balancing entity, and an absent claim entity is the unassigned cell. Unknown claim entities refuse. The effective cutoff selects eligible claims without changing their own days. A separately labeled original_lineage fallback compares live and pre-supersession original folds at the report cutoff, per entity, only for cells with no applicable attestation. Every comparison cites its participating entries and any baseline attestation; citation overflow refuses rather than omit evidence. Historical claims remain fixed at their evaluated prefixes, which this procedure does not re-execute. These observations do not establish recoverable damages; plan §11.6's damages.but_for is the certified delta between a counterfactual scenario and trunk via fa scenario diff --certify. Version 1 collapsed entities and cutoffs and compared gross claims to a live net. Registered as damages.but_for before fa-kxc4."
 effective_through = "optional"
 
 

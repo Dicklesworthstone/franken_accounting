@@ -767,11 +767,31 @@ checked again by the native posting kernel.
 fa close start --run march --period FY2026-P03 --tasks close-tasks.json --as controller --json
 fa close status --run march --json
 fa close dry-run --run march --certify --json
-fa close run --run march --as controller --yes --json
+fa close run --run march --rehearsal C:<combined-review-digest> --as controller --yes --json
+fa close dry-run --run march --certify --json
 fa close step --run march --task finish --key march-close --reason Scheduled \
   --as controller --dry-run --plan-out march-close.plan --json
-fa close run --run march --task finish --plan march-close.plan --as controller --yes --json
+fa close run --run march --rehearsal C:<remaining-review-digest> \
+  --task finish --plan march-close.plan --as controller --yes --json
 ```
+
+Every `close run` first rehearses all unfinished monetary tasks together.
+Passing `--rehearsal C:<digest>` additionally binds the invocation to the exact
+retained combined certificate the operator reviewed. It fully replays that
+certificate, checks that its monetary baseline is still current, and compares
+the current graph, completed receipts, ordered tasks and exact balance rows
+before publishing a task. A retention or approval commit alone is allowed;
+later contributing entries invalidate the review even when offsetting entries
+restore the same net balances.
+
+The selected digest is returned in the `rehearsal` field of
+`close_run_progress`. After any partial or completed execution, this strict
+mode needs a new combined review of the remaining state, as shown before the
+period task above. Existing completion receipts remain the baseline and their
+effects are never applied again. The old certificate remains available for
+historical replay. This selection is checked for the current invocation;
+durable run-level attachment of the combined certificate remains a separate
+lifecycle feature.
 
 `close run` chooses ready tasks in task-ID order and refreshes the native basis
 after every publication. It skips tasks with durable completion receipts, so
@@ -2495,7 +2515,21 @@ preserves net balances are explicit negative controls. The helper retains
 tool versions, input hashes and every external command; missing tools are
 `UNRUN`, never substituted with FrankenAccounting's own reader.
 
-These are whole published monthly expenditure extracts, **not original complete
+The [House disbursement workload](docs/HOUSE_DISBURSEMENTS.md) adds a complete
+April–June 2026 CAO office population: **3,855 original transactions**, 47
+credits, 54 repeated records, 49 active programs and 1,056 original blank
+transaction dates. It pins both full House publications and reconciles all
+**174 separately published category/program/office controls** before native
+writes. All **352 journals and 7,710 legs** passed 118 native calls, dated and
+historical balance checks, original-source readback, source-bound report
+verification and independent Beancount/hledger comparison. Blank dates retain
+their original evidence and receive an explicit quarter-end analysis date.
+A balanced one-cent alteration is refused against the publisher controls.
+The guide includes acquisition, whole-publication profiling, preparation,
+native execution and external verification commands with exact source and
+tested-binary identities.
+
+These are whole published expenditure extracts, **not original complete
 double-entry ledgers**. The fixture uses declared modeled Expense accounts and
 an explicitly labeled Equity offset, preserves all source dimensions as
 evidence, and makes no claim to reconstruct bank balances, missing activities,

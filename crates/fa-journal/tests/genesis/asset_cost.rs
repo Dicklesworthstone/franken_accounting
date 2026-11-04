@@ -9,6 +9,63 @@ use fa_journal::asset_cost::{
 use fa_model::PeriodRef;
 use fa_money::RoundingLaw;
 
+fn asset_dimension(h: &mut Harness, dimension: &str, code: &str) -> (u32, VId) {
+    let cx = h.ctx();
+    let key = format!("asset-dimension-{dimension}-{code}");
+    let description = h
+        .proposal(vec![], key.as_bytes(), EntryClass::ORIGINAL)
+        .description;
+    let spec = fa_journal::dimension::DimensionValueSpec {
+        dimension: dimension.into(),
+        code: code.into(),
+        name: code.into(),
+        parent: None,
+        valid_from: None,
+        valid_to: None,
+    };
+    let recorded = h
+        .runtime
+        .block_on(fa_journal::dimension::create_dimension_value(
+            &mut h.db,
+            &cx,
+            &h.book,
+            &spec,
+            PRINCIPAL,
+            key.as_bytes(),
+            description,
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    (recorded.value.dimension_id, recorded.value.vid)
+}
+
+fn asset_requirement(h: &mut Harness, dimension: &str, account: VId, required: bool) {
+    let cx = h.ctx();
+    let key = format!("asset-require-{dimension}-{:032x}-{required}", account.0);
+    let description = h
+        .proposal(vec![], key.as_bytes(), EntryClass::ORIGINAL)
+        .description;
+    let spec = fa_journal::dimension::DimensionRequirementSpec {
+        dimension: dimension.into(),
+        account,
+        required,
+    };
+    h.runtime
+        .block_on(fa_journal::dimension::record_dimension_requirement(
+            &mut h.db,
+            &cx,
+            &h.book,
+            &spec,
+            PRINCIPAL,
+            key.as_bytes(),
+            description,
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+}
+
 #[path = "asset_cost/batches.rs"]
 mod batches;
 
@@ -50,7 +107,39 @@ fn undo(proposal: &EntryPayload, target: EntryRef, key: &[u8]) -> EntryPayload {
 
 impl Fixture {
     fn new(kind: AssetCostKind, cost: i128, salvage: i128, periods: u32) -> Self {
-        let mut h = harness();
+        Self::from_harness(harness(), kind, cost, salvage, periods, Vec::new())
+    }
+
+    fn dimensioned(kind: AssetCostKind) -> Self {
+        let usd = UnitRegistry::with_defaults().lookup("USD").unwrap();
+        let mut h = harness_with_entities(
+            ["north", "south"]
+                .map(|code| LegalEntitySpec {
+                    code: code.into(),
+                    name: code.into(),
+                    functional_unit: usd,
+                })
+                .to_vec(),
+        );
+        let mut dimensions = vec![(
+            fa_model::LEGAL_ENTITY_DIMENSION,
+            fa_model::entity_value_vid(h.book.book_id, "north"),
+        )];
+        for (dimension, code) in [("cost_center", "MACHINING"), ("department", "OPS")] {
+            dimensions.push(asset_dimension(&mut h, dimension, code));
+        }
+        dimensions.sort_unstable();
+        Self::from_harness(h, kind, 10_007, 7, 3, dimensions)
+    }
+
+    fn from_harness(
+        mut h: Harness,
+        kind: AssetCostKind,
+        cost: i128,
+        salvage: i128,
+        periods: u32,
+        dimensions: Vec<(u32, VId)>,
+    ) -> Self {
         let accounts = [("1500", 0), ("1590", 1)].map(|(code, normal)| AccountSpec {
             code: code.into(),
             name: code.into(),
@@ -87,18 +176,23 @@ impl Fixture {
             .unwrap();
         h.transition("FY2026-P05", PeriodTransition::Open, b"open-asset-may")
             .unwrap();
-        let source = h.proposal(
-            vec![
-                LegPayload::simple(
-                    Side::Debit,
-                    account_vid(h.book.book_id, "1500"),
-                    Amount::new(h.usd, cost),
-                ),
-                LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, cost)),
-            ],
-            b"asset-acquisition",
-            EntryClass::ORIGINAL,
-        );
+        let mut legs = vec![
+            LegPayload::simple(
+                Side::Debit,
+                account_vid(h.book.book_id, "1500"),
+                Amount::new(h.usd, cost),
+            ),
+            LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, cost)),
+        ];
+        // Only the selected asset leg owns these analytic dimensions. Cash
+        // carries the legal entity needed to balance the acquisition.
+        legs[1].dimension_set = dimensions
+            .iter()
+            .filter(|(kind, _)| *kind == fa_model::LEGAL_ENTITY_DIMENSION)
+            .copied()
+            .collect();
+        legs[0].dimension_set = dimensions;
+        let source = h.proposal(legs, b"asset-acquisition", EntryClass::ORIGINAL);
         let acquisition = h.post(posting(source.clone())).unwrap().entry_ref();
         let spec = AssetScheduleSpec {
             name: "press".into(),
@@ -869,4 +963,214 @@ fn asset_register_has_stable_name_order_and_does_not_leak_future_schedules() {
     assert_eq!(historical.rows.len(), 1);
     assert_eq!(historical.rows[0].schedule.spec.name, "press");
     assert_eq!(f.h.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn dimensioned_asset_charges_preserve_source_entity_and_analytics_through_reversal() {
+    for kind in [AssetCostKind::Depreciation, AssetCostKind::Amortization] {
+        let mut f = Fixture::dimensioned(kind);
+        let dimensions = f.source.legs[0].dimension_set.clone();
+        assert_eq!(dimensions.len(), 3);
+        assert_eq!(f.source.legs[1].dimension_set.len(), 1);
+        for account in [
+            f.schedule.spec.expense_account,
+            f.schedule.spec.accumulated_account,
+        ] {
+            asset_requirement(&mut f.h, "cost_center", account, true);
+            asset_requirement(&mut f.h, "department", account, true);
+        }
+        let mut last = None;
+        for (month, amount) in [(3, 3333), (4, 3334), (5, 3333)] {
+            let key = format!("dimensioned-charge-{month}");
+            let proposal = f.proposal(month, key.as_bytes());
+            for leg in &proposal.legs {
+                assert_eq!(leg.dimension_set, dimensions);
+                assert_eq!(leg.amount, Amount::new(f.h.usd, amount));
+            }
+            let plan = f.h.post_plan(posting(proposal.clone())).unwrap();
+            let posted = f.h.publish_plan(plan.clone(), &cap()).unwrap();
+            assert_eq!(
+                read_entry(&f.h.db, posted.entry_ref().vid)
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .proposal,
+                proposal
+            );
+            assert!(matches!(
+                f.h.publish_plan(plan, &cap()).unwrap(),
+                Posted::AlreadyRecorded { .. }
+            ));
+            last = Some((proposal, posted.entry_ref()));
+        }
+        let (last, reference) = last.unwrap();
+        let reversed = undo(&last, reference, b"dimensioned-charge-undo");
+        for leg in &reversed.legs {
+            assert_eq!(leg.dimension_set, dimensions);
+        }
+        f.h.post(posting(reversed)).unwrap();
+        let repair = f.proposal(5, b"dimensioned-charge-repair");
+        assert_eq!(repair.legs[0].amount.mantissa, 3333);
+        for leg in &repair.legs {
+            assert_eq!(leg.dimension_set, dimensions);
+        }
+        f.h.post(posting(repair)).unwrap();
+        assert!(f.prepare(5, b"dimensioned-complete").unwrap().is_noop());
+        assert_eq!(
+            read_entry(&f.h.db, f.acquisition.vid)
+                .unwrap()
+                .unwrap()
+                .0
+                .proposal,
+            f.source
+        );
+        let verified = verify_asset_schedules(&f.h.db, &f.h.ctx(), &f.h.book).unwrap();
+        assert_eq!(verified.schedules_checked, 1);
+        assert_eq!(verified.executed, 4);
+        assert!(verified.is_green());
+        assert!(
+            verify_projections(&f.h.db, &f.h.book, None)
+                .unwrap()
+                .is_green()
+        );
+    }
+}
+
+#[test]
+fn source_bound_charges_refuse_balanced_dimension_substitution_or_omission() {
+    let mut f = Fixture::dimensioned(AssetCostKind::Depreciation);
+    let other_center = asset_dimension(&mut f.h, "cost_center", "SALES");
+    let project = asset_dimension(&mut f.h, "project", "UPGRADE");
+    let original = f.proposal(3, b"dimension-forgery");
+    let dimensions = f.source.legs[0].dimension_set.clone();
+    let mut other_entity = dimensions.clone();
+    for (kind, value) in &mut other_entity {
+        if *kind == fa_model::LEGAL_ENTITY_DIMENSION {
+            *value = fa_model::entity_value_vid(f.h.book.book_id, "south");
+        }
+    }
+    let mut other_analytics = dimensions.clone();
+    for (kind, value) in &mut other_analytics {
+        if *kind == other_center.0 {
+            *value = other_center.1;
+        }
+    }
+    let omitted = dimensions
+        .iter()
+        .filter(|(kind, _)| *kind != other_center.0)
+        .copied()
+        .collect();
+    let mut added = dimensions.clone();
+    added.push(project);
+    added.sort_unstable();
+    let before = f.h.db.frontier().unwrap();
+    for forged_dimensions in [other_entity, other_analytics, omitted, added] {
+        let mut forged = original.clone();
+        for leg in &mut forged.legs {
+            leg.dimension_set = forged_dimensions.clone();
+        }
+        // Both legs still balance in a declared entity and use valid values;
+        // the schedule's source binding, not a generic dimension error, refuses.
+        let refusal = f.h.post(posting(forged)).unwrap_err();
+        assert_eq!(refusal.code, fa_journal::refusal::code::STRUCTURE);
+        assert!(refusal.message.contains("journal-derived"));
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+    }
+    f.h.post(posting(original)).unwrap();
+    assert!(
+        verify_asset_schedules(&f.h.db, &f.h.ctx(), &f.h.book)
+            .unwrap()
+            .is_green()
+    );
+}
+
+#[test]
+fn current_destination_requirements_cannot_be_filled_with_invented_asset_dimensions() {
+    let mut f = Fixture::dimensioned(AssetCostKind::Amortization);
+    let reviewed = f.proposal(3, b"asset-before-requirement");
+    let plan = f.h.post_plan(posting(reviewed.clone())).unwrap();
+    let project = asset_dimension(&mut f.h, "project", "UPGRADE");
+    let accumulated = f.schedule.spec.accumulated_account;
+    asset_requirement(&mut f.h, "project", accumulated, true);
+    let before = f.h.db.frontier().unwrap();
+    assert!(f.h.publish_plan(plan, &cap()).is_err());
+    let refusal = f.h.post(posting(reviewed.clone())).unwrap_err();
+    assert_eq!(refusal.code, fa_journal::refusal::code::DIMENSION_MISSING);
+    assert_eq!(f.h.db.frontier().unwrap(), before);
+
+    let mut invented = reviewed.clone();
+    for leg in &mut invented.legs {
+        leg.dimension_set.push(project);
+        leg.dimension_set.sort_unstable();
+    }
+    assert_eq!(
+        f.h.post(posting(invented)).unwrap_err().code,
+        fa_journal::refusal::code::STRUCTURE
+    );
+    assert_eq!(f.h.db.frontier().unwrap(), before);
+    asset_requirement(&mut f.h, "project", accumulated, false);
+    f.h.post(posting(reviewed)).unwrap();
+    assert!(
+        verify_asset_schedules(&f.h.db, &f.h.ctx(), &f.h.book)
+            .unwrap()
+            .is_green()
+    );
+}
+
+#[test]
+fn closing_a_source_dimension_conflicts_with_prepared_charge_and_preserves_exact_undo() {
+    let mut f = Fixture::dimensioned(AssetCostKind::Depreciation);
+    let march = f.proposal(3, b"dimension-valid-march");
+    let march_ref = f.h.post(posting(march.clone())).unwrap().entry_ref();
+    let april = f.proposal(4, b"dimension-closes-before-april");
+    let cx = f.h.ctx();
+    let PostPreparation::Ready(prepared) =
+        prepare_post(&mut f.h.db, &cx, &f.h.book, posting(april.clone()))
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("fresh charge");
+    };
+    let close = fa_journal::dimension::DimensionCloseSpec {
+        dimension: "cost_center".into(),
+        code: "MACHINING".into(),
+        closed_on: DateDay::from_ymd(2026, 4, 1).unwrap(),
+    };
+    f.h.runtime
+        .block_on(fa_journal::dimension::close_dimension_value(
+            &mut f.h.db,
+            &cx,
+            &f.h.book,
+            &close,
+            PRINCIPAL,
+            b"close-asset-center",
+            f.source.description.clone(),
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    let before = f.h.db.frontier().unwrap();
+    assert_eq!(
+        f.h.runtime
+            .block_on(prepared.commit(&mut f.h.db, &cx))
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        6
+    );
+    assert_eq!(
+        f.h.post(posting(april)).unwrap_err().code,
+        fa_journal::refusal::code::DIMENSION_NOT_EFFECTIVE
+    );
+    assert_eq!(f.h.db.frontier().unwrap(), before);
+    let mut reversed = undo(&march, march_ref, b"closed-dimension-charge-undo");
+    let template = f.template(4, b"closed-dimension-charge-undo");
+    reversed.effective_date = template.effective_date;
+    reversed.effective_period = template.effective_period;
+    f.h.post(posting(reversed)).unwrap();
+    assert!(
+        verify_asset_schedules(&f.h.db, &f.h.ctx(), &f.h.book)
+            .unwrap()
+            .is_green()
+    );
 }

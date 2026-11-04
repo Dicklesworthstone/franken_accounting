@@ -736,6 +736,20 @@ fn charge(ctx: &mut Ctx<'_>, args: &Args, kind: AssetCostKind) -> Result<(), Fai
                         "amount",
                         s(render_amount(leg.amount, &book.context().units)?),
                     ),
+                    (
+                        "dimensions",
+                        Json::Arr(
+                            leg.dimension_set
+                                .iter()
+                                .map(|(dimension, value)| {
+                                    obj(vec![
+                                        ("dimension", Json::Int(i128::from(*dimension))),
+                                        ("value", s(format!("{:032x}", value.0))),
+                                    ])
+                                })
+                                .collect(),
+                        ),
+                    ),
                 ]))
             })
             .collect::<Result<Vec<_>, Fail>>()?;

@@ -4,6 +4,38 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-04 — historical procedure framing lost registered identities
+
+The `bef2ace9` decoder retains three historical extended procedure identities.
+A source-history audit of 26 catalog revisions found 42 historical identities
+with the same six-population native input layout. The other 39, including the
+removed `damages.but_for` and `recon.book_to_book` names, were rejected before
+the replay path could identify their unavailable registry epoch. The original
+`benford.first_digit` version 1 also lacked its original-closure request path.
+
+The extended decoder now enumerates those 42 identities and requires all six
+native witnesses in their registered order. Retained Benford version 1 uses
+its original closure. Extended framing refuses unknown identities, unregistered
+intermediate versions, missing witnesses and reordered populations. Replay
+continues to require the pinned registry and exact algorithm version; the
+broader RegistryEpoch implementation remains on the original open `fa-vdc`.
+
+Regression inputs are synthetic historical frames over real native captures,
+with their public digests recomputed. They establish format behavior; historical
+algorithm execution requires its own retained environment and execution proof.
+The first executed native framing probe at `fb1f522` failed in the helper's
+empty-findings assertion: its Benford prototype legitimately returned a finding.
+The corrected prototypes use an assertion-drift capture without RegisterEquals
+claims and an original-format cutoff capture without a document date. The
+empty-findings assertion and all original closure/refusal checks remain.
+
+The corrected `7a7104d` control subsequently compiled and executed on `ovh-a`.
+It failed at the intended first historical identity, `aging.inventory@1`, with
+FA-REF-150 / exit 8: unexpected extended native inputs. One native test failed,
+716 were filtered out, and both remote and outer exits were 101 with completion
+acknowledged. This witnesses the old framing refusal; the repaired source's
+positive tests and exact-tree proof remain the authority for its behavior.
+
 ## 2026-11-04 — fa-d48q read-only preparation was stranded at two surfaces
 
 The native `9435e377` facade library run passed 714 tests and failed
@@ -26,11 +58,26 @@ publication enter the existing exact-operation matrix; recovery of projections
 remains host-only. Public admissibility now recognizes the same nonpublishing
 preview exception as the dispatch confirmation gate.
 
-These are observed integration defects, not grounds to relax the global write
-guard, operation ceilings, class caveats or mandatory read receipts. The exact
-`9435e377` Tier-0 PASS proves formatting and compilation only. Native tests on
-the repaired source, the separately preserved missing-receipt fault control,
-and the final full repository gate remain required before closure.
+The repaired `d089882` passed all 546 tests in the original five-target
+authorization selection and all 97 complete CLI cases. The expanded run's
+643 tests include those same 546; they are not additional independent results.
+Its WorldCom walkthrough separately missed the 60,000 ms budget at 151,725 ms.
+
+Fault control `7a7104d` omits only `tb`'s access receipt. The original five-target
+selection and test profile, with the exact matrix test filter, compiled on
+`ovh-a` and failed one native test at `write_authority.rs:1946`: zero receipts
+where exactly one was required. The other four harnesses were filtered out
+and supply no passing credit. The remote and outer exits were 101; the source
+wrapper acknowledged completion. The full transcript is retained with the
+control's verified recovery material.
+
+The admission split is explicit: correct reads retain their mandatory access
+event while native Entry payloads and Period rows remain unchanged; a read
+that omits that event is rejected even when its head does not advance. These
+repairs preserve the global write guard, operation ceilings and class caveats.
+The exact `9435e377` Tier-0 PASS proves formatting and compilation only.
+Closure follows the final exact-tree repository proof and the original Bead's
+complete acceptance inventory.
 
 ## 2026-10-10 — fa-pri / fa-p7r arithmetic review
 

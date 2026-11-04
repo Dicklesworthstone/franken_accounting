@@ -45,7 +45,8 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("graph.identity_resolution", 1),
     ("recon.intercompany", 2),
     ("recon.lapping", 2),
-    ("recon.attested_register_compare", 1),
+    // Version 2 preserves each declared-entity cell and effective cutoff.
+    ("recon.attested_register_compare", 2),
     // Version 2 folds gross period activity, as RegisterEquals does.
     ("recon.assertion_drift", 2),
     ("completeness.unrecorded_liabilities", 2),
@@ -67,7 +68,7 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("ponzi.net_investment", 5),
     ("distribution.rising_tide", 4),
     ("distribution.pro_rata", 4),
-    ("damages.attested_baseline", 1),
+    ("damages.attested_baseline", 2),
 ];
 
 const INPUTS: &[(&str, &str)] = &[
@@ -85,13 +86,59 @@ pub(super) fn supported(id: &str, version: u16) -> bool {
     EXTENDED_CERTIFIABLE_PROCEDURES.contains(&(id, version))
 }
 
-/// Older assertion-drift certificates retain exactly this native input
-/// closure. Keep their durable framing decodable without admitting their old
-/// computation as the current one: ProcedureCertificate::request requires the
-/// pinned registry and an exact algorithm version before catalog dispatch.
-/// Replaying v1 therefore requires the executable that produced it.
+/// Previously registered certifiable identities with this six-part closure.
+/// Audited across the 26 revisions from 48e3602d through bef2ace9: the input
+/// layout never changed. Removed names remain explicit, and a future version
+/// bump cannot silently admit an unimplemented intermediate version.
+const RETAINED_CLOSURES: &[(&str, u16)] = &[
+    ("aging.inventory", 1),
+    ("aging.inventory", 2),
+    ("benford.first_two_digits", 1),
+    ("benford.second_digit", 1),
+    ("completeness.unrecorded_liabilities", 1),
+    ("confirm.coverage", 1),
+    ("damages.attested_baseline", 1),
+    ("damages.but_for", 1),
+    ("distribution.pro_rata", 1),
+    ("distribution.pro_rata", 2),
+    ("distribution.pro_rata", 3),
+    ("distribution.rising_tide", 1),
+    ("distribution.rising_tide", 2),
+    ("distribution.rising_tide", 3),
+    ("events.subsequent", 1),
+    ("events.subsequent", 2),
+    ("expense.capitalization", 1),
+    ("graph.communities", 1),
+    ("graph.layering", 1),
+    ("graph.party_layering", 1),
+    ("graph.related_party_exposure", 1),
+    ("graph.shell_signature", 1),
+    ("jet.intercompany_unmatched", 1),
+    ("jet.suspense_aging", 1),
+    ("jet.unusual_accounts", 1),
+    ("lookback.preferences", 1),
+    ("lookback.preferences", 2),
+    ("payroll.ghost", 1),
+    ("ponzi.net_investment", 1),
+    ("ponzi.net_investment", 2),
+    ("ponzi.net_investment", 3),
+    ("ponzi.net_investment", 4),
+    ("recon.assertion_drift", 1),
+    ("recon.attested_register_compare", 1),
+    ("recon.book_to_book", 1),
+    ("recon.intercompany", 1),
+    ("recon.lapping", 1),
+    ("solvency.balance_sheet_test", 1),
+    ("solvency.balance_sheet_test", 2),
+    ("solvency.cash_flow_test", 1),
+    ("solvency.cash_flow_test", 2),
+    ("solvency.cash_flow_test", 3),
+];
+
+/// Preserve durable framing, never substitute today's computation for an old
+/// one. request() separately requires the pinned registry and exact algorithm.
 pub(super) fn has_retained_closure(id: &str, version: u16) -> bool {
-    supported(id, version) || (id == "recon.assertion_drift" && version == 1)
+    supported(id, version) || RETAINED_CLOSURES.contains(&(id, version))
 }
 
 pub(super) fn statements(at: CommitSeq) -> Vec<String> {
@@ -138,7 +185,7 @@ pub(super) fn validate(certificate: &ProcedureCertificate) -> Result<(), Refusal
     if !has_retained_closure(&certificate.report.procedure, certificate.report.version) {
         if !inputs.is_empty() {
             return Err(invalid(
-                "unexpected extended native inputs for a v1 procedure",
+                "unexpected extended native inputs for this procedure version",
             ));
         }
         return Ok(());

@@ -1,0 +1,48 @@
+schema_version = 1
+id = "house-2026-q2"
+publisher = "U.S. House of Representatives, Office of the Chief Administrative Officer"
+title = "Statement of Disbursements, April 1 through June 30, 2026"
+publication_url = "https://www.house.gov/the-house-explained/open-government/statement-of-disbursements"
+terms_url = "https://www.house.gov/terms-of-use"
+encoding = "utf-8"
+period_start = "2026-04-01"
+period_end = "2026-07-01"
+default_organization = "FISCAL YEAR 2026 CHIEF ADMIN OFCR OF THE HOUSE"
+
+# Original complete publisher downloads, acquired 2026-11-03. Source census
+# and amounts were calculated independently with csv.DictReader and Decimal.
+# The publication is a disbursement report, not an original double-entry GL.
+[detail]
+url = "https://www.house.gov/sites/default/files/2026-08/grids/APRIL-JUNE%202026%20SOD%20DETAIL%20GRID-FINAL.csv"
+sha256 = "948ea680f24c2f654263e91641df4e3a1d7b9f2b3568f701be8b62421a5c3e92"
+byte_length = 26169448
+max_bytes = 33554432
+
+[summary]
+url = "https://www.house.gov/sites/default/files/2026-08/grids/APRIL-JUNE%202026%20SOD%20SUMM%20GRID-FINAL.csv"
+sha256 = "4828ceb94cc1dc67bbdc4faa276ef0cc0e36cbc3f4dcf0a84f9e1f54b005b28b"
+byte_length = 621267
+max_bytes = 1048576
+
+[controls]
+record_count = 133091
+detail_rows = 123701
+subtotal_rows = 7771
+office_total_rows = 1619
+summary_rows = 6812
+organization_count = 1142
+positive_rows = 119491
+negative_rows = 4201
+zero_rows = 9
+positive_minor = "46594596113"
+negative_minor = "-849639749"
+net_minor = "45744956364"
+duplicate_detail_rows = 74
+missing_transaction_dates = 16772
+outside_quarter_transaction_dates = 3
+unparsed_service_dates = 2
+
+[controls.data_sources]
+AP = 93532
+AR = 359
+GL = 29810

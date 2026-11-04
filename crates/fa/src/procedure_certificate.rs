@@ -78,6 +78,10 @@ fn supported(id: &str, version: u16) -> bool {
     CERTIFIABLE_PROCEDURES.contains(&(id, version))
 }
 
+// This identity was registered with the original native input closure.
+// Framing remains readable; request() still requires its original algorithm.
+const RETAINED_ORIGINAL_CLOSURES: &[(&str, u16)] = &[("benford.first_digit", 1)];
+
 /// Registered defaults are explicit data, not reselected when a certificate is
 /// replayed. Callers can narrow/replace `parameters` with Params::set before use.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -625,6 +629,8 @@ impl ProcedureCertificate {
     }
     fn request(&self) -> Result<ProcedureRequest, Refusal> {
         if !supported(&self.report.procedure, self.report.version)
+            && !RETAINED_ORIGINAL_CLOSURES
+                .contains(&(self.report.procedure.as_str(), self.report.version))
             && !extended::has_retained_closure(&self.report.procedure, self.report.version)
             && !bank::supported(&self.report.procedure, self.report.version)
         {

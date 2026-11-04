@@ -370,3 +370,16 @@ round_trip_identity = false
 certified_coordinate = false
 plan_ref = "§9.5"
 summary = "A saved flywheel_connectors (`fwc`) Plaid `transactions_sync` robot payload (`fwc.robot.v1`), imported with `fa bank import --bank-format plaid-sync`: robot schema version, connector, operation and receipt hash checked, exact fixed-scale amounts, opening plus activity equal to closing; the retained payload is the BankStatement document and every BankLine derives from it. Fetching live from Plaid through the `fwc` subprocess has no surface."
+
+[[format]]
+id = 26
+name = "aicpa_ads_gl_v4"
+kind = "audit_data_standard"
+direction = "both"
+mime = "text/plain"
+extension = "ads"
+oracle_tool = "none"
+round_trip_identity = true
+certified_coordinate = true
+plan_ref = "§8.6, §16.3"
+summary = "ADS-shaped GL package using v3 text encoding whose complete Trial_Balance is derived from nonempty GL_Detail when the source journal contains no balance assertions. The reader independently verifies every cell and restores the original assertion-free journal, preserving its content certificate. This repository profile is not external AICPA conformance evidence."

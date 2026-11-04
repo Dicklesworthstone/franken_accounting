@@ -145,7 +145,10 @@ name = "max_bank_predecessor_depth"
 value = 4096
 
 # Complete native-period snapshots. Each cell carries exact posted/pending
-# amounts, while unresolved holds remain bounded by max_batch_entries.
+# amounts, while unresolved holds in each period are bounded by max_batch_entries.
+# Posting admission counts the final atomic state across all accounts, after
+# resolutions (including cross-period releases). Retained over-cap periods may
+# still accept releases and other publications that do not increase that count.
 # The byte limit is independent of the distinct-key limit and does not waive
 # the native transaction's own capsule/row admission limits.
 [[limit]]

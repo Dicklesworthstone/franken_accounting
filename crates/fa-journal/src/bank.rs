@@ -233,12 +233,13 @@ fn admit_confirmation<V: Vfs + Clone>(
     if let Err(refusal) = admit_bank_match(db, book, capability)? {
         return Ok(Err(refusal));
     }
-    if capability.profile() != Profile::Human {
+    let profile = capability.sod_profile();
+    if profile != Profile::Human {
         return Ok(Err(crate::policy::refusal(
             &fa_policy::Denial::ApproverProfile {
                 rule: "bank_match_confirmer".into(),
                 approver: capability.holder(),
-                profile: capability.profile(),
+                profile,
                 allowed: vec!["Human".into()],
             },
         )));

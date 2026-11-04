@@ -8,6 +8,10 @@
 //! Each account/unit stock gross column bounds its period, entity and dimension
 //! subsets because monetary legs are nonnegative. Cross-account report totals
 //! are not registered cells and are deliberately outside this admission law.
+//! The same final-state check bounds each period's unresolved Pending entries
+//! by the retained register/checkpoint format's `max_batch_entries` limit.
+//! Releases are applied before new holds, and a pre-existing over-cap period
+//! can still be repaired by a publication that does not increase its count.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,6 +24,97 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, MarkerRef, VId};
 
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
+
+type PendingCounts = BTreeMap<String, usize>;
+type PendingOrigin = (fa_time::DateDay, Option<String>);
+
+fn pending_origin(entry: &Entry) -> PendingOrigin {
+    (
+        entry.proposal.effective_date,
+        entry
+            .proposal
+            .effective_period
+            .as_ref()
+            .map(|period| period.code.clone()),
+    )
+}
+
+fn pending_period(origin: &PendingOrigin, calendar: &fa_time::FiscalCalendar) -> Option<String> {
+    let periods = calendar
+        .fiscal_year_of(origin.0)
+        .and_then(|year| calendar.periods_for_year(year))
+        .ok()?;
+    fa_time::resolve_period(&periods, origin.0, origin.1.as_deref())
+        .ok()
+        .map(|period| period.code.clone())
+}
+
+fn change_pending_count(
+    counts: &mut PendingCounts,
+    baseline: Option<&PendingCounts>,
+    period: &str,
+    remove: bool,
+) -> bool {
+    let count = counts.entry(period.into()).or_insert_with(|| {
+        baseline
+            .and_then(|counts| counts.get(period).copied())
+            .unwrap_or_default()
+    });
+    let Some(next) = (if remove {
+        count.checked_sub(1)
+    } else {
+        count.checked_add(1)
+    }) else {
+        return false;
+    };
+    *count = next;
+    true
+}
+
+/// Adjust only an actual Pending entry's origin period. Expiry alone never
+/// removes a reservation: its journaled Resolution releases it, possibly in
+/// a different period. `baseline` supplies untouched counts for a sparse
+/// admission overlay; a retained summary folds without one.
+fn fold_pending_count(
+    counts: &mut PendingCounts,
+    baseline: Option<&PendingCounts>,
+    entry: &Entry,
+    calendar: &fa_time::FiscalCalendar,
+    remove: bool,
+) -> bool {
+    if entry.proposal.class != EntryClass::PENDING {
+        return true;
+    }
+    let Some(period) = pending_period(&pending_origin(entry), calendar) else {
+        return false;
+    };
+    change_pending_count(counts, baseline, &period, remove)
+}
+
+/// Only growth past the limit is refused. Retained books from before this
+/// admission law may already exceed it; an ordinary post or a release must
+/// not block the resolutions needed to make their cache representable again.
+fn pending_count_refusal(
+    before: &PendingCounts,
+    after: &PendingCounts,
+    maximum: usize,
+    at: CommitSeq,
+) -> Option<Refusal> {
+    after.iter().find_map(|(period, &count)| {
+        (count > maximum && count > before.get(period).copied().unwrap_or_default()).then(|| {
+            Refusal::new(
+                code::REGISTER_CAPACITY,
+                exit::REFUSAL,
+                format!(
+                    "period {period} would contain {count} unresolved Pending entries, exceeding max_batch_entries {maximum} for retained register continuation at guarded prefix {}",
+                    at.0,
+                ),
+                "plan §5.3–§5.4; limits.toml max_batch_entries (unresolved holds per period)",
+                "resolve or void existing Pending entries in this period, or include their valid Resolutions in the same atomic batch before adding more holds; a timeout frees capacity only after its journaled expiry Resolution",
+            )
+        })
+    })
+}
 
 /// The (unit, functional, mantissa) cells one leg adds to: its native amount,
 /// and its functional valuation in the base unit where it has one. Native-only
@@ -135,6 +230,31 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
     staged: impl IntoIterator<Item = VId>,
     extra: &[(VId, &Entry)],
 ) -> Outcome<()> {
+    admit_including_with_pending_limit(
+        txn,
+        db,
+        ctx,
+        book_id,
+        accounts,
+        staged,
+        extra,
+        fa_model::limits::MAX_BATCH_ENTRIES,
+    )
+}
+
+/// One implementation for the registered limit and the small-domain native
+/// boundary tests. No caller-facing API can change this limit.
+#[allow(clippy::too_many_arguments)]
+fn admit_including_with_pending_limit<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book_id: Id128,
+    accounts: &BTreeSet<VId>,
+    staged: impl IntoIterator<Item = VId>,
+    extra: &[(VId, &Entry)],
+    maximum_pending: usize,
+) -> Outcome<()> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     if accounts.is_empty() {
         return Ok(Ok(()));
@@ -143,15 +263,19 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
         txn.vertex(db, *account)?;
     }
     let maximum = maximum()?;
-    let base = crate::genesis::read_book_spec_at(db, txn.basis())?
-        .ok_or_else(|| KernelError::Corrupt("register capacity requires a book".into()))?
-        .base_unit;
+    let spec = crate::genesis::read_book_spec_at(db, txn.basis())?
+        .ok_or_else(|| KernelError::Corrupt("register capacity requires a book".into()))?;
+    let base = spec.base_unit;
     let mut rows: BTreeMap<VId, _> = db
         .vertices_at(txn.basis())?
         .into_iter()
         .filter(|row| row.labels.contains(&label::ENTRY))
         .map(|row| (row.vid, row))
         .collect();
+    // Distinguish the committed prefix from this publication's overlay. A
+    // repeated identity is never charged twice, including a prepared post
+    // whose identity was published by an intervening writer.
+    let committed: BTreeSet<_> = rows.keys().copied().collect();
     for vid in staged {
         if let Some(row) = txn.vertex(db, vid)?
             && row.labels.contains(&label::ENTRY)
@@ -160,6 +284,9 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let mut entries = Vec::new();
+    // Count a period across every account without retaining unrelated
+    // holds' full monetary/evidence payloads in the amount-admission vector.
+    let mut pending_origins = BTreeMap::new();
     let mut runs = BTreeMap::new();
     for row in rows.into_values() {
         ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
@@ -167,19 +294,25 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
         if entry.proposal.book_id != book_id || entry.proposal.branch_id != Id128::TRUNK {
             continue;
         }
+        let pending = entry.proposal.class == EntryClass::PENDING;
         let relevant = entry.proposal.class == EntryClass::RESOLUTION
             || entry
                 .proposal
                 .legs
                 .iter()
                 .any(|l| accounts.contains(&l.account_ref));
-        if !relevant {
+        if !pending && !relevant {
             continue;
         }
         if !crate::migration::visible_in(txn, db, &entry, &mut runs)? {
             continue;
         }
-        entries.push((row.vid, entry));
+        if pending {
+            pending_origins.insert(row.vid, pending_origin(&entry));
+        }
+        if relevant {
+            entries.push((row.vid, entry));
+        }
     }
     for &(vid, entry) in extra {
         // An intervening publication may already have spent this identity.
@@ -187,11 +320,17 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
         if !entries.iter().any(|(existing, _)| *existing == vid)
             && crate::migration::visible_in(txn, db, entry, &mut runs)?
         {
+            if entry.proposal.class == EntryClass::PENDING {
+                pending_origins
+                    .entry(vid)
+                    .or_insert_with(|| pending_origin(entry));
+            }
             entries.push((vid, entry.clone()));
         }
     }
     let mut resolved = BTreeSet::new();
-    for (_, entry) in &entries {
+    let mut previously_resolved = BTreeSet::new();
+    for (vid, entry) in &entries {
         if entry.proposal.class == EntryClass::RESOLUTION {
             let target = entry
                 .proposal
@@ -200,7 +339,31 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
                 .and_then(|p| p.resolution_of)
                 .ok_or_else(|| KernelError::Corrupt("resolution has no pending target".into()))?;
             resolved.insert(target.vid);
+            if committed.contains(vid) {
+                previously_resolved.insert(target.vid);
+            }
         }
+    }
+    let mut prior_pending = PendingCounts::new();
+    let mut final_pending = PendingCounts::new();
+    for (vid, origin) in &pending_origins {
+        let before = committed.contains(vid) && !previously_resolved.contains(vid);
+        let after = !resolved.contains(vid);
+        if !before && !after {
+            continue;
+        }
+        let period = pending_period(origin, &spec.calendar)
+            .ok_or_else(|| KernelError::Corrupt("invalid Pending period".into()))?;
+        if (before && !change_pending_count(&mut prior_pending, None, &period, false))
+            || (after && !change_pending_count(&mut final_pending, None, &period, false))
+        {
+            return Err(KernelError::Corrupt("Pending count overflow".into()));
+        }
+    }
+    if let Some(refusal) =
+        pending_count_refusal(&prior_pending, &final_pending, maximum_pending, txn.basis())
+    {
+        return Ok(Err(refusal));
     }
     // Resolve first: an old hold may have exceeded a prospective sum yet be
     // released in this same atomic publication, including across periods.
@@ -336,8 +499,13 @@ struct SummaryAdmission {
 struct Cells {
     book_id: Id128,
     base: UnitId,
+    calendar: fa_time::FiscalCalendar,
     maximum: i128,
     columns: BTreeMap<(VId, UnitId, bool), [i128; 4]>,
+    /// Outstanding holds by their own effective period, across all accounts.
+    /// This is a disposable count of immutable facts, never an admission
+    /// balance or a limit on the number of postings in the book.
+    pending_counts: PendingCounts,
     /// Pending entries a committed Resolution released.
     released: BTreeSet<VId>,
     /// Both visible and hidden migration chunks depend on their run's body
@@ -384,6 +552,15 @@ impl Cells {
     /// Add (or remove) `entry`'s legs; `false` when the summary can no
     /// longer stand for the scan.
     fn fold(&mut self, entry: &Entry, remove: bool) -> bool {
+        if !fold_pending_count(
+            &mut self.pending_counts,
+            None,
+            entry,
+            &self.calendar,
+            remove,
+        ) {
+            return false;
+        }
         let pending = entry.proposal.class == EntryClass::PENDING;
         for leg in &entry.proposal.legs {
             let column = usize::from(pending) * 2 + usize::from(leg.side == Side::Credit);
@@ -502,8 +679,10 @@ fn summarize<V: asupersync::fs::Vfs + Clone>(
     let mut cells = Cells {
         book_id,
         base: spec.base_unit,
+        calendar: spec.calendar,
         maximum: maximum()?,
         columns: BTreeMap::new(),
+        pending_counts: PendingCounts::new(),
         released: BTreeSet::new(),
         migration_runs: BTreeMap::new(),
         migration_accounts: BTreeMap::new(),
@@ -684,6 +863,7 @@ fn carry<V: asupersync::fs::Vfs + Clone>(
 /// these effects are copied from the summary; unrelated history is not read.
 /// Anything this shortcut cannot prove still receives the original scan and
 /// its original first error. The scan's account witnesses are retained.
+#[allow(clippy::too_many_arguments)]
 fn fits<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
@@ -692,6 +872,7 @@ fn fits<V: asupersync::fs::Vfs + Clone>(
     accounts: &BTreeSet<VId>,
     staged: &[VId],
     extra: Option<(VId, &Entry)>,
+    maximum_pending: usize,
 ) -> Result<SummaryAdmission, KernelError> {
     let mut admission = SummaryAdmission::default();
     for account in accounts {
@@ -701,7 +882,7 @@ fn fits<V: asupersync::fs::Vfs + Clone>(
         return Ok(admission);
     }
     match crate::genesis::read_book_spec_at(db, txn.basis())? {
-        Some(spec) if spec.base_unit == cells.base => {}
+        Some(spec) if spec.base_unit == cells.base && spec.calendar == cells.calendar => {}
         _ => return Ok(admission),
     }
     let runs: BTreeSet<_> = accounts
@@ -772,6 +953,7 @@ fn fits<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let mut columns: BTreeMap<(VId, UnitId, bool), [i128; 4]> = BTreeMap::new();
+    let mut pending_counts = PendingCounts::new();
     for (target, digest) in &releases {
         admission.targets_read = admission.targets_read.saturating_add(1);
         let original = match entry_at(db, book_id, *target, txn.basis())? {
@@ -787,7 +969,16 @@ fn fits<V: asupersync::fs::Vfs + Clone>(
         if hold.proposal.class != EntryClass::PENDING || hold.entry_digest != *digest {
             return Ok(admission);
         }
-        if original.is_some() && !fit_columns(cells, accounts, &mut columns, hold, true) {
+        if original.is_some()
+            && (!fit_columns(cells, accounts, &mut columns, hold, true)
+                || !fold_pending_count(
+                    &mut pending_counts,
+                    Some(&cells.pending_counts),
+                    hold,
+                    &cells.calendar,
+                    true,
+                ))
+        {
             return Ok(admission);
         }
     }
@@ -795,9 +986,27 @@ fn fits<V: asupersync::fs::Vfs + Clone>(
         if entry.proposal.class == EntryClass::PENDING && releases.contains_key(vid) {
             continue;
         }
-        if !fit_columns(cells, accounts, &mut columns, entry, false) {
+        if !fit_columns(cells, accounts, &mut columns, entry, false)
+            || !fold_pending_count(
+                &mut pending_counts,
+                Some(&cells.pending_counts),
+                entry,
+                &cells.calendar,
+                false,
+            )
+        {
             return Ok(admission);
         }
+    }
+    if pending_count_refusal(
+        &cells.pending_counts,
+        &pending_counts,
+        maximum_pending,
+        txn.basis(),
+    )
+    .is_some()
+    {
+        return Ok(admission);
     }
     admission.fits = true;
     Ok(admission)
@@ -906,7 +1115,16 @@ fn admit_carried_including<V: asupersync::fs::Vfs + Clone>(
         None => summarize(db, ctx, book_id, basis)?,
     };
     summary.admission = match &summary.cells {
-        Some(cells) => fits(txn, db, cells, book_id, accounts, &staged, extra)?,
+        Some(cells) => fits(
+            txn,
+            db,
+            cells,
+            book_id,
+            accounts,
+            &staged,
+            extra,
+            fa_model::limits::MAX_BATCH_ENTRIES,
+        )?,
         None => SummaryAdmission::default(),
     };
     let fit = summary.admission.fits;
@@ -916,6 +1134,10 @@ fn admit_carried_including<V: asupersync::fs::Vfs + Clone>(
     }
     admit_including(txn, db, ctx, book_id, accounts, staged, extra.as_slice())
 }
+
+#[cfg(test)]
+#[path = "register_capacity/pending_tests.rs"]
+mod pending_tests;
 
 #[cfg(test)]
 mod tests {

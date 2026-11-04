@@ -520,7 +520,9 @@ impl Profile {
         Self::ALL.into_iter().find(|p| p.tag() == tag)
     }
 
-    /// Ops this profile can never hold, with the plan clause that forbids them.
+    /// Ops forbidden by the profile's intrinsic authority rules. These also
+    /// constrain an Agent operator on a Human capability; an Agent base profile
+    /// additionally obeys the Agent template's complete ops ceiling.
     #[must_use]
     pub fn forbidden_ops(self) -> &'static [Op] {
         match self {
@@ -775,6 +777,8 @@ pub struct Capability {
 
 impl Capability {
     /// A capability under `profile`; refuses ops the profile can never hold.
+    /// The Agent template's ops ceiling is structural, including for embedded
+    /// callers and decoded tokens that never pass through `from_template`.
     pub fn new(
         holder: VId,
         profile: Profile,
@@ -783,6 +787,13 @@ impl Capability {
     ) -> Result<Self, CapabilityError> {
         let ops: BTreeSet<Op> = ops.iter().copied().collect();
         if let Some(op) = profile.forbidden_ops().iter().find(|op| ops.contains(op)) {
+            return Err(CapabilityError::ForbiddenOp { profile, op: *op });
+        }
+        if profile == Profile::Agent
+            && let Some(op) = ops
+                .iter()
+                .find(|op| !ProfileTemplate::Agent.ops_ceiling().contains(op))
+        {
             return Err(CapabilityError::ForbiddenOp { profile, op: *op });
         }
         let operator_kind = match profile {
@@ -1962,6 +1973,57 @@ mod tests {
             Capability::decode(&bytes),
             Err(CapabilityError::ForbiddenOp { .. })
         ));
+    }
+
+    /// fa-7yiz: the registered Agent ceiling applies without using templates,
+    /// including to legacy wire capabilities retagged from a Human profile.
+    #[test]
+    fn agent_ops_ceiling_is_structural_for_construction_and_decoding() {
+        for op in Op::ALL {
+            let constructed = Capability::new(VId(1), Profile::Agent, &[op], VId(2));
+            let human = Capability::new(VId(1), Profile::Human, &[op], VId(2)).unwrap();
+            let mut bytes = human.canonical_bytes().unwrap();
+            bytes[18] = Profile::Agent.tag();
+            let decoded = Capability::decode(&bytes);
+            if ProfileTemplate::Agent.ops_ceiling().contains(&op) {
+                let capability = constructed.unwrap();
+                assert!(capability.holds(op));
+                assert_eq!(decoded.unwrap(), capability, "{}", op.name());
+            } else {
+                let refusal = CapabilityError::ForbiddenOp {
+                    profile: Profile::Agent,
+                    op,
+                };
+                assert_eq!(constructed, Err(refusal.clone()), "{}", op.name());
+                assert_eq!(decoded, Err(refusal), "{}", op.name());
+            }
+        }
+    }
+
+    /// An MCP Preparer carries Agent provenance on a Human base profile;
+    /// it retains its registered soft-close and maintenance authority.
+    #[test]
+    fn agent_operator_preparer_retains_its_own_template_ops_ceiling() {
+        let capability = Capability::from_template(
+            VId(1),
+            ProfileTemplate::Preparer,
+            Some(ProfileTemplate::Preparer.ops_ceiling()),
+            VId(2),
+        )
+        .unwrap()
+        .with_operator_kind(OperatorKind::Agent)
+        .unwrap();
+        capability
+            .validate_template(ProfileTemplate::Preparer)
+            .unwrap();
+        assert_eq!(capability.profile(), Profile::Human);
+        assert_eq!(capability.sod_profile(), Profile::Agent);
+        assert!(capability.holds(Op::PostSoftclosed));
+        assert!(capability.holds(Op::Maintain));
+        assert_eq!(
+            Capability::decode(&capability.canonical_bytes().unwrap()).unwrap(),
+            capability
+        );
     }
 
     #[test]
