@@ -22,8 +22,10 @@
 //!   layer (fa-registers) refolds the claim before it is committed, and
 //!   re-verifies a stored one by refold wherever it is relied on.
 //!
-//! - **`Reconciled`** (§5.7 / §9.4): an exact statement close, evaluated
-//!   natively from cumulative posted cash and active immutable bank matches.
+//! - **`Reconciled`** (§5.7 / §9.4): a statement close, evaluated natively
+//!   from cumulative posted cash and active immutable bank matches. Tag 3
+//!   retains the exact-balance profile; tag 11 additionally binds explicitly
+//!   selected outstanding cash legs and their source-derived signed amounts.
 //!   Its publication and historical verification live in [`crate::bank`].
 //!
 //! - **`Confirmed { by_party, balance, as_of }`** (§11.12, AS 2310): the
@@ -123,6 +125,9 @@ pub mod claim {
     pub const MANUAL_ASSERTION: u8 = 8;
     pub const REPRESENTED: u8 = 9;
     pub const EXHIBIT_MARKED: u8 = 10;
+    /// The additive, explicitly selected outstanding-items statement close.
+    /// Empty selections retain the original `RECONCILED` bytes and digest.
+    pub const RECONCILED_OUTSTANDING: u8 = 11;
 }
 
 /// The claims one management representation may carry.
@@ -146,11 +151,12 @@ const SUBJECT_DOCUMENT: u8 = 1;
 const SUBJECT_PROPOSAL: u8 = 2;
 const SUBJECT_CELL: u8 = 3;
 
-/// Exact, cumulative cash closing against one retained statement. Unlike a
+/// Cumulative cash closing against one retained statement. Unlike a
 /// `RegisterEquals` period movement, this claim binds all posted cash effective
 /// through `manifest.statement_date`, and every active confirmation used to
-/// account for the statement's lines. Values are derived by the native bank
-/// recorder, never accepted as caller-entered monetary truth.
+/// account for the statement's lines. Any outstanding adjustment binds exact
+/// native cash-leg references. Values are derived by the native bank recorder,
+/// never accepted as caller-entered monetary truth.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReconciledClaim {
     pub manifest_oid: Oid,
@@ -166,9 +172,27 @@ pub struct ReconciledClaim {
     pub cash_fold_digest: [u8; 32],
     /// Sorted strictly by immutable native identity and digest.
     pub matches: Vec<crate::bank::BankDecisionRef>,
+    /// Explicit native cash legs excluded from the statement balance, sorted
+    /// strictly by `(entry VID, leg ordinal)`. Amounts are derived from their
+    /// immutable sources at `evaluated_known_at`, in debit sign.
+    pub outstanding: Vec<crate::bank::BankOutstandingItem>,
 }
 
 impl ReconciledClaim {
+    /// Exact signed sum of the selected, original-prefix cash contributions.
+    #[must_use]
+    pub fn outstanding_amount(&self) -> Option<i128> {
+        self.outstanding
+            .iter()
+            .try_fold(0_i128, |sum, item| sum.checked_add(item.signed_amount))
+    }
+
+    /// Book cash with only the explicitly selected outstanding legs removed.
+    #[must_use]
+    pub fn adjusted_cash_balance(&self) -> Option<i128> {
+        self.cash_balance.checked_sub(self.outstanding_amount()?)
+    }
+
     fn encode(&self, w: &mut Writer) -> Result<(), KernelError> {
         let predecessor_bytes = self
             .predecessors
@@ -189,10 +213,18 @@ impl ReconciledClaim {
             .list(&self.matches, |w, reference| {
                 w.u128(reference.vid.0).fixed(&reference.digest);
             });
+        if !self.outstanding.is_empty() {
+            w.list(&self.outstanding, |w, item| {
+                w.u128(item.entry_ref.vid.0)
+                    .fixed(&item.entry_ref.entry_digest)
+                    .u16(item.leg_ordinal)
+                    .i128(item.signed_amount);
+            });
+        }
         Ok(())
     }
 
-    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+    fn decode(r: &mut Reader<'_>, with_outstanding: bool) -> Result<Self, DecodeError> {
         let claim = Self {
             manifest_oid: Oid(r.fixed("reconciled.manifest_oid")?),
             manifest: BankImportManifest::decode(
@@ -223,12 +255,39 @@ impl ReconciledClaim {
                     })
                 },
             )?,
+            outstanding: if with_outstanding {
+                r.list(
+                    fa_model::limits::MAX_BANK_OUTSTANDING_ITEMS,
+                    "reconciled.outstanding",
+                    |r| {
+                        Ok(crate::bank::BankOutstandingItem {
+                            entry_ref: fa_model::EntryRef {
+                                vid: VId(r.u128("reconciled.outstanding.entry_vid")?),
+                                entry_digest: r.fixed("reconciled.outstanding.entry_digest")?,
+                            },
+                            leg_ordinal: r.u16("reconciled.outstanding.leg_ordinal")?,
+                            signed_amount: r.i128("reconciled.outstanding.signed_amount")?,
+                        })
+                    },
+                )?
+            } else {
+                Vec::new()
+            },
         };
         if claim.import_recorded_at.0 == 0
             || claim.import_recorded_at > claim.evaluated_known_at
-            || claim.cash_balance != claim.manifest.closing_balance
+            || claim.adjusted_cash_balance() != Some(claim.manifest.closing_balance)
             || claim.matches.len() != claim.manifest.line_oids.len()
             || !claim.matches.windows(2).all(|pair| pair[0] < pair[1])
+            || (with_outstanding && claim.outstanding.is_empty())
+            || claim
+                .outstanding
+                .iter()
+                .any(|item| item.signed_amount == 0 || item.signed_amount == i128::MIN)
+            || !claim.outstanding.windows(2).all(|pair| {
+                (pair[0].entry_ref.vid, pair[0].leg_ordinal)
+                    < (pair[1].entry_ref.vid, pair[1].leg_ordinal)
+            })
         {
             return Err(r.invalid("reconciled.exact_close"));
         }
@@ -370,6 +429,7 @@ impl AttestationClaim {
             Self::Reviewed { .. } => claim::REVIEWED,
             Self::ManualAssertion { .. } => claim::MANUAL_ASSERTION,
             Self::RegisterEquals(_) => claim::REGISTER_EQUALS,
+            Self::Reconciled(c) if !c.outstanding.is_empty() => claim::RECONCILED_OUTSTANDING,
             Self::Reconciled(_) => claim::RECONCILED,
             Self::Confirmed { .. } => claim::CONFIRMED,
             Self::Represented { .. } => claim::REPRESENTED,
@@ -740,8 +800,11 @@ impl StoredAttestation {
                     claim::REGISTER_EQUALS => {
                         AttestationClaim::RegisterEquals(RegisterEqualsClaim::decode(&mut r)?)
                     }
-                    claim::RECONCILED => {
-                        AttestationClaim::Reconciled(Box::new(ReconciledClaim::decode(&mut r)?))
+                    claim::RECONCILED | claim::RECONCILED_OUTSTANDING => {
+                        AttestationClaim::Reconciled(Box::new(ReconciledClaim::decode(
+                            &mut r,
+                            tag == claim::RECONCILED_OUTSTANDING,
+                        )?))
                     }
                     claim::CONFIRMED => AttestationClaim::Confirmed {
                         by_party: VId(r.u128("confirmed.by_party")?),

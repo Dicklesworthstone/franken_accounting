@@ -70,6 +70,15 @@ pub const MAX_ISSUANCE_LINEAGE: usize = 16;
 /// An oversized chain refuses; a truncated chain never establishes continuity.
 pub const MAX_BANK_PREDECESSOR_DEPTH: usize = 4096;
 
+/// Explicit outstanding cash legs retained by one adjusted bank reconciliation.
+/// The complete inline payload byte cap can bind before this item-count limit.
+pub const MAX_BANK_OUTSTANDING_ITEMS: usize = 1024;
+/// Complete newly published adjusted reconciliation Attestation payload. The
+/// existing 12 KiB inline-object profile leaves headroom under the 16 KiB native
+/// vertex row for encoded properties and mirrors. Legacy exact closes and wire
+/// decoder limits are unchanged; neither bound permits silent truncation.
+pub const MAX_BANK_RECONCILIATION_PAYLOAD_BYTES: usize = 12 * 1024;
+
 /// Canonical native-period checkpoint body, including both amount columns and
 /// unresolved hold digests. Chunking preserves the substrate's row bound;
 /// admission of the complete maintenance transaction still belongs to FGDB.
@@ -139,6 +148,14 @@ pub const ALL: &[(&str, u64)] = &[
     (
         "max_bank_predecessor_depth",
         MAX_BANK_PREDECESSOR_DEPTH as u64,
+    ),
+    (
+        "max_bank_outstanding_items",
+        MAX_BANK_OUTSTANDING_ITEMS as u64,
+    ),
+    (
+        "max_bank_reconciliation_payload_bytes",
+        MAX_BANK_RECONCILIATION_PAYLOAD_BYTES as u64,
     ),
     (
         "max_register_checkpoint_bytes",

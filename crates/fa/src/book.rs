@@ -3994,6 +3994,20 @@ impl Book {
         )))
     }
 
+    /// Close a statement with explicit immutable uncleared cash-leg references.
+    /// The kernel derives the amounts and checks the bridge; it posts no money.
+    pub fn reconcile_bank_statement_with_outstanding(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: crate::bank::BankReconciliationRequest,
+        outstanding: Vec<crate::bank::BankOutstandingLeg>,
+    ) -> Outcome<crate::bank::BankReconciliationRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.reconcile_bank_statement_with_outstanding(
+            &purposes, capability, request, outstanding,
+        )))
+    }
+
     /// Reverify each original closing claim and compare its cash contribution
     /// and active match sets with one selected prefix under current authority.
     /// No governed statement or counterparty text is disclosed.
