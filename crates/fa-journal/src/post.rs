@@ -617,7 +617,7 @@ impl PreparedPost {
                         refusal.message
                     ),
                     "plan §5.2 (register capacity at publication)",
-                    "re-plan against the current journal; reduce gross activity if the fresh plan exceeds register capacity",
+                    "re-plan against the current journal; reduce gross activity or resolve existing holds in the affected period if the fresh plan exceeds register capacity",
                 )
             } else {
                 refusal
@@ -1042,6 +1042,10 @@ pub(crate) enum Admission {
     /// binding. The caller still needs their own trunk authority; the token
     /// satisfies only the capability's required dry-run prerequisite.
     VerifiedBatch(crate::batch::VerifiedBatchPlan),
+    /// A single-entry or atomic correction plan authenticated by its
+    /// verifier. The private token satisfies only the rehearsal caveat;
+    /// current authority and every native accounting law still run.
+    VerifiedPlan(crate::plan::VerifiedPostPlan),
     /// A fixed occurrence derived by the approved recurring scheduler.
     Recurring(crate::recurring::Executing),
     /// A dry run ([`fa_policy::admit_base_for_plan`]): never published.
@@ -1159,6 +1163,9 @@ pub(crate) fn authorize_effects<V: asupersync::fs::Vfs + Clone>(
             legs: &explicit,
         },
     ) {
+        return Ok(Err(policy::refusal(&denial)));
+    }
+    if let Err(denial) = fa_policy::require_class(capability, Some(proposal.class)) {
         return Ok(Err(policy::refusal(&denial)));
     }
     let current = match policy::current_at(db, book, capability)? {
@@ -1371,9 +1378,10 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     )
 }
 
-/// Reproduce an authenticated portable plan with every ordinary posting law.
-/// The verifier must still compare effects and retain the certificate in this
-/// transaction before publication. No public request can construct its token.
+/// Reproduce an authenticated portable plan with every ordinary posting law,
+/// restaging that rehearsal under ordinary current commit authority.
+/// Only the plan verifier can construct the token. It compares the resulting
+/// effects and retains the certificate in this transaction before publication.
 pub(crate) fn prepare_verified_plan<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -1927,6 +1935,17 @@ pub(crate) fn admit_accounts<V: asupersync::fs::Vfs + Clone>(
                 effective_date,
                 &required,
             )
+        {
+            return Ok(Err(refusal));
+        }
+        if chosen
+            && let Some(refusal) = crate::dimension::admit_dimension_constraints(
+                book,
+                leg,
+                i,
+                &account.code,
+                &mut read_vertex,
+            )?
         {
             return Ok(Err(refusal));
         }
@@ -2725,7 +2744,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     };
     // The capability is not revoked (plan §14.2): the first read, so a
     // revoked token learns nothing about the book, not even a recorded outcome.
-    if let Err(r) = policy::capability_witness(&txn, db, book, &req.capability)? {
+    if let Err(r) = policy::capability_authority_witness(&txn, db, book, &req.capability)? {
         txn.abort();
         return Ok(Err(r));
     }
@@ -5394,8 +5413,8 @@ fn reclassification_shape(message: impl Into<String>) -> Refusal {
         code::RECLASSIFICATION_SHAPE,
         exit::REFUSAL,
         message.into(),
-        "plan §8.2 (Reclassifies: a positive part of the target's legs moves to another account or dimension in the same unit; net effect is target plus the delta)",
-        "name one live committed target with supersession = [{ target: <EntryRef>, kind: Reclassifies, reason_code }], move out of its legs at most what earlier reclassifications left, to at least one other account or dimension: `fa reclass <target> --from <account> --to <account> --amount \"<amount>\" --reason <name>`",
+        "plan §8.2 (Reclassifies: a positive part of the target's legs moves to another account or dimension, preserving the released amount separately for each unit and original side; net effect is target plus the delta)",
+        "name one live committed target with supersession = [{ target: <EntryRef>, kind: Reclassifies, reason_code }], move out of its legs at most what earlier reclassifications left, and deliver exactly those amounts to new accounts or dimensions in the same unit and original side; omit unrelated balanced pairs: `fa reclass <target> --from <account> --to <account> --amount \"<amount>\" --reason <name>`",
     )
 }
 
@@ -5629,8 +5648,8 @@ pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
     prepare_replacement_pair_admitted(db, ctx, book, reversal_req, replacement_req, admission)
 }
 
-/// The draft module's unforgeable admission tokens authorize rehearsal or
-/// independent promotion without weakening the native atomic pair law.
+/// Private admission tokens authorize draft rehearsal, independent promotion,
+/// or an authenticated correction plan without weakening the native pair law.
 pub(crate) fn prepare_replacement_pair_admitted<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,

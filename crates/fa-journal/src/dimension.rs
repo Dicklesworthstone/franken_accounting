@@ -19,6 +19,20 @@
 //! reads each registered dimension once per entry, by point read, and a leg
 //! on a requiring account that names no value of it is refused (FA-REF-005)
 //! with the values it may name.
+//!
+//! Account-specific allowed and forbidden value sets use a separate schema
+//! control and witnessed projection. They restrict exact value codes without
+//! changing whether the dimension is required; their immutable controls remain
+//! available at historical prefixes (see [`DimensionConstraintSpec`]).
+
+mod constraint;
+
+pub use constraint::{
+    DimensionConstraintRecorded, DimensionConstraintRow, DimensionConstraintSpec,
+    MAX_DIMENSION_CONSTRAINT_BYTES, MAX_DIMENSION_CONSTRAINT_VALUES,
+    SCHEMA_CHANGE_DIMENSION_CONSTRAINT, constraints_at, record_dimension_constraint,
+};
+pub(crate) use constraint::admit_dimension_constraints;
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -1035,6 +1035,34 @@ const TRUSTED_CERTIFICATE: &str =
     "b153b7b4414b22285d564ff07a1bef3f15ff89be7e4115cc307ac82b46628808";
 
 #[test]
+fn a_signed_statement_minor_cannot_be_upgraded_with_an_empty_manifest_list() {
+    let key: [u8; 32] = unhex(TRUSTED_KEY).try_into().unwrap();
+    let trusted: [u8; 32] = unhex(TRUSTED_CERTIFICATE).try_into().unwrap();
+    let bytes = unhex(include_str!("signed-bundle.hex"));
+    let checkpoint =
+        crate::checkpoint::verify_checkpoint(&unhex(include_str!("signed-checkpoint.hex")), &[key])
+            .unwrap()
+            .checkpoint;
+    assert_eq!(
+        verify_report_expected(&bytes, &[key], Some(&checkpoint), None, Some(&trusted))
+            .unwrap()
+            .statement,
+        Some(expected(true))
+    );
+
+    // Retain the real Ed25519 checkpoint and independently pinned certificate.
+    // Omitting the optional receipt must not permit an alternate wire minor.
+    let changed = with_empty_source_manifest_list(&bytes);
+    assert_eq!(
+        verify_report_expected(&changed, &[key], Some(&checkpoint), None, Some(&trusted))
+            .err()
+            .expect("a checkpoint and certificate cannot authorize a noncanonical minor")
+            .predicate,
+        "supported_report"
+    );
+}
+
+#[test]
 fn signed_statement_verifies_with_receipt_or_recipient_pin_and_refuses_missing_authority() {
     // Public test key from the deterministic [42; 32] fixture seed. The
     // checkpoint and detached receipt are actual Ed25519 signatures, verified

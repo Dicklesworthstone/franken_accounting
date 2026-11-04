@@ -1156,6 +1156,33 @@ impl Book {
         )))
     }
 
+    /// Replace the allowed and forbidden values of one dimension on a
+    /// posting account, independently of its required-dimension setting.
+    pub fn record_dimension_constraint(
+        &mut self,
+        spec: &crate::dimension::DimensionConstraintSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionConstraintRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_dimension_constraint(
+            &purposes, spec, principal, idempotency_key, capability,
+        )))
+    }
+
+    /// Account-specific dimension value policies at `known_at` (the head
+    /// when omitted), under current whole-book read authority.
+    pub fn dimension_constraints(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Vec<crate::dimension::DimensionConstraintRow>)> {
+        with_store!(&self.store, core => core.dimension_constraints(
+            &self.purposes(), known_at, capability,
+        ))
+    }
+
     /// `selection` over only the legs tagged with `dimension`'s `value` or a
     /// value under it (`fa tb --dimension`), folded literally under current
     /// whole-book read authority.
@@ -1548,6 +1575,30 @@ impl Book {
     ) -> Outcome<fa_journal::Approved> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.approve_signed(&purposes, capability, proposal_digest, key)))
+    }
+
+    /// Approve an exact entry payload, deriving its digest and admitting
+    /// its class together. A class-scoped capability must have a retained
+    /// issuance and admit this entry's class. Configured principal signing
+    /// applies as it does to [`Self::approve`].
+    pub fn approve_entry(
+        &mut self,
+        capability: fa_journal::Capability,
+        proposal: &fa_model::EntryPayload,
+    ) -> Outcome<fa_journal::Approved> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve_entry(&purposes, capability, proposal)))
+    }
+
+    /// [`Self::approve_entry`] signed with the principal's registered key.
+    pub fn approve_entry_signed(
+        &mut self,
+        capability: fa_journal::Capability,
+        proposal: &fa_model::EntryPayload,
+        key: &fa_notary::SigningKey,
+    ) -> Outcome<fa_journal::Approved> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve_entry_signed(&purposes, capability, proposal, key)))
     }
 
     /// Sign every approval and attestation this handle records with `key`,
@@ -5214,6 +5265,28 @@ impl Book {
         with_store!(&self.store, core => core.export_proof(&self.purposes(), principal, capability, request))
     }
 
+    /// The sorted, distinct account/unit cells of every migration chunk at
+    /// `state` through `effective_through`, optionally restricted to legs on
+    /// `account`. Open and abandoned runs remain candidates: the resulting
+    /// balance proofs decide their visibility, not the extract's row filter.
+    /// This observes and authenticates the whole checkpoint prefix, so it
+    /// requires current whole-book read and produce authority even for one
+    /// account. No write occurs, and the requests are bounded by the bundle
+    /// balance limit. Pass them to [`Book::produce_bundle`] at the same state;
+    /// these requests alone are not a proof of any chunk's visibility.
+    pub fn migration_balance_requests(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: fa_model::Oid,
+        account: Option<VId>,
+        effective_through: DateDay,
+    ) -> Outcome<Vec<fa_notary::BalanceRequest>> {
+        with_store!(&self.store, core => core.migration_balance_requests(
+            &self.purposes(), principal, capability, state, account, effective_through
+        ))
+    }
+
     /// Export the complete record-bearing suffix from the recorded state
     /// the recipient retained to a later one (default: the latest), under
     /// current read and produce authority, as [`crate::SuffixArtifact`]:
@@ -5442,6 +5515,26 @@ impl Book {
     ) -> Outcome<Option<ProducedBundle>> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.produce_lots_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
+    /// Produce a signed complete-prefix bundle for independent reproduction of
+    /// jet.round_amounts v1. The outer procedure certificate binds its exact
+    /// parameters, findings, work and decision card; the original native,
+    /// procedure and SoD registries accompany it. Current whole-book read and
+    /// produce authority are required. Effective cutoffs, input handles and
+    /// other procedure profiles are explicitly unsupported by this version.
+    /// Returns `None` when the requested checkpoint is unavailable.
+    pub fn produce_procedure_report_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::ProcedureCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_procedure_report_bundle(
             &purposes, principal, capability, state, certificate,
         )))
     }
@@ -7163,6 +7256,33 @@ impl Book {
     ) -> Outcome<fa_lantern::ProcedureRun> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.replay_procedure_with_history(
+            &purposes, principal, capability, certificate
+        )))
+    }
+
+    /// Replay an analytic certificate, then compare its exact procedure and
+    /// original question at the current head, under current read authority.
+    pub fn procedure_certificate_status(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::ProcedureCertificate,
+    ) -> Outcome<crate::ProcedureCertificateStatus> {
+        with_store!(&self.store, core => core.procedure_certificate_status(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    /// Admit current authority before loading native history and comparing a
+    /// saved analytic result with the same procedure's present result.
+    pub fn procedure_certificate_status_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::ProcedureCertificate,
+    ) -> Outcome<crate::ProcedureCertificateStatus> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.procedure_certificate_status_with_history(
             &purposes, principal, capability, certificate
         )))
     }

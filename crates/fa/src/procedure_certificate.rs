@@ -128,6 +128,29 @@ pub struct CertifiedProcedure {
     pub certificate: ProcedureCertificate,
 }
 
+/// Whether the original procedure still returns the same analytical result and
+/// decision evidence at the head, after its historical certificate replays.
+///
+/// This is deliberately conservative: population, work, findings, citations and
+/// the complete decision card must still agree. A posting beyond a procedure's
+/// effective cutoff can change its population or decision evidence even when
+/// the selected findings do not change. Only the recorded frontier and its
+/// input/finding commitments may differ for `Current`.
+///
+/// `Changed` carries the present run for inspection, not a new certificate or a
+/// claim that the historical result is invalid. Neither outcome grants current
+/// authority or authenticates an outsider's disclosure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcedureCertificateStatus {
+    Current {
+        checked_at: CommitSeq,
+    },
+    Changed {
+        checked_at: CommitSeq,
+        current: Box<ProcedureRun>,
+    },
+}
+
 fn invalid(message: impl Into<String>) -> Refusal {
     Refusal::new(
         crate::certificate::code::CERTIFICATE_INVALID,
@@ -135,6 +158,15 @@ fn invalid(message: impl Into<String>) -> Refusal {
         message,
         "plan §11.1/13.6; FA-INV-11 (native analytic inputs and exact output must replay)",
         "retain the complete procedure certificate and original book; replay with its registry/foundation versions and current whole-book read authority",
+    )
+}
+fn offline_unsupported(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        fa_notary::code::SCOPE_UNSUPPORTED,
+        exit::REFUSAL,
+        message,
+        "plan §11.1/13.3 (independent procedure replay requires its complete supported input and policy closure)",
+        "export a jet.round_amounts v1 certificate with its canonical registry closure and no effective cutoff or input handles; replay other procedure profiles in their original book",
     )
 }
 fn encode_error(e: fa_model::EncodeError) -> Refusal {
@@ -427,6 +459,68 @@ fn decode_run(bytes: &[u8]) -> Result<ProcedureRun, Refusal> {
 }
 
 impl ProcedureCertificate {
+    /// The first independent procedure interpreter has one explicit profile.
+    /// Native replay continues to support the wider catalog and legacy hashes.
+    pub(crate) fn check_offline_profile(&self) -> Result<(), Refusal> {
+        if self.format() != PROCEDURE_CERTIFICATE_FORMAT
+            || self.report.procedure != "jet.round_amounts"
+            || self.report.version != 1
+            || self.report.coordinate.effective_through.is_some()
+            || !self.report.inputs.is_empty()
+        {
+            return Err(offline_unsupported(
+                "portable procedures support only jet.round_amounts v1 without an effective cutoff or input handles",
+            ));
+        }
+        if self.registry != registry_digest()? {
+            return Err(offline_unsupported(
+                "portable procedures require the original canonical v2 procedure registry closure; legacy raw-text commitments cannot be substituted",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Extend the original native registry closure without substituting a
+    /// newer foundation. The policy document lets an independent verifier
+    /// derive the policy OID used by the complete decision-card transcript.
+    pub(crate) fn offline_registry_documents(
+        &self,
+        mut native: Vec<(String, Vec<u8>)>,
+    ) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
+        self.check_offline_profile()?;
+        let expected = ["account_types", "entry_classes", "units", "foundations"];
+        if native.iter().map(|(name, _)| name.as_str()).ne(expected) {
+            return Err(offline_unsupported(
+                "portable procedures require their complete original four-document native registry closure",
+            ));
+        }
+        let canonical = |name: &str, text: &str| {
+            fa_registry::toml::parse(text)
+                .map(|document| document.canonical_bytes())
+                .map_err(|error| {
+                    invalid(format!("embedded registry {name} does not parse: {error}"))
+                })
+        };
+        if native[3].1 != canonical("foundations", include_str!("../../../franken-stack.lock"))? {
+            return Err(offline_unsupported(
+                "the native source and procedure certificate require different foundation registries",
+            ));
+        }
+        for (name, text) in [
+            (
+                "procedures",
+                include_str!("../../../registries/procedures.toml"),
+            ),
+            (
+                "sod_policy",
+                include_str!("../../../registries/sod_policy.toml"),
+            ),
+        ] {
+            native.push((name.to_string(), canonical(name, text)?));
+        }
+        Ok(native)
+    }
+
     #[must_use]
     pub fn source_certificate(&self) -> &ReportCertificate {
         &self.source
@@ -948,6 +1042,116 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(refusal));
         }
         self.replay_procedure(cx, principal, capability, certificate)
+    }
+
+    /// Check freshness from a cold or resident book. Current Read and any bank
+    /// Reconcile authority precede history hydration; saved producer fields
+    /// supply neither. The retained certificate is replayed before reading the
+    /// current result, and no accounting record or certificate is published.
+    pub async fn procedure_certificate_status_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &ProcedureCertificate,
+    ) -> Outcome<ProcedureCertificateStatus> {
+        if let Err(refusal) = self
+            .prepare_procedure_history(
+                cx,
+                principal,
+                capability,
+                &certificate.report.procedure,
+                false,
+            )
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self
+            .prepare_report_history(cx, principal, capability, Some(certificate.known_at()))
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        self.procedure_certificate_status(cx, principal, capability, certificate)
+    }
+
+    /// Replay the complete historical run, then execute its exact registered
+    /// method, parameters, handles and effective cutoff at one current head.
+    /// Read is sufficient; bank procedures additionally require Reconcile.
+    ///
+    /// Unlike monetary report freshness, this compares the run itself rather
+    /// than attributing changes to later posting entries: parties, approvals,
+    /// attestations and bank decisions can also change analytical results.
+    pub fn procedure_certificate_status(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &ProcedureCertificate,
+    ) -> Outcome<ProcedureCertificateStatus> {
+        let original = match self.replay_procedure(cx, principal, capability, certificate)? {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let request = match certificate.request() {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let built = catalog::build(&request.procedure, request.parameters, request.inputs)?;
+        let bank_procedure = request.procedure == bank::PROCEDURE;
+        let result = self.query(cx, |db, book| {
+            let mut snapshot =
+                Snapshot::read(db, &cx.query(), book, None, request.effective_through)?;
+            if bank_procedure
+                && let Err(refusal) = bank::populate(db, cx, book, capability, &mut snapshot)?
+            {
+                return Ok(Err(refusal));
+            }
+            if extended::supported(&original.procedure, original.version)
+                && let Err(refusal) = extended::unchanged_attestations(db, cx, &snapshot)?
+            {
+                return Ok(Err(refusal));
+            }
+            if let Err(refusal) = unchanged_approvals(db, &snapshot)? {
+                return Ok(Err(refusal));
+            }
+            Ok(Ok(fa_lantern::run_over_metered(
+                &snapshot,
+                book,
+                built.as_ref(),
+                None,
+                Some(&cx.query()),
+            )?))
+        })?;
+        if let Err(refusal) = authorize(self, cx, principal, capability, false, bank_procedure)? {
+            return Ok(Err(refusal));
+        }
+        let current = match result {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        let checked_at = current.coordinate.known_at;
+        // Both commitments include the recorded frontier, so a certificate
+        // retention alone changes them. Historical replay above has already
+        // authenticated the original inputs. Compare every other run field,
+        // including the whole-snapshot population and policy evidence; never
+        // replace the returned current run's own commitments with old ones.
+        let mut normalized = current.clone();
+        normalized.coordinate.known_at = original.coordinate.known_at;
+        normalized.inputs_digest = original.inputs_digest;
+        normalized.findings_digest = original.findings_digest;
+        let unchanged = normalized == original;
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        Ok(Ok(if unchanged {
+            ProcedureCertificateStatus::Current { checked_at }
+        } else {
+            ProcedureCertificateStatus::Changed {
+                checked_at,
+                current: Box::new(current),
+            }
+        }))
     }
 
     /// Compute and certify a catalog procedure without publishing any record.

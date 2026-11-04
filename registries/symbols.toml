@@ -586,6 +586,12 @@ name = "MigrationSourceFragment"
 id = 66
 name = "EntryFragment"
 
+# Current allowed/forbidden dimension values per posting leaf and dimension.
+# The immutable SchemaChange kind 25 remains the authoritative declaration.
+[[label]]
+id = 67
+name = "DimensionConstraint"
+
 # CloseTask -> prerequisite CloseTask, within the same CloseRun.
 [[relation]]
 id = 38

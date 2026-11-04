@@ -19,7 +19,8 @@
 //!   bundle       <bundle> --key K... [--receipt R]
 //!                                                an evidence bundle, every predicate graded
 //!   report       <bundle> --key K... [--units N,N,... | --base-unit N] [--view detail]
-//!                                                a native report; statement units come from the recipient
+//!                                                a native report or supported statistical procedure;
+//!                                                legacy statement units come from the recipient
 //! ```
 //!
 //! `ANCHOR` is how the caller trusts the checkpoint, and there are exactly
@@ -116,7 +117,11 @@ commands:
                                                 effective-date or due-date aging, reconciliation, whole-chart aging portfolios,
                                                 account roll-forwards,
                                                 direct cash flows, changes in equity and their comparisons, lot schedules,
-                                                native/functional one-book consolidated group statements.
+                                                native/functional one-book consolidated group statements,
+                                                and jet.round_amounts v1 statistical procedures.
+                                                Round-amount procedures require no cutoff or input handles;
+                                                Replacement histories are refused. Exact statistical and decision-card
+                                                replay does not establish fraud, approval admission or policy activation.
                                                 V1 statements require --units;
                                                 native traces retain every consecutive source, including zero-effect steps;
                                                 migration and legacy-ambiguous Replacement traces are refused;
@@ -1571,7 +1576,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                             ("effective_through", day(report.effective_through)),
                             (
                                 "report_mode",
-                                s(if report.explanation.is_some() {
+                                s(if report.procedure.is_some() {
+                                    "procedure"
+                                } else if report.explanation.is_some() {
                                     "balance_explanation"
                                 } else if report.aging_portfolio.is_some() {
                                     "aging_portfolio"
@@ -1642,7 +1649,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                             ("records", n(report.checked_records as u64)),
                             (
                                 "rows",
-                                n(if let Some(explanation) = &report.explanation {
+                                n(if let Some(procedure) = &report.procedure {
+                                    procedure.findings.len()
+                                } else if let Some(explanation) = &report.explanation {
                                     explanation.contributions.len()
                                 } else if let Some(portfolio) = &report.aging_portfolio {
                                     portfolio.accounts.iter().map(|a| a.rows.len()).sum()
@@ -1791,6 +1800,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(open_items) = &report.open_items {
                         checks.extend(open_items_checks(open_items));
+                    }
+                    if let Some(procedure) = &report.procedure {
+                        checks.extend(procedure_checks(procedure));
                     }
                     if let Some(lots) = &report.lots {
                         checks.extend(lots_checks(lots));
@@ -2214,6 +2226,70 @@ fn explanation_checks(report: &crate::report::VerifiedBalanceExplanation) -> Vec
                 ("credits", s(change.credits.to_string())),
                 ("debits_pending", s(change.debits_pending.to_string())),
                 ("credits_pending", s(change.credits_pending.to_string())),
+            ],
+        ));
+    }
+    checks
+}
+
+fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "procedure_summary",
+        "statistical_replay",
+        vec![
+            ("book", h(&report.book_id)),
+            ("known_at", n(report.known_at)),
+            ("procedure", s(&report.procedure)),
+            ("version", n(u64::from(report.version))),
+            ("claim", s("statistical")),
+            ("evidence", s("FA-EVID-L01")),
+            ("round_power", n(u64::from(report.round_power))),
+            ("population", n(report.population)),
+            ("live_entries", n(report.live_entries)),
+            ("live_legs", n(report.live_legs)),
+            ("findings", n(report.findings.len() as u64)),
+            ("parameters_digest", h(&report.parameters_digest)),
+            ("inputs_digest", h(&report.inputs_digest)),
+            ("findings_digest", h(&report.findings_digest)),
+            ("decision_card_digest", h(&report.decision_card_digest)),
+            ("policy_oid", h(&report.policy_oid)),
+            (
+                "proof_scope",
+                s(
+                    "exact statistical replay; fraud, approval admission and policy activation are not established",
+                ),
+            ),
+        ],
+    )];
+    for finding in &report.findings {
+        checks.push(Check::pass(
+            "procedure_finding",
+            "statistical_replay",
+            vec![
+                ("entry", s(format!("{:032x}", finding.entry))),
+                (
+                    "severity",
+                    s(match finding.severity {
+                        1 => "low",
+                        2 => "medium",
+                        _ => "unknown",
+                    }),
+                ),
+                ("statistic", s("round_legs")),
+                ("value", n(finding.round_legs.len() as u64)),
+                ("scale", n(0)),
+                ("population", n(report.live_legs)),
+                (
+                    "leg_ordinals",
+                    Json::List(
+                        finding
+                            .round_legs
+                            .iter()
+                            .map(|ordinal| n(u64::from(*ordinal)))
+                            .collect(),
+                    ),
+                ),
+                ("narrative", s(&finding.narrative)),
             ],
         ));
     }
@@ -4737,6 +4813,15 @@ fn bundle_checks(report: &BundleReport) -> Vec<Check> {
             Grade::Unrun(why) => (Verdict::Unrun, Some(why.clone())),
         };
         let mut detail = vec![("subject", s(&c.subject))];
+        if c.check == "payload_disclosure" {
+            // These are the disclosure predicate's facts, with its own
+            // pass/fail/unrun grade, not a trusted claim from the header.
+            detail.extend([
+                ("distinct_journal_records", n(m.leaf_count)),
+                ("selected_entries", n(report.summary.entries)),
+                ("balance_proofs", n(report.summary.balances.len() as u64)),
+            ]);
+        }
         if c.check == "production_receipt"
             && let Some(r) = &report.receipt
         {

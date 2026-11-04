@@ -36,6 +36,9 @@ pub mod sod;
 pub mod statements;
 mod temporal;
 
+#[cfg(test)]
+mod reclassification_tests;
+
 /// The registered control kinds (`registries/entry_classes.toml`
 /// `[[control_kind]]`, fa-g23), written out literally: `(id, name, the
 /// control class it mints)`. The oracle's own copy, so a drift between the
@@ -485,6 +488,16 @@ pub struct DimensionTag {
     pub code: String,
 }
 
+/// An account's exact registered values for one dimension (fa-ficc).
+/// Missing tags remain the separate requirement law. Values do not include
+/// their descendants: each permitted or prohibited code names only itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DimensionConstraint {
+    /// None admits every value except the forbidden set; Some([]) admits none.
+    pub allowed: Option<Vec<String>>,
+    pub forbidden: Vec<String>,
+}
+
 /// Provenance asserted by a caller of the public posting path. Migration
 /// provenance is modelled by [`Oracle::post_migration`] and its verified run.
 /// The remaining system origins may only be minted internally.
@@ -571,6 +584,7 @@ pub mod code {
     pub const HOLD_DUE: &str = "FA-REF-097";
     pub const DIMENSION_MISSING: &str = "FA-REF-005";
     pub const DIMENSION_NOT_EFFECTIVE: &str = "FA-REF-195";
+    pub const DIMENSION_FORBIDDEN: &str = "FA-REF-207";
     pub const ENTITY_UNDECLARED: &str = "FA-REF-104";
     pub const STRUCTURE: &str = "FA-REF-100";
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
@@ -1028,6 +1042,8 @@ pub struct Oracle {
     /// Each registered dimension's requiring accounts, as recorded now: a
     /// requirement binds every later post, whatever its date.
     dimension_requirements: BTreeMap<u32, BTreeSet<String>>,
+    /// Independently recorded exact value restrictions, by kind and account.
+    dimension_constraints: BTreeMap<(u32, String), DimensionConstraint>,
     /// A committed entry's registered-kind tags, leg by leg.
     leg_dimensions: BTreeMap<usize, Vec<Vec<DimensionTag>>>,
     /// The tags of the entry [`Oracle::post_dimensioned`] is posting, leg by
@@ -1088,6 +1104,7 @@ impl Oracle {
             capacity_deferred: false,
             dimension_values: BTreeMap::new(),
             dimension_requirements: BTreeMap::new(),
+            dimension_constraints: BTreeMap::new(),
             leg_dimensions: BTreeMap::new(),
             posting_dimensions: Vec::new(),
         }
@@ -1128,6 +1145,53 @@ impl Oracle {
         } else {
             accounts.remove(account);
         }
+    }
+
+    /// Replace one account's exact value policy without changing whether
+    /// that dimension is required. This models the declaration and posting
+    /// law, independently of the engine's control codec and projection.
+    pub fn constrain_dimension(
+        &mut self,
+        kind: u32,
+        account: &str,
+        constraint: DimensionConstraint,
+    ) -> Result<(), &'static str> {
+        let allowed = constraint.allowed.as_deref().unwrap_or_default();
+        let forbidden = &constraint.forbidden;
+        let canonical = |values: &[String]| {
+            values.windows(2).all(|pair| pair[0] < pair[1])
+                && values.iter().all(|value| {
+                    !value.is_empty()
+                        && value.len() <= 64
+                        && value.bytes().all(|byte| byte.is_ascii_graphic())
+                })
+        };
+        if !(2..=9).contains(&kind)
+            || allowed.len().saturating_add(forbidden.len()) > 128
+            || !canonical(allowed)
+            || !canonical(forbidden)
+            || allowed.iter().any(|value| forbidden.contains(value))
+        {
+            return Err(code::STRUCTURE);
+        }
+        let Some(row) = self.accounts.get(account) else {
+            return Err(code::UNKNOWN_ACCOUNT);
+        };
+        if !row.is_leaf {
+            return Err(code::NOT_A_LEAF);
+        }
+        if allowed.iter().chain(forbidden).any(|value| {
+            !self.dimension_values.contains_key(&(kind, value.clone()))
+        }) {
+            return Err(code::STRUCTURE);
+        }
+        let key = (kind, account.to_string());
+        if constraint.allowed.is_none() && constraint.forbidden.is_empty() {
+            self.dimension_constraints.remove(&key);
+        } else {
+            self.dimension_constraints.insert(key, constraint);
+        }
+        Ok(())
     }
 
     /// End a value's window on `closed_on` (fa-ficc `fa dimension close`).
@@ -2356,6 +2420,10 @@ impl Oracle {
             }
         }
         let mut moved: BTreeMap<(String, u32, bool, Option<String>), Int> = BTreeMap::new();
+        // Independent exact conservation: a released position subtracts
+        // from its original side; a destination adds on its own side.
+        // Ordinary double-entry balance alone cannot exclude unrelated pairs.
+        let mut remaining_transfers: BTreeMap<(u32, bool), Int> = BTreeMap::new();
         let mut sources = BTreeSet::new();
         let mut destinations = BTreeSet::new();
         for l in &intent.legs {
@@ -2367,12 +2435,23 @@ impl Oracle {
                 if remaining.sub(slot).is_negative() {
                     return false;
                 }
+                let transfer = remaining_transfers
+                    .entry((l.unit, opposite(l.side) == Side::Debit))
+                    .or_insert_with(Int::zero);
+                *transfer = transfer.sub(&Int::from_i128(l.mantissa));
                 sources.insert(place);
             } else {
+                let transfer = remaining_transfers
+                    .entry((l.unit, l.side == Side::Debit))
+                    .or_insert_with(Int::zero);
+                *transfer = transfer.add(&Int::from_i128(l.mantissa));
                 destinations.insert(place);
             }
         }
-        !sources.is_empty() && !destinations.is_empty() && destinations.is_disjoint(&sources)
+        !sources.is_empty()
+            && !destinations.is_empty()
+            && destinations.is_disjoint(&sources)
+            && remaining_transfers.values().all(Int::is_zero)
     }
 
     fn post_inner(
@@ -2884,6 +2963,21 @@ impl Oracle {
             {
                 return Verdict::Refused {
                     code: code::DIMENSION_MISSING,
+                };
+            }
+            if chosen
+                && tags.iter().any(|tag| {
+                    self.dimension_constraints
+                        .get(&(tag.dimension, l.account.clone()))
+                        .is_some_and(|constraint| {
+                            constraint.allowed.as_ref().is_some_and(|allowed| {
+                                !allowed.contains(&tag.code)
+                            }) || constraint.forbidden.contains(&tag.code)
+                        })
+                })
+            {
+                return Verdict::Refused {
+                    code: code::DIMENSION_FORBIDDEN,
                 };
             }
         }

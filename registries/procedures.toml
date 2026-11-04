@@ -824,13 +824,13 @@ meaning = "Projection and tracing work budget in network scope (1..100000000)."
 
 [[procedure]]
 id = "jet.unusual_accounts"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L24"
 tie_break = "entry_vid"
-complexity = "O(legs log legs)"
+complexity = "O(legs log legs + account_pairs log account_pairs)"
 calibration = "uncalibrated"
-summary = "Live posting entries whose undirected account-pair co-occurrence appears at most max_pair_count times in the snapshot (or below min_pair_bps of live postings): rare debit/credit account combinations (AS 2401 ¶61)."
+summary = "Live postings containing an undirected debit/credit account pair occurring in at most max_pair_count live entries, once min_population is reached (AS 2401 ¶61). Each pair counts once per entry even with split legs or both directions. One finding cites the entry and its rarest pair, breaking count ties by canonical account IDs. Version 1 incorrectly counted whole account sets. account_pairs is the sum of per-entry distinct debit-account × credit-account candidates, charged during expansion and lookup."
 
 [[parameter]]
 procedure = "jet.unusual_accounts"
@@ -1441,13 +1441,14 @@ meaning = "Maximum civil days between overlapping counterparty receipts/applicat
 
 [[procedure]]
 id = "recon.attested_register_compare"
-version = 1
+version = 2
 claim = "invariant"
 evidence = "FA-EVID-L43"
 tie_break = "account_vid"
-complexity = "O(legs log legs)"
+complexity = "O(legs log legs + (attestations + instruments) × legs)"
 calibration = "uncalibrated"
-summary = "Exact reconciliation between Instrument vertices that mirror GL accounts (and RegisterEquals attestations) and the journal fold at the snapshot coordinate: any divergence between a mirrored instrument/attested register cell and the posted account balance is an invariant violation. One book against what was attested about it; plan §12.2's recon.book_to_book (book against book, every difference explained by rule version) waits for multi-book (fa-259c). Registered as recon.book_to_book before fa-kxc4."
+summary = "Exact comparison of every RegisterEquals claim with gross posted activity in its own (account, period, unit, declared legal entity, as-of day) cell. Distinct attestations remain distinct baselines; reversals contribute in their own period and never erase an earlier posting. Only the legal-entity dimension selects the declared entity, an untagged leg belongs to the sole declared balancing entity, and an absent claim entity denotes the unassigned cell rather than all entities. Unknown claim entities refuse. Findings cite the attestation and every contributing entry; citation overflow refuses the complete run. A claim remains a historical fact at its evaluated prefix, which this comparison does not re-execute. The effective cutoff selects eligible claims without changing their individual as-of days and also bounds the separate live-posting Instrument unit-consistency check. Plan §12.2's recon.book_to_book is a distinct multi-book procedure. Version 1 used live supersession and informational entity metadata, which could misstate an attested cell. Registered as recon.book_to_book before fa-kxc4."
+effective_through = "optional"
 
 [[procedure]]
 id = "recon.bank_statement_drift"
@@ -1472,13 +1473,13 @@ summary = "Exact drift of every RegisterEquals attestation at the snapshot coord
 
 [[procedure]]
 id = "completeness.unrecorded_liabilities"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L44"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Search for unrecorded liabilities (AU-C 500 / ISA 500): cash disbursements or payable entries recorded after a period's end within window_days whose document date or service period lies in the prior period."
+summary = "Search for unrecorded liabilities (AU-C 500 / ISA 500): cash disbursements or payable entries effective after the document's period end within window_days. The first day outside the period is day one, including for fiscal and custom calendars and periods not yet materialized in the book. Version 1 measured document age and missed older invoices posted just after period end."
 
 [[parameter]]
 procedure = "completeness.unrecorded_liabilities"
@@ -1488,13 +1489,13 @@ meaning = "Post-period lookahead window in civil days for subsequent disbursemen
 
 [[procedure]]
 id = "events.subsequent"
-version = 2
+version = 3
 claim = "statistical"
 evidence = "FA-EVID-L45"
 tie_break = "entry_vid"
-complexity = "O(legs log legs)"
+complexity = "O(entries log entries + legs + periods log periods + entries × periods)"
 calibration = "uncalibrated"
-summary = "Subsequent events review (AS 2801 / IAS 10): material postings, reversals, or restatements effective or recorded within window_days after a closed or soft-closed period boundary. A period is such a boundary when its latest recorded transition put it in SoftClosed, Closed or Locked. Version 1 counted every period with any recorded transition, including one that was only opened."
+summary = "Subsequent events review (AS 2801 / IAS 10): material adjustments, reversals, or restatements effective within window_days after a closed period boundary, or superseding an entry of an earlier period within that period-end window. A closed boundary's latest recorded transition is SoftClosed, Closed or Locked. Version 3 counts the exclusive period end as day one, including for supersessions; version 2 omitted that first day and used the original entry's date for supersessions. Version 1 also counted periods that were only opened."
 
 [[parameter]]
 procedure = "events.subsequent"
@@ -1608,13 +1609,13 @@ meaning = "Haircut in basis points applied after contra-account netting to each 
 
 [[procedure]]
 id = "solvency.cash_flow_test"
-version = 3
+version = 4
 claim = "statistical"
 evidence = "FA-EVID-L53"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Equitable cash-flow solvency test (ability to pay debts as they come due): compares the balances of the accounts holding the `cash` account role (registries/account_roles.toml, assigned with fa chart role) against open payable items and short-term obligations maturing within horizon_days of the coordinate's effective date. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens. Version 3 judges a scheduled obligation open as of the effective date, netting supersession within that window, so a payment or reversal dated later neither relieves it nor erases it; the unscheduled screen nets cash as of the effective date and liabilities through the horizon, each in its own window. Version 2 netted the whole snapshot and let settlements through the horizon relieve obligations without spending the cash that paid them."
+summary = "Equitable cash-flow solvency test (ability to pay debts as they come due): compares the balances of the accounts holding the `cash` account role (registries/account_roles.toml, assigned with fa chart role) against open payable items and short-term obligations maturing within horizon_days of the coordinate's effective date. Refused when no account holds the role. Version 4 nets overdrawn and positive cash accounts per unit before flooring liquidity at zero in the unscheduled book-wide screen, using the authenticated schedule's net-before-floor rule; version 3 discarded each overdraft. Authenticated schedules additionally partition by legal entity. Version 3 judges a scheduled obligation open as of the effective date, netting supersession within that window, so a payment or reversal dated later neither relieves it nor erases it; the unscheduled screen nets cash as of the effective date and liabilities through the horizon, each in its own window. Version 2 netted the whole snapshot and let settlements through the horizon relieve obligations without spending the cash that paid them. Version 1 guessed the accounts from code and name tokens."
 effective_through = "optional"
 
 [[parameter]]
@@ -1763,13 +1764,13 @@ meaning = "Explicit distributable cash pool in unit mantissa (0 = use the book's
 
 [[procedure]]
 id = "damages.attested_baseline"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L59"
 tie_break = "account_vid"
-complexity = "O(legs log legs)"
+complexity = "O(legs log legs + attestations × legs)"
 calibration = "uncalibrated"
-summary = "Per-account and per-period deltas between actual live postings and a baseline taken from RegisterEquals attestations or superseded/restated original folds. Plan §11.6's damages.but_for (the certified delta between a counterfactual scenario and trunk) is fa scenario diff --certify. Registered as damages.but_for before fa-kxc4."
+summary = "Per-claim absolute deltas from each RegisterEquals baseline to gross posted activity in its exact (account, period, unit, declared legal entity, as-of day) cell. Every attestation is preserved, including different cutoffs and evaluated prefixes for the same cell; no entity's claim overwrites another's. Reversals contribute in their own period, the legal-entity dimension alone selects an entity, untagged legs belong to the sole declared balancing entity, and an absent claim entity is the unassigned cell. Unknown claim entities refuse. The effective cutoff selects eligible claims without changing their own days. A separately labeled original_lineage fallback compares live and pre-supersession original folds at the report cutoff, per entity, only for cells with no applicable attestation. Every comparison cites its participating entries and any baseline attestation; citation overflow refuses rather than omit evidence. Historical claims remain fixed at their evaluated prefixes, which this procedure does not re-execute. These observations do not establish recoverable damages; plan §11.6's damages.but_for is the certified delta between a counterfactual scenario and trunk via fa scenario diff --certify. Version 1 collapsed entities and cutoffs and compared gross claims to a live net. Registered as damages.but_for before fa-kxc4."
 effective_through = "optional"
 
 

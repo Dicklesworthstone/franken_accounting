@@ -820,6 +820,29 @@ impl Work {
                     comparisons: attestations.saturating_mul(legs.saturating_add(1)),
                 })
             }
+            // RegisterEquals v2 indexes gross cell prefixes once, then visits
+            // the matching contributions of each discrepant claim to cite.
+            // Damages additionally folds live/original lineages; reconciliation
+            // additionally scans live postings for each mirrored Instrument.
+            "O(legs log legs + attestations × legs)"
+            | "O(legs log legs + (attestations + instruments) × legs)" => {
+                let attestations = snapshot.attestations.len() as u64;
+                let instruments = if complexity.contains("instruments") {
+                    snapshot.rea.instruments.len() as u64
+                } else {
+                    0
+                };
+                Some(Self {
+                    entries: entries.saturating_mul(instruments.saturating_add(3)),
+                    legs: legs.saturating_mul(instruments.saturating_add(3)),
+                    comparisons: n_log_n
+                        .saturating_add(legs.saturating_mul(2))
+                        .saturating_add(
+                            attestations.saturating_mul(legs.saturating_mul(2).saturating_add(1)),
+                        )
+                        .saturating_add(instruments),
+                })
+            }
             // jet.self_sourced_evidence: one comparison per attestation it
             // indexes, then at most one per document an entry cites or is
             // supplemented with.
@@ -850,6 +873,50 @@ impl Work {
                 comparisons: n_log_n
                     .saturating_add(entries.saturating_mul(crate::duplicates::MAX_NEAR_CANDIDATES)),
             }),
+            // jet.unusual_accounts: each entry expands its debit/credit
+            // account pairs once to count them and once to select a finding.
+            // Raw side counts bound the deduplicated candidates without
+            // materializing them or allowing unrelated entries to multiply
+            // each other's work. This is not a blanket whole-snapshot n² bound.
+            "O(legs log legs + account_pairs log account_pairs)" => {
+                let pairs = snapshot.entries.iter().fold(0_u64, |total, entry| {
+                    let mut debits = 0_u64;
+                    let mut credits = 0_u64;
+                    for leg in &entry.entry.proposal.legs {
+                        match leg.side {
+                            fa_money::Side::Debit => debits = debits.saturating_add(1),
+                            fa_money::Side::Credit => credits = credits.saturating_add(1),
+                        }
+                    }
+                    total.saturating_add(debits.saturating_mul(credits))
+                });
+                Some(Self {
+                    entries,
+                    legs,
+                    comparisons: n_log_n
+                        .saturating_add(entries)
+                        .saturating_add(pairs.saturating_mul(2)),
+                })
+            }
+            // events.subsequent indexes entries and sorts closed boundaries,
+            // then may inspect every period for each material posting. Period
+            // history is independent of the selected posting population and
+            // must remain part of its default budget even for sparse books.
+            "O(entries log entries + legs + periods log periods + entries × periods)" => {
+                let periods = snapshot.periods.len() as u64;
+                let ordering = |count: u64| {
+                    count
+                        .saturating_mul(u64::from(count.saturating_add(1).ilog2().max(1)))
+                        .saturating_mul(4)
+                };
+                Some(Self {
+                    entries,
+                    legs,
+                    comparisons: ordering(entries)
+                        .saturating_add(ordering(periods))
+                        .saturating_add(entries.saturating_mul(periods)),
+                })
+            }
             "O(entries)" => Some(Self {
                 entries,
                 legs: 0,

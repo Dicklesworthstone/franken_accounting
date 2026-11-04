@@ -78,6 +78,12 @@
 //! Traces reconstruct every intermediate report and presentation, including
 //! zero-effect publications and offsetting changes hidden by the endpoint delta.
 //! Their exact source commitments never substitute rounded display amounts.
+//!
+//! ProcedureCertificate v1 additionally replays `jet.round_amounts` v1 from
+//! that complete native history. Its six-document closure binds native unit
+//! scales, procedure semantics and the decision card's policy identifier.
+//! Findings, citations, population, work and every output digest are rebuilt.
+//! This statistical computation does not establish fraud or approval admission.
 
 mod aging;
 mod cash_flow;
@@ -97,6 +103,7 @@ mod lots;
 mod metadata;
 mod open_items;
 mod portfolio;
+mod procedure;
 mod reconciliation;
 mod registry;
 mod roll_forward;
@@ -162,6 +169,7 @@ pub use portfolio::{
     AgingPortfolioRequest, AgingPortfolioScope, VerifiedAgingPortfolio,
     VerifiedAgingPortfolioAccount,
 };
+pub use procedure::{VerifiedProcedure, VerifiedRoundAmountFinding};
 pub use reconciliation::{VerifiedAgingReconciliation, VerifiedAgingReconciliationRow};
 pub use registry::Reason as ExplanationReason;
 pub use roll_forward::{
@@ -258,6 +266,9 @@ pub struct VerifiedReport {
     /// Selected summary groups and complete historical posting-leaf coverage.
     /// `rows` still contains the entire native source, not only these groups.
     pub summary: Option<VerifiedSummaryTrialBalance>,
+    /// Exact statistical procedure replay over the complete native population.
+    /// No fraud finding, approval admission or policy activation is asserted.
+    pub procedure: Option<VerifiedProcedure>,
     pub bundle_digest: [u8; 32],
     pub certificate_digest: [u8; 32],
     pub output_digest: [u8; 32],
@@ -976,6 +987,11 @@ fn verify_report_with_recipient_inputs(
         ));
     }
     let certificate_bytes = r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?;
+    let procedure = if procedure::recognizes(certificate_bytes) {
+        Some(procedure::decode(certificate_bytes)?)
+    } else {
+        None
+    };
     let equity_diff = if equity_diff::recognizes(certificate_bytes) {
         Some(equity_diff::decode(certificate_bytes)?)
     } else {
@@ -1114,8 +1130,21 @@ fn verify_report_with_recipient_inputs(
         })
         .or_else(|| summary.as_ref().map(|value| value.source))
         .or_else(|| lots.as_ref().map(|value| value.source))
+        .or_else(|| procedure.as_ref().map(|value| value.source))
         .unwrap_or(certificate_bytes);
     let cert = certificate(source)?;
+    if procedure.is_some()
+        && (!matches!(cert.selection, Selection::OpenItems(None))
+            || cert.time_selection.is_some()
+            || cert.branch != [0; 16]
+            || cert.dimension.is_some()
+            || cert.functional)
+    {
+        return Err(failed(
+            "procedure_selection",
+            "procedures require a complete sequence-selected trunk native OpenItems source",
+        ));
+    }
     if lots.is_some()
         && (!matches!(cert.selection, Selection::OpenItems(Some(_)))
             || cert.time_selection.is_some()
@@ -1213,6 +1242,7 @@ fn verify_report_with_recipient_inputs(
         .or_else(|| statement_trace.as_ref().map(|value| value.digest))
         .or_else(|| summary.as_ref().map(|value| value.digest))
         .or_else(|| lots.as_ref().map(|value| value.digest))
+        .or_else(|| procedure.as_ref().map(|value| value.digest))
         .unwrap_or(cert.digest);
     let is_consolidation = matches!(cert.selection, Selection::Consolidation(_));
     if (cert.functional || is_consolidation) != (major == 3) {
@@ -1323,6 +1353,15 @@ fn verify_report_with_recipient_inputs(
     let mut manifests = Vec::new();
     if minor == 1 {
         let n = r.count(records.len(), 12, "report_bundle.source_manifests")?;
+        // Minor 1 canonically denotes a nonempty source-manifest closure.
+        // The checkpoint and certificate authenticate the accounting inputs,
+        // but do not authorize an alternate encoding of the transport itself.
+        if n == 0 {
+            return Err(failed(
+                "supported_report",
+                "report bundle minor 1 requires migration source manifests; use minor 0 when no source witness is needed",
+            ));
+        }
         for _ in 0..n {
             manifests.push((
                 r.u64("migration_source.bind_index")?,
@@ -1339,11 +1378,12 @@ fn verify_report_with_recipient_inputs(
     let mut functional_registry = None;
     let mut consolidation_registry = None;
     let mut lot_units = None;
+    let mut procedure_registry = None;
     let (units, supersession_reasons) = if major >= 2 {
         let n = r.count(
             if is_consolidation && cert.functional {
                 7
-            } else if major == 3 {
+            } else if major == 3 || procedure.is_some() {
                 6
             } else if is_explanation || is_custom_statement {
                 5
@@ -1360,7 +1400,16 @@ fn verify_report_with_recipient_inputs(
                 r.bytes(1024 * 1024, "registry.canonical")?,
             ));
         }
-        let (units, reasons) = if is_consolidation {
+        let (units, reasons) = if let Some(request) = &procedure {
+            let definitions = registry::verify_procedure(
+                &inputs,
+                &cert.registry_digest,
+                &request.registry_digest,
+            )?;
+            let units = definitions.unit_scales.keys().copied().collect();
+            procedure_registry = Some(definitions);
+            (units, BTreeMap::new())
+        } else if is_consolidation {
             let definitions =
                 registry::verify_consolidation(&inputs, &cert.registry_digest, cert.functional)?;
             let units = definitions.units.clone();
@@ -1513,6 +1562,7 @@ fn verify_report_with_recipient_inputs(
         return Ok(VerifiedReport {
             scope: "recomputation",
             summary: None,
+            procedure: None,
             bundle_digest: digest,
             certificate_digest: cert.digest,
             output_digest: cert.output_digest,
@@ -1744,6 +1794,7 @@ fn verify_report_with_recipient_inputs(
         return Ok(VerifiedReport {
             scope: "recomputation",
             summary: None,
+            procedure: None,
             bundle_digest: digest,
             certificate_digest,
             output_digest,
@@ -1936,6 +1987,7 @@ fn verify_report_with_recipient_inputs(
         return Ok(VerifiedReport {
             scope: "recomputation",
             summary: None,
+            procedure: None,
             bundle_digest: digest,
             certificate_digest,
             output_digest,
@@ -1993,6 +2045,33 @@ fn verify_report_with_recipient_inputs(
                 "open-item amounts, complete application history, account metadata or canonical bytes differ from independent replay",
             ));
         }
+        let (verified_procedure, output) = if let Some(request) = &procedure {
+            let entries = infos
+                .iter()
+                .filter(|(index, _)| {
+                    envelopes[**index].class != 12 || visible_migrations.contains(&(**index as u64))
+                })
+                .map(|(&index, info)| procedure::Entry {
+                    identity: info.identity,
+                    digest: envelopes[index].record_digest,
+                    recorded_at: envelopes[index].commit_seq,
+                    class: envelopes[index].class,
+                    legs: legs[index]
+                        .iter()
+                        .map(|leg| (leg.unit, leg.mantissa))
+                        .collect(),
+                    supersession: info.supersession.clone(),
+                })
+                .collect();
+            let definitions = procedure_registry
+                .as_ref()
+                .ok_or_else(|| failed("registry_closure", "procedure registries are absent"))?;
+            let (verified, output) =
+                procedure::replay(request, cert.book, cert.known_at, entries, definitions)?;
+            (Some(verified), output)
+        } else {
+            (None, output)
+        };
         if let Some(request) = &lots {
             // The authenticated source retains these exact bytes already.
             drop(output);
@@ -2044,6 +2123,7 @@ fn verify_report_with_recipient_inputs(
             return Ok(VerifiedReport {
                 scope: "recomputation",
                 summary: None,
+                procedure: None,
                 bundle_digest: digest,
                 certificate_digest,
                 output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -2138,6 +2218,7 @@ fn verify_report_with_recipient_inputs(
                 return Ok(VerifiedReport {
                     scope: "recomputation",
                     summary: None,
+                    procedure: None,
                     bundle_digest: digest,
                     certificate_digest,
                     output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -2179,6 +2260,7 @@ fn verify_report_with_recipient_inputs(
             return Ok(VerifiedReport {
                 scope: "recomputation",
                 summary: None,
+                procedure: None,
                 bundle_digest: digest,
                 certificate_digest,
                 output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -2264,6 +2346,7 @@ fn verify_report_with_recipient_inputs(
                 return Ok(VerifiedReport {
                     scope: "recomputation",
                     summary: None,
+                    procedure: None,
                     bundle_digest: digest,
                     certificate_digest,
                     output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -2335,6 +2418,7 @@ fn verify_report_with_recipient_inputs(
                 return Ok(VerifiedReport {
                     scope: "recomputation",
                     summary: None,
+                    procedure: None,
                     bundle_digest: digest,
                     certificate_digest,
                     output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -2376,6 +2460,7 @@ fn verify_report_with_recipient_inputs(
             return Ok(VerifiedReport {
                 scope: "recomputation",
                 summary: None,
+                procedure: None,
                 bundle_digest: digest,
                 certificate_digest,
                 output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -2418,8 +2503,8 @@ fn verify_report_with_recipient_inputs(
             scope: "recomputation",
             summary: None,
             bundle_digest: digest,
-            certificate_digest: cert.digest,
-            output_digest: cert.output_digest,
+            certificate_digest,
+            output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
             checkpoint: signed,
             known_at: cert.known_at,
             time_selection: cert.time_selection,
@@ -2432,7 +2517,12 @@ fn verify_report_with_recipient_inputs(
             statement_diff: None,
             dimension: None,
             statement_trace: None,
-            open_items: Some(open_items),
+            open_items: if verified_procedure.is_none() {
+                Some(open_items)
+            } else {
+                None
+            },
+            procedure: verified_procedure,
             lots: None,
             explanation: None,
             aging: None,
@@ -2479,6 +2569,7 @@ fn verify_report_with_recipient_inputs(
         return Ok(VerifiedReport {
             scope: "recomputation",
             summary: None,
+            procedure: None,
             bundle_digest: digest,
             certificate_digest: cert.digest,
             output_digest: cert.output_digest,
@@ -2609,6 +2700,7 @@ fn verify_report_with_recipient_inputs(
         return Ok(VerifiedReport {
             scope: "recomputation",
             summary: None,
+            procedure: None,
             bundle_digest: digest,
             certificate_digest,
             output_digest,
@@ -2710,6 +2802,7 @@ fn verify_report_with_recipient_inputs(
             return Ok(VerifiedReport {
                 scope: "recomputation",
                 summary: None,
+                procedure: None,
                 bundle_digest: digest,
                 certificate_digest,
                 output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -2806,6 +2899,7 @@ fn verify_report_with_recipient_inputs(
             return Ok(VerifiedReport {
                 scope: "recomputation",
                 summary: None,
+                procedure: None,
                 bundle_digest: digest,
                 certificate_digest,
                 output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -2847,6 +2941,7 @@ fn verify_report_with_recipient_inputs(
         return Ok(VerifiedReport {
             scope: "recomputation",
             summary: None,
+            procedure: None,
             bundle_digest: digest,
             certificate_digest,
             output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -2908,6 +3003,7 @@ fn verify_report_with_recipient_inputs(
     Ok(VerifiedReport {
         scope: "recomputation",
         summary,
+        procedure: None,
         bundle_digest: digest,
         certificate_digest,
         output_digest: hash_parts(b"fa:report-output:v1", &[&output]),

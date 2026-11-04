@@ -4,6 +4,7 @@
 mod attribution;
 mod investor_transfers;
 mod reconciliation_arithmetic;
+mod register_claim;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -340,6 +341,8 @@ impl Procedure for ReconLapping {
 /// `recon.attested_register_compare` (`FA-EVID-L43`, `claim = "invariant"`):
 /// exact reconciliation between `RegisterEquals` attestations / mirrored
 /// `Instrument` vertices and the posted journal fold at the snapshot coordinate.
+/// Version 2 compares each claim's gross period activity in its exact entity
+/// cell through its own as-of day; it never nets away a reversed source entry.
 /// Not plan §12.2's `recon.book_to_book` (one book against another, every
 /// difference explained by rule version), which needs multi-book (fa-259c);
 /// this procedure compares one book with what was attested about it.
@@ -356,7 +359,7 @@ impl Procedure for ReconAttestedRegisterCompare {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -367,65 +370,36 @@ impl Procedure for ReconAttestedRegisterCompare {
         book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let mut live = snapshot.live_postings()?;
-        live.sort_by_key(|e| e.vid);
-
-        // Map entity code -> dimension_value_vid
-        let mut entity_code_to_dvid: BTreeMap<String, VId> = BTreeMap::new();
-        for le in snapshot.rea.legal_entities.values() {
-            entity_code_to_dvid.insert(le.code.clone(), le.dimension_value_vid);
-        }
-
+        let through = snapshot.coordinate.effective_through;
+        let scope = register_claim::CellScope::new(snapshot);
+        let posted = register_claim::PostedFold::read(snapshot, &scope, work)?;
         let mut out = Vec::new();
         let population = (snapshot.attestations.len() + snapshot.rea.instruments.len()) as u64;
 
-        // 1. Check every stored RegisterEquals attestation against the posted journal fold
-        for att in snapshot.attestations.values() {
+        // The historical claim is unchanged. Compare its exact cell and day at
+        // this recorded prefix, retaining every attestation as its own baseline.
+        for (attestation, att) in &snapshot.attestations {
             work.compare(1)?;
             let AttestationClaim::RegisterEquals(claim) = &att.attestation.claim else {
                 continue;
             };
-            let entity_dvid = claim
-                .entity
-                .as_ref()
-                .and_then(|c| entity_code_to_dvid.get(c).copied());
-            let mut fold_net = 0i128;
-            let mut matching_entries = Vec::new();
-            for e in &live {
-                if e.period != claim.period
-                    || e.entry.proposal.effective_date > claim.as_of_effective
-                {
-                    continue;
-                }
-                for leg in &e.entry.proposal.legs {
-                    if leg.account_ref != claim.account || leg.amount.unit.0 != claim.unit_id {
-                        continue;
-                    }
-                    if let Some(req_dvid) = entity_dvid
-                        && !leg.dimension_set.iter().any(|(_, d)| *d == req_dvid)
-                    {
-                        continue;
-                    }
-                    let signed = signed_leg(leg.side, leg.amount.mantissa)?;
-                    fold_net = fold_net
-                        .checked_add(signed)
-                        .ok_or(LanternError::Overflow("attested_register fold sum"))?;
-                    matching_entries.push(e.vid);
-                }
+            if through.is_some_and(|day| claim.as_of_effective > day) {
+                continue;
             }
+            let key = scope.claim_key(Self::ID, *attestation, claim)?;
+            let cell = posted.at(&key, claim.as_of_effective, work)?;
+            let fold_net = cell.net();
             if fold_net != claim.mantissa {
                 let diff = reconciliation_arithmetic::discrepancy(fold_net, claim.mantissa).ok_or(
                     LanternError::Overflow("attested_register discrepancy magnitude"),
                 )?;
-                let mut cites = vec![Cite::Account(claim.account)];
-                if snapshot.periods.contains_key(&claim.period) {
-                    cites.push(Cite::Period(claim.period.clone()));
-                }
-                matching_entries.sort_unstable();
-                matching_entries.dedup();
-                for evid in matching_entries.into_iter().take(MAX_CITES - 2) {
-                    cites.push(Cite::Entry(evid));
-                }
+                let cites = register_claim::cites(
+                    Self::ID,
+                    snapshot,
+                    &key,
+                    Some(*attestation),
+                    cell.entries(work)?,
+                )?;
                 let scale = crate::unit_scale(book, claim.unit_id)?;
                 let code = snapshot
                     .accounts
@@ -442,19 +416,24 @@ impl Procedure for ReconAttestedRegisterCompare {
                     },
                     cites,
                     format!(
-                        "account {code} period {} unit {}: RegisterEquals attested {} but posted journal fold is {fold_net} (discrepancy {diff})",
-                        claim.period, claim.unit_id, claim.mantissa
+                        "account {code} period {} unit {} entity {} as_of_effective={}: RegisterEquals attested {} at sequence {}; gross posted period fold at this snapshot is {fold_net} (discrepancy {diff}); the original evaluated prefix is not re-executed",
+                        claim.period, claim.unit_id, scope.entity_name(key.entity),
+                        claim.as_of_effective.0, claim.mantissa, claim.evaluated_known_at.0
                     ),
                 ));
             }
         }
 
         // 2. Check every Instrument vertex mirroring an account for unit consistency
+        let mut live = snapshot.live_postings_through(through)?;
+        live.sort_by_key(|e| e.vid);
         for inst in snapshot.rea.instruments.values() {
             work.compare(1)?;
             let mut mismatched_entries = Vec::new();
             for e in &live {
+                work.entry()?;
                 for leg in &e.entry.proposal.legs {
+                    work.leg()?;
                     if leg.account_ref == inst.mirrors_account && leg.amount.unit != inst.unit {
                         mismatched_entries.push(e.vid);
                     }
@@ -487,7 +466,8 @@ impl Procedure for ReconAttestedRegisterCompare {
 
 /// `completeness.unrecorded_liabilities` (plan §11.7, `FA-EVID-L44`, AU-C 500 / ISA 500):
 /// cash disbursements or payable/expense entries recorded in a subsequent period
-/// within `window_days` whose document date lies in an earlier period.
+/// within `window_days` after the document's period end. Version 1 measured
+/// document age instead and missed older invoices paid just after period end.
 pub struct UnrecordedLiabilities {
     params: Params,
 }
@@ -498,7 +478,7 @@ impl Procedure for UnrecordedLiabilities {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -531,11 +511,7 @@ impl Procedure for UnrecordedLiabilities {
             if doc_date >= eff {
                 continue;
             }
-            let lag_days = (eff.0 - doc_date.0) as u32;
-            if lag_days > window_days {
-                continue;
-            }
-            let doc_period = snapshot.document_period_code_of(
+            let document_period = snapshot.document_period_of(
                 book,
                 doc_date,
                 e.entry
@@ -544,7 +520,14 @@ impl Procedure for UnrecordedLiabilities {
                     .as_ref()
                     .map(|p| p.code.as_str()),
             )?;
+            let doc_period = document_period.code;
             if doc_period == e.period {
+                continue;
+            }
+            let Some(lag_days) = days_after_period_end(eff, document_period.end) else {
+                continue;
+            };
+            if lag_days > window_days {
                 continue;
             }
             // Must touch an expense or liability account (or credit cash for an obligation)
@@ -587,13 +570,23 @@ impl Procedure for UnrecordedLiabilities {
                 },
                 cites,
                 format!(
-                    "obligation dated in prior period {doc_period} recorded in subsequent period {} ({lag_days} day(s) later, amount {mag})",
+                    "obligation dated in prior period {doc_period} recorded in subsequent period {} ({lag_days} day(s) after prior period end, amount {mag})",
                     e.period
                 ),
             ));
         }
         Ok(out)
     }
+}
+
+/// Civil days after the last included day of a half-open period. Its
+/// exclusive end is day one, not day zero. Wide checked subtraction also
+/// keeps extreme decoded dates from wrapping into the lookahead window.
+fn days_after_period_end(date: DateDay, exclusive_end: DateDay) -> Option<u32> {
+    let days = i64::from(date.0)
+        .checked_sub(i64::from(exclusive_end.0))?
+        .checked_add(1)?;
+    u32::try_from(days).ok().filter(|days| *days > 0)
 }
 
 /// `events.subsequent` (plan §11.7, `FA-EVID-L45`, AS 2801 / IAS 10):
@@ -610,7 +603,7 @@ impl Procedure for SubsequentEvents {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        3
     }
     fn params(&self) -> &Params {
         &self.params
@@ -706,19 +699,26 @@ impl Procedure for SubsequentEvents {
 
             let mut matched_closed_period: Option<(String, u32)> = None;
             if let Some(orig) = prior_superseded {
-                let days = (eff.0 - orig.entry.proposal.effective_date.0).unsigned_abs();
-                if days <= window_days {
+                let period = snapshot.document_period_of(
+                    book,
+                    orig.entry.proposal.effective_date,
+                    Some(&orig.period),
+                )?;
+                if let Some(days) = days_after_period_end(eff, period.end)
+                    && days <= window_days
+                {
                     matched_closed_period = Some((orig.period.clone(), days));
                 }
             }
             if matched_closed_period.is_none() && is_subsequent_class {
                 for (pcode, pend) in &closed_periods {
-                    if *pcode != e.period && eff > *pend {
-                        let days = (eff.0 - pend.0) as u32;
-                        if days <= window_days {
-                            matched_closed_period = Some((pcode.clone(), days));
-                            break;
-                        }
+                    work.compare(1)?;
+                    if *pcode != e.period
+                        && let Some(days) = days_after_period_end(eff, *pend)
+                        && days <= window_days
+                    {
+                        matched_closed_period = Some((pcode.clone(), days));
+                        break;
                     }
                 }
             }
@@ -1610,7 +1610,7 @@ impl Procedure for SolvencyCashFlowTest {
         Self::ID
     }
     fn version(&self) -> u16 {
-        3
+        4
     }
     fn params(&self) -> &Params {
         &self.params
@@ -3399,10 +3399,13 @@ impl Procedure for DistributionProRata {
     }
 }
 
-/// `damages.attested_baseline` (`FA-EVID-L59`): per-account and per-period
-/// deltas between the actual live posted fold and a baseline taken from
-/// `RegisterEquals` attestations or pre-supersession / restated entry
-/// lineages. Not plan §11.6's `damages.but_for`, which is the certified delta
+/// `damages.attested_baseline` (`FA-EVID-L59`): each `RegisterEquals` claim
+/// compared to the gross activity of its exact entity cell and as-of day.
+/// Cells with no applicable attestation separately compare live postings to
+/// their original, pre-supersession lineage baseline. Version 2 preserves
+/// distinct claims, entities and effective cutoffs instead of overwriting
+/// one attestation with another or netting away attested gross activity.
+/// Not plan §11.6's `damages.but_for`, which is the certified delta
 /// between a counterfactual scenario and trunk: `fa scenario diff --certify`,
 /// and [`compute_scenario_but_for_damages`] over two snapshots.
 pub struct DamagesAttestedBaseline {
@@ -3415,7 +3418,7 @@ impl Procedure for DamagesAttestedBaseline {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -3427,19 +3430,74 @@ impl Procedure for DamagesAttestedBaseline {
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let through = snapshot.coordinate.effective_through;
+        let scope = register_claim::CellScope::new(snapshot);
+        let posted = register_claim::PostedFold::read(snapshot, &scope, work)?;
         let mut live = snapshot.live_postings_through(through)?;
         live.sort_by_key(|e| e.vid);
+        let population = (live.len() + snapshot.attestations.len()).max(1) as u64;
+        let mut out = Vec::new();
 
-        // Actual live fold per (account_vid, period, unit_id)
-        type CellKey = (VId, String, u32);
-        let mut actual_fold: BTreeMap<CellKey, (i128, BTreeSet<VId>)> = BTreeMap::new();
+        // An attestation is one immutable baseline, not a last-writer-wins
+        // value for the entire account. Compare at the claim's own cutoff.
+        let mut attested_cells = BTreeSet::new();
+        for (attestation, att) in &snapshot.attestations {
+            work.compare(1)?;
+            let AttestationClaim::RegisterEquals(claim) = &att.attestation.claim else {
+                continue;
+            };
+            if through.is_some_and(|day| claim.as_of_effective > day) {
+                continue;
+            }
+            let key = scope.claim_key(Self::ID, *attestation, claim)?;
+            let cell = posted.at(&key, claim.as_of_effective, work)?;
+            let actual_net = cell.net();
+            attested_cells.insert(key.clone());
+            if actual_net == claim.mantissa {
+                continue;
+            }
+            let delta = reconciliation_arithmetic::discrepancy(actual_net, claim.mantissa)
+                .ok_or(LanternError::Overflow("damages.attested_baseline delta"))?;
+            let cites = register_claim::cites(
+                Self::ID,
+                snapshot,
+                &key,
+                Some(*attestation),
+                cell.entries(work)?,
+            )?;
+            let code = snapshot
+                .accounts
+                .get(&key.account)
+                .map_or("?", |a| a.code.as_str());
+            out.push(finding(
+                Self::ID,
+                Severity::High,
+                Statistic {
+                    name: "attested_baseline_delta".into(),
+                    value: delta,
+                    scale: crate::unit_scale(book, key.unit_id)?,
+                    population,
+                },
+                cites,
+                format!(
+                    "account {code} period {} unit {} entity {} as_of_effective={}: baseline=RegisterEquals at sequence {}, actual_gross_net={actual_net}, attested_net={}, baseline_delta={delta}; the original evaluated prefix is not re-executed",
+                    key.period, key.unit_id, scope.entity_name(key.entity),
+                    claim.as_of_effective.0, claim.evaluated_known_at.0, claim.mantissa
+                ),
+            ));
+        }
+
+        // Preserve the original-lineage fallback as a different comparison:
+        // live and original folds share the report cutoff and exact entity.
+        // It applies only where no selected attestation supplies a baseline.
+        type CellFold = BTreeMap<register_claim::CellKey, (i128, BTreeSet<VId>)>;
+        let mut actual_fold = CellFold::new();
         for e in &live {
             work.entry()?;
             for leg in &e.entry.proposal.legs {
                 work.leg()?;
                 let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                 let cell = actual_fold
-                    .entry((leg.account_ref, e.period.clone(), leg.amount.unit.0))
+                    .entry(scope.leg_key(&e.period, leg))
                     .or_default();
                 cell.0 = cell.0.checked_add(signed).ok_or(LanternError::Overflow(
                     "damages.attested_baseline actual fold",
@@ -3448,27 +3506,11 @@ impl Procedure for DamagesAttestedBaseline {
             }
         }
 
-        // Counterfactual baseline from RegisterEquals attestations
-        let mut but_for_cells: BTreeMap<CellKey, (i128, BTreeSet<VId>)> = BTreeMap::new();
-        for att in snapshot.attestations.values() {
-            if let AttestationClaim::RegisterEquals(c) = &att.attestation.claim {
-                if through.is_some_and(|d| c.as_of_effective > d) {
-                    continue;
-                }
-                let key = (c.account, c.period.clone(), c.unit_id);
-                let entries = actual_fold
-                    .get(&key)
-                    .map(|(_, es)| es.clone())
-                    .unwrap_or_default();
-                but_for_cells.insert(key, (c.mantissa, entries));
-            }
-        }
-
-        // Also include cells whereOriginal postings were superseded/reversed by restatement
         let live_vids: BTreeSet<VId> = live.iter().map(|e| e.vid).collect();
-        let mut original_fold: BTreeMap<CellKey, (i128, BTreeSet<VId>)> = BTreeMap::new();
-        let mut has_superseded_cell: BTreeSet<CellKey> = BTreeSet::new();
+        let mut original_fold = CellFold::new();
+        let mut has_superseded_cell = BTreeSet::new();
         for e in &snapshot.entries {
+            work.entry()?;
             if !e.posts() || through.is_some_and(|d| e.entry.proposal.effective_date > d) {
                 continue;
             }
@@ -3477,8 +3519,9 @@ impl Procedure for DamagesAttestedBaseline {
             let was_superseded = is_original && !live_vids.contains(&e.vid);
             if is_original {
                 for leg in &e.entry.proposal.legs {
+                    work.leg()?;
                     let signed = signed_leg(leg.side, leg.amount.mantissa)?;
-                    let key = (leg.account_ref, e.period.clone(), leg.amount.unit.0);
+                    let key = scope.leg_key(&e.period, leg);
                     let cell = original_fold.entry(key.clone()).or_default();
                     cell.0 = cell.0.checked_add(signed).ok_or(LanternError::Overflow(
                         "damages.attested_baseline original fold",
@@ -3491,42 +3534,28 @@ impl Procedure for DamagesAttestedBaseline {
             }
         }
         for key in has_superseded_cell {
-            if !but_for_cells.contains_key(&key)
-                && let Some(orig) = original_fold.remove(&key)
-            {
-                but_for_cells.insert(key, orig);
-            }
-        }
-
-        let population = (live.len() + snapshot.attestations.len()).max(1) as u64;
-        let mut out = Vec::new();
-        for ((acct_vid, period, unit_id), (but_for_net, mut cites_set)) in but_for_cells {
             work.compare(1)?;
-            let actual_net = actual_fold
-                .get(&(acct_vid, period.clone(), unit_id))
-                .map_or(0, |(v, _)| *v);
-            if let Some((_, act_entries)) = actual_fold.get(&(acct_vid, period.clone(), unit_id)) {
-                cites_set.extend(act_entries.iter().copied());
-            }
-            if actual_net == but_for_net {
+            if attested_cells.contains(&key) {
                 continue;
             }
-            let delta = reconciliation_arithmetic::discrepancy(actual_net, but_for_net)
+            let Some((original_net, mut cites_set)) = original_fold.remove(&key) else {
+                continue;
+            };
+            let actual_net = actual_fold.get(&key).map_or(0, |(v, _)| *v);
+            if let Some((_, act_entries)) = actual_fold.get(&key) {
+                cites_set.extend(act_entries.iter().copied());
+            }
+            if actual_net == original_net {
+                continue;
+            }
+            let delta = reconciliation_arithmetic::discrepancy(actual_net, original_net)
                 .ok_or(LanternError::Overflow("damages.attested_baseline delta"))?;
-            let mut cites = vec![Cite::Account(acct_vid)];
-            if snapshot.periods.contains_key(&period) {
-                cites.push(Cite::Period(period.clone()));
-            }
-            for evid in cites_set {
-                if cites.len() < MAX_CITES {
-                    cites.push(Cite::Entry(evid));
-                }
-            }
+            let cites = register_claim::cites(Self::ID, snapshot, &key, None, cites_set)?;
             let code = snapshot
                 .accounts
-                .get(&acct_vid)
+                .get(&key.account)
                 .map_or("?", |a| a.code.as_str());
-            let scale = crate::unit_scale(book, unit_id)?;
+            let scale = crate::unit_scale(book, key.unit_id)?;
             out.push(finding(
                 Self::ID,
                 Severity::High,
@@ -3538,7 +3567,9 @@ impl Procedure for DamagesAttestedBaseline {
                 },
                 cites,
                 format!(
-                    "account {code} period {period} unit {unit_id}: actual_net={actual_net}, but_for_net={but_for_net}, damages_delta={delta}"
+                    "account {code} period {} unit {} entity {} effective_through={}: baseline=original_lineage, actual_live_net={actual_net}, original_net={original_net}, baseline_delta={delta}; no applicable RegisterEquals attestation supplies this cell's baseline",
+                    key.period, key.unit_id, scope.entity_name(key.entity),
+                    through.map_or_else(|| "snapshot".into(), |day| day.0.to_string())
                 ),
             ));
         }

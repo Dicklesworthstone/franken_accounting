@@ -55,6 +55,7 @@ const FLAGS: &[&str] = &[
     "--task",
     "--plan",
     "--reason",
+    "--rehearsal",
 ];
 const SWITCHES: &[&str] = &["--dry-run", "--review-only", "--case-review", "--certify"];
 

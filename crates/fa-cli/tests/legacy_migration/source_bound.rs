@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "source_bound/scoped_ads.rs"]
+mod scoped_ads;
+
 fn run_id(fixture: &Fixture) -> VId {
     VId(u128::from_str_radix(&fixture.run_vid, 16).unwrap())
 }

@@ -140,6 +140,7 @@ enum ReportBundleCertificate<'a> {
     StatementTrace(&'a crate::StatementTraceCertificate),
     Aging(&'a crate::AgingCertificate),
     Lots(&'a crate::LotsCertificate),
+    Procedure(&'a crate::ProcedureCertificate),
     DueDateAging(&'a crate::DueDateAgingCertificate),
     RollForward(&'a crate::RollForwardCertificate),
     EquityRollForward(&'a crate::EquityRollForwardCertificate),
@@ -183,6 +184,7 @@ impl<'a> ReportBundleCertificate<'a> {
             }
             Self::Aging(certificate) => certificate.source(),
             Self::Lots(certificate) => certificate.source(),
+            Self::Procedure(certificate) => certificate.source_certificate(),
             Self::DueDateAging(certificate) => certificate.source(),
             Self::RollForward(certificate) => certificate.source_certificate(),
             Self::EquityRollForward(certificate) => {
@@ -1118,6 +1120,34 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Approve the exact canonical entry payload. An issued class-scoped
+    /// capability may approve an entry of its own class through this path;
+    /// an opaque digest alone cannot establish the approved class.
+    pub async fn approve_entry(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        proposal: &fa_model::EntryPayload,
+    ) -> Outcome<fa_journal::Approved> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        if let Some(key) = self.principal_key.take() {
+            let signed = self
+                .approve_entry_signed(cx, capability, proposal, &key.0)
+                .await;
+            self.principal_key = Some(key);
+            return signed;
+        }
+        Ok(fa_journal::record_approval_for(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            proposal,
+            0,
+        )
+        .await?)
+    }
+
     /// Sign every approval and attestation this handle records with `key`,
     /// the client's principal key (plan §14.5, fa-kae):
     /// - proposal approvals and every review approval (allocation, balance
@@ -1144,53 +1174,161 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         key: &fa_notary::SigningKey,
     ) -> Outcome<fa_journal::Approved> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        let principal = capability.holder();
-        let (epoch, generation) = self.query(cx, |db, context| {
-            let chain = fa_journal::read_principal_keys(db, context, principal)?;
-            Ok((
-                fa_journal::security_policy_epoch(db)?,
-                chain.last().map_or(0, |g| g.key.generation),
-            ))
-        })?;
-        let unsigned = fa_journal::ApprovalRequest {
-            capability: capability.clone(),
-            approved_proposal_digest: proposal_digest,
-            role: 0,
-        };
-        // A capability that cannot approve is refused by the kernel, which
-        // names the missing op; there is nothing to sign.
-        let Ok(Ok(approval)) = fa_policy::Approval::by(
-            &capability,
-            fa_policy::Op::Approve,
-            self.context.book_id,
-            proposal_digest,
-            epoch,
-            0,
-        ) else {
-            return Ok(
-                fa_journal::record_approval(&mut self.db, cx, &self.context, unsigned).await?,
-            );
-        };
-        let digest = approval
-            .digest()
-            .map_err(|e| BookError::Kernel(fa_journal::KernelError::Model(e.into())))?;
-        let signature = fa_policy::PrincipalSignature {
-            scheme: fa_policy::principal_key::SCHEME_ED25519,
-            generation,
-            key_id: fa_policy::principal_key::key_id(&key.public_key()),
-            bytes: key.sign(&fa_policy::principal_key::approval_message(&digest)),
-        };
+        let signature =
+            match self.approval_signature(cx, &capability, proposal_digest, None, key)? {
+                Ok(signature) => signature,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
         Ok(fa_journal::record_signed_approval(
             &mut self.db,
             cx,
             &self.context,
-            unsigned,
+            fa_journal::ApprovalRequest {
+                capability,
+                approved_proposal_digest: proposal_digest,
+                role: 0,
+            },
             Some(fa_journal::SignedBy {
                 signature,
                 verifier: &crate::book::PRINCIPAL_SIGNATURES,
             }),
         )
         .await?)
+    }
+
+    /// [`Self::approve_entry`] signed by the approver's registered key.
+    /// The entry supplies both the class and the digest; neither can be
+    /// substituted independently by a caller.
+    pub async fn approve_entry_signed(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        proposal: &fa_model::EntryPayload,
+        key: &fa_notary::SigningKey,
+    ) -> Outcome<fa_journal::Approved> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        if proposal.book_id != self.context.book_id {
+            // Keep the kernel's coordinate refusal and avoid reading a key
+            // or policy epoch for a proposal belonging to another book.
+            return Ok(fa_journal::record_approval_for(
+                &mut self.db,
+                cx,
+                &self.context,
+                capability,
+                proposal,
+                0,
+            )
+            .await?);
+        }
+        let proposal_digest = proposal.proposal_digest().map_err(KernelError::from)?;
+        let signature = match self.approval_signature(
+            cx,
+            &capability,
+            proposal_digest,
+            Some(proposal.class),
+            key,
+        )? {
+            Ok(signature) => signature,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(fa_journal::record_signed_approval_for(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            proposal,
+            0,
+            Some(fa_journal::SignedBy {
+                signature,
+                verifier: &crate::book::PRINCIPAL_SIGNATURES,
+            }),
+        )
+        .await?)
+    }
+
+    /// Admit the approval before reading its signing coordinates. The
+    /// kernel repeats these checks in its publication transaction, so a
+    /// changed key, policy epoch or authority cannot authorize a stale
+    /// signature.
+    fn approval_signature(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        proposal_digest: [u8; 32],
+        class: Option<EntryClass>,
+        key: &fa_notary::SigningKey,
+    ) -> Outcome<fa_policy::PrincipalSignature> {
+        fn capability_error(error: fa_policy::CapabilityError) -> KernelError {
+            match error {
+                fa_policy::CapabilityError::Encode(error) => KernelError::Model(error.into()),
+                fa_policy::CapabilityError::Decode(error) => KernelError::Model(error.into()),
+                other => KernelError::Corrupt(format!("capability: {other}")),
+            }
+        }
+        let admission =
+            fa_policy::require(capability, fa_policy::Op::Approve, "recording an approval")
+                .and_then(|()| fa_policy::scope(capability, self.context.book_id))
+                .and_then(|()| match class {
+                    Some(class) => fa_policy::reach_class(
+                        capability,
+                        &fa_policy::Reach::whole_book(true),
+                        None,
+                        class,
+                    ),
+                    None => fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None),
+                })
+                .and_then(|()| fa_policy::admit_direct_write(capability));
+        if let Err(denial) = admission {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let coordinates = self.query(cx, |db, context| {
+            if let Err(denial) = fa_policy::current(capability, db.frontier().map_err(KernelError::from)?) {
+                return Ok(Err(fa_journal::policy::refusal(&denial)));
+            }
+            if let Err(refusal) = fa_journal::policy::capability_admitted(db, context, capability)? {
+                return Ok(Err(refusal));
+            }
+            if capability.classes().is_some() {
+                let commitment = capability.commitment().map_err(capability_error)?;
+                if fa_journal::policy::read_issued(db, context, &commitment)?.is_none() {
+                    return Ok(Err(fa_journal::policy::refusal(&fa_policy::Denial::OutOfScope {
+                        caveat: "classes",
+                        value: "an approval whose class-scoped capability has no retained issuance body".into(),
+                    })));
+                }
+            }
+            let chain = fa_journal::read_principal_keys(db, context, capability.holder())?;
+            Ok(Ok((
+                fa_journal::security_policy_epoch(db)?,
+                chain.last().map_or(0, |generation| generation.key.generation),
+            )))
+        })?;
+        let (epoch, generation) = match coordinates {
+            Ok(coordinates) => coordinates,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let approval = match fa_policy::Approval::by(
+            capability,
+            fa_policy::Op::Approve,
+            self.context.book_id,
+            proposal_digest,
+            epoch,
+            0,
+        )
+        .map_err(capability_error)?
+        {
+            Ok(approval) => approval,
+            Err(denial) => return Ok(Err(fa_journal::policy::refusal(&denial))),
+        };
+        let digest = approval
+            .digest()
+            .map_err(|error| KernelError::Model(error.into()))?;
+        Ok(Ok(fa_policy::PrincipalSignature {
+            scheme: fa_policy::principal_key::SCHEME_ED25519,
+            generation,
+            key_id: fa_policy::principal_key::key_id(&key.public_key()),
+            bytes: key.sign(&fa_policy::principal_key::approval_message(&digest)),
+        }))
     }
 
     /// Register `key` as the next generation of the capability holder's
@@ -4472,7 +4610,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     },
                 )
             })
-            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None));
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+            .and_then(|()| fa_policy::admit_direct_write(capability));
         if let Err(denial) = admitted {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
@@ -4665,6 +4804,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         ) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
+        if let Err(denial) = fa_policy::admit_direct_write(capability) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         if let Err(denial) = fa_policy::current(capability, self.head(cx)?) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
@@ -4795,6 +4937,29 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             capability,
             state,
             ReportBundleCertificate::Lots(certificate),
+        )
+        .await
+    }
+
+    /// Export a jet.round_amounts v1 run for independent replay from a signed
+    /// complete journal prefix. The native source, exact procedure output,
+    /// canonical procedure definition and decision policy travel together.
+    /// This bounded profile requires no effective cutoff or input handles;
+    /// other procedure families remain available through native replay.
+    pub async fn produce_procedure_report_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::ProcedureCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::Procedure(certificate),
         )
         .await
     }
@@ -5136,6 +5301,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
+        if let ReportBundleCertificate::Procedure(procedure) = report
+            && let Err(refusal) = procedure.check_offline_profile()
+        {
+            return Ok(Err(refusal));
+        }
         let consolidation = matches!(
             &certificate.selection,
             crate::ReportSelection::Consolidation { .. }
@@ -5291,6 +5461,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
             ReportBundleCertificate::Lots(certificate) => {
                 if let Err(refusal) = self.replay_lots(cx, principal, capability, certificate)? {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::Procedure(certificate) => {
+                if let Err(refusal) =
+                    self.replay_procedure(cx, principal, capability, certificate)?
+                {
                     return Ok(Err(refusal));
                 }
                 None
@@ -5481,6 +5659,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let requires_registry_closure = matches!(
             report,
             ReportBundleCertificate::Summary(_)
+                | ReportBundleCertificate::Procedure(_)
                 | ReportBundleCertificate::StatementDiff(_)
                 | ReportBundleCertificate::StatementTrace(_)
                 | ReportBundleCertificate::RollForward(_)
@@ -5530,6 +5709,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
         } else {
             None
+        };
+        let registries = if let ReportBundleCertificate::Procedure(procedure) = report {
+            let Some(registries) = registries else {
+                return Err(KernelError::Corrupt(
+                    "procedure proof lost its native registry closure".into(),
+                )
+                .into());
+            };
+            match procedure.offline_registry_documents(registries) {
+                Ok(registries) => Some(registries),
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+        } else {
+            registries
         };
         if let Some(crate::ReportOutput::ExplainBalance(explanation)) = &replayed
             && let Err(refusal) = crate::certificate::check_explanation_reasons_at(
@@ -5581,6 +5774,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "portable trace attribution does not yet support migration publications or ambiguous legacy replacement identities",
                 "plan §8.3 / §13.3 (authenticate every publication and exact entry identity)",
                 "replay this trace in its original book, or export a supported native or functional interval; no partial trace is produced",
+            )));
+        }
+        if matches!(report, ReportBundleCertificate::Procedure(_))
+            && journal.leaves.iter().any(|leaf| {
+                leaf.envelope.is_entry()
+                    && leaf.envelope.commit_seq <= certificate.known_at
+                    && leaf.envelope.class == EntryClass::REPLACEMENT
+            })
+        {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_notary::code::SCOPE_UNSUPPORTED,
+                fa_journal::exit::REFUSAL,
+                "portable round-amount procedures do not yet support replacement histories with ambiguous original entry identities",
+                "plan §11.1/13.3 (every procedure input and citation must preserve its authenticated entry identity)",
+                "replay this procedure in its original book and retain its certificate until the independent interpreter supports the original replacement identity law",
             )));
         }
         if let crate::ReportSelection::OpenItems { account } = &certificate.selection
@@ -5743,6 +5951,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Ok(bytes) => bytes,
                 Err(refusal) => return Ok(Err(refusal)),
             },
+            ReportBundleCertificate::Procedure(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
             ReportBundleCertificate::DueDateAging(certificate) => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,
@@ -6073,6 +6287,33 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Outcome<crate::ProofArtifact> {
         self.query(cx, |db, book| {
             crate::proof::export(db, cx, book, &self.signer, principal, capability, request)
+        })
+    }
+
+    /// Derive migration visibility witness cells at an exact recorded state.
+    /// [`crate::Book::migration_balance_requests`] states the disclosure and
+    /// admission contract; this read never changes the journal.
+    pub fn migration_balance_requests(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: fa_model::Oid,
+        account: Option<VId>,
+        effective_through: fa_time::DateDay,
+    ) -> Outcome<Vec<fa_notary::BalanceRequest>> {
+        self.query(cx, |db, book| {
+            crate::proof::migration_balance_requests(
+                db,
+                cx,
+                book,
+                &self.signer,
+                principal,
+                capability,
+                state,
+                account,
+                effective_through,
+            )
         })
     }
 
@@ -6691,6 +6932,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             })
             .and_then(|()| fa_policy::admit_control_write(capability))
             .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+            .and_then(|()| fa_policy::admit_direct_write(capability))
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }

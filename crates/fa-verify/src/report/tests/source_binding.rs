@@ -200,6 +200,29 @@ fn pack_with_entry_storage(
 }
 
 #[test]
+fn a_report_minor_must_match_its_migration_source_manifests() {
+    let mut records = schema();
+    records.push(record(1, 3, 10, b"ordinary", 125, None, None, None));
+    let (bytes, anchor) = bundle(&records, 3, Selection::AsOf(20), &rows(125, 0));
+    assert_eq!(
+        verify_fixture(&bytes, anchor.clone()).unwrap().rows,
+        rows(125, 0)
+    );
+
+    // No receipt is supplied: the trusted checkpoint still authenticates every
+    // byte contributing to this balance, but cannot make a noncanonical
+    // transport version valid.
+    let changed = with_empty_source_manifest_list(&bytes);
+    assert_eq!(
+        verify_fixture(&changed, anchor)
+            .err()
+            .expect("minor 1 without source manifests must be refused")
+            .predicate,
+        "supported_report"
+    );
+}
+
+#[test]
 fn minor_one_source_report_requires_manifest_and_exact_native_storage_profile() {
     let (records, body, manifest) = fixture();
     for inputs in [9, 10] {
@@ -254,7 +277,21 @@ fn bound_frontier_before_first_chunk_needs_native_source_storage_but_no_populati
         let inputs = if known_at == 4 { 9 } else { 7 };
         let (bytes, anchor) =
             bundle_with_native_inputs(&records, known_at, Selection::AsOf(20), &[], inputs);
-        assert!(verify_fixture(&bytes, anchor).unwrap().rows.is_empty());
+        assert!(
+            verify_fixture(&bytes, anchor.clone())
+                .unwrap()
+                .rows
+                .is_empty()
+        );
+        // Even after BindSource is visible, the canonical transport stays at
+        // minor 0 until the first selected chunk needs its population witness.
+        assert_eq!(
+            verify_fixture(&with_empty_source_manifest_list(&bytes), anchor)
+                .err()
+                .expect("a source binding without selected chunks still uses minor 0")
+                .predicate,
+            "supported_report"
+        );
         let (wrong, anchor) = bundle_with_native_inputs(
             &records,
             known_at,

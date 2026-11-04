@@ -38,6 +38,18 @@ fn entry(
     control: Option<(u8, [u8; 32], [u8; 32])>,
     evidence: &[Citation],
 ) -> Record {
+    entry_in_unit(seq, day, key, 1, legs, control, evidence)
+}
+
+fn entry_in_unit(
+    seq: u64,
+    day: i32,
+    key: u64,
+    unit: u32,
+    legs: &[(u8, u128, i128)],
+    control: Option<(u8, [u8; 32], [u8; 32])>,
+    evidence: &[Citation],
+) -> Record {
     let mut w = Writer::default();
     w.u16(1)
         .u16(0)
@@ -55,7 +67,7 @@ fn entry(
     for (side, account, amount) in legs {
         w.u8(*side)
             .u128(*account)
-            .u32(1)
+            .u32(unit)
             .i128(*amount)
             .u8(0)
             .count(0)
@@ -79,7 +91,7 @@ fn entry(
             .filter(|(side, _, _)| *side == 1)
             .map(|(_, _, value)| value)
             .sum();
-        w.u32(1).i128(debits).i128(credits);
+        w.u32(unit).i128(debits).i128(credits);
     }
     w.u8(0).bytes(&key.to_le_bytes());
     if let Some((_, body, _)) = control {
@@ -217,6 +229,30 @@ fn proof(
     through: Option<i32>,
     format: &[u8],
 ) -> (Vec<u8>, Checkpoint) {
+    proof_for_scope(
+        records,
+        body,
+        manifest,
+        debits,
+        credits,
+        crate::BalanceScope {
+            account: 10,
+            unit: 1,
+            effective_through: through,
+        },
+        format,
+    )
+}
+
+fn proof_for_scope(
+    records: &[Record],
+    body: &[u8],
+    manifest: Option<&[u8]>,
+    debits: i128,
+    credits: i128,
+    scope: crate::BalanceScope,
+    format: &[u8],
+) -> (Vec<u8>, Checkpoint) {
     let checkpoint = Checkpoint {
         book_id: [1; 16],
         branch_id: [0; 16],
@@ -232,8 +268,11 @@ fn proof(
         ),
     };
     let mut w = Writer::default();
-    w.bytes(format).fixed(&checkpoint.encode()).u128(10).u32(1);
-    if let Some(day) = through {
+    w.bytes(format)
+        .fixed(&checkpoint.encode())
+        .u128(scope.account)
+        .u32(scope.unit);
+    if let Some(day) = scope.effective_through {
         w.u8(1).i32(day);
     } else {
         w.u8(0);
@@ -256,6 +295,47 @@ fn proof(
         }
     }
     (w.buf, checkpoint)
+}
+
+/// A complete v4 wire proof for public API tests: both offsetting chunks,
+/// their source manifest and citations, and their Finalize tie-out are
+/// authenticated by the checkpoint. The gross columns are each 5,000 even
+/// though the net is zero; an empty prefix cannot canonically use v4.
+pub(crate) fn source_bound_fixture(scope: crate::BalanceScope) -> (Vec<u8>, Checkpoint) {
+    let body = body(0, false);
+    let day = scope.effective_through.unwrap_or(100);
+    let other_account = scope.account ^ 1;
+    let chunks = vec![
+        entry_in_unit(
+            3,
+            day,
+            1,
+            scope.unit,
+            &[(0, scope.account, 5000), (1, other_account, 5000)],
+            None,
+            &[],
+        ),
+        entry_in_unit(
+            4,
+            day,
+            2,
+            scope.unit,
+            &[(1, scope.account, 5000), (0, other_account, 5000)],
+            None,
+            &[],
+        ),
+    ];
+    let manifest = manifest(&body, &chunks);
+    let records = history(&body, &manifest, chunks, Some(1));
+    proof_for_scope(
+        &records,
+        &body,
+        Some(&manifest),
+        5000,
+        5000,
+        scope,
+        BALANCE_FORMAT_V4,
+    )
 }
 
 fn accepted(

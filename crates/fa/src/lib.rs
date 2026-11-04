@@ -323,7 +323,7 @@ pub use plan_warnings::{PlanWarning, PlanWarningKind, PlanWarnings};
 pub use procedure_certificate::{
     BANK_PROCEDURE_CERTIFICATE_FORMAT, CERTIFIABLE_PROCEDURES, CertifiedProcedure,
     MAX_PROCEDURE_CERTIFICATE_BYTES, PROCEDURE_CERTIFICATE_FORMAT, PROCEDURE_OUTPUT_FORMAT,
-    ProcedureCertificate, ProcedureRequest,
+    ProcedureCertificate, ProcedureCertificateStatus, ProcedureRequest,
 };
 pub use production::{
     BundleDelivery, DEFAULT_VOLUME as DEFAULT_PRODUCTION_VOLUME, PrivilegeClaims, PrivilegeEntry,

@@ -211,6 +211,82 @@ fn admitted_chain<V: Vfs + Clone>(
     Ok(Ok(fa_notary::chain(db, None)?))
 }
 
+/// The exact cells touched by migration entries in a selected checkpoint,
+/// including chunks whose open or abandoned run currently hides them.
+/// An extract needs a balance witness over these cells to prove which chunks
+/// count. Deriving them from its already-visible rows would miss hidden
+/// foreign-unit chunks, while crossing account and unit envelope lists would
+/// invent cells the authenticated legs do not touch.
+pub(crate) fn migration_balance_requests<V: Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &fgdb_types::context::PurposeContexts,
+    book: &BookContext,
+    signer: &dyn fa_notary::CheckpointSigner,
+    principal: VId,
+    capability: &Capability,
+    state: Oid,
+    account: Option<VId>,
+    effective_through: DateDay,
+) -> Outcome<Vec<fa_notary::BalanceRequest>> {
+    let states = match admitted_chain(db, ctx, book, signer, principal, capability)? {
+        Ok(states) => states,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let checkpoint = match select(&states, Some(state)) {
+        Ok(state) => state,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let journal = match fa_notary::Journal::read_with_boundaries(
+        db,
+        book,
+        Some(checkpoint.state.through_seq),
+        checkpoint.state.evidence_after,
+        checkpoint.state.access_after,
+    )? {
+        Ok(journal) => journal,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if journal.statement() != checkpoint.state.statement() {
+        return Err(KernelError::Corrupt(
+            "the migration candidate journal differs from its verified checkpoint".into(),
+        )
+        .into());
+    }
+    let mut cells = std::collections::BTreeSet::new();
+    for leaf in &journal.leaves {
+        if leaf.envelope.kind != fa_notary::journal::KIND_ENTRY
+            || leaf.envelope.class != fa_model::EntryClass::MIGRATION
+        {
+            continue;
+        }
+        let Some(fa_notary::Record::Entry(entry)) = leaf.authenticated_record()? else {
+            return Err(KernelError::Corrupt(
+                "a migration candidate does not authenticate its entry payload".into(),
+            )
+            .into());
+        };
+        if entry.proposal.effective_date > effective_through {
+            continue;
+        }
+        for leg in &entry.proposal.legs {
+            if account.is_none_or(|account| leg.account_ref == account) {
+                cells.insert((leg.account_ref, leg.amount.unit.0));
+                if cells.len() > fa_notary::bundle::MAX_BUNDLE_BALANCES {
+                    return Ok(Err(fa_notary::bundle::balance_limit(cells.len())));
+                }
+            }
+        }
+    }
+    Ok(Ok(cells
+        .into_iter()
+        .map(|(account, unit)| fa_notary::BalanceRequest {
+            account,
+            unit,
+            effective_through: Some(effective_through.0),
+        })
+        .collect()))
+}
+
 /// Which suffix to export: from the recipient's retained recorded state to
 /// a later one (`None`: the latest).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

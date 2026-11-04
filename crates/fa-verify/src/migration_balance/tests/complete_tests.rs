@@ -258,6 +258,35 @@ fn empty_prefixes_are_complete_and_bad_claims_still_fail() {
 }
 
 #[test]
+fn source_bound_balance_format_requires_a_nonempty_manifest_list() {
+    let body = body(0, false);
+    for (records, bodies, debits) in [
+        (vec![], vec![], 0),
+        (vec![record(Kind::Ordinary, 1, 100)], vec![], 5000),
+        (history(&body, 100, Some(1)), vec![(0, body)], 5000),
+    ] {
+        let (bytes, anchor) = complete(&records, &bodies, debits, None);
+        let report = crate::verify_balance(&bytes, &anchor).unwrap();
+        assert_eq!(report.scope, SCOPE_RECOMPUTATION);
+        assert_eq!(report.claim.debits, debits);
+
+        // The unchanged trusted root and every authenticated record remain
+        // valid. Only the transport tag and empty extension are substituted.
+        let format = 4..4 + BALANCE_FORMAT_V3.len();
+        assert_eq!(&bytes[format.clone()], BALANCE_FORMAT_V3);
+        let mut changed = bytes;
+        changed[format].copy_from_slice(BALANCE_FORMAT_V4);
+        changed.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(
+            crate::verify_balance(&changed, &anchor),
+            Err(VerifyError::Format {
+                expected: BALANCE_FORMAT_V3,
+            })
+        );
+    }
+}
+
+#[test]
 fn oversized_proofs_are_refused_before_prefix_allocation() {
     let (_, anchor) = complete(&[], &[], 0, None);
     let bytes = vec![0; MAX_BALANCE_PROOF_BYTES + 1];

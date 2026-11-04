@@ -1,0 +1,528 @@
+{
+  "commands": [
+    {
+      "command": [
+        "/root/.local/bin/bean-check",
+        "--version"
+      ],
+      "elapsed_ms": 166,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "01-bean_check-version.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 16,
+        "file": "01-bean_check-version.stdout",
+        "sha256": "8b43a16ae1d314e5b136b36cad7667de9c6bfcbf2bb768ae2b21a24ecf7df05e"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "--version"
+      ],
+      "elapsed_ms": 214,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "02-bean_query-version.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 33,
+        "file": "02-bean_query-version.stdout",
+        "sha256": "8844e58c92110812b210705f5ab2de25ffc3f642e6dad788358f82bae91133c6"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--version"
+      ],
+      "elapsed_ms": 16,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "03-hledger-version.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 29,
+        "file": "03-hledger-version.stdout",
+        "sha256": "85a89abb22b0da64f3824a996a4b13e9528cfae00551a9dcacdf090489aa10bb"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-check",
+        "/workspace/scratch/50fa1275d487/hmrc-oracle-final/inputs/journal.beancount"
+      ],
+      "elapsed_ms": 218,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "04-bean-check.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 0,
+        "file": "04-bean-check.stdout",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/hmrc-oracle-final/inputs/journal.beancount",
+        "SELECT account, currency, sum(number) AS total, count(*) AS postings GROUP BY account, currency ORDER BY account, currency;"
+      ],
+      "elapsed_ms": 367,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "05-beanquery-net.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 7617,
+        "file": "05-beanquery-net.stdout",
+        "sha256": "3fcc1cd05ef3fd25aeab75d6070846b9bed8c0536274b418114d18ffee7400c2"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/hmrc-oracle-final/inputs/journal.beancount",
+        "SELECT account, currency, sum(number) AS total, count(*) AS postings WHERE number > 0 GROUP BY account, currency ORDER BY account, currency;"
+      ],
+      "elapsed_ms": 367,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "06-beanquery-debit.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 7344,
+        "file": "06-beanquery-debit.stdout",
+        "sha256": "6aab3d1e5919078b835fea836aa88d14e2855bc6bef4d477b25cd09ba6c0bd78"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/hmrc-oracle-final/inputs/journal.beancount",
+        "SELECT account, currency, sum(number) AS total, count(*) AS postings WHERE number < 0 GROUP BY account, currency ORDER BY account, currency;"
+      ],
+      "elapsed_ms": 366,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "07-beanquery-credit.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 932,
+        "file": "07-beanquery-credit.stdout",
+        "sha256": "8e922be92caa2dd8baf1c7ea77740755195303627eab3eff17c244f70aeded1a"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/hmrc-oracle-final/inputs/journal.hledger",
+        "print",
+        "-O",
+        "csv"
+      ],
+      "elapsed_ms": 165,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "08-hledger-postings.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 716131,
+        "file": "08-hledger-postings.stdout",
+        "sha256": "691d1a63bef490a5b8f5f8b129bfe673ecc3435e05ed4722fed3324bbdcbeaa8"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/hmrc-oracle-final/inputs/journal.hledger",
+        "balance",
+        "--flat",
+        "--no-total",
+        "--empty",
+        "-O",
+        "csv",
+        "cur:^GBP$"
+      ],
+      "elapsed_ms": 165,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "09-hledger-00-net.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 7172,
+        "file": "09-hledger-00-net.stdout",
+        "sha256": "1b0e3c4eec6b67382c4a91a56c817311df6ae2471cacff583b393a2ffde06cb8"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/hmrc-oracle-final/inputs/journal.hledger",
+        "balance",
+        "--flat",
+        "--no-total",
+        "--empty",
+        "-O",
+        "csv",
+        "cur:^GBP$",
+        "amt:>0"
+      ],
+      "elapsed_ms": 118,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "10-hledger-00-debit.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 7170,
+        "file": "10-hledger-00-debit.stdout",
+        "sha256": "b1b87ecda6946f60e4cced8f68dcba80e85b578c360bbe790a77f0a8a447a619"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/hmrc-oracle-final/inputs/journal.hledger",
+        "balance",
+        "--flat",
+        "--no-total",
+        "--empty",
+        "-O",
+        "csv",
+        "cur:^GBP$",
+        "amt:<0"
+      ],
+      "elapsed_ms": 165,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "11-hledger-00-credit.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 867,
+        "file": "11-hledger-00-credit.stdout",
+        "sha256": "280d8c0aa61a21f0d44a1590946e7ffd237ccb8c499aaaa83fc515810dade6b6"
+      }
+    }
+  ],
+  "dataset": "hmrc-2025-03",
+  "execution_boundary": "Native exports were produced by frozen commit 68b80d4e6c916013582832626f92edb0d50be08e. This is not execution evidence for later Rust changes. The independently identified new Python helper was executed against the untouched exports.",
+  "format": "fa-public-data-external-oracle-evidence-v1",
+  "launch_command": [
+    "python3",
+    "-B",
+    "scripts/plaintext_oracle.py",
+    "--csv-gl",
+    "/workspace/scratch/50fa1275d487/hmrc-native/native.csv",
+    "--beancount",
+    "/workspace/scratch/50fa1275d487/hmrc-native/journal.beancount",
+    "--hledger-journal",
+    "/workspace/scratch/50fa1275d487/hmrc-native/journal.hledger",
+    "--bean-check",
+    "/root/.local/bin/bean-check",
+    "--bean-query",
+    "/root/.local/bin/bean-query",
+    "--hledger",
+    "/workspace/scratch/50fa1275d487/bin/hledger",
+    "--out",
+    "/workspace/scratch/50fa1275d487/hmrc-oracle-final"
+  ],
+  "native_artifacts": {
+    "binaries": {
+      "fa": {
+        "bytes": 235424736,
+        "sha256": "acaae9c492073da98944c6c63366e58eefa64d419dab0fcbcbe2ced31c71eaa3"
+      },
+      "fa-verify": {
+        "bytes": 20226944,
+        "sha256": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+      }
+    },
+    "source_commit": "68b80d4e6c916013582832626f92edb0d50be08e"
+  },
+  "native_replay_result": {
+    "bytes": 4976,
+    "file": "hmrc-native/result.json",
+    "report": {
+      "approval_group_requests": 6,
+      "attribution_identities": null,
+      "attribution_tamper_controls": [],
+      "batch_approvals": true,
+      "batch_evidence": true,
+      "bind_source": true,
+      "boundary": "Complete published monthly expenditure extract under a declared offset-account model; not a complete original GL, independent human review, fraud finding, or audited trial balance.",
+      "bulk_transport": "direct_cli",
+      "bundle_sha256": "ebb4eb63724b5a2aa7b0bb81b588f50a052564eb453c640def656d10b4da3ca9",
+      "certificate_digest": "5ade117a026e10f1bcbfdb7417afbdc850dc962e253cc44e7b8446dee926128b",
+      "checkpoint_public_key": "2140d014068012353da18d863ef75f05a590cd44f3e3807d491b86de4b4a2fc2",
+      "checks": [
+        "pinned_original_bytes",
+        "deterministic_source_transform",
+        "all_source_documents_durable_byte_identity",
+        "complete_chunk_and_leg_census",
+        "group_receipts_bind_every_approved_chunk",
+        "prepare_retry_without_publication",
+        "chunk_retry_without_publication",
+        "staged_invisibility",
+        "native_full_detail_tieout",
+        "atomic_finalization",
+        "historical_invisibility",
+        "exact_gross_and_net_by_account",
+        "registers_equal_fold",
+        "finalized_retry_without_publication",
+        "native_csv_export_verification",
+        "every_dated_exported_leg_and_memo",
+        "native_certificate_replay",
+        "independent_fa_verify_report",
+        "tampered_bundle_refused",
+        "approval_groups_bound_to_each_digest_and_reviewer",
+        "approval_group_retry_without_publication",
+        "group_evidence_binds_every_entry_and_source_commitment",
+        "evidence_group_retry_without_publication",
+        "native_source_binding_matches_complete_prepared_population",
+        "bound_prepare_retry_without_publication",
+        "source_population_complete_before_activation",
+        "terminal_binding_retry_retains_original_identity",
+        "portable_source_manifest_matches_every_prepared_proposal",
+        "executable_identity_guards"
+      ],
+      "cost_center_reports": [],
+      "dataset": "hmrc-2025-03",
+      "documents": {
+        "expected_tb.json": "74bb52c34fce15b78c20c940c1e6c7aeb6a65c2601ac6cb1722d83f8853c32de",
+        "legacy.csv": "84caa882b32965389974aa8264861d2081a37aa680102a56fe3cc89861ab6557",
+        "provenance.jsonl": "c7083101f1319534304759daa8951b3ef0dc467551781d6499759d965ae99867",
+        "raw.csv": "473a8e5890e8ffb32021bc6337ba21d97d9a040047df0de32a70deb6bc76e624",
+        "receipt.json": "b31143020a3c70522d4b5db0d262db6c4327daca9f7fb6dd0ba6b7af7a91c7cf",
+        "records.jsonl": "bfff3af6667f4a2d95f1c112fc0251f5bb632a0a05b5d468b40ba0d900f8f2fd"
+      },
+      "elapsed_seconds": 63.308,
+      "evidence_group_requests": 3,
+      "fa_sha256": "acaae9c492073da98944c6c63366e58eefa64d419dab0fcbcbe2ced31c71eaa3",
+      "fa_verify_sha256": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e",
+      "migration_run": "c7a52cb47948609925007d5694bc4013",
+      "native_attribution": null,
+      "native_calls": 100,
+      "native_export": {
+        "entries": 127,
+        "legs": 2860
+      },
+      "output_digest": "5c0d224975acfe0e6ccda71ba68c002c0d858b2e24b267f6f841ea0ad3daed95",
+      "package_oid": "14a00e5b6ca9ea30980415024d5faa716f4f9c5740bf531b5fc9936d56356b92",
+      "period": "FY2025-P03",
+      "source_binding": {
+        "book_id": "6d0befce5d0204cf28a6aa29432076b5",
+        "complete": true,
+        "expected_chunks": 127,
+        "manifest_digest": "9d3c59031cc5dc18d37e06463314461341867d456cae5887f5dd5b7fd8c60eb9",
+        "manifest_vid": "cd064918198a05fb874d12111f5a83af",
+        "missing_chunks": [],
+        "package_commit": "3ecb62416317499c434edb32498118a0d303f63a5692483d3d2b1ced008bc030",
+        "package_oid": "14a00e5b6ca9ea30980415024d5faa716f4f9c5740bf531b5fc9936d56356b92",
+        "recorded_chunks": 127,
+        "run_body_digest": "811e0bf5bed03ba8fa22107cd440525c830d18ff7bebae8f5670f81c81e01264",
+        "run_vid": "c7a52cb47948609925007d5694bc4013",
+        "source_commit": "bf64e4efaaf56381baa9c81c278cb1f2ef748b35e28b0c7d98c1e8c53494b322",
+        "source_oid": "84caa882b32965389974aa8264861d2081a37aa680102a56fe3cc89861ab6557",
+        "source_rows": 2860,
+        "unexpected_chunks": []
+      },
+      "source_binding_receipt": {
+        "already_recorded": false,
+        "control_entry": "5f24c5c44a7f258774033b9c18d6a65a",
+        "recorded_at": 40
+      },
+      "source_report": {
+        "bind_leaf_index": 38,
+        "major": 1,
+        "manifest_bytes": 6322,
+        "minor": 1,
+        "source_witnesses": 1
+      },
+      "source_sha256": "eca3d42b3c8f6c8e1b4746fcd3614b6b65311fbd4a7900a96b3b269dc3006a2a",
+      "source_stats": {
+        "date_count": 21,
+        "duplicate_rows": 1,
+        "expense_area_count": 42,
+        "expense_type_count": 134,
+        "max_minor": "1507727368",
+        "max_transaction_rows": 12,
+        "min_minor": "-321224815",
+        "negative_minor": "-942246241",
+        "negative_rows": 125,
+        "net_minor": "28574458415",
+        "positive_minor": "29516704656",
+        "positive_rows": 1305,
+        "row_count": 1430,
+        "split_transaction_count": 71,
+        "supplier_count": 160,
+        "transaction_count": 1321,
+        "zero_rows": 0
+      },
+      "stage_group_size": 64,
+      "stage_requests": 2,
+      "status": "PASS"
+    },
+    "sha256": "5123314e4e1331f10b6a218494279917e1ddef157892dfd53b5bcac8a3f7f1e0"
+  },
+  "observed_utc": "2026-11-03T23:51:12.056467+00:00",
+  "proof_class": "real external Beancount and hledger differential against same-coordinate native CSV controls",
+  "retention": "Compact report and full command/status/output-digest transcript. The helper retains byte-identical input snapshots and every raw stdout/stderr in each new run directory; those large local files are not duplicated into this repository evidence.",
+  "source": {
+    "byte_length": 213348,
+    "controls": {
+      "date_count": 21,
+      "duplicate_rows": 1,
+      "expense_area_count": 42,
+      "expense_type_count": 134,
+      "max_minor": "1507727368",
+      "max_transaction_rows": 12,
+      "min_minor": "-321224815",
+      "negative_minor": "-942246241",
+      "negative_rows": 125,
+      "net_minor": "28574458415",
+      "positive_minor": "29516704656",
+      "positive_rows": 1305,
+      "row_count": 1430,
+      "split_transaction_count": 71,
+      "supplier_count": 160,
+      "transaction_count": 1321,
+      "zero_rows": 0
+    },
+    "encoding": "cp1252",
+    "limits": "Paid invoice lines over the publication threshold, including split lines and credit notes. Values are gross including VAT; dates are payment dates. No original double-entry counterpart, opening balances, or complete departmental ledger is supplied.",
+    "publication_url": "https://www.gov.uk/government/publications/hmrc-spending-over-25000-march-2025",
+    "publisher": "HM Revenue & Customs",
+    "sha256": "eca3d42b3c8f6c8e1b4746fcd3614b6b65311fbd4a7900a96b3b269dc3006a2a",
+    "title": "HMRC spending over £25,000, March 2025",
+    "url": "https://assets.publishing.service.gov.uk/media/680fdb56b0d43971b07f5c76/HMRC_spending_over_25000_for_March_2025.csv"
+  },
+  "status": "PASS",
+  "tool_report": {
+    "account_currency_cells": 135,
+    "checks": [
+      "bean_check_validates_untouched_export",
+      "beanquery_net_and_counts_match_every_native_cell",
+      "beanquery_debit_and_counts_match_every_native_cell",
+      "beanquery_credit_and_counts_match_every_native_cell",
+      "hledger_parsed_postings_match_native_net_gross_and_counts",
+      "hledger_independent_net_balances_match_every_native_cell",
+      "hledger_independent_gross_debits_match_every_native_cell",
+      "hledger_independent_gross_credits_match_every_native_cell",
+      "original_snapshot_and_executable_hashes_unchanged"
+    ],
+    "command_transcript": {
+      "bytes": 5435,
+      "file": "commands.jsonl",
+      "sha256": "fea11c05d8bed81719fe4e89d3b03eadc3d05b4705d0a1e463967d8438d1b9d7"
+    },
+    "commands": 11,
+    "compared_controls": {
+      "bytes": 36580,
+      "file": "expected.json",
+      "sha256": "493e1130336f62d7728f84820e4b6c3f59a64f0d73046f550d0109f9085c5951"
+    },
+    "coordinate": {
+      "base": "GBP@2",
+      "book": "Published expenditure model: hmrc-2025-03",
+      "certificate_digest": "67913a2825228a67279409cb943eb57d9be3b122e19774e91f1fc6d5fc09ee7d",
+      "content_digest": "e74e5e14df441a2c283ae5ad500c4940c92920411fd19172dc862eeb9852a95a",
+      "effective_through": "2025-03-31",
+      "entries": "127",
+      "known_at": "554"
+    },
+    "currencies": {
+      "GBP": 2
+    },
+    "declared_accounts": 135,
+    "entries": 127,
+    "format": "fa-plaintext-oracle-v1",
+    "helper_sha256": "8a9ad13bdd17fb7e0f6740e7571294acfe57d20b92825dc80385717b867a2955",
+    "input_files": {
+      "beancount": {
+        "bytes": 460837,
+        "original_path": "/workspace/scratch/50fa1275d487/hmrc-native/journal.beancount",
+        "sha256": "1f7aaf3f4bf9ff048adbd6b7315f51b066f42e3f58575c559a32b80f7072f93e",
+        "snapshot": "inputs/journal.beancount"
+      },
+      "csv_gl": {
+        "bytes": 931898,
+        "original_path": "/workspace/scratch/50fa1275d487/hmrc-native/native.csv",
+        "sha256": "e56d772852ced33153d41de0cac9058beac01d4c1021961dde79b5c2d1d62a66",
+        "snapshot": "inputs/native.csv"
+      },
+      "hledger": {
+        "bytes": 196993,
+        "original_path": "/workspace/scratch/50fa1275d487/hmrc-native/journal.hledger",
+        "sha256": "aab7af7179e8fd9c8fbca0acee17b2a61635f604eed9521875ee146d767af46d",
+        "snapshot": "inputs/journal.hledger"
+      }
+    },
+    "postings": 2860,
+    "python_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+    "scope": "Exact signed-unit balances, separate debit/credit activity and posting counts for every account/currency cell in the three same-coordinate native exports. No cost conversion, market valuation, lot, dimension, evidence-custody, original-source authenticity or full-book completeness claim. Native export certificate verification and original-source reconciliation remain separate.",
+    "status": "PASS",
+    "tool_hash_scope": "Hashes bind the resolved executable files; Python launcher hashes do not bind all installed package dependencies.",
+    "tools": {
+      "bean_check": {
+        "bytes": 227,
+        "path": "/root/.local/bin/bean-check",
+        "sha256": "be8d5543540749ca2f4e456c1ca46acf30b82966c783628a98363de791b8926e",
+        "version": "Beancount 3.2.0"
+      },
+      "bean_query": {
+        "bytes": 219,
+        "path": "/root/.local/bin/bean-query",
+        "sha256": "628b1a9aa2e574bf78b6a415c64d9d8f646d0a113ec8eb5ce2562a8ff479028e",
+        "version": "beanquery 0.2.0, beancount 3.2.0"
+      },
+      "hledger": {
+        "bytes": 68837064,
+        "path": "/workspace/scratch/50fa1275d487/bin/hledger",
+        "sha256": "f4cb2b67ef40a1d2806e6347ec0baafcf23d5313daa3982be0c0606b3ad84bb8",
+        "version": "hledger 1.52.4, linux-x86_64"
+      }
+    }
+  },
+  "tool_report_file": {
+    "bytes": 3646,
+    "sha256": "3e600af449fca25682488490c0e7962b7788947a11c4775de53a5f3508fd30fe"
+  }
+}

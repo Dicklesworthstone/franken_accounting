@@ -5,7 +5,7 @@
 //! bundle   = bytes("fa:bundle:v1") ‖ format_major u16 ‖ format_minor u16
 //!          ‖ manifest ‖ bytes(TransparencyCheckpoint) ‖ completeness proof
 //!          ‖ list(entry) ‖ list(balance)
-//!          ‖ [format 1.1 only: list(bytes(approval record)) ‖ list(key leaf)]
+//!          ‖ [format 1.1/1.2: list(bytes(approval record)) ‖ list(key leaf)]
 //!          ‖ bytes(manifest_md)
 //! manifest = book_id [16] ‖ branch_id [16] ‖ through_seq u64 ‖ leaf_count u64
 //!          ‖ checkpoint_oid [32]
@@ -41,11 +41,18 @@
 //! detached receipt, which signs the body's digest.
 //!
 //! `format_major.format_minor` is the fa-verify format the bundle targets;
-//! this verifier implements 1.0 and 1.1 and refuses any other version
+//! this verifier implements 1.0, 1.1 and 1.2 and refuses any other version
 //! before it reads further ([`BundleError::Version`]). A producer writes
-//! 1.1 exactly when the in-scope entries cite an approval: 1.1 adds those
+//! 1.2 exactly when an Account or Entries bundle carries a balance: its
+//! manifest declares that the balance proofs disclose ALL checkpoint
+//! record payloads, including records outside the entry selection. They
+//! also carry any required migration bodies and source manifests. A scoped
+//! balance encoded as 1.0 or 1.1 is refused: the old text understates that
+//! disclosure. Reproduction in 1.2 changes the body digest and needs a new
+//! detached receipt. All other bundles retain 1.1 when the in-scope entries
+//! cite an approval, or 1.0 otherwise. Both 1.1 and 1.2 carry the selected
 //! approvals' records and their signers' key generations, checked as the
-//! `approvals` module states. Each balance names the
+//! `approvals` module states; 1.2's lists can be empty. Each balance names the
 //! register fold law its claim is defined under, and a law this verifier
 //! does not implement is a typed failure of that balance
 //! ([`VerifyError::FoldLaw`]), never a recomputation under another law.
@@ -73,7 +80,8 @@
 //! [`verify_bundle`] grades every predicate on its own — the checkpoint's
 //! signature, the manifest, the completeness of the in-scope set, the
 //! entry set, each record, each entry's document closure, each document
-//! stub's public commitment, each balance, in 1.1 the cited approvals, each
+//! stub's public commitment, each balance, in 1.2 the full-prefix payload
+//! disclosure, in 1.1/1.2 the cited approvals, each
 //! key record, each key chain and each approval's signature, and the
 //! receipt — as pass, fail, or unrun when a predicate it rests on failed.
 //! There is no bundle-wide success bit.
@@ -81,7 +89,8 @@
 //! Version 1.0 carries a subset of Appendix A's bundle, by name: closures
 //! hold the documents an entry's own evidence list cites (no events,
 //! rules, approvals, supplemental evidence or attestations; 1.1 adds the
-//! cited approvals and nothing else); there are no
+//! cited approvals, and 1.2 explicitly declares scoped balances' complete
+//! prefix payloads and any required migration witnesses); there are no
 //! redaction contracts, register cells, statements, certificates or
 //! findings. A receipt can bind the checkpoint prefix's retained TimeEvidence;
 //! this does not attest the physical UTC time of production. `scope_label` and `bundle_digest` are
@@ -105,11 +114,13 @@ use crate::verify_balance;
 
 pub const BUNDLE_FORMAT: &[u8] = b"fa:bundle:v1";
 pub const BUNDLE_DIGEST_DOMAIN: &[u8] = b"fa:bundle:v1";
-/// The fa-verify formats this verifier implements: 1.0, and 1.1, which
-/// adds the approvals the in-scope entries cite.
+/// The fa-verify formats this verifier implements: 1.0, 1.1 (cited
+/// approvals), and 1.2 (scoped balances' whole-prefix payload disclosure,
+/// with approval/key sections whether or not the selected entries cite any).
 pub const FORMAT_MAJOR: u16 = 1;
 pub const FORMAT_MINOR: u16 = 0;
 pub const FORMAT_MINOR_APPROVALS: u16 = 1;
+pub const FORMAT_MINOR_DISCLOSURE: u16 = 2;
 pub const RECEIPT_FORMAT: &[u8] = b"fa:production-receipt:v1";
 pub const RECEIPT_DIGEST_DOMAIN: &[u8] = b"fa:production-receipt:v1";
 pub const RECEIPT_SIGNATURE_DOMAIN: &[u8] = b"fa:production-receipt-signature:v1";
@@ -209,11 +220,11 @@ pub struct Summary {
     pub inline: u64,
     /// The fold law of each balance, in body order.
     pub balances: Vec<(Vec<u8>, u16)>,
-    /// Format 1.1's approval section; `None` in 1.0.
+    /// Format 1.1/1.2's approval section; `None` in 1.0.
     pub approvals: Option<ApprovalSummary>,
 }
 
-/// What a 1.1 bundle carries for its cited approvals.
+/// What a 1.1/1.2 bundle carries for its cited approvals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ApprovalSummary {
     pub records: u64,
@@ -277,6 +288,14 @@ pub fn manifest_md(m: &Manifest, summary: &Summary) -> String {
             a.records, a.signed, a.key_records
         )
     });
+    let disclosure = if summary.format.1 == FORMAT_MINOR_DISCLOSURE {
+        format!(
+            "- Payload disclosure: whole_checkpoint_prefix; all {} distinct checkpoint journal record payloads, including records outside the entry selection, evidence and access records. Each balance proof also carries any required migration witnesses.\n",
+            m.leaf_count
+        )
+    } else {
+        String::new()
+    };
     format!(
         "# FrankenAccounting evidence bundle\n\
          \n\
@@ -290,6 +309,7 @@ pub fn manifest_md(m: &Manifest, summary: &Summary) -> String {
          - Entries: {}, with their payloads\n\
          - Documents: {} cited, {} included\n\
          - Balances: {}{laws}\n\
+         {disclosure}\
          {approvals}\
          \n\
          Verify: fa-verify bundle <this file> --key <the book's checkpoint public key> [--receipt <its production receipt>]\n\
@@ -343,7 +363,7 @@ impl fmt::Display for BundleError {
             Self::Format => write!(f, "not an `fa:bundle:v1` evidence bundle"),
             Self::Version { major, minor } => write!(
                 f,
-                "the bundle targets fa-verify format {major}.{minor}; this verifier implements {FORMAT_MAJOR}.{FORMAT_MINOR} and {FORMAT_MAJOR}.{FORMAT_MINOR_APPROVALS} only — use a verifier that implements {major}.{minor}"
+                "the bundle targets fa-verify format {major}.{minor}; this verifier implements {FORMAT_MAJOR}.{FORMAT_MINOR}, {FORMAT_MAJOR}.{FORMAT_MINOR_APPROVALS} and {FORMAT_MAJOR}.{FORMAT_MINOR_DISCLOSURE} only — use a verifier that implements {major}.{minor}"
             ),
             Self::Decode(e) => write!(f, "{e}"),
             Self::TrustedKey {
@@ -447,9 +467,9 @@ struct Parsed<'a> {
     proof: ProofSection<'a>,
     entries: Vec<Item<'a>>,
     balances: Vec<BalanceItem<'a>>,
-    /// Format 1.1: the cited approvals' stored records, in file order.
+    /// Format 1.1/1.2: the cited approvals' stored records, in file order.
     approvals: Vec<&'a [u8]>,
-    /// Format 1.1: their signers' key generations.
+    /// Format 1.1/1.2: their signers' key generations.
     key_leaves: Vec<approvals::KeyLeaf<'a>>,
     manifest_md: &'a [u8],
 }
@@ -534,7 +554,12 @@ fn parse(bundle: &[u8]) -> Result<Parsed<'_>, BundleError> {
     }
     let major = r.u16("bundle.format_major")?;
     let minor = r.u16("bundle.format_minor")?;
-    if major != FORMAT_MAJOR || !matches!(minor, FORMAT_MINOR | FORMAT_MINOR_APPROVALS) {
+    if major != FORMAT_MAJOR
+        || !matches!(
+            minor,
+            FORMAT_MINOR | FORMAT_MINOR_APPROVALS | FORMAT_MINOR_DISCLOSURE
+        )
+    {
         return Err(BundleError::Version { major, minor });
     }
     let manifest = read_manifest(&mut r)?;
@@ -578,7 +603,7 @@ fn parse(bundle: &[u8]) -> Result<Parsed<'_>, BundleError> {
             proof: r.bytes(UNBOUNDED, "balance.proof")?,
         });
     }
-    let (approvals, key_leaves) = if minor == FORMAT_MINOR_APPROVALS {
+    let (approvals, key_leaves) = if minor != FORMAT_MINOR {
         (
             approvals::read_approvals(&mut r)?,
             approvals::read_key_leaves(&mut r)?,
@@ -936,7 +961,7 @@ pub(crate) fn verify_bundle_observing(
             .iter()
             .map(|b| (b.domain.to_vec(), b.version))
             .collect(),
-        approvals: (p.format.1 == FORMAT_MINOR_APPROVALS).then(|| ApprovalSummary {
+        approvals: (p.format.1 != FORMAT_MINOR).then(|| ApprovalSummary {
             records: p.approvals.len() as u64,
             signed: p
                 .approvals
@@ -958,14 +983,16 @@ pub(crate) fn verify_bundle_observing(
     let signed = signed.ok();
     let scope_label = p.manifest.scope.admissible(p.manifest.leaf_count).label();
 
+    let manifest_grade = signed.as_ref().map_or_else(
+        || Grade::Unrun(CHECKPOINT_UNRUN.to_string()),
+        |s| manifest_grade(&p, s, &summary),
+    );
+    let manifest_authenticated = matches!(manifest_grade, Grade::Pass);
     checks.push(check(
         "manifest",
         "manifest",
         "the manifest and manifest_md".to_string(),
-        signed.as_ref().map_or_else(
-            || Grade::Unrun(CHECKPOINT_UNRUN.to_string()),
-            |s| manifest_grade(&p, s, &summary),
-        ),
+        manifest_grade,
     ));
 
     let scoped = signed.as_ref().map(|s| in_scope(&p, s));
@@ -1048,7 +1075,7 @@ pub(crate) fn verify_bundle_observing(
         match cited {
             Some((proposal_digest, cited)) => {
                 citing_entries += usize::from(!cited.is_empty());
-                if p.format.1 == FORMAT_MINOR_APPROVALS {
+                if p.format.1 != FORMAT_MINOR {
                     citing.push(approvals::Citing {
                         leaf_index: item.leaf_index,
                         proposal_digest,
@@ -1084,8 +1111,13 @@ pub(crate) fn verify_bundle_observing(
         }
     }
 
+    // Only a payload-complete proof authenticates the whole-prefix
+    // disclosure count. A legacy proof composed with entry-only prefix
+    // closure cannot attest disclosure of non-entry payloads.
+    let mut complete_balance_payloads = !p.balances.is_empty();
     for (k, b) in p.balances.iter().enumerate() {
         let subject = format!("balance {k}");
+        let mut complete_payloads = false;
         let grade = match &signed {
             None => Grade::Unrun(CHECKPOINT_UNRUN.to_string()),
             Some(_) if (b.domain, b.version) != (FOLD_DOMAIN, FOLD_VERSION) => Grade::Fail(
@@ -1097,6 +1129,7 @@ pub(crate) fn verify_bundle_observing(
             ),
             Some(s) => match verify_balance(b.proof, &s.checkpoint) {
                 Ok(balance) if balance.scope == crate::balance::SCOPE_RECOMPUTATION => {
+                    complete_payloads = true;
                     observe(k, &balance);
                     Grade::Pass
                 }
@@ -1115,6 +1148,7 @@ pub(crate) fn verify_bundle_observing(
                 Err(error) => Grade::Fail(error.to_string()),
             },
         };
+        complete_balance_payloads &= complete_payloads;
         let subject = if full_prefix_payloads {
             format!(
                 "{subject}; every prefix entry selector independently rebuilt from its payload; \
@@ -1126,24 +1160,51 @@ pub(crate) fn verify_bundle_observing(
         checks.push(check("recomputation", "recomputation", subject, grade));
     }
 
-    // A producer writes 1.1 exactly when an in-scope entry cites an approval
-    // (bundle/approvals.rs), so the minor is fixed by the authenticated
-    // entries. A citing bundle re-encoded as 1.0 would carry none of the
-    // approval records its entries cite and still verify, and a 1.1 bundle
-    // that cites nothing is not the canonical bytes. The check is reported
-    // only when the minor contradicts the citations.
+    if p.format.1 == FORMAT_MINOR_DISCLOSURE {
+        let grade = if !manifest_authenticated {
+            Grade::Unrun("the disclosure manifest did not verify".to_string())
+        } else if !complete_balance_payloads {
+            Grade::Unrun("not every balance verified all checkpoint record payloads".to_string())
+        } else {
+            Grade::Pass
+        };
+        checks.push(check(
+            "payload_disclosure",
+            "whole_checkpoint_prefix",
+            format!(
+                "all {} distinct checkpoint journal record payloads, including records outside the entry selection, evidence and access records; balance proofs also carry any required migration witnesses",
+                p.manifest.leaf_count
+            ),
+            grade,
+        ));
+    }
+
+    // The minor is fixed by the selection, stock claims and authenticated
+    // citations. In particular, dropping 1.2's disclosure line and approval
+    // sections while relabelling a scoped balance 1.0 cannot hide its full
+    // prefix payloads; nor can 1.2 pad a bundle that needs no such disclosure.
     if citations_authenticated {
-        let why = if citing_entries > 0 && p.format.1 != FORMAT_MINOR_APPROVALS {
+        let scoped_balances =
+            !matches!(p.manifest.scope, BundleScope::Prefix) && !p.balances.is_empty();
+        let expected = if scoped_balances {
+            FORMAT_MINOR_DISCLOSURE
+        } else if citing_entries > 0 {
+            FORMAT_MINOR_APPROVALS
+        } else {
+            FORMAT_MINOR
+        };
+        let why = if p.format.1 != expected {
             Some(format!(
-                "{citing_entries} in-scope entries cite an approval, so the canonical bundle is \
-                 format {FORMAT_MAJOR}.{FORMAT_MINOR_APPROVALS} and carries their records; this \
-                 {FORMAT_MAJOR}.{} bundle omits them",
-                p.format.1
-            ))
-        } else if citing_entries == 0 && p.format.1 == FORMAT_MINOR_APPROVALS {
-            Some(format!(
-                "no in-scope entry cites an approval, so the canonical bundle is format \
-                 {FORMAT_MAJOR}.{FORMAT_MINOR}, not {FORMAT_MAJOR}.{FORMAT_MINOR_APPROVALS}"
+                "the entry selection, {} balances and {citing_entries} approval-citing entries \
+                 require canonical bundle format {FORMAT_MAJOR}.{expected}; this bundle is \
+                 format {FORMAT_MAJOR}.{}{}",
+                p.balances.len(),
+                p.format.1,
+                if scoped_balances {
+                    "; scoped balances must declare whole_checkpoint_prefix payload disclosure"
+                } else {
+                    ""
+                },
             ))
         } else {
             None
@@ -1158,7 +1219,7 @@ pub(crate) fn verify_bundle_observing(
         }
     }
 
-    if p.format.1 == FORMAT_MINOR_APPROVALS {
+    if p.format.1 != FORMAT_MINOR {
         checks.extend(approvals::approval_checks(
             &p.manifest.book_id,
             signed.as_ref(),
@@ -1234,14 +1295,17 @@ mod tests {
         v2.extend_from_slice(&0u16.to_le_bytes());
         let e = verify_bundle(&v2, &[], None).unwrap_err();
         assert_eq!(e, BundleError::Version { major: 2, minor: 0 });
-        assert!(e.to_string().contains("implements 1.0 and 1.1 only"), "{e}");
-        let mut v1_2 = v2.clone();
-        v1_2.truncate(v1_2.len() - 4);
-        v1_2.extend_from_slice(&1u16.to_le_bytes());
-        v1_2.extend_from_slice(&2u16.to_le_bytes());
+        assert!(
+            e.to_string().contains("implements 1.0, 1.1 and 1.2 only"),
+            "{e}"
+        );
+        let mut v1_3 = v2.clone();
+        v1_3.truncate(v1_3.len() - 4);
+        v1_3.extend_from_slice(&1u16.to_le_bytes());
+        v1_3.extend_from_slice(&3u16.to_le_bytes());
         assert_eq!(
-            verify_bundle(&v1_2, &[], None).unwrap_err(),
-            BundleError::Version { major: 1, minor: 2 }
+            verify_bundle(&v1_3, &[], None).unwrap_err(),
+            BundleError::Version { major: 1, minor: 3 }
         );
     }
 

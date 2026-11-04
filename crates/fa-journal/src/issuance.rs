@@ -659,10 +659,7 @@ pub async fn issue_statements<V: asupersync::fs::Vfs + Clone>(
     // witnessed Approval of exactly this proposal under the current epoch,
     // judged by the `statement-issuance` rule.
     let key = fa_policy::sod::control_key("IssuanceControl", None, "Issue");
-    let preparer = Party {
-        principal,
-        profile: capability.profile(),
-    };
+    let preparer = Party::for_capability(principal, capability);
     if let Err(r) = policy::authorize_approvals(
         &txn,
         db,

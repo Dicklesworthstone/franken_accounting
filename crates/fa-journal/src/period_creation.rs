@@ -544,10 +544,7 @@ fn prepare_creation<V: asupersync::fs::Vfs + Clone>(
         epoch,
         &key,
         0,
-        Party {
-            principal,
-            profile: capability.profile(),
-        },
+        Party::for_capability(principal, capability),
     )? {
         txn.abort();
         return Ok(Err(refusal));

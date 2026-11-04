@@ -104,7 +104,11 @@ pub async fn prepare_outcome_rebuild<V: Vfs + Clone>(
     let query = ctx.query();
     query.checkpoint().map_err(WriteTxnError::Interrupted)?;
     let mut txn = db.begin(&ctx.txn())?;
-    if let Err(refusal) = crate::policy::capability_witness(&txn, db, book, &capability)? {
+    // Preparation is also the read-only recovery preview. Retain the
+    // authority witnesses here; publication checks the rehearsal caveat
+    // against the same capability sealed inside the prepared object.
+    if let Err(refusal) = crate::policy::capability_authority_witness(&txn, db, book, &capability)?
+    {
         txn.abort();
         return Ok(Err(refusal));
     }
@@ -233,6 +237,10 @@ pub async fn publish_outcome_rebuild<V: Vfs + Clone>(
     if let Err(refusal) = admit(db, book, &prepared.capability)? {
         prepared.abort();
         return Ok(Err(refusal));
+    }
+    if let Err(denial) = fa_policy::admit_direct_write(&prepared.capability) {
+        prepared.abort();
+        return Ok(Err(crate::policy::refusal(&denial)));
     }
     if db.frontier()? != prepared.preview.basis || db.partition_root()?.0.0 != prepared.source_root
     {

@@ -7,7 +7,8 @@
 
 use fa::TrialBalanceSelection;
 use fa::dimension::{
-    DimensionCloseSpec, DimensionRequirementSpec, DimensionValueRow, DimensionValueSpec,
+    DimensionCloseSpec, DimensionConstraintSpec, DimensionRequirementSpec, DimensionValueRow,
+    DimensionValueSpec,
 };
 use fa_model::{Id128, account_vid, dimension_kind, dimension_value_vid};
 use fa_time::DateDay;
@@ -24,6 +25,8 @@ const ADD: &str = "fa dimension add <dimension> <code> --name <name> [--parent <
 const LIST: &str = "fa dimension list [<dimension>] [--as-known-at HEAD|<seq>]";
 const REQUIRE: &str = "fa dimension require <dimension> <account> [--remove] [--key K]";
 const CLOSE: &str = "fa dimension close <dimension> <code> --on YYYY-MM-DD [--key K]";
+const CONSTRAIN: &str = "fa dimension constrain <dimension> <account> [--allow <code>]... [--forbid <code>]... [--allow-none | --clear] [--key K]";
+const CONSTRAINTS: &str = "fa dimension constraints [<dimension>] [--as-known-at HEAD|<seq>]";
 
 fn kinds() -> String {
     fa_journal::dimension::kinds_listing()
@@ -39,14 +42,46 @@ pub(crate) fn code_of(id: u32) -> &'static str {
 }
 
 pub(crate) fn dimension_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    match args.positional.get(1).map(String::as_str) {
+    let command = args.positional.get(1).map(String::as_str);
+    let allowed: &[&str] = match command {
+        Some("add") => &["--name", "--parent", "--from", "--to", "--key"],
+        Some("list" | "constraints") => &["--as-known-at"],
+        Some("require") => &["--remove", "--key"],
+        Some("close") => &["--on", "--key"],
+        Some("constrain") => &["--allow", "--forbid", "--allow-none", "--clear", "--key"],
+        _ => &[],
+    };
+    for flag in [
+        "--name",
+        "--parent",
+        "--from",
+        "--to",
+        "--key",
+        "--as-known-at",
+        "--on",
+        "--remove",
+        "--allow",
+        "--forbid",
+        "--allow-none",
+        "--clear",
+    ] {
+        if (args.flag(flag).is_some() || args.switch(flag)) && !allowed.contains(&flag) {
+            return Err(usage(
+                format!("{flag} does not apply to this dimension subcommand"),
+                format!("{ADD} | {LIST} | {REQUIRE} | {CLOSE} | {CONSTRAIN} | {CONSTRAINTS}"),
+            ));
+        }
+    }
+    match command {
         Some("add") => add(ctx, args),
         Some("list") => list(ctx, args),
         Some("require") => require(ctx, args),
         Some("close") => close(ctx, args),
+        Some("constrain") => constrain(ctx, args),
+        Some("constraints") => constraints(ctx, args),
         _ => Err(usage(
-            "dimension has the subcommands add, list, require and close",
-            format!("{ADD} | {LIST} | {REQUIRE} | {CLOSE}"),
+            "dimension has the subcommands add, list, require, close, constrain and constraints",
+            format!("{ADD} | {LIST} | {REQUIRE} | {CLOSE} | {CONSTRAIN} | {CONSTRAINTS}"),
         )),
     }
 }
@@ -284,6 +319,224 @@ fn require(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ""
             }
         ),
+    );
+    Ok(())
+}
+
+/// Normalize repeated exact codes to their canonical order. Repeating a
+/// code is an error; no comma splitting or descendant expansion is implicit.
+fn constraint_codes(args: &Args, flag: &str) -> Result<Vec<String>, Fail> {
+    let mut codes: Vec<String> = args
+        .flag_all(flag)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    if codes.iter().any(String::is_empty) {
+        return Err(usage(format!("{flag} needs a nonempty value code"), CONSTRAIN));
+    }
+    codes.sort();
+    if codes.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(usage(format!("{flag} repeats a value code"), CONSTRAIN));
+    }
+    Ok(codes)
+}
+
+fn constraint_fields(spec: &DimensionConstraintSpec, account: &str) -> Vec<(&'static str, Json)> {
+    vec![
+        ("dimension", s(&spec.dimension)),
+        ("account", s(account)),
+        ("account_vid", s(format!("{:032x}", spec.account.0))),
+        (
+            "allowed",
+            spec.allowed
+                .as_ref()
+                .map_or(Json::Null, |values| Json::Arr(values.iter().map(s).collect())),
+        ),
+        (
+            "forbidden",
+            Json::Arr(spec.forbidden.iter().map(s).collect()),
+        ),
+    ]
+}
+
+fn constraint_summary(spec: &DimensionConstraintSpec, account: &str) -> String {
+    let allowed = match &spec.allowed {
+        None => "any value".to_string(),
+        Some(values) if values.is_empty() => "no tagged values".to_string(),
+        Some(values) => values.join(", "),
+    };
+    let forbidden = if spec.forbidden.is_empty() {
+        "none".to_string()
+    } else {
+        spec.forbidden.join(", ")
+    };
+    format!(
+        "{account} / {}: allowed {allowed}; forbidden {forbidden}",
+        spec.dimension
+    )
+}
+
+/// Replace a policy as a whole. Omitted --allow means an unrestricted
+/// allowlist; --allow-none represents an explicitly empty allowlist.
+fn constrain(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let [_, _, dimension, account] = args.positional.as_slice() else {
+        return Err(usage(
+            "dimension constrain names one dimension and one posting account",
+            CONSTRAIN,
+        ));
+    };
+    registered(dimension, CONSTRAIN)?;
+    let clear = args.switch("--clear");
+    let allow_none = args.switch("--allow-none");
+    let has_allow = args.flag("--allow").is_some();
+    let has_forbid = args.flag("--forbid").is_some();
+    if clear && (allow_none || has_allow || has_forbid) {
+        return Err(usage(
+            "--clear cannot be combined with value restrictions",
+            CONSTRAIN,
+        ));
+    }
+    if allow_none && has_allow {
+        return Err(usage("--allow-none cannot be combined with --allow", CONSTRAIN));
+    }
+    if !(clear || allow_none || has_allow || has_forbid) {
+        return Err(usage(
+            "choose --allow, --forbid, --allow-none or --clear",
+            CONSTRAIN,
+        ));
+    }
+    if args.flag_all("--key").len() > 1 {
+        return Err(usage("--key must be supplied at most once", CONSTRAIN));
+    }
+    let allowed = if allow_none || has_allow {
+        Some(constraint_codes(args, "--allow")?)
+    } else {
+        None
+    };
+    let forbidden = constraint_codes(args, "--forbid")?;
+    if allowed.as_ref().is_some_and(|values| {
+        forbidden
+            .iter()
+            .any(|value| values.binary_search(value).is_ok())
+    }) {
+        return Err(usage(
+            "a value cannot be both explicitly allowed and forbidden",
+            CONSTRAIN,
+        ));
+    }
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read", "schema_change"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.admit_rea_change(who, &cap)??;
+        crate::rea::admit_read(book, who, &cap)
+    })?;
+    let spec = DimensionConstraintSpec {
+        dimension: dimension.clone(),
+        account: account_vid(book.context().book_id, account),
+        allowed,
+        forbidden,
+    };
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        None => format!(
+            "dc:{:032x}:{}",
+            fa_model::dimension_constraint_vid(book.context().book_id, dimension, spec.account).0,
+            book.head()?.0
+        ),
+    };
+    let recorded = book.record_dimension_constraint(&spec, who, key.as_bytes(), &cap)??;
+    let mut fields = constraint_fields(&recorded.spec, account);
+    fields.extend([
+        (
+            "control_entry",
+            recorded
+                .control_entry
+                .map_or(Json::Null, |vid| s(format!("{:032x}", vid.0))),
+        ),
+        (
+            "recorded_at",
+            recorded
+                .recorded_at
+                .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+        ),
+        ("already_recorded", Json::Bool(recorded.already_recorded)),
+    ]);
+    ctx.out.at_book(&book)?;
+    ctx.out.event(
+        "dimension_constraint_recorded",
+        fields,
+        &format!(
+            "{}; required-dimension setting unchanged{}",
+            constraint_summary(&recorded.spec, account),
+            if recorded.already_recorded {
+                "; nothing was written"
+            } else {
+                ""
+            }
+        ),
+    );
+    Ok(())
+}
+
+/// Inspect policies at a fixed prefix, including retained clear controls.
+fn constraints(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let only = match args.positional.as_slice() {
+        [_, _] => None,
+        [_, _, dimension] => {
+            registered(dimension, CONSTRAINTS)?;
+            Some(dimension.as_str())
+        }
+        _ => {
+            return Err(usage(
+                "dimension constraints takes at most one dimension",
+                CONSTRAINTS,
+            ));
+        }
+    };
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+    let (known_at, _) = known_at_read_flag(args, &book, &ctx.out, &cap)?;
+    let (at, rows) = book.dimension_constraints(known_at, &cap)??;
+    let codes: std::collections::BTreeMap<VId, String> = book
+        .accounts_at(at, &cap)??
+        .into_iter()
+        .map(|account| (account.vid, account.code))
+        .collect();
+    let mut policies = Vec::new();
+    let mut human = Vec::new();
+    for row in rows {
+        if only.is_some_and(|only| row.spec.dimension != only) {
+            continue;
+        }
+        let account = codes
+            .get(&row.spec.account)
+            .cloned()
+            .unwrap_or_else(|| format!("{:032x}", row.spec.account.0));
+        let mut fields = constraint_fields(&row.spec, &account);
+        fields.extend([
+            ("vid", s(format!("{:032x}", row.vid.0))),
+            ("control_entry", s(format!("{:032x}", row.control_entry.0))),
+            ("recorded_at", Json::Int(i128::from(row.recorded_at.0))),
+        ]);
+        policies.push(obj(fields));
+        human.push(constraint_summary(&row.spec, &account));
+    }
+    ctx.out.at_book(&book)?;
+    ctx.out.event(
+        "dimension_constraints",
+        vec![
+            ("known_at", Json::Int(i128::from(at.0))),
+            ("dimension", only.map_or(Json::Null, s)),
+            ("constraints", Json::Arr(policies)),
+        ],
+        &if human.is_empty() {
+            "no account-specific dimension value restrictions recorded".to_string()
+        } else {
+            human.join("\n")
+        },
     );
     Ok(())
 }

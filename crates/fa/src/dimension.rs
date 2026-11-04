@@ -19,7 +19,8 @@ use fgdb_types::{CommitSeq, VId};
 use crate::{AsyncBook, BookError, Outcome, TrialBalanceSelection};
 
 pub use fa_journal::dimension::{
-    DimensionCloseSpec, DimensionRequirementRecorded, DimensionRequirementSpec,
+    DimensionCloseSpec, DimensionConstraintRecorded, DimensionConstraintRow,
+    DimensionConstraintSpec, DimensionRequirementRecorded, DimensionRequirementSpec,
     DimensionValueRecorded, DimensionValueRow, DimensionValueSpec,
 };
 
@@ -439,6 +440,58 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             capability,
         )
         .await?)
+    }
+
+    /// Replace one posting account's exact allowed and forbidden values for
+    /// a dimension under SchemaChange authority. This does not change
+    /// whether that dimension is required. `allowed: None` with no forbidden
+    /// values clears the restriction, retaining its journaled history.
+    pub async fn record_dimension_constraint(
+        &mut self,
+        cx: &PurposeContexts,
+        spec: &DimensionConstraintSpec,
+        principal: VId,
+        key: &[u8],
+        capability: &Capability,
+    ) -> Outcome<DimensionConstraintRecorded> {
+        if let Err(refusal) = self.admit_rea_change(cx, principal, capability)? {
+            return Ok(Err(refusal));
+        }
+        let description = self.seal_text(
+            cx,
+            &format!("constrain {} on {:032x}", spec.dimension, spec.account.0),
+        )?;
+        Ok(fa_journal::dimension::record_dimension_constraint(
+            &mut self.db,
+            cx,
+            &self.context,
+            spec,
+            principal,
+            key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
+    /// Account-specific value policies at the requested prefix, including
+    /// journaled clears, under current whole-book read authority.
+    pub fn dimension_constraints(
+        &self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+        capability: &Capability,
+    ) -> Outcome<(CommitSeq, Vec<DimensionConstraintRow>)> {
+        self.query(cx, |db, book| {
+            let at = match crate::subledger::admitted_at(db, book, capability, known_at)? {
+                Ok(at) => at,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            Ok(Ok((
+                at,
+                fa_journal::dimension::constraints_at(db, book, at)?,
+            )))
+        })
     }
 
     /// Every registered kind's value at `known_at` (the head when `None`),

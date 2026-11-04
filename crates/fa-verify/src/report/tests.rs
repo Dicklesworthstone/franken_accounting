@@ -327,6 +327,35 @@ fn verify_fixture(bytes: &[u8], anchor: SignedCheckpoint) -> Result<VerifiedRepo
     verify_report_with(bytes, &[], None, None, None, |_, _| Ok(anchor))
 }
 
+/// Change only the transport minor and insert an empty source-manifest list.
+/// The authenticated checkpoint, certificate, records and all later registry
+/// or functional inputs remain byte-for-byte identical.
+pub(super) fn with_empty_source_manifest_list(bytes: &[u8]) -> Vec<u8> {
+    let mut r = Reader::new(bytes);
+    assert_eq!(r.bytes(64, "format").unwrap(), REPORT_BUNDLE_FORMAT);
+    assert!(matches!(r.u16("major").unwrap(), 1..=3));
+    let minor_offset = bytes.len() - r.remaining();
+    assert_eq!(r.u16("minor").unwrap(), 0);
+    for field in ["certificate", "checkpoint", "prefix"] {
+        r.bytes(MAX_REPORT_BUNDLE_BYTES, field).unwrap();
+    }
+    let n = r.count(MAX_ROWS, 8, "records").unwrap();
+    for _ in 0..n {
+        r.u32("proposal_len").unwrap();
+        r.bytes(MAX_RECORD_BYTES, "record").unwrap();
+    }
+    let n = r.count(MAX_ROWS, 12, "migrations").unwrap();
+    for _ in 0..n {
+        r.u64("open_index").unwrap();
+        r.bytes(MAX_RECORD_BYTES, "body").unwrap();
+    }
+    let after_bodies = bytes.len() - r.remaining();
+    let mut changed = bytes.to_vec();
+    changed[minor_offset..minor_offset + 2].copy_from_slice(&1u16.to_le_bytes());
+    changed.splice(after_bodies..after_bodies, 0u32.to_le_bytes());
+    changed
+}
+
 #[test]
 fn original_and_fragment_source_closures_reproduce_the_same_report() {
     let mut records = schema();

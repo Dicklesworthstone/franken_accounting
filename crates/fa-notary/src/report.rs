@@ -1,5 +1,5 @@
 //! Portable native and dimension-filtered trial balances, statements, open
-//! items, summary accounts, balance explanations, aging, roll-forwards and direct cash flow over
+//! items, summary accounts, balance explanations, aging, roll-forwards, round-amount procedures and direct cash flow over
 //! a payload-complete checkpoint.
 //!
 //! This is the linear complete-prefix fallback from plan §13.1/§13.3. The
@@ -43,7 +43,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, summary trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, v11/v12 custom statement, native statement-diff, v6/v7 one-book consolidation, effective-date aging, roll-forward, equity roll-forward or equity comparison, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, summary trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, v11/v12 custom statement, native statement-diff, v6/v7 one-book consolidation, jet.round_amounts v1 procedure, effective-date aging, roll-forward, equity roll-forward or equity comparison, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -134,6 +134,11 @@ pub fn assemble(
 /// control is carried in the authenticated prefix; independent reconstruction
 /// checks its definition and chart commitments without promoting the native
 /// approval or definition-object reads into separate membership proofs.
+/// The bounded jet.round_amounts v1 profile keeps its outer procedure
+/// certificate and appends procedures and sod_policy to the four native
+/// documents. Those definitions support independent reproduction of the
+/// findings, exact work and complete decision card. Other procedures, input
+/// handles and effective cutoffs are not part of this profile.
 /// V2 appends a list of (registry name, canonical registry document) frames;
 /// existing v1 trial-balance bytes remain unchanged.
 pub fn assemble_with_registries(
@@ -148,6 +153,7 @@ pub fn assemble_with_registries(
     let custom = custom_statement_certificate(certificate)
         || custom_statement_diff_certificate(certificate)
         || custom_statement_trace_certificate(certificate);
+    let procedure = procedure_certificate(certificate);
     let expected: &[&str] = if explanation {
         &[
             "account_types",
@@ -164,6 +170,15 @@ pub fn assemble_with_registries(
             "foundations",
             "rounding_laws",
         ]
+    } else if procedure {
+        &[
+            "account_types",
+            "entry_classes",
+            "units",
+            "foundations",
+            "procedures",
+            "sod_policy",
+        ]
     } else {
         &["account_types", "entry_classes", "units", "foundations"]
     };
@@ -173,6 +188,7 @@ pub fn assemble_with_registries(
         || open_items_certificate(certificate)
         || aging_certificate(certificate)
         || lots_certificate(certificate)
+        || procedure
         || due_date_aging_certificate(certificate)
         || reconciliation_certificate(certificate)
         || roll_forward_certificate(certificate)
@@ -194,7 +210,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, or five including rounding_laws for custom statements",
+            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, five including rounding_laws for custom statements, or six including procedures and sod_policy for jet.round_amounts v1",
         )));
     }
     assemble_inner(
@@ -422,6 +438,64 @@ fn lots_certificate(certificate: &[u8]) -> bool {
         Ok(true)
     };
     header().unwrap_or(false)
+}
+
+/// Route only the bounded base procedure profile. This checks framing and
+/// selection, while producer replay and the independent verifier authenticate
+/// the complete source, commitments and reproduced output.
+fn procedure_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "procedure format")? != b"fa:procedure-certificate:v1" {
+            return Ok(false);
+        }
+        let source = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "procedure source")?;
+        if !open_items_certificate(source) {
+            return Ok(false);
+        }
+        let mut native = Reader::new(source);
+        native.fixed::<{ b"fa:report-certificate:v3".len() }>("report format")?;
+        native.str(128, "report scope")?;
+        native.str(128, "report authority")?;
+        native.str(128, "report output format")?;
+        let book = native.fixed::<16>("report book")?;
+        if native.fixed::<16>("report branch")? != [0; 16] {
+            return Ok(false);
+        }
+        let known_at = native.u64("report known-at")?;
+        if known_at == 0
+            || native.u8("report selector")? != 1
+            || native.u8("selected account")? != 0
+        {
+            return Ok(false);
+        }
+        reader.bytes(1024 * 1024, "procedure native approvals")?;
+        reader.fixed::<32>("procedure registry closure")?;
+        reader.u128("procedure producer")?;
+        reader.fixed::<32>("procedure capability")?;
+        let output = reader.bytes(32 * 1024 * 1024, "procedure output")?;
+        reader.fixed::<32>("procedure digest")?;
+        reader.finish()?;
+        let mut output = Reader::new(output);
+        if output.bytes(64, "procedure output format")? != b"fa:procedure-output:v1"
+            || output.str(128, "procedure id")? != "jet.round_amounts"
+            || output.u16("procedure version")? != 1
+            || output.u8("procedure claim")? != 0
+            || output.str(128, "procedure evidence")? != "FA-EVID-L01"
+            || output.fixed::<16>("procedure book")? != book
+            || output.u64("procedure known-at")? != known_at
+            || output.u8("procedure effective cutoff")? != 0
+        {
+            return Ok(false);
+        }
+        output.list(128, "procedure parameters", |reader| {
+            reader.str(128, "procedure parameter")?;
+            reader.i128("procedure parameter value")?;
+            Ok(())
+        })?;
+        Ok(output.u32("procedure input handles")? == 0)
+    };
+    certificate.len() <= MAX_REPORT_BUNDLE_BYTES && header().unwrap_or(false)
 }
 
 /// Route a summary wrapper only when it carries a sequence-selected trunk
@@ -816,6 +890,7 @@ fn assemble_inner(
                 || explanation_certificate(certificate)
                 || aging_certificate(certificate)
                 || lots_certificate(certificate)
+                || procedure_certificate(certificate)
                 || due_date_aging_certificate(certificate)
                 || reconciliation_certificate(certificate)
                 || roll_forward_certificate(certificate)
@@ -834,7 +909,7 @@ fn assemble_inner(
                 || consolidation::profile(certificate, journal, known_at).is_some()))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v13 functional dimension trial balance, v11/v12 custom statement, v6/v7 one-book consolidation, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, equity roll-forward or equity comparison, direct, policy, split or indirect cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, summary trial balance, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v13 functional dimension trial balance, v11/v12 custom statement, v6/v7 one-book consolidation, jet.round_amounts v1 procedure, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, equity roll-forward or equity comparison, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()

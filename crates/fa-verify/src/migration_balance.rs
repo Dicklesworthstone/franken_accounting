@@ -21,6 +21,7 @@
 //! runs must contain every member exactly once, including excluded accounts
 //! and dates. Open/Abandoned populations may be partial and remain invisible.
 //! A missing manifest never downgrades a bound run to a legacy proof.
+//! V4 requires a nonempty manifest list; an unbound complete proof keeps V3.
 //!
 //! This proves the register visibility predicate, not the migration's economic
 //! correctness, authorization, or trial-balance tie-out. Nothing reads current
@@ -224,6 +225,11 @@ pub fn verify_balance(proof: &[u8], anchor: &Checkpoint) -> Result<Balance, Veri
     let mut manifests = Vec::new();
     if source_bound {
         let n = r.count(raw.len(), 12, "proof.source_manifests")?;
+        if n == 0 {
+            return Err(VerifyError::Format {
+                expected: BALANCE_FORMAT_V3,
+            });
+        }
         for _ in 0..n {
             manifests.push((
                 r.u64("source_manifest.bind_leaf_index")?,
@@ -831,9 +837,12 @@ pub(crate) fn report_bodies_at<'a>(
 }
 
 #[cfg(test)]
+pub(crate) use tests::source_tests::source_bound_fixture;
+
+#[cfg(test)]
 mod tests {
     mod complete_tests;
-    mod source_tests;
+    pub(super) mod source_tests;
 
     use super::*;
     use crate::codec::Writer;

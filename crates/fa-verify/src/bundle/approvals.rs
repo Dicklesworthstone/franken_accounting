@@ -1,4 +1,4 @@
-//! Approvals in an evidence bundle (format 1.1; plan §14.5 non-repudiation,
+//! Approvals in an evidence bundle (formats 1.1/1.2; plan §14.5 non-repudiation,
 //! Appendix A `Approval` and `signature`, FA-INV-10, bead fa-kae).
 //!
 //! ```text
@@ -26,10 +26,13 @@
 //! key_id          = BLAKE3("fa:principal-key-id:v1" ‖ u32 32 ‖ public_key)
 //! ```
 //!
-//! A producer writes format 1.1 exactly when its in-scope entries cite an
-//! approval. The bundle then carries the stored record of each approval
+//! A producer writes format 1.2 for a scoped bundle carrying a balance;
+//! otherwise it writes 1.1 when its in-scope entries cite an approval.
+//! Both formats carry the stored record of each approval
 //! they cite, and, for each principal with a signed approval among them,
-//! that principal's key generations in the checkpoint's prefix.
+//! that principal's key generations in the checkpoint's prefix. Format
+//! 1.2's lists are empty exactly when no selected entry needs them; the
+//! same exact-set and signature checks still run.
 //!
 //! What passes:
 //! - every approval an in-scope entry cites is present, derives the cited

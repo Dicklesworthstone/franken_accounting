@@ -7,6 +7,7 @@ use fa_verify::evidence::inventory::production::documents::{
     DocumentContent, MAX_PRODUCTION_DOCUMENTS, VerifiedDocumentProduction,
     verify_document_prefix_for, verify_document_production_for,
 };
+use fa_verify::evidence::inventory::production::supplements::verify_supplemented_document_prefix_for;
 use fa_verify::proof::production::MAX_PRODUCTION_BYTES;
 
 use crate::{Failure, array, hex, object, quote, read_bounded, read_checkpoint};
@@ -15,7 +16,7 @@ const HELP: &str = "Usage:
   fa-verify evidence production documents --prefix PREFIX --checkpoint TRUSTED_FILE \\
     --expect-first-seq U64 --expect-known-at U64 --expect-account HEX32|all \\
     --expect-days FIRST:LAST|all [--from-prefix | --record INCLUSION ...] \\
-    [--document OID64 KIND FILE ...] [--json]
+    [--include-supplements] [--document OID64 KIND FILE ...] [--json]
 
 The recipient independently chooses all four --expect-* selectors and trusts
 exactly 80 raw checkpoint bytes. Their meanings are unchanged from evidence
@@ -32,15 +33,24 @@ and balance v3 files are refused in this mode. No separate record set is
 supplied or checked; the exact document set and full bytes are still checked.
 Without --from-prefix the existing multi-proof behavior is unchanged.
 
+Add --include-supplements with --from-prefix to also require every document
+attached to the selected entries through the independently chosen known-at
+horizon. Attachments are authenticated and joined to earlier target entries;
+their recorded time, attacher and document/role associations are retained.
+Later attachments are excluded even when the trusted checkpoint is newer.
+Completeness covers supplemental records within the trusted prefix, not
+pre-accumulator history. Ambiguous or unsupported target identities fail.
+
 --document consumes THREE arguments: 64 ASCII hex digits for the document
 locator, a decimal u8 kind tag, and a path to its complete canonical bytes.
 Repeat it once per distinct document, in strictly ascending locator order.
 Every document originally cited by a selected entry is required, including
-empty documents. Repeated citations/roles share one file. Missing, extra,
+empty documents; --include-supplements adds its selected attachments to this
+exact set. Repeated original and supplemental citations/roles share one file. Missing, extra,
 duplicate, substituted or corrupt files fail the entire verification.
 No --document options succeed only for an authenticated empty citation set.
 
-Expected document commitments come only from authenticated entry citations,
+Expected document commitments come only from authenticated citations,
 never from these options or a producer manifest. Kind, length and every byte
 are recomputed. Kind/role tags are bound, not interpreted as economic facts.
 No new bundle format, book, keys, network or signature trust is introduced.
@@ -51,8 +61,9 @@ Each file is read against the remaining total budget. Use ./ for paths beginning
 All argument syntax is checked before any file is opened. Non-UTF-8 paths
 are supported. Success/error output never contains entry or document payloads.
 
-Coverage is original cited document bytes only. Supplemental evidence, rules,
-events, approvals, custody, signatures, permissions, evidence sufficiency,
+Without --include-supplements, coverage is original cited bytes only.
+Neither mode verifies full provenance: rules, events, approvals, custody,
+signatures, permissions, evidence sufficiency,
 accounting laws and migration visibility are NOT verified. Partial/redacted
 views cannot fulfill this full-byte mode; use the separate disclosure modes.
 Exit codes: 0 verified/help; 2 usage; 5 file/output I/O; 8 verification failed.";
@@ -146,6 +157,7 @@ fn parse(args: &[OsString]) -> Result<(super::Request, Vec<DocumentFile>), Failu
             // or missing-value token for a new document declaration.
             if argument != "--json"
                 && argument != "--from-prefix"
+                && argument != "--include-supplements"
                 && let Some(value) = args.get(index)
             {
                 base.push(value.clone());
@@ -199,6 +211,16 @@ pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
                 bytes,
             }),
     );
+    if request.include_supplements {
+        let report = verify_supplemented_document_prefix_for(
+            &prefix,
+            &documents,
+            &checkpoint,
+            &request.scope,
+        )
+        .map_err(|error| Failure::verification(error.to_string()))?;
+        return super::supplements::render_documents(&report, json);
+    }
     let report = if request.from_prefix {
         verify_document_prefix_for(&prefix, &documents, &checkpoint, &request.scope)
     } else {

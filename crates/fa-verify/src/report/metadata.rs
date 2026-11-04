@@ -931,6 +931,10 @@ impl Schema {
             // the chart or periods. Ordinary reports check its frame and
             // fold admitted legs; they do not prove asset-law admission.
             22 => return asset_cost::schedule(bytes),
+            // Account dimension constraints affect posting admission only.
+            // The authenticated control changes no chart or period facts;
+            // ordinary reports do not re-prove the admission policy.
+            25 => return Ok(()),
             // Existing REA controls, role/closing/FX declarations,
             // dimension values (17), requirements (18) and closes (19), and
             // Canon rule versions (20) change neither the immutable account

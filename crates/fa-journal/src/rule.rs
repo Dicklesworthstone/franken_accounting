@@ -912,10 +912,7 @@ pub async fn activate_rule_version<V: Vfs + Clone>(
         return Ok(Err(refusal));
     }
     let key = fa_policy::sod::control_key("PolicyControl", None, "ActivateRule");
-    let preparer = Party {
-        principal,
-        profile: capability.profile(),
-    };
+    let preparer = Party::for_capability(principal, capability);
     if let Err(r) = crate::policy::authorize_approvals(
         &txn,
         db,

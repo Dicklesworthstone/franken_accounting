@@ -398,3 +398,115 @@ fn round_trip_search_obeys_the_runtime_budget_before_finishing_its_search() {
     assert_eq!(bounded.work, complete.work);
     assert_eq!(h.db.frontier().unwrap(), before);
 }
+
+#[test]
+fn subsequent_events_default_budget_covers_long_period_history_and_explicit_budget_still_refuses() {
+    use fa_lantern::cutoff::SubsequentEvents;
+    use fa_lantern::{Transition, default_budget};
+
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    let january = h.period_code(day(2026, 1, 15));
+    let february = h.period_code(day(2026, 2, 1));
+    let usd = h.usd;
+    let mut closed_periods = 0_u64;
+    // Sixteen complete fiscal years plus January: each posting must pass 192
+    // old, out-of-window boundaries before finding the final eligible period.
+    // A budget based only on posting legs/log legs cannot pay for this scan.
+    for year in 2010..=2026 {
+        for period in h.book.calendar.periods_for_year(year).unwrap() {
+            if period.kind != PeriodKind::Normal || period.end > day(2026, 2, 1) {
+                continue;
+            }
+            closed_periods += 1;
+            snapshot.periods.insert(
+                period.code.clone(),
+                fa_journal::rows::PeriodRow {
+                    vid: fa_model::period_vid(&h.book.calendar.id, &period.code),
+                    calendar_id: h.book.calendar.id.clone(),
+                    code: period.code.clone(),
+                    fiscal_year: period.fiscal_year,
+                    ordinal: period.ordinal,
+                    kind: period.kind,
+                    start: period.start,
+                    end: period.end,
+                    state: PeriodState::Closed,
+                    created_at: CommitSeq(1),
+                },
+            );
+            snapshot.transitions.insert(
+                period.code,
+                vec![Transition {
+                    recorded_at: snapshot.coordinate.known_at,
+                    from: PeriodState::SoftClosed,
+                    to: PeriodState::Closed,
+                }],
+            );
+        }
+    }
+    assert_eq!(closed_periods, 193);
+    for index in 0_u64..128 {
+        snapshot.entries.push(make_snapshot_entry(
+            &mut h,
+            VId(300_000 + u128::from(index)),
+            snapshot.coordinate.known_at,
+            day(2026, 2, 1),
+            &february,
+            EntryClass::ADJUSTING,
+            vec![
+                ("6000", Side::Debit, usd, 500_000),
+                ("1000", Side::Credit, usd, 500_000),
+            ],
+            Vec::new(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        ));
+    }
+    let procedure = SubsequentEvents::new().unwrap();
+    let budget = default_budget(SubsequentEvents::ID, &snapshot).unwrap();
+    let complete = run_over_metered(&snapshot, &h.book, &procedure, Some(budget), None)
+        .expect("the registered budget must include the book's closed-period history");
+    assert_eq!(complete.findings.len(), 128);
+    assert_eq!(complete.work.entries, 128);
+    assert_eq!(complete.work.legs, 256);
+    assert_eq!(complete.work.comparisons, 128 * closed_periods);
+    for finding in &complete.findings {
+        assert!(finding.cites.contains(&Cite::Period(january.clone())));
+        assert!(
+            finding
+                .narrative
+                .contains(&format!("(1 day(s) after prior period {january})"))
+        );
+    }
+    let row = fa_lantern::bind(SubsequentEvents::ID).unwrap();
+    assert!(
+        complete
+            .work
+            .within_registered_bound(&row.complexity, &snapshot)
+    );
+    let reversed = run_over_metered(
+        &snapshot.with_entries_reversed(),
+        &h.book,
+        &procedure,
+        Some(budget),
+        None,
+    )
+    .unwrap();
+    assert_eq!(reversed.findings, complete.findings);
+    assert_eq!(reversed.findings_digest, complete.findings_digest);
+    assert_eq!(reversed.work, complete.work);
+
+    // The larger derived default never overrides an explicitly smaller
+    // caller budget. This refuses while scanning the first posting's periods,
+    // before returning any findings from the otherwise valid full run.
+    let error = run_over_metered(&snapshot, &h.book, &procedure, Some(50), None)
+        .expect_err("the caller's budget must still interrupt the nested scan");
+    assert!(
+        matches!(&error, LanternError::BudgetExhausted { procedure, used: 51, budget: 50, .. }
+            if procedure == SubsequentEvents::ID),
+        "{error:?}"
+    );
+    assert!(error.fix_hint().unwrap().contains("work budget"));
+}

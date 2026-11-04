@@ -1608,10 +1608,7 @@ pub async fn approve_case<V: asupersync::fs::Vfs + Clone>(
     // who planned any of the case's entries.
     let epoch = crate::policy::epoch_witness(&txn, db)?;
     let key = fa_policy::sod::control_key("CaseControl", None, "Approve");
-    let preparer = fa_policy::Party {
-        principal,
-        profile: req.capability.profile(),
-    };
+    let preparer = fa_policy::Party::for_capability(principal, &req.capability);
     let preparers = manifest.preparers();
     if let Err(r) = crate::policy::authorize_approvals_in(
         &txn,

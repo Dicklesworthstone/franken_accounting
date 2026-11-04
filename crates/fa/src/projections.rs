@@ -118,6 +118,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(refusal) = authorize(&self.db, cx, self.context(), principal, capability)? {
             return Ok(Err(refusal));
         }
+        if let Err(denial) = fa_policy::admit_direct_write(capability) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         cx.commit().checkpoint().map_err(BookError::Context)?;
         if prepared.book != self.context().book_id
             || prepared.report.basis != self.db.frontier().map_err(KernelError::from)?

@@ -782,10 +782,7 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
     let proposal = tick_proposal(book, &req);
     let proposal_digest = proposal.proposal_digest()?;
     let epoch = policy::epoch_witness(&txn, db)?;
-    let preparer = Party {
-        principal: req.principal_ref,
-        profile: req.capability.profile(),
-    };
+    let preparer = Party::for_capability(req.principal_ref, &req.capability);
     if let Err(r) = policy::authorize_approvals(
         &txn,
         db,
@@ -1367,10 +1364,7 @@ pub async fn sweep_batch_with_crash_and_witness<V: asupersync::fs::Vfs + Clone>(
     let classes = EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let matrix =
         Admissibility::embedded(&classes).map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let preparer = Party {
-        principal: req.principal_ref,
-        profile: req.capability.profile(),
-    };
+    let preparer = Party::for_capability(req.principal_ref, &req.capability);
 
     let mut accounts: BTreeMap<VId, AccountRow> = BTreeMap::new();
     let mut cells: BTreeMap<VId, CellRun> = BTreeMap::new();

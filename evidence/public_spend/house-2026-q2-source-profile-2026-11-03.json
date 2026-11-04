@@ -1,0 +1,305 @@
+{
+  "claim_boundary": "This record establishes original source pins, full-publication census, exact printed-control reconciliation for admissible complete organizations, and reproducible CAO preparation. It does not establish native posting, migration, report, export, or cryptographic verification. Native execution has a separate record.",
+  "dataset_id": "house-2026-q2",
+  "full_source_census": {
+    "data_sources": {
+      "AP": 93532,
+      "AR": 359,
+      "GL": 29810
+    },
+    "detail_rows": 123701,
+    "duplicate_detail_rows": 74,
+    "missing_transaction_dates": 16772,
+    "negative_minor": "-849639749",
+    "negative_rows": 4201,
+    "net_minor": "45744956364",
+    "office_total_rows": 1619,
+    "organization_count": 1142,
+    "outside_quarter_transaction_dates": 3,
+    "positive_minor": "46594596113",
+    "positive_rows": 119491,
+    "record_count": 133091,
+    "subtotal_rows": 7771,
+    "summary_rows": 6812,
+    "unparsed_service_dates": 2,
+    "zero_rows": 9
+  },
+  "helper_pins": {
+    "tools/public-data/house_disbursements.py": {
+      "byte_length": 42569,
+      "sha256": "c6c57f753553fe8d05caf9b541739ffc33d52052f0bfc602ae8f615b5f76d188"
+    },
+    "tools/public-data/house_sources.toml": {
+      "byte_length": 1683,
+      "sha256": "f6d2fc4959de17419843dfc29df5e94af15779a404da9dffc13406ef96887de3"
+    },
+    "tools/public-data/public_spend.py": {
+      "byte_length": 29136,
+      "sha256": "b8142a53f45d395e5fed2ce588b4aeda91708c0e85caf8e08c8845f0fbb46c1a"
+    },
+    "tools/public-data/tests/test_house_disbursements.py": {
+      "byte_length": 22612,
+      "sha256": "2cfb3c1bba40fa29856c05df510cef579c7140fa46fedd6ad3d4a95669839072"
+    }
+  },
+  "native_validation": "UNRUN",
+  "offline_helper_tests": {
+    "command": "python3 -m unittest discover -s tools/public-data/tests -p test_house_disbursements.py -v",
+    "scope": "Explicit synthetic adversarial helper tests. They are separate from real publisher-source observations and do not count as native real-corpus execution.",
+    "status": "PASS",
+    "test_count": 25
+  },
+  "organization_profile": {
+    "admissible_date_policy_among_controls_pass": 534,
+    "all_labels_in_either_publication": 1148,
+    "complete_profile_output": {
+      "byte_length": 704232,
+      "sha256": "fe939eaf19d951d35df8457d1465886ee3e484a6b75737ef516c3be065297f90"
+    },
+    "interpretation": "A missing publication counterpart or an ambiguous/incompatible section layout is an adapter scope or structure refusal. No accounting error, fraud, or legal conclusion is inferred.",
+    "missing_publication_scope": {
+      "count": 610,
+      "detail_only": 604,
+      "examples": [
+        "2019 HON. DAN CRENSHAW",
+        "2021 HOUSE ADMINISTRATION",
+        "2021 WEB SYSTEMS",
+        "2022 ENTERPRISE INFRASTRUCTURE",
+        "2022 ENTERPRISE OPERATIONS",
+        "2022 HON. A. DONALD MCEACHIN",
+        "2022 HON. JAY OBERNOLTE",
+        "2022 HON. JOHN GARAMENDI"
+      ],
+      "labels_digest_encoding": "UTF-8 json.dumps(sorted labels, ensure_ascii=False, sort_keys=True, indent=2) plus newline",
+      "reproduction": "The profile command emits every label and its refusal; no failing organization is silently removed.",
+      "sorted_organization_labels_sha256": "aff57c482556d1e86e1873a196e8bef903fdda5817b31b8dcb6a6aaaace1915c",
+      "summary_only": 6
+    },
+    "publisher_controls_pass": 534,
+    "publisher_controls_refused": 614,
+    "structural_refusals": [
+      {
+        "detail_file_rows": 211,
+        "organization": "2026 HON. BRIAN J. MAST",
+        "publisher_controls": "REFUSED",
+        "reason": "detail and summary have different office-section populations",
+        "summary_file_rows": 13
+      },
+      {
+        "detail_file_rows": 313,
+        "organization": "FISCAL YEAR 2026 OFFICE OF ATTENDING PHYSICIAN",
+        "publisher_controls": "REFUSED",
+        "reason": "detail and summary have different office-section populations",
+        "summary_file_rows": 15
+      },
+      {
+        "detail_file_rows": 3025,
+        "organization": "FISCAL YEAR 2026 SERGEANT AT ARMS",
+        "publisher_controls": "REFUSED",
+        "reason": "ambiguous repeated category control within publication section: ('NON - PERSONNEL', 'TRAVEL')",
+        "summary_file_rows": 55
+      },
+      {
+        "detail_file_rows": 143,
+        "organization": "FISCAL YEAR 2026 SUPPLIES AND MATERIALS",
+        "publisher_controls": "REFUSED",
+        "reason": "ambiguous or unknown inline subtotal at house-2026-q2:detail:948ea680f24c2f65:132063",
+        "summary_file_rows": 7
+      }
+    ]
+  },
+  "publication_url": "https://www.house.gov/the-house-explained/open-government/statement-of-disbursements",
+  "publisher": "U.S. House of Representatives, Office of the Chief Administrative Officer",
+  "reproduce": {
+    "fetch": "python3 tools/public-data/house_disbursements.py fetch --out artifacts/house-2026-q2-source",
+    "prepare": "python3 tools/public-data/house_disbursements.py prepare --detail artifacts/house-2026-q2-source/raw-detail.csv --summary artifacts/house-2026-q2-source/raw-summary.csv --out artifacts/house-cao-prepared",
+    "profile": "python3 tools/public-data/house_disbursements.py profile --detail artifacts/house-2026-q2-source/raw-detail.csv --summary artifacts/house-2026-q2-source/raw-summary.csv",
+    "verify": "python3 tools/public-data/house_disbursements.py verify --prepared artifacts/house-cao-prepared"
+  },
+  "schema_version": 1,
+  "selected_complete_organization": {
+    "date_policy": "Use a nonblank published TRANSACTION DATE only when it falls inside the publication quarter. A blank GL TRANSACTION DATE is assigned the quarter's last day solely for this analysis book. Original blanks and service-period dates remain unchanged in retained evidence. Service dates never substitute for transaction dates; no monthly distribution of undated payroll is inferred. A malformed service-date literal remains unparsed with an explicit diagnostic. Published two-digit years are interpreted as 2000 through 2099 in this source.",
+    "entry_count": 352,
+    "july_december": "Carry of this Q2-only analysis population; no completeness claim for subsequent real-world activity.",
+    "leg_count": 7710,
+    "model_boundary": "An expenditure analysis book of the complete selected published organization. Each nonzero DETAIL amount maps to an Expense account for its exact program and category, with an explicit modeled Equity counterpart. These are not the House's original journals, cash balances, opening balances, or full general ledger. Summary and subtotal rows are controls only, never monetary inputs. No original debit/credit counterpart, fiscal-year accrual, or undisclosed appropriation identity is inferred.",
+    "modeled_chart_accounts_including_offset": 121,
+    "month_end_scoped_expenditure_minor": {
+      "FY2026-P04": "275521581",
+      "FY2026-P05": "536547513",
+      "FY2026-P06": "3558135389"
+    },
+    "office_control_totals": [
+      {
+        "detail_minor": "3371931293",
+        "difference_minor": "0",
+        "inline_row_id": "house-2026-q2:detail:948ea680f24c2f65:005757",
+        "kind": "office",
+        "publication_section": 1,
+        "summary_qtd_minor": "3371931293",
+        "summary_row_id": "house-2026-q2:summary:4828ceb94cc1dc67:000250"
+      },
+      {
+        "detail_minor": "186204096",
+        "difference_minor": "0",
+        "inline_row_id": "house-2026-q2:detail:948ea680f24c2f65:011790",
+        "kind": "office",
+        "publication_section": 2,
+        "summary_qtd_minor": "186204096",
+        "summary_row_id": "house-2026-q2:summary:4828ceb94cc1dc67:000491"
+      }
+    ],
+    "organization": "FISCAL YEAR 2026 CHIEF ADMIN OFCR OF THE HOUSE",
+    "prepared_artifact_pins": {
+      "account_map.json": {
+        "byte_length": 7031,
+        "sha256": "35c2d1928e9b6307cb493f9a1e1e3bced80ffad3bd077678d442a8c1ff4433b5"
+      },
+      "chart.json": {
+        "byte_length": 22082,
+        "sha256": "e64784151cec8972a0d3900ed6239917d97b6573c13f685196560317dc7a3bcd"
+      },
+      "columns.toml": {
+        "byte_length": 319,
+        "sha256": "cd9a44166aae0748bbe8681a9f77f8862a1a3204b1d006c2e2e349e04960608f"
+      },
+      "controls.json": {
+        "byte_length": 305293,
+        "sha256": "08a3e68f700e4cec6e953fd21ba8713a0e751de5bd3a9fcd16449130d8ab7ad5"
+      },
+      "expected_tb.json": {
+        "byte_length": 711136,
+        "sha256": "a0b95931897d4314ed42b47c54a3c402cb76fca0d4c221df6e9e0f92d051de30"
+      },
+      "legacy.csv": {
+        "byte_length": 1643770,
+        "sha256": "a94a76c63d803c93082c3af97281677674078db2e216ef7479cf351f5803499d"
+      },
+      "provenance.jsonl": {
+        "byte_length": 5743279,
+        "sha256": "b8d2d0a3af6d5be37d6756cc9a6929c2853fbf80d6d7c4ccea48c8c84ce53ee3"
+      },
+      "receipt.json": {
+        "byte_length": 6203,
+        "sha256": "02fb5410e881fa9743db12c1215b5504e06d21e3cf0f5672af97c99c5af8b2ca"
+      },
+      "records.jsonl": {
+        "byte_length": 5119301,
+        "sha256": "abeb3008ddc5a8c9d40b874ce41ce96f73d65d31adce98fca2d66b74b43c3ccf"
+      },
+      "summary-records.jsonl": {
+        "byte_length": 98781,
+        "sha256": "9c3e430f4e48091c68e92a4037e61f9227db33e2979c79293b4e73eaad9dd1ef"
+      }
+    },
+    "prepared_regeneration": "PASS: every prepared filename and byte equals regeneration from both complete pinned originals.",
+    "publication_sections": 2,
+    "publisher_control_count": 174,
+    "publisher_control_kinds": {
+      "category": 120,
+      "office": 2,
+      "program": 52
+    },
+    "retained_summary_records": 174,
+    "source_stats": {
+      "budget_object_code_count": 62,
+      "data_sources": {
+        "AP": 2315,
+        "AR": 1,
+        "GL": 1539
+      },
+      "distinct_nonblank_documents": 894,
+      "duplicate_detail_rows": 54,
+      "fiscal_or_legislative_years": [
+        "FY2026"
+      ],
+      "missing_transaction_dates": 1056,
+      "negative_minor": "-21962254",
+      "negative_rows": 47,
+      "net_minor": "3558135389",
+      "nonblank_document_rows": 2799,
+      "organization_codes": [
+        "30AO000"
+      ],
+      "positive_minor": "3580097643",
+      "positive_rows": 3808,
+      "program_count": 49,
+      "retained_detail_file_records": 4010,
+      "row_count": 3855,
+      "unparsed_service_dates": 0,
+      "zero_rows": 0
+    },
+    "summary_only_zero_category_count": 16
+  },
+  "source_date_diagnostics": [
+    {
+      "classification": "transaction_date_outside_publication_quarter",
+      "column": "TRANSACTION DATE",
+      "literal": "19-Dec-24",
+      "organization": "2024 HON. MIKE FLOOD",
+      "parsed_iso": "2024-12-19",
+      "record_ordinal": 44106,
+      "row_id": "house-2026-q2:detail:948ea680f24c2f65:044106",
+      "status": "parsed"
+    },
+    {
+      "classification": "transaction_date_outside_publication_quarter",
+      "column": "TRANSACTION DATE",
+      "literal": "19-Dec-24",
+      "organization": "2024 HON. MIKE FLOOD",
+      "parsed_iso": "2024-12-19",
+      "record_ordinal": 44108,
+      "row_id": "house-2026-q2:detail:948ea680f24c2f65:044108",
+      "status": "parsed"
+    },
+    {
+      "classification": "transaction_date_outside_publication_quarter",
+      "column": "TRANSACTION DATE",
+      "literal": "19-Dec-24",
+      "organization": "2024 HON. MIKE FLOOD",
+      "parsed_iso": "2024-12-19",
+      "record_ordinal": 44109,
+      "row_id": "house-2026-q2:detail:948ea680f24c2f65:044109",
+      "status": "parsed"
+    },
+    {
+      "classification": "unparsed_service_date",
+      "column": "PERFORM START DT",
+      "literal": "14-MAR-0026",
+      "organization": "2026 HON. JAHANA HAYES",
+      "parsed_iso": null,
+      "reason": "invalid published date '14-MAR-0026'",
+      "record_ordinal": 55392,
+      "row_id": "house-2026-q2:detail:948ea680f24c2f65:055392",
+      "status": "unparsed_as_published"
+    },
+    {
+      "classification": "unparsed_service_date",
+      "column": "PERFORM START DT",
+      "literal": "17-MAR-0026",
+      "organization": "FISCAL YEAR 2026 STATIONERY",
+      "parsed_iso": null,
+      "reason": "invalid published date '17-MAR-0026'",
+      "record_ordinal": 130693,
+      "row_id": "house-2026-q2:detail:948ea680f24c2f65:130693",
+      "status": "unparsed_as_published"
+    }
+  ],
+  "sources": {
+    "detail": {
+      "byte_length": 26169448,
+      "max_bytes": 33554432,
+      "sha256": "948ea680f24c2f654263e91641df4e3a1d7b9f2b3568f701be8b62421a5c3e92",
+      "url": "https://www.house.gov/sites/default/files/2026-08/grids/APRIL-JUNE%202026%20SOD%20DETAIL%20GRID-FINAL.csv"
+    },
+    "summary": {
+      "byte_length": 621267,
+      "max_bytes": 1048576,
+      "sha256": "4828ceb94cc1dc67bbdc4faa276ef0cc0e36cbc3f4dcf0a84f9e1f54b005b28b",
+      "url": "https://www.house.gov/sites/default/files/2026-08/grids/APRIL-JUNE%202026%20SOD%20SUMM%20GRID-FINAL.csv"
+    }
+  },
+  "status": "PASS_WITH_DECLARED_PROFILE_REFUSALS",
+  "validation_kind": "original_publication_acquisition_census_reconciliation_and_preparation",
+  "verification_date": "2026-11-03"
+}

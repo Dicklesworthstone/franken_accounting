@@ -436,6 +436,13 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
                 crate::dimension::DimensionCloseSpec::decode(canonical_bytes)?;
                 continue;
             }
+            Some(ControlPayload::SchemaChange {
+                kind: crate::dimension::SCHEMA_CHANGE_DIMENSION_CONSTRAINT,
+                canonical_bytes,
+            }) => {
+                crate::dimension::DimensionConstraintSpec::decode(canonical_bytes)?;
+                continue;
+            }
             // A rule version is policy data; it changes no account.
             Some(ControlPayload::SchemaChange {
                 kind: crate::rule::SCHEMA_CHANGE_RULE_VERSION,

@@ -1,11 +1,13 @@
 //! Offline complete-scope evidence inventories using existing raw proofs.
 
 mod documents;
+mod supplements;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 
 use fa_verify::evidence::inventory::production::prefix::verify_evidence_prefix_for;
+use fa_verify::evidence::inventory::production::supplements::verify_supplemented_evidence_prefix_for;
 use fa_verify::evidence::inventory::production::{
     VerifiedEvidenceProduction, verify_evidence_production_for,
 };
@@ -16,7 +18,8 @@ use crate::{Failure, array, hex, object, quote, read_bounded, read_checkpoint};
 const HELP: &str = "Usage:
   fa-verify evidence production --prefix PREFIX --checkpoint TRUSTED_FILE \\
     --expect-first-seq U64 --expect-known-at U64 --expect-account HEX32|all \\
-    --expect-days FIRST:LAST|all [--from-prefix | --record INCLUSION ...] [--json]
+    --expect-days FIRST:LAST|all [--from-prefix | --record INCLUSION ...] \\
+    [--include-supplements] [--json]
 
 For full cited document bytes as well, run:
   fa-verify evidence production documents --help
@@ -27,6 +30,15 @@ Every prefix entry payload is authenticated before the recipient's selectors
 are applied. Selected original citations are read directly from that witness;
 no separate record set is supplied or checked, and --record is forbidden.
 Legacy v1 and balance v3 files are not accepted by this explicit input mode.
+
+Add --include-supplements with --from-prefix to include evidence attached
+later to selected entries, through the independently chosen known-at horizon.
+Every supplemental record in the trusted prefix at that horizon is checked
+against its earlier target entry. Selected attachments retain their target,
+recorded time, attacher and document/role associations. A checkpoint newer
+than known-at does not include later attachments in the result. Completeness
+is within the trusted prefix, not an assertion about pre-accumulator history.
+Unsupported or ambiguous target identities fail this explicit mode.
 
 Without --from-prefix, behavior is unchanged. Supply precisely the
 matching record-bearing inclusion proofs with repeated --record options,
@@ -44,10 +56,11 @@ The known-at horizon may be earlier than the trusted checkpoint, never later.
 
 TRUSTED_FILE is exactly 80 raw checkpoint bytes, trusted independently.
 The command authenticates the complete entry set and every original citation
-list, including empty lists and repeated document/role associations. It does
-not verify document contents, supplemental evidence, signatures, custody,
-provenance, permissions, evidence sufficiency, accounting laws or migration
-visibility. A payload-complete prefix discloses EVERY prefix entry payload,
+list, including empty lists and repeated document/role associations. Without
+--include-supplements, later attachments are not verified. Neither inventory
+mode verifies document contents, signatures, custody, full provenance,
+permissions, evidence sufficiency, accounting laws or migration visibility.
+A payload-complete prefix discloses EVERY prefix entry payload,
 including outside the requested scope. This is not a private scope index
 or an authorization to export those bytes.
 
@@ -62,6 +75,7 @@ struct Request {
     checkpoint: PathBuf,
     records: Vec<PathBuf>,
     from_prefix: bool,
+    include_supplements: bool,
     scope: ProductionScope,
 }
 
@@ -121,21 +135,18 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
     let (mut prefix, mut checkpoint, mut first, mut known, mut accounts, mut effective) =
         (None, None, None, None, None, None);
     let mut records = Vec::new();
-    let (mut json, mut from_prefix) = (false, false);
+    let (mut json, mut from_prefix, mut include_supplements) = (false, false, false);
     let mut index = 1;
     while let Some(argument) = args.get(index) {
-        if argument == "--json" || argument == "--from-prefix" {
-            let seen = if argument == "--json" {
-                &mut json
-            } else {
-                &mut from_prefix
+        if let Some(name @ ("--json" | "--from-prefix" | "--include-supplements")) =
+            argument.to_str()
+        {
+            let seen = match name {
+                "--json" => &mut json,
+                "--from-prefix" => &mut from_prefix,
+                _ => &mut include_supplements,
             };
             if *seen {
-                let name = if argument == "--json" {
-                    "--json"
-                } else {
-                    "--from-prefix"
-                };
                 return Err(Failure::usage(format!("{name} may be supplied only once")));
             }
             *seen = true;
@@ -194,6 +205,11 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
             "--from-prefix cannot be combined with --record; choose one record source",
         ));
     }
+    if include_supplements && !from_prefix {
+        return Err(Failure::usage(
+            "--include-supplements requires --from-prefix to prove the complete attachment set",
+        ));
+    }
     let scope = ProductionScope {
         first_seq: sequence(required_text(first, "--expect-first-seq")?)?,
         known_at: sequence(required_text(known, "--expect-known-at")?)?,
@@ -210,6 +226,7 @@ fn parse(args: &[OsString]) -> Result<Request, Failure> {
         ),
         records,
         from_prefix,
+        include_supplements,
         scope,
     })
 }
@@ -243,6 +260,11 @@ pub(super) fn run(args: &[OsString], json: bool) -> Result<String, Failure> {
         records.push(bytes);
     }
     let slices: Vec<_> = records.iter().map(Vec::as_slice).collect();
+    if request.include_supplements {
+        let report = verify_supplemented_evidence_prefix_for(&prefix, &checkpoint, &request.scope)
+            .map_err(|error| Failure::verification(error.to_string()))?;
+        return supplements::render_inventory(&report, json);
+    }
     let report = if request.from_prefix {
         verify_evidence_prefix_for(&prefix, &checkpoint, &request.scope)
     } else {

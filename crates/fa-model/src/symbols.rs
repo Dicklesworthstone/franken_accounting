@@ -92,6 +92,7 @@ symbols!(
         (MIGRATION_SOURCE, "MigrationSource", 64),
         (MIGRATION_SOURCE_FRAGMENT, "MigrationSourceFragment", 65),
         (ENTRY_FRAGMENT, "EntryFragment", 66),
+        (DIMENSION_CONSTRAINT, "DimensionConstraint", 67),
     ]
 );
 
@@ -429,7 +430,8 @@ mod tests {
 
     #[test]
     fn entry_fragments_preserve_the_literal_previous_symbol_table() {
-        let current = SymbolTable::compiled();
+        let mut current = SymbolTable::compiled();
+        current.labels.retain(|_, id| *id <= label::ENTRY_FRAGMENT.0);
         assert_eq!(current.label("EntryFragment"), Some(LabelId(66)));
         let mut previous = current.clone();
         assert_eq!(previous.labels.remove("EntryFragment"), Some(66));
@@ -440,6 +442,37 @@ mod tests {
         assert!(!current.matches_label_prefix_digest(renamed.digest()));
         let mut rebound = previous;
         rebound.labels.insert("Entry".into(), 66);
+        assert!(!current.matches_label_prefix_digest(rebound.digest()));
+    }
+
+    #[test]
+    fn dimension_constraints_preserve_the_literal_entry_fragment_release() {
+        let current = SymbolTable::compiled();
+        assert_eq!(current.label("DimensionConstraint"), Some(LabelId(67)));
+        let mut previous = current.clone();
+        previous
+            .labels
+            .retain(|_, id| *id < label::DIMENSION_CONSTRAINT.0);
+        assert_eq!(previous.label("EntryFragment"), Some(LabelId(66)));
+        // Independently recomputed from the literal label-66 registry release.
+        assert_eq!(
+            previous.digest(),
+            Digest([
+                0xbb, 0xb0, 0x65, 0x9c, 0x58, 0x7c, 0x4e, 0xd9,
+                0x3f, 0x9f, 0xfc, 0x97, 0x44, 0x77, 0xf4, 0x25,
+                0x17, 0x1e, 0x95, 0xd0, 0x25, 0xe0, 0xa7, 0xf2,
+                0xc8, 0x97, 0xb4, 0x36, 0x3c, 0x3f, 0x6a, 0xf7,
+            ])
+        );
+        assert_ne!(current.digest(), previous.digest());
+        assert!(current.matches_label_prefix_digest(previous.digest()));
+        assert_eq!(current.properties, previous.properties);
+        assert_eq!(current.relations, previous.relations);
+        let mut renamed = previous.clone();
+        renamed.labels.insert("DifferentDimensionConstraint".into(), 67);
+        assert!(!current.matches_label_prefix_digest(renamed.digest()));
+        let mut rebound = previous;
+        rebound.labels.insert("Entry".into(), 67);
         assert!(!current.matches_label_prefix_digest(rebound.digest()));
     }
 
@@ -494,7 +527,8 @@ mod tests {
         let mut previous = current.clone();
         // The registry immediately before 94ef9dae0 ends at AssetSchedule=61.
         // Later migration labels were never part of that pre-close release.
-        previous.labels.retain(|_, id| *id <= 61);
+        // CloseTask is 62, so the named bound is that same prefix.
+        previous.labels.retain(|_, id| *id < label::CLOSE_TASK.0);
         previous.relations.remove("DEPENDS_ON");
         // Independently render 2c6225ced's registry and hash its canonical
         // bytes under fa:symbols:v1. Freeze every namespace of that release,

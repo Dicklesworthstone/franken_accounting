@@ -135,6 +135,83 @@ fn access_payloads_and_omissions_are_checked_offline_without_changing_balances()
     );
 }
 
+/// fa-472t: selecting one entry still transports every prefix payload when
+/// an independently recomputed balance is requested. The canonical manifest
+/// and graded verifier output must expose that wider disclosure, including
+/// actual out-of-scope postings, custody/evidence records and principal names
+/// in access events, without weakening the balance proof.
+#[test]
+fn scoped_bundle_discloses_only_what_its_manifest_states() {
+    let mut h = harness();
+    let evidence = record_evidence(&mut h);
+    let unrelated = h.post(h.utilities, 900, b"unrelated-disclosed-posting");
+    let (access, _) = record_access(&mut h, "confidential access history");
+    let stored = h.checkpoint();
+    let journal = selected(&h, &stored.state);
+    let kinds: std::collections::BTreeSet<_> =
+        journal.leaves.iter().map(|l| l.envelope.kind).collect();
+    assert_eq!(kinds, std::collections::BTreeSet::from([1, 2, 3, 4, 5, 6]));
+    assert!(journal.leaf_index(unrelated).is_some());
+    assert!(journal.leaf_index(access.vid().unwrap()).is_some());
+    for scope in [
+        BundleScope::Entries(vec![evidence.entry]),
+        BundleScope::Index(ScopeRequest::Account {
+            account: h.rent,
+            from: day(1),
+            to: day(31),
+        }),
+    ] {
+        let request = BundleRequest {
+            scope,
+            balances: vec![balance(h.rent, h.usd, None), balance(h.cash, h.usd, None)],
+            inline_documents: false,
+        };
+        let bundle = h.bundle(&stored, &request).unwrap();
+        assert_eq!(h.bundle(&stored, &request).unwrap(), bundle);
+        let receipt = h.receipt(&bundle, h.db.frontier().unwrap());
+        let report =
+            fa_verify::verify_bundle(&bundle.bytes, &[h.signer.public_key()], Some(&receipt))
+                .unwrap();
+        assert!(report.verified(), "{:?}", report.checks);
+        assert_eq!(report.summary.format, (1, 2));
+        assert_eq!(report.summary.entries, 1);
+        assert_eq!(report.summary.balances.len(), 2);
+        assert_eq!(report.manifest.leaf_count, journal.leaves.len() as u64);
+        let disclosure = report
+            .checks
+            .iter()
+            .find(|c| c.check == "payload_disclosure")
+            .unwrap();
+        assert_eq!(disclosure.grade, fa_verify::Grade::Pass);
+        assert_eq!(disclosure.scope, "whole_checkpoint_prefix");
+        let md = fa_verify::bundle::manifest_md(&report.manifest, &report.summary);
+        assert!(bundle.bytes.ends_with(md.as_bytes()));
+        assert!(
+            md.contains(&format!(
+                "all {} distinct checkpoint journal record payloads",
+                journal.leaves.len()
+            )),
+            "{md}"
+        );
+        assert!(
+            md.contains(
+                "including records outside the entry selection, evidence and access records"
+            ),
+            "{md}"
+        );
+        for leaf in &journal.leaves {
+            assert!(
+                bundle
+                    .bytes
+                    .windows(leaf.payload.len())
+                    .any(|b| b == leaf.payload),
+                "payload of leaf {:?} must be disclosed and authenticated by the balance proof",
+                leaf.vid
+            );
+        }
+    }
+}
+
 #[test]
 fn access_event_rewrite_after_checkpoint_is_detected() {
     for change in [

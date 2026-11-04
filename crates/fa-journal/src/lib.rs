@@ -194,8 +194,8 @@ pub use plan::{
 pub use policy::{
     ActivationRequest, ApprovalRequest, Approved, IssuanceRequest, Issued, IssuedCapability,
     PolicyActivated, RevocationRequest, Revoked, SignedBy, activate_policy, activation_proposal,
-    issuance_vid, issue_capability, list_issued, read_issued, record_approval,
-    record_signed_approval, revoke_capability, security_policy_epoch,
+    issuance_vid, issue_capability, list_issued, read_issued, record_approval, record_approval_for,
+    record_signed_approval, record_signed_approval_for, revoke_capability, security_policy_epoch,
 };
 pub use post::{
     Capability, CarriedHistory, PostPreparation, PostRequest, Posted, PreparedPost,

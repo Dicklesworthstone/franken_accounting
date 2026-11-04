@@ -221,7 +221,8 @@ impl fmt::Display for Refusal {
 /// Refusal codes this crate emits. The catalog (`refusal_catalog.toml`) is a
 /// later bead; until it lands these constants are the registry.
 pub mod code {
-    /// A gross native or functional register column would exceed its bound.
+    /// A gross native/functional column or a period's unresolved-hold
+    /// continuation would exceed its registered representability bound.
     pub const REGISTER_CAPACITY: &str = "FA-REF-198";
     /// A batch or multi-entry transaction's canonical `LogicalDeltaTemplate`
     /// would exceed `limits.toml` `max_batch_template_bytes` (`14,439,152` B,
@@ -498,6 +499,9 @@ pub mod code {
     /// the other registered kinds) outside its valid-time effectivity on
     /// the entry's effective date (plan §4.1).
     pub const DIMENSION_NOT_EFFECTIVE: &str = "FA-REF-195";
+    /// A preparer-chosen dimension value is outside its posting account's
+    /// allowlist or is explicitly forbidden by that account's policy.
+    pub const DIMENSION_FORBIDDEN: &str = "FA-REF-207";
     /// A Canon rule source the checker refuses (a parse, unit, law, name or
     /// balance-proof failure), or an evaluation that cannot be computed
     /// exactly over the event it was given (plan §10.3).

@@ -450,6 +450,55 @@ fn commit_opening_plan(
 }
 
 #[test]
+fn required_rehearsal_allows_open_preview_but_refuses_staged_and_planned_publication() {
+    let mut h = fixture();
+    let capability = reviewing_closer().with_requires_dry_run();
+    let head = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let plan = opening_plan(&mut h, &capability, b"required-opening-preview").unwrap();
+    let effects = plan.opening_effects.as_ref().unwrap();
+    assert!(effects.minted.is_empty());
+    assert!(effects.blocked.is_empty());
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+
+    let refusal = commit_opening_plan(&mut h, &plan, &capability).unwrap_err();
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+
+    let ctx = h.ctx();
+    let description = h.statement("required staged Open", 149);
+    let prepared = fa_journal::period::prepare_transition(
+        &mut h.db,
+        &ctx,
+        &h.book,
+        &h.april,
+        PeriodTransition::Open,
+        capability.holder(),
+        1,
+        b"required-staged-opening",
+        description,
+        &capability,
+        &[],
+    )
+    .unwrap()
+    .unwrap();
+    let refusal = h
+        .runtime
+        .block_on(prepared.commit(&mut h.db, &ctx))
+        .unwrap()
+        .unwrap_err();
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+    assert_eq!(h.period_state(&h.april), PeriodState::Future);
+
+    open(&mut h, &closer(), b"unrestricted-opening").unwrap();
+    assert_eq!(h.period_state(&h.april), PeriodState::Open);
+}
+
+#[test]
 fn opening_plan_rehearses_exact_reversals_without_writes_and_retries_its_original_effects() {
     let mut h = fixture();
     let target = accrue(&mut h, 100, b"reviewed-opening-accrual");
@@ -880,6 +929,113 @@ fn account_effectivity_is_judged_at_reversal_date_and_close_races_conflict() {
 }
 
 #[test]
+fn agent_operator_closed_reversal_requires_an_independent_human_approval() {
+    let mut h = fixture();
+    let original = h
+        .post(h.request(
+            h.proposal(
+                h.rent_legs(100),
+                b"agent-operator-source",
+                EntryClass::ORIGINAL,
+            ),
+            &["post"],
+        ))
+        .unwrap()
+        .entry_ref();
+    let march = h.march.clone();
+    h.transition(
+        &march,
+        PeriodTransition::SoftClose,
+        b"softclose-agent-source",
+    )
+    .unwrap();
+    h.transition(&march, PeriodTransition::Close, b"close-agent-source")
+        .unwrap();
+    let reversal = h.reversal_of(original, 100, b"agent-operator-reversal");
+    let mut request = h.request(reversal.clone(), &["post", "post_closed"]);
+    request.capability = request
+        .capability
+        .with_operator_kind(fa_policy::OperatorKind::Agent)
+        .unwrap();
+    let before = h.db.frontier().unwrap();
+    let refusal = h.post(request.clone()).unwrap_err();
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        (fa_policy::denial::code::SOD, exit::SAFETY)
+    );
+    assert!(refusal.message.contains("Human approver"), "{refusal}");
+    assert!(refusal.cite.contains("reversal-closed"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert!(h.db.vertex(reversal_vid(original.vid)).unwrap().is_none());
+    request.approvals = vec![h.approve_transition(reversal.proposal_digest().unwrap())];
+    let posted = h.post(request).unwrap();
+    assert!(matches!(posted, Posted::Committed { .. }));
+    assert_eq!(posted.entry_ref().vid, reversal_vid(original.vid));
+    assert_leg_projections(&h);
+}
+
+#[test]
+fn closed_reversal_sweep_requires_system_authority_even_for_an_agent_operator() {
+    let mut h = fixture();
+    let target = accrue(&mut h, 100, b"closed-system-accrual");
+    open(&mut h, &closer(), b"open-before-system-reversal").unwrap();
+    let april_period = h.april.clone();
+    h.transition(
+        &april_period,
+        PeriodTransition::SoftClose,
+        b"softclose-before-system-reversal",
+    )
+    .unwrap();
+    h.transition(
+        &april_period,
+        PeriodTransition::Close,
+        b"close-before-system-reversal",
+    )
+    .unwrap();
+    tick(&mut h, april(), 126);
+    let before = h.db.frontier().unwrap();
+    let system = fa_journal::rows::system_principal(h.book.book_id);
+    for kind in [
+        fa_policy::OperatorKind::Human,
+        fa_policy::OperatorKind::Agent,
+    ] {
+        // Possession of the System principal ID and the posting ops does not
+        // promote a Human base capability to the sweep's System authority.
+        let capability = Capability::new(
+            system,
+            Profile::Human,
+            &[Op::Post, Op::PostClosed],
+            PRINCIPAL,
+        )
+        .unwrap()
+        .with_operator_kind(kind)
+        .unwrap();
+        let refusal = sweep(&mut h, capability).unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (code::CAPABILITY, exit::SAFETY)
+        );
+        assert!(refusal.message.contains("System principal"), "{refusal}");
+        assert_eq!(h.db.frontier().unwrap(), before);
+        assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+    }
+    let capability = Capability::new(
+        system,
+        Profile::System,
+        &[Op::Post, Op::PostClosed],
+        PRINCIPAL,
+    )
+    .unwrap();
+    let batch = sweep(&mut h, capability).unwrap().unwrap();
+    assert_eq!(batch.minted.len(), 1);
+    assert_eq!(batch.minted[0].0, target);
+    assert_eq!(batch.minted[0].1.vid, reversal_vid(target.vid));
+    assert!(batch.blocked.is_empty());
+    assert!(verify_schedules(&h.db, &h.book).unwrap().is_green());
+    assert_leg_projections(&h);
+}
+
+#[test]
 fn automatic_effects_enforce_post_ceiling_class_scope_dry_run_and_revocation() {
     let mut h = fixture();
     let target = accrue(&mut h, 100, b"governed-accrual");
@@ -889,6 +1045,7 @@ fn automatic_effects_enforce_post_ceiling_class_scope_dry_run_and_revocation() {
         Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
         closer().with_ceiling(h.usd, 99).unwrap(),
         closer().for_classes(&[EntryClass::ORIGINAL]).unwrap(),
+        closer().for_classes(&[EntryClass::PERIOD_CONTROL]).unwrap(),
         closer().for_accounts(&["6000"]).unwrap(),
         closer().for_periods(&[h.april.as_str()]).unwrap(),
         closer().effective_through(DateDay(april().0 - 1)),
@@ -900,39 +1057,54 @@ fn automatic_effects_enforce_post_ceiling_class_scope_dry_run_and_revocation() {
         assert_eq!(h.period_state(&h.april), PeriodState::Future);
         assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
     }
+    // Opening the period also reads the Adjusting source and publishes a
+    // Reversal. The scope must admit all three actual classes.
+    let permitted = closer()
+        .for_classes(&[
+            EntryClass::PERIOD_CONTROL,
+            EntryClass::ADJUSTING,
+            EntryClass::REVERSAL,
+        ])
+        .unwrap();
+    let result = open(&mut h, &permitted, b"scoped-open-with-reversal").unwrap();
+    assert_eq!(result.minted.len(), 1);
+    assert_eq!(result.minted[0].0, target);
+    assert!(result.blocked.is_empty());
+    assert_eq!(h.period_state(&h.april), PeriodState::Open);
+
     // No due effects are hidden by moving the period first: use a separate
     // fixture whose period was opened before the committed tick.
     let mut h = fixture();
     let target = accrue(&mut h, 100, b"bounded-sweep-accrual");
     open(&mut h, &closer(), b"sweep-period").unwrap();
-    for (nonce, cap) in [
-        (127, executor(&h).with_ceiling(h.usd, 99).unwrap()),
-        (
-            128,
-            executor(&h).for_classes(&[EntryClass::ORIGINAL]).unwrap(),
-        ),
-    ] {
-        tick(&mut h, april(), nonce);
-        let result = sweep(&mut h, cap).unwrap().unwrap();
-        assert!(result.minted.is_empty());
-        assert_eq!(result.blocked.len(), 1);
-        assert_eq!(result.blocked[0].0, target);
-        assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
-    }
+    tick(&mut h, april(), 127);
+    let cap = executor(&h).with_ceiling(h.usd, 99).unwrap();
+    let result = sweep(&mut h, cap).unwrap().unwrap();
+    assert!(result.minted.is_empty());
+    assert_eq!(result.blocked.len(), 1);
+    assert_eq!(result.blocked[0].0, target);
+    assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+    // A scope confined to Original cannot publish the SweepControl cursor,
+    // even when every monetary effect would have been reported as blocked.
+    tick(&mut h, april(), 128);
+    let head = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let cap = executor(&h).for_classes(&[EntryClass::ORIGINAL]).unwrap();
+    let refusal = sweep(&mut h, cap).unwrap_err();
+    assert!(refusal.message.contains("classes"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+    assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+    // A blocked-only sweep still publishes its cursor. The explicit
+    // rehearsal caveat must refuse that control write as well as reversals.
     tick(&mut h, april(), 129);
     let head = h.db.frontier().unwrap();
-    let capability = executor(&h).with_requires_dry_run();
-    let refusal = sweep(&mut h, capability).unwrap_err();
-    assert_eq!(
-        (refusal.code, refusal.exit),
-        (code::CAPABILITY, exit::SAFETY)
-    );
-    assert!(refusal.message.contains("requires_dry_run"));
-    assert_eq!(
-        h.db.frontier().unwrap(),
-        head,
-        "no sweep cursor publication"
-    );
+    let vertices = h.db.vertices().unwrap();
+    let cap = executor(&h).with_requires_dry_run();
+    let refusal = sweep(&mut h, cap).unwrap_err();
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
     assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
     let cap = executor(&h);
     h.revoke(&cap, 130);

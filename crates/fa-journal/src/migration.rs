@@ -1935,10 +1935,7 @@ fn authorize<V: asupersync::fs::Vfs + Clone>(
         epoch,
         &fa_policy::sod::control_key("MigrationControl", None, transition),
         0,
-        Party {
-            principal: req.proposal.principal_ref,
-            profile: req.capability.profile(),
-        },
+        Party::for_capability(req.proposal.principal_ref, &req.capability),
     )
 }
 

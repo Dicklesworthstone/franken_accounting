@@ -1734,6 +1734,157 @@ fn every_bound_writing_command_is_admitted_on_exactly_its_operations() {
     }
 }
 
+#[test]
+fn requires_dry_run_operator_tokens_refuse_control_and_metadata_writes_but_allow_previews() {
+    let dir = fixture();
+    write_files(
+        &dir,
+        &[
+            (
+                "chart.json",
+                r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+            ),
+            (
+                "fee.rule",
+                r#"rule fee v1 for event Sale { debit "1200" "1.00 USD" credit "4000" "1.00 USD" }"#,
+            ),
+        ],
+    );
+    let mut book = Book::create_memory(
+        BookKeys::for_development(0x71),
+        spec(Id128([0x71; 16]), "Required rehearsal control admission"),
+        Entropy::deterministic(0x71),
+    )
+    .unwrap();
+    owner(&mut book, &dir, &["chart", "import", "chart.json"]);
+    owner(
+        &mut book,
+        &dir,
+        &["period", "create", "--fiscal-year", "2026"],
+    );
+    owner(&mut book, &dir, &["period", "open", "FY2026-P03"]);
+    let ops = [
+        Op::Read,
+        Op::Close,
+        Op::Post,
+        Op::RuleChange,
+        Op::Witness,
+        Op::Produce,
+        Op::Maintain,
+        Op::Verify,
+        Op::SchemaChange,
+    ];
+    let mut issuer_ops: Vec<_> = ops.iter().map(|op| op.name()).collect();
+    issuer_ops.push("issue_capability");
+    let issuer = Capability::embedded(principal_vid(ISSUER), &issuer_ops).unwrap();
+    let mut m = Matrix {
+        dir: dir.clone(),
+        book,
+        issuer,
+        day: DateDay::parse(DAY).unwrap(),
+        seed: 0,
+    };
+    let mut authorities = Vec::new();
+    for (required, seed) in [(true, 0x72), (false, 0x73)] {
+        let secret = [seed; 32];
+        let cap = Capability::new(
+            principal_vid(HOLDER),
+            Profile::Human,
+            &ops,
+            m.issuer.holder(),
+        )
+        .unwrap()
+        .holder_bound(possession_digest(&secret));
+        let cap = if required {
+            cap.with_requires_dry_run()
+        } else {
+            cap
+        };
+        m.book
+            .issue_capability(
+                m.issuer.clone(),
+                cap.clone(),
+                m.day,
+                &[seed],
+                "control rehearsal test",
+            )
+            .unwrap()
+            .unwrap();
+        let token = CapabilityToken::new(HOLDER, cap, secret).unwrap();
+        authorities.push(
+            LaunchAuthority::from_operator_token(dir.join("book"), None, &token)
+                .unwrap()
+                .with_files(Some(dir.clone()))
+                .unwrap(),
+        );
+    }
+
+    let writes = [
+        argv(&[
+            "period",
+            "close",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--yes",
+        ]),
+        argv(&["period", "open", "FY2026-P04"]),
+        argv(&["rule", "propose", "fee.rule"]),
+        argv(&["checkpoint", "create"]),
+        argv(&["registers", "materialize", "--period", "FY2026-P03"]),
+        argv(&["tb", "--period", "FY2026-P03", "--certify"]),
+    ];
+    for words in &writes {
+        let before = m.book.head().unwrap();
+        let (exit, out) = m.bound(&authorities[0], words);
+        assert_eq!(exit, 7, "{words:?}: {out:?}");
+        assert!(
+            out.stdout.contains("requires_dry_run"),
+            "{words:?}: {out:?}"
+        );
+        assert_eq!(m.book.head().unwrap(), before, "{words:?} published");
+    }
+    for words in [
+        argv(&["tb", "--period", "FY2026-P03"]),
+        argv(&["recover", "outcomes", "--dry-run"]),
+        argv(&["period", "open", "FY2026-P04", "--dry-run"]),
+        argv(&[
+            "period",
+            "close",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--dry-run",
+        ]),
+    ] {
+        let before = m.book.head().unwrap();
+        let (exit, out) = m.bound(&authorities[0], &words);
+        assert_eq!(exit, 0, "{words:?}: {out:?}");
+        assert_eq!(m.book.head().unwrap(), before, "{words:?} published");
+    }
+    let before = m.book.head().unwrap();
+    let recovery = argv(&[
+        "recover",
+        "outcomes",
+        "--yes",
+        "--basis",
+        &before.0.to_string(),
+    ]);
+    let (exit, out) = m.bound(&authorities[0], &recovery);
+    assert_eq!(exit, 7, "{recovery:?}: {out:?}");
+    assert!(
+        out.stdout.contains("requires_dry_run"),
+        "{recovery:?}: {out:?}"
+    );
+    assert_eq!(m.book.head().unwrap(), before, "{recovery:?} published");
+    let (exit, out) = m.bound(&authorities[1], &recovery);
+    assert_eq!(exit, 0, "unrestricted {recovery:?}: {out:?}");
+    for words in &writes {
+        let (exit, out) = m.bound(&authorities[1], words);
+        assert_eq!(exit, 0, "unrestricted {words:?}: {out:?}");
+    }
+}
+
 /// Every subcommand of a verb the registry marks as writing is a matrix
 /// row, a variant the bound route admits on read alone, or a named
 /// host-only command; nothing that writes is unaccounted for.

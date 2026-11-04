@@ -1516,6 +1516,30 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
                 }
             }
         }
+        ReportArtifactFamily::Procedure => {
+            if args.flag("--expect").is_some() {
+                return Err(usage(
+                    "procedure status uses the certificate's own method, parameters and handles and does not accept report-policy expectations",
+                    "fa certificate status C:<procedure-certificate> --json",
+                ));
+            }
+            let certificate = fa::ProcedureCertificate::decode(&bytes)?;
+            ctx.out.effective(
+                certificate
+                    .report()
+                    .coordinate
+                    .effective_through
+                    .map_or_else(|| "all".into(), |day| format!("through:{}", day.render())),
+            );
+            match book.procedure_certificate_status(principal, &capability, &certificate)?? {
+                fa::ProcedureCertificateStatus::Current { checked_at } => {
+                    ("Current", checked_at, Vec::new(), Vec::new())
+                }
+                fa::ProcedureCertificateStatus::Changed { checked_at, .. } => {
+                    ("Changed", checked_at, Vec::new(), Vec::new())
+                }
+            }
+        }
         ReportArtifactFamily::ScenarioDiff => {
             if args.flag("--expect").is_some() {
                 return Err(usage(
@@ -1600,6 +1624,11 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             )
         })
         .collect::<String>();
+    let status_detail = if artifact.family() == ReportArtifactFamily::Procedure {
+        "procedure findings, population, work and decision evidence compared".to_owned()
+    } else {
+        format!("{} later entries in its selector", later_entries.len())
+    };
     ctx.out.event_with_certificate(
         "certificate_status",
         vec![
@@ -1617,7 +1646,7 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             ("replay_scope", s(REPLAY_SCOPE)),
             ("authority", s(AUTHORITY)),
         ],
-        &format!("Certificate {digest}: {name} (known at {}, checked at {}, {} later entries in its selector){case_summary}", certificate.known_at.0, checked_at.0, later_entries.len()),
+        &format!("Certificate {digest}: {name} (known at {}, checked at {}, {status_detail}){case_summary}", certificate.known_at.0, checked_at.0),
         Some(&digest),
     );
     Ok(())
