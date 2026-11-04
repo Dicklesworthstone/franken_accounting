@@ -151,6 +151,67 @@ fn revoked_foreign_draft_planner_cannot_be_replaced_by_the_promoters_authority()
 }
 
 #[test]
+fn an_agent_drafts_independent_native_and_foreign_members_in_either_order() {
+    for fx_first in [false, true] {
+        let mut f = fixture(3, 10);
+        let name = "mixed-foreign-collections";
+        let agent = f.h.agent_capability();
+        f.h.open_draft(agent.clone(), name).unwrap();
+        let fx = agent_proposal(f.prepare(1, b"draft-mixed-fx"));
+        let plain = f.h.agent_rent(1, b"draft-mixed-native");
+        let members = if fx_first {
+            vec![fx, plain]
+        } else {
+            vec![plain, fx]
+        };
+        f.h.plan_draft(agent.clone(), name, members[0].clone())
+            .unwrap();
+        let planned = f.h.plan_draft(agent, name, members[1].clone()).unwrap();
+        let entries: Vec<_> = planned
+            .plan
+            .unwrap()
+            .members()
+            .iter()
+            .map(|member| {
+                member.entry.entry_ref(entry_vid(
+                    f.h.book.book_id,
+                    &AGENT.0.to_le_bytes(),
+                    &member.entry.proposal.idempotency_key,
+                ))
+            })
+            .collect();
+        assert_unpublished(&f, name, &entries);
+        assert_eq!(f.carrying().open_base.mantissa, 10);
+        let before = f.h.db.frontier().unwrap();
+        let promoted = f.h.promote(f.h.approver_capability(), name).unwrap();
+        assert_eq!(promoted.recorded_at.0, before.0 + 1);
+        assert_eq!(promoted.entries, entries);
+        assert!(!promoted.already_recorded);
+        for (entry_ref, proposed) in promoted.entries.iter().zip(&members) {
+            let (entry, recorded_at) = read_entry(&f.h.db, entry_ref.vid).unwrap().unwrap();
+            assert_eq!(recorded_at, promoted.recorded_at);
+            assert_eq!(entry.proposal.principal_ref, AGENT);
+            assert_eq!(entry.proposal.idempotency_key, proposed.idempotency_key);
+            assert_eq!(entry.proposal.legs, proposed.legs);
+        }
+        let carrying = f.carrying();
+        assert_eq!(
+            (carrying.open_native.mantissa, carrying.open_base.mantissa),
+            (2, 7)
+        );
+        assert_eq!(f.h.draft(name).state, DraftState::Promoted);
+        f.verify();
+        let rows = f.h.db.vertices().unwrap();
+        let retry = f.h.promote(f.h.approver_capability(), name).unwrap();
+        assert!(retry.already_recorded);
+        assert_eq!(retry.entries, promoted.entries);
+        assert_eq!(retry.recorded_at, promoted.recorded_at);
+        assert_eq!(f.h.db.frontier().unwrap(), promoted.recorded_at);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+    }
+}
+
+#[test]
 fn foreign_drafts_still_refuse_overlapping_sources_mixed_members_and_groups() {
     for variant in ["overlap", "forged-overlap", "mixed", "group"] {
         let mut f = fixture(3, 10);
@@ -160,7 +221,11 @@ fn foreign_drafts_still_refuse_overlapping_sources_mixed_members_and_groups() {
         let first = agent_proposal(f.prepare(1, b"first-foreign-member"));
         f.h.plan_draft(agent.clone(), variant, first).unwrap();
         let mut later = match variant {
-            "mixed" => f.h.agent_rent(1, b"unrelated-native-member"),
+            "mixed" => {
+                let mut proposal = f.h.agent_rent(1, b"dependent-native-member");
+                proposal.legs[0].account_ref = account_vid(f.h.book.book_id, "1211");
+                proposal
+            }
             "group" => {
                 let mut proposal = f
                     .prepare_group(
@@ -186,12 +251,7 @@ fn foreign_drafts_still_refuse_overlapping_sources_mixed_members_and_groups() {
         let rows = f.h.db.vertices().unwrap();
         let planned = f.h.draft(variant);
         let refusal = f.h.plan_draft(agent, variant, later).unwrap_err();
-        let expected = if variant == "mixed" {
-            "FA-REF-102"
-        } else {
-            "FA-REF-071"
-        };
-        assert_eq!(refusal.code, expected, "{variant}: {refusal}");
+        assert_eq!(refusal.code, "FA-REF-071", "{variant}: {refusal}");
         assert_eq!(f.h.db.frontier().unwrap(), before);
         assert_eq!(f.h.db.vertices().unwrap(), rows);
         assert_eq!(f.h.draft(variant), planned);
