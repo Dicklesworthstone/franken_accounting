@@ -5706,8 +5706,8 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 // ---------------------------------------------------------------------------
 
 /// `fa approve --proposal <digest>` (R4) or `fa approve --review <file|-|hex> --digest <64-hex>`:
-/// record an Approval binding a planned proposal's digest or a portable allocation/settlement
-/// review under the caller's capability.
+/// record an Approval binding a planned proposal's digest or a portable entry,
+/// allocation or settlement review under the caller's capability.
 fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let Some(input) = args.flag("--proposals") {
         if args.positional.len() != 1
@@ -9240,7 +9240,7 @@ pub(crate) fn post_document(
     if review_mode && (args.switch("--dry-run") || doc.get("intents").is_some()) {
         return Err(usage(
             "a review seals one entry proposal for approval: no --dry-run or batch; nothing was posted",
-            "fa post --intent entry.json --review-out review.bin (then fa approve --proposal <proposal_digest> --as <approver>)",
+            "fa post --intent entry.json --review-out review.bin (then fa approve --review review.bin --digest <review_digest> --as <approver>)",
         ));
     }
     if forced.is_none() && doc.get("intents").is_some() {
@@ -9336,8 +9336,9 @@ const POST_REVIEW_EXAMPLE: &str = "fa post --review <file|hex|-> --digest <revie
 /// the case-studies plan's A0): the entry proposal sealed once, as the
 /// portable canonical bytes of an unapproved PostIntent. Re-parsing the intent
 /// would seal its description afresh and change its digest, so an approval
-/// is recorded against this review's proposal_digest (`fa approve
-/// --proposal`), and the review is restored unchanged with `--review`.
+/// is recorded from the unchanged review and its independently retained
+/// review_digest (`fa approve --review --digest`). The approval binds the
+/// proposal_digest; posting restores the same review with `--review`.
 /// Nothing is published.
 fn emit_post_review(
     out: &Out,
@@ -9378,10 +9379,10 @@ fn emit_post_review(
             ("file", args.flag("--review-out").map_or(Json::Null, s)),
         ],
         &format!(
-            "review {class_name} proposal {}{}; an approver records fa approve --proposal {} --as <approver>, then fa post --review <file|hex> --digest {} --approval <vid>; nothing was published",
+            "review {class_name} proposal {}{}; an approver records fa approve --review <file|hex> --digest {} --as <approver>, then fa post --review <file|hex> --digest {} --approval <vid>; nothing was published",
             hex(&proposal_digest),
             amounts.as_ref().map_or(String::new(), |(requested, moved)| format!(" (requested {requested}, reviewed movement {moved})")),
-            hex(&proposal_digest),
+            hex(&review_digest),
             hex(&review_digest)
         ),
     );
@@ -11039,6 +11040,21 @@ fn approve_any_review_bytes(
     bytes: &[u8],
     digest: [u8; 32],
 ) -> Result<(), Fail> {
+    if bytes.starts_with(b"FA-INTENT\0") {
+        return approve_post_review_bytes(ctx, args, bytes, digest);
+    }
+    // Only a native entry review has a class-aware approval path here.
+    // Preserve the prior whole-book admission for specialized reviews.
+    // They keep their own source and allocation checks; this dispatcher
+    // never unwraps them into an ordinary entry review.
+    if let Some(authority) = ctx.authority() {
+        bound_scope_refusal(
+            authority.capability(),
+            &[fa_policy::Op::Read, fa_policy::Op::Approve],
+            false,
+            "approve",
+        )?;
+    }
     if bytes.starts_with(b"FA-BAL-REVIEW\0") || bytes.starts_with(b"FA-ALLOC-REVIEW\0") {
         approve_allocation_review_bytes(ctx, args, bytes, digest)
     } else if bytes.starts_with(b"FA-SETTLEMENT-GROUP-REVIEW\0")
@@ -11048,9 +11064,68 @@ fn approve_any_review_bytes(
     } else {
         Err(usage(
             "unrecognized review artifact format",
-            "supply a review exported by `fa allocate --review-out` or `fa settle --review-out`",
+            "supply a review exported by `fa post --review-out`, `fa close year-end --review-out`, `fa allocate --review-out` or `fa settle --review-out`",
         ))
     }
+}
+
+/// Approve the exact sealed entry, without reconstructing its description,
+/// replacing its evidence or deriving a class from a caller-supplied flag.
+/// This is an approval of a supplied proposal, not a posting rehearsal or
+/// a claim that its source observations or accounting laws still hold.
+fn approve_post_review_bytes(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    bytes: &[u8],
+    expected_digest: [u8; 32],
+) -> Result<(), Fail> {
+    let review = PostIntent::decode(bytes).map_err(|error| {
+        usage(
+            format!("invalid entry approval review: {error}"),
+            "supply the unchanged canonical entry review and its independently retained review_digest",
+        )
+    })?;
+    if review
+        .digest()
+        .map_err(|error| Fail::Internal(format!("entry approval review digest: {error}")))?
+        != expected_digest
+    {
+        return Err(usage(
+            "entry approval review digest does not match",
+            "supply the unchanged review with its independently retained review_digest, not its proposal_digest",
+        ));
+    }
+    if !review.approvals().is_empty() {
+        return Err(usage(
+            "an entry approval review must contain no prior approvals",
+            "approve the original unapproved review; supply each returned approval only when restoring it for posting",
+        ));
+    }
+    let capability = ctx.capability(args, &["read", "approve"])?;
+    // Pure admission before the book coordinate or a signing-key file is
+    // observed. The native approval repeats these checks and independently
+    // witnesses current authority and the retained class-scoped issuance.
+    fa_policy::reach_class(
+        &capability,
+        &fa_policy::Reach::whole_book(true),
+        None,
+        review.proposal().class,
+    )
+    .and_then(|()| fa_policy::admit_direct_write(&capability))
+    .map_err(|denial| fa_journal::policy::refusal(&denial))?;
+    let routed_through_daemon = ctx.routed_through_daemon();
+    let mut book = ctx.books.open(args)?;
+    let key = crate::principal::load_principal_key_from_files(
+        &ctx.files,
+        routed_through_daemon,
+        args,
+        "--sign-key",
+    )?;
+    let approved = match &key {
+        Some(key) => book.approve_entry_signed(capability, review.proposal(), key)??,
+        None => book.approve_entry(capability, review.proposal())??,
+    };
+    emit_approved(&ctx.out, &book, approved)
 }
 
 fn approve_allocation_review_bytes(

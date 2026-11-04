@@ -181,14 +181,14 @@ example = "fa close year-end --fiscal-year 2026 --period FY2026-CLOSE --key clos
 
 [[verb]]
 name = "approve"
-summary = "Record an approval of a planned proposal's digest or a reviewed allocation/settlement review artifact under the caller's capability (journaled; bound to the current security policy epoch)."
+summary = "Record an approval of a planned proposal's digest or a sealed entry, allocation or settlement review under the caller's capability (journaled; bound to the current security policy epoch)."
 writes = true
 subcommands = []
 flags = ["--proposal", "--proposals", "--review", "--digest", "--grant", "--sign-key"]
 switches = []
 events = ["approved"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["approve --proposal <proposal_digest> [--sign-key <key file>] [--as <principal>] [--grant <op>]...   (the digest is printed by `fa period <t> <code> --plan-out <file>`; a second approver is a second invocation as another principal. A principal that registered a signing key (fa principal key add) must sign: --sign-key names its current key file, read by the client and never routed through fad, and the approval stores the Ed25519 signature over its digest; plan §14.5)", "approve --review <file|-|hex> --digest <review_digest> [--sign-key <key file>] [--as <principal>] [--grant <op>]...   (verifies the review artifact's digest and records an approval of its sealed proposal_digest)", "approve --proposals <inline-JSON-array|-> [--sign-key <key file>] [--as <principal>] [--grant <op>]...   (1 to 4096 unique 64-hex digests, at most 1 MiB; - reads complete forwarded stdin, never a host file. All syntax and digest uniqueness validate before publication. One caller approves each member through a separate native transaction with fresh authority checks. Existing approved receipts are emitted in request order; the first refusal stops the request after any prior durable successes. The group is not atomic. Retry unchanged requests under still-valid original authority to recover stable receipts. Another approver remains a separate invocation by an independent principal; grouping never supplies another identity. --proposals occurs once and is exclusive with --proposal/--review/--digest; repeated legacy --proposal retains its existing last-value behavior.)"]
+usage = ["approve --proposal <proposal_digest> [--sign-key <key file>] [--as <principal>] [--grant <op>]...   (the digest is printed by `fa period <t> <code> --plan-out <file>`; a second approver is a second invocation as another principal. A principal that registered a signing key (fa principal key add) must sign: --sign-key names its current key file, read by the client and never routed through fad, and the approval stores the Ed25519 signature over its digest; plan §14.5)", "approve --review <file|-|hex> --digest <review_digest> [--sign-key <key file>] [--as <principal>] [--grant <op>]...   (verifies the review artifact's digest and records an approval of its sealed proposal_digest)", "An unapproved native entry review from post or close year-end binds its actual class and every proposal field. An issued Human token with read and approve may approve its permitted class with --token <file>; pass complete review hex or stdin. The independently retained review_digest is required. Wrong classes, foreign books, changed bytes and reviews already containing approvals refuse. Opaque --proposal and --proposals cannot establish a class and remain unavailable to class-scoped tokens. Approval does not rehearse the posting or authorize execution: restoring the unchanged review still rechecks source history, evidence, period, current posting authority and required independent approvals.", "approve --proposals <inline-JSON-array|-> [--sign-key <key file>] [--as <principal>] [--grant <op>]...   (1 to 4096 unique 64-hex digests, at most 1 MiB; - reads complete forwarded stdin, never a host file. All syntax and digest uniqueness validate before publication. One caller approves each member through a separate native transaction with fresh authority checks. Existing approved receipts are emitted in request order; the first refusal stops the request after any prior durable successes. The group is not atomic. Retry unchanged requests under still-valid original authority to recover stable receipts. Another approver remains a separate invocation by an independent principal; grouping never supplies another identity. --proposals occurs once and is exclusive with --proposal/--review/--digest; repeated legacy --proposal retains its existing last-value behavior.)"]
 example = "fa approve --proposal <proposal_digest> --as controller --book ./books/myco --json"
 
 [[verb]]
@@ -5419,7 +5419,7 @@ subcommands = []
 positionals = []
 flags = ["--proposal", "--proposals", "--review", "--digest"]
 required = []
-dont = ["Don't approve a proposal you planned in this session: segregation of duties (FA-REF-008) needs another principal.", "Don't invent a digest: `proposal` is the `proposal_digest` a `period_transition` with `dry_run: true` returned, or supply `review` (complete hex bytes) and `digest` (`review_digest`) from an allocation or settlement review."]
+dont = ["Don't approve a proposal you planned in this session: segregation of duties (FA-REF-008) needs another principal.", "Don't invent a digest: `proposal` is the `proposal_digest` a `period_transition` with `dry_run: true` returned, or supply `review` (complete hex bytes) and `digest` (`review_digest`) from an unapproved native entry, allocation or settlement review."]
 mistakes = ["For several digests, `proposals` is one inline JSON-array string (1..4096 unique 64-hex digests, at most 1 MiB); this MCP tool has no stdin property, so `proposals: -` cannot supply a group. Each member is checked for self-approval and copied untrusted control text.", "A placeholder such as \"<proposal_digest>\" in `proposal`.", "Trying to change principal or self-issue approve: this session is launch-bound, and Agent/Preparer profiles do not permit approval."]
 
 # ---- fa.close ---------------------------------------------------------------
@@ -6433,6 +6433,7 @@ ops = ["read", "post"]
 verbs = ["approve"]
 when_any = ["--review"]
 ops = ["read", "approve"]
+reach = "judged"
 
 [[bound]]
 verbs = ["approve"]

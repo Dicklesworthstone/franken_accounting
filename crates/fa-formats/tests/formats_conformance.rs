@@ -255,7 +255,7 @@ fn sample_multi_unit_journal() -> FormatJournal {
 #[test]
 fn embedded_formats_registry_matches_fa_formats_surface() {
     let formats = Formats::embedded().expect("registries/formats.toml must parse");
-    assert_eq!(formats.rows.len(), 25);
+    assert_eq!(formats.rows.len(), 26);
     assert!(
         formats
             .by_name("aicpa_ads_gl_v2")
@@ -266,6 +266,12 @@ fn embedded_formats_registry_matches_fa_formats_surface() {
     assert!(
         formats
             .by_name("aicpa_ads_gl_v3")
+            .unwrap()
+            .round_trip_identity
+    );
+    assert!(
+        formats
+            .by_name("aicpa_ads_gl_v4")
             .unwrap()
             .round_trip_identity
     );
