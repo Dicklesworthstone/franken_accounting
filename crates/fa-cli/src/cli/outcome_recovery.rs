@@ -39,6 +39,10 @@ pub(super) fn recover(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
 
     let capability = ctx.capability(args, &["read", "schema_change"])?;
+    if !dry_run {
+        fa_policy::admit_direct_write(&capability)
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    }
     let mut book = ctx.books.open_admitted(args, |book| {
         admit_whole_book_read(
             book,

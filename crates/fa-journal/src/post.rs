@@ -1042,10 +1042,6 @@ pub(crate) enum Admission {
     /// binding. The caller still needs their own trunk authority; the token
     /// satisfies only the capability's required dry-run prerequisite.
     VerifiedBatch(crate::batch::VerifiedBatchPlan),
-    /// A single-entry or atomic correction plan authenticated by its
-    /// verifier. The private token satisfies only the rehearsal caveat;
-    /// current authority and every native accounting law still run.
-    VerifiedPlan(crate::plan::VerifiedPostPlan),
     /// A fixed occurrence derived by the approved recurring scheduler.
     Recurring(crate::recurring::Executing),
     /// A dry run ([`fa_policy::admit_base_for_plan`]): never published.
@@ -1380,8 +1376,9 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
 
 /// Reproduce an authenticated portable plan with every ordinary posting law,
 /// restaging that rehearsal under ordinary current commit authority.
-/// Only the plan verifier can construct the token. It compares the resulting
-/// effects and retains the certificate in this transaction before publication.
+/// Only the plan verifier can construct the token. No public request can
+/// construct it. The verifier compares the resulting effects and retains the
+/// certificate in this transaction before publication.
 pub(crate) fn prepare_verified_plan<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,

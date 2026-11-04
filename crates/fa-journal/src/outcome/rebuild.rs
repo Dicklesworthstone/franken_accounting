@@ -57,7 +57,7 @@ fn admit<V: Vfs + Clone>(
     capability: &Capability,
 ) -> Outcome<()> {
     for op in [Op::Read, Op::SchemaChange] {
-        if let Err(denial) = fa_policy::admit_within(
+        if let Err(denial) = fa_policy::admit_preparation(
             capability,
             &Intent {
                 principal: capability.holder(),
@@ -67,6 +67,7 @@ fn admit<V: Vfs + Clone>(
                 legs: &[],
             },
             &Reach::whole_book(true),
+            None,
             None,
         ) {
             return Ok(Err(crate::policy::refusal(&denial)));
@@ -234,13 +235,13 @@ pub async fn publish_outcome_rebuild<V: Vfs + Clone>(
         prepared.abort();
         return Ok(Err(invalidated()));
     }
-    if let Err(refusal) = admit(db, book, &prepared.capability)? {
-        prepared.abort();
-        return Ok(Err(refusal));
-    }
     if let Err(denial) = fa_policy::admit_direct_write(&prepared.capability) {
         prepared.abort();
         return Ok(Err(crate::policy::refusal(&denial)));
+    }
+    if let Err(refusal) = admit(db, book, &prepared.capability)? {
+        prepared.abort();
+        return Ok(Err(refusal));
     }
     if db.frontier()? != prepared.preview.basis || db.partition_root()?.0.0 != prepared.source_root
     {

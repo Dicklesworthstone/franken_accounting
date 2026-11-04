@@ -920,7 +920,7 @@ impl Book {
         capability: &Capability,
         certificate: &CloseRunRehearsalCertificate,
     ) -> Outcome<crate::RetainedCertificate> {
-        if let Err(denial) = fa_policy::admit_control_write(capability) {
+        if let Err(denial) = fa_policy::admit_direct_write(capability) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         if let Err(refusal) = authorize(self, principal, capability, true)? {

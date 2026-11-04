@@ -1102,8 +1102,16 @@ fn automatic_effects_enforce_post_ceiling_class_scope_dry_run_and_revocation() {
     let vertices = h.db.vertices().unwrap();
     let cap = executor(&h).with_requires_dry_run();
     let refusal = sweep(&mut h, cap).unwrap_err();
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        (code::CAPABILITY, exit::SAFETY)
+    );
     assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
-    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        head,
+        "no sweep cursor publication"
+    );
     assert_eq!(h.db.vertices().unwrap(), vertices);
     assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
     let cap = executor(&h);

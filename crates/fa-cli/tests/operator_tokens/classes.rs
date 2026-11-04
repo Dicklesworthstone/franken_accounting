@@ -26,6 +26,9 @@ fn issue(f: &mut Fixture, holder: &str, op: &str, class: Option<&str>) -> Launch
     if let Some(class) = class {
         words.extend(["--class", class]);
     }
+    if op == "close" {
+        words.extend(["--op", "read", "--grant", "read"]);
+    }
     let issued = f.owner(&words);
     assert_eq!(text(&issued, "event"), "capability_issued");
     let token = CapabilityToken::decode(&std::fs::read(f.dir.join(&output)).unwrap()).unwrap();
@@ -96,6 +99,19 @@ fn a_class_scoped_token_writes_no_control_of_another_class() {
     // The same real operation succeeds with its matching class and with no
     // class caveat. Fresh books ensure each positive actually publishes a
     // new control instead of returning a previously recorded close.
+    let journal = |book: &fa::Book| {
+        let fa::QuerySelection::Native(query) =
+            fa::compile_query("MATCH (e:Entry) RETURN e,e._fa_payload AS payload ORDER BY e")
+                .unwrap()
+                .selection
+        else {
+            panic!("the journal population query must be native");
+        };
+        book.query_native(&query, book.head().unwrap(), None)
+            .unwrap()
+            .unwrap()
+            .rows
+    };
     for (seed, class, holder) in [
         (0xe2, Some("PeriodControl"), "period-only-controller"),
         (0xe3, None, "unscoped-controller"),
@@ -103,6 +119,8 @@ fn a_class_scoped_token_writes_no_control_of_another_class() {
         let mut f = Fixture::new(seed);
         let authority = issue(&mut f, holder, "close", class);
         let before = f.book.head().unwrap();
+        let entries = journal(&f.book);
+        let periods = f.book.periods().unwrap();
         let plan = f.ok(
             &authority,
             &[
@@ -115,10 +133,35 @@ fn a_class_scoped_token_writes_no_control_of_another_class() {
             ],
             None,
         );
+        let access = f.book.access_log(before).unwrap();
+        assert_eq!(
+            access.len(),
+            1,
+            "delivering the plan owes one access receipt"
+        );
+        assert_eq!(access[0].record.command, "period close");
+        assert_eq!(access[0].record.principal, authority.principal_vid());
+        assert_eq!(access[0].record.principal_name, holder);
+        assert_eq!(
+            access[0].record.capability_commitment,
+            authority.capability().commitment().unwrap()
+        );
+        assert_eq!(access[0].observed_at, before);
+        assert_eq!(access[0].recorded_at.0, before.0 + 1);
         assert_eq!(
             f.book.head().unwrap(),
-            before,
-            "preparing the permitted control is read-only"
+            access[0].recorded_at,
+            "the plan publishes only its access receipt"
+        );
+        assert_eq!(
+            journal(&f.book),
+            entries,
+            "the plan changes no journal entry"
+        );
+        assert_eq!(
+            f.book.periods().unwrap(),
+            periods,
+            "the plan changes no period"
         );
         assert!(!text(&plan, "proposal_digest").is_empty());
         let closed = f.ok(

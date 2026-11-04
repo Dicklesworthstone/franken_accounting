@@ -423,7 +423,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         certificate_digest: &[u8; 32],
     ) -> Outcome<RecordedFindings> {
-        if let Err(denial) = fa_policy::admit_control_write(capability) {
+        if let Err(denial) = fa_policy::admit_direct_write(capability) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         if let Err(r) = authorize(self, cx, principal, capability, true)? {

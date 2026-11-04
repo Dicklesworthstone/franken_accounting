@@ -109,9 +109,8 @@ pub struct Intent<'a> {
 /// Admit or deny an act on the whole book before any storage observation.
 /// Order: the capability is the actor's; an Agent never writes trunk; the
 /// op is held; the book is in scope; every leg is within its unit's
-/// ceiling; the scope caveats admit the whole book (a scoped token is
-/// refused). A `requires_dry_run` token may still prepare. Publishing an
-/// unrehearsed control calls [`admit_control_write`] or [`admit_direct_write`].
+/// ceiling; unrehearsed controls cannot carry `requires_dry_run`; the scope
+/// caveats admit the whole book (a scoped token is refused).
 pub fn admit(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
     admit_within(cap, intent, &Reach::whole_book(intent.trunk), None)
 }
@@ -155,23 +154,26 @@ pub fn admit_within_class(
 /// `accounts` caveat (compiling reads the chart) runs this first, so
 /// nothing is read for a token that may not act here at all, then [`reach`].
 pub fn admit_base(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
-    // Preparation, including a class-scoped post rehearsal, stays admitted.
-    // Publication sites call admit_control_write or admit_direct_write.
-    admit_base_as(cap, intent, false)
+    admit_base_as(cap, intent, false)?;
+    admit_direct_write(cap)
 }
 
-/// Admit a control write that has no verified rehearsal-certificate protocol.
-/// Controls may offer previews, but a preview alone does not discharge the
-/// `requires_dry_run` caveat. Run this before observing storage; read admission
-/// and its mandatory access receipts are independent of this write check.
-pub fn admit_control_write(cap: &Capability) -> Result<(), Denial> {
-    if cap.has_requires_dry_run_caveat() {
-        return Err(out_of_scope(
-            "requires_dry_run",
-            "a control write without a supported verified rehearsal certificate".into(),
-        ));
+/// Authority and reach for nonpublishing control preparation. A preview does
+/// not discharge `requires_dry_run`: publication must independently call
+/// [`admit_direct_write`] on the original capability before observing storage.
+/// Unlike posting-plan previews, this does not permit an Agent on trunk.
+pub fn admit_preparation(
+    cap: &Capability,
+    intent: &Intent<'_>,
+    r: &Reach<'_>,
+    accounts: Option<&AccountScope>,
+    class: Option<EntryClass>,
+) -> Result<(), Denial> {
+    admit_base_as(cap, intent, false)?;
+    match class {
+        Some(class) => reach_class(cap, r, accounts, class),
+        None => reach(cap, r, accounts),
     }
-    Ok(())
 }
 
 /// Base authority checks for the posting kernel, which separately verifies
@@ -179,8 +181,7 @@ pub fn admit_control_write(cap: &Capability) -> Result<(), Denial> {
 /// establish that a posting has been rehearsed.
 pub fn admit_base_for_post(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
     if intent.op != Op::Post {
-        admit_base(cap, intent)?;
-        return admit_control_write(cap);
+        return admit_base(cap, intent);
     }
     admit_base_as(cap, intent, false)
 }
@@ -546,9 +547,35 @@ mod tests {
             .unwrap()
             .with_requires_dry_run();
         assert_eq!(
-            admit_class(&cap, &intent(VId(1), &[(USD, 100)]), EntryClass::ORIGINAL),
+            admit_preparation(
+                &cap,
+                &intent(VId(1), &[(USD, 100)]),
+                &Reach::whole_book(true),
+                None,
+                Some(EntryClass::ORIGINAL),
+            ),
             Ok(())
         );
+        assert!(matches!(
+            admit_class(&cap, &intent(VId(1), &[(USD, 100)]), EntryClass::ORIGINAL),
+            Err(Denial::OutOfScope {
+                caveat: "requires_dry_run",
+                ..
+            })
+        ));
+        assert!(matches!(
+            admit_preparation(
+                &cap,
+                &intent(VId(1), &[(USD, 100)]),
+                &Reach::whole_book(true),
+                None,
+                Some(EntryClass::PERIOD_CONTROL),
+            ),
+            Err(Denial::OutOfScope {
+                caveat: "classes",
+                ..
+            })
+        ));
         assert!(matches!(
             admit_class(&cap, &intent(VId(2), &[]), EntryClass::ORIGINAL),
             Err(Denial::NotHolder { .. })
@@ -595,7 +622,25 @@ mod tests {
         // Controls prepare proposal digests for review without publishing.
         let mut control = intent(VId(1), &[]);
         control.op = Op::Close;
-        assert_eq!(admit(&cap, &control), Ok(()));
+        assert_eq!(
+            admit_preparation(&cap, &control, &Reach::whole_book(true), None, None),
+            Ok(())
+        );
+        assert!(matches!(
+            admit(&cap, &control),
+            Err(Denial::OutOfScope {
+                caveat: "requires_dry_run",
+                ..
+            })
+        ));
+        let agent = Capability::new(VId(1), Profile::Agent, &[Op::Post], VId(1))
+            .unwrap()
+            .with_requires_dry_run();
+        let agent_intent = intent(VId(1), &[]);
+        assert_eq!(
+            admit_preparation(&agent, &agent_intent, &Reach::whole_book(true), None, None),
+            Err(Denial::AgentOnTrunk)
+        );
     }
 
     #[test]
@@ -925,31 +970,21 @@ mod tests {
         let ordinary = Capability::new(VId(5), Profile::Human, &Op::ALL, VId(1)).unwrap();
         let capability = ordinary.clone().with_requires_dry_run();
         assert_eq!(admit_read(&capability, VId(5), BOOK), Ok(()));
-        let publication = admit_control_write(&capability).unwrap_err();
-        assert!(matches!(
-            publication,
-            Denial::OutOfScope {
-                caveat: "requires_dry_run",
-                ..
-            }
-        ));
-        assert!(publication.fix().contains("verified plan"));
-        let direct = admit_direct_write(&capability).unwrap_err();
-        assert!(matches!(
-            direct,
-            Denial::OutOfScope {
-                caveat: "requires_dry_run",
-                ..
-            }
-        ));
         for op in Op::ALL {
             let intent = Intent {
                 op,
                 ..intent(VId(5), &[])
             };
             assert_eq!(admit(&ordinary, &intent), Ok(()), "unflagged {op}");
-            // Preparation remains admitted. The publication helpers above refuse.
-            assert_eq!(admit(&capability, &intent), Ok(()), "prepare {op}");
+            let denial = admit(&capability, &intent).unwrap_err();
+            assert!(matches!(
+                denial,
+                Denial::OutOfScope {
+                    caveat: "requires_dry_run",
+                    ..
+                }
+            ));
+            assert!(denial.fix().contains("verified plan"));
             if op == Op::Post {
                 assert_eq!(admit_base_for_post(&capability, &intent), Ok(()));
                 assert_eq!(admit_for_post(&capability, &intent), Ok(()));

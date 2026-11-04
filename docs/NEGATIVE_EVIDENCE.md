@@ -4,6 +4,81 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-04 — historical procedure framing lost registered identities
+
+The `bef2ace9` decoder retains three historical extended procedure identities.
+A source-history audit of 26 catalog revisions found 42 historical identities
+with the same six-population native input layout. The other 39, including the
+removed `damages.but_for` and `recon.book_to_book` names, were rejected before
+the replay path could identify their unavailable registry epoch. The original
+`benford.first_digit` version 1 also lacked its original-closure request path.
+
+The extended decoder now enumerates those 42 identities and requires all six
+native witnesses in their registered order. Retained Benford version 1 uses
+its original closure. Extended framing refuses unknown identities, unregistered
+intermediate versions, missing witnesses and reordered populations. Replay
+continues to require the pinned registry and exact algorithm version; the
+broader RegistryEpoch implementation remains on the original open `fa-vdc`.
+
+Regression inputs are synthetic historical frames over real native captures,
+with their public digests recomputed. They establish format behavior; historical
+algorithm execution requires its own retained environment and execution proof.
+The first executed native framing probe at `fb1f522` failed in the helper's
+empty-findings assertion: its Benford prototype legitimately returned a finding.
+The corrected prototypes use an assertion-drift capture without RegisterEquals
+claims and an original-format cutoff capture without a document date. The
+empty-findings assertion and all original closure/refusal checks remain.
+
+The corrected `7a7104d` control subsequently compiled and executed on `ovh-a`.
+It failed at the intended first historical identity, `aging.inventory@1`, with
+FA-REF-150 / exit 8: unexpected extended native inputs. One native test failed,
+716 were filtered out, and both remote and outer exits were 101 with completion
+acknowledged. This witnesses the old framing refusal; the repaired source's
+positive tests and exact-tree proof remain the authority for its behavior.
+
+## 2026-11-04 — fa-d48q read-only preparation was stranded at two surfaces
+
+The native `9435e377` facade library run passed 714 tests and failed
+`required_rehearsal_allows_statement_preapproval_but_refuses_unverified_activation`:
+statement-definition planning called raw write admission and returned
+FA-REF-011 instead of preparing the definition. Preparation now uses the
+explicit nonpublishing admission contract; activation checks direct-write
+admission before any frontier read and retains its transaction authority
+witness. The existing positive, refusal and unchanged-head assertions remain.
+
+The same source's original five-target authorization run passed all 16
+operator-token, 53 bank, 392 genesis and 82 journal-policy tests, but the
+write-authority matrix passed two tests and failed its required-rehearsal
+preview test. The `recover outcomes --dry-run` handler already prepared and
+aborted its native transaction, but its launch-bound registry row was missing.
+The shared registry now requires Read and SchemaChange for that exact target;
+whole-book scope admission still precedes observation. Publication additionally
+checks direct-write admission before opening the book. Both preview and
+publication enter the existing exact-operation matrix; recovery of projections
+remains host-only. Public admissibility now recognizes the same nonpublishing
+preview exception as the dispatch confirmation gate.
+
+The repaired `d089882` passed all 546 tests in the original five-target
+authorization selection and all 97 complete CLI cases. The expanded run's
+643 tests include those same 546; they are not additional independent results.
+Its WorldCom walkthrough separately missed the 60,000 ms budget at 151,725 ms.
+
+Fault control `7a7104d` omits only `tb`'s access receipt. The original five-target
+selection and test profile, with the exact matrix test filter, compiled on
+`ovh-a` and failed one native test at `write_authority.rs:1946`: zero receipts
+where exactly one was required. The other four harnesses were filtered out
+and supply no passing credit. The remote and outer exits were 101; the source
+wrapper acknowledged completion. The full transcript is retained with the
+control's verified recovery material.
+
+The admission split is explicit: correct reads retain their mandatory access
+event while native Entry payloads and Period rows remain unchanged; a read
+that omits that event is rejected even when its head does not advance. These
+repairs preserve the global write guard, operation ceilings and class caveats.
+The exact `9435e377` Tier-0 PASS proves formatting and compilation only.
+Closure follows the final exact-tree repository proof and the original Bead's
+complete acceptance inventory.
+
 ## 2026-10-10 — fa-pri / fa-p7r arithmetic review
 
 - **Native imbalance absorbed as valuation rounding.** The former
@@ -2415,3 +2490,65 @@ The capture then failed independent verification because it never reached
 published valid verdict or resume credit. The separate original Tier 0 reached
 its unchanged 1,800-second compile cap: remote 137 after 1,804,185 ms, format
 PASS/check FAIL, wrapper 1. Neither result authorizes a fold, push or closure.
+
+## 2026-11-04 — Reconciliation exposed authorization-order and coverage defects
+
+The unlanded 953b25b candidate reconciled 05090127 with owner 7ebfffc2.
+Its original unfiltered journal/CLI authorization packet compiled and completed
+with exit 101: operator tokens 15 passed/1 failed, write authority 1/2,
+bank matches 53/0, Genesis 391/1, and journal policy 81/1. The remote run
+finished at 01:17:09 UTC after 1,396,260 ms. All five failures are retained;
+the candidate was not merged, published or used to close a Bead.
+
+Two original armed outside-scope controls failed with `entry class mirror:
+None`: class-aware metadata admission inspected that mirror even for tokens
+without a class caveat. It now reads the class mirror only when that caveat
+requires it. Account and period guards retain their original behavior, a
+class-scoped request still requires the actual valid class mirror, and an
+unscoped consumer still detects the deliberately unreadable entry payload.
+Neither armed control is edited.
+
+`tb --certify` correctly refused a required-rehearsal token, but only after
+the bound read's AccessEvent moved the head from 6 to 7. Certifying report
+admission now rejects the unsupported publication before opening the book.
+The original unchanged-head assertion remains; a certificate-file twin also
+requires no output file. Ordinary reads and read-only proof bundles keep their
+separate access-receipt contract.
+
+The new class-scoped CLI fixture issued a close-only token although the actual
+period route requires read and close, so a missing-read refusal masked the
+class boundary. Its controller now holds both required operations; the exact
+class-refusal, matching-class success and unscoped success assertions remain.
+The write matrix also lacked the existing CloseRun start, step and run routes.
+They now have rows, including the step-preview operation set; no writing route
+is exempted, and the original coverage checker remains unchanged.
+
+The separate 953b25b compile gate and policy/CLI packet reached their original
+1,800-second caps with exit 137 before tests executed. They provide no compile
+PASS or test credit. Corrected-source native execution, exact-tree Tier 0 and
+the complete Tier 1 proof remain required.
+
+The corrected 6b76ebdb candidate passed the exact-tree format/all-target compile
+gate. Its complete authority packet still exited 101: operator tokens 15/1,
+write authority 2/1, bank matches 53/0, Genesis 392/0 and journal policy 82/0.
+Both original armed scope controls and the missing matrix coverage passed.
+The CLI library separately passed 82/0; policy passed 45/1 because the added
+Agent fixture tried to construct a forbidden Close capability. That fixture
+now uses an allowed Post capability and keeps the Agent-on-trunk refusal.
+
+The remaining class failure was a front-door whole-book judgment over an
+unknown class, before the period handler's actual PeriodControl check.
+Both bound-admission callers now supply that known payload class only for
+period transition commands. Every other whole-book coordinate check remains;
+the registry's scope rules are not exempted or broadened.
+
+The remaining preview assertion incorrectly forbade the mandatory AccessEvent
+required by plan §9.7 and the existing operator-token plan-delivery controls.
+Its admission split is explicit: an ordinary read or period-plan delivery may
+publish exactly its one access receipt, with the original principal, capability,
+command and observed/recorded sequence. The complete Entry identities and
+payloads and all period rows must remain unchanged. Missing, wrong or extra
+receipts and accounting changes remain failures. The recovery preview keeps
+its original no-publication requirement. A planted missing-receipt execution
+and corrected native/full-gate execution are required before this test repair
+can be treated as qualified; no missing receipt is a passing read.
