@@ -636,3 +636,204 @@ fn a_keyed_controllers_review_approval_is_signed_and_plans_the_allocation() {
     f.assert_dimensions(&legs[1], "ENG");
     f.assert_dimensions(&legs[2], "SALES");
 }
+
+
+/// Policies survive process reopen, replace independently of required
+/// dimensions, and leave earlier prefixes and historical reversals usable.
+#[test]
+fn account_dimension_constraints_enforce_exact_values_and_replay_history() {
+    let f = Fixture::new();
+    let document = write(&f.dir, "constraint-evidence.txt", "Dimension policy posting evidence");
+    let evidence = ok(
+        &f.book,
+        &[
+            "document",
+            "add",
+            &document,
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let post = |key: &str, dimensions: &str| {
+        let intent = write(
+            &f.dir,
+            &format!("{key}.json"),
+            format!(
+                r#"{{"effective_date":"2026-03-12","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6100","amount":"10.00 USD","dimensions":{dimensions}}},{{"side":"credit","account":"1000","amount":"10.00 USD"}}]}}"#
+            ),
+        );
+        run(
+            &f.book,
+            &["post", "--intent", &intent, "--evidence", text(&evidence, "oid")],
+        )
+    };
+    let before = f.head();
+    let recorded = ok(
+        &f.book,
+        &[
+            "dimension",
+            "constrain",
+            "cost_center",
+            "6100",
+            "--allow",
+            "SALES",
+            "--allow",
+            "ENG",
+            "--forbid",
+            "SHARED",
+            "--key",
+            "restricted-rent",
+        ],
+    );
+    let first_policy = integer(&recorded, "recorded_at");
+    assert_eq!(get(&recorded, "allowed").render(), r#"["ENG","SALES"]"#);
+    assert_eq!(get(&recorded, "forbidden").render(), r#"["SHARED"]"#);
+    assert!(first_policy > before);
+    let old = ok(
+        &f.book,
+        &[
+            "dimension",
+            "constraints",
+            "--as-known-at",
+            &before.to_string(),
+        ],
+    );
+    assert!(get(&old, "constraints").as_arr().unwrap().is_empty());
+    let unchanged = f.head();
+    let retry = ok(
+        &f.book,
+        &[
+            "dimension",
+            "constrain",
+            "cost_center",
+            "6100",
+            "--allow",
+            "ENG",
+            "--allow",
+            "SALES",
+            "--forbid",
+            "SHARED",
+            "--key",
+            "restricted-rent",
+        ],
+    );
+    assert_eq!(get(&retry, "already_recorded"), &Json::Bool(true));
+    assert_eq!(get(&retry, "control_entry"), get(&recorded, "control_entry"));
+    assert_eq!(f.head(), unchanged);
+    let (code, conflict) = run(
+        &f.book,
+        &[
+            "dimension",
+            "constrain",
+            "cost_center",
+            "6100",
+            "--allow",
+            "ENG",
+            "--key",
+            "restricted-rent",
+        ],
+    );
+    assert_eq!(code, 6, "{}", conflict.render());
+    assert!(conflict.render().contains("FA-REF-032"), "{}", conflict.render());
+    assert_eq!(f.head(), unchanged);
+    let (code, forbidden) = post("shared-refused", r#"{"cost_center":"SHARED"}"#);
+    assert_eq!(code, 3, "{}", forbidden.render());
+    assert!(forbidden.render().contains("FA-REF-207"), "{}", forbidden.render());
+    assert_eq!(f.head(), unchanged);
+    let (code, allowed) = post("eng-permitted", r#"{"cost_center":"ENG"}"#);
+    assert_eq!(code, 0, "{}", allowed.render());
+    let original = text(&allowed, "vid").to_string();
+
+    ok(
+        &f.book,
+        &["dimension", "constrain", "cost_center", "6100", "--allow-none"],
+    );
+    ok(
+        &f.book,
+        &["dimension", "require", "cost_center", "6100", "--remove"],
+    );
+    let unchanged = f.head();
+    let (code, forbidden) = post("eng-refused", r#"{"cost_center":"ENG"}"#);
+    assert_eq!(code, 3, "{}", forbidden.render());
+    assert!(forbidden.render().contains("FA-REF-207"), "{}", forbidden.render());
+    assert_eq!(f.head(), unchanged);
+    let (code, optional) = post("untagged-permitted", "{}");
+    assert_eq!(code, 0, "{}", optional.render());
+    // The same tightened policy must not strand the earlier lawful entry.
+    ok(&f.book, &["reverse", &original, "--reason", "WrongAccount"]);
+
+    ok(&f.book, &["dimension", "require", "cost_center", "6100"]);
+    let unchanged = f.head();
+    let (code, missing) = post("untagged-refused", "{}");
+    assert_eq!(code, 3, "{}", missing.render());
+    assert!(missing.render().contains("FA-REF-005"), "{}", missing.render());
+    assert_eq!(f.head(), unchanged);
+    let clear = ok(
+        &f.book,
+        &["dimension", "constrain", "cost_center", "6100", "--clear"],
+    );
+    assert_eq!(get(&clear, "allowed"), &Json::Null);
+    assert!(get(&clear, "forbidden").as_arr().unwrap().is_empty());
+    let (code, now_allowed) = post("shared-now-permitted", r#"{"cost_center":"SHARED"}"#);
+    assert_eq!(code, 0, "{}", now_allowed.render());
+    let unchanged = f.head();
+    let (code, still_required) = post("untagged-still-refused", "{}");
+    assert_eq!(code, 3, "{}", still_required.render());
+    assert!(still_required.render().contains("FA-REF-005"));
+    assert_eq!(f.head(), unchanged);
+
+    let historical = ok(
+        &f.book,
+        &[
+            "dimension",
+            "constraints",
+            "cost_center",
+            "--as-known-at",
+            &first_policy.to_string(),
+        ],
+    );
+    let rows = get(&historical, "constraints").as_arr().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(text(&rows[0], "account"), "6100");
+    assert_eq!(get(&rows[0], "allowed").render(), r#"["ENG","SALES"]"#);
+    assert_eq!(get(&rows[0], "control_entry"), get(&recorded, "control_entry"));
+    let current = ok(&f.book, &["dimension", "constraints", "cost_center"]);
+    let rows = get(&current, "constraints").as_arr().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(get(&rows[0], "allowed"), &Json::Null);
+    assert_eq!(get(&rows[0], "control_entry"), get(&clear, "control_entry"));
+    // The new schema controls must not break chart replay or report folds.
+    ok(&f.book, &["chart", "list"]);
+    f.assert_cell("SHARED", "110.00 USD", "0.00 USD");
+    f.assert_cell("ENG", "10.00 USD", "10.00 USD");
+}
+
+#[test]
+fn dimension_constraint_cli_rejects_ambiguous_or_unknown_policies_without_writes() {
+    let f = Fixture::new();
+    let before = f.head();
+    for args in [
+        vec!["dimension", "constrain", "cost_center", "6100"],
+        vec!["dimension", "constrain", "cost_center", "6100", "--allow", "ENG", "--allow", "ENG"],
+        vec!["dimension", "constrain", "cost_center", "6100", "--allow", "ENG", "--forbid", "ENG"],
+        vec!["dimension", "constrain", "cost_center", "6100", "--allow-none", "--allow", "ENG"],
+        vec!["dimension", "constrain", "cost_center", "6100", "--clear", "--forbid", "ENG"],
+        vec!["dimension", "constrain", "cost_center", "6100", "--allow", ""],
+        vec!["dimension", "constrain", "cost_center", "6100", "--allow", "NO-SUCH-CENTER"],
+        vec!["dimension", "constrain", "cost_center", "6100", "--allow", "ENG", "--remove"],
+        vec!["dimension", "list", "cost_center", "--allow", "ENG"],
+        vec!["dimension", "constraints", "cost_center", "--clear"],
+    ] {
+        let (code, refusal) = run(&f.book, &args);
+        assert_ne!(code, 0, "args={args:?}: {}", refusal.render());
+        assert_eq!(f.head(), before, "args={args:?}");
+    }
+    let denied = ok(
+        &f.book,
+        &["dimension", "constrain", "cost_center", "6100", "--forbid", "SALES"],
+    );
+    assert_eq!(get(&denied, "allowed"), &Json::Null);
+    assert_eq!(get(&denied, "forbidden").render(), r#"["SALES"]"#);
+}

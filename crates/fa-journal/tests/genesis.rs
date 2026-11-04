@@ -47,6 +47,8 @@ mod closing_carrying_tests;
 mod closing_case_tests;
 #[path = "genesis/closing_draft.rs"]
 mod closing_draft_tests;
+#[path = "genesis/dimension_constraints.rs"]
+mod dimension_constraint_tests;
 #[path = "genesis/disposal.rs"]
 mod disposal_tests;
 #[path = "genesis/draft_authority.rs"]
