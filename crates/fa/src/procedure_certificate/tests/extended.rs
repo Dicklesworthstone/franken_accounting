@@ -630,6 +630,36 @@ fn independent_attestations_change_results_but_not_the_saved_historical_run() {
 }
 
 #[test]
+fn procedure_status_detects_new_attestation_without_new_postings() {
+    let mut f = Fixture::new(106);
+    f.assign_role("1000", "cash");
+    let (source, _) = f.post(1, "3000", "1000", 100, false);
+    let certified = f.certify(&f.request("confirm.coverage", source));
+    assert_eq!(certified.report.findings.len(), 1);
+    let reviewed = review(&mut f);
+    let cx = f.cx();
+    let head = f.head();
+    let status = f
+        .book
+        .procedure_certificate_status(&cx, PRINCIPAL, &cap(&["read"]), &certified.certificate)
+        .unwrap()
+        .unwrap();
+    let ProcedureCertificateStatus::Changed {
+        checked_at,
+        current,
+    } = status
+    else {
+        panic!("the new independent review changes confirmation coverage");
+    };
+    assert_eq!(checked_at, head);
+    assert_eq!(current.population, certified.report.population);
+    assert_eq!(current.decision_card, certified.report.decision_card);
+    assert!(current.findings.is_empty());
+    assert!(f.book.db.vertex(reviewed.vid).unwrap().is_some());
+    assert_eq!(f.head(), head, "status must not journal its recomputation");
+}
+
+#[test]
 fn nonempty_party_identity_graph_survives_later_population_changes_and_reopen() {
     let mut f = Fixture::new(93);
     let (source, _) = f.post(1, "3000", "1000", 100, false);
@@ -641,10 +671,29 @@ fn nonempty_party_identity_graph_survives_later_population_changes_and_reopen() 
     assert_eq!(c.report.findings.len(), 1);
     assert!(c.report.findings[0].cites.contains(&Cite::Principal(a)));
     assert!(c.report.findings[0].cites.contains(&Cite::Principal(b)));
+    assert_eq!(
+        f.book
+            .procedure_certificate_status(&f.cx(), PRINCIPAL, &cap(&["read"]), &c)
+            .unwrap()
+            .unwrap(),
+        ProcedureCertificateStatus::Current {
+            checked_at: f.head()
+        }
+    );
     let bytes = c.canonical_bytes().unwrap();
     party(&mut f, "VENDOR-C", "ab123");
     let new = f.certify(&f.request("graph.identity_resolution", source));
     assert_ne!(new.report.findings_digest, c.report.findings_digest);
+    assert_eq!(
+        f.book
+            .procedure_certificate_status(&f.cx(), PRINCIPAL, &cap(&["read"]), &c)
+            .unwrap()
+            .unwrap(),
+        ProcedureCertificateStatus::Changed {
+            checked_at: f.head(),
+            current: Box::new(new.report)
+        }
+    );
     let cx = f.cx();
     let vfs = f.vfs.clone();
     drop(f.book);

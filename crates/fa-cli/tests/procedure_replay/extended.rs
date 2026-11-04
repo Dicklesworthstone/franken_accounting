@@ -192,6 +192,21 @@ fn extended_analytics_replay_from_retained_handles_files_and_stdin_after_new_evi
         }
         (certificates, at)
     };
+    let first_handle = format!("C:{}", hex(certificates[0].digest()));
+    let before_post = head();
+    let status = ok(&path, &["certificate", "status", &first_handle]);
+    assert_eq!(status.len(), 1);
+    assert_eq!(text(&status[0], "event"), "certificate_status");
+    assert_eq!(text(data(&status[0]), "status"), "Current");
+    assert_eq!(
+        number(data(&status[0]), "known_at"),
+        i128::from(original_at.0)
+    );
+    assert_eq!(
+        number(data(&status[0]), "checked_at"),
+        i128::from(before_post.0)
+    );
+    assert_eq!(head(), before_post, "retained-handle freshness is a read");
     post(
         &path,
         &dir,
@@ -204,6 +219,13 @@ fn extended_analytics_replay_from_retained_handles_files_and_stdin_after_new_evi
     );
     let after = head();
     assert!(after > original_at);
+    let status = ok(&path, &["certificate", "status", &first_handle]);
+    assert_eq!(text(data(&status[0]), "status"), "Changed");
+    assert_eq!(
+        number(data(&status[0]), "known_at"),
+        i128::from(original_at.0)
+    );
+    assert_eq!(number(data(&status[0]), "checked_at"), i128::from(after.0));
     for (index, certificate) in certificates.iter().enumerate() {
         let bytes = certificate.canonical_bytes().unwrap();
         let handle = format!("C:{}", hex(certificate.digest()));

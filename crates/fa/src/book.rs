@@ -7174,6 +7174,33 @@ impl Book {
         )))
     }
 
+    /// Replay an analytic certificate, then compare its exact procedure and
+    /// original question at the current head, under current read authority.
+    pub fn procedure_certificate_status(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::ProcedureCertificate,
+    ) -> Outcome<crate::ProcedureCertificateStatus> {
+        with_store!(&self.store, core => core.procedure_certificate_status(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    /// Admit current authority before loading native history and comparing a
+    /// saved analytic result with the same procedure's present result.
+    pub fn procedure_certificate_status_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::ProcedureCertificate,
+    ) -> Outcome<crate::ProcedureCertificateStatus> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.procedure_certificate_status_with_history(
+            &purposes, principal, capability, certificate
+        )))
+    }
+
     /// Publish every occurrence in a retained procedure run atomically.
     /// Retrying its certificate returns the original publication and identities.
     pub fn record_findings(

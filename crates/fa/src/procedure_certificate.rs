@@ -124,6 +124,29 @@ pub struct CertifiedProcedure {
     pub certificate: ProcedureCertificate,
 }
 
+/// Whether the original procedure still returns the same analytical result and
+/// decision evidence at the head, after its historical certificate replays.
+///
+/// This is deliberately conservative: population, work, findings, citations and
+/// the complete decision card must still agree. A posting beyond a procedure's
+/// effective cutoff can change its population or decision evidence even when
+/// the selected findings do not change. Only the recorded frontier and its
+/// input/finding commitments may differ for `Current`.
+///
+/// `Changed` carries the present run for inspection, not a new certificate or a
+/// claim that the historical result is invalid. Neither outcome grants current
+/// authority or authenticates an outsider's disclosure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcedureCertificateStatus {
+    Current {
+        checked_at: CommitSeq,
+    },
+    Changed {
+        checked_at: CommitSeq,
+        current: Box<ProcedureRun>,
+    },
+}
+
 fn invalid(message: impl Into<String>) -> Refusal {
     Refusal::new(
         crate::certificate::code::CERTIFICATE_INVALID,
@@ -942,6 +965,116 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(refusal));
         }
         self.replay_procedure(cx, principal, capability, certificate)
+    }
+
+    /// Check freshness from a cold or resident book. Current Read and any bank
+    /// Reconcile authority precede history hydration; saved producer fields
+    /// supply neither. The retained certificate is replayed before reading the
+    /// current result, and no accounting record or certificate is published.
+    pub async fn procedure_certificate_status_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &ProcedureCertificate,
+    ) -> Outcome<ProcedureCertificateStatus> {
+        if let Err(refusal) = self
+            .prepare_procedure_history(
+                cx,
+                principal,
+                capability,
+                &certificate.report.procedure,
+                false,
+            )
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self
+            .prepare_report_history(cx, principal, capability, Some(certificate.known_at()))
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        self.procedure_certificate_status(cx, principal, capability, certificate)
+    }
+
+    /// Replay the complete historical run, then execute its exact registered
+    /// method, parameters, handles and effective cutoff at one current head.
+    /// Read is sufficient; bank procedures additionally require Reconcile.
+    ///
+    /// Unlike monetary report freshness, this compares the run itself rather
+    /// than attributing changes to later posting entries: parties, approvals,
+    /// attestations and bank decisions can also change analytical results.
+    pub fn procedure_certificate_status(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &ProcedureCertificate,
+    ) -> Outcome<ProcedureCertificateStatus> {
+        let original = match self.replay_procedure(cx, principal, capability, certificate)? {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let request = match certificate.request() {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let built = catalog::build(&request.procedure, request.parameters, request.inputs)?;
+        let bank_procedure = request.procedure == bank::PROCEDURE;
+        let result = self.query(cx, |db, book| {
+            let mut snapshot =
+                Snapshot::read(db, &cx.query(), book, None, request.effective_through)?;
+            if bank_procedure
+                && let Err(refusal) = bank::populate(db, cx, book, capability, &mut snapshot)?
+            {
+                return Ok(Err(refusal));
+            }
+            if extended::supported(&original.procedure, original.version)
+                && let Err(refusal) = extended::unchanged_attestations(db, cx, &snapshot)?
+            {
+                return Ok(Err(refusal));
+            }
+            if let Err(refusal) = unchanged_approvals(db, &snapshot)? {
+                return Ok(Err(refusal));
+            }
+            Ok(Ok(fa_lantern::run_over_metered(
+                &snapshot,
+                book,
+                built.as_ref(),
+                None,
+                Some(&cx.query()),
+            )?))
+        })?;
+        if let Err(refusal) = authorize(self, cx, principal, capability, false, bank_procedure)? {
+            return Ok(Err(refusal));
+        }
+        let current = match result {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        let checked_at = current.coordinate.known_at;
+        // Both commitments include the recorded frontier, so a certificate
+        // retention alone changes them. Historical replay above has already
+        // authenticated the original inputs. Compare every other run field,
+        // including the whole-snapshot population and policy evidence; never
+        // replace the returned current run's own commitments with old ones.
+        let mut normalized = current.clone();
+        normalized.coordinate.known_at = original.coordinate.known_at;
+        normalized.inputs_digest = original.inputs_digest;
+        normalized.findings_digest = original.findings_digest;
+        let unchanged = normalized == original;
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        Ok(Ok(if unchanged {
+            ProcedureCertificateStatus::Current { checked_at }
+        } else {
+            ProcedureCertificateStatus::Changed {
+                checked_at,
+                current: Box::new(current),
+            }
+        }))
     }
 
     /// Compute and certify a catalog procedure without publishing any record.
