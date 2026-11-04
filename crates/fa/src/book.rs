@@ -5199,6 +5199,28 @@ impl Book {
         with_store!(&self.store, core => core.export_proof(&self.purposes(), principal, capability, request))
     }
 
+    /// The sorted, distinct account/unit cells of every migration chunk at
+    /// `state` through `effective_through`, optionally restricted to legs on
+    /// `account`. Open and abandoned runs remain candidates: the resulting
+    /// balance proofs decide their visibility, not the extract's row filter.
+    /// This observes and authenticates the whole checkpoint prefix, so it
+    /// requires current whole-book read and produce authority even for one
+    /// account. No write occurs, and the requests are bounded by the bundle
+    /// balance limit. Pass them to [`Book::produce_bundle`] at the same state;
+    /// these requests alone are not a proof of any chunk's visibility.
+    pub fn migration_balance_requests(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: fa_model::Oid,
+        account: Option<VId>,
+        effective_through: DateDay,
+    ) -> Outcome<Vec<fa_notary::BalanceRequest>> {
+        with_store!(&self.store, core => core.migration_balance_requests(
+            &self.purposes(), principal, capability, state, account, effective_through
+        ))
+    }
+
     /// Export the complete record-bearing suffix from the recorded state
     /// the recipient retained to a later one (default: the latest), under
     /// current read and produce authority, as [`crate::SuffixArtifact`]:

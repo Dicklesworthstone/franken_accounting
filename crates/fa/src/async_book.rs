@@ -6187,6 +6187,33 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Derive migration visibility witness cells at an exact recorded state.
+    /// [`crate::Book::migration_balance_requests`] states the disclosure and
+    /// admission contract; this read never changes the journal.
+    pub fn migration_balance_requests(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: fa_model::Oid,
+        account: Option<VId>,
+        effective_through: fa_time::DateDay,
+    ) -> Outcome<Vec<fa_notary::BalanceRequest>> {
+        self.query(cx, |db, book| {
+            crate::proof::migration_balance_requests(
+                db,
+                cx,
+                book,
+                &self.signer,
+                principal,
+                capability,
+                state,
+                account,
+                effective_through,
+            )
+        })
+    }
+
     /// Export the complete record-bearing suffix between two recorded
     /// states (plan §13.2); [`crate::Book::export_suffix`] states the contract.
     pub fn export_suffix(
