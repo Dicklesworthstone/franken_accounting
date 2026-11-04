@@ -332,7 +332,10 @@ fn constraint_codes(args: &Args, flag: &str) -> Result<Vec<String>, Fail> {
         .map(str::to_string)
         .collect();
     if codes.iter().any(String::is_empty) {
-        return Err(usage(format!("{flag} needs a nonempty value code"), CONSTRAIN));
+        return Err(usage(
+            format!("{flag} needs a nonempty value code"),
+            CONSTRAIN,
+        ));
     }
     codes.sort();
     if codes.windows(2).any(|pair| pair[0] == pair[1]) {
@@ -348,9 +351,9 @@ fn constraint_fields(spec: &DimensionConstraintSpec, account: &str) -> Vec<(&'st
         ("account_vid", s(format!("{:032x}", spec.account.0))),
         (
             "allowed",
-            spec.allowed
-                .as_ref()
-                .map_or(Json::Null, |values| Json::Arr(values.iter().map(s).collect())),
+            spec.allowed.as_ref().map_or(Json::Null, |values| {
+                Json::Arr(values.iter().map(s).collect())
+            }),
         ),
         (
             "forbidden",
@@ -397,7 +400,10 @@ fn constrain(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     if allow_none && has_allow {
-        return Err(usage("--allow-none cannot be combined with --allow", CONSTRAIN));
+        return Err(usage(
+            "--allow-none cannot be combined with --allow",
+            CONSTRAIN,
+        ));
     }
     if !(clear || allow_none || has_allow || has_forbid) {
         return Err(usage(

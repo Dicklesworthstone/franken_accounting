@@ -544,7 +544,9 @@ pub(super) fn verify_procedure(
         || string(row, "calibration")? != "corpus"
         || string(row, "artifact")? != "FA-ART-CAL-01"
     {
-        return Err(invalid("unsupported round-amount procedure registry semantics"));
+        return Err(invalid(
+            "unsupported round-amount procedure registry semantics",
+        ));
     }
     let parameters: Vec<_> = rows(&procedures, "parameter")?
         .iter()
@@ -684,7 +686,10 @@ fn procedure_policy_oid(doc: &Document) -> Result<[u8; 32], ReportError> {
     }
     Ok(hash_parts(
         b"fa:policy:v1",
-        &[&(canonical.len() as u32).to_le_bytes(), canonical.as_bytes()],
+        &[
+            &(canonical.len() as u32).to_le_bytes(),
+            canonical.as_bytes(),
+        ],
     ))
 }
 
