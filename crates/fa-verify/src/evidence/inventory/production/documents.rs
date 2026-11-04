@@ -14,6 +14,7 @@ use super::{
     verify_evidence_production_for,
 };
 use crate::document::doc_commit;
+use crate::evidence::EvidenceCitation;
 use crate::proof::Checkpoint;
 use crate::proof::production::{
     MAX_PRODUCTION_BYTES, MAX_PRODUCTION_RECORDS, ProductionError, ProductionScope,
@@ -79,15 +80,15 @@ impl fmt::Display for DocumentProductionError {
             ),
             Self::ConflictingCitation => write!(
                 f,
-                "authenticated entries assign different commitments to one document locator"
+                "authenticated citations assign different commitments to one document locator"
             ),
             Self::DocumentCount { expected, actual } => write!(
                 f,
-                "original citations require {expected} distinct documents; supplied {actual}"
+                "authenticated citations require {expected} distinct documents; supplied {actual}"
             ),
             Self::DocumentIdentity { position } => write!(
                 f,
-                "document {position} is not the next locator required by the original citations"
+                "document {position} is not the next locator required by the authenticated citations"
             ),
             Self::Commitment { position } => write!(
                 f,
@@ -163,7 +164,7 @@ pub fn verify_document_prefix_for(
 
 // Keep admission and the total resource policy identical across both input
 // routes. A valid prefix never excuses excessive or noncanonical documents.
-fn validate_inputs(
+pub(super) fn validate_inputs(
     prefix: &[u8],
     records: &[&[u8]],
     documents: &[DocumentContent<'_>],
@@ -212,20 +213,37 @@ fn verify_documents(
     inventory: VerifiedEvidenceProduction,
     documents: &[DocumentContent<'_>],
 ) -> Result<VerifiedDocumentProduction, DocumentProductionError> {
+    let (documents, document_byte_count) = verify_cited_documents(
+        inventory.citation_count,
+        inventory.entries.iter().flat_map(|entry| &entry.citations),
+        documents,
+    )?;
+    Ok(VerifiedDocumentProduction {
+        inventory,
+        document_scope: "recomputation",
+        documents,
+        document_byte_count,
+    })
+}
+
+/// Only callers that just authenticated the complete inventory may use this
+/// helper. Its input is never a caller-constructed public inventory.
+pub(super) fn verify_cited_documents<'a>(
+    citation_count: usize,
+    citations: impl IntoIterator<Item = &'a EvidenceCitation>,
+    documents: &[DocumentContent<'_>],
+) -> Result<(Vec<VerifiedDocumentContent>, u64), DocumentProductionError> {
     // Sort only authenticated metadata. Neither entries nor supplied documents
     // are reordered or silently deduplicated to repair a malformed production.
     let mut required = Vec::new();
     required
-        .try_reserve_exact(inventory.citation_count)
+        .try_reserve_exact(citation_count)
         .map_err(|_| DocumentProductionError::Limit("citation allocation"))?;
-    for entry in &inventory.entries {
-        required.extend(
-            entry
-                .citations
-                .iter()
-                .map(|citation| (citation.document_oid, citation.doc_commit)),
-        );
-    }
+    required.extend(
+        citations
+            .into_iter()
+            .map(|citation| (citation.document_oid, citation.doc_commit)),
+    );
     required.sort_unstable();
     let mut distinct = usize::from(!required.is_empty());
     for pair in required.windows(2) {
@@ -271,10 +289,5 @@ fn verify_documents(
         });
         cursor = end;
     }
-    Ok(VerifiedDocumentProduction {
-        inventory,
-        document_scope: "recomputation",
-        documents: verified,
-        document_byte_count,
-    })
+    Ok((verified, document_byte_count))
 }

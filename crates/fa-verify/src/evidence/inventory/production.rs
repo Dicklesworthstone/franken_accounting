@@ -6,14 +6,17 @@
 //! missing entries and missing citations inside a supplied entry. Reusing
 //! the existing proof formats introduces neither a bundle nor a trust anchor.
 //!
-//! Completeness is confined to the original citation lists of the matching
-//! journal entries. Document bytes, supplemental evidence, provenance,
-//! signatures, permissions, accounting validity and migration visibility
-//! are not verified. An empty list is not a claim that evidence was required
-//! or sufficient. The full prefix exposes out-of-scope envelope metadata.
+//! The original APIs confine completeness to the matching journal entries'
+//! original citation lists. [`supplements`] explicitly extends native-prefix
+//! production to later attachments at a recipient's known-at; [`documents`]
+//! and the supplemented document API verify complete cited bytes. Neither
+//! route verifies provenance, signatures, permissions, accounting validity or
+//! migration visibility. An empty list is not a claim that evidence was
+//! required or sufficient. The full prefix exposes out-of-scope metadata.
 
 pub mod documents;
 pub mod prefix;
+pub mod supplements;
 
 use core::fmt;
 
@@ -57,6 +60,14 @@ pub enum EvidenceProductionError {
         leaf_index: u64,
         error: EvidenceError,
     },
+    Supplement {
+        leaf_index: u64,
+        problem: &'static str,
+    },
+    UnsupportedTargetIdentity {
+        leaf_index: u64,
+        class: u16,
+    },
     Limit(&'static str),
 }
 
@@ -67,6 +78,19 @@ impl fmt::Display for EvidenceProductionError {
             Self::Evidence { leaf_index, error } => {
                 write!(f, "evidence at journal leaf {leaf_index}: {error}")
             }
+            Self::Supplement {
+                leaf_index,
+                problem,
+            } => {
+                write!(
+                    f,
+                    "supplemental evidence at journal leaf {leaf_index}: {problem}"
+                )
+            }
+            Self::UnsupportedTargetIdentity { leaf_index, class } => write!(
+                f,
+                "supplement target at journal leaf {leaf_index} has unsupported entry identity (class {class})"
+            ),
             Self::Limit(what) => write!(f, "evidence production exceeds the {what} bound"),
         }
     }
@@ -77,7 +101,9 @@ impl core::error::Error for EvidenceProductionError {
         match self {
             Self::Production(error) => Some(error),
             Self::Evidence { error, .. } => Some(error),
-            Self::Limit(_) => None,
+            Self::Supplement { .. } | Self::UnsupportedTargetIdentity { .. } | Self::Limit(_) => {
+                None
+            }
         }
     }
 }

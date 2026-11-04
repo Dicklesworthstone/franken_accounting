@@ -5,6 +5,8 @@
 mod fixture;
 #[path = "support/evidence_production.rs"]
 mod production_fixture;
+#[path = "support/evidence_supplements.rs"]
+mod supplement_fixture;
 
 use std::ffi::OsString;
 use std::fs;
@@ -19,6 +21,7 @@ use fa_verify::proof::production::MAX_PRODUCTION_BYTES;
 use production_fixture::{Journal, entry, journal};
 
 const DOCUMENT: &[u8] = b"DO_NOT_PRINT_ORIGINAL_DOCUMENT_CONTENT";
+const SUPPLEMENT_DOCUMENT: &[u8] = b"DO_NOT_PRINT_LATER_ATTACHED_DOCUMENT_CONTENT";
 
 fn directory() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -84,7 +87,7 @@ fn change(args: &mut [OsString], option: &str, value: impl Into<OsString>) {
 }
 
 fn no_payload(text: &str) {
-    for secret in [fixture::SECRET, DOCUMENT] {
+    for secret in [fixture::SECRET, DOCUMENT, SUPPLEMENT_DOCUMENT] {
         assert!(!text.contains(std::str::from_utf8(secret).unwrap()));
         assert!(!text.contains(&hex(secret)));
     }
@@ -240,6 +243,177 @@ fn ambiguous_duplicate_and_incomplete_modes_are_usage_errors_before_file_access(
         invoke(&bad, 2);
     }
     assert!(!missing.exists());
+}
+
+#[test]
+fn supplemental_mode_requires_a_complete_prefix_before_observing_any_path() {
+    let missing = directory().join("not-created");
+    for documents in [false, true] {
+        let mut argv = args(&missing, documents, 7);
+        argv.push("--include-supplements".into());
+        let out = invoke(&argv, 2);
+        assert!(out.contains("requires --from-prefix"));
+
+        argv.extend(["--from-prefix".into(), "--include-supplements".into()]);
+        let out = invoke(&argv, 2);
+        assert!(out.contains("may be supplied only once"));
+
+        let mut misplaced = args(&missing, documents, 7);
+        misplaced.push("--from-prefix".into());
+        change(&mut misplaced, "--prefix", "--include-supplements");
+        invoke(&misplaced, 2);
+    }
+    assert!(!missing.exists());
+}
+
+#[test]
+fn explicit_supplemental_mode_reports_authenticated_empty_sets_separately() {
+    let j = journal(&[]);
+    let dir = files(&j);
+    for documents in [false, true] {
+        let mut argv = args(&dir, documents, 0);
+        argv.push("--from-prefix".into());
+        let original = invoke(&argv, 0);
+        assert!(original.contains("\"supplemental_evidence\":\"not_verified\""));
+        assert!(!original.contains("original_plus_supplements"));
+
+        argv.push("--include-supplements".into());
+        let supplemented = invoke(&argv, 0);
+        assert!(supplemented.contains("\"evidence_mode\":\"original_plus_supplements\""));
+        assert!(supplemented.contains("\"supplement_count\":0"));
+        assert!(supplemented.contains("\"citation_count\":0"));
+        assert!(supplemented.contains("\"supplements\":[]"));
+        assert!(
+            supplemented
+                .contains("complete_for_selected_entries_in_trusted_prefix_through_known_at")
+        );
+        assert!(supplemented.contains("\"full_provenance_closure\":\"not_verified\""));
+        assert!(!supplemented.contains("\"supplemental_evidence\":\"not_verified\""));
+        if documents {
+            assert!(supplemented.contains("\"document_count\":0"));
+            assert!(supplemented.contains("\"document_bytes\":\"complete_and_recomputed\""));
+        } else {
+            assert!(supplemented.contains("\"document_bytes\":\"not_verified\""));
+        }
+    }
+}
+
+fn supplemented_fixture() -> (
+    PathBuf,
+    fa_verify::evidence::EvidenceCitation,
+    fa_verify::evidence::EvidenceCitation,
+    supplement_fixture::Target,
+) {
+    let original = fixture::citation(doc_commit(1, DOCUMENT), 1);
+    let attached = fixture::citation(doc_commit(2, SUPPLEMENT_DOCUMENT), 3);
+    let (entry, target) = supplement_fixture::posting(17, 7, 10, &[original]);
+    let mut shared = [fixture::citation(original.doc_commit, 2), attached];
+    shared.sort();
+    let supplement = supplement_fixture::supplement(target, &shared, 11, 99);
+    let later = supplement_fixture::supplement(
+        target,
+        &[fixture::citation(attached.doc_commit, 4)],
+        17,
+        100,
+    );
+    let journal = supplement_fixture::Journal::new(&[entry, supplement, later], 20);
+    let dir = directory();
+    fs::write(dir.join("prefix.bin"), &journal.prefix).unwrap();
+    fs::write(dir.join("trusted.bin"), journal.checkpoint.encode()).unwrap();
+    fs::write(dir.join("original.bin"), DOCUMENT).unwrap();
+    fs::write(dir.join("attached.bin"), SUPPLEMENT_DOCUMENT).unwrap();
+    (dir, original, attached, target)
+}
+
+#[test]
+fn supplemented_inventory_retains_sources_targets_and_historical_cutoff() {
+    let (dir, original, attached, target) = supplemented_fixture();
+    let mut argv = args(&dir, false, 12);
+    argv.extend(["--from-prefix".into(), "--include-supplements".into()]);
+    let out = invoke(&argv, 0);
+    assert!(out.contains("\"proof_kind\":\"supplemented_evidence_production\""));
+    assert!(out.contains("\"original_citation_count\":1"));
+    assert!(out.contains("\"supplement_count\":1"));
+    assert!(out.contains("\"citation_count\":3"));
+    assert!(out.contains("\"source\":\"original\""));
+    assert!(out.contains("\"source\":\"supplement\""));
+    assert!(out.contains(&format!("\"entry_vid\":\"{:032x}\"", target.vid)));
+    assert!(out.contains(&hex(&target.digest)));
+    assert!(out.contains(&format!("\"attached_by\":\"{:032x}\"", 99)));
+    assert!(out.contains("\"recorded_at\":\"11\""));
+    assert!(!out.contains("\"recorded_at\":\"17\""));
+    assert!(out.contains(&hex(&original.document_oid)));
+    assert!(out.contains(&hex(&attached.document_oid)));
+    assert!(out.contains("\"full_provenance_closure\":\"not_verified\""));
+
+    let human: Vec<_> = argv
+        .iter()
+        .filter(|arg| *arg != "--json")
+        .cloned()
+        .collect();
+    let text = invoke(&human, 0);
+    assert!(text.contains("1 supplemental records, 3 total citation rows"));
+    assert!(text.contains("recorded at 11: target"));
+    assert!(text.contains("Document bytes were not supplied or verified"));
+
+    change(&mut argv, "--expect-known-at", "7");
+    let earlier = invoke(&argv, 0);
+    assert!(earlier.contains("\"supplement_count\":0"));
+    assert!(earlier.contains("\"citation_count\":1"));
+    assert!(!earlier.contains(&hex(&attached.document_oid)));
+
+    change(&mut argv, "--expect-known-at", "20");
+    let later = invoke(&argv, 0);
+    assert!(later.contains("\"supplement_count\":2"));
+    assert!(later.contains("\"citation_count\":4"));
+}
+
+#[test]
+fn supplemented_document_command_requires_exact_union_and_authenticates_added_bytes() {
+    let (dir, original, attached, _) = supplemented_fixture();
+    let mut base = args(&dir, true, 12);
+    base.extend(["--include-supplements".into(), "--from-prefix".into()]);
+    let mut original_only = base.clone();
+    document_args(
+        &mut original_only,
+        &original.document_oid,
+        1,
+        &dir.join("original.bin"),
+    );
+    invoke(&original_only, 8);
+
+    let mut files = [
+        (original.document_oid, 1, dir.join("original.bin")),
+        (attached.document_oid, 2, dir.join("attached.bin")),
+    ];
+    files.sort_by_key(|file| file.0);
+    let mut complete = base;
+    for (oid, kind, path) in &files {
+        document_args(&mut complete, oid, *kind, path);
+    }
+    let out = invoke(&complete, 0);
+    assert!(out.contains("\"proof_kind\":\"supplemented_evidence_document_production\""));
+    assert!(out.contains("\"document_count\":2"));
+    assert!(out.contains("\"citation_count\":3"));
+    assert!(out.contains("\"document_bytes\":\"complete_and_recomputed\""));
+    assert!(out.contains("exact_distinct_document_set"));
+    assert!(out.contains(&format!(
+        "\"document_byte_count\":\"{}\"",
+        DOCUMENT.len() + SUPPLEMENT_DOCUMENT.len(),
+    )));
+
+    fs::write(dir.join("attached.bin"), b"corrupted attachment").unwrap();
+    invoke(&complete, 8);
+    fs::write(dir.join("attached.bin"), SUPPLEMENT_DOCUMENT).unwrap();
+
+    // The current checkpoint still contains the later attachment. At the
+    // independently earlier horizon its document is extra, not required.
+    change(&mut complete, "--expect-known-at", "7");
+    invoke(&complete, 8);
+    change(&mut original_only, "--expect-known-at", "7");
+    let historical = invoke(&original_only, 0);
+    assert!(historical.contains("\"document_count\":1"));
+    assert!(historical.contains("\"supplement_count\":0"));
 }
 
 #[test]
