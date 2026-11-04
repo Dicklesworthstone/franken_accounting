@@ -156,6 +156,15 @@ fn invalid(message: impl Into<String>) -> Refusal {
         "retain the complete procedure certificate and original book; replay with its registry/foundation versions and current whole-book read authority",
     )
 }
+fn offline_unsupported(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        fa_notary::code::SCOPE_UNSUPPORTED,
+        exit::REFUSAL,
+        message,
+        "plan §11.1/13.3 (independent procedure replay requires its complete supported input and policy closure)",
+        "export a jet.round_amounts v1 certificate with its canonical registry closure and no effective cutoff or input handles; replay other procedure profiles in their original book",
+    )
+}
 fn encode_error(e: fa_model::EncodeError) -> Refusal {
     invalid(format!("procedure encoding: {e}"))
 }
@@ -446,6 +455,68 @@ fn decode_run(bytes: &[u8]) -> Result<ProcedureRun, Refusal> {
 }
 
 impl ProcedureCertificate {
+    /// The first independent procedure interpreter has one explicit profile.
+    /// Native replay continues to support the wider catalog and legacy hashes.
+    pub(crate) fn check_offline_profile(&self) -> Result<(), Refusal> {
+        if self.format() != PROCEDURE_CERTIFICATE_FORMAT
+            || self.report.procedure != "jet.round_amounts"
+            || self.report.version != 1
+            || self.report.coordinate.effective_through.is_some()
+            || !self.report.inputs.is_empty()
+        {
+            return Err(offline_unsupported(
+                "portable procedures support only jet.round_amounts v1 without an effective cutoff or input handles",
+            ));
+        }
+        if self.registry != registry_digest()? {
+            return Err(offline_unsupported(
+                "portable procedures require the original canonical v2 procedure registry closure; legacy raw-text commitments cannot be substituted",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Extend the original native registry closure without substituting a
+    /// newer foundation. The policy document lets an independent verifier
+    /// derive the policy OID used by the complete decision-card transcript.
+    pub(crate) fn offline_registry_documents(
+        &self,
+        mut native: Vec<(String, Vec<u8>)>,
+    ) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
+        self.check_offline_profile()?;
+        let expected = ["account_types", "entry_classes", "units", "foundations"];
+        if native.iter().map(|(name, _)| name.as_str()).ne(expected) {
+            return Err(offline_unsupported(
+                "portable procedures require their complete original four-document native registry closure",
+            ));
+        }
+        let canonical = |name: &str, text: &str| {
+            fa_registry::toml::parse(text)
+                .map(|document| document.canonical_bytes())
+                .map_err(|error| {
+                    invalid(format!("embedded registry {name} does not parse: {error}"))
+                })
+        };
+        if native[3].1 != canonical("foundations", include_str!("../../../franken-stack.lock"))? {
+            return Err(offline_unsupported(
+                "the native source and procedure certificate require different foundation registries",
+            ));
+        }
+        for (name, text) in [
+            (
+                "procedures",
+                include_str!("../../../registries/procedures.toml"),
+            ),
+            (
+                "sod_policy",
+                include_str!("../../../registries/sod_policy.toml"),
+            ),
+        ] {
+            native.push((name.to_string(), canonical(name, text)?));
+        }
+        Ok(native)
+    }
+
     #[must_use]
     pub fn source_certificate(&self) -> &ReportCertificate {
         &self.source

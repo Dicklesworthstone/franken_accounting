@@ -5453,6 +5453,26 @@ impl Book {
         )))
     }
 
+    /// Produce a signed complete-prefix bundle for independent reproduction of
+    /// jet.round_amounts v1. The outer procedure certificate binds its exact
+    /// parameters, findings, work and decision card; the original native,
+    /// procedure and SoD registries accompany it. Current whole-book read and
+    /// produce authority are required. Effective cutoffs, input handles and
+    /// other procedure profiles are explicitly unsupported by this version.
+    /// Returns `None` when the requested checkpoint is unavailable.
+    pub fn produce_procedure_report_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::ProcedureCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_procedure_report_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
     /// Produce a portable contractual-maturity aging report. The complete
     /// signed prefix retains original terms and application history so an
     /// independent verifier can reconstruct scheduled and unscheduled amounts.

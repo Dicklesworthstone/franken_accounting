@@ -140,6 +140,7 @@ enum ReportBundleCertificate<'a> {
     StatementTrace(&'a crate::StatementTraceCertificate),
     Aging(&'a crate::AgingCertificate),
     Lots(&'a crate::LotsCertificate),
+    Procedure(&'a crate::ProcedureCertificate),
     DueDateAging(&'a crate::DueDateAgingCertificate),
     RollForward(&'a crate::RollForwardCertificate),
     EquityRollForward(&'a crate::EquityRollForwardCertificate),
@@ -183,6 +184,7 @@ impl<'a> ReportBundleCertificate<'a> {
             }
             Self::Aging(certificate) => certificate.source(),
             Self::Lots(certificate) => certificate.source(),
+            Self::Procedure(certificate) => certificate.source_certificate(),
             Self::DueDateAging(certificate) => certificate.source(),
             Self::RollForward(certificate) => certificate.source_certificate(),
             Self::EquityRollForward(certificate) => {
@@ -4905,6 +4907,29 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export a jet.round_amounts v1 run for independent replay from a signed
+    /// complete journal prefix. The native source, exact procedure output,
+    /// canonical procedure definition and decision policy travel together.
+    /// This bounded profile requires no effective cutoff or input handles;
+    /// other procedure families remain available through native replay.
+    pub async fn produce_procedure_report_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::ProcedureCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::Procedure(certificate),
+        )
+        .await
+    }
+
     /// Export both historical native or functional statements and their complete bridge over
     /// one signed journal prefix. The original registry closure must be
     /// identical on both sides. Replay checks the two recorded frontiers before
@@ -5242,6 +5267,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
+        if let ReportBundleCertificate::Procedure(procedure) = report
+            && let Err(refusal) = procedure.check_offline_profile()
+        {
+            return Ok(Err(refusal));
+        }
         let consolidation = matches!(
             &certificate.selection,
             crate::ReportSelection::Consolidation { .. }
@@ -5397,6 +5427,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
             ReportBundleCertificate::Lots(certificate) => {
                 if let Err(refusal) = self.replay_lots(cx, principal, capability, certificate)? {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::Procedure(certificate) => {
+                if let Err(refusal) =
+                    self.replay_procedure(cx, principal, capability, certificate)?
+                {
                     return Ok(Err(refusal));
                 }
                 None
@@ -5587,6 +5625,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let requires_registry_closure = matches!(
             report,
             ReportBundleCertificate::Summary(_)
+                | ReportBundleCertificate::Procedure(_)
                 | ReportBundleCertificate::StatementDiff(_)
                 | ReportBundleCertificate::StatementTrace(_)
                 | ReportBundleCertificate::RollForward(_)
@@ -5636,6 +5675,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
         } else {
             None
+        };
+        let registries = if let ReportBundleCertificate::Procedure(procedure) = report {
+            let Some(registries) = registries else {
+                return Err(KernelError::Corrupt(
+                    "procedure proof lost its native registry closure".into(),
+                )
+                .into());
+            };
+            match procedure.offline_registry_documents(registries) {
+                Ok(registries) => Some(registries),
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+        } else {
+            registries
         };
         if let Some(crate::ReportOutput::ExplainBalance(explanation)) = &replayed
             && let Err(refusal) = crate::certificate::check_explanation_reasons_at(
@@ -5687,6 +5740,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "portable trace attribution does not yet support migration publications or ambiguous legacy replacement identities",
                 "plan §8.3 / §13.3 (authenticate every publication and exact entry identity)",
                 "replay this trace in its original book, or export a supported native or functional interval; no partial trace is produced",
+            )));
+        }
+        if matches!(report, ReportBundleCertificate::Procedure(_))
+            && journal.leaves.iter().any(|leaf| {
+                leaf.envelope.is_entry()
+                    && leaf.envelope.commit_seq <= certificate.known_at
+                    && leaf.envelope.class == EntryClass::REPLACEMENT
+            })
+        {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_notary::code::SCOPE_UNSUPPORTED,
+                fa_journal::exit::REFUSAL,
+                "portable round-amount procedures do not yet support replacement histories with ambiguous original entry identities",
+                "plan §11.1/13.3 (every procedure input and citation must preserve its authenticated entry identity)",
+                "replay this procedure in its original book and retain its certificate until the independent interpreter supports the original replacement identity law",
             )));
         }
         if let crate::ReportSelection::OpenItems { account } = &certificate.selection
@@ -5849,6 +5917,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Ok(bytes) => bytes,
                 Err(refusal) => return Ok(Err(refusal)),
             },
+            ReportBundleCertificate::Procedure(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
             ReportBundleCertificate::DueDateAging(certificate) => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,

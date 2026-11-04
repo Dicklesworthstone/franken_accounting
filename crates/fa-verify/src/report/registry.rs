@@ -40,6 +40,7 @@ type Table = BTreeMap<String, Value>;
 struct Document {
     root: Table,
     named_tables: usize,
+    tables: BTreeMap<String, Table>,
     arrays: BTreeMap<String, Vec<Table>>,
 }
 fn invalid(message: impl Into<String>) -> ReportError {
@@ -138,9 +139,11 @@ fn document(bytes: &[u8]) -> Result<Document, ReportError> {
     let n = r.count(256, 16)?;
     let named_tables = n;
     let mut previous = None;
+    let mut tables = BTreeMap::new();
     for _ in 0..n {
-        ordered(&mut previous, &r.text()?)?;
-        r.table()?;
+        let name = r.text()?;
+        ordered(&mut previous, &name)?;
+        tables.insert(name, r.table()?);
     }
     let n = r.count(256, 16)?;
     let mut previous = None;
@@ -164,6 +167,7 @@ fn document(bytes: &[u8]) -> Result<Document, ReportError> {
     Ok(Document {
         root,
         named_tables,
+        tables,
         arrays,
     })
 }
@@ -480,6 +484,205 @@ pub(super) fn verify(
         } else {
             BTreeMap::new()
         },
+    ))
+}
+
+/// Procedure v1 closes over the native source, its original procedure
+/// registry, and the policy identifier used by the deterministic decision
+/// card. Policy admission and journaled activation remain outside this proof.
+pub(super) fn verify_procedure(
+    inputs: &[(&str, &[u8])],
+    native_digest: &[u8; 32],
+    procedure_digest: &[u8; 32],
+) -> Result<super::procedure::Registry, ReportError> {
+    const NAMES: [&str; 6] = [
+        "account_types",
+        "entry_classes",
+        "units",
+        "foundations",
+        "procedures",
+        "sod_policy",
+    ];
+    if inputs.iter().map(|(name, _)| *name).ne(NAMES) {
+        return Err(invalid(
+            "round-amount bundles require the six registry documents in exact closure order",
+        ));
+    }
+    verify(&inputs[..4], native_digest, false)?;
+    let mut transcript = Vec::new();
+    for index in [4, 3] {
+        let (name, bytes) = inputs[index];
+        transcript.extend_from_slice(name.as_bytes());
+        transcript.push(0);
+        transcript.extend_from_slice(&hash_parts(b"fa:registry-canonical-digest:v1", &[bytes]));
+    }
+    if hash_parts(b"fa:procedure-registry:v2", &[&transcript]) != *procedure_digest {
+        return Err(invalid(
+            "procedure and foundation documents differ from the procedure certificate closure",
+        ));
+    }
+    let procedures = document(inputs[4].1)?;
+    if procedures.root.len() != 1 || procedures.named_tables != 0 {
+        return Err(invalid("unsupported procedure registry shape"));
+    }
+    let selected: Vec<_> = rows(&procedures, "procedure")?
+        .iter()
+        .filter(|row| matches!(row.get("id"), Some(Value::Text(id)) if id == "jet.round_amounts"))
+        .collect();
+    let [row] = selected.as_slice() else {
+        return Err(invalid(
+            "round-amount procedure must occur exactly once in its registry",
+        ));
+    };
+    if integer(row, "version")? != 1
+        || string(row, "claim")? != "statistical"
+        || string(row, "evidence")? != "FA-EVID-L01"
+        || string(row, "tie_break")? != "entry_vid"
+        || string(row, "complexity")? != "O(legs)"
+        || string(row, "calibration")? != "corpus"
+        || string(row, "artifact")? != "FA-ART-CAL-01"
+    {
+        return Err(invalid("unsupported round-amount procedure registry semantics"));
+    }
+    let parameters: Vec<_> = rows(&procedures, "parameter")?
+        .iter()
+        .filter(|row| matches!(row.get("procedure"), Some(Value::Text(id)) if id == "jet.round_amounts"))
+        .collect();
+    let [parameter] = parameters.as_slice() else {
+        return Err(invalid(
+            "round-amount registry must declare exactly one parameter",
+        ));
+    };
+    if string(parameter, "name")? != "round_power" || integer(parameter, "default")? != 3 {
+        return Err(invalid("unsupported round-amount parameter registry"));
+    }
+    // A future input declaration cannot be silently ignored under v1.
+    if procedures.arrays.iter().any(|(name, rows)| {
+        name != "procedure"
+            && name != "parameter"
+            && rows.iter().any(|row| {
+                matches!(row.get("procedure"), Some(Value::Text(id)) if id == "jet.round_amounts")
+            })
+    }) {
+        return Err(invalid(
+            "round-amount procedure declares unsupported additional inputs",
+        ));
+    }
+    let units = document(inputs[2].1)?;
+    let mut unit_scales = BTreeMap::new();
+    for row in rows(&units, "unit")? {
+        unit_scales.insert(
+            u32::try_from(integer(row, "id")?).map_err(|_| invalid("invalid unit id"))?,
+            u8::try_from(integer(row, "scale")?).map_err(|_| invalid("invalid unit scale"))?,
+        );
+    }
+    Ok(super::procedure::Registry {
+        unit_scales,
+        policy_oid: procedure_policy_oid(&document(inputs[5].1)?)?,
+    })
+}
+
+/// Independently encode the SoD identifier's sorted, textual v1 transcript.
+/// Only its identity is used here; this is not an approval-policy evaluator.
+fn procedure_policy_oid(doc: &Document) -> Result<[u8; 32], ReportError> {
+    fn atom<'a>(row: &'a Table, key: &str) -> Result<&'a str, ReportError> {
+        let value = string(row, key)?;
+        if value.is_empty() || value.contains(['\n', '\r', '|', '=', ',']) {
+            return Err(invalid(
+                "policy identity field is empty or contains a delimiter",
+            ));
+        }
+        Ok(value)
+    }
+    fn optional<'a>(row: &'a Table, key: &str) -> Result<Option<&'a str>, ReportError> {
+        row.contains_key(key).then(|| atom(row, key)).transpose()
+    }
+    fn list(row: &Table, key: &str, vocabulary: &[&str]) -> Result<String, ReportError> {
+        let Some(Value::Array(values)) = row.get(key) else {
+            return Err(invalid("policy identity field must be a string list"));
+        };
+        let mut ordered = BTreeSet::new();
+        for value in values {
+            let Value::Text(value) = value else {
+                return Err(invalid("policy identity list contains a non-string"));
+            };
+            if !vocabulary.contains(&value.as_str()) || !ordered.insert(value.as_str()) {
+                return Err(invalid(
+                    "policy identity list contains duplicate or unknown values",
+                ));
+            }
+        }
+        if ordered.is_empty()
+            || key == "exclusions"
+                && (!ordered.contains("duplicate") || !ordered.contains("preparer"))
+        {
+            return Err(invalid(
+                "policy identity omits required profiles or exclusions",
+            ));
+        }
+        Ok(ordered.into_iter().collect::<Vec<_>>().join(","))
+    }
+    fn requirement(out: &mut String, scope: &str, row: &Table) -> Result<(), ReportError> {
+        let approvers = u8::try_from(integer(row, "approvers")?)
+            .map_err(|_| invalid("policy approver count exceeds u8"))?;
+        let human = u8::try_from(integer(row, "agent_prepared_human_approvers")?)
+            .map_err(|_| invalid("policy human approver count exceeds u8"))?;
+        let op = atom(row, "approver_op")?;
+        let profiles = list(row, "approver_profiles", &["Human", "Agent", "System"])?;
+        let exclusions = list(
+            row,
+            "exclusions",
+            &["preparer", "duplicate", "case_preparer", "session_lineage"],
+        )?;
+        out.push_str(&format!("{scope}|approvers={approvers}|approver_op={op}|approver_profiles={profiles}|agent_prepared_human_approvers={human}|exclusions={exclusions}\n"));
+        Ok(())
+    }
+    if doc.root.len() != 1 || doc.tables.len() != 1 || doc.arrays.len() != 1 {
+        return Err(invalid("unsupported SoD policy identity document shape"));
+    }
+    let default = doc
+        .tables
+        .get("default")
+        .ok_or_else(|| invalid("policy default is absent"))?;
+    let mut canonical = String::from("fa:sod-policy:v1\n");
+    requirement(&mut canonical, "default", default)?;
+    let mut rules = BTreeMap::new();
+    let mut names = BTreeSet::new();
+    for row in rows(doc, "rule")? {
+        let name = atom(row, "name")?;
+        let class = atom(row, "class")?;
+        let state = optional(row, "state")?;
+        let state_order = state
+            .map(|state| match state {
+                "Future" => Ok(0u8),
+                "Open" => Ok(1),
+                "SoftClosed" => Ok(2),
+                "Closed" => Ok(3),
+                "Locked" => Ok(4),
+                _ => Err(invalid("unsupported policy period state")),
+            })
+            .transpose()?;
+        let disposition = optional(row, "disposition")?;
+        let transition = optional(row, "transition")?;
+        let preparer_op = optional(row, "preparer_op")?;
+        let key = (class, state_order, disposition, transition);
+        let scope = format!(
+            "rule:{name}|class={class}|state={}|disposition={}|transition={}|preparer_op={}",
+            state.unwrap_or("-"),
+            disposition.unwrap_or("-"),
+            transition.unwrap_or("-"),
+            preparer_op.unwrap_or("-")
+        );
+        if !names.insert(name) || rules.insert(key, (scope, row)).is_some() {
+            return Err(invalid("duplicate SoD policy name or key"));
+        }
+    }
+    for (scope, row) in rules.values() {
+        requirement(&mut canonical, scope, row)?;
+    }
+    Ok(hash_parts(
+        b"fa:policy:v1",
+        &[&(canonical.len() as u32).to_le_bytes(), canonical.as_bytes()],
     ))
 }
 
