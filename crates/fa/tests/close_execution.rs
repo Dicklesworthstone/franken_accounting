@@ -278,12 +278,25 @@ fn close_run_stops_at_revoked_second_planner_and_retains_first_receipt() {
     let mut fixture = Fixture::new(202);
     let first = fixture.review("allowed-expense", PLANNER, 100);
     let second = fixture.review("revoked-expense", OTHER_PLANNER, 250);
-    // Both tasks are ready initially: lexical IDs, not declaration order,
-    // select the authorized first task before the refused second one.
+    // A task completed in an earlier invocation remains durable when the
+    // remaining planner subsequently loses authority. Preflight must not
+    // replay that completed effect or discard its receipt.
     fixture.start(
         "partial",
         vec![task("b-refused", &[], second), task("a-posted", &[], first)],
     );
+    fixture
+        .book
+        .execute_close_task(
+            "partial",
+            "a-posted",
+            closer(),
+            "First task completed before revocation",
+            None,
+            Vec::new(),
+        )
+        .unwrap()
+        .unwrap();
     fixture
         .book
         .revoke_capability(
@@ -300,8 +313,7 @@ fn close_run_stops_at_revoked_second_planner_and_retains_first_receipt() {
         .execute_close_run("partial", closer(), "Execute available tasks", None)
         .unwrap()
         .unwrap();
-    assert_eq!(result.completed.len(), 1);
-    assert_eq!(result.completed[0].task, "a-posted");
+    assert!(result.completed.is_empty());
     assert!(!result.run.complete);
     let Some(CloseRunStop::Refused { task, refusal }) = &result.stop else {
         panic!("a revoked planner must stop native promotion");

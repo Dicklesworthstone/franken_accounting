@@ -224,8 +224,12 @@ impl Book {
     /// rechecks current authority before publication. This call never creates
     /// approvals and never executes a newly generated transition proposal.
     ///
-    /// Invalid request input and initial authorization fail before any task
-    /// executes. A task refusal is returned in [`CloseRunExecution::stop`],
+    /// Invalid request input, initial authorization and the combined rehearsal
+    /// of all unfinished draft tasks fail before any task executes. Independent
+    /// reviews alone cannot establish that the drafts are compatible: together
+    /// they may overspend a limit, settle the same item or claim the same key.
+    /// The native rehearsal runs them in this executor's dependency order.
+    /// A task refusal is returned in [`CloseRunExecution::stop`],
     /// together with progress already committed by earlier tasks. Foundation
     /// failures and cancellation propagate as outer errors; those same
     /// receipts remain available through [`Book::close_run_status`] on retry.
@@ -296,6 +300,42 @@ impl Book {
                     Err(refusal) => return Ok(Err(refusal)),
                 }
             }
+        }
+        // Validate the whole remaining monetary sequence before publishing its
+        // first task. This Book owns the writer lease throughout this call;
+        // native execution still rechecks authority, witnesses and exact effects
+        // at each task's transaction boundary. Historical receipts remain the
+        // source of truth on restart and are never applied twice in scratch.
+        if run.tasks.iter().any(|task| {
+            task.completion.is_none()
+                && run.body.tasks.iter().any(|body| {
+                    body.id == task.id
+                        && matches!(body.action, CloseTaskBodyAction::PromoteDraft { .. })
+                })
+        }) && let Err(refusal) =
+            self.close_run_rehearsal(capability.holder(), &capability, name)?
+        {
+            let task = refusal.detail.as_ref().and_then(|detail| {
+                detail
+                    .at
+                    .iter()
+                    .find_map(|(key, value)| match (key, value) {
+                        (&"task", fa_journal::refusal::Locus::Text(id))
+                            if run.body.tasks.iter().any(|task| task.id == *id) =>
+                        {
+                            Some(id.clone())
+                        }
+                        _ => None,
+                    })
+            });
+            return Ok(match task {
+                Some(task) => Ok(CloseRunExecution {
+                    run,
+                    completed: Vec::new(),
+                    stop: Some(CloseRunStop::Refused { task, refusal }),
+                }),
+                None => Err(refusal),
+            });
         }
         let mut completed = Vec::new();
         for _ in 0..fa_model::limits::MAX_CLOSE_RUN_TASKS {

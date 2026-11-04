@@ -476,6 +476,60 @@ fn close_run_command_executes_ready_tasks_resumes_and_waits_for_native_period_re
 }
 
 #[test]
+fn close_run_command_preflights_every_draft_before_publishing_the_first_task() {
+    let f = Fixture::new(false);
+    let first = reviewed_draft(&f, "preflight-first", "15.00");
+    let second = reviewed_draft(&f, "preflight-second", "5.00");
+    let definition = format!(
+        r#"[
+        {{"id":"first","certificate":"{first}"}},
+        {{"id":"second","depends_on":["first"],"certificate":"{second}"}}
+    ]"#
+    );
+    ok(
+        &f.book,
+        &[
+            "close",
+            "start",
+            "--run",
+            "preflight",
+            "--period",
+            PERIOD,
+            "--tasks",
+            &definition,
+            "--as",
+            CONTROLLER,
+        ],
+    );
+    append(&f, "preflight-second", "unreviewed-preflight-extra", "1.00");
+    let before = head(&f.book);
+    let args = [
+        "close",
+        "run",
+        "--run",
+        "preflight",
+        "--as",
+        CONTROLLER,
+        "--yes",
+    ];
+    for _ in 0..2 {
+        let (code, refused) = run(&f.book, &args);
+        assert_ne!(
+            code, 0,
+            "the changed later draft must refuse the invocation"
+        );
+        assert_eq!(text(&refused, "event"), "error");
+        let detail = get(&refused, "detail");
+        assert_eq!(text(detail, "pending_task"), "second");
+        assert!(get(detail, "completed").as_arr().unwrap().is_empty());
+        assert_eq!(head(&f.book), before);
+        let durable = status(&f, "preflight");
+        assert_eq!(get(task(&durable, "first"), "completion"), &Json::Null);
+        assert_eq!(get(task(&durable, "second"), "completion"), &Json::Null);
+    }
+}
+
+#[test]
 fn close_run_command_reports_durable_partial_progress_on_later_task_refusal() {
     let f = Fixture::new(false);
     let first = reviewed_draft(&f, "partial-first", "15.00");
@@ -501,6 +555,12 @@ fn close_run_command_reports_durable_partial_progress_on_later_task_refusal() {
             CONTROLLER,
         ],
     );
+    ok(
+        &f.book,
+        &[
+            "close", "step", "--run", "partial", "--task", "first", "--as", CONTROLLER, "--yes",
+        ],
+    );
     append(&f, "partial-second", "unreviewed-extra", "1.00");
     let before = head(&f.book);
     let args = [
@@ -513,16 +573,15 @@ fn close_run_command_reports_durable_partial_progress_on_later_task_refusal() {
     assert_eq!(text(detail, "state"), "refused");
     assert_eq!(text(detail, "pending_task"), "second");
     let completed = get(detail, "completed").as_arr().unwrap();
-    assert_eq!(completed.len(), 1);
-    assert_eq!(text(&completed[0], "task"), "first");
-    assert_eq!(head(&f.book), before + 1);
+    assert!(completed.is_empty());
+    assert_eq!(head(&f.book), before);
     let durable = status(&f, "partial");
     assert_ne!(get(task(&durable, "first"), "completion"), &Json::Null);
     assert_eq!(get(task(&durable, "second"), "completion"), &Json::Null);
     assert_ne!(run(&f.book, &args).0, 0);
     assert_eq!(
         head(&f.book),
-        before + 1,
+        before,
         "retry preserves exactly the first task's one effect"
     );
 }

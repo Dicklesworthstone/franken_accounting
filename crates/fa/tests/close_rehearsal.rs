@@ -372,6 +372,78 @@ fn independent_reviews_that_overspend_together_refuse_without_partial_effects() 
 }
 
 #[test]
+fn close_execution_refuses_combined_overspend_before_any_task_publishes() {
+    let mut f = Fixture::new(Some(-1_000));
+    f.start(600, 600, true);
+    let head = f.book.head().unwrap();
+    let baseline = f.book.trial_balance(&[PERIOD.into()]).unwrap();
+    let first = f.book.draft(FIRST).unwrap().unwrap();
+    let second = f.book.draft(SECOND).unwrap().unwrap();
+    for _ in 0..2 {
+        let execution = f
+            .book
+            .execute_close_run(RUN, executor(), "Execute the complete close", None)
+            .unwrap()
+            .unwrap();
+        assert!(execution.completed.is_empty());
+        assert!(!execution.run.complete);
+        assert!(
+            execution
+                .run
+                .tasks
+                .iter()
+                .all(|task| task.completion.is_none())
+        );
+        let Some(fa::CloseRunStop::Refused { task, refusal }) = execution.stop else {
+            panic!("the combined limit violation must stop the entire invocation");
+        };
+        assert_eq!(task, "a-second");
+        assert_eq!(refusal.code, fa_journal::refusal::code::AVAILABILITY_LOWER);
+        assert_eq!(f.book.head().unwrap(), head);
+        assert_eq!(f.book.trial_balance(&[PERIOD.into()]).unwrap(), baseline);
+        assert_eq!(f.book.draft(FIRST).unwrap().unwrap(), first);
+        assert_eq!(f.book.draft(SECOND).unwrap().unwrap(), second);
+    }
+}
+
+#[test]
+fn close_execution_rehearses_remaining_tasks_at_the_exact_limit_without_reapplying_receipts() {
+    let mut f = Fixture::new(Some(-1_000));
+    f.start(600, 400, false);
+    f.execute("z-first");
+    let before = f.book.head().unwrap();
+    let execution = f
+        .book
+        .execute_close_run(RUN, executor(), "Resume the close at its exact limit", None)
+        .unwrap()
+        .unwrap();
+    assert!(execution.run.complete);
+    assert!(execution.stop.is_none());
+    assert_eq!(execution.completed.len(), 1);
+    assert_eq!(execution.completed[0].task, "a-second");
+    assert_eq!(f.book.head().unwrap(), CommitSeq(before.0 + 1));
+    let balance = f.book.trial_balance(&[PERIOD.into()]).unwrap();
+    let cash = balance.rows.iter().find(|row| row.code == "1000").unwrap();
+    assert_eq!((cash.debits, cash.credits), (0, 1_000));
+    assert_eq!((cash.debits_pending, cash.credits_pending), (0, 0));
+    let report = f
+        .book
+        .close_run_rehearsal(REVIEWER, &cap(REVIEWER, &["read"]), RUN)
+        .unwrap()
+        .unwrap();
+    assert!(report.complete_on_trunk);
+    assert!(report.rows.is_empty());
+    let retry = f
+        .book
+        .execute_close_run(RUN, executor(), "Retry the completed close", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(retry.run, execution.run);
+    assert!(retry.completed.is_empty());
+    assert_eq!(f.book.head().unwrap(), CommitSeq(before.0 + 1));
+}
+
+#[test]
 fn partial_run_rehearses_only_remaining_work_and_replays_after_real_completion() {
     let mut f = Fixture::new(None);
     f.start(1_000, 250, false);
