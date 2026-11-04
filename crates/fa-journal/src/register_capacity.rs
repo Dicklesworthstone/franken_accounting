@@ -611,11 +611,21 @@ impl Cells {
                 released.insert(target.vid);
             }
         }
-        for target in &released {
-            if self.released.contains(target) || entries.iter().any(|(vid, _)| vid == target) {
-                continue;
+        // A rebuild may contain the entire history. Find its older release
+        // targets in one pass instead of rescanning every entry per target.
+        // Index only unresolved targets, so a history with few resolutions
+        // does not allocate another index over all of its ordinary entries.
+        let mut older: BTreeSet<_> = released.difference(&self.released).copied().collect();
+        if !older.is_empty() {
+            for (vid, _) in entries {
+                older.remove(vid);
+                if older.is_empty() {
+                    break;
+                }
             }
-            if let Some(hold) = earlier(*target)?
+        }
+        for target in older {
+            if let Some(hold) = earlier(target)?
                 && hold.proposal.class == EntryClass::PENDING
                 && !self.fold(&hold, true)
             {

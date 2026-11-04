@@ -541,3 +541,121 @@ fn pending_batch_publication_keeps_a_fitting_changed_prefix() {
         .commit(&delayed, delayed_stage)
         .expect("a changed prefix alone does not invalidate a fitting point operation");
 }
+
+#[test]
+fn capacity_reconstruction_handles_a_hundred_thousand_hold_and_release_entries() {
+    let fixture = Fixture::new();
+    let mut cells = summarize(
+        &fixture.db,
+        &fixture.cx(),
+        fixture.book.book_id,
+        fixture.db.frontier().unwrap(),
+    )
+    .unwrap()
+    .cells
+    .unwrap();
+    let outstanding = fixture
+        .hold(b"capacity-history-outstanding")
+        .seal(Vec::new(), None)
+        .unwrap();
+    assert!(cells.fold(&outstanding, false));
+    let before_columns = cells.columns.clone();
+    let before_counts = cells.pending_counts.clone();
+
+    // Exercise the actual reconstruction fold at ledger scale without
+    // conflating its work with substrate transaction staging. Its input is
+    // a set of already decoded native entries, just as after a full scan.
+    const HOLDS: u128 = 50_000;
+    let mut holds = Vec::new();
+    let mut entries = Vec::new();
+    for index in 0..HOLDS {
+        let hold = fixture
+            .hold(format!("capacity-history-hold-{index}").as_bytes())
+            .seal(Vec::new(), None)
+            .unwrap();
+        let vid = VId(index + 1);
+        let release = fixture
+            .release(
+                hold.entry_ref(vid),
+                format!("capacity-history-release-{index}").as_bytes(),
+            )
+            .seal(Vec::new(), None)
+            .unwrap();
+        holds.push((vid, hold));
+        entries.push((VId(HOLDS + index + 1), release));
+    }
+    // Scan order is not commit order. Put all targets after their releases,
+    // so a nested linear target search would traverse billions of entries.
+    entries.extend(holds);
+    assert_eq!(entries.len(), 100_000);
+    assert!(
+        cells
+            .absorb(&entries, |_| {
+                panic!("a hold in this reconstruction must not be read from an earlier prefix")
+            })
+            .unwrap()
+    );
+    assert_eq!(cells.columns, before_columns);
+    assert_eq!(cells.pending_counts, before_counts);
+    assert_eq!(cells.released.len(), 50_000);
+    assert!((1..=HOLDS).all(|vid| cells.released.contains(&VId(vid))));
+}
+
+#[test]
+fn capacity_reconstruction_reads_each_older_hold_once_and_preserves_unreleased_holds() {
+    let fixture = Fixture::new();
+    let mut cells = summarize(
+        &fixture.db,
+        &fixture.cx(),
+        fixture.book.book_id,
+        fixture.db.frontier().unwrap(),
+    )
+    .unwrap()
+    .cells
+    .unwrap();
+    let hold = fixture
+        .hold(b"capacity-older-hold")
+        .seal(Vec::new(), None)
+        .unwrap();
+    let untouched = fixture
+        .hold(b"capacity-untouched-hold")
+        .seal(Vec::new(), None)
+        .unwrap();
+    assert!(cells.fold(&untouched, false));
+    let expected_columns = cells.columns.clone();
+    let expected_counts = cells.pending_counts.clone();
+    assert!(cells.fold(&hold, false));
+    let target = hold.entry_ref(VId(1));
+    let releases: Vec<_> = [b"capacity-release-one".as_slice(), b"capacity-release-two"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, key)| {
+            (
+                VId(index as u128 + 2),
+                fixture.release(target, key).seal(Vec::new(), None).unwrap(),
+            )
+        })
+        .collect();
+    let mut reads = 0;
+    assert!(
+        cells
+            .absorb(&releases, |vid| {
+                assert_eq!(vid, target.vid);
+                reads += 1;
+                Ok(Some(hold.clone()))
+            })
+            .unwrap()
+    );
+    assert_eq!(reads, 1, "a release target is subtracted only once");
+    assert_eq!(cells.columns, expected_columns);
+    assert_eq!(cells.pending_counts, expected_counts);
+    assert!(
+        cells
+            .absorb(&releases, |_| {
+                panic!("an already released hold must never be subtracted again")
+            })
+            .unwrap()
+    );
+    assert_eq!(cells.columns, expected_columns);
+    assert_eq!(cells.pending_counts, expected_counts);
+}
