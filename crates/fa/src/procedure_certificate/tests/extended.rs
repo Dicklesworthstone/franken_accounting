@@ -83,6 +83,231 @@ fn all_additional_procedures_round_trip_with_complete_native_populations() {
     }
 }
 
+// Construct framing cases over real native captures, not receipts of an old
+// algorithm execution. Repair every public digest so an obsolete checksum
+// cannot stand in for the registry/version and closure checks below.
+fn historical_frame(
+    mut captured: ProcedureCertificate,
+    id: &str,
+    version: u16,
+) -> ProcedureCertificate {
+    let report = &mut captured.report;
+    assert!(report.findings.is_empty());
+    report.procedure = id.into();
+    report.version = version;
+    let mut parameters = Writer::new();
+    parameters.str(id).u16(version);
+    parameters.list(&report.parameters, |w, (key, value)| {
+        w.str(key).i128(*value);
+    });
+    parameters.list(&report.inputs, |w, (key, value)| {
+        w.str(key).str(value);
+    });
+    report.parameters_digest = raw_digest(
+        fa_lantern::PARAMETERS_DIGEST_DOMAIN,
+        &parameters.finish().unwrap(),
+    );
+    let mut findings = Writer::new();
+    findings
+        .str(id)
+        .u16(version)
+        .fixed(&report.parameters_digest)
+        .fixed(&report.inputs_digest);
+    report.coordinate.encode(&mut findings);
+    findings.list(&report.findings, |w, finding| finding.encode(w));
+    report.findings_digest = raw_digest(
+        fa_lantern::FINDINGS_DIGEST_DOMAIN,
+        &findings.finish().unwrap(),
+    );
+    let policy = fa_policy::Steward::embedded().unwrap().policy_oid;
+    report.decision_card = fa_policy::decide_lantern_threshold(
+        Some(policy),
+        policy,
+        id,
+        version,
+        &report.parameters,
+        report.population,
+    );
+    report.decision_card_digest = report.decision_card.digest().unwrap();
+    captured.output = encode_run(report).unwrap();
+    captured.registry = [0; 32];
+    assert_ne!(captured.registry, registry_digest().unwrap());
+    captured
+}
+
+#[test]
+fn historical_extended_versions_keep_their_complete_native_closure() {
+    let mut f = Fixture::new(117);
+    let (source, _) = f.post(1, "3000", "1000", 100, false);
+    let prototype = f
+        .certify(&f.request("recon.assertion_drift", source))
+        .certificate;
+    let before = f.head();
+    // Historical identities from emitted catalogs, including the two removed
+    // names. This is a format-compatibility inventory, not algorithm aliases.
+    let histories: &[(&str, &[u16])] = &[
+        ("aging.inventory", &[1, 2]),
+        ("benford.first_two_digits", &[1]),
+        ("benford.second_digit", &[1]),
+        ("completeness.unrecorded_liabilities", &[1]),
+        ("confirm.coverage", &[1]),
+        ("damages.attested_baseline", &[1]),
+        ("damages.but_for", &[1]),
+        ("distribution.pro_rata", &[1, 2, 3]),
+        ("distribution.rising_tide", &[1, 2, 3]),
+        ("events.subsequent", &[1, 2]),
+        ("expense.capitalization", &[1]),
+        ("graph.communities", &[1]),
+        ("graph.layering", &[1]),
+        ("graph.party_layering", &[1]),
+        ("graph.related_party_exposure", &[1]),
+        ("graph.shell_signature", &[1]),
+        ("jet.intercompany_unmatched", &[1]),
+        ("jet.suspense_aging", &[1]),
+        ("jet.unusual_accounts", &[1]),
+        ("lookback.preferences", &[1, 2]),
+        ("payroll.ghost", &[1]),
+        ("ponzi.net_investment", &[1, 2, 3, 4]),
+        ("recon.assertion_drift", &[1]),
+        ("recon.attested_register_compare", &[1]),
+        ("recon.book_to_book", &[1]),
+        ("recon.intercompany", &[1]),
+        ("recon.lapping", &[1]),
+        ("solvency.balance_sheet_test", &[1, 2]),
+        ("solvency.cash_flow_test", &[1, 2, 3]),
+    ];
+    assert_eq!(
+        histories
+            .iter()
+            .map(|(_, versions)| versions.len())
+            .sum::<usize>(),
+        42
+    );
+    for &(id, versions) in histories {
+        for &version in versions {
+            assert!(!extended::supported(id, version));
+            let mut saved = historical_frame(prototype.clone(), id, version);
+            let body = saved
+                .body()
+                .unwrap_or_else(|error| panic!("{id}@{version}: {error}"));
+            saved.digest = domain_digest(CERTIFICATE_DOMAIN, &[&body]);
+            let bytes = saved.canonical_bytes().unwrap();
+            let decoded = ProcedureCertificate::decode(&bytes).unwrap();
+            assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
+            assert_eq!(decoded.supplemental_inputs().len(), 6);
+            assert_eq!(
+                ReportArtifact::decode(&bytes).unwrap().family(),
+                ReportArtifactFamily::Procedure
+            );
+            let unavailable = f
+                .book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(
+                unavailable.code,
+                crate::certificate::code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+                "{id}@{version}"
+            );
+            assert_eq!(unavailable.exit, exit::ENVIRONMENT);
+
+            // Even a repaired envelope naming today's registry cannot make
+            // its old identity dispatch a current algorithm.
+            saved.registry = registry_digest().unwrap();
+            saved.digest = domain_digest(CERTIFICATE_DOMAIN, &[&saved.body().unwrap()]);
+            let rebound = ProcedureCertificate::decode(&saved.canonical_bytes().unwrap()).unwrap();
+            let mismatch = f
+                .book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &rebound)
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(
+                mismatch.exit,
+                exit::VERIFICATION,
+                "{id}@{version}: {mismatch}"
+            );
+            let mut missing = saved.clone();
+            missing.extended_inputs.pop();
+            assert!(
+                missing.body().is_err(),
+                "{id}@{version} needs every native witness"
+            );
+            let mut swapped = saved;
+            swapped.extended_inputs.swap(0, 1);
+            assert!(
+                swapped.body().is_err(),
+                "{id}@{version} needs the exact native populations"
+            );
+            assert_eq!(f.head(), before, "{id}@{version} must not publish");
+        }
+    }
+    for (id, version) in [
+        ("future.unaudited", 1),
+        ("aging.inventory", 0),
+        ("aging.inventory", 4),
+        ("damages.but_for", 2),
+        ("recon.book_to_book", 2),
+        ("graph.round_trips", 1),
+    ] {
+        assert!(
+            !extended::has_retained_closure(id, version),
+            "{id}@{version}"
+        );
+        if version != 0 {
+            assert!(
+                historical_frame(prototype.clone(), id, version)
+                    .body()
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn original_benford_version_keeps_its_original_closure_and_cannot_replay_as_current() {
+    let mut f = Fixture::new(118);
+    let (source, _) = f.post(1, "3000", "1000", 100, false);
+    let prototype = f
+        .certify(&f.request("cutoff.period_boundary", source))
+        .certificate;
+    let before = f.head();
+    let mut saved = historical_frame(prototype, "benford.first_digit", 1);
+    saved.digest = domain_digest(CERTIFICATE_DOMAIN, &[&saved.body().unwrap()]);
+    let bytes = saved.canonical_bytes().unwrap();
+    let decoded = ProcedureCertificate::decode(&bytes).unwrap();
+    assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
+    assert!(decoded.supplemental_inputs().is_empty());
+    let unavailable = f
+        .book
+        .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        unavailable.code,
+        crate::certificate::code::CERTIFICATE_REGISTRY_UNAVAILABLE
+    );
+    saved.registry = registry_digest().unwrap();
+    saved.digest = domain_digest(CERTIFICATE_DOMAIN, &[&saved.body().unwrap()]);
+    let rebound = ProcedureCertificate::decode(&saved.canonical_bytes().unwrap()).unwrap();
+    assert_eq!(
+        f.book
+            .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &rebound)
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        exit::VERIFICATION
+    );
+    saved.extended_inputs = f
+        .certify(&f.request("benford.second_digit", source))
+        .certificate
+        .extended_inputs;
+    assert!(
+        saved.body().is_err(),
+        "an original-format procedure never acquires the extended closure"
+    );
+    assert_eq!(f.head(), before);
+}
+
 /// fa-kxc4: a procedure that selects its population by account role is
 /// refused while no account holds the role, never certified over an empty
 /// population (planted), and certifies and replays once the role is held.
@@ -131,9 +356,11 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
         let certified = f.certify(&f.request(id, source));
         // fa-6l8g moved the party-attributing procedures to version 3, and
         // fa-yugf.83 the investor-population ones on to version 4. As-of
-        // netting moved aging.inventory and the solvency tests to version 3.
+        // netting moved aging.inventory to version 3; cash-overdraft netting
+        // moved the cash-flow solvency screen to version 4.
         let version = match id {
-            "lookback.preferences" | "aging.inventory" | "solvency.cash_flow_test" => 3,
+            "lookback.preferences" | "aging.inventory" => 3,
+            "solvency.cash_flow_test" => 4,
             "ponzi.net_investment" => 5,
             "distribution.rising_tide" | "distribution.pro_rata" => 4,
             _ => 2,
@@ -171,7 +398,7 @@ fn ponzi_v5_certificates_refuse_the_old_cash_only_version_instead_of_reinterpret
     assert!(
         refusal
             .message
-            .contains("no complete registered native certificate closure")
+            .contains("procedure identity, claim, evidence or full parameter set has changed")
     );
     assert_eq!(refusal.exit, fa_journal::exit::VERIFICATION);
     assert_eq!(f.head(), before, "method/version refusal cannot publish");
@@ -542,10 +769,11 @@ fn signed_solvency_certifies_its_method_and_refuses_the_old_version() {
         assert!(
             refusal
                 .message
-                .contains("no complete registered native certificate closure"),
+                .contains("procedure identity, claim, evidence or full parameter set has changed"),
             "version {old}: {}",
             refusal.message
         );
+        assert_eq!(refusal.exit, exit::VERIFICATION);
     }
     assert_eq!(
         f.head(),
