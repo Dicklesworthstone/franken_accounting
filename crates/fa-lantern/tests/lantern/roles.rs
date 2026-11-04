@@ -60,6 +60,33 @@ fn masked_witness(text: &str) -> String {
     out
 }
 
+/// Version 2 declares an undirected pair, serialized in native vid order.
+/// After mapping handles back to the original accounts, compare that pair as
+/// an unordered value, just as citations are compared below. Retain every
+/// member, word and numeric value; other procedures and versions are unchanged.
+fn canonical_pair_narrative(procedure: &str, version: u16, text: &str) -> String {
+    const PREFIX: &str = "debit/credit account pair (";
+    if procedure != "jet.unusual_accounts" || version != 2 {
+        return text.to_owned();
+    }
+    let Some(rest) = text.strip_prefix(PREFIX) else {
+        return text.to_owned();
+    };
+    let Some((pair, suffix)) = rest.split_once(") occurs ") else {
+        return text.to_owned();
+    };
+    let Some((a, b)) = pair.split_once(", ") else {
+        return text.to_owned();
+    };
+    let account =
+        |part: &str| part.starts_with("account(") && part.ends_with(')') && !part.contains(", ");
+    if !account(a) || !account(b) {
+        return text.to_owned();
+    }
+    let (a, b) = if a <= b { (a, b) } else { (b, a) };
+    format!("{PREFIX}{a}, {b}) occurs {suffix}")
+}
+
 /// A run's outcome over one book, with every book-specific handle mapped to
 /// what it stands for in the original corpus: entries by corpus index,
 /// accounts by original code, and in narratives and statistic names the
@@ -134,12 +161,116 @@ fn outcome(
                 f.statistic.value,
                 f.statistic.scale,
                 f.statistic.population,
-                text(&f.narrative),
+                canonical_pair_narrative(&f.procedure, f.version, &text(&f.narrative)),
             )
         })
         .collect();
     findings.sort();
     Ok(findings)
+}
+
+/// The oracle admits only the declared undirected pair's presentation order.
+/// Mutating actual findings' membership, values, citations or other content
+/// must still change the compared outcome.
+#[test]
+fn role_outcome_preserves_membership_and_all_nonordering_fields() {
+    let corpus = generate(GenConfig::new(ScenarioKind::Ponzi, 7));
+    let (book, snapshot, posted_vids) = corpus_snapshot(&corpus);
+    let chart: Vec<_> = corpus
+        .accounts
+        .iter()
+        .map(|account| (account.code.clone(), account.name.clone()))
+        .collect();
+    let procedure = fa_lantern::jet::UnusualAccounts::new().unwrap();
+    let mut run = run_over(&snapshot, &book, &procedure).unwrap();
+    assert_eq!(run.procedure, "jet.unusual_accounts");
+    assert_eq!(run.version, 2);
+    assert!(
+        !run.findings.is_empty(),
+        "the native run must report a pair"
+    );
+    let compared = |run| outcome(Ok(run), &book, &posted_vids, &chart, &BTreeMap::new()).unwrap();
+    let accounts: Vec<_> = run.findings[0]
+        .cites
+        .iter()
+        .filter_map(|cite| match cite {
+            Cite::Account(vid) => Some(*vid),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(accounts.len(), 2);
+    let (a, b) = (accounts[0], accounts[1]);
+    let prefix = format!("debit/credit account pair ({:032x}, {:032x})", a.0, b.0);
+    let suffix = run.findings[0]
+        .narrative
+        .strip_prefix(&prefix)
+        .unwrap()
+        .to_owned();
+    let code = |vid| {
+        chart
+            .iter()
+            .find(|(code, _)| account_vid(book.book_id, code) == vid)
+            .map(|(code, _)| code.as_str())
+            .unwrap()
+    };
+    let (first, second) = if code(a) <= code(b) { (a, b) } else { (b, a) };
+    // Start semantic mutants from an already canonical pair presentation.
+    // Changing version or procedure then cannot differ merely because it
+    // disables pair sorting; each mutant must preserve its own changed field.
+    run.findings[0].narrative = format!(
+        "debit/credit account pair ({:032x}, {:032x}){suffix}",
+        first.0, second.0
+    );
+    let expected = compared(run.clone());
+    let mut permuted = run.clone();
+    permuted.findings[0].narrative = format!(
+        "debit/credit account pair ({:032x}, {:032x}){suffix}",
+        second.0, first.0
+    );
+    assert_eq!(
+        compared(permuted),
+        expected,
+        "an undirected pair has no order"
+    );
+
+    let other = chart
+        .iter()
+        .map(|(code, _)| account_vid(book.book_id, code))
+        .find(|vid| !accounts.contains(vid))
+        .unwrap();
+    let mut wrong_member = run.clone();
+    wrong_member.findings[0].narrative = wrong_member.findings[0]
+        .narrative
+        .replace(&format!("{:032x}", a.0), &format!("{:032x}", other.0));
+    assert_ne!(
+        compared(wrong_member),
+        expected,
+        "pair membership is retained"
+    );
+
+    for field in 0..9 {
+        let mut changed = run.clone();
+        let finding = &mut changed.findings[0];
+        match field {
+            0 => finding.statistic.value += 1,
+            1 => finding.statistic.scale += 1,
+            2 => finding.statistic.population += 1,
+            3 => finding.severity = Severity::Info,
+            4 => {
+                finding.cites.pop();
+            }
+            5 => finding.version += 1,
+            6 => finding.narrative.push_str(" changed"),
+            7 => finding.statistic.name.push_str("_changed"),
+            8 => finding.procedure.push_str("_changed"),
+            _ => unreachable!(),
+        }
+        assert_ne!(
+            compared(changed),
+            expected,
+            "semantic field {field} was lost"
+        );
+    }
 }
 
 /// Every registered procedure that builds from its default parameters, run

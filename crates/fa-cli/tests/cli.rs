@@ -13784,6 +13784,31 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "--name",
         "Events cost center",
     ]);
+    let (_, constraint) = run2(&[
+        "dimension",
+        "constrain",
+        "cost_center",
+        "6000",
+        "--allow",
+        "EVENTS",
+        "--key",
+        "events-cost-center-constraint",
+    ]);
+    assert_eq!(
+        field(&constraint, "event"),
+        Some("dimension_constraint_recorded")
+    );
+    let (_, constraints) = run2(&["dimension", "constraints", "cost_center"]);
+    assert_eq!(field(&constraints, "event"), Some("dimension_constraints"));
+    let constraints = doc(&constraints);
+    let [constraint] = arr(&constraints, "constraints") else {
+        panic!(
+            "one recorded cost-center constraint: {}",
+            constraints.render()
+        );
+    };
+    assert_eq!(text(constraint, "account"), "6000");
+    assert_eq!(arr(constraint, "allowed"), &[Json::Str("EVENTS".into())]);
     let dimension_source = write(
         &dir,
         "events-dimension-source.txt",
@@ -17749,9 +17774,10 @@ fn outcome_recovery_is_explicit_basis_bound_and_a_noop_for_covered_books() -> st
     assert_eq!(code, 7, "{out}\n{err}");
     assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-011");
     assert!(
-        text(&doc(&out), "message").contains("not admitted by the launch-bound"),
+        text(&doc(&out), "message").contains("requires capability op `schema_change`"),
         "{out}"
     );
+    assert_eq!(head(), issued, "unauthorized preview publishes nothing");
     let (code, out, err) = fa(
         Some(&book),
         &["--token", &token, "recover", "outcomes", "--yes", "--json"],

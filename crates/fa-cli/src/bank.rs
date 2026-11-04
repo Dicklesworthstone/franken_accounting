@@ -22,6 +22,7 @@ use crate::cli::{Ctx, Fail, hex, known_at_flag, untrusted_text_json, usage};
 use crate::json::{Json, obj, s};
 
 mod layout;
+mod outstanding;
 
 const IMPORT_EXAMPLE: &str = "fa bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv|plaid-sync --account <cash-account-code> [--layout <JSON-file|inline-JSON>] [--previous-import <manifest_oid> --grant privileged] --json";
 const FETCH_EXAMPLE: &str = "fa bank fetch --connector plaid --connector-account <id> --since YYYY-MM-DD --account <cash-account-code> [--previous-import <manifest_oid> --grant privileged] --json (runs the host's `fwc` connector; the fetched payload is retained as a plaid-sync statement)";
@@ -30,7 +31,7 @@ const CONFIRM_EXAMPLE: &str = "fa bank confirm --import <manifest_oid> --line-or
 const STATUS_EXAMPLE: &str = "fa bank status --import <manifest_oid> --grant privileged [--as-known-at HEAD|<seq>|<RFC3339>] --json";
 const HISTORY_EXAMPLE: &str = "fa bank history [--account <code>] [--import <manifest_oid>] [--as-known-at HEAD|<seq>] --json";
 const UNMATCH_EXAMPLE: &str = "fa bank unmatch --match <hex32> --digest <hex64> --yes --json";
-const RECONCILE_EXAMPLE: &str = "fa bank reconcile --import <manifest_oid> --source-known-at <reviewed-seq> --grant privileged --yes --json";
+const RECONCILE_EXAMPLE: &str = "fa bank reconcile --import <manifest_oid> --source-known-at <reviewed-seq> [--outstanding <entry-vid>:<leg-ordinal>:<entry-digest>]... --grant privileged --yes --json";
 const RECONCILIATION_EXAMPLE: &str =
     "fa bank reconciliation --import <manifest_oid> [--as-known-at HEAD|<seq>] --json";
 
@@ -60,12 +61,18 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--proposer",
         ],
         Some("status") => &["--import", "--as-known-at"],
-        Some("reconcile") => &["--import", "--source-known-at"],
+        Some("reconcile") => &["--import", "--source-known-at", "--outstanding"],
         Some("reconciliation") => &["--import", "--as-known-at"],
         Some("history") => &["--account", "--import", "--as-known-at"],
         Some("unmatch") => &["--match", "--digest"],
         _ => &[],
     };
+    if args.flag("--outstanding").is_some() && !allowed.contains(&"--outstanding") {
+        return Err(usage(
+            "--outstanding applies only to bank reconcile",
+            RECONCILE_EXAMPLE,
+        ));
+    }
     for flag in [
         "--bank-format",
         "--account",
@@ -1140,7 +1147,7 @@ fn reconciliation_record_json(
 ) -> Result<Json, Fail> {
     let claim = &recorded.claim;
     let manifest = &claim.manifest;
-    Ok(obj(vec![
+    let mut fields = vec![
         (
             "attestation_vid",
             s(format!("{:032x}", recorded.attestation_vid.0)),
@@ -1167,8 +1174,17 @@ fn reconciliation_record_json(
             "matches",
             Json::Arr(claim.matches.iter().map(decision_ref_json).collect()),
         ),
-        ("scope", s("exact_statement_close")),
-    ]))
+        (
+            "scope",
+            s(if claim.outstanding.is_empty() {
+                "exact_statement_close"
+            } else {
+                "outstanding_adjusted_statement_close"
+            }),
+        ),
+    ];
+    fields.extend(outstanding::fields(recorded, book)?);
+    Ok(obj(fields))
 }
 
 fn reconciliation_state_json(
@@ -1211,6 +1227,7 @@ fn reconcile_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             RECONCILE_EXAMPLE,
         ));
     }
+    let outstanding = outstanding::parse(args)?;
     let manifest_oid = Oid(crate::document::hex32(
         required(args, "--import", RECONCILE_EXAMPLE)?,
         "--import",
@@ -1232,12 +1249,13 @@ fn reconcile_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Ok(())
     })?;
     crate::principal::sign_with(&mut book, key);
-    let recorded = book.reconcile_bank_statement(
+    let recorded = book.reconcile_bank_statement_with_outstanding(
         &capability,
         BankReconciliationRequest {
             manifest_oid,
             evaluated_known_at,
         },
+        outstanding,
     )??;
     let fields = vec![(
         "reconciliation",
@@ -1245,10 +1263,11 @@ fn reconcile_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     )];
     ctx.out.at_book(&book)?;
     ctx.out.event("bank_reconciled", fields, &format!(
-        "{} exact statement close {:032x} through {} at reviewed prefix {}; backdated cash postings require reconcile authority and retain this attestation",
+        "{} statement close {:032x} through {} at reviewed prefix {}, with {} declared outstanding cash legs; backdated cash postings require reconcile authority and retain this attestation",
         if recorded.already_recorded { "already recorded" } else { "recorded" },
         recorded.attestation_vid.0, recorded.claim.manifest.statement_date.render(),
         recorded.claim.evaluated_known_at.0,
+        recorded.claim.outstanding.len(),
     ));
     Ok(())
 }

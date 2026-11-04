@@ -476,8 +476,8 @@ pub fn source_batches<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// Inspect native history, not current labels or code mirrors. Also recognize
-/// attempted tag-3 manufacture or restoration: maintenance filtering must not
-/// erase a fabricated attestation before the source verifier can reject it.
+/// attempted tag-3 or tag-11 manufacture or restoration: maintenance filtering
+/// must not erase a fabricated attestation before the source verifier rejects it.
 fn contains_reconciled_claim(batches: &[LogicalDeltaBatch]) -> bool {
     let mut attestations = BTreeSet::new();
     for batch in batches {
@@ -501,7 +501,9 @@ fn contains_reconciled_claim(batches: &[LogicalDeltaBatch]) -> bool {
     }
     let reconciled = |value: &CanonicalScalar| {
         matches!(value, CanonicalScalar::Bytes(bytes)
-            if bytes.as_slice().get(18) == Some(&crate::attestation::claim::RECONCILED))
+            if matches!(bytes.as_slice().get(18),
+                Some(&crate::attestation::claim::RECONCILED)
+                    | Some(&crate::attestation::claim::RECONCILED_OUTSTANDING)))
     };
     batches.iter().any(|batch| {
         batch.coordinate_entries().iter().any(|coordinate| {

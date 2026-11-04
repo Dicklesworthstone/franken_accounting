@@ -250,6 +250,22 @@ fn post(intent: Json) -> Request {
     }
 }
 
+fn dimension_restricted_post(_: &Given) -> Request {
+    let mut debit = leg("debit", "6000", "5.00 USD");
+    let Json::Obj(fields) = &mut debit else {
+        unreachable!("leg constructs an object");
+    };
+    fields.push((
+        "dimensions".into(),
+        Json::Obj(vec![("cost_center".into(), Json::Str("CC20".into()))]),
+    ));
+    post(intent(
+        "dimension-restricted",
+        "2026-03-10",
+        vec![debit, leg("credit", "1000", "5.00 USD")],
+    ))
+}
+
 /// Run `req`; `n` numbers the intent file so each submission is its own.
 fn run(dir: &Path, book: &Path, ev: &str, req: &Request, n: usize) -> (i32, Json, Vec<String>) {
     let args = match req {
@@ -722,6 +738,52 @@ const CASES: &[Case] = &[
 ];
 
 const MORE_CASES: &[Case] = &[
+    Case {
+        name: "dimension-outside-account-allowlist",
+        entities: &[],
+        setup: &[
+            &[
+                "dimension",
+                "add",
+                "cost_center",
+                "CC10",
+                "--name",
+                "Allowed",
+            ],
+            &["dimension", "add", "cost_center", "CC20", "--name", "Other"],
+            &[
+                "dimension",
+                "constrain",
+                "cost_center",
+                "6000",
+                "--allow",
+                "CC10",
+            ],
+        ],
+        base: None,
+        prepare: None,
+        trigger: dimension_restricted_post,
+        steps: &[("FA-REF-207", Apply::Inform)],
+    },
+    Case {
+        name: "dimension-explicitly-forbidden-on-account",
+        entities: &[],
+        setup: &[
+            &["dimension", "add", "cost_center", "CC20", "--name", "Other"],
+            &[
+                "dimension",
+                "constrain",
+                "cost_center",
+                "6000",
+                "--forbid",
+                "CC20",
+            ],
+        ],
+        base: None,
+        prepare: None,
+        trigger: dimension_restricted_post,
+        steps: &[("FA-REF-207", Apply::Inform)],
+    },
     Case {
         name: "prior-period-adjustment-needs-reviewed-case",
         entities: &[],

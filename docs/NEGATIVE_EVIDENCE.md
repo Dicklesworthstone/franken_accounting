@@ -2670,3 +2670,256 @@ receipts and accounting changes remain failures. The recovery preview keeps
 its original no-publication requirement. A planted missing-receipt execution
 and corrected native/full-gate execution are required before this test repair
 can be treated as qualified; no missing receipt is a passing read.
+
+## 2026-11-04 — Per-crate input hashes fabricated execution verdicts (fa-xrl)
+
+On frozen commit `9bc4c99a27c1b30e9342e2f6b3e8923658e1aa8c`, the native
+`fa-formats` test job exited 101. A separate invocation of
+`scripts/crate_verdicts.py` with a new empty store nevertheless exited zero
+and emitted `PASS` for all 33 crates, including `fa-formats`, plus ten
+workspace steps that it never ran. Both fresh statuses and default step
+statuses were hard-coded; a stored `PASS` needed no execution provenance.
+The wrapper could publish that output as a Git note. No such note was
+published by this probe. This violated doctrine 12 and the gate verdict
+contract; hashing source inputs is not execution evidence.
+
+The repair keeps candidate input fingerprints, reports every unexecuted
+status as `UNRUN`, exits 2, and refuses verdict-note publication. It removes
+the unauthenticated store interface and preserves existing stores and notes.
+The report format is version 2 and output creation refuses an existing file.
+The old producer's retained manifest and store remain negative evidence.
+The admission split is entirely restrictive: the 33 unbound crate `PASS`
+claims and ten invented workspace `PASS` claims are no longer admitted;
+no authenticated execution result is removed, because this producer never
+consumed one. The ordinary full repository proof remains authoritative.
+
+The existing selftest preserves leaf-change, deterministic fingerprint,
+registry-invalidation and external-input checks without calling them
+execution or reuse. Added controls refuse false verdicts for broken Rust,
+forged stores, unproved note publication and report overwrites. All nine
+metadata/refusal controls and their integration into the existing local-proof
+selftest passed in the external review copy. They are tooling tests, not a
+native accounting test run. Original bead `fa-xrl` is reopened; real executed
+per-crate reuse and cold-run equivalence remain unmet acceptance criteria.
+Publication combined with selftest is refused before any child starts, in
+both flag orders. A retained instrumented-child control observes an early
+exec directly without recursively invoking the suite on regression.
+
+## 2026-11-04 — Role oracle treated an undirected pair as ordered
+
+The native Lantern target on `9bc4c99a27c1b30e9342e2f6b3e8923658e1aa8c`
+ran 106 passing and two failing tests. In the role-renaming failure,
+`jet.unusual_accounts` version 2 retained the same two account members,
+citations, occurrence count and population. Only the pair's narrative order
+changed after account renaming changed the native vertex-ID order. The
+registered version-2 definition explicitly makes this pair undirected;
+the algorithm serializes its members in native-ID order. The comparison
+already normalized citation order but omitted this unordered narrative value.
+
+The oracle repair maps accounts back to their original identities, then sorts
+only this version-2 procedure's declared pair text. Every member, remaining
+word, statistic, severity, citation, procedure identity and version remains
+in the compared outcome. Both complete corpus comparisons remain in place.
+The admission change accepts only equivalent ordering of this undirected
+value. Added controls use an actual native procedure result: swapping only
+the two displayed members is equivalent, while changing a member, value,
+scale, population, severity, citations, version, narrative suffix, statistic
+name or procedure ID must still differ. Native execution of these prepared
+controls is required; formatting alone does not qualify the repair.
+The semantic mutants start from an already canonical pair presentation,
+so changing the procedure or version cannot differ merely by disabling
+the pair-order normalization.
+Production algorithms, registry versions and certificate bytes are unchanged.
+
+The other failure expected 22 date-aware procedures. Comparing the registry
+at the assertion's introducing revision `ea9ba4f71` with this tree identifies
+exactly one addition: `recon.attested_register_compare` became date-aware in
+version 2 (`748173064`). Its code consumes the optional cutoff in both claim
+and instrument comparisons. The expected inventory is now exactly 23; every
+undeclared procedure still undergoes the original strict date-invariance
+comparison, and the corpus must still exercise a declared date-sensitive run.
+
+## 2026-11-04 — Native reapplication shipped ahead of its reference model
+
+The original generated-history differential on
+`9bc4c99a27c1b30e9342e2f6b3e8923658e1aa8c` failed at seed
+`0xe220a8397b1dcdaf`, step 232: the kernel committed a native reversal
+that revived an application, while the reference model returned
+`FA-REF-102` from its obsolete unsupported-reapplication guard. The target
+ran 54 passing tests and this one failure. I extended the production law
+without extending and qualifying the independent oracle first, contrary
+to doctrine 11. The full repository gate caught the omission before
+publication; its failing proof remains evidence and cannot authorize closure.
+
+The repair derives prospective restored applications from the model's own
+immutable reversal lineage and literal live-entry fold, using its independent
+limb arithmetic. Each restored application requires a currently live target
+and sufficient remaining capacity. No production applied mirror, delta map
+or compare-and-swap implementation is reused. Refusal precedes journal
+mutation; foreign-valued application profiles remain unsupported.
+
+The exact differential comparison and original seed corpus remain unchanged.
+A model test adds both receipt and payment orientations, four reversal
+levels, cumulative capacity competition across two application legs,
+successful retry of the same refused key after
+capacity is released, and refusal when the source was reversed. Each refusal
+must preserve journal length, monetary fold and open-item fold. These
+prepared changes still require native model execution and the entire
+original generated-history differential on the final candidate.
+
+## 2026-11-04 — CLI fixture omitted live events and expected an old refusal reason
+
+The general CLI integration target on frozen `9bc4c99a27c1b30e9342e2f6b3e8923658e1aa8c`
+ran 156 passing and two failing tests. Exhaustive event coverage was missing
+exactly `dimension_constraint_recorded` and `dimension_constraints`:
+the handlers and schemas already existed, but the fixture never called them.
+The repair records a real cost-center allowlist on account 6000, reads it
+back, and checks its one row and exact allowed value before the existing
+tagged posting. The final complete emitted-versus-declared set equality
+remains unchanged. No event is removed or exempted.
+
+The recovery test already required a read-only issued token to be refused.
+Its exit 7 and `FA-REF-011` assertions passed; only its old blanket
+launch-surface message assertion failed. The actual path names the missing
+`schema_change` operation before recovery observes book contents. The test
+now requires that specific missing-operation reason and immediately checks
+that the refusal published no sequence. The existing confirmation refusal,
+final unchanged-head assertion, successful authorized previews, stale-basis
+refusal and covered-book no-op assertions remain.
+
+This admission change accepts the precise earlier authorization refusal in
+place of the old blanket refusal text; it admits no successful reader-token
+recovery. Production authority and recovery behavior are unchanged. Both
+original test names and the complete CLI target still require native
+qualification on the assembled candidate.
+
+## 2026-11-04 — Dimension refusal omitted from executable fix coverage
+
+The original refusal-fix target ran one passing and one failing test on
+`9bc4c99a27c1b30e9342e2f6b3e8923658e1aa8c`. After executing its existing
+cases, the exhaustive catalog assertion found `FA-REF-207` absent from
+both real triggers and the documented non-single-step exceptions.
+
+The repair adds two native CLI cases: a declared value outside an account's
+allowlist, and an explicitly forbidden value with no allowlist. Each
+restriction is isolated, so ignoring either policy rule makes its own case
+fail. Each must return `FA-REF-207` and execute the existing structured
+`fa dimension constraints cost_center` hint under the harness's read-only
+operation check. This is policy inspection; classification remains the
+preparer's decision, and the refused posting is not resubmitted or silently
+changed. The renderer already extracts this command from the refusal.
+No production change, catalog exemption or coverage-assertion reduction is
+needed. The full original target still requires native qualification.
+
+## 2026-11-04 — Schema branches diverged in shape ordering
+
+The native robot-schema target ran one passing and one failing test.
+The retained binary output and published version-1 pin are both 355,126
+bytes. Structural comparison found identical envelopes, events and all
+284 named shapes, including every field, type and documentation string.
+Only `plan_application` and `plan_application_difference` were in different
+array positions: their registry declarations followed `plan_leg`, while
+the published pin appends them after `asset_register_row`.
+
+An initial external candidate moved the two unchanged declarations to match
+that local pin. Before applying it, the canonical remote advanced to
+`b14cd555d`. Comparison with the shared `17aa0fba` base established that
+the local fixture had moved those two shapes, while the canonical remote
+retained their original order and matched the automatically merged registry.
+The final integration preserves that canonical order; the earlier external
+declaration move is superseded and never applied to product source.
+
+The schema merge starts with the canonical remote's exact bytes. It carries
+over only the two local daemon event objects (`fad_serving`, `fad_status`)
+and the separately attributed `tb_served` documentation correction below.
+This retains the remote's new bank-reconciliation fields, item shape and
+bundle documentation. Structural comparison with the shared base proves
+the two branches' declared deltas before composition; all 285 shapes and
+284 events then match the combined registry's exact names, order, fields,
+types and documentation. No binary fixture regeneration occurs. The
+356,766-byte combined fixture is a prepared merge, not native schema or
+registry qualification; both remain required.
+
+## 2026-11-04 — Retained-cut conformance pinned an obsolete current procedure version
+
+The native substrate-conformance target ran 14 passing and one failing
+test. Its call to the current `PonziNetInvestment::new()` returned version
+5, while the test still expected 4. Registry commit `cbc90a645` and the live
+implementation both declare version 5, adding explicitly classified posted
+principal transfers. This fixture contains cash subscriptions and payments,
+with no such transfer. Version-4 distribution procedures remain cash-only.
+
+The repair pins that current constructor to exactly 5 and updates the
+test's corresponding evidence label. The exact per-investor values
+`[10000, 20000]`, distribution values `[3000, 6000]`, all other financial
+vectors, the four other procedure-version pins, retained input and finding
+digests across later postings, and the changed-head non-vacuity checks
+remain unchanged. This tests version 5 at a retained cut; it does not claim
+cross-version replay of a historical version-4 certificate. The original
+test and complete conformance crate still require native qualification.
+
+## 2026-11-04 — Historical serving invalidated the served-read test's literal oracle
+
+The native served-read target failed both tests, with zero passing tests.
+Its helper assumed that a numeric `--as-known-at` selector forces a literal
+fold with `served: null`. Commit `804f02225` deliberately added authorized
+historical reads from pinned maintained state, and updated the README and
+other CLI tests accordingly. The first failure returned a literal serving
+description rather than null; later maintained reads would also invalidate
+the helper. Adding an unrelated head entry would not restore independence.
+
+The repair uses `tb --as-known-at <the original cut> --certify` as the
+comparison oracle. The certificate path directly calls the literal
+`fa_registers` fold over journal payloads. The test runner requires exactly
+two schema-valid frames for this command, a trial balance naming a
+certificate followed by a report certificate. Ordinary calls still require
+exactly one frame. The original exact selected frontier, null serving
+metadata for the certified fold, rows and unit totals remain required.
+All head serving-mode and tail-count assertions, the maximum-amount
+overflow refusal, unchanged frontier after refusal, and register
+verification checks remain intact. No product read path changes.
+
+The registry's `tb_served` documentation also retained the obsolete claim
+that historical reads always fold the journal. Only this documentation
+string is corrected in the registry and in the existing published robot
+fixture: historical cells, checkpoints and tails use the selected recorded
+frontier; certified, as-of and summary reads retain their literal behavior.
+Every other fixture byte segment, shape field, type and event is preserved.
+The initial standalone prepared fixture was 355,252 bytes. The subsequent
+canonical-remote merge described above retains the remote's original shape
+ordering and new declarations, the local daemon fields, and this same one
+documentation edit. It changes no financial golden or type expectation.
+Full native served-read and robot-schema execution remains required before
+acceptance.
+
+## 2026-11-04 — Bank facade replay preceded the raw-publication rehearsal gate
+
+Source review of the newly published bank and subledger features found an
+existing admission gap in the facade. `confirm_bank_statement_match` and
+`reconcile_bank_statement` called `authorize_bank`, which observes the
+recorded current-authority point, and then could reopen governed bank
+evidence before reaching the native publication boundary's
+`admit_direct_write` refusal. The native boundary already blocked an
+unverified rehearsal-required publication; that did not prevent the
+facade's earlier observations. The new outstanding-item reconciliation
+variant inherited the same ordering.
+
+The repair performs the same pure `admit_direct_write` check at the start
+of the two facade publication implementations, before `authorize_bank`.
+The exact-close convenience method delegates to the checked outstanding
+implementation. The native gate remains in place, and current authority,
+Human profile, source replay, exact cash bridge and publication witnesses
+remain independently enforced. Read-only bank matching and continuity
+continue to use their existing preparation admission.
+
+Two new real-MemVfs tests cover all three public write entry points with
+ordinary and expired rehearsal-required capabilities. They require the
+specific FA-REF-011 rehearsal refusal without changing the book frontier.
+An expired capability without the rehearsal caveat must instead reach the
+real current-authority check and return FA-REF-014. A separate positive
+test imports a real bank statement and matches its retained source using
+a rehearsal-required capability. These checks distinguish publication
+admission from permitted preparation; they do not weaken an old check or
+claim that denied native commits previously succeeded. This is a
+source-observed defect with a prepared repair; native qualification of
+both new tests and the existing bank paths is still required.

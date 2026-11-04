@@ -972,11 +972,16 @@ fn attestation_parts(
                 r.fixed::<32>("register_equals.fold_digest")?;
                 expected_cell = Some(register_cell_digest(account, unit_id, period, entity));
             }
-            3 => {
+            3 | 11 => {
                 if profile != 0 {
                     return Err(r.error("reconciled.profile", Reason::BadTag(profile)));
                 }
-                expected_source = Some(reconciled::read(&mut r, book_id, commit_seq)?);
+                expected_source = Some(reconciled::read(
+                    &mut r,
+                    book_id,
+                    commit_seq,
+                    claim_tag == 11,
+                )?);
             }
             t => return Err(r.error("attestation.claim", Reason::BadTag(t))),
         }
@@ -989,7 +994,7 @@ fn attestation_parts(
         let valid_subject = match (claim_tag, subject_tag) {
             (2, 1) | (8, 2) | (5, 1) | (9, 1) | (10, 1) => true,
             (4, 3) => expected_cell == Some(subject_bytes),
-            (3, 1) => expected_source
+            (3, 1) | (11, 1) => expected_source
                 .as_ref()
                 .is_some_and(|source| source.manifest_oid == subject_bytes),
             _ => false,

@@ -8,6 +8,8 @@ use crate::envelope::{
 const BOOK: [u8; 16] = [0x5a; 16];
 const STATEMENT: [u8; 32] = [0x22; 32];
 
+mod outstanding;
+
 fn manifest_bytes(previous: Option<&[u8]>) -> Vec<u8> {
     let mut w = Writer::default();
     w.fixed(b"FA-BANK-IMPORT")
@@ -66,6 +68,7 @@ fn previous_manifest() -> Vec<u8> {
 
 #[derive(Clone)]
 struct Fixture {
+    claim_tag: u8,
     manifest: Vec<u8>,
     manifest_oid: [u8; 32],
     predecessors: Vec<Vec<u8>>,
@@ -73,6 +76,7 @@ struct Fixture {
     evaluated: u64,
     cash: i128,
     matches: Vec<(u128, [u8; 32])>,
+    outstanding: Vec<(u128, [u8; 32], u16, i128)>,
     subject: [u8; 32],
     evidence: Vec<[u8; 32]>,
     profile: u8,
@@ -86,6 +90,7 @@ impl Fixture {
             Vec::new()
         };
         let mut fixture = Self {
+            claim_tag: 3,
             manifest: manifest_bytes(predecessors.first().map(Vec::as_slice)),
             manifest_oid: [0; 32],
             predecessors,
@@ -93,6 +98,7 @@ impl Fixture {
             evaluated: 8,
             cash: 60_000,
             matches: vec![(100, [0x41; 32]), (101, [0x42; 32])],
+            outstanding: Vec::new(),
             subject: [0; 32],
             evidence: Vec::new(),
             profile: 0,
@@ -113,7 +119,7 @@ impl Fixture {
         let mut w = Writer::default();
         w.u16(1)
             .fixed(&BOOK)
-            .u8(3)
+            .u8(self.claim_tag)
             .fixed(&self.manifest_oid)
             .bytes(&self.manifest)
             .count(self.predecessors.len());
@@ -129,6 +135,12 @@ impl Fixture {
             .count(self.matches.len());
         for (vid, digest) in &self.matches {
             w.u128(*vid).fixed(digest);
+        }
+        if self.claim_tag == 11 {
+            w.count(self.outstanding.len());
+            for (vid, digest, ordinal, amount) in &self.outstanding {
+                w.u128(*vid).fixed(digest).u16(*ordinal).i128(*amount);
+            }
         }
         w.count(1)
             .u8(1)

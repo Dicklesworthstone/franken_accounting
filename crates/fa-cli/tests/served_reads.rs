@@ -24,14 +24,36 @@ fn run(book: &Path, args: &[&str]) -> (i32, Json) {
     let stdout = String::from_utf8(result.stdout).expect("UTF-8 stdout");
     let stderr = String::from_utf8_lossy(&result.stderr);
     let lines: Vec<_> = stdout.lines().collect();
-    assert_eq!(lines.len(), 1, "args={args:?}\n{stdout}\n{stderr}");
-    let checked = fa_cli::verbs::registry()
-        .expect("registry")
-        .check_line(lines[0]);
-    assert!(
-        checked.is_ok(),
-        "args={args:?}: {checked:?}\n{stdout}\n{stderr}"
+    let certified = args.contains(&"--certify");
+    assert_eq!(
+        lines.len(),
+        if certified { 2 } else { 1 },
+        "args={args:?}\n{stdout}\n{stderr}"
     );
+    let registry = fa_cli::verbs::registry().expect("registry");
+    for line in &lines {
+        let checked = registry.check_line(line);
+        assert!(
+            checked.is_ok(),
+            "args={args:?}: {checked:?}\n{stdout}\n{stderr}"
+        );
+    }
+    if certified {
+        let certificate = json::parse(lines[1]).expect("certificate robot line");
+        assert_eq!(
+            certificate.get("event").and_then(Json::as_str),
+            Some("report_certificate")
+        );
+        let report = json::parse(lines[0]).expect("trial balance robot line");
+        assert_eq!(
+            report.get("event").and_then(Json::as_str),
+            Some("trial_balance")
+        );
+        assert!(
+            get(&report, "certificate").as_str().is_some(),
+            "a certified report must name its certificate"
+        );
+    }
     (code, json::parse(lines[0]).expect("one robot line"))
 }
 
@@ -124,14 +146,25 @@ fn post(dir: &Path, book: &Path, evidence: &str, key: &str, amount: &str) {
     ok(book, &["post", "--intent", &intent, "--evidence", evidence]);
 }
 
-/// The same rows as a literal fold at the read's own head.
+/// The same rows as a certified literal fold at the read's own retained cut.
 fn assert_literal_rows(book: &Path, read: &Json, activity: bool) {
-    let known_at = integer(read, "known_at").to_string();
-    let mut args = vec!["tb", "--period", "FY2026-P03", "--as-known-at", &known_at];
+    let cutoff = integer(read, "known_at");
+    let known_at = cutoff.to_string();
+    // Fixed-cut reads may also use maintained state. Certification explicitly
+    // folds journal payloads, so this oracle cannot compare the cache to itself.
+    let mut args = vec![
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &known_at,
+        "--certify",
+    ];
     if activity {
         args.push("--activity");
     }
     let literal = ok(book, &args);
+    assert_eq!(integer(&literal, "known_at"), cutoff);
     assert_eq!(get(&literal, "served"), &Json::Null, "{}", literal.render());
     assert_eq!(
         get(read, "rows"),

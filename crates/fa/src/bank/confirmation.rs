@@ -137,6 +137,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: BankConfirmationRequest,
     ) -> Outcome<BankMatchRecorded> {
+        if let Err(denial) = fa_policy::admit_direct_write(capability) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         if let Err(refusal) = self.authorize_bank(cx, capability)? {
             return Ok(Err(refusal));
         }

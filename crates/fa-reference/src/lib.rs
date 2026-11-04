@@ -3139,8 +3139,10 @@ impl Oracle {
                 };
             }
             // 7c. Application effects (plan §5.7, §8.2): an item or any ancestor
-            //     in its reversal chain with live applications is not reversed;
-            //     re-applying by reversing a reversal waits for the full netting law.
+            //     in its reversal chain with live applications is not reversed.
+            //     Reversing the tip toggles the root's applications. The literal
+            //     fold already removes them when the root becomes dead; before
+            //     reviving it, check each restored application against that fold.
             let mut anc = Some(target);
             while let Some(idx) = anc {
                 let entry = &self.journal[idx];
@@ -3152,17 +3154,50 @@ impl Oracle {
                     }
                 }
                 if entry.class == "Reversal" {
-                    if entry
-                        .reverses
-                        .and_then(|g| self.journal.get(g))
-                        .is_some_and(|g| !g.settles.is_empty())
-                    {
-                        return Verdict::Refused {
-                            code: code::CLASS_NOT_IMPLEMENTED,
-                        };
-                    }
                     anc = entry.reverses;
                 } else {
+                    if !self.is_live(idx) {
+                        // Posting visits legs in order, retaining the declared
+                        // application order within each leg. Re-fold the prefix
+                        // rather than maintaining the kernel's applied mirrors.
+                        let mut restored: Vec<&Settle> = entry.settles.iter().collect();
+                        restored.sort_by_key(|s| s.leg);
+                        for (position, s) in restored.iter().enumerate() {
+                            let Some(destination) = self.journal.get(s.target) else {
+                                return Verdict::Refused {
+                                    code: code::SETTLE_TARGET,
+                                };
+                            };
+                            if !self.carries_open_items(destination) || !self.is_live(s.target) {
+                                return Verdict::Refused {
+                                    code: code::SETTLE_TARGET,
+                                };
+                            }
+                            let Some(leg) = destination.legs.get(s.ordinal) else {
+                                return Verdict::Refused {
+                                    code: code::SETTLE_SHAPE,
+                                };
+                            };
+                            let mut remaining = Int::from_i128(leg.mantissa);
+                            for outgoing in
+                                destination.settles.iter().filter(|t| t.leg == s.ordinal)
+                            {
+                                remaining = remaining.sub(&Int::from_i128(outgoing.mantissa));
+                            }
+                            remaining = remaining.sub(&self.applied_to_int(s.target, s.ordinal));
+                            for incoming in restored[..=position]
+                                .iter()
+                                .filter(|t| t.target == s.target && t.ordinal == s.ordinal)
+                            {
+                                remaining = remaining.sub(&Int::from_i128(incoming.mantissa));
+                            }
+                            if remaining.is_negative() {
+                                return Verdict::Refused {
+                                    code: code::OVER_APPLICATION,
+                                };
+                            }
+                        }
+                    }
                     anc = None;
                 }
             }
@@ -4674,6 +4709,157 @@ mod tests {
             o.transition(&march, PeriodTransition::Lock),
             Err(code::TRANSITION)
         );
+    }
+
+    #[test]
+    fn native_reapplications_refold_lineage_and_refuse_atomically() {
+        fn reversal(o: &Oracle, target: usize, key: &[u8]) -> Intent {
+            let entry = o.entry(target).unwrap();
+            Intent {
+                class: "Reversal".into(),
+                date: entry.date,
+                discriminator: None,
+                legs: entry
+                    .legs
+                    .iter()
+                    .map(|leg| Leg {
+                        side: leg.side.flipped(),
+                        ..leg.clone()
+                    })
+                    .collect(),
+                key: key.to_vec(),
+                ops: vec!["post".into()],
+                approvals: 0,
+                reverses: Some(target),
+                supersession_reason: 1,
+                resolves: None,
+                settles: Vec::new(),
+            }
+        }
+        let post = |o: &mut Oracle, intent: &Intent| {
+            let index = o.journal_len();
+            assert_eq!(
+                o.post(intent),
+                Verdict::Posted {
+                    index,
+                    period: "FY2026-P03".into(),
+                }
+            );
+            index
+        };
+        // Receipts and payments have opposite source sides; their application
+        // law and refusal atomicity must be identical.
+        for side in [Side::Debit, Side::Credit] {
+            let mut o = Oracle::new(FiscalCalendar::monthly("cal", 1, 1).unwrap());
+            for account in ["1000", "6000"] {
+                o.add_account(Account {
+                    code: account.into(),
+                    is_leaf: true,
+                    unit: Some(1),
+                });
+            }
+            o.create_periods(2026);
+            o.transition("FY2026-P03", PeriodTransition::Open).unwrap();
+            let intent = |side: Side, amount, key: &[u8], settles| Intent {
+                class: "Original".into(),
+                date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+                discriminator: None,
+                legs: vec![
+                    Leg {
+                        side,
+                        account: "1000".into(),
+                        unit: 1,
+                        entity: None,
+                        mantissa: amount,
+                    },
+                    Leg {
+                        side: side.flipped(),
+                        account: "6000".into(),
+                        unit: 1,
+                        entity: None,
+                        mantissa: amount,
+                    },
+                ],
+                key: key.to_vec(),
+                ops: vec!["post".into()],
+                approvals: 0,
+                reverses: None,
+                supersession_reason: 1,
+                resolves: None,
+                settles,
+            };
+            let source = post(&mut o, &intent(side, 100, b"source", Vec::new()));
+            let application = |amount, key: &[u8]| {
+                intent(
+                    side.flipped(),
+                    amount,
+                    key,
+                    vec![Settle {
+                        leg: 0,
+                        target: source,
+                        ordinal: 0,
+                        mantissa: amount,
+                    }],
+                )
+            };
+            // Restore 30 then 40 to the same source from distinct legs. With
+            // a competing 50, the first restoration fits and the second must
+            // refuse without publishing either one.
+            let mut split = application(70, b"application");
+            split.legs[0].mantissa = 30;
+            split.legs.push(Leg {
+                mantissa: 40,
+                ..split.legs[0].clone()
+            });
+            split.settles[0].mantissa = 30;
+            split.settles.push(Settle {
+                leg: 2,
+                target: source,
+                ordinal: 0,
+                mantissa: 40,
+            });
+            let mut tip = post(&mut o, &split);
+            for (key, applied) in [(b"r1", 0), (b"r2", 70), (b"r3", 0), (b"r4", 70)] {
+                let next = reversal(&o, tip, key);
+                tip = post(&mut o, &next);
+                assert_eq!(o.open_items()[&(source, 0)], (100, applied, 0));
+            }
+            let release = reversal(&o, tip, b"release");
+            tip = post(&mut o, &release);
+            let competing = post(&mut o, &application(50, b"competing"));
+            let retry = reversal(&o, tip, b"retry");
+            let before = (o.journal_len(), o.fold("FY2026-P03"), o.open_items());
+            assert_eq!(
+                o.post(&retry),
+                Verdict::Refused {
+                    code: code::OVER_APPLICATION,
+                }
+            );
+            assert_eq!(
+                (o.journal_len(), o.fold("FY2026-P03"), o.open_items()),
+                before
+            );
+            let release_competing = reversal(&o, competing, b"release-competing");
+            post(&mut o, &release_competing);
+            tip = post(&mut o, &retry);
+            assert_eq!(o.open_items()[&(source, 0)], (100, 70, 0));
+            let release = reversal(&o, tip, b"release-again");
+            tip = post(&mut o, &release);
+            let reverse_source = reversal(&o, source, b"reverse-source");
+            post(&mut o, &reverse_source);
+            let restore = reversal(&o, tip, b"dead-target");
+            let before = (o.journal_len(), o.fold("FY2026-P03"), o.open_items());
+            assert_eq!(
+                o.post(&restore),
+                Verdict::Refused {
+                    code: code::SETTLE_TARGET,
+                }
+            );
+            assert_eq!(
+                (o.journal_len(), o.fold("FY2026-P03"), o.open_items()),
+                before
+            );
+        }
     }
 
     /// Period authority in the obvious way (plan §14.2, Appendix C): the

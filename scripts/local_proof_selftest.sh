@@ -600,7 +600,9 @@ for field in commit-after tree-after; do
   done
 done
 
-printf 'PASS local-proof v3 semantic controls (verified partial reuse, retained provenance, legacy verification, git notes, and bead-close attribution)\n'
+bash "$source_root/scripts/tests/crate_verdicts_selftest.sh"
+
+printf 'PASS local-proof v3 semantic controls (verified partial reuse, retained provenance, legacy verification, git notes, bead-close attribution, and refusal of unproved per-crate verdicts)\n'
 printf 'fixture=%s\n' "$fixture"
 printf 'pass_proof=%s\n' "$pass_proof"
 printf 'split2_proof=%s\n' "$split2_proof"

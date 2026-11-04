@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Content-addressed per-crate verdicts & Merkle tree verdict composer (bead fa-xrl).
+"""Candidate per-crate input fingerprints, without execution verdicts (fa-xrl).
 
-Computes exact input-closure hashes for every workspace crate:
+Computes candidate hashes over the workspace inputs currently enumerated:
   input_hash = H(
       "fa:crate-input-closure:v1",
       global_invalidation_inputs(Cargo.toml, Cargo.lock, rust-toolchain.toml,
@@ -12,15 +12,17 @@ Computes exact input-closure hashes for every workspace crate:
 
 Rules:
 - Any change to Cargo.lock, rust-toolchain.toml, franken-stack.lock, deny.toml,
-  or any registries/*.toml changes `global_invalidation_digest`, invalidating
-  100% of crate verdicts (0 reused).
+  or any registries/*.toml changes `global_invalidation_digest` and every
+  candidate crate fingerprint.
 - Any build.rs or include_str!/include_bytes! reading a path outside the crate's
   own directory or `registries/` is flagged `undeclared_external_read=True` and
-  never reuses a cached verdict (fail closed).
-- A crate whose `input_hash` has a stored green verdict in the verdict store is
-  marked `reused=True` with `reused_from_tree`; its leaf digest in the whole-tree
-  Merkle root is identical whether reused or freshly executed, so a composed root
-  equals a cold full run on the same tree byte-for-byte.
+  reported as an undeclared input. This scan is not a complete input manifest.
+- These fingerprints do not authenticate execution, feature sets, test-target
+  inventories, or every external input. No result is a verification verdict.
+- Earlier versions invented PASS for fresh inputs and trusted unauthenticated
+  JSON stores. They must not authorize reuse. Until actual execution evidence is
+  bound and verified, every status is UNRUN and the command exits 2. Existing
+  stores and notes are left untouched.
 """
 
 import argparse
@@ -181,21 +183,21 @@ def inspect_external_reads(repo: Path, crate_dir: Path) -> tuple[bool, list[str]
 
 def merkle_root(leaves: list[str]) -> str:
     if not leaves:
-        return sha256_domain(b"fa:verdict-merkle-empty:v1", [])
+        return sha256_domain(b"fa:input-fingerprint-merkle-empty:v1", [])
     layer = [bytes.fromhex(x) for x in leaves]
     while len(layer) > 1:
         next_layer: list[bytes] = []
         for i in range(0, len(layer), 2):
             if i + 1 < len(layer):
-                combined = sha256_domain(b"fa:verdict-merkle-node:v1", [layer[i], layer[i + 1]])
+                combined = sha256_domain(b"fa:input-fingerprint-merkle-node:v1", [layer[i], layer[i + 1]])
             else:
-                combined = sha256_domain(b"fa:verdict-merkle-odd:v1", [layer[i]])
+                combined = sha256_domain(b"fa:input-fingerprint-merkle-odd:v1", [layer[i]])
             next_layer.append(bytes.fromhex(combined))
         layer = next_layer
     return layer[0].hex()
 
 
-def evaluate_workspace(repo: Path, store_path: Path, workspace_steps: list[dict], update_store: bool) -> dict:
+def evaluate_workspace(repo: Path) -> dict:
     tree_sha = git_tree_hash(repo)
     global_digest = compute_global_invalidation_digest(repo)
     crates = discover_workspace_crates(repo)
@@ -204,15 +206,7 @@ def evaluate_workspace(repo: Path, store_path: Path, workspace_steps: list[dict]
     for name, info in sorted(crates.items()):
         per_crate_tree_hashes[name] = hash_directory_tree(info["dir"])
 
-    store: dict[str, dict] = {}
-    if store_path.is_file():
-        try:
-            store = json.loads(store_path.read_text(encoding="utf-8"))
-        except Exception:
-            store = {}
-
     crate_records: list[dict] = []
-    reused_count = 0
     for name in sorted(crates.keys()):
         info = crates[name]
         closure = transitive_ws_closure(crates, name)
@@ -225,34 +219,15 @@ def evaluate_workspace(repo: Path, store_path: Path, workspace_steps: list[dict]
             closure_parts.append(
                 dep_name.encode("utf-8") + b"=" + per_crate_tree_hashes[dep_name].encode("ascii")
             )
-        input_hash = sha256_domain(b"fa:crate-input-closure:v1", closure_parts)
+        input_hash = sha256_domain(b"fa:crate-input-fingerprint:v1", closure_parts)
 
-        cached = store.get(input_hash)
-        if cached and cached.get("status") == "PASS" and not undeclared:
-            reused = True
-            reused_from_tree = cached.get("tree_hash", tree_sha)
-            status = "PASS"
-            reused_count += 1
-        else:
-            reused = False
-            reused_from_tree = None
-            status = "PASS"
-            if update_store and not undeclared:
-                store[input_hash] = {
-                    "crate": name,
-                    "input_hash": input_hash,
-                    "status": status,
-                    "tree_hash": tree_sha,
-                }
-
-        # Canonical leaf digest depends ONLY on (crate, input_hash, status) so a reused
-        # leaf and a cold-run leaf produce the exact same Merkle root!
+        # Hashing inputs is not evidence that any check executed. In particular,
+        # a cache's self-asserted PASS cannot establish a verdict for this hash.
         leaf_digest = sha256_domain(
-            b"fa:crate-verdict-leaf:v1",
+            b"fa:crate-input-fingerprint-leaf:v1",
             [
                 name.encode("utf-8"),
                 input_hash.encode("ascii"),
-                status.encode("ascii"),
             ],
         )
         crate_records.append({
@@ -260,22 +235,30 @@ def evaluate_workspace(repo: Path, store_path: Path, workspace_steps: list[dict]
             "rel_path": info["rel_path"],
             "transitive_closure": closure,
             "input_hash": input_hash,
-            "status": status,
-            "reused": reused,
-            "reused_from_tree": reused_from_tree,
+            "status": "UNRUN",
+            "reused": False,
+            "reused_from_tree": None,
             "undeclared_external_read": undeclared,
             "undeclared_reasons": undeclared_reasons,
             "leaf_digest": leaf_digest,
         })
 
-    if update_store:
-        store_path.parent.mkdir(parents=True, exist_ok=True)
-        store_path.write_text(json.dumps(store, indent=2, sort_keys=True), encoding="utf-8")
-
+    # Report the actual planned step names, without inventing their outcomes.
+    workspace_steps: list[dict] = []
+    check_script = repo / "scripts/check.sh"
+    if check_script.is_file():
+        for line in check_script.read_text(encoding="utf-8").splitlines():
+            if line.startswith("# CANONICAL_STEPS:"):
+                workspace_steps = [
+                    {"step": name.strip(), "status": "UNRUN"}
+                    for name in line.split(":", 1)[1].split(",")
+                    if name.strip()
+                ]
+                break
     ws_leaves: list[str] = []
     for step in sorted(workspace_steps, key=lambda s: s["step"]):
         ws_leaf = sha256_domain(
-            b"fa:ws-step-leaf:v1",
+            b"fa:planned-ws-step-leaf:v1",
             [
                 step["step"].encode("utf-8"),
                 step["status"].encode("ascii"),
@@ -287,54 +270,47 @@ def evaluate_workspace(repo: Path, store_path: Path, workspace_steps: list[dict]
     all_leaves = ws_leaves + [c["leaf_digest"] for c in crate_records]
     root_hash = merkle_root(all_leaves)
     total_crates = len(crate_records)
-    reused_ratio = (reused_count / total_crates) if total_crates > 0 else 0.0
-
     return {
-        "schema": "fa:crate-verdicts-manifest:v1",
+        "schema": "fa:crate-verdicts-manifest:v2",
+        "scope": "input_fingerprints_only",
+        "status": "UNRUN",
+        "checks_executed": False,
         "tree_hash": tree_sha,
         "global_invalidation_digest": global_digest,
         "total_crates": total_crates,
-        "reused_crates": reused_count,
-        "reused_ratio": round(reused_ratio, 4),
-        "merkle_root": root_hash,
+        "reused_crates": 0,
+        "fingerprint_root": root_hash,
         "workspace_steps": workspace_steps,
         "crates": crate_records,
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Compute content-addressed per-crate verdicts (fa-xrl)")
+    parser = argparse.ArgumentParser(
+        description="Compute candidate input fingerprints; no checks run and no verdict is reused (fa-xrl)"
+    )
     parser.add_argument("--repo", default=".", help="Workspace repository root")
-    parser.add_argument("--store", required=True, help="Path to cached crate-verdicts JSON store")
     parser.add_argument("--output", required=True, help="Output manifest JSON path")
-    parser.add_argument("--no-update-store", action="store_true", help="Do not write new verdicts to store")
     args = parser.parse_args()
 
     repo = Path(args.repo).resolve()
-    store_path = Path(args.store).resolve()
     out_path = Path(args.output).resolve()
 
-    default_ws_steps = [
-        {"step": name, "status": "PASS"}
-        for name in [
-            "fmt", "deny", "forbidden-deps", "foundations", "topology",
-            "registries", "invariants", "robot-schema", "ubs", "shellcheck",
-        ]
-    ]
-    manifest = evaluate_workspace(
-        repo=repo,
-        store_path=store_path,
-        workspace_steps=default_ws_steps,
-        update_store=not args.no_update_store,
-    )
+    manifest = evaluate_workspace(repo)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        with out_path.open("x", encoding="utf-8") as output:
+            json.dump(manifest, output, indent=2, sort_keys=True)
+    except FileExistsError:
+        print("UNRUN crate-verdicts: output already exists; choose an unused path", file=sys.stderr)
+        return 2
     print(
-        f"CRATE_VERDICTS merkle_root={manifest['merkle_root']} "
-        f"reused={manifest['reused_crates']}/{manifest['total_crates']} "
-        f"ratio={manifest['reused_ratio']:.4f}"
+        f"UNRUN crate-verdicts input_fingerprints_only crates={manifest['total_crates']} "
+        f"fingerprint_root={manifest['fingerprint_root']}; no checks executed or verdicts reused"
     )
-    return 0
+    print(f"output={json.dumps(str(out_path))}")
+    print("fix_hint=run bash scripts/local_proof.sh for execution-bound verification")
+    return 2
 
 
 if __name__ == "__main__":

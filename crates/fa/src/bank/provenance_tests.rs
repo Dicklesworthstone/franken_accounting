@@ -15,6 +15,122 @@ use fgdb::MemVfs;
 use crate::{BookKeys, Entropy};
 
 #[test]
+fn required_rehearsal_refuses_bank_publication_before_current_authority() {
+    fn invoke(h: &mut Harness, capability: &Capability, surface: &str, at: CommitSeq) -> Refusal {
+        let cx = h.cx();
+        let manifest_oid = Oid([0xee; 32]);
+        match surface {
+            "confirmation" => h
+                .runtime
+                .block_on(h.book.confirm_bank_statement_match(
+                    &cx,
+                    capability,
+                    BankConfirmationRequest {
+                        manifest_oid,
+                        line_ordinal: 0,
+                        proposal_digest: [0xdd; 32],
+                        source_known_at: at,
+                        date_window_days: 3,
+                        proposer: PRINCIPAL,
+                    },
+                ))
+                .unwrap()
+                .unwrap_err(),
+            "exact close" => h
+                .runtime
+                .block_on(h.book.reconcile_bank_statement(
+                    &cx,
+                    capability,
+                    BankReconciliationRequest {
+                        manifest_oid,
+                        evaluated_known_at: at,
+                    },
+                ))
+                .unwrap()
+                .unwrap_err(),
+            "outstanding close" => h
+                .runtime
+                .block_on(h.book.reconcile_bank_statement_with_outstanding(
+                    &cx,
+                    capability,
+                    BankReconciliationRequest {
+                        manifest_oid,
+                        evaluated_known_at: at,
+                    },
+                    vec![BankOutstandingLeg {
+                        entry_ref: fa_model::EntryRef {
+                            vid: VId(0x1234),
+                            entry_digest: [0xcc; 32],
+                        },
+                        leg_ordinal: 0,
+                    }],
+                ))
+                .unwrap()
+                .unwrap_err(),
+            _ => unreachable!("named bank publication surface"),
+        }
+    }
+
+    let mut h = Harness::new(164);
+    let before = h.head();
+    let ordinary = privileged_cap(PRINCIPAL);
+    // Expiry needs the real recorded admission point. Its separate control
+    // proves these entry points reach current-authority observation without
+    // the rehearsal caveat; that caveat must refuse first, even for an expired
+    // token or a manifest and cash leg that do not exist.
+    let expired = ordinary.clone().expiring_at(before);
+    for surface in ["confirmation", "exact close", "outstanding close"] {
+        for capability in [
+            ordinary.clone().with_requires_dry_run(),
+            expired.clone().with_requires_dry_run(),
+        ] {
+            let refusal = invoke(&mut h, &capability, surface, before);
+            assert_eq!(
+                (refusal.code, refusal.exit),
+                ("FA-REF-011", 7),
+                "{surface}: {refusal}"
+            );
+            assert!(
+                refusal.message.contains("requires_dry_run"),
+                "{surface}: {refusal}"
+            );
+            assert_eq!(h.head(), before, "{surface} published despite its refusal");
+        }
+        let refusal = invoke(&mut h, &expired, surface, before);
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            ("FA-REF-014", 7),
+            "{surface}: {refusal}"
+        );
+        assert_eq!(h.head(), before);
+    }
+}
+
+#[test]
+fn required_rehearsal_keeps_bank_matching_preparation_available() {
+    let mut h = Harness::new(165);
+    let imported = h.import(PRINCIPAL);
+    let at = h.head();
+    let cx = h.cx();
+    let capability = privileged_cap(PRINCIPAL).with_requires_dry_run();
+    let matched = h
+        .runtime
+        .block_on(h.book.match_bank_statement(
+            &cx,
+            &capability,
+            BankMatchRequest {
+                manifest_oid: imported.manifest_oid,
+                known_at: Some(at),
+                date_window_days: 3,
+            },
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(matched.manifest, imported.manifest);
+    assert_eq!(matched.verified_predecessors, 0);
+}
+
+#[test]
 fn bank_continuity_replays_original_receipts_after_legitimate_document_custody_transfers() {
     let mut h = Harness::new(132);
     let cx = h.cx();

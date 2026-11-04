@@ -15,6 +15,9 @@ mod external;
 #[path = "subledger/certificate.rs"]
 mod certificate;
 
+#[path = "subledger/portable.rs"]
+mod portable;
+
 #[path = "subledger/application.rs"]
 mod application;
 

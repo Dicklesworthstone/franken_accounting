@@ -144,6 +144,19 @@ value = 16
 name = "max_bank_predecessor_depth"
 value = 4096
 
+# Explicit original cash legs in an adjusted bank reconciliation. The count
+# bounds every decoder; native inline publication also obeys the byte cap below.
+[[limit]]
+name = "max_bank_outstanding_items"
+value = 1024
+# Complete newly published tag-11 Attestation payload, including its trailer.
+# The 12 KiB inline-object profile leaves room below the 16 KiB substrate vertex
+# row for memcomparable encoding, properties and mirrors. Legacy tag-3 admission
+# and wire decoder bounds are unchanged. Neither bound permits truncating a list.
+[[limit]]
+name = "max_bank_reconciliation_payload_bytes"
+value = 12288
+
 # Complete native-period snapshots. Each cell carries exact posted/pending
 # amounts, while unresolved holds in each period are bounded by max_batch_entries.
 # Posting admission counts the final atomic state across all accounts, after

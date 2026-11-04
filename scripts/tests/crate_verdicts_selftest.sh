@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Self-test for content-addressed per-crate verdicts and Merkle root composition (bead fa-xrl).
+# Input-fingerprint and false-verdict controls (bead fa-xrl).
 #
 # Verifies:
-#   1. Cold run populates the verdict store (0 reused) and computes a deterministic Merkle root.
-#   2. Planted change in a leaf crate (`crate-leaf`) reuses >= 50% of crate verdicts (3/4 = 75%).
-#   3. Composed Merkle root with reused leaves equals a cold full run on the exact same tree byte-for-byte.
-#   4. Planted change in `registries/units.toml` invalidates 100% of crates (0 reused).
-#   5. Planted undeclared external `include_str!("../../../outside.txt")` fails closed (not reused).
+#   Input changes and undeclared includes are detected, while unexecuted checks,
+#   invalid Rust, forged stores and publication requests cannot become PASS.
+#   These are metadata tests; no Rust compilation or real proof reuse is claimed.
 
 set -euo pipefail
 
@@ -21,8 +19,7 @@ ok() {
 source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 base="${TMPDIR:-/tmp}/fa-crate-verdicts-selftest-$$-${RANDOM:-0}"
 repo="$base/workspace"
-store="$base/store.json"
-mkdir -p "$repo/registries" "$repo/crates/crate-core/src" "$repo/crates/crate-mid/src" \
+mkdir -p "$repo/scripts" "$repo/registries" "$repo/crates/crate-core/src" "$repo/crates/crate-mid/src" \
   "$repo/crates/crate-leaf-a/src" "$repo/crates/crate-leaf-b/src"
 
 cat > "$repo/Cargo.toml" <<'TOML'
@@ -39,6 +36,11 @@ printf 'nightly-2026-08-31\n' > "$repo/rust-toolchain.toml"
 printf 'stack-v1\n' > "$repo/franken-stack.lock"
 printf 'deny-v1\n' > "$repo/deny.toml"
 printf 'units-v1\n' > "$repo/registries/units.toml"
+cat > "$repo/scripts/check.sh" <<'CHECK'
+#!/usr/bin/env bash
+# CANONICAL_STEPS: check, test
+printf 'unexpected execution\n' > checks-ran
+CHECK
 
 cat > "$repo/crates/crate-core/Cargo.toml" <<'TOML'
 [package]
@@ -81,39 +83,163 @@ git config user.email "test@example.invalid"
 git add .
 git commit -q -m "initial workspace"
 
-# 1. Cold run: 0/4 reused
-out1="$(python3 -B "$source_root/scripts/crate_verdicts.py" --repo "$repo" --store "$store" --output "$base/m1.json")"
-grep -Fq "reused=0/4 ratio=0.0000" <<< "$out1" || fail "1: expected 0/4 reused on cold run ($out1)"
-ok "1 cold run computes input closures for 4 crates (0/4 reused)"
+run_unrun() {
+  local manifest="$1" rc
+  if python3 -B "$source_root/scripts/crate_verdicts.py" \
+    --repo "$repo" --output "$manifest" > "$manifest.log" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 2 ] || fail "expected UNRUN exit2, got $rc; log: $manifest.log"
+  python3 -B - "$manifest" <<'PY'
+import json
+import sys
+from pathlib import Path
 
-# 2. Planted change in leaf crate `crate-leaf-a` -> crate-core, crate-mid, crate-leaf-b reused (3/4 = 75% >= 50%)
+m = json.loads(Path(sys.argv[1]).read_text())
+assert m["schema"] == "fa:crate-verdicts-manifest:v2"
+assert m["scope"] == "input_fingerprints_only"
+assert m["status"] == "UNRUN" and m["checks_executed"] is False
+assert m["total_crates"] == 4 and m["reused_crates"] == 0
+assert all(c["status"] == "UNRUN" and c["reused"] is False for c in m["crates"])
+assert m["workspace_steps"] == [
+    {"step": "check", "status": "UNRUN"},
+    {"step": "test", "status": "UNRUN"},
+]
+assert len(m["fingerprint_root"]) == 64
+PY
+  [ ! -e "$repo/checks-ran" ] || fail "input collection ran an unrequested check"
+}
+
+# 1. Fingerprints cannot assert that unexecuted checks passed.
+run_unrun "$base/m1.json"
+ok "1 four crate fingerprints and two planned checks remain UNRUN"
+
+# 2. Preserve the leaf-change dependency test, without calling matching inputs proofs.
 printf 'pub fn leaf_a_v2() {}\n' >> "$repo/crates/crate-leaf-a/src/lib.rs"
 git commit -q -am "edit leaf-a"
-out2="$(python3 -B "$source_root/scripts/crate_verdicts.py" --repo "$repo" --store "$store" --output "$base/m2-incremental.json")"
-grep -Fq "reused=3/4 ratio=0.7500" <<< "$out2" || fail "2: expected 3/4 (75%) reused after leaf change ($out2)"
-ok "2 leaf crate edit reuses 3/4 (75% >= 50%) of crate verdicts"
+run_unrun "$base/m2.json"
+python3 -B - "$base/m1.json" "$base/m2.json" <<'PY'
+import json
+import sys
+from pathlib import Path
 
-# 3. Composed Merkle root with reused leaves equals a cold full run on the same tree
-python3 -B "$source_root/scripts/crate_verdicts.py" --repo "$repo" --store "$base/empty-store.json" --output "$base/m2-cold.json" --no-update-store >/dev/null
-root_inc="$(jq -r '.merkle_root' "$base/m2-incremental.json")"
-root_cold="$(jq -r '.merkle_root' "$base/m2-cold.json")"
-[ "$root_inc" = "$root_cold" ] || fail "3: incremental Merkle root ($root_inc) != cold Merkle root ($root_cold)"
-ok "3 composed Merkle root ($root_inc) equals cold full run on the same tree"
+a, b = [json.loads(Path(p).read_text()) for p in sys.argv[1:]]
+before = {c["crate"]: c["input_hash"] for c in a["crates"]}
+after = {c["crate"]: c["input_hash"] for c in b["crates"]}
+assert {name for name in before if before[name] != after[name]} == {"crate-leaf-a"}
+assert a["fingerprint_root"] != b["fingerprint_root"]
+PY
+ok "2 a leaf edit changes only its candidate input hash, with zero verdict reuse"
 
-# 4. Planted registry change in `registries/units.toml` -> conservative invalidation (0/4 reused)
+# 3. Deterministic input collection is not cold-run execution equivalence.
+run_unrun "$base/m2-again.json"
+cmp "$base/m2.json" "$base/m2-again.json" || fail "3 identical inputs produced different metadata"
+ok "3 identical inputs produce byte-identical fingerprint metadata"
+
+# 4. A registry edit still invalidates every candidate input fingerprint.
 printf 'units-v2\n' >> "$repo/registries/units.toml"
 git commit -q -am "edit registries/units.toml"
-out4="$(python3 -B "$source_root/scripts/crate_verdicts.py" --repo "$repo" --store "$store" --output "$base/m4-reg.json")"
-grep -Fq "reused=0/4 ratio=0.0000" <<< "$out4" || fail "4: expected 0/4 reused after registry edit ($out4)"
-ok "4 planted registry change invalidates all crates (0/4 reused)"
+run_unrun "$base/m4.json"
+python3 -B - "$base/m2.json" "$base/m4.json" <<'PY'
+import json
+import sys
+from pathlib import Path
 
-# 5. Undeclared external include_str! outside crate and registries fails closed (not reused)
+a, b = [json.loads(Path(p).read_text()) for p in sys.argv[1:]]
+assert a["global_invalidation_digest"] != b["global_invalidation_digest"]
+before = {c["crate"]: c["input_hash"] for c in a["crates"]}
+assert all(before[c["crate"]] != c["input_hash"] for c in b["crates"])
+PY
+ok "4 a registry edit changes every candidate input hash"
+
+# 5. Keep the explicit external-input diagnostic.
 printf 'const EXT: &str = include_str!("../../../outside.txt");\n' >> "$repo/crates/crate-leaf-b/src/lib.rs"
 git commit -q -am "undeclared include"
-python3 -B "$source_root/scripts/crate_verdicts.py" --repo "$repo" --store "$store" --output "$base/m5a.json" >/dev/null
-out5b="$(python3 -B "$source_root/scripts/crate_verdicts.py" --repo "$repo" --store "$store" --output "$base/m5b.json")"
-# crate-leaf-b has undeclared_external_read=true so only 3/4 are reused even on identical tree
-grep -Fq "reused=3/4 ratio=0.7500" <<< "$out5b" || fail "5: undeclared external include should fail closed ($out5b)"
-ok "5 undeclared external include_str! fails closed and is never cached/reused"
+run_unrun "$base/m5.json"
+python3 -B - "$base/m5.json" <<'PY'
+import json
+import sys
+from pathlib import Path
 
-printf 'crate-verdicts-selftest: all 5 scenarios passed (fixtures retained at %s)\n' "$base"
+m = json.loads(Path(sys.argv[1]).read_text())
+leaf = next(c for c in m["crates"] if c["crate"] == "crate-leaf-b")
+assert leaf["undeclared_external_read"] is True and leaf["undeclared_reasons"]
+assert leaf["status"] == "UNRUN"
+PY
+ok "5 an undeclared external include is reported without a verdict"
+
+# 6. Deliberately broken Rust still cannot receive a fabricated PASS.
+printf 'this is not Rust\n' >> "$repo/crates/crate-core/src/lib.rs"
+git commit -q -am "broken Rust negative control"
+run_unrun "$base/m6.json"
+ok "6 invalid Rust and an unexecuted compiler remain UNRUN"
+
+# 7. A self-asserted legacy PASS store is rejected and preserved.
+printf '{"forged":{"status":"PASS","tree_hash":"invented"}}\n' > "$base/forged-store.json"
+before="$(sha256sum "$base/forged-store.json")"
+if python3 -B "$source_root/scripts/crate_verdicts.py" --repo "$repo" \
+  --store "$base/forged-store.json" --output "$base/forged-output.json" > "$base/forged.log" 2>&1; then
+  rc=0
+else
+  rc=$?
+fi
+[ "$rc" -eq 2 ] || fail "7 a legacy store was accepted (exit $rc)"
+[ "$before" = "$(sha256sum "$base/forged-store.json")" ] || fail "7 legacy evidence was overwritten"
+[ ! -e "$base/forged-output.json" ] || fail "7 a legacy store produced a verdict"
+ok "7 forged legacy PASS data cannot authorize reuse and stays intact"
+
+# 8. Publishing input hashes as execution notes is refused before any note write.
+notes_before="$(git for-each-ref refs/notes/crate-verdicts)"
+if TMPDIR="$base" bash "$source_root/scripts/crate_verdicts.sh" --repo "$repo" \
+  --output "$base/published.json" --publish-note > "$base/publish.log" 2>&1; then
+  rc=0
+else
+  rc=$?
+fi
+[ "$rc" -eq 2 ] || fail "8 unproved publication was accepted (exit $rc)"
+[ "$notes_before" = "$(git for-each-ref refs/notes/crate-verdicts)" ] || fail "8 a verdict note was published"
+[ ! -e "$base/published.json" ] || fail "8 publication produced an unproved verdict"
+# An instrumented child makes an early --self-test exec observable without
+# recursively running this suite if the wrapper regresses. Use the actual
+# wrapper, with only its child replaced; no accounting behavior is simulated.
+wrapper_fixture="$base/wrapper-control/scripts"
+mkdir -p "$wrapper_fixture/tests"
+cp "$source_root/scripts/crate_verdicts.sh" "$wrapper_fixture/crate_verdicts.sh"
+cat > "$wrapper_fixture/tests/crate_verdicts_selftest.sh" <<'CHILD'
+#!/usr/bin/env bash
+: > "${FA_CRATE_CHILD_MARKER:?}"
+exit 97
+CHILD
+for order in self-first publish-first; do
+  if [ "$order" = self-first ]; then
+    flags=(--self-test --publish-note)
+  else
+    flags=(--publish-note --self-test)
+  fi
+  marker="$base/child-$order"
+  if FA_CRATE_CHILD_MARKER="$marker" bash "$wrapper_fixture/crate_verdicts.sh" \
+    "${flags[@]}" > "$base/flags-$order.log" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 2 ] || fail "8 combined flags did not refuse (order $order, exit $rc)"
+  [ ! -e "$marker" ] || fail "8 publication request started a child (order $order)"
+done
+ok "8 unproved note publication is refused"
+
+# 9. Retained reports cannot be overwritten by another invocation.
+before="$(sha256sum "$base/m1.json")"
+if python3 -B "$source_root/scripts/crate_verdicts.py" --repo "$repo" \
+  --output "$base/m1.json" > "$base/overwrite.log" 2>&1; then
+  rc=0
+else
+  rc=$?
+fi
+[ "$rc" -eq 2 ] || fail "9 an existing report was overwritten (exit $rc)"
+[ "$before" = "$(sha256sum "$base/m1.json")" ] || fail "9 retained report bytes changed"
+ok "9 existing reports are preserved"
+
+printf 'crate-verdicts-selftest: all 9 metadata and false-verdict controls passed (fixtures retained at %s)\n' "$base"

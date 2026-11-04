@@ -1,4 +1,4 @@
-//! Exact statement closing over the retained source and native cash history.
+//! Statement closing over retained sources, cash history and explicit timing items.
 
 use super::*;
 
@@ -22,6 +22,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: BankReconciliationRequest,
     ) -> Outcome<BankReconciliationRecorded> {
+        self.reconcile_bank_statement_with_outstanding(cx, capability, request, Vec::new())
+            .await
+    }
+
+    /// Close with explicitly selected uncleared checks or deposits in transit.
+    /// References bind immutable cash legs; the native boundary derives every
+    /// signed amount and verifies the exact bridge to the statement balance.
+    /// An empty selection retains the original exact-close wire and behavior.
+    pub async fn reconcile_bank_statement_with_outstanding(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        request: BankReconciliationRequest,
+        outstanding: Vec<BankOutstandingLeg>,
+    ) -> Outcome<BankReconciliationRecorded> {
+        if let Err(denial) = fa_policy::admit_direct_write(capability) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         if let Err(refusal) = self.authorize_bank(cx, capability)? {
             return Ok(Err(refusal));
         }
@@ -56,7 +74,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         let context = self.context().clone();
-        Ok(fa_journal::bank::reconcile_bank_statement(
+        Ok(fa_journal::bank::reconcile_bank_statement_with_outstanding(
             &mut self.db,
             cx,
             &context,
@@ -67,6 +85,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 predecessors: predecessors.into_iter().skip(1).collect(),
                 evaluated_known_at: seq,
             },
+            outstanding,
         )
         .await?)
     }

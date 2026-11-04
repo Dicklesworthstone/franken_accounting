@@ -1,7 +1,7 @@
 //! Exact statement closes in the native Attestation family. A close binds the
 //! original prefix; later cash changes and match corrections are reported as
-//! drift and never rewrite that historical fact. Outstanding-adjusted closing
-//! is deliberately outside this exact profile.
+//! drift and never rewrite that historical fact. An explicit outstanding-items
+//! selection extends the exact close without accepting caller-entered amounts.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,6 +36,10 @@ use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{AccountRow, book_root, edge_id, marker_at, scalar_bytes, scalar_text};
 
 const CASH_FOLD_DOMAIN: &[u8] = b"fa:bank-reconciled-cash-fold:v1";
+
+mod outstanding;
+
+pub use outstanding::{BankOutstandingItem, BankOutstandingLeg, MAX_BANK_OUTSTANDING_ITEMS};
 
 /// The complete native source witnesses are the only inputs to the close.
 /// Monetary amounts, matches and cash contributions are evaluated internally.
@@ -95,8 +99,8 @@ fn invalid(message: impl Into<String>) -> Refusal {
         code::BANK_MATCH,
         exit::REFUSAL,
         message,
-        "plan §5.7 / §9.4 (an exact close binds complete confirmed statement lines and cumulative posted cash)",
-        "confirm every retained statement line, post any genuine difference under its accounting law, then review the current native prefix; outstanding-adjusted reconciliation is not supported by this exact close",
+        "plan §5.7 / §9.4 (a close binds complete confirmed statement lines, cumulative posted cash and any explicitly selected outstanding cash legs)",
+        "confirm every retained statement line, post any genuine difference under its accounting law, and review the current native prefix with exact retained references for any outstanding cash legs",
     )
 }
 
@@ -517,6 +521,9 @@ fn strong_edges(recorded: &BankReconciliationRecorded) -> Vec<(RelationId, VId)>
     for matched in &claim.matches {
         edges.insert((relation::CITES, matched.vid));
     }
+    for item in &claim.outstanding {
+        edges.insert((relation::CITES, item.entry_ref.vid));
+    }
     let mut manifest = &claim.manifest;
     if manifest.predecessor.is_some() || manifest.csv_layout.is_some() {
         edges.insert((
@@ -544,12 +551,15 @@ fn strong_edges(recorded: &BankReconciliationRecorded) -> Vec<(RelationId, VId)>
 /// The native v1 Attestation header is u16 version, Id128 book, then its
 /// reserved claim tag. Classification uses the original CreateVertex bytes,
 /// never the mutable code mirror or a current live-label scan. Full decoding
-/// follows for every protected birth, including malformed payloads with tag 3.
+/// follows for every protected birth, including malformed payloads with either
+/// exact-close tag 3 or outstanding-adjusted tag 11.
 fn is_reconciled_payload(props: &[(PropertyKeyId, CanonicalScalar)]) -> bool {
     props.iter().any(|(key, value)| {
         *key == property::FA_PAYLOAD
             && matches!(value, CanonicalScalar::Bytes(bytes)
-                if bytes.as_slice().get(18) == Some(&crate::attestation::claim::RECONCILED))
+                if matches!(bytes.as_slice().get(18),
+                    Some(&crate::attestation::claim::RECONCILED)
+                        | Some(&crate::attestation::claim::RECONCILED_OUTSTANDING)))
     })
 }
 
@@ -692,12 +702,29 @@ fn history_at<V: Vfs + Clone>(
             Ok(matches) => matches,
             Err(refusal) => return Ok(Err(drift(refusal.message))),
         };
+        let references: Vec<_> = claim
+            .outstanding
+            .iter()
+            .map(BankOutstandingItem::reference)
+            .collect();
+        let outstanding = match outstanding::derive(
+            db,
+            cx,
+            book,
+            &claim.manifest,
+            claim.evaluated_known_at,
+            &references,
+        )? {
+            Ok(outstanding) => outstanding,
+            Err(refusal) => return Ok(Err(drift(refusal.message))),
+        };
         if cash.balance != claim.cash_balance
             || cash.digest != claim.cash_fold_digest
             || matches != claim.matches
+            || outstanding != claim.outstanding
         {
             return Ok(Err(drift(
-                "a reconciliation attestation does not equal its original cumulative cash and active-confirmation fold",
+                "a reconciliation attestation does not equal its original cumulative cash, active-confirmation fold and selected outstanding cash legs",
             )));
         }
         let recorded = BankReconciliationRecorded {
@@ -761,13 +788,37 @@ pub async fn reconcile_bank_statement<V: Vfs + Clone>(
     signer: Option<&dyn fa_policy::PrincipalSigner>,
     request: BankReconciliationRequest,
 ) -> Outcome<BankReconciliationRecorded> {
+    reconcile_bank_statement_with_outstanding(db, cx, book, capability, signer, request, Vec::new())
+        .await
+}
+
+/// Close a reviewed statement with an explicit selection of uncleared native
+/// cash legs. Amounts and signs are derived internally at the original prefix;
+/// later clearance cannot rewrite the historical claim.
+pub async fn reconcile_bank_statement_with_outstanding<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    signer: Option<&dyn fa_policy::PrincipalSigner>,
+    request: BankReconciliationRequest,
+    outstanding: Vec<BankOutstandingLeg>,
+) -> Outcome<BankReconciliationRecorded> {
     if let Err(refusal) = admit_confirmation(db, book, capability)? {
         return Ok(Err(refusal));
     }
     if let Err(refusal) = crate::scratch::ensure_history(db, cx).await? {
         return Ok(Err(refusal));
     }
-    match prepare_bank_reconciliation(db, cx, book, capability, signer, request)? {
+    match prepare_bank_reconciliation_with_outstanding(
+        db,
+        cx,
+        book,
+        capability,
+        signer,
+        request,
+        outstanding,
+    )? {
         Err(refusal) => Ok(Err(refusal)),
         Ok(BankReconciliationPreparation::AlreadyRecorded(recorded)) => Ok(Ok(*recorded)),
         Ok(BankReconciliationPreparation::Ready(prepared)) => prepared.commit(db, cx).await,
@@ -833,9 +884,34 @@ pub fn prepare_bank_reconciliation<V: Vfs + Clone>(
     signer: Option<&dyn fa_policy::PrincipalSigner>,
     request: BankReconciliationRequest,
 ) -> Outcome<BankReconciliationPreparation> {
+    prepare_bank_reconciliation_with_outstanding(
+        db,
+        cx,
+        book,
+        capability,
+        signer,
+        request,
+        Vec::new(),
+    )
+}
+
+/// Resident-history preparation of a complete outstanding-adjusted close.
+pub fn prepare_bank_reconciliation_with_outstanding<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    signer: Option<&dyn fa_policy::PrincipalSigner>,
+    request: BankReconciliationRequest,
+    outstanding: Vec<BankOutstandingLeg>,
+) -> Outcome<BankReconciliationPreparation> {
     if let Err(refusal) = admit_confirmation(db, book, capability)? {
         return Ok(Err(refusal));
     }
+    let outstanding = match outstanding::canonicalize(outstanding) {
+        Ok(outstanding) => outstanding,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let head = db.frontier()?;
     if request.evaluated_known_at > head
         || request.import.manifest().book_id != book.book_id
@@ -875,9 +951,15 @@ pub fn prepare_bank_reconciliation<V: Vfs + Clone>(
                     .iter()
                     .map(|w| w.manifest().clone())
                     .collect::<Vec<_>>()
+            || original
+                .claim
+                .outstanding
+                .iter()
+                .map(BankOutstandingItem::reference)
+                .ne(outstanding.iter().copied())
         {
             return Ok(Err(conflict(
-                "a retained reconciliation identity binds different source witnesses",
+                "a retained reconciliation identity binds different source witnesses or selected outstanding cash legs",
             )));
         }
         txn.abort();
@@ -946,12 +1028,10 @@ pub fn prepare_bank_reconciliation<V: Vfs + Clone>(
         Ok(matches) => matches,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if cash.balance != manifest.closing_balance {
-        return Ok(Err(invalid(format!(
-            "cumulative posted cash {} differs from statement closing {}; outstanding-adjusted closing is not this exact profile",
-            cash.balance, manifest.closing_balance
-        ))));
-    }
+    let outstanding = match outstanding::derive(db, cx, book, manifest, head, &outstanding)? {
+        Ok(outstanding) => outstanding,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let claim = ReconciledClaim {
         manifest_oid: request.import.manifest_oid(),
         manifest: manifest.clone(),
@@ -967,7 +1047,19 @@ pub fn prepare_bank_reconciliation<V: Vfs + Clone>(
         cash_balance: cash.balance,
         cash_fold_digest: cash.digest,
         matches,
+        outstanding,
     };
+    let Some(adjusted_cash) = claim.adjusted_cash_balance() else {
+        return Ok(Err(invalid(
+            "the selected outstanding contribution sum or cash bridge exceeds the exact signed amount range",
+        )));
+    };
+    if adjusted_cash != manifest.closing_balance {
+        return Ok(Err(invalid(format!(
+            "cumulative posted cash {} less the selected signed outstanding contributions gives {adjusted_cash}, which differs from statement closing {}",
+            cash.balance, manifest.closing_balance
+        ))));
+    }
     if let Err(refusal) = verify_sources(db, cx, book, &claim)? {
         return Ok(Err(refusal));
     }
@@ -1003,11 +1095,34 @@ pub fn prepare_bank_reconciliation<V: Vfs + Clone>(
     let payload = attestation.stored_bytes(&binding, signature.as_ref())?;
     if payload.len() > fa_model::limits::MAX_ENTRY_BYTES {
         return Ok(Err(invalid(
-            "the complete statement-close attestation exceeds its native payload bound; no predecessor or match may be omitted",
+            "the complete statement-close attestation exceeds its native payload bound; no predecessor, match or outstanding item may be omitted",
+        )));
+    }
+    if !claim.outstanding.is_empty()
+        && payload.len() > fa_model::limits::MAX_BANK_RECONCILIATION_PAYLOAD_BYTES
+    {
+        return Ok(Err(Refusal::new(
+            code::BANK_MATCH,
+            exit::REFUSAL,
+            format!(
+                "the complete outstanding-adjusted attestation is {} bytes, exceeding max_bank_reconciliation_payload_bytes={}",
+                payload.len(),
+                fa_model::limits::MAX_BANK_RECONCILIATION_PAYLOAD_BYTES,
+            ),
+            "plan §9.4; native inline attestation row capacity",
+            "retain every real outstanding item and predecessor; use a smaller statement/source scope only through a supported complete import, or retain the complete reconciliation as a standalone workpaper until larger attestation storage is supported",
         )));
     }
     // Decode before publication, enforcing every reader's exact bounds and shape.
     crate::attestation::StoredAttestation::decode(&payload)?;
+    let payload = match CanonicalScalar::bytes(payload) {
+        Ok(payload) => payload,
+        Err(_) => {
+            return Ok(Err(invalid(
+                "the complete statement-close attestation exceeds the native inline storage bound; no predecessor, match or outstanding item may be omitted",
+            )));
+        }
+    };
     let recorded = BankReconciliationRecorded {
         attestation_vid: identity,
         attestation_digest: attestation.signed_digest()?,
@@ -1017,10 +1132,7 @@ pub fn prepare_bank_reconciliation<V: Vfs + Clone>(
         claim,
     };
     let mut props = vec![
-        (
-            property::FA_PAYLOAD,
-            scalar_bytes("reconciled.payload", payload)?,
-        ),
+        (property::FA_PAYLOAD, payload),
         (
             property::FA_DIGEST,
             scalar_bytes("reconciled.digest", recorded.attestation_digest.to_vec())?,

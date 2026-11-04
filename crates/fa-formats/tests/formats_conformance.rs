@@ -2298,7 +2298,12 @@ fn conformance_matrices_match_published_docs_and_refuse_undocumented_divergence(
         oracle: "fa-formats beancount_v3 + hledger writers and readers (self round-trip)".to_owned(),
         proof_class: "metamorphic (self round-trip); external tools not run".to_owned(),
         no_claim_boundary: "Shows that FrankenAccounting's fold survives its own Beancount v3 and hledger export read back by its own reader. bean-check and hledger did not evaluate these journals, so no agreement with either tool is claimed; that differential is fa-sa4w.".to_owned(),
-        notes: String::new(),
+        notes: concat!(
+            "The separately executed [external public-data oracle](plaintext-external-oracle.md)\n",
+            "now covers the complete HMRC March 2025 expenditure model with real Beancount\n",
+            "and hledger tools. It does not change the proof class of this historical matrix\n",
+            "or claim that every fixture below has been externally evaluated.",
+        ).to_owned(),
         rows: vec![
             ConformanceRow {
                 fixture: "acme_multi_unit_fy2026_p03 via Beancount v3".to_owned(),

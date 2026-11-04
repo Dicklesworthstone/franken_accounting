@@ -2410,7 +2410,9 @@ mod forensic_semantics {
             preferences.findings
         );
         let ponzi = run(&retained, &PonziNetInvestment::new().unwrap());
-        assert_eq!(ponzi.version, 4);
+        // Version 5 adds explicitly classified principal transfers. This
+        // cash-only history must retain its exact per-investor principal.
+        assert_eq!(ponzi.version, 5);
         assert_eq!(values(&ponzi), [10_000, 20_000], "{:?}", ponzi.findings);
         let distribution = run(&retained, &pro_rata());
         assert_eq!(distribution.version, 4);
@@ -2486,7 +2488,7 @@ mod forensic_semantics {
         relied_upon(
             T,
             held,
-            "retained procedure versions (preferences v3, ponzi v4, distribution v4, solvency cash-flow v2, solvency balance-sheet v2) preserve their declared method, input digest, and exact findings across later journal mutations",
+            "retained procedure versions (preferences v3, ponzi v5, distribution v4, solvency cash-flow v2, solvency balance-sheet v2) preserve their declared method, input digest, and exact findings across later journal mutations",
         );
     }
 }
