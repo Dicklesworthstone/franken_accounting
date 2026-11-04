@@ -503,11 +503,51 @@ struct InScope {
     leaves: Vec<u64>,
 }
 
+/// Resolve a named selection in one pass over the prefix, retaining only
+/// requested identities. Repeating `Journal::leaf_index` for every name
+/// costs O(names * journal leaves); this join costs O((names + leaves) *
+/// log(names)) and O(names) memory. Refusals still follow request order,
+/// and repeated identities keep the first matching leaf, as before.
+fn named_indices(
+    leaves: impl Iterator<Item = (usize, VId, bool)>,
+    vids: &[VId],
+    through: CommitSeq,
+) -> Result<Vec<usize>, Refusal> {
+    let mut wanted: BTreeMap<VId, Option<(usize, bool)>> =
+        vids.iter().map(|vid| (*vid, None)).collect();
+    let mut remaining = wanted.len();
+    if remaining == 0 {
+        return Ok(Vec::new());
+    }
+    for (index, vid, is_entry) in leaves {
+        if let Some(found) = wanted.get_mut(&vid)
+            && found.is_none()
+        {
+            *found = Some((index, is_entry));
+            remaining -= 1;
+            if remaining == 0 {
+                break;
+            }
+        }
+    }
+    let mut run = Vec::with_capacity(wanted.len());
+    for vid in vids {
+        match wanted.get(vid).copied().flatten() {
+            Some((index, true)) => run.push(index),
+            Some((_, false)) => return Err(not_an_entry(*vid)),
+            None => return Err(not_in_prefix(*vid, through)),
+        }
+    }
+    run.sort_unstable();
+    run.dedup();
+    Ok(run)
+}
+
 /// The scope `request` names over `journal`, or its refusal (FA-REF-129 when
 /// `request.balances` exceeds 4096, FA-REF-126 for an index scope other than
 /// one account, FA-REF-120 for a named entry outside the prefix). A caller
-/// that reads only the indices passes `prove: false`, which skips building
-/// a prefix scope's proof (the other scopes' refusals need theirs).
+/// that reads only the indices passes `prove: false`: scope admission does
+/// not need to allocate or hash any Merkle paths.
 fn in_scope(journal: &Journal, request: &BundleRequest, prove: bool) -> Outcome<InScope> {
     if request.balances.len() > MAX_BUNDLE_BALANCES {
         return Ok(Err(balance_limit(request.balances.len())));
@@ -525,15 +565,37 @@ fn in_scope(journal: &Journal, request: &BundleRequest, prove: bool) -> Outcome<
             Vec::new(),
         ),
         BundleScope::Index(req) => {
-            let proof = match scope::prove(journal, req)? {
-                Ok(p) => p,
+            let (account, from, to) = match scope::account_interval(req) {
+                Ok(interval) => interval,
                 Err(refusal) => return Ok(Err(refusal)),
             };
-            let ScopeRequest::Account { account, from, to } = req else {
-                return Err(corrupt("an index scope other than one account was proved"));
-            };
+            if !prove {
+                let indices = journal
+                    .leaves
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, leaf)| {
+                        leaf.envelope
+                            .effective_day
+                            .is_some_and(|day| from <= day && day <= to)
+                    })
+                    .flat_map(|(i, leaf)| {
+                        leaf.envelope
+                            .account_vids
+                            .iter()
+                            .filter(move |vid| **vid == account)
+                            .map(move |_| i)
+                    })
+                    .collect();
+                return Ok(Ok(InScope {
+                    indices,
+                    proof: Vec::new(),
+                    leaves: Vec::new(),
+                }));
+            }
             let index = ScopeIndex::of(journal);
-            let (lo, hi) = index.range(account.0, *from, *to);
+            let proof = index.proof(journal, account.0, from, to)?;
+            let (lo, hi) = index.range(account.0, from, to);
             let mut run: Vec<usize> = index
                 .tuples()
                 .get(lo..hi)
@@ -545,16 +607,26 @@ fn in_scope(journal: &Journal, request: &BundleRequest, prove: bool) -> Outcome<
             (run, proof, Vec::new())
         }
         BundleScope::Entries(vids) => {
-            let mut run = Vec::with_capacity(vids.len());
-            for vid in vids {
-                match journal.leaf_index(*vid) {
-                    Some(i) if journal.leaves[i].envelope.is_entry() => run.push(i),
-                    Some(_) => return Ok(Err(not_an_entry(*vid))),
-                    None => return Ok(Err(not_in_prefix(*vid, journal.through_seq))),
-                }
+            let run = match named_indices(
+                journal
+                    .leaves
+                    .iter()
+                    .enumerate()
+                    .map(|(i, leaf)| (i, leaf.vid, leaf.envelope.is_entry())),
+                vids,
+                journal.through_seq,
+            ) {
+                Ok(run) => run,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let leaves = run.iter().map(|i| *i as u64).collect();
+            if !prove {
+                return Ok(Ok(InScope {
+                    indices: run,
+                    proof: Vec::new(),
+                    leaves,
+                }));
             }
-            run.sort_unstable();
-            run.dedup();
             let mut members: Vec<(&[u8], Vec<Digest>)> = Vec::with_capacity(run.len());
             for i in &run {
                 let leaf = journal
@@ -572,7 +644,6 @@ fn in_scope(journal: &Journal, request: &BundleRequest, prove: bool) -> Outcome<
                     w.fixed(d);
                 });
             });
-            let leaves = run.iter().map(|i| *i as u64).collect();
             (run, w.finish().map_err(encode_failed)?, leaves)
         }
     };
@@ -994,6 +1065,188 @@ impl ProductionReceipt {
 mod tests {
     use super::*;
     use crate::sign::SigningKey;
+
+    #[test]
+    fn named_selection_visits_a_hundred_thousand_leaves_once() {
+        use std::cell::Cell;
+
+        for count in [1_000usize, 10_000, 100_000] {
+            // Reverse request order, duplicate every name and select the
+            // last leaf so the lookup must consume the entire prefix.
+            let vids: Vec<_> = (0..count)
+                .rev()
+                .step_by(4)
+                .flat_map(|i| [VId(i as u128), VId(i as u128)])
+                .collect();
+            let visited = Cell::new(0usize);
+            let leaves = (0..count).map(|i| (i, VId(i as u128), true)).inspect(|_| {
+                visited.set(visited.get() + 1);
+            });
+            let selected = named_indices(leaves, &vids, CommitSeq(7)).unwrap();
+            let expected: Vec<_> = (0..count).filter(|i| i % 4 == 3).collect();
+            assert_eq!(selected, expected);
+            assert_eq!(visited.get(), count, "prefix size {count}");
+        }
+
+        let empty = named_indices(
+            std::iter::from_fn(|| panic!("an empty request must not read a leaf")),
+            &[],
+            CommitSeq(7),
+        )
+        .unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn named_selection_preserves_request_order_refusals_and_first_matches() {
+        let leaves = [(0, VId(3), true), (1, VId(5), false), (2, VId(3), false)];
+        assert_eq!(
+            named_indices(leaves.into_iter(), &[VId(3), VId(3)], CommitSeq(7)).unwrap(),
+            vec![0]
+        );
+        // The first requested invalid identity determines the refusal,
+        // even though the evidence record occurs earlier in the prefix.
+        for (vids, expected) in [
+            ([VId(9), VId(5)], not_in_prefix(VId(9), CommitSeq(7))),
+            ([VId(5), VId(9)], not_an_entry(VId(5))),
+        ] {
+            assert_eq!(
+                named_indices(leaves.into_iter(), &vids, CommitSeq(7)).unwrap_err(),
+                expected
+            );
+        }
+        assert_eq!(
+            named_indices(leaves.into_iter(), &[VId(5), VId(3)], CommitSeq(7)).unwrap_err(),
+            not_an_entry(VId(5))
+        );
+    }
+
+    #[test]
+    fn named_selection_matches_the_literal_lookup_for_every_small_request() {
+        let leaves: Vec<_> = (0..11)
+            .map(|i| (i, VId((i * 7 % 11) as u128), i != 4))
+            .collect();
+        for a in 0..13 {
+            for b in 0..13 {
+                let vids = [VId(a), VId(b), VId(a)];
+                let literal = (|| {
+                    let mut out = Vec::new();
+                    for vid in vids {
+                        match leaves.iter().find(|(_, found, _)| *found == vid) {
+                            Some((index, _, true)) => out.push(*index),
+                            Some(_) => return Err(not_an_entry(vid)),
+                            None => return Err(not_in_prefix(vid, CommitSeq(7))),
+                        }
+                    }
+                    out.sort_unstable();
+                    out.dedup();
+                    Ok(out)
+                })();
+                assert_eq!(
+                    named_indices(leaves.iter().copied(), &vids, CommitSeq(7)),
+                    literal,
+                    "request {vids:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn citation_discovery_selects_the_same_leaves_without_building_proofs() {
+        use fa_model::{
+            EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, LegPayload, SealKey,
+        };
+        use fa_money::{Amount, Side, UnitId};
+        use fa_time::DateDay;
+
+        let book = Id128([0x5a; 16]);
+        let mut records = Vec::new();
+        for i in 0..5u8 {
+            let legs = vec![
+                LegPayload::simple(Side::Debit, VId(10), Amount::new(UnitId(1), 100)),
+                LegPayload::simple(Side::Credit, VId(20), Amount::new(UnitId(1), 100)),
+            ];
+            let entry = EntryPayload {
+                schema_minor: 1,
+                book_id: book,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ORIGINAL,
+                effective_date: DateDay(20_527 + i32::from(i)),
+                document_date: None,
+                description: Erasable::seal(
+                    &"selection".to_string(),
+                    None,
+                    &SealKey([0x33; 32]),
+                    [1; 32],
+                    [2; 24],
+                ),
+                effective_period: None,
+                unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+                legs,
+                control: None,
+                base_totals: None,
+                idempotency_key: vec![i],
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid([4; 32]),
+                    intent_kind: 1,
+                },
+                principal_ref: VId(7),
+                session_ref: None,
+                evidence: Vec::new(),
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            }
+            .seal(Vec::new(), None)
+            .unwrap();
+            records.push((VId(100 + u128::from(i)), entry, CommitSeq(2 + u64::from(i))));
+        }
+        let journal = Journal::from_records(book, CommitSeq(7), records).unwrap();
+        for (scope, expected) in [
+            (BundleScope::Prefix, vec![0, 1, 2, 3, 4]),
+            (
+                BundleScope::Entries(vec![VId(104), VId(101), VId(104)]),
+                vec![1, 4],
+            ),
+            (
+                BundleScope::Index(ScopeRequest::Account {
+                    account: VId(10),
+                    from: 20_528,
+                    to: 20_530,
+                }),
+                vec![1, 2, 3],
+            ),
+            (
+                BundleScope::Index(ScopeRequest::Account {
+                    account: VId(30),
+                    from: 20_527,
+                    to: 20_531,
+                }),
+                vec![],
+            ),
+        ] {
+            let request = BundleRequest {
+                scope,
+                balances: Vec::new(),
+                inline_documents: false,
+            };
+            let discovered = in_scope(&journal, &request, false).unwrap().unwrap();
+            let proved = in_scope(&journal, &request, true).unwrap().unwrap();
+            assert_eq!(discovered.indices, expected);
+            assert_eq!(proved.indices, expected);
+            assert_eq!(discovered.leaves, proved.leaves);
+            assert!(discovered.proof.is_empty());
+            assert!(!proved.proof.is_empty());
+            if let BundleScope::Index(scope) = &request.scope {
+                assert_eq!(
+                    proved.proof,
+                    scope::prove(&journal, scope).unwrap().unwrap()
+                );
+            }
+        }
+    }
 
     #[test]
     fn civil_dates_are_the_proleptic_gregorian_calendar() {

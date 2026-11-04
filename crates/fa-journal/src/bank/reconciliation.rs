@@ -4,6 +4,7 @@
 //! selection extends the exact close without accepting caller-entered amounts.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
@@ -1181,10 +1182,73 @@ pub struct ReconciliationHistory {
     /// predecessor, so an equal marker means the same committed prefix: a
     /// history is only carried forward on the database it was verified on.
     marker: Option<MarkerRef>,
-    recorded: Vec<BankReconciliationRecorded>,
+    /// Immutable verified records and their lookup indexes. A carried prefix
+    /// shares these, including across all members of an atomic batch; neither
+    /// advancing the prefix nor selecting an unrelated account copies the
+    /// reconciliations' evidence closures.
+    index: Arc<ReconciliationIndex>,
     /// The delta rows examined to carry this history forward, or `None` when
     /// it was verified in full: the work witness of a carried post.
     carried_rows: Option<u64>,
+    /// Candidate locks examined by the last posting witness, excluding full
+    /// history verification and the independent suffix-row work above.
+    lock_candidates_examined: usize,
+}
+
+#[derive(Debug)]
+struct ReconciliationIndex {
+    recorded: Vec<BankReconciliationRecorded>,
+    born: BTreeSet<VId>,
+    protected: BTreeSet<EId>,
+    by_account: BTreeMap<VId, Vec<usize>>,
+}
+
+impl ReconciliationIndex {
+    /// Called only after the full native-history verifier succeeds. These
+    /// indexes are disposable selections of that result, never authority for
+    /// accepting a new close or a changed attestation.
+    fn new(
+        cx: &PurposeContexts,
+        recorded: Vec<BankReconciliationRecorded>,
+    ) -> Result<Self, KernelError> {
+        let mut born = BTreeSet::new();
+        let mut protected = BTreeSet::new();
+        let mut by_account = BTreeMap::<VId, Vec<usize>>::new();
+        for (index, record) in recorded.iter().enumerate() {
+            checkpoint(cx)?;
+            born.insert(record.attestation_vid);
+            by_account
+                .entry(record.claim.manifest.account)
+                .or_default()
+                .push(index);
+            for (relation, target) in strong_edges(record) {
+                checkpoint(cx)?;
+                protected.insert(edge_id(relation, record.attestation_vid, target));
+            }
+        }
+        Ok(Self {
+            recorded,
+            born,
+            protected,
+            by_account,
+        })
+    }
+
+    /// Read only the requested accounts' index ranges. Sorting positions
+    /// preserves the verifier's chronological order when several accounts
+    /// are requested, without scanning unrelated reconciliations.
+    fn for_accounts(&self, accounts: &BTreeSet<VId>) -> Vec<usize> {
+        let mut selected = Vec::new();
+        for account in accounts {
+            if let Some(indices) = self.by_account.get(account) {
+                selected.extend_from_slice(indices);
+            }
+        }
+        if accounts.len() > 1 {
+            selected.sort_unstable();
+        }
+        selected
+    }
 }
 
 impl ReconciliationHistory {
@@ -1200,6 +1264,15 @@ impl ReconciliationHistory {
     #[must_use]
     pub fn carried_rows(&self) -> Option<u64> {
         self.carried_rows
+    }
+
+    /// Reconciliation records examined by the last posting witness. Only
+    /// records belonging to its affected accounts are candidates; unrelated
+    /// accounts add no record scans. Full history verification, when needed,
+    /// is separate from this selection work.
+    #[must_use]
+    pub fn lock_candidates_examined(&self) -> usize {
+        self.lock_candidates_examined
     }
 }
 
@@ -1231,16 +1304,6 @@ pub fn extend_reconciliation_history<V: Vfs + Clone>(
     if history.at > at || history.marker.is_none() || marker_at(db, history.at)? != history.marker {
         return Ok(None);
     }
-    let born: BTreeSet<VId> = history.recorded.iter().map(|r| r.attestation_vid).collect();
-    let protected: BTreeSet<EId> = history
-        .recorded
-        .iter()
-        .flat_map(|recorded| {
-            strong_edges(recorded)
-                .into_iter()
-                .map(|(relation, target)| edge_id(relation, recorded.attestation_vid, target))
-        })
-        .collect();
     let mut through = history.at.0;
     let mut examined = 0u64;
     for batch in db.delta_since(history.at)? {
@@ -1262,13 +1325,13 @@ pub fn extend_reconciliation_history<V: Vfs + Clone>(
                         vid,
                         label: flipped,
                         ..
-                    } => *flipped != label::ATTESTATION && !born.contains(vid),
+                    } => *flipped != label::ATTESTATION && !history.index.born.contains(vid),
                     DeltaRow::Property {
                         elem: ElementId::Vertex(vid),
                         property: key,
                         ..
                     } => {
-                        !born.contains(vid)
+                        !history.index.born.contains(vid)
                             && (*key != property::FA_PAYLOAD
                                 || !db
                                     .vertex_at(*vid, at)?
@@ -1278,7 +1341,7 @@ pub fn extend_reconciliation_history<V: Vfs + Clone>(
                         elem: ElementId::Edge(eid),
                         ..
                     }
-                    | DeltaRow::DeleteEdge { eid, .. } => !protected.contains(eid),
+                    | DeltaRow::DeleteEdge { eid, .. } => !history.index.protected.contains(eid),
                     _ => false,
                 };
                 if !unchanged {
@@ -1294,8 +1357,9 @@ pub fn extend_reconciliation_history<V: Vfs + Clone>(
     Ok(Some(ReconciliationHistory {
         at,
         marker: marker_at(db, at)?,
-        recorded: history.recorded.clone(),
+        index: Arc::clone(&history.index),
         carried_rows: Some(examined),
+        lock_candidates_examined: 0,
     }))
 }
 
@@ -1318,6 +1382,9 @@ pub fn witness_reconciliation_locks<V: Vfs + Clone>(
 ) -> Outcome<Vec<BankReconciliationLock>> {
     let accounts: BTreeSet<_> = accounts.iter().copied().collect();
     if accounts.is_empty() {
+        if let Some(history) = history {
+            history.lock_candidates_examined = 0;
+        }
         return Ok(Ok(Vec::new()));
     }
     for account in &accounts {
@@ -1328,19 +1395,26 @@ pub fn witness_reconciliation_locks<V: Vfs + Clone>(
         Some(verified) => extend_reconciliation_history(db, cx, &verified, at)?,
         None => None,
     };
-    let verified = match carried {
+    let mut verified = match carried {
         Some(verified) => verified,
         None => match history_at(db, cx, book, at)? {
             Ok(recorded) => ReconciliationHistory {
                 at,
                 marker: marker_at(db, at)?,
-                recorded,
+                index: Arc::new(ReconciliationIndex::new(cx, recorded)?),
                 carried_rows: None,
+                lock_candidates_examined: 0,
             },
             Err(refusal) => return Ok(Err(refusal)),
         },
     };
-    let locks = locks_for(db, txn, &accounts, &verified.recorded);
+    let locks = locks_for(
+        db,
+        txn,
+        &accounts,
+        &verified.index,
+        &mut verified.lock_candidates_examined,
+    );
     *history = Some(verified);
     locks
 }
@@ -1349,13 +1423,13 @@ fn locks_for<V: Vfs + Clone>(
     db: &Database<V>,
     txn: &WriteTxn,
     accounts: &BTreeSet<VId>,
-    history: &[BankReconciliationRecorded],
+    index: &ReconciliationIndex,
+    examined: &mut usize,
 ) -> Outcome<Vec<BankReconciliationLock>> {
     let mut locks = Vec::new();
-    for recorded in history {
-        if !accounts.contains(&recorded.claim.manifest.account) {
-            continue;
-        }
+    for position in index.for_accounts(accounts) {
+        *examined += 1;
+        let recorded = &index.recorded[position];
         let Some(row) = txn.vertex(db, recorded.attestation_vid)? else {
             return Ok(Err(drift(
                 "a reconciliation attestation disappeared before posting preparation",
@@ -1639,4 +1713,140 @@ pub async fn bank_reconciliation_status<V: Vfs + Clone>(
         reconciled_through,
         reconciliations,
     }))
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fgdb::{DatabaseKeys, MemVfs};
+    use fgdb_types::ids::DatabaseSecurityNamespaceId;
+
+    // Index fixtures only: the integration tests exercise the native verifier
+    // and its tamper refusals before any history becomes reusable.
+    fn record(ordinal: u64, account: VId) -> BankReconciliationRecorded {
+        BankReconciliationRecorded {
+            attestation_vid: VId(u128::from(ordinal) + 1),
+            attestation_digest: [9; 32],
+            recorded_at: CommitSeq(ordinal + 1),
+            already_recorded: false,
+            principal: VId(900_000),
+            claim: ReconciledClaim {
+                manifest_oid: Oid([1; 32]),
+                manifest: BankImportManifest {
+                    book_id: Id128([2; 16]),
+                    account,
+                    format: crate::import::BankFormat::Mt940,
+                    statement_oid: Oid([3; 32]),
+                    statement_commit: [4; 32],
+                    unit: UnitId(1),
+                    sequence_number: ordinal,
+                    statement_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+                    opening_balance: 0,
+                    closing_balance: 0,
+                    line_oids: Vec::new(),
+                    csv_layout: None,
+                    predecessor: None,
+                },
+                predecessors: Vec::new(),
+                import_run: VId(800_000),
+                import_receipt_hash: [5; 32],
+                import_recorded_at: CommitSeq(1),
+                evaluated_known_at: CommitSeq(ordinal + 1),
+                cash_balance: 0,
+                cash_fold_digest: [6; 32],
+                matches: Vec::new(),
+                outstanding: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn reconciliation_index_preserves_order_and_shares_a_hundred_thousand_records() {
+        let runtime = RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(Budget::INFINITE);
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let records: Vec<_> = (0..100_000)
+            .map(|ordinal| record(ordinal, VId(200_000 + u128::from(ordinal % 4_096))))
+            .collect();
+        let index = Arc::new(ReconciliationIndex::new(&cx, records).unwrap());
+
+        // Literal selection is the independent ordering oracle. Account
+        // order differs from chronology, and their records are interleaved.
+        for accounts in [
+            BTreeSet::new(),
+            BTreeSet::from([VId(200_002)]),
+            BTreeSet::from([VId(200_000), VId(200_002), VId(204_095)]),
+            BTreeSet::from([VId(999_999)]),
+        ] {
+            let literal: Vec<_> = index
+                .recorded
+                .iter()
+                .enumerate()
+                .filter_map(|(position, record)| {
+                    accounts
+                        .contains(&record.claim.manifest.account)
+                        .then_some(position)
+                })
+                .collect();
+            assert_eq!(index.for_accounts(&accounts), literal);
+        }
+        assert_eq!(
+            index.for_accounts(&BTreeSet::from([VId(200_002)])).len(),
+            25
+        );
+
+        // Real Chronicle prefixes exercise the production carry function.
+        // Reusing a batch basis must not reconstruct these indexes or deep
+        // clone their 100,000 source records and evidence closures.
+        let mut db = runtime
+            .block_on(Database::<MemVfs>::open_memory(
+                &cx.commit(),
+                DatabaseKeys::new([31; 32], DatabaseSecurityNamespaceId([32; 32]), [33; 32]),
+            ))
+            .unwrap();
+        let mut batch = WriteBatch::new(relation::IN_BOOK);
+        batch.create_vertex(VId(700_000), vec![label::ACCOUNT], Vec::new());
+        let at = runtime.block_on(db.write(&cx.commit(), batch)).unwrap();
+        let mut history = ReconciliationHistory {
+            at,
+            marker: marker_at(&db, at).unwrap(),
+            index: Arc::clone(&index),
+            carried_rows: None,
+            lock_candidates_examined: 0,
+        };
+        for _ in 0..1_000 {
+            history = extend_reconciliation_history(&db, &cx, &history, at)
+                .unwrap()
+                .unwrap();
+            assert!(Arc::ptr_eq(&history.index, &index));
+            assert_eq!(history.carried_rows(), Some(0));
+        }
+
+        let txn = db.begin(&cx.txn()).unwrap();
+        let mut examined = 0;
+        let unrelated = locks_for(
+            &db,
+            &txn,
+            &BTreeSet::from([VId(700_000)]),
+            &index,
+            &mut examined,
+        )
+        .unwrap()
+        .unwrap();
+        txn.abort();
+        assert!(unrelated.is_empty());
+        assert_eq!(examined, 0, "unrelated closes add no candidate visits");
+
+        let mut batch = WriteBatch::new(relation::IN_BOOK);
+        batch.create_vertex(VId(700_001), vec![label::ACCOUNT], Vec::new());
+        let later = runtime.block_on(db.write(&cx.commit(), batch)).unwrap();
+        let carried = extend_reconciliation_history(&db, &cx, &history, later)
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(&carried.index, &index));
+        assert_eq!(carried.verified_at(), later);
+        assert!(carried.carried_rows().unwrap() > 0);
+    }
 }
