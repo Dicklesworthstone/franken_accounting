@@ -44,10 +44,15 @@ Both shared-document cases correctly conflict after the first publication.
 Separating accounts and the source document still failed on `b8fa97b3`.
 Unchanged-assertion diagnostic `713dcf85` identified the second point as
 VId(199322935102087367386372612645850268979), LabelId(8), FY2026-P03.
-The positive case now also uses the independently opened April period before
-either transaction is prepared. Three shared-document/period cases remain
-strict conflict negatives, with exact changed-vertex identities and no
-publication. The first attempt was refused
+Separating periods on `966d8bed` still failed; diagnostic `9964f7c6`
+identified VId(248219180475393197307962412840611490853), LabelId(6), USD.
+Four real competing-hold cases therefore retain strict conflict negatives,
+identify the exact document, period or unit witness, and then require a fresh
+preparation of the unchanged intent to commit with two holds. The positive
+unchanged-witness case instead advances the prefix through a new unrelated
+native source document while the delayed hold remains prepared. It must
+publish without re-preparation and reproduce the exact pending count.
+The first attempt was refused
 by the offloader with exit103 before execution and earns no test credit.
 The diagnostic is preserved and excluded from product ancestry.
 
@@ -77,9 +82,10 @@ checks remain. The pending-prefix fixture also expected a commit after changing
 a retained document it had read. The original shared-source case now requires
 the observed FCW conflict and no publication. Changing only the accounts was
 insufficient; the later diagnostic above identifies that mistaken assumption.
-The distinct-account, distinct-document, distinct-period case must succeed
-with exactly one native pending count in each period. The point-witness law
-is unchanged.
+Later diagnostics identified the shared period and unit as well. The final
+fixture retains those conflicts, requires safe fresh-preparation retries, and
+uses an unrelated native document append for the unchanged-witness positive.
+The point-witness law is unchanged.
 
 Finally, the scheduler classified every conditional Reversal cell using only
 its default `post` operation. Execution now tests the actual admitted executor

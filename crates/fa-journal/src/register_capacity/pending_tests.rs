@@ -261,6 +261,28 @@ impl Fixture {
             fa_model::account_vid(self.book.book_id, "6100"),
         )
     }
+
+    fn add_source_document(&mut self, bytes: &[u8]) -> Vec<fa_model::EvidenceRef> {
+        let document = crate::evidence::Document {
+            book_id: self.book.book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: VId(7),
+            bytes: bytes.to_vec(),
+        };
+        let cx = self.cx();
+        self.runtime
+            .block_on(crate::evidence::add_document(
+                &mut self.db,
+                &cx,
+                &self.book,
+                &document,
+            ))
+            .unwrap()
+            .unwrap();
+        vec![document.evidence_ref(1)]
+    }
 }
 
 #[test]
@@ -549,26 +571,8 @@ fn pending_batch_publication_keeps_a_fitting_changed_prefix() {
             hold.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
         }
         if independent_evidence {
-            let document = crate::evidence::Document {
-                book_id: fixture.book.book_id,
-                kind: 1,
-                mime: "text/plain".into(),
-                grade: 3,
-                retrieved_by: VId(7),
-                bytes: b"Independent delayed-hold fixture source document".to_vec(),
-            };
-            let cx = fixture.cx();
-            fixture
-                .runtime
-                .block_on(crate::evidence::add_document(
-                    &mut fixture.db,
-                    &cx,
-                    &fixture.book,
-                    &document,
-                ))
-                .unwrap()
-                .unwrap();
-            hold.evidence = vec![document.evidence_ref(1)];
+            hold.evidence =
+                fixture.add_source_document(b"Independent delayed-hold fixture source document");
         }
         let delayed = fixture.batch(b"fitting-delayed", vec![hold]);
         let first_stage = fixture.stage(&first).unwrap();
@@ -576,31 +580,33 @@ fn pending_batch_publication_keeps_a_fitting_changed_prefix() {
         assert_eq!(first_stage.txn.basis(), delayed_stage.txn.basis());
         fixture.commit(&first, first_stage).unwrap();
         let before = fixture.db.frontier().unwrap();
-        let result = fixture.commit(&delayed, delayed_stage);
-        if independent_period {
-            result.expect("a fitting batch with unchanged point witnesses survives a new prefix");
+        let refusal = fixture
+            .commit(&delayed, delayed_stage)
+            .expect_err("a changed document, period or unit witness must conflict");
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (code::CONFLICT, exit::CONFLICT)
+        );
+        assert!(refusal.message.contains("witness"));
+        let changed = if independent_period {
+            let unit = fixture.book.units.get(fixture.usd).unwrap();
+            fa_model::unit_vid(
+                fixture.book.book_id,
+                &format!("{}@v{}", unit.code, unit.version),
+            )
+        } else if independent_evidence {
+            fa_model::period_vid(&fixture.book.calendar.id, "FY2026-P03")
         } else {
-            // Reusing the source document changes its retained point witness,
-            // including when the accounts differ. Separate documents still
-            // share the period point. Fitting final capacity cannot authorize
-            // ignoring either invalidated dependency.
-            let refusal = result.expect_err("changed document or period witnesses must conflict");
-            assert_eq!(
-                (refusal.code, refusal.exit),
-                (code::CONFLICT, exit::CONFLICT)
-            );
-            assert!(refusal.message.contains("witness"));
-            let changed = if independent_evidence {
-                fa_model::period_vid(&fixture.book.calendar.id, "FY2026-P03")
-            } else {
-                crate::evidence::document_vid(&fixture.evidence[0].document_oid)
-            };
-            assert!(
-                refusal.message.contains(&format!("VId({})", changed.0)),
-                "{refusal}"
-            );
-            assert_eq!(fixture.db.frontier().unwrap(), before);
-        }
+            crate::evidence::document_vid(&fixture.evidence[0].document_oid)
+        };
+        assert!(
+            refusal.message.contains(&format!("VId({})", changed.0)),
+            "{refusal}"
+        );
+        assert_eq!(fixture.db.frontier().unwrap(), before);
+        // Same intent and keys, freshly witnessed after the competing commit.
+        let restaged = fixture.stage(&delayed).unwrap();
+        fixture.commit(&delayed, restaged).unwrap();
         let summary = summarize(
             &fixture.db,
             &fixture.cx(),
@@ -609,10 +615,41 @@ fn pending_batch_publication_keeps_a_fitting_changed_prefix() {
         )
         .unwrap();
         let counts = summary.cells.unwrap().pending_counts;
-        assert_eq!(counts.get("FY2026-P03"), Some(&1),);
+        assert_eq!(
+            counts.get("FY2026-P03"),
+            Some(&if independent_period { 1 } else { 2 })
+        );
         assert_eq!(
             counts.get("FY2026-P04").copied().unwrap_or_default(),
             usize::from(independent_period),
         );
     }
+
+    let mut fixture = Fixture::new();
+    fixture.post(b"prefix-existing", fixture.hold(b"prefix-existing-hold"));
+    let delayed = fixture.batch(
+        b"unrelated-prefix-delayed",
+        vec![fixture.hold(b"unrelated-prefix-hold")],
+    );
+    let staged = fixture.stage(&delayed).unwrap();
+    let basis = staged.txn.basis();
+    let _source = fixture.add_source_document(b"Unrelated native fixture prefix evidence");
+    let advanced = fixture.db.frontier().unwrap();
+    assert!(advanced > basis);
+    assert_eq!(staged.txn.basis(), basis);
+    let posted = fixture
+        .commit(&delayed, staged)
+        .expect("an unrelated native document prefix leaves the posting's point witnesses valid");
+    assert_eq!(posted.recorded_at.0, advanced.0 + 1);
+    let summary = summarize(
+        &fixture.db,
+        &fixture.cx(),
+        fixture.book.book_id,
+        fixture.db.frontier().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        summary.cells.unwrap().pending_counts.get("FY2026-P03"),
+        Some(&2)
+    );
 }
