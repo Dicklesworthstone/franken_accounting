@@ -61,17 +61,17 @@ reads_evidence = false
 reader_reads_evidence = false
 second_reader_reads_evidence = false
 
-# StormyLion: per (account, period, unit) cell: live fold vs RegisterEquals attestation or original fold
-# MaroonCat: the (account, period, unit) cell's live fold against its RegisterEquals attestation, or else the fold of the cell's original entries when one was superseded; cites are capped inside the cell (cutoff.rs:3372-3459)
+# ChatGPT-root: each RegisterEquals claim selects one exact account/period/unit/legal-entity cell at its own day; the separately labeled original-lineage fallback remains within that cell. Reads and cites attestations; oversized citation closure refuses.
+# ChatGPT-workflow_gaps: independently read v2 and cutoff/register_claim.rs against plan sections 2.5 and 5.4; cell-disjoint filler cannot change the projected amount, severity or source citations. Whole-book population is descriptive and excluded from the verdict projection. Reads_evidence is true because RegisterEquals claims supply the baselines.
 [[tier]]
 procedure = "damages.attested_baseline"
-version = 1
-row_digest = "821eeb8b6731d0df7d5f8417c6fe10ef8162b80e79d62cf6bf32536930c0c561"
+version = 2
+row_digest = "6360c46e56ff864da05bb29a56a505901bd5581dde72a88ff2208536192b1e59"
 tier = "S-acct"
-code_location = "crates/fa-lantern/src/cutoff.rs:3360"
-reader = "StormyLion"
+code_location = "crates/fa-lantern/src/cutoff.rs:3430"
+reader = "ChatGPT-root"
 reader_tier = "S-acct"
-second_reader = "MaroonCat"
+second_reader = "ChatGPT-workflow_gaps"
 second_reader_tier = "S-acct"
 disagreement = false
 reads_evidence = true
@@ -112,17 +112,17 @@ reads_evidence = false
 reader_reads_evidence = false
 second_reader_reads_evidence = false
 
-# StormyLion: the superseded original entry (by key), closed period states and ends (C), target legs' magnitude
-# MaroonCat: path 1: the superseded entry, found by the supersession key, supplies the days window and a cite; path 2: class plus period state (cutoff.rs:652-731). It iterates all postings, not live_postings, so a later reversal of the target does not remove its flag (cutoff.rs:665)
+# ChatGPT-root: v3 uses the target's own magnitude/class/date, fixed calendar and period-state context, and a superseded original resolved by the target's explicit lineage key. The inclusive period-end window changes timing but not the S-rel dependence; no evidence is read.
+# ChatGPT-correctness_gaps: independently read v3 against sections 2.5 and 5.4; the keyed original supplies a prior period and citation, while unrelated posting count affects only excluded statistic.population. No evidence list, document, supplement or attestation is observed.
 [[tier]]
 procedure = "events.subsequent"
-version = 2
-row_digest = "d628858066de64f6632f3a2444eb70b13e1e935c0eab4055c0c1ba781f4c501f"
+version = 3
+row_digest = "397288aa7ca4975c986b39f285859f94c254c4ff26892b079ce7820da13272f9"
 tier = "S-rel"
-code_location = "crates/fa-lantern/src/cutoff.rs:617"
-reader = "StormyLion"
+code_location = "crates/fa-lantern/src/cutoff.rs:612"
+reader = "ChatGPT-root"
 reader_tier = "S-rel"
-second_reader = "MaroonCat"
+second_reader = "ChatGPT-correctness_gaps"
 second_reader_tier = "S-rel"
 disagreement = false
 reads_evidence = false

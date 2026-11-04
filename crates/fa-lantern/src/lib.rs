@@ -820,6 +820,29 @@ impl Work {
                     comparisons: attestations.saturating_mul(legs.saturating_add(1)),
                 })
             }
+            // RegisterEquals v2 indexes gross cell prefixes once, then visits
+            // the matching contributions of each discrepant claim to cite.
+            // Damages additionally folds live/original lineages; reconciliation
+            // additionally scans live postings for each mirrored Instrument.
+            "O(legs log legs + attestations × legs)"
+            | "O(legs log legs + (attestations + instruments) × legs)" => {
+                let attestations = snapshot.attestations.len() as u64;
+                let instruments = if complexity.contains("instruments") {
+                    snapshot.rea.instruments.len() as u64
+                } else {
+                    0
+                };
+                Some(Self {
+                    entries: entries.saturating_mul(instruments.saturating_add(3)),
+                    legs: legs.saturating_mul(instruments.saturating_add(3)),
+                    comparisons: n_log_n
+                        .saturating_add(legs.saturating_mul(2))
+                        .saturating_add(
+                            attestations.saturating_mul(legs.saturating_mul(2).saturating_add(1)),
+                        )
+                        .saturating_add(instruments),
+                })
+            }
             // jet.self_sourced_evidence: one comparison per attestation it
             // indexes, then at most one per document an entry cites or is
             // supplemented with.

@@ -45,7 +45,8 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("graph.identity_resolution", 1),
     ("recon.intercompany", 2),
     ("recon.lapping", 2),
-    ("recon.attested_register_compare", 1),
+    // Version 2 preserves each declared-entity cell and effective cutoff.
+    ("recon.attested_register_compare", 2),
     // Version 2 folds gross period activity, as RegisterEquals does.
     ("recon.assertion_drift", 2),
     ("completeness.unrecorded_liabilities", 2),
@@ -67,7 +68,7 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("ponzi.net_investment", 5),
     ("distribution.rising_tide", 4),
     ("distribution.pro_rata", 4),
-    ("damages.attested_baseline", 1),
+    ("damages.attested_baseline", 2),
 ];
 
 const INPUTS: &[(&str, &str)] = &[
@@ -85,13 +86,20 @@ pub(super) fn supported(id: &str, version: u16) -> bool {
     EXTENDED_CERTIFIABLE_PROCEDURES.contains(&(id, version))
 }
 
-/// Older assertion-drift certificates retain exactly this native input
+/// Older register-comparison certificates retain exactly this native input
 /// closure. Keep their durable framing decodable without admitting their old
 /// computation as the current one: ProcedureCertificate::request requires the
 /// pinned registry and an exact algorithm version before catalog dispatch.
 /// Replaying v1 therefore requires the executable that produced it.
 pub(super) fn has_retained_closure(id: &str, version: u16) -> bool {
-    supported(id, version) || (id == "recon.assertion_drift" && version == 1)
+    supported(id, version)
+        || (version == 1
+            && matches!(
+                id,
+                "recon.assertion_drift"
+                    | "recon.attested_register_compare"
+                    | "damages.attested_baseline"
+            ))
 }
 
 pub(super) fn statements(at: CommitSeq) -> Vec<String> {

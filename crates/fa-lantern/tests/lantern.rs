@@ -47,6 +47,9 @@ use fgdb_types::{CommitSeq, VId};
 #[path = "lantern/bank_reconciliation.rs"]
 mod bank_reconciliation_tests;
 
+#[path = "lantern/register_claims.rs"]
+mod register_claim_tests;
+
 #[path = "lantern/graph_arithmetic.rs"]
 mod graph_arithmetic_tests;
 

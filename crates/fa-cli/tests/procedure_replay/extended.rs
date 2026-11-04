@@ -278,10 +278,10 @@ fn extended_analytics_replay_from_retained_handles_files_and_stdin_after_new_evi
             "replay, retries and refusals create no accounting or metadata writes"
         );
     }
-    // recon.attested_register_compare folds every posting regardless of effective date,
-    // so a new run refuses a date rather than ignoring it (fa-9pjp); the
-    // retained certificate above, which carries one, still replays.
-    let (code, stdout, _) = call(
+    // Version 2 honors the report cutoff while retaining each attestation's
+    // own day. The same January claim sees the later-recorded January entry,
+    // while the retained certificate still replays its earlier known-at prefix.
+    let (code, stdout, events) = call(
         &path,
         &[
             "procedure",
@@ -292,9 +292,14 @@ fn extended_analytics_replay_from_retained_handles_files_and_stdin_after_new_evi
         ],
         None,
     );
-    assert_eq!(code, 2, "{stdout}");
+    assert_eq!(code, 0, "{stdout}");
     assert!(
-        stdout.contains("does not take --effective-through"),
+        data(&events[0])
+            .get("findings")
+            .and_then(Json::as_arr)
+            .unwrap()
+            .iter()
+            .any(|finding| number(finding.get("statistic").unwrap(), "value") == 7_000),
         "{stdout}"
     );
     let current = ok(
