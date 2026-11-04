@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 mod access;
+mod application;
 pub mod args;
 mod asset;
 pub mod authority;

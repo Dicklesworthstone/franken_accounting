@@ -7,7 +7,7 @@ schema_version = 1
 name = "Entry"
 owner = "fa-model::entry::Entry"
 major = 1
-minor = 8
+minor = 9
 proposal_digest_domain = "fa:entry-proposal:v1"
 entry_digest_domain = "fa:entry:v1"
 semantic_digest_domain = "fa:entry-semantic:v1"
@@ -15,7 +15,7 @@ externally_verifiable = true
 
 proposal_fields = ["schema_major:u16", "schema_minor:u16", "book_id:bytes16", "branch_id:bytes16", "class:u16", "effective_date:i32", "document_date:option<i32>", "description:erasable<string>", "effective_period:option<period_ref>", "legs:list<leg_payload>", "control:option<control_payload>", "unit_totals:list<unit_total>", "base_totals:option<base_totals>", "idempotency_key:bytes", "origin:entry_origin", "principal_ref:u128", "session_ref:option<u128>", "evidence:list<evidence_ref>", "supersession:list<supersession>", "pending:option<pending>", "external_ids:list<external_id>", "tags:list<tag>", "extensions:list<extension>"]
 envelope_fields = ["proposal_digest:bytes32", "plan_certificate_oid:option<bytes32>", "approvals:list<approval_ref>", "entry_digest:bytes32"]
-extension_tags = ["1:fa:balancing:v1", "2:fa:auto-reverse:v1", "3:fa:effective-date-basis:v1", "4:fa:legal-hold-scope:v1", "5:fa:allocation-posting:v1", "6:fa:event-ref:v1", "7:fa:capability-body:v1", "8:fa:draft-body:v1", "9:fa:draft-intent:v1", "10:fa:scenario-body:v1", "11:fa:scenario-intent:v1", "12:fa:year-end-close:v1|v2|v3", "13:fa:production-profile:v1", "14:fa:production-bates:v1", "15:fa:statement-issuance:v1", "16:fa:fx-revaluation:v1|v2", "17:fa:engagement:v1", "18:fa:proposed-adjustment:v1", "19:fa:restatement-case:v1", "20:fa:case-determination:v1", "21:fa:case-rehearsal:v1", "22:fa:case-approval:v1", "23:fa:case-member:v1", "24:fa:case-posted:v1", "25:fa:case-disclosure:v1|v2", "26:fa:documentation-completion:v1", "27:fa:prior-period-error:v1", "28:fa:engagement-carry-forward:v1", "29:fa:recurring-schedule:v1", "30:fa:external-subledger-detail:v1", "31:fa:recurring-occurrence:v1", "32:fa:rule-inputs:v1", "33:fa:obligation-maturity:v1|v2", "34:fa:valuation-adjustment:v1", "35:fa:proportional-post:v1", "36:fa:prior-period-adjustment:v1", "37:fa:fx-settlement-valuation:v1", "38:fa:lot-disposal:v1", "39:fa:asset-charge:v1", "40:fa:close-run:v1"]
+extension_tags = ["1:fa:balancing:v1", "2:fa:auto-reverse:v1", "3:fa:effective-date-basis:v1", "4:fa:legal-hold-scope:v1", "5:fa:allocation-posting:v1", "6:fa:event-ref:v1", "7:fa:capability-body:v1", "8:fa:draft-body:v1", "9:fa:draft-intent:v1", "10:fa:scenario-body:v1", "11:fa:scenario-intent:v1", "12:fa:year-end-close:v1|v2|v3", "13:fa:production-profile:v1", "14:fa:production-bates:v1", "15:fa:statement-issuance:v1", "16:fa:fx-revaluation:v1|v2", "17:fa:engagement:v1", "18:fa:proposed-adjustment:v1", "19:fa:restatement-case:v1", "20:fa:case-determination:v1", "21:fa:case-rehearsal:v1", "22:fa:case-approval:v1", "23:fa:case-member:v1", "24:fa:case-posted:v1", "25:fa:case-disclosure:v1|v2", "26:fa:documentation-completion:v1", "27:fa:prior-period-error:v1", "28:fa:engagement-carry-forward:v1", "29:fa:recurring-schedule:v1", "30:fa:external-subledger-detail:v1", "31:fa:recurring-occurrence:v1", "32:fa:rule-inputs:v1", "33:fa:obligation-maturity:v1|v2", "34:fa:valuation-adjustment:v1", "35:fa:proportional-post:v1", "36:fa:prior-period-adjustment:v1", "37:fa:fx-settlement-valuation:v1", "38:fa:lot-disposal:v1", "39:fa:asset-charge:v1", "40:fa:close-run:v1", "41:fa:application-terms:v1"]
 
 [[decision]]
 field = "native_storage"
@@ -23,6 +23,13 @@ appendix_a = "Canonical Entry byte bounds and immutable native publication (plan
 code_type = "fa-journal::entry_storage; object_storage kind 11; EntryFragment label 66"
 rationale = "Native monetary posting keeps one canonical Entry and its exact legs. Above 4096 canonical bytes, only the root payload mirror changes to a bounded object manifest; same-publication immutable EntryFragment rows retain every byte. Canonical codecs, schema version, digests, exported Entry bytes and notary leaf commitments are unchanged. Reassembly checks the selected prefix, root book, typed manifest, exact fragment identities, original same-publication births, length and full content commitments. Transaction-local readers include staged members and witness committed fragment reads. Historical inline roots remain accepted without rewriting. The existing max_entry_bytes and max_batch_template_bytes limits still apply; this representation does not guarantee every schema-sized Entry fits a complete transaction, and dedicated inline-only control writers retain their existing bounds."
 tracking_bead = "fa-fdt"
+
+[[decision]]
+field = "extensions.41"
+appendix_a = "Typed ApplyPayment and ApplyReceipt differences (plan §5.2, §5.7, Appendix B)"
+code_type = "fa-model::application::ApplicationTerms; APPLICATION_TERMS_EXTENSION=41; minimum schema minor 9"
+rationale = "Version 1 is u16 version, u8 direction (Receipt=1, Payment=2), u16 cash ordinal, u16 applying ordinal, u32 difference count, then (u16 leg ordinal, u8 kind) rows. One to 128 difference rows are strictly ordered by ordinal; Discount=1, Writeoff=3 and BankCharge=4 retain the registered kind tags. The complete marker is at most 395 bytes and is authenticated by the ordinary proposal digest, without a separate digest or a new Entry identity. Cash, applying and difference ordinals are disjoint and cover every leg. Fresh Intent-origin Original/Adjusting entries use the book's base unit, explicit accounts and amounts, exact direction-dependent signs, and complete application of the control leg to witnessed open items. Ordinary posting, account, evidence, authority and reversal laws still apply; no default account or balancing plug is inferred. Exact Reversals retain identical terms while negating the target's witnessed legs; ordinary reports refold those monetary effects without claiming independent application-law admission. ShortPay remains a partial application with the residual open, and RealizedFx remains on the existing journal-derived FX path. Neither is silently recoded as a discount or write-off. Older Entry bytes and identities are unchanged."
+tracking_bead = "fa-pvt7"
 
 [[decision]]
 field = "extensions.40"
