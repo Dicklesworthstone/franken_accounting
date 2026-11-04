@@ -2949,3 +2949,34 @@ tests, including its original nine-seed generated-history comparison.
 Both exited zero with no failures, ignored or filtered tests. These scoped
 results validate the native application-fold repair on that source; they
 are not a complete repository verdict for the subsequent parser-test fix.
+
+## 2026-11-04 — Refusal fixture setup omitted robot mode
+
+Candidate `a954f5ea0` passed exact-tree Tier 0 and the complete independent
+verifier package: 925 tests passed, with none failed, ignored or filtered.
+Its focused CLI packet then exited 101 with 307 passing tests and one
+failure. The library, bank, general CLI, robot schema, served-read and
+subledger targets passed, including portable native AR/AP verification.
+The refusal-fix harness failed before its new FA-REF-207 cases: five new
+dimension setup commands omitted `--json`, so its existing strict robot
+schema check correctly rejected human output from `dimension add`.
+
+The repair adds `--json` to those five setup commands. Both independent
+allowlist-only and forbid-only cases, their expected FA-REF-207 refusals,
+the actual suggested read commands, the catalog coverage requirement and
+strict schema validation remain intact. No production admission rule or
+robot output contract changes. The corrected complete target must execute
+successfully before it supplies passing evidence.
+
+The same source's facade and formats/Lantern/conformance builds reached
+the ordinary 1800-second compilation limit and exited 137 without running
+tests. A queued strict Clippy command exited 103 before remote execution.
+These are not passing results. The three focused commands placed profile
+options before the Cargo subcommand; the CLI transcript unexpectedly says
+`unoptimized + debuginfo`, whereas the repository's original command form
+places these options after `test` and reports `unoptimized`. Local config
+inspection resolves the leading options correctly, so the remote cause is
+unestablished. Subsequent qualification uses the repository's original
+argument order. No compiler optimization, assertion, time limit, worker
+capacity or gate criterion is relaxed. All owned source leases were
+terminal and acknowledged before applying the fixture correction.
