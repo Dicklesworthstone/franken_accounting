@@ -3,16 +3,18 @@
 //! inputs alone, before the kernel reads anything from storage.
 //!
 //! **Scope caveats** (`accounts`, `periods`, `effective ≤ date`,
-//! `known_at ≤ seq`, `branch`) are judged by [`reach`] against what an act
+//! `known_at ≤ seq`, `branch`, `classes`) are judged by [`reach`] against what an act
 //! reaches, before any query is constructed and never by filtering a result
 //! (plan §14.2, interim posture of Appendix H R-WARDEN). [`admit`] judges
 //! an act on the whole book, so a scoped token is refused there; only acts
 //! that name their accounts and periods (a post, a period transition, a
 //! scoped read) call [`admit_within`] or [`reach`] with a narrower reach.
+//! A class-scoped act additionally uses [`admit_within_class`] or
+//! [`reach_class`] with the class derived from its actual payload.
 
 use std::collections::BTreeSet;
 
-use fa_model::Id128;
+use fa_model::{EntryClass, Id128};
 use fa_money::UnitId;
 use fa_time::DateDay;
 use fgdb_types::{CommitSeq, VId};
@@ -113,6 +115,13 @@ pub fn admit(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
     admit_within(cap, intent, &Reach::whole_book(intent.trunk), None)
 }
 
+/// [`admit`] for a write whose canonical payload determines its class.
+/// The remaining reach is still the whole book: naming a class does not
+/// authorize accounts, periods, or another caveat's wider scope.
+pub fn admit_class(cap: &Capability, intent: &Intent<'_>, class: EntryClass) -> Result<(), Denial> {
+    admit_within_class(cap, intent, &Reach::whole_book(intent.trunk), None, class)
+}
+
 /// [`admit`] for an act that names what it reaches: [`admit_base`], then
 /// [`reach`] over `r` with the compiled `accounts` scope.
 pub fn admit_within(
@@ -123,6 +132,20 @@ pub fn admit_within(
 ) -> Result<(), Denial> {
     admit_base(cap, intent)?;
     reach(cap, r, accounts)
+}
+
+/// [`admit_within`] with the class of the actual canonical write payload.
+/// A caller must not infer this from the operation: one operation can
+/// publish several different entry classes.
+pub fn admit_within_class(
+    cap: &Capability,
+    intent: &Intent<'_>,
+    r: &Reach<'_>,
+    accounts: Option<&AccountScope>,
+    class: EntryClass,
+) -> Result<(), Denial> {
+    admit_base(cap, intent)?;
+    reach_class(cap, r, accounts, class)
 }
 
 /// The checks that precede every reach: the capability is the actor's, an
@@ -185,6 +208,48 @@ fn admit_base_as(cap: &Capability, intent: &Intent<'_>, planning: bool) -> Resul
 /// (and the compiled `accounts` scope), before any query is constructed.
 /// A capability with an `accounts` caveat and no compiled scope is refused.
 pub fn reach(
+    cap: &Capability,
+    r: &Reach<'_>,
+    accounts: Option<&AccountScope>,
+) -> Result<(), Denial> {
+    require_class(cap, None)?;
+    reach_coordinates(cap, r, accounts)
+}
+
+/// Judge every reach caveat when the request determines one entry class.
+/// Unknown or whole-book class reach uses [`reach`] and fails closed for a
+/// class-scoped capability. This does not narrow any other coordinate.
+pub fn reach_class(
+    cap: &Capability,
+    r: &Reach<'_>,
+    accounts: Option<&AccountScope>,
+    class: EntryClass,
+) -> Result<(), Denial> {
+    require_class(cap, Some(class))?;
+    reach_coordinates(cap, r, accounts)
+}
+
+/// Admit a class from explicit request data before observing storage.
+/// `None` means the act does not establish its class, including approvals
+/// over opaque digests and global controls whose effects are not named.
+pub fn require_class(cap: &Capability, class: Option<EntryClass>) -> Result<(), Denial> {
+    let Some(held) = cap.classes() else {
+        return Ok(());
+    };
+    match class {
+        Some(class) if held.contains(&class) => Ok(()),
+        Some(class) => Err(out_of_scope(
+            "classes",
+            format!("class `{}`", class.name().unwrap_or("unknown")),
+        )),
+        None => Err(out_of_scope(
+            "classes",
+            "an act whose entry class is not established before the read".into(),
+        )),
+    }
+}
+
+fn reach_coordinates(
     cap: &Capability,
     r: &Reach<'_>,
     accounts: Option<&AccountScope>,
@@ -361,6 +426,119 @@ mod tests {
             book: BOOK,
             legs,
         }
+    }
+
+    #[test]
+    fn class_caveats_require_a_known_matching_class_without_widening_other_scopes() {
+        let base = Capability::embedded(VId(1), &["post", "close"]).unwrap();
+        let scoped = base
+            .clone()
+            .for_classes(&[EntryClass::PERIOD_CONTROL])
+            .unwrap();
+        let mut control = intent(VId(1), &[]);
+        control.op = Op::Close;
+        let whole = Reach::whole_book(true);
+        assert!(scoped.is_scoped());
+        for denied in [
+            admit(&scoped, &control),
+            admit_within(&scoped, &control, &whole, None),
+            reach(&scoped, &whole, None),
+            admit_class(&scoped, &control, EntryClass::ORIGINAL),
+        ] {
+            assert!(matches!(
+                denied,
+                Err(Denial::OutOfScope {
+                    caveat: "classes",
+                    ..
+                })
+            ));
+        }
+        assert_eq!(admit(&base, &control), Ok(()));
+        assert_eq!(
+            admit_class(&scoped, &control, EntryClass::PERIOD_CONTROL),
+            Ok(())
+        );
+        let periods = scoped.for_periods(&["FY2026-P03"]).unwrap();
+        assert!(matches!(
+            admit_class(&periods, &control, EntryClass::PERIOD_CONTROL),
+            Err(Denial::OutOfScope {
+                caveat: "periods",
+                ..
+            })
+        ));
+        let codes = ["FY2026-P03"];
+        let reached = Reach {
+            periods: Some(&codes),
+            ..whole
+        };
+        assert_eq!(
+            admit_within_class(
+                &periods,
+                &control,
+                &reached,
+                None,
+                EntryClass::PERIOD_CONTROL
+            ),
+            Ok(())
+        );
+        let other = ["FY2026-P04"];
+        assert!(matches!(
+            admit_within_class(
+                &periods,
+                &control,
+                &Reach {
+                    periods: Some(&other),
+                    ..whole
+                },
+                None,
+                EntryClass::PERIOD_CONTROL,
+            ),
+            Err(Denial::OutOfScope {
+                caveat: "periods",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn class_admission_keeps_holder_operation_amount_and_rehearsal_laws() {
+        let cap = Capability::embedded(VId(1), &["post"])
+            .unwrap()
+            .for_classes(&[EntryClass::ORIGINAL])
+            .unwrap()
+            .with_ceiling(USD, 100)
+            .unwrap()
+            .with_requires_dry_run();
+        assert_eq!(
+            admit_class(&cap, &intent(VId(1), &[(USD, 100)]), EntryClass::ORIGINAL),
+            Ok(())
+        );
+        assert!(matches!(
+            admit_class(&cap, &intent(VId(2), &[]), EntryClass::ORIGINAL),
+            Err(Denial::NotHolder { .. })
+        ));
+        assert!(matches!(
+            admit_class(
+                &cap,
+                &Intent {
+                    op: Op::Close,
+                    ..intent(VId(1), &[])
+                },
+                EntryClass::ORIGINAL
+            ),
+            Err(Denial::MissingOp { .. })
+        ));
+        assert!(matches!(
+            admit_class(&cap, &intent(VId(1), &[(USD, 101)]), EntryClass::ORIGINAL),
+            Err(Denial::CeilingExceeded { .. })
+        ));
+        assert!(matches!(
+            admit_direct_write(&cap),
+            Err(Denial::OutOfScope {
+                caveat: "requires_dry_run",
+                ..
+            })
+        ));
     }
 
     #[test]

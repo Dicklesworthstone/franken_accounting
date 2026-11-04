@@ -2466,6 +2466,14 @@ rule = "difference"
 params = []
 
 [[fact]]
+id = "ENR-BRIDGE-FY1999"
+provenance = "interpretation"
+from = ["10K-TA-A-FY1999", "10K-EQ-A-FY1999", "10K-NI-A-FY1999"]
+reader = "case-author-1"
+second_reader = "case-second-reader"
+rationale = "The single-year FY1999 8-K bridge book holds total assets, equity and net income on separate asset, equity and revenue accounts. Each stock figure and its restatement adjustments post against a liability balancing account; net income and its adjustments post against a separate equity balancing account. Neither balancing account is read, published or compared. Every figure posts in full in FY1999, rather than as a change from an earlier year, and the equity bridge excludes the net-income balancing account. This is the book's encoding of the three reported figures, not a sourced claim about Enron's account-level journal."
+
+[[fact]]
 id = "ENR-BRIDGE-8K"
 provenance = "interpretation"
 from = ["10K-TA-A-FY1997", "10K-DEBT-A-FY1997", "10K-EQ-A-FY1997", "10K-NI-A-FY1998"]

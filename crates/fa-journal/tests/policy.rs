@@ -49,6 +49,9 @@ const AGENT: VId = VId(31);
 #[path = "policy/capability_retries.rs"]
 mod capability_retries;
 
+#[path = "policy/class_scoped_approval.rs"]
+mod class_scoped_approval;
+
 #[path = "policy/issuance_ancestry.rs"]
 mod issuance_ancestry;
 

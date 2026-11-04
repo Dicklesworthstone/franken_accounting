@@ -33,8 +33,9 @@ pub mod principal_key;
 pub mod sod;
 
 pub use admit::{
-    AccountScope, Intent, Observes, Reach, admit, admit_base, admit_base_for_plan,
-    admit_direct_write, admit_read, admit_within, current, reach, require, scope,
+    AccountScope, Intent, Observes, Reach, admit, admit_base, admit_base_for_plan, admit_class,
+    admit_direct_write, admit_read, admit_within, admit_within_class, current, reach, reach_class,
+    require, require_class, scope,
 };
 pub use approval::Approval;
 pub use capability::{

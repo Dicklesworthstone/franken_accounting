@@ -1550,6 +1550,30 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.approve_signed(&purposes, capability, proposal_digest, key)))
     }
 
+    /// Approve an exact entry payload, deriving its digest and admitting
+    /// its class together. A class-scoped capability must have a retained
+    /// issuance and admit this entry's class. Configured principal signing
+    /// applies as it does to [`Self::approve`].
+    pub fn approve_entry(
+        &mut self,
+        capability: fa_journal::Capability,
+        proposal: &fa_model::EntryPayload,
+    ) -> Outcome<fa_journal::Approved> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve_entry(&purposes, capability, proposal)))
+    }
+
+    /// [`Self::approve_entry`] signed with the principal's registered key.
+    pub fn approve_entry_signed(
+        &mut self,
+        capability: fa_journal::Capability,
+        proposal: &fa_model::EntryPayload,
+        key: &fa_notary::SigningKey,
+    ) -> Outcome<fa_journal::Approved> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve_entry_signed(&purposes, capability, proposal, key)))
+    }
+
     /// Sign every approval and attestation this handle records with `key`,
     /// the client's principal key ([`AsyncBook::sign_with_principal_key`]).
     pub fn sign_with_principal_key(&mut self, key: fa_notary::SigningKey) {

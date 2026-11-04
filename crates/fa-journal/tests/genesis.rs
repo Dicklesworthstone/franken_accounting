@@ -39,6 +39,8 @@ mod asset_cost_tests;
 mod carrying_tests;
 #[path = "genesis/chart_outcome_keys.rs"]
 mod chart_outcome_keys;
+#[path = "genesis/class_scoped_posting.rs"]
+mod class_scoped_posting;
 #[path = "genesis/closing_carrying.rs"]
 mod closing_carrying_tests;
 #[path = "genesis/closing_case.rs"]

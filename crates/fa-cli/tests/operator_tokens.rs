@@ -20,6 +20,9 @@ use fgdb_types::CommitSeq;
 const PERIOD: &str = "FY2026-P03";
 const ISSUER: &str = "operator-token-issuer";
 
+#[path = "operator_tokens/classes.rs"]
+mod classes;
+
 fn directory() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {

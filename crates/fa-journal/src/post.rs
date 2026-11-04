@@ -1163,6 +1163,9 @@ pub(crate) fn authorize_effects<V: asupersync::fs::Vfs + Clone>(
     ) {
         return Ok(Err(policy::refusal(&denial)));
     }
+    if let Err(denial) = fa_policy::require_class(capability, Some(proposal.class)) {
+        return Ok(Err(policy::refusal(&denial)));
+    }
     let current = match policy::current_at(db, book, capability)? {
         Ok(current) => current,
         Err(refusal) => return Ok(Err(refusal)),

@@ -1061,7 +1061,14 @@ pub async fn plan_open_transition<V: asupersync::fs::Vfs + Clone>(
 ) -> Outcome<TransitionPlan> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     if let Err(denial) = fa_policy::admit_read(capability, principal_ref, book.book_id)
-        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .and_then(|()| {
+            fa_policy::reach_class(
+                capability,
+                &fa_policy::Reach::whole_book(true),
+                None,
+                EntryClass::PERIOD_CONTROL,
+            )
+        })
         .and_then(|()| {
             fa_policy::require(
                 capability,
@@ -1436,7 +1443,14 @@ async fn transition_planned_in<V: asupersync::fs::Vfs + Clone>(
             )));
         };
         if let Err(denial) = fa_policy::admit_read(capability, plan.principal_ref, book.book_id)
-            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+            .and_then(|()| {
+                fa_policy::reach_class(
+                    capability,
+                    &fa_policy::Reach::whole_book(true),
+                    None,
+                    EntryClass::PERIOD_CONTROL,
+                )
+            })
             .and_then(|()| {
                 fa_policy::require(
                     capability,
@@ -1620,7 +1634,7 @@ fn admit_transition<V: asupersync::fs::Vfs + Clone>(
     let calendar_period = policy::calendar_period(book, period_code);
     let reached = [period_code];
     let through = calendar_period.as_ref().map(PeriodDef::last_day);
-    if let Err(denial) = fa_policy::admit_within(
+    if let Err(denial) = fa_policy::admit_within_class(
         capability,
         &Intent {
             principal,
@@ -1637,6 +1651,7 @@ fn admit_transition<V: asupersync::fs::Vfs + Clone>(
             accounts: None,
         },
         None,
+        EntryClass::PERIOD_CONTROL,
     ) {
         return Ok(Err(policy::refusal(&denial)));
     }

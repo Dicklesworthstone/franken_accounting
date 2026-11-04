@@ -5424,6 +5424,10 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 vec![op.name()]
             };
             let capability = ctx.capability(args, &implied_ops)?;
+            // The default key observes the period's current state below.
+            // Class admission must precede that observation too.
+            fa_policy::require_class(&capability, Some(EntryClass::PERIOD_CONTROL))
+                .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
             let mut book = ctx.books.open(args)?;
             let current = book
                 .periods()?
