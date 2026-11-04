@@ -2923,3 +2923,29 @@ admission from permitted preparation; they do not weaken an old check or
 claim that denied native commits previously succeeded. This is a
 source-observed defect with a prepared repair; native qualification of
 both new tests and the existing bank paths is still required.
+
+## 2026-11-04 — Canonical parser tests required Debug on private usage errors
+
+After integrating the four canonical bank/subledger commits, the complete
+native verifier build exited 101 before running tests. Two E0277 diagnostics
+came from the nested `parse(...).unwrap()` and `request(...).unwrap()` in
+the positive recipient-question parser test: its private `Usage` error type
+does not implement Debug. Exact-tree Tier 0
+also failed at the new bank-selector test's `selected(...).unwrap()`, which
+required Debug on the private CLI `Fail` type.
+
+The repair uses explicit test panic messages on parsing failure, retaining
+the same successful values and every assertion. The recipient test still
+requires the spaced subledger code, maximum control ID, negative civil
+cutoff and maximum recorded selector. The bank test still checks both
+sorted leg references and rejects duplicates, changed digests, bad ordinals
+and caller-supplied amounts. No production parser, error type, Debug
+implementation, refusal expectation or input bound changes. Both native
+verifier execution and exact-tree Tier 0 must be rerun on this repair.
+
+On the preceding integrated source, the independent reference package
+executed 38 tests and the unchanged register differential executed all 55
+tests, including its original nine-seed generated-history comparison.
+Both exited zero with no failures, ignored or filtered tests. These scoped
+results validate the native application-fold repair on that source; they
+are not a complete repository verdict for the subsequent parser-test fix.

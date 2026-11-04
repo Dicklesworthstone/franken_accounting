@@ -122,7 +122,8 @@ mod tests {
     fn outstanding_selectors_bind_digest_and_ordinal_without_accepting_amounts() {
         let one = format!("{:032x}:0:{}", 1, "ab".repeat(32));
         let two = format!("{:032x}:1:{}", 1, "cd".repeat(32));
-        let rows = selected(&[&two, &one]).unwrap();
+        let rows = selected(&[&two, &one])
+            .unwrap_or_else(|_| panic!("valid immutable outstanding selectors must parse"));
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].leg_ordinal, 0);
         assert_eq!(rows[0].entry_ref.entry_digest, [0xab; 32]);

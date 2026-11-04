@@ -158,8 +158,20 @@ mod tests {
             "18446744073709551615",
         ]
         .map(str::to_string);
+        let parsed = parse(&args).unwrap_or_else(|failure| {
+            panic!(
+                "complete recipient question must parse: {}",
+                failure.message
+            )
+        });
+        let complete = request(&parsed).unwrap_or_else(|failure| {
+            panic!(
+                "complete recipient question must validate: {}",
+                failure.message
+            )
+        });
         assert_eq!(
-            request(&parse(&args).unwrap()).unwrap(),
+            complete,
             Some(NativeSubledgerRequest {
                 code: "Trade AR".into(),
                 control_account: u128::MAX,
