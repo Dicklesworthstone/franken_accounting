@@ -2851,6 +2851,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         let checked = checked_entry_staged(&txn, db, &row);
         txn.abort();
         let (recorded, _) = checked?;
+        // A distinct request cannot claim a pending target's one resolution,
+        // including one staged earlier in this same atomic batch. Its outcome
+        // claim is not committed yet, so checking only committed provenance
+        // would obscure the target conflict as an unrelated key failure.
+        if identity == Identity::Resolution
+            && recorded.proposal.idempotency_key != proposal.idempotency_key
+        {
+            return Ok(Err(identity_conflict(identity, evid)));
+        }
         if crate::outcome::covered_class(recorded.proposal.class)
             && (recorded.approvals != req.approvals
                 || !crate::outcome::verify_recorded(db, &ctx.query(), book, &row, &recorded)?)

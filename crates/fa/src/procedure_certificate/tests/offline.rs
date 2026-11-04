@@ -715,12 +715,20 @@ fn round_amounts_offline_scope_is_explicit_and_production_authority_precedes_obs
     }
     let mut damaged = ordinary.clone();
     damaged.digest[0] ^= 1;
-    for capability in [
-        cap(&["read"]),
-        cap(&["produce"]),
-        cap(&["read", "produce"]).for_accounts(&["1000"]).unwrap(),
-        cap(&["read", "produce"]).known_at_most(ordinary.known_at()),
-        cap(&["read", "produce"]).expiring_at(before),
+    for (capability, expected_code) in [
+        (cap(&["read"]), "FA-REF-011"),
+        (cap(&["produce"]), "FA-REF-011"),
+        (
+            cap(&["read", "produce"]).for_accounts(&["1000"]).unwrap(),
+            "FA-REF-011",
+        ),
+        (
+            cap(&["read", "produce"]).known_at_most(ordinary.known_at()),
+            "FA-REF-011",
+        ),
+        // Expiry has its own registered refusal; it must still precede
+        // certificate replay and checkpoint selection, including bad inputs.
+        (cap(&["read", "produce"]).expiring_at(before), "FA-REF-014"),
     ] {
         for certificate in [&ordinary, &damaged] {
             for state in [None, Some(Oid([0xff; 32]))] {
@@ -735,7 +743,7 @@ fn round_amounts_offline_scope_is_explicit_and_production_authority_precedes_obs
                     ))
                     .unwrap()
                     .unwrap_err();
-                assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", exit::SAFETY));
+                assert_eq!((refusal.code, refusal.exit), (expected_code, exit::SAFETY));
                 assert_eq!(f.head(), before);
             }
         }

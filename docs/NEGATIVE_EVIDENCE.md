@@ -4,6 +4,68 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-04 — native integration exposed six failures
+
+The integrated `a2cc11bb` native run completed with 1,715 passing tests and six
+failures across four targets. Its complete CLI cases passed 97/0, and the
+large batch capsule-boundary regression passed unchanged. The six failures
+were an expiry expectation, missing dimension-command authority coverage,
+the symbol-67 witness change below, a staged duplicate-resolution diagnostic,
+an overlapping-account concurrency fixture, and scheduled closed-period
+execution that ignored an explicitly held operation.
+
+Expiry correctly returned registered FA-REF-014, while the new offline test
+expected FA-REF-011 for every denial. The repaired test retains all twenty
+capability/certificate/checkpoint combinations and every unchanged-head
+assertion; only expiry expects FA-REF-014. This exact repair executed under
+`32d5ccaf`. The matrix now exercises `dimension constrain` under Read and
+SchemaChange rather than exempting the command from coverage.
+
+A second resolution in one transaction encountered the first staged entry,
+but committed-only outcome verification obscured its target-derived conflict
+as FA-REF-032. A distinct resolution key now receives FA-REF-062 after the
+existing authority, scope, common-key and staged-entry checks; it never returns
+a recorded outcome or discharges any accounting law. Same-key provenance
+checks remain. The pending-prefix fixture also expected a commit after changing
+both accounts it had read. Its original case now requires the observed FCW
+conflict and no publication; a separate disjoint-account case must succeed
+with the exact native pending count. The point-witness law is unchanged.
+
+Finally, the scheduler classified every conditional Reversal cell using only
+its default `post` operation. Execution now tests the actual admitted executor
+against the registered operation, requiring zero additional approvals in this
+bounded schedule profile. Closed still requires explicit `post_closed`; Locked
+still refuses. Read-only inspection retains its conservative default profile.
+The native corrective tests and final exact-tree proof remain required.
+
+## 2026-11-04 — symbol 67 changes authenticated certificate inputs
+
+DimensionConstraint=67 extends the compiled and registered symbol table.
+The native `a2cc11bb` Genesis campaign consequently disagreed with all 36 old
+LAB04 pins; current-table diagnostic `32d5ccaf` also failed the cross-target
+certificate pin while all four financial-output pins agreed. No pin was
+changed before the following counterfactual executed.
+
+The first inverse, `2bf027d9`, omitted only the compiled label. It restored all
+36 old LAB04 hashes and both cross-target tests, but 22 functional fixtures
+correctly refused its mismatched registry. The consistent inverse `c117e4cd`
+also omits that single registry row. It executed 727 facade tests and both
+cross-target tests with no failures, ignored tests or filters; remote and outer
+exits were zero. All old pins and original assertions remained intact. These
+controls deliberately disable the new label profile and must never be landed.
+
+Across all 36 current/inverse runs, the native heads, trial-balance byte digests
+and register folds agree. The seed-1 certificate remains 3,076 bytes; its 287
+differing bytes lie only in nine 32-byte fields: seven snapshot bindings, the
+Book input commitment and the trailing certificate digest. The current and
+inverse cross-target outputs likewise have equal fold/TB/BS/IS byte digests;
+only three certificate digests and the resulting bundle digest change. This
+is input-change maintenance on x86_64, not an arithmetic or performance win
+or an aarch64 qualification. The prior complete manifest and registry remain
+Git blobs `03f0e08e059b5478b59d55bf23825e5b5743d8b1` and
+`04dadb419c96824791bcf70797b2c53f7abb2580`. The updated product source still
+requires its own full native and exact-tree gates.
+
 ## 2026-11-04 — historical procedure framing lost registered identities
 
 The `bef2ace9` decoder retains three historical extended procedure identities.
