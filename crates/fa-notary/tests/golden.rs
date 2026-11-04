@@ -712,3 +712,67 @@ fn approval_bundle_formats_equal_the_pinned_vectors() {
         drift.join("\n")
     );
 }
+
+/// Adding a balance to an approval-citing selection chooses the disclosure
+/// format while retaining the independently verified signature/key closure.
+/// The existing pinned 1.1 productions above remain byte-for-byte unchanged.
+#[test]
+fn scoped_balances_with_approvals_declare_full_payload_disclosure() {
+    use fa_notary::SigningKey;
+    use fa_notary::bundle::{BalanceRequest, BundleRequest, BundleScope, assemble_with_runs};
+    let (records, approvals) = approval_records();
+    let journal = Journal::from_records(BOOK, CommitSeq(9), records).unwrap();
+    let key = SigningKey::from_seed(&[0x11; 32]);
+    let stored = bundle_checkpoint(&journal, &key);
+    let request = BundleRequest {
+        scope: BundleScope::Entries(vec![VId(0x106)]),
+        balances: vec![BalanceRequest {
+            account: VId(0x30),
+            unit: 1,
+            effective_through: None,
+        }],
+        inline_documents: false,
+    };
+    let produce = || {
+        assemble_with_runs(
+            &journal,
+            &stored,
+            &request,
+            &golden_documents(),
+            &std::collections::BTreeMap::new(),
+            &approvals,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let bundle = produce();
+    assert_eq!(produce(), bundle);
+    let report = fa_verify::verify_bundle(&bundle.bytes, &[key.public_key()], None).unwrap();
+    assert!(report.verified(), "{:?}", report.checks);
+    assert_eq!(report.summary.format, (1, 2));
+    assert_eq!(report.summary.entries, 1);
+    assert_eq!(report.manifest.leaf_count, 7);
+    assert_eq!(
+        report.summary.approvals,
+        Some(fa_verify::bundle::ApprovalSummary {
+            records: 1,
+            signed: 1,
+            key_records: 1,
+        })
+    );
+    for name in [
+        "payload_disclosure",
+        "recomputation",
+        "key_chain",
+        "approval",
+    ] {
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == name && c.grade == fa_verify::Grade::Pass),
+            "{name}: {:?}",
+            report.checks
+        );
+    }
+}

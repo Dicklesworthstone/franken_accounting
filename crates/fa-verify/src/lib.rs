@@ -630,7 +630,6 @@ mod balance_dispatch_tests {
             balance::BALANCE_FORMAT,
             migration_balance::BALANCE_FORMAT_V2,
             migration_balance::BALANCE_FORMAT_V3,
-            migration_balance::BALANCE_FORMAT_V4,
         ] {
             let mut w = codec::Writer::default();
             w.bytes(format)
@@ -645,9 +644,6 @@ mod balance_dispatch_tests {
             if format != balance::BALANCE_FORMAT {
                 w.count(0);
             }
-            if format == migration_balance::BALANCE_FORMAT_V4 {
-                w.count(0);
-            }
             let report = verify_balance(&w.buf, &checkpoint).unwrap();
             assert_eq!(report.scope, "recomputation");
             assert!(report.contributing.is_empty());
@@ -659,5 +655,21 @@ mod balance_dispatch_tests {
                 );
             }
         }
+
+        // V4 is reserved for a nonempty authenticated source-manifest
+        // closure, so exercise it with a finalized run and real chunks.
+        let (bytes, checkpoint) = migration_balance::source_bound_fixture(BalanceScope {
+            account: 10,
+            unit: 1,
+            effective_through: None,
+        });
+        let report = verify_balance(&bytes, &checkpoint).unwrap();
+        assert_eq!(report.scope, "recomputation");
+        assert_eq!(report.contributing, vec![2, 3]);
+        assert_eq!((report.claim.debits, report.claim.credits), (5000, 5000));
+        assert_eq!(
+            migration_balance::verify_balance(&bytes, &checkpoint).unwrap(),
+            report
+        );
     }
 }

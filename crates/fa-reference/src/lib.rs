@@ -36,6 +36,9 @@ pub mod sod;
 pub mod statements;
 mod temporal;
 
+#[cfg(test)]
+mod reclassification_tests;
+
 /// The registered control kinds (`registries/entry_classes.toml`
 /// `[[control_kind]]`, fa-g23), written out literally: `(id, name, the
 /// control class it mints)`. The oracle's own copy, so a drift between the
@@ -2356,6 +2359,10 @@ impl Oracle {
             }
         }
         let mut moved: BTreeMap<(String, u32, bool, Option<String>), Int> = BTreeMap::new();
+        // Independent exact conservation: a released position subtracts
+        // from its original side; a destination adds on its own side.
+        // Ordinary double-entry balance alone cannot exclude unrelated pairs.
+        let mut remaining_transfers: BTreeMap<(u32, bool), Int> = BTreeMap::new();
         let mut sources = BTreeSet::new();
         let mut destinations = BTreeSet::new();
         for l in &intent.legs {
@@ -2367,12 +2374,23 @@ impl Oracle {
                 if remaining.sub(slot).is_negative() {
                     return false;
                 }
+                let transfer = remaining_transfers
+                    .entry((l.unit, opposite(l.side) == Side::Debit))
+                    .or_insert_with(Int::zero);
+                *transfer = transfer.sub(&Int::from_i128(l.mantissa));
                 sources.insert(place);
             } else {
+                let transfer = remaining_transfers
+                    .entry((l.unit, l.side == Side::Debit))
+                    .or_insert_with(Int::zero);
+                *transfer = transfer.add(&Int::from_i128(l.mantissa));
                 destinations.insert(place);
             }
         }
-        !sources.is_empty() && !destinations.is_empty() && destinations.is_disjoint(&sources)
+        !sources.is_empty()
+            && !destinations.is_empty()
+            && destinations.is_disjoint(&sources)
+            && remaining_transfers.values().all(Int::is_zero)
     }
 
     fn post_inner(

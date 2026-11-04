@@ -1106,8 +1106,8 @@ code = "FA-REF-185"
 name = "RECLASSIFICATION_SHAPE"
 owners = ["fa-journal"]
 exit = "refusal"
-cite = "plan §8.2 (Reclassifies: a positive part of the target's legs moves to another account or dimension in the same unit; net effect is target plus the reclassification delta; bead fa-xvba)"
-fix = "name one live committed target with kind Reclassifies and a registered reason, move out of its legs at most what earlier reclassifications left, to at least one other account or dimension: fa reclass <target> --from <account> --to <account> --amount \"<amount>\" --reason <name>"
+cite = "plan §8.2 (Reclassifies: a positive part of the target's legs moves to another account or dimension, preserving the released amount separately for each unit and original side; net effect is target plus the reclassification delta; bead fa-xvba)"
+fix = "name one live committed target with kind Reclassifies and a registered reason, move out of its legs at most what earlier reclassifications left, and deliver exactly those amounts to new accounts or dimensions in the same unit and original side; omit unrelated balanced pairs: fa reclass <target> --from <account> --to <account> --amount \"<amount>\" --reason <name>"
 
 [[refusal]]
 code = "FA-REF-179"

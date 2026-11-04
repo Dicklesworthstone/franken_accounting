@@ -111,9 +111,10 @@ impl PreparedTransition {
         }
     }
 
-    /// Commit with the original witnesses and a fresh check of the same
-    /// acting capability's expiry. A changed period, revocation, approval,
-    /// or policy epoch is judged by the ordinary transaction validator.
+    /// Commit with the original witnesses and fresh checks of the same
+    /// acting capability's publication admission and expiry. A changed period,
+    /// revocation, approval, or policy epoch is judged by the ordinary
+    /// transaction validator.
     pub async fn commit<V: asupersync::fs::Vfs + Clone>(
         self,
         db: &mut Database<V>,
@@ -157,6 +158,10 @@ impl PreparedTransition {
             }
             PreparedTransitionState::Staged(staged) => *staged,
         };
+        if let Err(denial) = fa_policy::admit_direct_write(&capability) {
+            txn.abort();
+            return Ok(Err(policy::refusal(&denial)));
+        }
         if let Err(d) = fa_policy::current(&capability, db.frontier()?) {
             txn.abort();
             return Ok(Err(policy::refusal(&d)));
@@ -1056,7 +1061,14 @@ pub async fn plan_open_transition<V: asupersync::fs::Vfs + Clone>(
 ) -> Outcome<TransitionPlan> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     if let Err(denial) = fa_policy::admit_read(capability, principal_ref, book.book_id)
-        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .and_then(|()| {
+            fa_policy::reach_class(
+                capability,
+                &fa_policy::Reach::whole_book(true),
+                None,
+                EntryClass::PERIOD_CONTROL,
+            )
+        })
         .and_then(|()| {
             fa_policy::require(
                 capability,
@@ -1174,6 +1186,9 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     approvals: &[ApprovalRef],
 ) -> Outcome<Transitioned> {
+    if let Err(denial) = fa_policy::admit_direct_write(capability) {
+        return Ok(Err(policy::refusal(&denial)));
+    }
     if let Err(refusal) = admit_transition(db, book, period_code, t, principal_ref, capability)? {
         return Ok(Err(refusal));
     }
@@ -1403,6 +1418,9 @@ async fn transition_planned_in<V: asupersync::fs::Vfs + Clone>(
     completion: Option<&crate::close_run::TaskCompletion>,
 ) -> Outcome<Transitioned> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
+    if let Err(denial) = fa_policy::admit_direct_write(capability) {
+        return Ok(Err(policy::refusal(&denial)));
+    }
     if let Err(refusal) = admit_transition(
         db,
         book,
@@ -1431,7 +1449,14 @@ async fn transition_planned_in<V: asupersync::fs::Vfs + Clone>(
             )));
         };
         if let Err(denial) = fa_policy::admit_read(capability, plan.principal_ref, book.book_id)
-            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+            .and_then(|()| {
+                fa_policy::reach_class(
+                    capability,
+                    &fa_policy::Reach::whole_book(true),
+                    None,
+                    EntryClass::PERIOD_CONTROL,
+                )
+            })
             .and_then(|()| {
                 fa_policy::require(
                     capability,
@@ -1615,7 +1640,7 @@ fn admit_transition<V: asupersync::fs::Vfs + Clone>(
     let calendar_period = policy::calendar_period(book, period_code);
     let reached = [period_code];
     let through = calendar_period.as_ref().map(PeriodDef::last_day);
-    if let Err(denial) = fa_policy::admit_within(
+    if let Err(denial) = fa_policy::admit_preparation(
         capability,
         &Intent {
             principal,
@@ -1632,6 +1657,7 @@ fn admit_transition<V: asupersync::fs::Vfs + Clone>(
             accounts: None,
         },
         None,
+        Some(EntryClass::PERIOD_CONTROL),
     ) {
         return Ok(Err(policy::refusal(&denial)));
     }
@@ -1702,8 +1728,10 @@ fn prepare_transition_in<V: asupersync::fs::Vfs + Clone>(
     let pvid = period_vid(&book.calendar.id, period_code);
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
-    // Current authority: not revoked, under the witnessed policy epoch.
-    if let Err(r) = policy::capability_witness(&txn, db, book, capability)? {
+    // Open rehearsals also stage this exact transaction and then abort it.
+    // Witness current authority here; commit checks publication admission
+    // against the capability sealed inside StagedTransition.
+    if let Err(r) = policy::capability_authority_witness(&txn, db, book, capability)? {
         txn.abort();
         return Ok(Err(r));
     }

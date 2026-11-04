@@ -3,16 +3,18 @@
 //! inputs alone, before the kernel reads anything from storage.
 //!
 //! **Scope caveats** (`accounts`, `periods`, `effective ≤ date`,
-//! `known_at ≤ seq`, `branch`) are judged by [`reach`] against what an act
+//! `known_at ≤ seq`, `branch`, `classes`) are judged by [`reach`] against what an act
 //! reaches, before any query is constructed and never by filtering a result
 //! (plan §14.2, interim posture of Appendix H R-WARDEN). [`admit`] judges
 //! an act on the whole book, so a scoped token is refused there; only acts
 //! that name their accounts and periods (a post, a period transition, a
 //! scoped read) call [`admit_within`] or [`reach`] with a narrower reach.
+//! A class-scoped act additionally uses [`admit_within_class`] or
+//! [`reach_class`] with the class derived from its actual payload.
 
 use std::collections::BTreeSet;
 
-use fa_model::Id128;
+use fa_model::{EntryClass, Id128};
 use fa_money::UnitId;
 use fa_time::DateDay;
 use fgdb_types::{CommitSeq, VId};
@@ -113,6 +115,13 @@ pub fn admit(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
     admit_within(cap, intent, &Reach::whole_book(intent.trunk), None)
 }
 
+/// [`admit`] for a write whose canonical payload determines its class.
+/// The remaining reach is still the whole book: naming a class does not
+/// authorize accounts, periods, or another caveat's wider scope.
+pub fn admit_class(cap: &Capability, intent: &Intent<'_>, class: EntryClass) -> Result<(), Denial> {
+    admit_within_class(cap, intent, &Reach::whole_book(intent.trunk), None, class)
+}
+
 /// [`admit`] for an act that names what it reaches: [`admit_base`], then
 /// [`reach`] over `r` with the compiled `accounts` scope.
 pub fn admit_within(
@@ -125,28 +134,46 @@ pub fn admit_within(
     reach(cap, r, accounts)
 }
 
-/// Ordinary control-write checks before reach: the capability is the actor's, an
+/// [`admit_within`] with the class of the actual canonical write payload.
+/// A caller must not infer this from the operation: one operation can
+/// publish several different entry classes.
+pub fn admit_within_class(
+    cap: &Capability,
+    intent: &Intent<'_>,
+    r: &Reach<'_>,
+    accounts: Option<&AccountScope>,
+    class: EntryClass,
+) -> Result<(), Denial> {
+    admit_base(cap, intent)?;
+    reach_class(cap, r, accounts, class)
+}
+
+/// The checks that precede every reach: the capability is the actor's, an
 /// Agent never writes trunk, the op is held, the book is in scope, and
 /// every leg is within its unit's ceiling. A kernel that compiles the
 /// `accounts` caveat (compiling reads the chart) runs this first, so
 /// nothing is read for a token that may not act here at all, then [`reach`].
 pub fn admit_base(cap: &Capability, intent: &Intent<'_>) -> Result<(), Denial> {
     admit_base_as(cap, intent, false)?;
-    admit_control_write(cap)
+    admit_direct_write(cap)
 }
 
-/// Admit a control write that has no verified rehearsal-certificate protocol.
-/// Controls may offer previews, but a preview alone does not discharge the
-/// `requires_dry_run` caveat. Run this before observing storage; read admission
-/// and its mandatory access receipts are independent of this write check.
-pub fn admit_control_write(cap: &Capability) -> Result<(), Denial> {
-    if cap.has_requires_dry_run_caveat() {
-        return Err(out_of_scope(
-            "requires_dry_run",
-            "a control write without a supported verified rehearsal certificate".into(),
-        ));
+/// Authority and reach for nonpublishing control preparation. A preview does
+/// not discharge `requires_dry_run`: publication must independently call
+/// [`admit_direct_write`] on the original capability before observing storage.
+/// Unlike posting-plan previews, this does not permit an Agent on trunk.
+pub fn admit_preparation(
+    cap: &Capability,
+    intent: &Intent<'_>,
+    r: &Reach<'_>,
+    accounts: Option<&AccountScope>,
+    class: Option<EntryClass>,
+) -> Result<(), Denial> {
+    admit_base_as(cap, intent, false)?;
+    match class {
+        Some(class) => reach_class(cap, r, accounts, class),
+        None => reach(cap, r, accounts),
     }
-    Ok(())
 }
 
 /// Base authority checks for the posting kernel, which separately verifies
@@ -218,6 +245,48 @@ fn admit_base_as(cap: &Capability, intent: &Intent<'_>, planning: bool) -> Resul
 /// (and the compiled `accounts` scope), before any query is constructed.
 /// A capability with an `accounts` caveat and no compiled scope is refused.
 pub fn reach(
+    cap: &Capability,
+    r: &Reach<'_>,
+    accounts: Option<&AccountScope>,
+) -> Result<(), Denial> {
+    require_class(cap, None)?;
+    reach_coordinates(cap, r, accounts)
+}
+
+/// Judge every reach caveat when the request determines one entry class.
+/// Unknown or whole-book class reach uses [`reach`] and fails closed for a
+/// class-scoped capability. This does not narrow any other coordinate.
+pub fn reach_class(
+    cap: &Capability,
+    r: &Reach<'_>,
+    accounts: Option<&AccountScope>,
+    class: EntryClass,
+) -> Result<(), Denial> {
+    require_class(cap, Some(class))?;
+    reach_coordinates(cap, r, accounts)
+}
+
+/// Admit a class from explicit request data before observing storage.
+/// `None` means the act does not establish its class, including approvals
+/// over opaque digests and global controls whose effects are not named.
+pub fn require_class(cap: &Capability, class: Option<EntryClass>) -> Result<(), Denial> {
+    let Some(held) = cap.classes() else {
+        return Ok(());
+    };
+    match class {
+        Some(class) if held.contains(&class) => Ok(()),
+        Some(class) => Err(out_of_scope(
+            "classes",
+            format!("class `{}`", class.name().unwrap_or("unknown")),
+        )),
+        None => Err(out_of_scope(
+            "classes",
+            "an act whose entry class is not established before the read".into(),
+        )),
+    }
+}
+
+fn reach_coordinates(
     cap: &Capability,
     r: &Reach<'_>,
     accounts: Option<&AccountScope>,
@@ -320,6 +389,25 @@ pub fn admit_read(cap: &Capability, principal: VId, book: Id128) -> Result<(), D
     scope(cap, book)
 }
 
+/// Admit a write that has no verified rehearsal certificate. This is
+/// separate from actor, operation, and reach admission: those checks also
+/// serve read-only preparation, which a rehearsal-required token may do.
+/// Control commit paths call this before staging any publication. A
+/// posting plan satisfies the caveat only through its authenticated,
+/// effect-revalidated commit path, never by skipping this check at a
+/// caller's request.
+pub fn admit_direct_write(cap: &Capability) -> Result<(), Denial> {
+    if cap.has_requires_dry_run_caveat() {
+        Err(out_of_scope(
+            "requires_dry_run",
+            "a write without a verified rehearsal certificate; this commit path does not verify one"
+                .into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn out_of_scope(caveat: &'static str, value: String) -> Denial {
     Denial::OutOfScope { caveat, value }
 }
@@ -375,6 +463,183 @@ mod tests {
             book: BOOK,
             legs,
         }
+    }
+
+    #[test]
+    fn class_caveats_require_a_known_matching_class_without_widening_other_scopes() {
+        let base = Capability::embedded(VId(1), &["post", "close"]).unwrap();
+        let scoped = base
+            .clone()
+            .for_classes(&[EntryClass::PERIOD_CONTROL])
+            .unwrap();
+        let mut control = intent(VId(1), &[]);
+        control.op = Op::Close;
+        let whole = Reach::whole_book(true);
+        assert!(scoped.is_scoped());
+        for denied in [
+            admit(&scoped, &control),
+            admit_within(&scoped, &control, &whole, None),
+            reach(&scoped, &whole, None),
+            admit_class(&scoped, &control, EntryClass::ORIGINAL),
+        ] {
+            assert!(matches!(
+                denied,
+                Err(Denial::OutOfScope {
+                    caveat: "classes",
+                    ..
+                })
+            ));
+        }
+        assert_eq!(admit(&base, &control), Ok(()));
+        assert_eq!(
+            admit_class(&scoped, &control, EntryClass::PERIOD_CONTROL),
+            Ok(())
+        );
+        let periods = scoped.for_periods(&["FY2026-P03"]).unwrap();
+        assert!(matches!(
+            admit_class(&periods, &control, EntryClass::PERIOD_CONTROL),
+            Err(Denial::OutOfScope {
+                caveat: "periods",
+                ..
+            })
+        ));
+        let codes = ["FY2026-P03"];
+        let reached = Reach {
+            periods: Some(&codes),
+            ..whole
+        };
+        assert_eq!(
+            admit_within_class(
+                &periods,
+                &control,
+                &reached,
+                None,
+                EntryClass::PERIOD_CONTROL
+            ),
+            Ok(())
+        );
+        let other = ["FY2026-P04"];
+        assert!(matches!(
+            admit_within_class(
+                &periods,
+                &control,
+                &Reach {
+                    periods: Some(&other),
+                    ..whole
+                },
+                None,
+                EntryClass::PERIOD_CONTROL,
+            ),
+            Err(Denial::OutOfScope {
+                caveat: "periods",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn class_admission_keeps_holder_operation_amount_and_rehearsal_laws() {
+        let cap = Capability::embedded(VId(1), &["post"])
+            .unwrap()
+            .for_classes(&[EntryClass::ORIGINAL])
+            .unwrap()
+            .with_ceiling(USD, 100)
+            .unwrap()
+            .with_requires_dry_run();
+        assert_eq!(
+            admit_preparation(
+                &cap,
+                &intent(VId(1), &[(USD, 100)]),
+                &Reach::whole_book(true),
+                None,
+                Some(EntryClass::ORIGINAL),
+            ),
+            Ok(())
+        );
+        assert!(matches!(
+            admit_class(&cap, &intent(VId(1), &[(USD, 100)]), EntryClass::ORIGINAL),
+            Err(Denial::OutOfScope {
+                caveat: "requires_dry_run",
+                ..
+            })
+        ));
+        assert!(matches!(
+            admit_preparation(
+                &cap,
+                &intent(VId(1), &[(USD, 100)]),
+                &Reach::whole_book(true),
+                None,
+                Some(EntryClass::PERIOD_CONTROL),
+            ),
+            Err(Denial::OutOfScope {
+                caveat: "classes",
+                ..
+            })
+        ));
+        assert!(matches!(
+            admit_class(&cap, &intent(VId(2), &[]), EntryClass::ORIGINAL),
+            Err(Denial::NotHolder { .. })
+        ));
+        assert!(matches!(
+            admit_class(
+                &cap,
+                &Intent {
+                    op: Op::Close,
+                    ..intent(VId(1), &[])
+                },
+                EntryClass::ORIGINAL
+            ),
+            Err(Denial::MissingOp { .. })
+        ));
+        assert!(matches!(
+            admit_class(&cap, &intent(VId(1), &[(USD, 101)]), EntryClass::ORIGINAL),
+            Err(Denial::CeilingExceeded { .. })
+        ));
+        assert!(matches!(
+            admit_direct_write(&cap),
+            Err(Denial::OutOfScope {
+                caveat: "requires_dry_run",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn required_rehearsal_refuses_direct_writes_without_blocking_read_or_plan_admission() {
+        let cap = Capability::embedded(VId(1), &["read", "post", "close"]).unwrap();
+        assert_eq!(admit_direct_write(&cap), Ok(()));
+        let cap = cap.with_requires_dry_run();
+        let denial = admit_direct_write(&cap).unwrap_err();
+        assert!(matches!(
+            denial,
+            Denial::OutOfScope {
+                caveat: "requires_dry_run",
+                ..
+            }
+        ));
+        assert_eq!(admit_read(&cap, VId(1), BOOK), Ok(()));
+        assert_eq!(admit_base_for_plan(&cap, &intent(VId(1), &[])), Ok(()));
+        // Controls prepare proposal digests for review without publishing.
+        let mut control = intent(VId(1), &[]);
+        control.op = Op::Close;
+        assert_eq!(
+            admit_preparation(&cap, &control, &Reach::whole_book(true), None, None),
+            Ok(())
+        );
+        assert!(matches!(
+            admit(&cap, &control),
+            Err(Denial::OutOfScope {
+                caveat: "requires_dry_run",
+                ..
+            })
+        ));
+        let agent = Capability::new(VId(1), Profile::Agent, &[Op::Close], VId(1))
+            .unwrap()
+            .with_requires_dry_run();
+        assert_eq!(
+            admit_preparation(&agent, &control, &Reach::whole_book(true), None, None),
+            Err(Denial::AgentOnTrunk)
+        );
     }
 
     #[test]

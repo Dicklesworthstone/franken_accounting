@@ -1098,7 +1098,9 @@ pub fn review_balancing<V: asupersync::fs::Vfs + Clone>(
     };
     let txn = db.begin(&ctx.txn())?;
     let reviewed = (|| {
-        if let Err(refusal) = crate::policy::capability_witness(&txn, db, book, &req.capability)? {
+        if let Err(refusal) =
+            crate::policy::capability_authority_witness(&txn, db, book, &req.capability)?
+        {
             return Ok(Err(refusal));
         }
         let accounts = match crate::post::admit_accounts(

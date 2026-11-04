@@ -227,7 +227,7 @@ fn admit_confirmation<V: Vfs + Clone>(
     book: &BookContext,
     capability: &Capability,
 ) -> Outcome<()> {
-    if let Err(denial) = fa_policy::admit_control_write(capability) {
+    if let Err(denial) = fa_policy::admit_direct_write(capability) {
         return Ok(Err(crate::policy::refusal(&denial)));
     }
     if let Err(refusal) = admit_bank_match(db, book, capability)? {

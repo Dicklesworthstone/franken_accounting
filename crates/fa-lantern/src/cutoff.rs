@@ -487,7 +487,8 @@ impl Procedure for ReconAttestedRegisterCompare {
 
 /// `completeness.unrecorded_liabilities` (plan §11.7, `FA-EVID-L44`, AU-C 500 / ISA 500):
 /// cash disbursements or payable/expense entries recorded in a subsequent period
-/// within `window_days` whose document date lies in an earlier period.
+/// within `window_days` after the document's period end. Version 1 measured
+/// document age instead and missed older invoices paid just after period end.
 pub struct UnrecordedLiabilities {
     params: Params,
 }
@@ -498,7 +499,7 @@ impl Procedure for UnrecordedLiabilities {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -531,11 +532,7 @@ impl Procedure for UnrecordedLiabilities {
             if doc_date >= eff {
                 continue;
             }
-            let lag_days = (eff.0 - doc_date.0) as u32;
-            if lag_days > window_days {
-                continue;
-            }
-            let doc_period = snapshot.document_period_code_of(
+            let document_period = snapshot.document_period_of(
                 book,
                 doc_date,
                 e.entry
@@ -544,7 +541,14 @@ impl Procedure for UnrecordedLiabilities {
                     .as_ref()
                     .map(|p| p.code.as_str()),
             )?;
+            let doc_period = document_period.code;
             if doc_period == e.period {
+                continue;
+            }
+            let Some(lag_days) = days_after_period_end(eff, document_period.end) else {
+                continue;
+            };
+            if lag_days > window_days {
                 continue;
             }
             // Must touch an expense or liability account (or credit cash for an obligation)
@@ -587,13 +591,23 @@ impl Procedure for UnrecordedLiabilities {
                 },
                 cites,
                 format!(
-                    "obligation dated in prior period {doc_period} recorded in subsequent period {} ({lag_days} day(s) later, amount {mag})",
+                    "obligation dated in prior period {doc_period} recorded in subsequent period {} ({lag_days} day(s) after prior period end, amount {mag})",
                     e.period
                 ),
             ));
         }
         Ok(out)
     }
+}
+
+/// Civil days after the last included day of a half-open period. Its
+/// exclusive end is day one, not day zero. Wide checked subtraction also
+/// keeps extreme decoded dates from wrapping into the lookahead window.
+fn days_after_period_end(date: DateDay, exclusive_end: DateDay) -> Option<u32> {
+    let days = i64::from(date.0)
+        .checked_sub(i64::from(exclusive_end.0))?
+        .checked_add(1)?;
+    u32::try_from(days).ok().filter(|days| *days > 0)
 }
 
 /// `events.subsequent` (plan §11.7, `FA-EVID-L45`, AS 2801 / IAS 10):
@@ -610,7 +624,7 @@ impl Procedure for SubsequentEvents {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        3
     }
     fn params(&self) -> &Params {
         &self.params
@@ -706,19 +720,26 @@ impl Procedure for SubsequentEvents {
 
             let mut matched_closed_period: Option<(String, u32)> = None;
             if let Some(orig) = prior_superseded {
-                let days = (eff.0 - orig.entry.proposal.effective_date.0).unsigned_abs();
-                if days <= window_days {
+                let period = snapshot.document_period_of(
+                    book,
+                    orig.entry.proposal.effective_date,
+                    Some(&orig.period),
+                )?;
+                if let Some(days) = days_after_period_end(eff, period.end)
+                    && days <= window_days
+                {
                     matched_closed_period = Some((orig.period.clone(), days));
                 }
             }
             if matched_closed_period.is_none() && is_subsequent_class {
                 for (pcode, pend) in &closed_periods {
-                    if *pcode != e.period && eff > *pend {
-                        let days = (eff.0 - pend.0) as u32;
-                        if days <= window_days {
-                            matched_closed_period = Some((pcode.clone(), days));
-                            break;
-                        }
+                    work.compare(1)?;
+                    if *pcode != e.period
+                        && let Some(days) = days_after_period_end(eff, *pend)
+                        && days <= window_days
+                    {
+                        matched_closed_period = Some((pcode.clone(), days));
+                        break;
                     }
                 }
             }
@@ -1610,7 +1631,7 @@ impl Procedure for SolvencyCashFlowTest {
         Self::ID
     }
     fn version(&self) -> u16 {
-        3
+        4
     }
     fn params(&self) -> &Params {
         &self.params

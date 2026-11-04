@@ -1098,6 +1098,7 @@ impl Capability {
             || self.effective_through.is_some()
             || self.known_at.is_some()
             || self.branch.is_some()
+            || self.classes.is_some()
     }
 
     #[must_use]
@@ -2480,6 +2481,10 @@ mod tests {
             plain.clone().effective_through(DateDay(20_000)),
             plain.clone().known_at_most(CommitSeq(9)),
             plain.clone().on_branch(Id128([3; 16])).unwrap(),
+            plain
+                .clone()
+                .for_classes(&[EntryClass::PERIOD_CONTROL])
+                .unwrap(),
             scoped().effective_through(DateDay(19_999)),
             scoped().known_at_most(CommitSeq(8)),
         ] {

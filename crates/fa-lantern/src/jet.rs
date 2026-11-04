@@ -597,8 +597,9 @@ impl Procedure for ThinDescriptions {
     }
 }
 
-/// `jet.unusual_accounts`: live postings whose account-pair co-occurrence is
-/// rare in the snapshot population.
+/// `jet.unusual_accounts`: live postings whose undirected debit/credit account
+/// pairs are rare in the snapshot population. Version 2 counts each pair once
+/// per entry; version 1 incorrectly counted complete account combinations.
 pub struct UnusualAccounts {
     params: Params,
 }
@@ -609,7 +610,7 @@ impl Procedure for UnusualAccounts {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -625,45 +626,80 @@ impl Procedure for UnusualAccounts {
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| e.vid);
         let population = live.len() as u64;
-        let mut freq: BTreeMap<Vec<VId>, u64> = BTreeMap::new();
-        let mut entry_keys: Vec<(VId, Vec<VId>)> = Vec::with_capacity(live.len());
-        for e in &live {
-            work.entry()?;
-            let mut accts: Vec<VId> = Vec::with_capacity(e.entry.proposal.legs.len());
-            for leg in &e.entry.proposal.legs {
-                work.leg()?;
-                if snapshot.accounts.contains_key(&leg.account_ref) {
-                    accts.push(leg.account_ref);
-                }
-            }
-            accts.sort_unstable();
-            accts.dedup();
-            if accts.len() >= 2 {
-                *freq.entry(accts.clone()).or_insert(0) += 1;
-            }
-            entry_keys.push((e.vid, accts));
-        }
         if population < min_population {
             return Ok(Vec::new());
         }
-        let mut out = Vec::new();
-        for (vid, accts) in entry_keys {
-            work.compare(1)?;
-            if accts.len() < 2 {
-                continue;
+        // Retain the two sides, not every entry's Cartesian product. The
+        // frequency map holds each distinct pair once across the population.
+        let mut entry_accounts = Vec::with_capacity(live.len());
+        for e in &live {
+            work.entry()?;
+            let mut debits = Vec::new();
+            let mut credits = Vec::new();
+            for leg in &e.entry.proposal.legs {
+                work.leg()?;
+                if snapshot.accounts.contains_key(&leg.account_ref) {
+                    match leg.side {
+                        fa_money::Side::Debit => debits.push(leg.account_ref),
+                        fa_money::Side::Credit => credits.push(leg.account_ref),
+                    }
+                }
             }
-            let count = freq.get(&accts).copied().unwrap_or(0);
+            debits.sort_unstable();
+            debits.dedup();
+            credits.sort_unstable();
+            credits.dedup();
+            entry_accounts.push((e.vid, debits, credits));
+        }
+        let mut freq: BTreeMap<(VId, VId), (u64, usize)> = BTreeMap::new();
+        for (entry_index, (_, debits, credits)) in entry_accounts.iter().enumerate() {
+            for &debit in debits {
+                for &credit in credits {
+                    // Charge before expanding a dense entry or allocating its
+                    // next pair. One comparison per entry would hide this work.
+                    work.compare(1)?;
+                    let pair = (debit.min(credit), debit.max(credit));
+                    let (count, last_entry) = freq.entry(pair).or_insert((0, entry_index));
+                    // A pair can appear in both directions in the same entry.
+                    // Split legs and reciprocal directions still count once.
+                    if *count == 0 || *last_entry != entry_index {
+                        *count = count
+                            .checked_add(1)
+                            .ok_or(LanternError::Overflow("account-pair occurrences"))?;
+                        *last_entry = entry_index;
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for (vid, debits, credits) in entry_accounts {
+            work.compare(1)?;
+            let mut rarest = None;
+            for &debit in &debits {
+                for &credit in &credits {
+                    work.compare(1)?;
+                    let pair = (debit.min(credit), debit.max(credit));
+                    // The same retained sides populated every pair above.
+                    let candidate = (freq[&pair].0, pair);
+                    rarest = Some(rarest.map_or(candidate, |prior| candidate.min(prior)));
+                }
+            }
+            let Some((count, (a, b))) = rarest else {
+                continue;
+            };
             if count <= max_pair_count {
-                let mut cites = vec![Cite::Entry(vid)];
-                cites.extend(accts.iter().take(MAX_CITES - 1).copied().map(Cite::Account));
+                let mut cites = vec![Cite::Entry(vid), Cite::Account(a)];
+                if a != b {
+                    cites.push(Cite::Account(b));
+                }
                 out.push(finding(
                     Self::ID,
                     Severity::Low,
                     Statistic::count("pair_occurrences", count, population),
                     cites,
                     format!(
-                        "account combination ({} accounts) occurs {count} time(s) in {population} live postings (max_pair_count {max_pair_count})",
-                        accts.len()
+                        "debit/credit account pair ({:032x}, {:032x}) occurs {count} time(s) in {population} live postings (max_pair_count {max_pair_count})",
+                        a.0, b.0
                     ),
                 ));
             }

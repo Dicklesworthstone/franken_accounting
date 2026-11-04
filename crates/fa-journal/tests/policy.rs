@@ -49,6 +49,9 @@ const AGENT: VId = VId(31);
 #[path = "policy/capability_retries.rs"]
 mod capability_retries;
 
+#[path = "policy/class_scoped_approval.rs"]
+mod class_scoped_approval;
+
 #[path = "policy/issuance_ancestry.rs"]
 mod issuance_ancestry;
 
@@ -3485,6 +3488,47 @@ fn identical_period_transition_and_period_create_retries_return_recorded_outcome
 // ---------------------------------------------------------------------------
 // Capability issuance (plan §14.2, bead fa-v62)
 // ---------------------------------------------------------------------------
+
+#[test]
+fn requires_dry_run_blocks_control_commits_and_issuance_but_allows_control_preparation() {
+    let mut h = harness();
+    let direct = human(PREPARER, &["read", "close", "issue_capability"]);
+    let rehearsed = direct.clone().with_requires_dry_run();
+    let before = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+
+    let plan = h.period_plan(PeriodTransition::SoftClose, b"required-control-review");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let refusal = h
+        .commit_period_plan(&plan, PeriodTransition::SoftClose, &rehearsed, &[])
+        .unwrap_err();
+    assert_eq!(refusal.exit, 7, "{refusal}");
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+
+    let child = Capability::new(ALICE, Profile::Human, &[Op::Read], PREPARER)
+        .unwrap()
+        .with_requires_dry_run()
+        .holder_bound(possession_digest(&[0x51; 32]));
+    let refusal = h
+        .issue(&rehearsed, &child, b"required-issuance")
+        .unwrap_err();
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+
+    let approver = human(ALICE, &["approve"]).with_requires_dry_run();
+    let refusal = h.approve_with(approver, [0x52; 32]).unwrap_err();
+    assert!(refusal.message.contains("requires_dry_run"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+
+    h.commit_period_plan(&plan, PeriodTransition::SoftClose, &direct, &[])
+        .unwrap();
+    assert_eq!(h.march_state(), PeriodState::SoftClosed);
+    h.issue(&direct, &child, b"required-issuance").unwrap();
+}
 
 impl Harness {
     fn issue(

@@ -464,6 +464,18 @@ impl Snapshot {
         date: fa_time::DateDay,
         hint: Option<&str>,
     ) -> Result<String, LanternError> {
+        self.document_period_of(book, date, hint).map(|p| p.code)
+    }
+
+    /// Resolve the complete calendar definition, including its exclusive
+    /// end, even when the document predates the book's generated period rows.
+    /// Cutoff windows use this boundary rather than the age of the document.
+    pub fn document_period_of(
+        &self,
+        book: &BookContext,
+        date: fa_time::DateDay,
+        hint: Option<&str>,
+    ) -> Result<fa_time::PeriodDef, LanternError> {
         let fy = book
             .calendar
             .fiscal_year_of(date)
@@ -475,10 +487,10 @@ impl Snapshot {
         if let Some(code) = hint
             && let Ok(p) = fa_time::resolve_period(&periods, date, Some(code))
         {
-            return Ok(p.code.clone());
+            return Ok(p.clone());
         }
         fa_time::resolve_period(&periods, date, None)
-            .map(|p| p.code.clone())
+            .cloned()
             .map_err(|e| KernelError::Corrupt(format!("period of date: {e:?}")).into())
     }
 

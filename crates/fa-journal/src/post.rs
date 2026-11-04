@@ -1161,6 +1161,9 @@ pub(crate) fn authorize_effects<V: asupersync::fs::Vfs + Clone>(
     ) {
         return Ok(Err(policy::refusal(&denial)));
     }
+    if let Err(denial) = fa_policy::require_class(capability, Some(proposal.class)) {
+        return Ok(Err(policy::refusal(&denial)));
+    }
     let current = match policy::current_at(db, book, capability)? {
         Ok(current) => current,
         Err(refusal) => return Ok(Err(refusal)),
@@ -2725,7 +2728,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     };
     // The capability is not revoked (plan §14.2): the first read, so a
     // revoked token learns nothing about the book, not even a recorded outcome.
-    if let Err(r) = policy::capability_witness(&txn, db, book, &req.capability)? {
+    if let Err(r) = policy::capability_authority_witness(&txn, db, book, &req.capability)? {
         txn.abort();
         return Ok(Err(r));
     }
@@ -5394,8 +5397,8 @@ fn reclassification_shape(message: impl Into<String>) -> Refusal {
         code::RECLASSIFICATION_SHAPE,
         exit::REFUSAL,
         message.into(),
-        "plan §8.2 (Reclassifies: a positive part of the target's legs moves to another account or dimension in the same unit; net effect is target plus the delta)",
-        "name one live committed target with supersession = [{ target: <EntryRef>, kind: Reclassifies, reason_code }], move out of its legs at most what earlier reclassifications left, to at least one other account or dimension: `fa reclass <target> --from <account> --to <account> --amount \"<amount>\" --reason <name>`",
+        "plan §8.2 (Reclassifies: a positive part of the target's legs moves to another account or dimension, preserving the released amount separately for each unit and original side; net effect is target plus the delta)",
+        "name one live committed target with supersession = [{ target: <EntryRef>, kind: Reclassifies, reason_code }], move out of its legs at most what earlier reclassifications left, and deliver exactly those amounts to new accounts or dimensions in the same unit and original side; omit unrelated balanced pairs: `fa reclass <target> --from <account> --to <account> --amount \"<amount>\" --reason <name>`",
     )
 }
 
@@ -5629,8 +5632,8 @@ pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
     prepare_replacement_pair_admitted(db, ctx, book, reversal_req, replacement_req, admission)
 }
 
-/// The draft module's unforgeable admission tokens authorize rehearsal or
-/// independent promotion without weakening the native atomic pair law.
+/// Private admission tokens authorize draft rehearsal, independent promotion,
+/// or an authenticated correction plan without weakening the native pair law.
 pub(crate) fn prepare_replacement_pair_admitted<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,

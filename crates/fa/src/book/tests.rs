@@ -8,6 +8,8 @@ use fa_money::{Amount, Side};
 use fa_time::{FiscalCalendar, PeriodKind};
 use fgdb_sim::vfs::{FaultKind, FaultPlan, FaultVfs, Trigger};
 
+mod class_scoped_approval;
+
 fn maintenance_capability(principal: VId) -> Capability {
     Capability::embedded(principal, &["read", "verify", "maintain"]).unwrap()
 }

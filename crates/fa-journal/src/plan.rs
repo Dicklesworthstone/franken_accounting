@@ -80,8 +80,9 @@ fn request(intent: &PostIntent, capability: Capability) -> PostRequest {
 /// Run every production posting law and stage every native effect, then
 /// release the transaction without a publication. Already recorded intents
 /// are refused: a fresh plan must describe an actual prospective effect.
-/// A token with a scope caveat (plan §14.2) is refused before anything is
-/// read, because [`commit_plan`] admits only whole-book tokens: no plan is
+/// A token with a coordinate scope caveat (plan §14.2) is refused before
+/// anything is read, because [`commit_plan`] admits only whole-book
+/// coordinates. A class caveat is checked against the actual proposal: no plan is
 /// issued that its own token could never commit, with one deliberate
 /// exception. An Agent-profile token may rehearse a trunk post (plan §15.3:
 /// `fa post --dry-run` is implied for Agents), so the full law can be checked
@@ -95,7 +96,12 @@ pub fn plan_post<V: Vfs + Clone>(
     capability: Capability,
     intent: PostIntent,
 ) -> Outcome<PostPlan> {
-    if let Err(d) = fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None) {
+    if let Err(d) = fa_policy::reach_class(
+        &capability,
+        &fa_policy::Reach::whole_book(true),
+        None,
+        intent.proposal().class,
+    ) {
         return Ok(Err(policy::refusal(&d)));
     }
     let commitment = capability
@@ -146,7 +152,12 @@ pub async fn plan_post_with_history<V: Vfs + Clone>(
     capability: Capability,
     intent: PostIntent,
 ) -> Outcome<PostPlan> {
-    if let Err(denial) = fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None) {
+    if let Err(denial) = fa_policy::reach_class(
+        &capability,
+        &fa_policy::Reach::whole_book(true),
+        None,
+        intent.proposal().class,
+    ) {
         return Ok(Err(policy::refusal(&denial)));
     }
     if let Err(refusal) = crate::post::authorize_request(
@@ -541,7 +552,7 @@ pub async fn commit_plan<V: Vfs + Clone>(
         .collect();
     // Authentication of the plan never replaces admission of the caller.
     // Do this before observing the identity, retained certificate, or head.
-    if let Err(denial) = fa_policy::admit_for_post(
+    if let Err(denial) = fa_policy::admit_base_for_post(
         &capability,
         &fa_policy::Intent {
             principal: proposal.principal_ref,
@@ -550,7 +561,15 @@ pub async fn commit_plan<V: Vfs + Clone>(
             book: book.book_id,
             legs: &explicit,
         },
-    ) {
+    )
+    .and_then(|()| {
+        fa_policy::reach_class(
+            &capability,
+            &fa_policy::Reach::whole_book(true),
+            None,
+            proposal.class,
+        )
+    }) {
         return Ok(Err(policy::refusal(&denial)));
     }
     if let Err(denial) = fa_policy::current(&capability, db.frontier()?) {
@@ -777,8 +796,15 @@ pub fn plan_replacement<V: Vfs + Clone>(
     reversal: PostIntent,
     replacement: PostIntent,
 ) -> Outcome<ReplacementPlan> {
-    if let Err(d) = fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None) {
-        return Ok(Err(policy::refusal(&d)));
+    for intent in [&reversal, &replacement] {
+        if let Err(d) = fa_policy::reach_class(
+            &capability,
+            &fa_policy::Reach::whole_book(true),
+            None,
+            intent.proposal().class,
+        ) {
+            return Ok(Err(policy::refusal(&d)));
+        }
     }
     let commitment = capability
         .commitment()
@@ -865,8 +891,15 @@ pub async fn plan_replacement_with_history<V: Vfs + Clone>(
     reversal: PostIntent,
     replacement: PostIntent,
 ) -> Outcome<ReplacementPlan> {
-    if let Err(denial) = fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None) {
-        return Ok(Err(policy::refusal(&denial)));
+    for intent in [&reversal, &replacement] {
+        if let Err(denial) = fa_policy::reach_class(
+            &capability,
+            &fa_policy::Reach::whole_book(true),
+            None,
+            intent.proposal().class,
+        ) {
+            return Ok(Err(policy::refusal(&denial)));
+        }
     }
     for intent in [&reversal, &replacement] {
         if let Err(refusal) = crate::post::authorize_request(
@@ -1017,9 +1050,6 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
             "the correction does not target this book's trunk",
         )));
     }
-    if let Err(denial) = fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None) {
-        return Ok(Err(policy::refusal(&denial)));
-    }
     for member in [plan.reversal(), plan.replacement()] {
         let proposal = member.intent().proposal();
         let explicit: Vec<_> = proposal
@@ -1027,7 +1057,7 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
             .iter()
             .map(|leg| (leg.amount.unit, leg.amount.mantissa))
             .collect();
-        if let Err(denial) = fa_policy::admit_for_post(
+        if let Err(denial) = fa_policy::admit_base_for_post(
             &capability,
             &fa_policy::Intent {
                 principal: proposal.principal_ref,
@@ -1036,7 +1066,15 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
                 book: book.book_id,
                 legs: &explicit,
             },
-        ) {
+        )
+        .and_then(|()| {
+            fa_policy::reach_class(
+                &capability,
+                &fa_policy::Reach::whole_book(true),
+                None,
+                proposal.class,
+            )
+        }) {
             return Ok(Err(policy::refusal(&denial)));
         }
     }

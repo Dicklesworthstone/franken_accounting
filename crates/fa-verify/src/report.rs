@@ -1323,6 +1323,15 @@ fn verify_report_with_recipient_inputs(
     let mut manifests = Vec::new();
     if minor == 1 {
         let n = r.count(records.len(), 12, "report_bundle.source_manifests")?;
+        // Minor 1 canonically denotes a nonempty source-manifest closure.
+        // The checkpoint and certificate authenticate the accounting inputs,
+        // but do not authorize an alternate encoding of the transport itself.
+        if n == 0 {
+            return Err(failed(
+                "supported_report",
+                "report bundle minor 1 requires migration source manifests; use minor 0 when no source witness is needed",
+            ));
+        }
         for _ in 0..n {
             manifests.push((
                 r.u64("migration_source.bind_index")?,

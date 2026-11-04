@@ -3956,8 +3956,40 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
     // 1. jet.unusual_accounts & oracle
     let ua = run_over(&snapshot, &h.book, &UnusualAccounts::new().unwrap()).unwrap();
     assert!(!ua.findings.is_empty());
-    witness::determinism(&snapshot, &h.book, &UnusualAccounts::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &UnusualAccounts::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
     assert_eq!(naive::unusual_accounts(&naive_rows, 1, 5), vec![4]);
+    // Compare the production procedure and the independent oracle over the
+    // same five rows, not two unrelated assertions over different populations.
+    let mut shared_population = snapshot.clone();
+    shared_population.entries.retain(|entry| {
+        naive_rows
+            .iter()
+            .any(|row| entry.vid == VId(90_000 + row.index as u128))
+    });
+    let shared_result = run_over(
+        &shared_population,
+        &h.book,
+        &UnusualAccounts::new().unwrap(),
+    )
+    .unwrap();
+    let actual: BTreeSet<_> = shared_result
+        .findings
+        .iter()
+        .filter_map(|finding| match finding.cites.first() {
+            Some(Cite::Entry(vid)) => usize::try_from(vid.0 - 90_000).ok(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        actual,
+        naive::unusual_accounts(&naive_rows, 1, 5)
+            .into_iter()
+            .collect()
+    );
 
     // 2. jet.unusual_preparers
     let up = run_over(&snapshot, &h.book, &UnusualPreparers::new().unwrap()).unwrap();
@@ -4941,6 +4973,248 @@ fn events_subsequent_closed_boundary_is_the_latest_transition_never_an_opened_pe
         if expected {
             witness::determinism(&snapshot, &h.book, &SubsequentEvents::new().unwrap()).unwrap();
         }
+    }
+}
+
+#[test]
+fn unrecorded_liabilities_uses_period_end_instead_of_document_age() {
+    use fa_lantern::cutoff::UnrecordedLiabilities;
+
+    let mut h = harness();
+    let base = h.snapshot();
+    let usd = h.usd;
+    for (document, effective, window, expected_days) in [
+        ("2026-01-01", "2026-02-01", 1, Some(1)),
+        ("2026-01-01", "2026-02-02", 2, Some(2)),
+        ("2026-01-31", "2026-02-03", 2, None),
+        ("2026-01-01", "2026-02-28", 28, Some(28)),
+        ("2026-01-31", "2026-03-01", 28, None),
+        ("2026-01-01", "2026-01-31", 45, None),
+        // December need not have a materialized Period row: its calendar
+        // definition still supplies the exact year-crossing boundary.
+        ("2025-12-01", "2026-01-01", 1, Some(1)),
+    ] {
+        let document = DateDay::parse(document).unwrap();
+        let effective = DateDay::parse(effective).unwrap();
+        let period = base.period_code_of(&h.book, effective).unwrap();
+        let entry = make_snapshot_entry(
+            &mut h,
+            VId(93_101),
+            CommitSeq(700),
+            effective,
+            &period,
+            EntryClass::ORIGINAL,
+            vec![
+                ("6000", Side::Debit, usd, 50_000),
+                ("1000", Side::Credit, usd, 50_000),
+            ],
+            Vec::new(),
+            None,
+            Some(document),
+            None,
+            Vec::new(),
+        );
+        let mut snapshot = base.clone();
+        snapshot.entries.push(entry);
+        let procedure = UnrecordedLiabilities::with(
+            Params::defaults(UnrecordedLiabilities::ID)
+                .unwrap()
+                .set("window_days", window)
+                .unwrap(),
+        );
+        let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+        assert_eq!(result.version, 2);
+        assert_eq!(
+            result.findings.len(),
+            usize::from(expected_days.is_some()),
+            "document={document}, effective={effective}, window={window}"
+        );
+        if let Some(days) = expected_days {
+            let finding = &result.findings[0];
+            assert!(finding.cites.contains(&Cite::Entry(VId(93_101))));
+            assert_eq!(finding.statistic.value, 50_000);
+            assert!(
+                finding
+                    .narrative
+                    .contains(&format!("{days} day(s) after prior period end"))
+            );
+            assert!(
+                witness::determinism(&snapshot, &h.book, &procedure)
+                    .unwrap()
+                    .deterministic()
+            );
+        }
+    }
+}
+
+#[test]
+fn subsequent_events_include_day_one_and_exclude_the_day_after_the_window() {
+    use fa_lantern::Transition;
+    use fa_lantern::cutoff::SubsequentEvents;
+
+    let mut h = harness();
+    let base = h.snapshot();
+    let jan = h.period_code(day(2026, 1, 15));
+    let usd = h.usd;
+    let procedure = SubsequentEvents::with(
+        Params::defaults(SubsequentEvents::ID)
+            .unwrap()
+            .set("window_days", 2)
+            .unwrap(),
+    );
+    for (effective, expected_days) in [
+        (day(2026, 2, 1), Some(1)),
+        (day(2026, 2, 2), Some(2)),
+        (day(2026, 2, 3), None),
+    ] {
+        let period = base.period_code_of(&h.book, effective).unwrap();
+        let entry = make_snapshot_entry(
+            &mut h,
+            VId(93_102),
+            CommitSeq(700),
+            effective,
+            &period,
+            EntryClass::ADJUSTING,
+            vec![
+                ("6000", Side::Debit, usd, 500_000),
+                ("1000", Side::Credit, usd, 500_000),
+            ],
+            Vec::new(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        );
+        for state in [
+            PeriodState::Open,
+            PeriodState::SoftClosed,
+            PeriodState::Locked,
+        ] {
+            let mut snapshot = base.clone();
+            snapshot.entries.push(entry.clone());
+            snapshot.transitions.insert(
+                jan.clone(),
+                vec![Transition {
+                    recorded_at: CommitSeq(600),
+                    from: PeriodState::Open,
+                    to: state,
+                }],
+            );
+            let expected = expected_days.filter(|_| state != PeriodState::Open);
+            let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+            assert_eq!(result.version, 3);
+            assert_eq!(
+                result.findings.len(),
+                usize::from(expected.is_some()),
+                "effective={effective}, prior state={state:?}"
+            );
+            if let Some(days) = expected {
+                assert!(
+                    result.findings[0]
+                        .cites
+                        .contains(&Cite::Period(jan.clone()))
+                );
+                assert!(
+                    result.findings[0]
+                        .narrative
+                        .contains(&format!("({days} day(s) after prior period {jan})"))
+                );
+                assert!(
+                    witness::determinism(&snapshot, &h.book, &procedure)
+                        .unwrap()
+                        .deterministic()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn subsequent_supersessions_use_the_target_period_end_even_without_a_close() {
+    use fa_lantern::cutoff::SubsequentEvents;
+
+    let mut h = harness();
+    let base = h.snapshot();
+    let usd = h.usd;
+    let procedure = SubsequentEvents::with(
+        Params::defaults(SubsequentEvents::ID)
+            .unwrap()
+            .set("window_days", 2)
+            .unwrap(),
+    );
+    for (original_date, reversal_date, expected_days) in [
+        ("2026-01-01", "2026-02-01", Some(1)),
+        ("2026-01-31", "2026-02-02", Some(2)),
+        ("2026-01-01", "2026-02-03", None),
+        ("2026-01-01", "2026-01-31", None),
+        ("2025-12-01", "2026-01-01", Some(1)),
+    ] {
+        let original_date = DateDay::parse(original_date).unwrap();
+        let reversal_date = DateDay::parse(reversal_date).unwrap();
+        let original_period = base.period_code_of(&h.book, original_date).unwrap();
+        let reversal_period = base.period_code_of(&h.book, reversal_date).unwrap();
+        let original = make_snapshot_entry(
+            &mut h,
+            VId(93_103),
+            CommitSeq(700),
+            original_date,
+            &original_period,
+            EntryClass::ORIGINAL,
+            vec![
+                ("6000", Side::Debit, usd, 500_000),
+                ("1000", Side::Credit, usd, 500_000),
+            ],
+            Vec::new(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        );
+        let reversal = make_snapshot_entry(
+            &mut h,
+            VId(93_104),
+            CommitSeq(701),
+            reversal_date,
+            &reversal_period,
+            EntryClass::REVERSAL,
+            vec![
+                ("1000", Side::Debit, usd, 500_000),
+                ("6000", Side::Credit, usd, 500_000),
+            ],
+            vec![fa_model::Supersession {
+                target: fa_model::EntryRef {
+                    vid: original.vid,
+                    entry_digest: original.entry.entry_digest,
+                },
+                kind: SupersessionKind::Reverses,
+                reason_code: 1,
+            }],
+            None,
+            None,
+            None,
+            Vec::new(),
+        );
+        let mut snapshot = base.clone();
+        snapshot.entries.extend([original, reversal]);
+        let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+        assert_eq!(
+            result.findings.len(),
+            usize::from(expected_days.is_some()),
+            "original={original_date}, reversal={reversal_date}"
+        );
+        if let Some(days) = expected_days {
+            let finding = &result.findings[0];
+            assert!(finding.cites.contains(&Cite::Entry(VId(93_103))));
+            assert!(finding.cites.contains(&Cite::Entry(VId(93_104))));
+            assert!(finding.narrative.contains(&format!(
+                "({days} day(s) after prior period {original_period})"
+            )));
+        }
+        assert!(
+            witness::determinism(&snapshot, &h.book, &procedure)
+                .unwrap()
+                .deterministic()
+        );
     }
 }
 

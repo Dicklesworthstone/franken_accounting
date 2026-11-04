@@ -47,6 +47,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         cx: &PurposeContexts,
         capability: Capability,
     ) -> Outcome<OutcomeRebuild> {
+        if let Err(denial) = fa_policy::admit_direct_write(&capability) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         let prepared = match self.prepare_outcome_rebuild(cx, capability).await? {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),

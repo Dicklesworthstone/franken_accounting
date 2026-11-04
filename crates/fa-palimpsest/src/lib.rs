@@ -17,6 +17,8 @@ use fa_registry::g0::SupersessionKinds;
 use fa_time::DateDay;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
+mod reclassification;
+
 /// `H(domain ‖ canonical SeqMap)`.
 pub const SEQ_MAP_DOMAIN: &[u8] = b"fa:seq-map:v1";
 pub const SEQ_MAP_VERSION: u16 = 1;
@@ -473,7 +475,8 @@ type DimSet = Vec<(u32, VId)>;
 ///
 /// A reclassification moves a positive subset of one or more legs of `target`
 /// to new accounts or dimensions in the same unit without negating the entire
-/// entry.
+/// entry. Each unit and original target side must deliver exactly what it
+/// releases; an unrelated balanced pair is not part of that move.
 pub fn validate_reclassification(
     target: &EntryPayload,
     target_ref: EntryRef,
@@ -501,80 +504,23 @@ pub fn validate_reclassification(
         ));
     }
 
-    let side_tag = |s: Side| match s {
-        Side::Debit => 0u8,
-        Side::Credit => 1u8,
-    };
-    // Aggregate target positions by (account_ref, unit, side_tag, dimension_set).
-    let mut target_buckets: BTreeMap<(VId, UnitId, u8, DimSet), i128> = BTreeMap::new();
-    for leg in &target.legs {
-        let key = (
-            leg.account_ref,
-            leg.amount.unit,
-            side_tag(leg.side),
-            leg.dimension_set.clone(),
-        );
-        let slot = target_buckets.entry(key).or_insert(0);
-        *slot = slot
-            .checked_add(leg.amount.mantissa)
-            .ok_or(PalimpsestError::Overflow)?;
-    }
-
-    let mut reduced_buckets: BTreeMap<(VId, UnitId, u8, DimSet), i128> = BTreeMap::new();
-    let mut destination_legs = 0usize;
-    // Where amounts move out of and into, by account, unit and dimensions:
-    // a move back to where it came from moves nothing.
-    let mut sources: BTreeSet<(VId, UnitId, DimSet)> = BTreeSet::new();
-    let mut destinations: BTreeSet<(VId, UnitId, DimSet)> = BTreeSet::new();
-
-    for leg in &reclass.legs {
-        let opposite = match leg.side {
-            Side::Debit => Side::Credit,
-            Side::Credit => Side::Debit,
-        };
-        let target_key = (
-            leg.account_ref,
-            leg.amount.unit,
-            side_tag(opposite),
-            leg.dimension_set.clone(),
-        );
-        let place = (leg.account_ref, leg.amount.unit, leg.dimension_set.clone());
-        if let Some(&avail) = target_buckets.get(&target_key) {
-            sources.insert(place);
-            let slot = reduced_buckets.entry(target_key).or_insert(0);
-            *slot = slot
-                .checked_add(leg.amount.mantissa)
-                .ok_or(PalimpsestError::Overflow)?;
-            if *slot > avail {
-                return Err(PalimpsestError::InvalidReclassification(format!(
-                    "reclassification out of account {:032x} ({}) exceeds target amount ({} > {})",
-                    leg.account_ref.0, leg.amount.unit.0, *slot, avail
-                )));
-            }
-        } else {
-            destinations.insert(place);
-            destination_legs += 1;
+    fn movement(leg: &LegPayload) -> reclassification::Leg<'_, [(u32, VId)]> {
+        reclassification::Leg {
+            account: leg.account_ref.0,
+            unit: leg.amount.unit.0,
+            debit: leg.side == Side::Debit,
+            dimensions: &leg.dimension_set,
+            amount: leg.amount.mantissa,
         }
     }
-
-    if let Some((account, unit, _)) = destinations.intersection(&sources).next() {
-        return Err(PalimpsestError::InvalidReclassification(format!(
-            "reclassification moves amount back into account {:032x} ({}) with the dimensions it moves out of",
-            account.0, unit.0
-        )));
-    }
-    if reduced_buckets.is_empty() {
-        return Err(PalimpsestError::InvalidReclassification(
-            "reclassification does not reduce any leg of the target entry".into(),
-        ));
-    }
-    if destination_legs == 0 {
-        return Err(PalimpsestError::InvalidReclassification(
-            "reclassification must move amount to at least one new account or dimension".into(),
-        ));
-    }
-
-    Ok(())
+    reclassification::validate(
+        target.legs.iter().map(movement),
+        reclass.legs.iter().map(movement),
+    )
+    .map_err(|error| match error {
+        reclassification::Error::Overflow => PalimpsestError::Overflow,
+        other => PalimpsestError::InvalidReclassification(other.to_string()),
+    })
 }
 
 /// `target` as the live reclassifications in `prior` left it (plan §8.2,
@@ -1393,6 +1339,65 @@ mod tests {
             .collect();
         assert_eq!(net.get(&VId(6000)), Some(&100));
         assert_eq!(net.get(&VId(1000)), Some(&-100));
+    }
+
+    #[test]
+    fn a_reclassification_conserves_what_it_moves_per_unit_and_side() {
+        let usd = UnitId(0);
+        let eur = UnitId(1);
+        let leg = |side, account, unit, amount| {
+            LegPayload::simple(side, VId(account), Amount::new(unit, amount))
+        };
+        let target = sample_payload(
+            EntryClass::ORIGINAL,
+            vec![
+                leg(Side::Debit, 6000, usd, 100),
+                leg(Side::Credit, 1000, usd, 100),
+            ],
+            Vec::new(),
+        )
+        .seal(Vec::new(), None)
+        .unwrap();
+        let target_ref = target.entry_ref(VId(10));
+        let reclass = |legs| {
+            sample_payload(
+                EntryClass::RECLASSIFICATION,
+                legs,
+                vec![Supersession {
+                    kind: SupersessionKind::Reclassifies,
+                    target: target_ref,
+                    reason_code: 3,
+                }],
+            )
+        };
+        for invalid in [
+            vec![
+                leg(Side::Credit, 6000, usd, 1),
+                leg(Side::Debit, 6100, usd, 1),
+                leg(Side::Debit, 6200, usd, 50_000),
+                leg(Side::Credit, 1000, usd, 50_000),
+            ],
+            vec![
+                leg(Side::Credit, 6000, usd, 40),
+                leg(Side::Debit, 1000, usd, 40),
+                leg(Side::Debit, 6100, eur, 40),
+                leg(Side::Credit, 1100, eur, 40),
+            ],
+        ] {
+            let error = validate_reclassification(&target.proposal, target_ref, &reclass(invalid))
+                .unwrap_err();
+            assert!(matches!(error, PalimpsestError::InvalidReclassification(_)));
+            assert!(error.to_string().contains("target releases"), "{error}");
+        }
+        let valid = reclass(vec![
+            leg(Side::Credit, 6000, usd, 10),
+            leg(Side::Credit, 6000, usd, 60),
+            leg(Side::Debit, 6100, usd, 20),
+            leg(Side::Debit, 6200, usd, 50),
+            leg(Side::Debit, 1000, usd, 30),
+            leg(Side::Credit, 1100, usd, 30),
+        ]);
+        validate_reclassification(&target.proposal, target_ref, &valid).unwrap();
     }
 
     #[test]

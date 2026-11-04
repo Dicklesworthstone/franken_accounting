@@ -238,11 +238,18 @@ pub fn authorize_approvals_in<V: asupersync::fs::Vfs + Clone>(
     case_preparers: Option<&std::collections::BTreeSet<VId>>,
 ) -> Outcome<()> {
     let steward = steward()?;
-    let (witnessed, commitments) =
-        match witness_approvals(txn, db, book, approvals, proposal_digest, epoch)? {
-            Ok(read) => read,
-            Err(r) => return Ok(Err(r)),
-        };
+    let (witnessed, commitments) = match witness_approvals(
+        txn,
+        db,
+        book,
+        approvals,
+        proposal_digest,
+        epoch,
+        EntryClass::from_name(&key.class),
+    )? {
+        Ok(read) => read,
+        Err(r) => return Ok(Err(r)),
+    };
     let mut lineages = None;
     if steward.excludes(key, "session_lineage") {
         lineages = approval_lineages(txn, db, book, &commitments)?;
@@ -275,7 +282,7 @@ pub fn authorize_lineage<V: asupersync::fs::Vfs + Clone>(
     case_preparers: &BTreeSet<VId>,
 ) -> Outcome<()> {
     let (witnessed, commitments) =
-        match witness_approvals(txn, db, book, approvals, proposal_digest, epoch)? {
+        match witness_approvals(txn, db, book, approvals, proposal_digest, epoch, None)? {
             Ok(read) => read,
             Err(r) => return Ok(Err(r)),
         };
@@ -315,6 +322,7 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
     approvals: &[ApprovalRef],
     proposal_digest: &[u8; 32],
     epoch: u64,
+    class: Option<EntryClass>,
 ) -> Outcome<(Vec<Approver>, Vec<[u8; 32]>)> {
     let mut witnessed: Vec<Approver> = Vec::with_capacity(approvals.len());
     let mut commitments: Vec<[u8; 32]> = Vec::with_capacity(approvals.len());
@@ -363,6 +371,26 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
         ) {
             return Ok(Err(refusal(&d)));
         }
+        // An approval recorded under an issued capability keeps that
+        // capability's immutable class restriction, even when the approval
+        // predates class-aware recording. Judge the actual proposal class
+        // supplied by its SoD key, not a class asserted by the approver.
+        // Do not reapply current expiry/revocation: those do not unwind a
+        // previously recorded approval (plan §14.2).
+        if let Some(issued) = txn.vertex(
+            db,
+            issuance_vid(book.book_id, &approval.capability_commitment),
+        )? {
+            let (capability, _) =
+                issued_here(&issued, book.book_id, &approval.capability_commitment)?;
+            if let Err(d) = fa_policy::require_class(&capability, class) {
+                return Ok(Err(refusal(&d)));
+            }
+        }
+        // Legacy embedded approvals retained only the commitment, not a
+        // capability body. Its historical class set cannot be recovered;
+        // keep those records compatible. New class-scoped approvals require
+        // retained issuance below so every such approval can be checked.
         witnessed.push(Approver::from(&approval));
         commitments.push(approval.capability_commitment);
     }
@@ -446,12 +474,85 @@ pub async fn record_signed_approval<V: asupersync::fs::Vfs + Clone>(
     req: ApprovalRequest,
     signed: Option<SignedBy>,
 ) -> Outcome<Approved> {
-    // An approval binds an opaque proposal digest, so it reaches the whole
-    // book: a scoped token cannot judge what it approves and is refused.
+    record_approval_with_class(db, ctx, book, req, signed, None).await
+}
+
+/// Record an approval of a complete canonical proposal. The digest and
+/// class are derived together from `proposal`; no caller-supplied class
+/// can stand in for the bytes being approved. Other scope caveats retain
+/// the whole-book admission of [`record_approval`].
+///
+/// A class-scoped capability must have its canonical body retained in this
+/// book's issuance journal, so consumption can independently enforce the
+/// same class restriction without changing the Approval wire format.
+pub async fn record_approval_for<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: Capability,
+    proposal: &EntryPayload,
+    role: u16,
+) -> Outcome<Approved> {
+    record_signed_approval_for(db, ctx, book, capability, proposal, role, None).await
+}
+
+/// [`record_approval_for`] with the approver's principal-key signature.
+/// The signed Approval body is unchanged; its approved digest commits the
+/// same canonical proposal whose class admission checks here.
+pub async fn record_signed_approval_for<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: Capability,
+    proposal: &EntryPayload,
+    role: u16,
+    signed: Option<SignedBy>,
+) -> Outcome<Approved> {
+    if proposal.book_id != book.book_id {
+        return Ok(Err(Refusal::new(
+            code::COORDINATE,
+            exit::USAGE,
+            "the approved proposal names another book",
+            "plan Appendix A Approval (the approval and proposal belong to one book)",
+            "approve the canonical proposal in the book it names",
+        )));
+    }
+    let approved_proposal_digest = proposal.proposal_digest()?;
+    record_approval_with_class(
+        db,
+        ctx,
+        book,
+        ApprovalRequest {
+            capability,
+            approved_proposal_digest,
+            role,
+        },
+        signed,
+        Some(proposal.class),
+    )
+    .await
+}
+
+async fn record_approval_with_class<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: ApprovalRequest,
+    signed: Option<SignedBy>,
+    class: Option<EntryClass>,
+) -> Outcome<Approved> {
+    // An opaque digest establishes no class. The payload-taking API alone
+    // supplies the class bound by that same digest; all coordinate caveats
+    // still judge whole-book reach, so this does not widen other scopes.
     if let Err(d) = fa_policy::require(&req.capability, Op::Approve, "recording an approval")
         .and_then(|()| fa_policy::scope(&req.capability, book.book_id))
-        .and_then(|()| fa_policy::admit_control_write(&req.capability))
-        .and_then(|()| fa_policy::reach(&req.capability, &Reach::whole_book(true), None))
+        .and_then(|()| fa_policy::admit_direct_write(&req.capability))
+        .and_then(|()| match class {
+            Some(class) => {
+                fa_policy::reach_class(&req.capability, &Reach::whole_book(true), None, class)
+            }
+            None => fa_policy::reach(&req.capability, &Reach::whole_book(true), None),
+        })
     {
         return Ok(Err(refusal(&d)));
     }
@@ -464,6 +565,22 @@ pub async fn record_signed_approval<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
         txn.abort();
         return Ok(Err(r));
+    }
+    if req.capability.classes().is_some() {
+        let commitment = req.capability.commitment().map_err(capability_error)?;
+        let Some(issued) = txn.vertex(db, issuance_vid(book.book_id, &commitment))? else {
+            txn.abort();
+            return Ok(Err(refusal(&Denial::OutOfScope {
+                caveat: "classes",
+                value: "an approval whose class-scoped capability has no retained issuance body"
+                    .into(),
+            })));
+        };
+        let (retained, _) = issued_here(&issued, book.book_id, &commitment)?;
+        if let Err(d) = fa_policy::require_class(&retained, class) {
+            txn.abort();
+            return Ok(Err(refusal(&d)));
+        }
     }
     let epoch = epoch_witness(&txn, db)?;
     let approval = match Approval::by(
@@ -1114,11 +1231,32 @@ fn admitted_issuance_ancestry(
     Ok(Ok(ancestry))
 }
 
-/// The capability is not revoked, as a point witness of `txn` (plan §14.2:
-/// authority is evaluated against current policy at commit). A revocation
-/// committed after this read makes the transaction a first-committer-wins
-/// conflict.
+/// Admit an ordinary control write, then point-witness its current
+/// authority. Control proposals and approval digests are not authenticated
+/// posting rehearsal certificates, so a `requires_dry_run` capability
+/// cannot publish them through this path. Keeping the check here also
+/// covers façade controls that stage their own transactions.
+///
+/// A revocation committed after the authority read makes the transaction
+/// a first-committer-wins conflict (plan §14.2).
 pub fn capability_witness<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+) -> Outcome<()> {
+    if let Err(denial) = fa_policy::admit_direct_write(capability) {
+        return Ok(Err(refusal(&denial)));
+    }
+    capability_authority_witness(txn, db, book, capability)
+}
+
+/// Point-witness authority without deciding whether a write may publish.
+/// The posting pipeline verifies its rehearsal prerequisite separately;
+/// read-only reviews and control preparations defer publication admission.
+/// Prepared publishers must check their bound capability before committing.
+/// Ordinary control writers must use [`capability_witness`].
+pub(crate) fn capability_authority_witness<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     book: &BookContext,
@@ -1316,12 +1454,7 @@ pub fn payload_reach(
     proposal: &EntryPayload,
     accounts: Option<&AccountScope>,
 ) -> Result<(), Denial> {
-    if !capability.admits_class(proposal.class) {
-        return Err(Denial::OutOfScope {
-            caveat: "classes",
-            value: format!("class `{}`", proposal.class.name().unwrap_or("unknown")),
-        });
-    }
+    fa_policy::require_class(capability, Some(proposal.class))?;
     let legs: Vec<VId> = proposal.legs.iter().map(|l| l.account_ref).collect();
     let mut periods: Vec<String> = resolved_period(
         book,
@@ -1336,7 +1469,7 @@ pub fn payload_reach(
         through = through.max(reverse_on);
     }
     let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
-    fa_policy::reach(
+    fa_policy::reach_class(
         capability,
         &Reach {
             branch: Some(proposal.branch_id),
@@ -1346,12 +1479,13 @@ pub fn payload_reach(
             accounts: Some(&legs),
         },
         accounts,
+        proposal.class,
     )
 }
 
 /// Whether the entry at `vid` lies wholly inside the capability's scope,
 /// decided from its metadata alone (WhiteCreek 3575/3582): the ENTRY label,
-/// the `_fa_effective_day` mirror and each leg vertex's `account_ref`
+/// the class and `_fa_effective_day` mirrors and each leg vertex's `account_ref`
 /// mirror, each a projection point read of `txn` that copies only the
 /// selected label or scalar and is a witness of the transaction. The
 /// payload is never loaded, so an entry outside the scope is never
@@ -1369,6 +1503,21 @@ pub fn entry_in_scope_by_metadata<V: asupersync::fs::Vfs + Clone>(
     vid: VId,
 ) -> Result<bool, KernelError> {
     if txn.vertex_has_label(db, vid, label::ENTRY)? != Some(true) {
+        return Ok(false);
+    }
+    let class = match txn.vertex_property(db, vid, property::CLASS)? {
+        Some(CanonicalScalar::Int(tag)) => u16::try_from(tag)
+            .ok()
+            .map(EntryClass)
+            .filter(|class| class.name().is_some())
+            .ok_or_else(|| KernelError::Corrupt(format!("entry class mirror: {tag}")))?,
+        other => {
+            return Err(KernelError::Corrupt(format!(
+                "entry class mirror: {other:?}"
+            )));
+        }
+    };
+    if fa_policy::require_class(capability, Some(class)).is_err() {
         return Ok(false);
     }
     let day = match txn.vertex_property(db, vid, property::FA_EFFECTIVE_DAY)? {
@@ -1400,10 +1549,12 @@ pub fn entry_in_scope_by_metadata<V: asupersync::fs::Vfs + Clone>(
             }
         }
     }
-    Ok(footprint_in_scope(capability, accounts, book, &legs, day))
+    Ok(footprint_in_scope(
+        capability, accounts, book, &legs, day, class,
+    ))
 }
 
-/// The accounts, period and effective-date caveats admit an entry with
+/// The class, accounts, period and effective-date caveats admit an entry with
 /// these legs on `day`, its period resolved from the date alone. Branch and
 /// `known_at` are the act's own and were judged at its admission, so they
 /// pass here.
@@ -1413,6 +1564,7 @@ fn footprint_in_scope(
     book: &BookContext,
     legs: &[VId],
     day: DateDay,
+    class: EntryClass,
 ) -> bool {
     if capability.accounts().is_some() && legs.is_empty() {
         return false;
@@ -1428,7 +1580,7 @@ fn footprint_in_scope(
         return false;
     }
     let codes: Vec<&str> = period.iter().map(String::as_str).collect();
-    fa_policy::reach(
+    fa_policy::reach_class(
         capability,
         &Reach {
             branch: capability.branch().or(Some(Id128::TRUNK)),
@@ -1440,6 +1592,7 @@ fn footprint_in_scope(
             accounts: Some(legs),
         },
         accounts,
+        class,
     )
     .is_ok()
 }
@@ -2178,6 +2331,12 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
         },
     ) {
         return Ok(Err(refusal(&d)));
+    }
+    // Issuance witnesses ancestry directly, rather than going through the
+    // ordinary control-write witness. Enforce the same rehearsal rule
+    // before observing or extending that authority chain.
+    if let Err(denial) = fa_policy::admit_direct_write(&req.capability) {
+        return Ok(Err(refusal(&denial)));
     }
     if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
         return Ok(Err(refusal(&d)));
