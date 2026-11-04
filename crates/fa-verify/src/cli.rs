@@ -461,6 +461,7 @@ impl Check {
 /// Why a run ended without a report: bad usage (exit 2), an unreadable input
 /// (exit 5), or an input over [`MAX_INPUT_BYTES`] that is refused unread
 /// (exit 8).
+#[derive(Debug)]
 struct Usage {
     message: String,
     fix: String,
