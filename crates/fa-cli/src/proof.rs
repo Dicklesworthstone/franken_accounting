@@ -915,6 +915,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mut report_units = None;
     let mut report_base_unit = None;
     let mut equity_diff_request = false;
+    let mut native_subledger_request = None;
     let produced = if let Some(source) = report_source {
         let bytes = crate::notary::read_certificate_bytes(
             &book,
@@ -935,10 +936,11 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     | fa::ReportArtifactFamily::SplitCashFlow
                     | fa::ReportArtifactFamily::IndirectCashFlow
                     | fa::ReportArtifactFamily::EquityRollForwardDiff
+                    | fa::ReportArtifactFamily::NativeSubledger
             )
         {
             return Err(usage(
-                "--expect on bundle produce applies only to an aging, aging reconciliation, aging portfolio, split cash-flow, indirect cash-flow or equity-roll-forward-diff certificate",
+                "--expect on bundle produce applies only to an aging, aging reconciliation, aging portfolio, native-subledger reconciliation, split cash-flow, indirect cash-flow or equity-roll-forward-diff certificate",
                 "omit --expect for other portable report families",
             ));
         }
@@ -947,6 +949,24 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         // question and must never become the recipient's --expect value.
         report_digest = Some(hex(artifact.digest()));
         match artifact.family() {
+            fa::ReportArtifactFamily::NativeSubledger => {
+                let expected = crate::notary::native_subledger_bundle_expectation(
+                    args,
+                    &book,
+                    principal,
+                    &capability,
+                )?;
+                let certificate = fa::NativeSubledgerCertificate::decode(&bytes)?;
+                let result = book.produce_native_subledger_bundle(
+                    principal,
+                    &capability,
+                    state,
+                    &certificate,
+                    &expected,
+                )??;
+                native_subledger_request = Some(expected);
+                result
+            }
             fa::ReportArtifactFamily::Native => {
                 let certificate = artifact.source_certificate();
                 if matches!(&certificate.selection, fa::ReportSelection::Statement(_)) {
@@ -1139,7 +1159,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         artifact.family().name(),
                     ),
                     "plan §13.2–§13.6 (every portable report authenticates and recomputes its complete family-specific closure)",
-                    "use a supported native, summary or functional trial-balance or statement report, native statement diff or trace, lot schedule, jet.round_amounts v1 procedure, effective-date aging, aging reconciliation or portfolio, roll-forward, equity roll-forward or comparison, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
+                    "use a supported native, summary or functional trial-balance or statement report, native statement diff or trace, native subledger reconciliation, lot schedule, jet.round_amounts v1 procedure, effective-date aging, aging reconciliation or portfolio, roll-forward, equity roll-forward or comparison, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
                 ).into());
             }
         }
@@ -1220,6 +1240,18 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if equity_diff_request {
         verify.push_str(" --equity-diff-request <independently-retained-request-file>");
     }
+    if let Some(expected) = &native_subledger_request {
+        let known_at = expected.known_at.ok_or_else(|| {
+            Fail::Internal("exported native subledger request has no fixed prefix".into())
+        })?;
+        verify.push_str(&format!(
+            " --subledger={} --control-account 0x{:032x} --through {} --known-at {}",
+            fa_journal::refusal::command_word(&expected.code),
+            expected.control_account.0,
+            expected.effective_through.0,
+            known_at.0,
+        ));
+    }
     if let Some(base_unit) = report_base_unit {
         verify.push_str(&format!(" --base-unit {base_unit}"));
     }
@@ -1233,7 +1265,9 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .join(",")
         ));
     }
-    let unit_premise = if equity_diff_request {
+    let unit_premise = if native_subledger_request.is_some() {
+        "\nRetain the subledger code, control account, civil-day cutoff and recorded prefix independently. These flags reproduce the supplied --expect question; compare them with the recipient's original request before verification."
+    } else if equity_diff_request {
         "\nSelect the canonical equity request retained when the comparison was requested (--request-out or verification_request_hex); the delivered bundle cannot choose the recipient's expected frontiers, units, dates or owner-account roles."
     } else if report_units.is_some() {
         "\nConfirm --units against the recipient's complete unit-ID list: the checkpoint authenticates the journal, not genesis unit-table membership or unit labels."

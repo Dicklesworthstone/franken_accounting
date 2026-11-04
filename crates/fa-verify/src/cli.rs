@@ -52,6 +52,7 @@
 //! store them.
 
 mod access_log;
+mod native_subledger;
 
 use crate::ads::{AdsReport, verify_ads};
 use crate::blake3::hex;
@@ -111,11 +112,12 @@ commands:
                                                 an evidence bundle (.fab), every predicate graded
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,... | --base-unit N | --equity-diff-request Q] [--view detail]
+               [--subledger CODE --control-account A --through D --known-at N]
                                                 independently recompute native or dimension-filtered
                                                 trial balances, summary groups, statements, open items, balance explanations,
                                                 statement comparisons and complete native publication traces,
                                                 effective-date or due-date aging, reconciliation, whole-chart aging portfolios,
-                                                account roll-forwards,
+                                                native AR/AP party/control reconciliation, account roll-forwards,
                                                 direct cash flows, changes in equity and their comparisons, lot schedules,
                                                 native/functional one-book consolidated group statements,
                                                 and jet.round_amounts v1 statistical procedures.
@@ -167,6 +169,13 @@ options:
                  Fixes both recorded frontiers, dates, label, units and owner-account roles;
                  required even when --expect or --receipt authenticates the outer certificate.
                  Cannot be combined with --units, --base-unit or --view detail.
+  --subledger CODE --control-account A --through D --known-at N
+                 report: all four independently selected inputs are required for native
+                 AR/AP reconciliation, even with a receipt or certificate digest pin.
+                 A is the control account vid (decimal or 0x-prefixed hex), D the signed
+                 i32 civil-day number, and N the fixed recorded u64 sequence, never HEAD.
+                 Verifies every party's gross posted and pending debit/credit columns.
+                 Cannot be combined with --units, --base-unit, --equity-diff-request or --view.
   --view detail  report: derive complete general-ledger detail from a verified roll-forward.
                  Keeps zero cells, offsetting legs, gross turnover and exact running balances.
                  --expect still pins the original outer RollForwardCertificate; the derived
@@ -203,7 +212,7 @@ const COMMANDS: [&str; 13] = [
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 23] = [
+const VALUE_FLAGS: [&str; 27] = [
     "--state",
     "--after-seq",
     "--through-seq",
@@ -227,6 +236,10 @@ const VALUE_FLAGS: [&str; 23] = [
     "--base-unit",
     "--equity-diff-request",
     "--view",
+    "--subledger",
+    "--control-account",
+    "--through",
+    "--known-at",
 ];
 const SWITCHES: [&str; 3] = ["--json", "--hex", "--unsigned-checkpoint"];
 
@@ -279,6 +292,10 @@ fn admitted(command: &str) -> &'static [&'static str] {
             "--base-unit",
             "--equity-diff-request",
             "--view",
+            "--subledger",
+            "--control-account",
+            "--through",
+            "--known-at",
         ],
         _ => &[],
     }
@@ -1464,6 +1481,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     "use --base-unit for lots, or --units for a native financial statement",
                 ));
             }
+            let native_subledger_request = native_subledger::request(args)?;
             let equity_request = if let Some(path) = args.one("--equity-diff-request") {
                 if units.is_some() || base_unit.is_some() || detail_view {
                     return Err(usage(
@@ -1496,7 +1514,16 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 .one("--receipt")
                 .map(|p| load(read, p, args.hex))
                 .transpose()?;
-            let verified = if let Some(expected) = &equity_request {
+            let verified = if let Some(expected) = &native_subledger_request {
+                crate::report::verify_report_native_subledger_expected(
+                    &bytes,
+                    &keys,
+                    expected_checkpoint.as_ref(),
+                    receipt.as_deref(),
+                    expected,
+                    expected_digest.as_ref(),
+                )
+            } else if let Some(expected) = &equity_request {
                 crate::report::verify_equity_roll_forward_diff_report_expected(
                     &bytes,
                     &keys,
@@ -1576,7 +1603,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                             ("effective_through", day(report.effective_through)),
                             (
                                 "report_mode",
-                                s(if report.procedure.is_some() {
+                                s(if report.native_subledger.is_some() {
+                                    "native_subledger_reconciliation"
+                                } else if report.procedure.is_some() {
                                     "procedure"
                                 } else if report.explanation.is_some() {
                                     "balance_explanation"
@@ -1649,7 +1678,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                             ("records", n(report.checked_records as u64)),
                             (
                                 "rows",
-                                n(if let Some(procedure) = &report.procedure {
+                                n(if let Some(subledger) = &report.native_subledger {
+                                    subledger.rows.len()
+                                } else if let Some(procedure) = &report.procedure {
                                     procedure.findings.len()
                                 } else if let Some(explanation) = &report.explanation {
                                     explanation.contributions.len()
@@ -1800,6 +1831,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(open_items) = &report.open_items {
                         checks.extend(open_items_checks(open_items));
+                    }
+                    if let Some(subledger) = &report.native_subledger {
+                        checks.extend(native_subledger::checks(subledger));
                     }
                     if let Some(procedure) = &report.procedure {
                         checks.extend(procedure_checks(procedure));
