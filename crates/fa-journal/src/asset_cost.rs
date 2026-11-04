@@ -3,6 +3,8 @@
 //! Immutable terms select one original acquisition debit, full monthly fiscal
 //! periods and a separate accumulated-cost account. Charges are cumulative
 //! targets less the exact recorded charges and reversals, never caller amounts.
+//! Both charge legs retain the selected acquisition debit's exact dimensions;
+//! ordinary posting still enforces destination requirements and value effectivity.
 //! The source projection is only a conflict witness: every read reconstructs
 //! it and the financial state from immutable controls and monetary entries.
 
@@ -430,7 +432,10 @@ fn live_source_at(history: &History, source: VId, at: Option<CommitSeq>) -> Resu
     Ok(live)
 }
 
-fn source_cost(history: &History, schedule: &StoredAssetSchedule) -> Result<Amount, Refusal> {
+fn source_leg<'a>(
+    history: &'a History,
+    schedule: &StoredAssetSchedule,
+) -> Result<&'a LegPayload, Refusal> {
     let spec = &schedule.spec;
     let (entry, recorded) = history
         .entries
@@ -451,7 +456,6 @@ fn source_cost(history: &History, schedule: &StoredAssetSchedule) -> Result<Amou
         || leg.side != Side::Debit
         || leg.amount.mantissa <= 0
         || leg.base_amount.is_some()
-        || !leg.dimension_set.is_empty()
         || !leg.settles.is_empty()
         || spec.salvage.unit != leg.amount.unit
         || spec.salvage.mantissa < 0
@@ -467,17 +471,25 @@ fn source_cost(history: &History, schedule: &StoredAssetSchedule) -> Result<Amou
             "the schedule needs one digest-bound positive Original asset debit, native cost, salvage at most cost and distinct destinations",
         ));
     }
-    Ok(leg.amount)
+    Ok(leg)
 }
 
-fn charge_legs(spec: &AssetScheduleSpec, amount: Amount) -> Vec<LegPayload> {
+fn charge_legs(
+    spec: &AssetScheduleSpec,
+    amount: Amount,
+    dimensions: &[(u32, VId)],
+) -> Vec<LegPayload> {
     if amount.mantissa == 0 {
         return Vec::new();
     }
-    vec![
+    let mut legs = vec![
         LegPayload::simple(Side::Debit, spec.expense_account, amount),
         LegPayload::simple(Side::Credit, spec.accumulated_account, amount),
-    ]
+    ];
+    for leg in &mut legs {
+        leg.dimension_set = dimensions.to_vec();
+    }
+    legs
 }
 
 fn recognized_ceiling<V: Vfs + Clone>(
@@ -555,7 +567,7 @@ fn history<V: Vfs + Clone>(
                     "duplicate immutable schedule name or acquisition leg",
                 ));
             }
-            source_cost(&result, &schedule).map_err(|r| corrupt(r.message))?;
+            source_leg(&result, &schedule).map_err(|r| corrupt(r.message))?;
             if !live_source(&result, schedule.spec.acquisition.vid)
                 .map_err(|r| corrupt(r.message))?
             {
@@ -584,7 +596,9 @@ fn history<V: Vfs + Clone>(
             if schedule.entry != basis.schedule {
                 return Err(corrupt("charge schedule digest differs"));
             }
-            let cost = source_cost(&result, schedule).map_err(|r| corrupt(r.message))?;
+            let source = source_leg(&result, schedule).map_err(|r| corrupt(r.message))?;
+            let cost = source.amount;
+            let dimensions = source.dimension_set.clone();
             let delta = if entry.proposal.class == EntryClass::ADJUSTING {
                 if basis.known_at < schedule.recorded_at || basis.known_at >= recorded {
                     return Err(corrupt(
@@ -641,7 +655,11 @@ fn history<V: Vfs + Clone>(
                     .ok_or_else(|| corrupt("charge difference overflow"))?;
                 if delta <= 0
                     || entry.proposal.legs
-                        != charge_legs(&schedule.spec, Amount::new(cost.unit, delta))
+                        != charge_legs(
+                            &schedule.spec,
+                            Amount::new(cost.unit, delta),
+                            &dimensions,
+                        )
                     || entry.proposal.effective_period.as_ref() != Some(&basis.through_period)
                     || entry.proposal.effective_date != selected.end.pred().map_err(corrupt)?
                     || entry.proposal.extensions.len() != 1
@@ -817,21 +835,20 @@ fn accounts<V: Vfs + Clone>(
     history: &History,
     at: CommitSeq,
 ) -> Outcome<Amount> {
-    let cost = match source_cost(history, schedule) {
-        Ok(value) => value,
+    let cost = match source_leg(history, schedule) {
+        Ok(value) => value.amount,
         Err(r) => return Ok(Err(r)),
     };
     let spec =
         crate::genesis::read_book_spec_at(db, at)?.ok_or_else(|| corrupt("book is absent"))?;
-    if spec.entities.len() > 1
-        || cost.unit != spec.base_unit
+    if cost.unit != spec.base_unit
         || book
             .units
             .get(cost.unit)
             .is_none_or(|unit| !matches!(unit.kind, UnitKind::Currency { .. }))
     {
         return Ok(Err(invalid(
-            "this profile requires native base currency in a single-entity book",
+            "this profile requires an acquisition in the book's native base currency",
         )));
     }
     let source = &history.entries[&schedule.spec.acquisition.vid].0.proposal;
@@ -1186,8 +1203,9 @@ pub fn asset_register<V: Vfs + Clone>(
         cx.query()
             .checkpoint()
             .map_err(WriteTxnError::Interrupted)?;
-        let original_cost =
-            source_cost(&history, schedule).map_err(|refusal| corrupt(refusal.message))?;
+        let original_cost = source_leg(&history, schedule)
+            .map_err(|refusal| corrupt(refusal.message))?
+            .amount;
         let source_live = live_source(&history, schedule.spec.acquisition.vid)
             .map_err(|refusal| corrupt(refusal.message))?;
         let state = history
@@ -1304,7 +1322,11 @@ fn derive<V: Vfs + Clone>(
             "the cumulative target is below the already recognized cost",
         )));
     }
-    let legs = charge_legs(&schedule.spec, delta);
+    let source = match source_leg(&history, &schedule) {
+        Ok(value) => value,
+        Err(r) => return Ok(Err(r)),
+    };
+    let legs = charge_legs(&schedule.spec, delta, &source.dimension_set);
     Ok(Ok(PreparedAssetCharge {
         basis,
         schedule,
@@ -1460,8 +1482,8 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
                     "asset charge reversals must be exact recorded side swaps",
                 )));
             }
-            let cost = match source_cost(&history, schedule) {
-                Ok(v) => v,
+            let cost = match source_leg(&history, schedule) {
+                Ok(v) => v.amount,
                 Err(r) => return Ok(Err(r)),
             };
             let leg = proposal
