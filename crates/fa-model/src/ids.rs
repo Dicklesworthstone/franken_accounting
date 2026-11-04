@@ -344,6 +344,16 @@ pub fn dimension_vid(book: Id128, code: &str) -> VId {
     derive_vid(b"fa:vid:dimension:v1", &[&book.0, code.as_bytes()])
 }
 
+/// One allowed/forbidden-value projection per book, dimension and account.
+/// Each part is length-prefixed under its own stable identity domain.
+#[must_use]
+pub fn dimension_constraint_vid(book: Id128, dimension_code: &str, account: VId) -> VId {
+    derive_vid(
+        b"fa:vid:dimension-constraint:v1",
+        &[&book.0, dimension_code.as_bytes(), &account.0.to_le_bytes()],
+    )
+}
+
 /// `vid(DimensionValue) = H("fa:vid:dimension-value:v1" ‖ book_id ‖
 /// dimension_code ‖ value_code)`: what a leg's `dimension_set` references.
 #[must_use]
@@ -541,6 +551,26 @@ mod tests {
             dimension_value_vid(book, "legal_entity", "A"),
             dimension_value_vid(book, "legal_entityA", "")
         );
+    }
+
+    #[test]
+    fn dimension_constraints_have_stable_scoped_identities() {
+        let book = Id128([1; 16]);
+        let account = VId(42);
+        let constraint = dimension_constraint_vid(book, "cost_center", account);
+        assert_eq!(constraint, VId(0x2bad_12a9_59e1_598e_83a0_b425_e9b5_6d43));
+        for (other_book, other_dimension, other_account) in [
+            (Id128([2; 16]), "cost_center", account),
+            (book, "department", account),
+            (book, "cost_center", VId(43)),
+        ] {
+            assert_ne!(
+                constraint,
+                dimension_constraint_vid(other_book, other_dimension, other_account)
+            );
+        }
+        assert_ne!(constraint, dimension_vid(book, "cost_center"));
+        assert_ne!(constraint, dimension_value_vid(book, "cost_center", "42"));
     }
 
     /// The legal-entity identities are durable formats: pinned by fixed

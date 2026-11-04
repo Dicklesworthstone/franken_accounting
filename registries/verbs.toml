@@ -885,12 +885,12 @@ example = "fa entity add acme-de.json --book ./books/myco --json"
 name = "dimension"
 summary = "Dimension values (plan §4.1): create a value of a registered dimension (cost_center, department, project, product, region, fund, grant, segment) with its name, parent and valid time, or list them. A post intent's leg tags values with \"dimensions\": {\"cost_center\": \"CC10\"}; the kernel refuses a value the book does not hold or one not effective on the entry's date."
 writes = true
-subcommands = ["add", "list", "require", "close"]
-flags = ["--name", "--parent", "--from", "--to", "--key", "--as-known-at", "--on"]
-switches = ["--remove"]
-events = ["dimension_value_recorded", "dimension_values", "dimension_requirement_recorded"]
+subcommands = ["add", "list", "require", "close", "constrain", "constraints"]
+flags = ["--name", "--parent", "--from", "--to", "--key", "--as-known-at", "--on", "--allow", "--forbid"]
+switches = ["--remove", "--allow-none", "--clear"]
+events = ["dimension_value_recorded", "dimension_values", "dimension_requirement_recorded", "dimension_constraint_recorded", "dimension_constraints"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["dimension add <dimension> <code> --name <name> [--parent <code>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--key K]   (a journaled SchemaChange control under schema_change authority; the code is unique in its dimension; a parent is an existing value of the same dimension; the value is effective from --from (inclusive) and before --to (exclusive), always when they are omitted; the default key is dimension:<dimension>:<code>, so an exact retry returns the recorded value)", "dimension close <dimension> <code> --on YYYY-MM-DD [--key K]   (from that date the value tags no leg: its window ends there; a journaled SchemaChange control under schema_change; it only shortens a window, never empties it, and is refused with FA-REF-195 while a leg it tags is effective on or after the date; a value already closed then writes nothing; the default key is dimension-close:<dimension>:<code>:<date>)", "dimension list [<dimension>] [--as-known-at HEAD|<seq>]   (every value, or one dimension's, and the accounts each dimension is required on; needs read)", "dimension require <dimension> <account> [--remove] [--key K]   (from now on every leg on that posting leaf must name a value of the dimension, or with --remove need not; a journaled SchemaChange control under read and schema_change; the dimension needs a value first; an account already in (or out of) the requirement writes nothing; a leg that omits a required dimension is refused with FA-REF-005, naming fa dimension list for the values; an applying leg (settles) and a class whose legs the law dictates (Reversal, Resolution, Closing, Revaluation, Elimination, Migration) carry their values as dictated)", "A leg tags values in its intent: \"dimensions\": {\"cost_center\": \"CC10\", \"project\": \"P-7\"}. The legal entity and the party keep the leg's entity and party fields. An unknown value is a usage error; a value outside its valid time is FA-REF-195."]
+usage = ["dimension constrain <dimension> <account> [--allow <code>]... [--forbid <code>]... [--allow-none | --clear] [--key K]   (replace that posting account's exact value policy under read and schema_change; repeat --allow or --forbid for several codes; omitted --allow permits any value except forbidden ones, --allow-none permits no tagged value, and --clear removes value restrictions; codes must already exist in this dimension; parent values do not implicitly include descendants; a value cannot be in both lists; at most 128 total codes and 8192 canonical policy bytes; the separate required-dimension setting is unchanged; applying and dictated legs retain their historical values; disallowed values refuse with FA-REF-207)", "dimension constraints [<dimension>] [--as-known-at HEAD|<seq>]   (inspect account-specific value policies and the controls that recorded them, including historical states and explicit clears, under current read authority)", "dimension add <dimension> <code> --name <name> [--parent <code>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--key K]   (a journaled SchemaChange control under schema_change authority; the code is unique in its dimension; a parent is an existing value of the same dimension; the value is effective from --from (inclusive) and before --to (exclusive), always when they are omitted; the default key is dimension:<dimension>:<code>, so an exact retry returns the recorded value)", "dimension close <dimension> <code> --on YYYY-MM-DD [--key K]   (from that date the value tags no leg: its window ends there; a journaled SchemaChange control under schema_change; it only shortens a window, never empties it, and is refused with FA-REF-195 while a leg it tags is effective on or after the date; a value already closed then writes nothing; the default key is dimension-close:<dimension>:<code>:<date>)", "dimension list [<dimension>] [--as-known-at HEAD|<seq>]   (every value, or one dimension's, and the accounts each dimension is required on; needs read)", "dimension require <dimension> <account> [--remove] [--key K]   (from now on every leg on that posting leaf must name a value of the dimension, or with --remove need not; a journaled SchemaChange control under read and schema_change; the dimension needs a value first; an account already in (or out of) the requirement writes nothing; a leg that omits a required dimension is refused with FA-REF-005, naming fa dimension list for the values; an applying leg (settles) and a class whose legs the law dictates (Reversal, Resolution, Closing, Revaluation, Elimination, Migration) carry their values as dictated)", "A leg tags values in its intent: \"dimensions\": {\"cost_center\": \"CC10\", \"project\": \"P-7\"}. The legal entity and the party keep the leg's entity and party fields. An unknown value is a usage error; a value outside its valid time is FA-REF-195."]
 example = "fa dimension add cost_center CC10 --name Operations --book ./books/myco --json"
 
 [[verb]]
@@ -2419,6 +2419,18 @@ doc = "One account now requires (or no longer requires) a value of a dimension o
 fields = ["dimension:string", "account:string", "required:bool", "control_entry:hex?", "recorded_at:seq?", "already_recorded:bool"]
 
 [[event]]
+name = "dimension_constraint_recorded"
+book = true
+doc = "One posting account's complete exact-value dimension policy. A null allowed list permits all globally valid values except forbidden ones; an empty list permits no tagged value. Presence remains independently governed by dimension require. control_entry and recorded_at are null only when clearing a policy that was never recorded; already_recorded means this call wrote nothing."
+fields = ["dimension:string", "account:string", "account_vid:hex", "allowed:[string]?", "forbidden:[string]", "control_entry:hex?", "recorded_at:seq?", "already_recorded:bool"]
+
+[[event]]
+name = "dimension_constraints"
+book = true
+doc = "Account-specific dimension value policies at known_at, ordered by dimension id and account identity, including recorded clears. Current read authority still applies to historical selection."
+fields = ["known_at:seq", "dimension:string?", "constraints:[dimension_constraint]"]
+
+[[event]]
 name = "legal_entities"
 book = true
 doc = "The book's legal entities at known_at, in code order: each with its jurisdiction, functional unit, life span and the number of external ids it was created with."
@@ -3251,6 +3263,11 @@ doc = "A dimension that has values, and the account codes whose every leg must n
 fields = ["dimension:string", "accounts:[string]"]
 
 [[shape]]
+name = "dimension_constraint"
+doc = "One account's dimension policy at the selected prefix, with its stable policy identity and the immutable control and sequence that last set it. allowed null is unrestricted; allowed [] prohibits tagged values; forbidden contains exact disallowed codes. Neither list expands descendants or changes whether a dimension is required."
+fields = ["dimension:string", "account:string", "account_vid:hex", "allowed:[string]?", "forbidden:[string]", "vid:hex", "control_entry:hex", "recorded_at:seq"]
+
+[[shape]]
 name = "dimension_value"
 doc = "One value of a registered dimension (plan §4.1): its dimension and code, name, parent value (null at the top), valid time [valid_from, valid_to) with null for unbounded, the dimension id a leg's dimension_set carries it under, its DimensionValue vid and the sequence that recorded it."
 fields = ["dimension:string", "code:string", "name:string", "parent:string?", "valid_from:date?", "valid_to:date?", "dimension_id:int", "vid:hex", "recorded_at:seq"]
@@ -4052,7 +4069,7 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book", "--token", "--sign-key", "--endorse-key"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--reversal-approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route", "--band", "--issuance", "--distribution", "--definition", "--claim", "--turned-around", "--corrected", "--input"]
+repeat_flags = ["--evidence", "--approval", "--reversal-approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route", "--band", "--issuance", "--distribution", "--definition", "--claim", "--turned-around", "--corrected", "--input", "--allow", "--forbid"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--max-depth", "--budget"]
 
@@ -6816,6 +6833,16 @@ subcommands = ["close"]
 ops = ["schema_change"]
 
 [[bound]]
+verbs = ["dimension"]
+subcommands = ["constrain"]
+ops = ["read", "schema_change"]
+
+[[bound]]
+verbs = ["dimension"]
+subcommands = ["constraints"]
+ops = ["read"]
+
+[[bound]]
 verbs = ["party"]
 subcommands = ["ownership"]
 ops = ["read"]
@@ -6926,6 +6953,30 @@ switches = ["--remove"]
 required = ["dimension", "account"]
 dont = ["Require a dimension on posting leaves only (expense accounts, for example); a summary account is refused.", "Don't require a dimension before it has a value: the refusal names fa dimension add."]
 mistakes = ["Naming the account by name instead of its chart code.", "Expecting remove to write when the account was never required: it writes nothing."]
+
+[[mcp.tool]]
+cluster = "fa.dimensions"
+name = "constrain"
+verb = "dimension"
+subcommands = ["constrain"]
+positionals = ["dimension", "account"]
+flags = ["--allow", "--forbid", "--key"]
+switches = ["--allow-none", "--clear"]
+required = ["dimension", "account"]
+dont = ["The launch capability must already hold read and schema_change. A tool argument never grants authority.", "This replaces the account's entire value policy. Pass allow and forbid as arrays of exact existing codes; a parent does not include descendants. Omitted allow permits any otherwise valid value except forbidden values.", "allow_none prohibits all tagged values; clear removes restrictions. Neither changes whether the dimension is required; use the separate require tool for presence."]
+mistakes = ["Sending a comma-separated string instead of a code array.", "Putting one code in both allow and forbid, or combining clear with value restrictions.", "Expecting a tightened policy to rewrite old entries or block their exact reversal or settlement."]
+
+[[mcp.tool]]
+cluster = "fa.dimensions"
+name = "constraints"
+verb = "dimension"
+subcommands = ["constraints"]
+positionals = ["dimension?"]
+flags = ["--as-known-at"]
+switches = []
+required = []
+dont = ["Current read authority applies even when selecting an older known-at prefix.", "An explicit clear remains visible with allowed=null and no forbidden values; required presence is listed separately by the dimension list tool."]
+mistakes = ["Treating an empty allowed array as unrestricted; it prohibits all tagged values.", "Supplying an account as a second positional argument; this tool lists every account policy for the selected dimension."]
 
 [[mcp.cluster]]
 name = "fa.rules"

@@ -1935,6 +1935,17 @@ pub(crate) fn admit_accounts<V: asupersync::fs::Vfs + Clone>(
         {
             return Ok(Err(refusal));
         }
+        if chosen
+            && let Some(refusal) = crate::dimension::admit_dimension_constraints(
+                book,
+                leg,
+                i,
+                &account.code,
+                &mut read_vertex,
+            )?
+        {
+            return Ok(Err(refusal));
+        }
         accounts.push(account);
     }
     Ok(Ok(accounts))

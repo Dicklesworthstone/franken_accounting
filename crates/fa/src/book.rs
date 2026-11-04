@@ -1156,6 +1156,33 @@ impl Book {
         )))
     }
 
+    /// Replace the allowed and forbidden values of one dimension on a
+    /// posting account, independently of its required-dimension setting.
+    pub fn record_dimension_constraint(
+        &mut self,
+        spec: &crate::dimension::DimensionConstraintSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionConstraintRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_dimension_constraint(
+            &purposes, spec, principal, idempotency_key, capability,
+        )))
+    }
+
+    /// Account-specific dimension value policies at `known_at` (the head
+    /// when omitted), under current whole-book read authority.
+    pub fn dimension_constraints(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Vec<crate::dimension::DimensionConstraintRow>)> {
+        with_store!(&self.store, core => core.dimension_constraints(
+            &self.purposes(), known_at, capability,
+        ))
+    }
+
     /// `selection` over only the legs tagged with `dimension`'s `value` or a
     /// value under it (`fa tb --dimension`), folded literally under current
     /// whole-book read authority.

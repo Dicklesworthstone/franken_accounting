@@ -499,6 +499,9 @@ pub mod code {
     /// the other registered kinds) outside its valid-time effectivity on
     /// the entry's effective date (plan §4.1).
     pub const DIMENSION_NOT_EFFECTIVE: &str = "FA-REF-195";
+    /// A preparer-chosen dimension value is outside its posting account's
+    /// allowlist or is explicitly forbidden by that account's policy.
+    pub const DIMENSION_FORBIDDEN: &str = "FA-REF-207";
     /// A Canon rule source the checker refuses (a parse, unit, law, name or
     /// balance-proof failure), or an evaluation that cannot be computed
     /// exactly over the event it was given (plan §10.3).

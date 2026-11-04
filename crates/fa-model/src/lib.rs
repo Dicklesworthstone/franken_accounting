@@ -63,8 +63,9 @@ pub use erasable::{Canonical, Erasable, EraseError, SealKey};
 pub use ids::{
     ApprovalRef, DIMENSION_KINDS, DimensionKind, EntryRef, Id128, LEGAL_ENTITY_DIMENSION,
     LEGAL_ENTITY_DIMENSION_CODE, Oid, PARTY_DIMENSION, PARTY_DIMENSION_CODE, PeriodRef, TypedRef,
-    access_event_vid, account_vid, bates_range_vid, close_run_vid, close_task_vid, dimension_kind,
-    dimension_kind_of, dimension_value_vid, dimension_vid, domain_digest, draft_vid,
+    access_event_vid, account_vid, bates_range_vid, close_run_vid, close_task_vid,
+    dimension_constraint_vid, dimension_kind, dimension_kind_of, dimension_value_vid,
+    dimension_vid, domain_digest, draft_vid,
     engagement_vid, entity_value_vid, entry_vid, event_vid, external_id_vid, instrument_vid,
     intent_outcome_vid, legal_entity_vid, migration_entry_vid, migration_run_vid, party_value_vid,
     party_vid, period_vid, principal_vid, production_profile_vid, proposed_adjustment_vid,
