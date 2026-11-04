@@ -56,25 +56,29 @@ pub fn posting(
     // The fixture's principal precedes the absent-session byte and citations.
     let principal_at = proposal.count_offset - 17;
     proposal.bytes[principal_at..principal_at + 16].copy_from_slice(&principal.to_le_bytes());
-    let split = proposal.bytes.len();
-    let proposal_digest = hash_parts(PROPOSAL_DIGEST_DOMAIN, &[&proposal.bytes]);
+    let record = proposal_record(proposal.bytes, sequence);
+    let target = Target {
+        vid: identity(principal),
+        digest: record.envelope.record_digest,
+    };
+    (record, target)
+}
+
+/// Seal a wire-only proposal, including specialized native identity families.
+pub fn proposal_record(proposal: Vec<u8>, sequence: u64) -> Record {
+    let split = proposal.len();
+    let proposal_digest = hash_parts(PROPOSAL_DIGEST_DOMAIN, &[&proposal]);
     let digest = hash_parts(ENTRY_DIGEST_DOMAIN, &[&proposal_digest, &[0; 5]]);
-    let mut payload = proposal.bytes;
+    let mut payload = proposal;
     payload.extend_from_slice(&[0; 5]);
     payload.extend_from_slice(&proposal_digest);
     payload.extend_from_slice(&digest);
     let envelope = envelope_of_entry(&payload, split, sequence, 0).unwrap();
-    (
-        Record {
-            envelope,
-            payload,
-            split,
-        },
-        Target {
-            vid: identity(principal),
-            digest,
-        },
-    )
+    Record {
+        envelope,
+        payload,
+        split,
+    }
 }
 
 /// Rehash even deliberately invalid bodies. The verifier must establish the
