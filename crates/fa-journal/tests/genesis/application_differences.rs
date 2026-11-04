@@ -603,10 +603,79 @@ fn reversal_requires_exact_inherited_terms_and_reversal_parity_restores_applicat
                 .proposal
                 .application_terms()
                 .unwrap(),
-            Some(original_terms),
+            Some(original_terms.clone()),
         );
         assert_eq!(f.applied(source), 10_000);
+        let undone_again = f
+            .post(f.reversal(revived, b"undo-restored-application"))
+            .unwrap()
+            .entry_ref();
+        assert_eq!(f.applied(source), 0);
+        let restored_again = f
+            .post(f.reversal(undone_again, b"restore-application-again"))
+            .unwrap()
+            .entry_ref();
+        assert_eq!(f.applied(source), 10_000);
+        assert_eq!(
+            read_entry(&f.h.db, restored_again.vid)
+                .unwrap()
+                .unwrap()
+                .0
+                .proposal
+                .application_terms()
+                .unwrap(),
+            Some(original_terms),
+        );
         assert_leg_projections(&f.h);
+    }
+}
+
+#[test]
+fn reapplication_witnesses_live_targets_and_current_capacity_without_publication_on_refusal() {
+    for direction in [Receipt, Payment] {
+        for consume_elsewhere in [false, true] {
+            let mut f = Fixture::new();
+            let source = f.source(direction, 10_000, b"reapplication-source");
+            let proposal = f.application(
+                direction,
+                source,
+                10_000,
+                9_000,
+                &[(Discount, 1_000)],
+                b"reapplication-original",
+            );
+            let original = f.post(proposal).unwrap().entry_ref();
+            let undone = f
+                .post(f.reversal(original, b"reapplication-undo"))
+                .unwrap()
+                .entry_ref();
+            assert_eq!(f.applied(source), 0);
+            let restore = f.reversal(undone, b"reapplication-restore");
+            let expected = if consume_elsewhere {
+                let competing = f.application(
+                    direction,
+                    source,
+                    10_000,
+                    9_000,
+                    &[(Discount, 1_000)],
+                    b"reapplication-competing",
+                );
+                f.post(competing).unwrap();
+                assert_eq!(f.applied(source), 10_000);
+                code::OVER_APPLICATION
+            } else {
+                f.post(f.reversal(source.entry, b"reapplication-source-undo"))
+                    .unwrap();
+                code::SETTLE_TARGET
+            };
+            f.refuses_without_writes(
+                restore,
+                source,
+                expected,
+                "reapplication must honor the current source item",
+            );
+            assert_leg_projections(&f.h);
+        }
     }
 }
 

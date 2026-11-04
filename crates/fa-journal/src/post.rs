@@ -930,6 +930,31 @@ fn reaches<V: asupersync::fs::Vfs + Clone>(
     policy::entry_in_scope_by_metadata(txn, db, book, &req.capability, scope, vid)
 }
 
+/// Current lineage parity with a point witness on every possible successor.
+fn entry_is_reversed<V: asupersync::fs::Vfs + Clone>(
+    txn: &fgdb::WriteTxn,
+    db: &Database<V>,
+    vid: VId,
+) -> Result<bool, KernelError> {
+    let mut reversed = false;
+    let mut current = vid;
+    let mut seen = BTreeSet::new();
+    while txn
+        .vertex_has_label(db, reversal_vid(current), label::ENTRY)?
+        .is_some()
+    {
+        if !seen.insert(current) {
+            return Err(KernelError::Corrupt(format!(
+                "reversal lineage of {:032x} cycles",
+                vid.0
+            )));
+        }
+        reversed = !reversed;
+        current = reversal_vid(current);
+    }
+    Ok(reversed)
+}
+
 /// Step 3''' for a scoped token (plan §14.2, CobaltGull 3570): the targets
 /// the commit releases, applies to or undoes are part of its footprint — a
 /// resolution's hold (every leg, so a partial Posts never silently releases
@@ -3885,24 +3910,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             // length is legal, so the walk is bounded only by a cycle check
             // (impossible for honest identities, corruption otherwise). Each
             // hop is a witnessed point read, so a concurrent reversal conflicts.
-            let mut reversed = false;
-            let mut current = s.target.vid;
-            let mut seen: BTreeSet<VId> = BTreeSet::new();
             // Existence only: a label point read, never the reversal's row.
-            while txn
-                .vertex_has_label(db, reversal_vid(current), label::ENTRY)?
-                .is_some()
-            {
-                if !seen.insert(current) {
-                    return Err(KernelError::Corrupt(format!(
-                        "reversal lineage of {:032x} cycles",
-                        s.target.vid.0
-                    )));
-                }
-                reversed = !reversed;
-                current = reversal_vid(current);
-            }
-            if reversed {
+            if entry_is_reversed(&txn, db, s.target.vid)? {
                 txn.abort();
                 return Ok(Err(Refusal::new(
                     code::SETTLE_TARGET,
@@ -4192,11 +4201,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         //     in its witnessed reversal chain with live applications against its
         //     legs is not reversed — the applying entries come first; the
         //     target's own applications are undone exactly as derived UNSETTLES
-        //     effects, never re-entered. Reversing a reversal that undid
-        //     applications would re-apply them; that waits for the full netting
-        //     law.
+        //     effects, never re-entered. Native application effects alternate
+        //     with reversal parity. Reapplication rechecks current target
+        //     liveness and capacity; it cannot reclaim amounts used elsewhere.
         let mut anc_vid = target.vid;
         let mut anc_entry = original.clone();
+        let mut undo_applications = true;
         let mut seen_ancestors: BTreeSet<VId> = BTreeSet::new();
         loop {
             if !seen_ancestors.insert(anc_vid) {
@@ -4242,33 +4252,74 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 && let [first] = anc_entry.proposal.supersession.as_slice()
             {
                 let next_vid = first.target.vid;
-                let Some(grand) = txn.vertex(db, next_vid)? else {
-                    break;
-                };
+                let grand = txn
+                    .vertex(db, next_vid)?
+                    .ok_or_else(|| KernelError::Corrupt("reversal ancestor is missing".into()))?;
                 let (grand, _) = checked_entry_staged(&txn, db, &grand)?;
-                if grand.proposal.legs.iter().any(|l| !l.settles.is_empty()) {
-                    txn.abort();
-                    return Ok(Err(not_implemented(
-                        "re-application by reversing a reversal",
-                    )));
+                if grand.entry_digest != first.target.entry_digest {
+                    return Err(KernelError::Corrupt(
+                        "reversal ancestor disagrees with its retained handle".into(),
+                    ));
                 }
                 anc_vid = next_vid;
                 anc_entry = grand;
+                undo_applications = !undo_applications;
             } else {
                 break;
             }
         }
-        let mut undone: BTreeSet<VId> = BTreeSet::new();
-        for (i, oleg) in original.proposal.legs.iter().enumerate() {
+        // Foreign applications additionally carry valuation relief. Preserve
+        // their bounded posture until ancestry can restore that exact relief;
+        // a native parity projection must never substitute for FX netting.
+        if anc_vid != target.vid
+            && anc_entry
+                .proposal
+                .legs
+                .iter()
+                .any(|leg| !leg.settles.is_empty())
+            && (anc_entry.proposal.base_totals.is_some()
+                || anc_entry
+                    .proposal
+                    .legs
+                    .iter()
+                    .any(|leg| leg.base_amount.is_some()))
+        {
+            txn.abort();
+            return Ok(Err(not_implemented(
+                "re-application by reversing a reversal",
+            )));
+        }
+        for (i, oleg) in anc_entry.proposal.legs.iter().enumerate() {
             let ordinal =
                 u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
             for s in &oleg.settles {
                 // Each entry the undo touches is bound to its mirrors first.
-                if undone.insert(s.target.vid) {
-                    let row = txn.vertex(db, s.target.vid)?.ok_or_else(|| {
-                        KernelError::Corrupt("an applied-to entry is missing".into())
-                    })?;
-                    checked_entry_staged(&txn, db, &row)?;
+                let row = txn
+                    .vertex(db, s.target.vid)?
+                    .ok_or_else(|| KernelError::Corrupt("an applied-to entry is missing".into()))?;
+                let (applied_to, _) = checked_entry_staged(&txn, db, &row)?;
+                if applied_to.entry_digest != s.target.entry_digest {
+                    return Err(KernelError::Corrupt(
+                        "application ancestor target disagrees with its retained handle".into(),
+                    ));
+                }
+                if !undo_applications {
+                    if let Err(refusal) =
+                        migration::witness_open_item(&txn, db, s.target.vid, &applied_to, i)?
+                    {
+                        txn.abort();
+                        return Ok(Err(refusal));
+                    }
+                    if entry_is_reversed(&txn, db, s.target.vid)? {
+                        txn.abort();
+                        return Ok(Err(Refusal::new(
+                            code::SETTLE_TARGET,
+                            exit::REFUSAL,
+                            "reversing this reversal would reapply to a reversed open item",
+                            "plan §5.7, §8.2 (reapplication requires a live open item)",
+                            "correct the source item's lineage first, or post an explicit new application",
+                        ).at("entry", format!("{:032x}", s.target.vid.0))));
+                    }
                 }
                 let target_leg_vid = leg_vid(s.target.vid, s.ordinal);
                 if let MapEntry::Vacant(slot) = applied_delta.entry(target_leg_vid) {
@@ -4277,13 +4328,57 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     })?;
                     slot.insert((applied_witness(&leg_row)?, 0));
                 }
-                let (_, delta) = applied_delta
+                let (witnessed, delta) = applied_delta
                     .get_mut(&target_leg_vid)
                     .ok_or_else(|| KernelError::Corrupt("applied witness".into()))?;
-                *delta = delta
-                    .checked_sub(s.amount.mantissa)
-                    .ok_or_else(|| KernelError::Corrupt("applied underflow".into()))?;
-                undo.push((ordinal, target_leg_vid, s.amount.mantissa));
+                if undo_applications {
+                    *delta = delta
+                        .checked_sub(s.amount.mantissa)
+                        .ok_or_else(|| KernelError::Corrupt("applied underflow".into()))?;
+                    undo.push((ordinal, target_leg_vid, s.amount.mantissa));
+                } else {
+                    let applied_leg = applied_to
+                        .proposal
+                        .legs
+                        .get(usize::from(s.ordinal))
+                        .ok_or_else(|| {
+                            KernelError::Corrupt(
+                                "application ancestor target leg is missing".into(),
+                            )
+                        })?;
+                    let consumed = applied_leg.settles.iter().try_fold(0i128, |sum, settle| {
+                        sum.checked_add(settle.amount.mantissa)
+                            .ok_or_else(|| KernelError::Corrupt("applied_out overflow".into()))
+                    })?;
+                    let capacity = applied_leg
+                        .amount
+                        .mantissa
+                        .checked_sub(consumed)
+                        .ok_or_else(|| {
+                            KernelError::Corrupt("applied_out exceeds the leg".into())
+                        })?;
+                    let open = capacity
+                        .checked_sub(*witnessed)
+                        .and_then(|remaining| remaining.checked_sub(*delta))
+                        .filter(|remaining| *remaining >= 0)
+                        .ok_or_else(|| {
+                            KernelError::Corrupt("reapplication capacity is corrupt".into())
+                        })?;
+                    if s.amount.mantissa > open {
+                        txn.abort();
+                        return Ok(Err(Refusal::new(
+                            code::OVER_APPLICATION,
+                            exit::REFUSAL,
+                            format!("reapplication requires {}, but only {} is open", shown(book, s.amount.unit, s.amount.mantissa), shown(book, s.amount.unit, open)),
+                            "plan §5.7 (reapplication cannot exceed current open capacity)",
+                            "reverse the conflicting application first, or post a new application bounded by the remaining open amount",
+                        ).at("entry", format!("{:032x}", s.target.vid.0)).at("ordinal", u64::from(s.ordinal))));
+                    }
+                    *delta = delta
+                        .checked_add(s.amount.mantissa)
+                        .ok_or_else(|| KernelError::Corrupt("applied overflow".into()))?;
+                    applications.push((ordinal, target_leg_vid, s.amount.mantissa));
+                }
             }
         }
     }

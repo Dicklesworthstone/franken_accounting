@@ -528,7 +528,7 @@ fn pending_batches_recheck_capacity_after_an_intervening_publication() {
 
 #[test]
 fn pending_batch_publication_keeps_a_fitting_changed_prefix() {
-    for disjoint in [false, true] {
+    for (disjoint, independent_evidence) in [(false, false), (true, false), (true, true)] {
         let mut fixture = Fixture::new();
         let other = disjoint.then(|| fixture.another_pair());
         let first = fixture.batch(b"fitting-first", vec![fixture.hold(b"fitting-first-hold")]);
@@ -537,6 +537,28 @@ fn pending_batch_publication_keeps_a_fitting_changed_prefix() {
             hold.legs[0].account_ref = rent;
             hold.legs[1].account_ref = cash;
         }
+        if independent_evidence {
+            let document = crate::evidence::Document {
+                book_id: fixture.book.book_id,
+                kind: 1,
+                mime: "text/plain".into(),
+                grade: 3,
+                retrieved_by: VId(7),
+                bytes: b"Independent delayed-hold fixture source document".to_vec(),
+            };
+            let cx = fixture.cx();
+            fixture
+                .runtime
+                .block_on(crate::evidence::add_document(
+                    &mut fixture.db,
+                    &cx,
+                    &fixture.book,
+                    &document,
+                ))
+                .unwrap()
+                .unwrap();
+            hold.evidence = vec![document.evidence_ref(1)];
+        }
         let delayed = fixture.batch(b"fitting-delayed", vec![hold]);
         let first_stage = fixture.stage(&first).unwrap();
         let delayed_stage = fixture.stage(&delayed).unwrap();
@@ -544,17 +566,23 @@ fn pending_batch_publication_keeps_a_fitting_changed_prefix() {
         fixture.commit(&first, first_stage).unwrap();
         let before = fixture.db.frontier().unwrap();
         let result = fixture.commit(&delayed, delayed_stage);
-        if disjoint {
+        if independent_evidence {
             result.expect("a fitting batch with unchanged point witnesses survives a new prefix");
         } else {
-            // The original fixture reused both accounts. Its pending register
-            // witnesses really change, even though two holds fit the count law.
-            let refusal = result.expect_err("changed account witnesses must still conflict");
+            // Reusing the source document changes its retained point witness,
+            // including when the accounts differ. Fitting final capacity does
+            // not authorize ignoring an invalidated document witness.
+            let refusal = result.expect_err("changed document witnesses must still conflict");
             assert_eq!(
                 (refusal.code, refusal.exit),
                 (code::CONFLICT, exit::CONFLICT)
             );
             assert!(refusal.message.contains("witness"));
+            let document = crate::evidence::document_vid(&fixture.evidence[0].document_oid);
+            assert!(
+                refusal.message.contains(&format!("VId({})", document.0)),
+                "{refusal}"
+            );
             assert_eq!(fixture.db.frontier().unwrap(), before);
         }
         let summary = summarize(
@@ -564,7 +592,7 @@ fn pending_batch_publication_keeps_a_fitting_changed_prefix() {
             fixture.db.frontier().unwrap(),
         )
         .unwrap();
-        let expected = if disjoint { 2 } else { 1 };
+        let expected = if independent_evidence { 2 } else { 1 };
         assert_eq!(
             summary.cells.unwrap().pending_counts.get("FY2026-P03"),
             Some(&expected),

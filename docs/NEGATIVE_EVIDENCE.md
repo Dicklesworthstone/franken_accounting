@@ -4,6 +4,39 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-04 — native payment differences need application parity at commit
+
+Integrated source `224d31b9` executed the complete facade (727/0), model
+(85/0) and determinism target (2/0), with no ignored or filtered tests.
+Its next native packet returned 101: 592 tests passed and three failed.
+All operator-token, write-authority, bank and policy cases passed, including
+the scheduler's explicit System/PostClosed case. The new native and CLI
+payment-chain tests both encountered the existing FA-REF-102 refusal when
+reversing an application reversal. The new raw-post retry test expected
+reserved alias FA-REF-009 instead of the live FA-REF-032 registry row.
+
+The corrective native projection walks authenticated reversal ancestry and
+alternates the original application's exact effects. Reapplication witnesses
+the target's current lineage and remaining native capacity before emitting
+derived SETTLES effects; ordinary undo emits UNSETTLES. Scoped footprint,
+one-reversal identity, exact side-swap, and point-witness checks still apply.
+Foreign-valued ancestry remains unsupported rather than substituting native
+amounts for its recorded valuation relief. New negative cases consume the
+released capacity elsewhere or reverse the source item; both require refusal
+without any publication. The existing positive chain now continues through
+four reversals. These changes still require their own native qualification.
+
+The pending module separately executed five passing tests and one failing
+test on `224d31b9`. Its disjoint-account case still shared the original
+source document. Diagnostic `9db316b7` retained every assertion and printed
+the failed vertex: LabelId(16), the retained fixture Invoice document at
+VId(111580638931722348158306021880142259661), not an account or period.
+Both shared-document cases correctly conflict after the first publication.
+The positive case now has distinct accounts and a separately retained source
+document before either transaction is prepared. The first attempt was refused
+by the offloader with exit103 before execution and earns no test credit.
+The diagnostic is preserved and excluded from product ancestry.
+
 ## 2026-11-04 — native integration exposed six failures
 
 The integrated `a2cc11bb` native run completed with 1,715 passing tests and six
@@ -11,7 +44,7 @@ failures across four targets. Its complete CLI cases passed 97/0, and the
 large batch capsule-boundary regression passed unchanged. The six failures
 were an expiry expectation, missing dimension-command authority coverage,
 the symbol-67 witness change below, a staged duplicate-resolution diagnostic,
-an overlapping-account concurrency fixture, and scheduled closed-period
+a shared-evidence concurrency fixture, and scheduled closed-period
 execution that ignored an explicitly held operation.
 
 Expiry correctly returned registered FA-REF-014, while the new offline test
@@ -27,9 +60,11 @@ as FA-REF-032. A distinct resolution key now receives FA-REF-062 after the
 existing authority, scope, common-key and staged-entry checks; it never returns
 a recorded outcome or discharges any accounting law. Same-key provenance
 checks remain. The pending-prefix fixture also expected a commit after changing
-both accounts it had read. Its original case now requires the observed FCW
-conflict and no publication; a separate disjoint-account case must succeed
-with the exact native pending count. The point-witness law is unchanged.
+a retained document it had read. The original shared-source case now requires
+the observed FCW conflict and no publication. Changing only the accounts was
+insufficient; the later diagnostic above identifies that mistaken assumption.
+The distinct-account, distinct-document case must succeed with the exact
+native pending count. The point-witness law is unchanged.
 
 Finally, the scheduler classified every conditional Reversal cell using only
 its default `post` operation. Execution now tests the actual admitted executor

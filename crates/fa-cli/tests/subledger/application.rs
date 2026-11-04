@@ -337,7 +337,7 @@ fn raw_post_application_classification_is_kernel_checked_and_identity_bound() {
     );
     let (status, output) = f.run(&["post", "--intent", &changed, "--evidence", &f.evidence]);
     assert_eq!(status, 6, "{output}");
-    assert!(output.contains("FA-REF-009"));
+    assert!(output.contains("FA-REF-032"), "{output}");
     assert_eq!(
         f.head(),
         after,
