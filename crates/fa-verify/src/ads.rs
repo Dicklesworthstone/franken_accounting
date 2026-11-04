@@ -568,12 +568,10 @@ pub fn verify_ads(
             .push("the bundle did not verify, so GL_Detail was not judged against it".into());
         return Ok(out);
     }
-    let escaped = match field(certificate, "format") {
-        Some("aicpa_ads_gl_v3") => true,
-        Some("aicpa_ads_gl_v2") | None => false,
-        Some(other) => {
-            out.failures
-                .push(format!("unsupported ADS format version {other:?}"));
+    let escaped = match escaped_format(certificate) {
+        Ok(escaped) => escaped,
+        Err(why) => {
+            out.failures.push(why);
             return Ok(out);
         }
     };
@@ -610,6 +608,17 @@ pub fn verify_ads(
         chart: ads_chart(chart_of_accounts, escaped),
     };
     Ok(judge(out, authenticated, stated, &ADS_PARTS))
+}
+
+fn escaped_format(certificate: &str) -> Result<bool, String> {
+    match field(certificate, "format") {
+        // v4 distinguishes a Trial_Balance derived from GL_Detail from
+        // original source assertions. Its escaped text law is v3's, and
+        // either profile must still refold exactly from authenticated GL.
+        Some("aicpa_ads_gl_v3" | "aicpa_ads_gl_v4") => Ok(true),
+        Some("aicpa_ads_gl_v2") | None => Ok(false),
+        Some(other) => Err(format!("unsupported ADS format version {other:?}")),
+    }
 }
 
 /// Judge what an extract states against the records a verified bundle
@@ -1313,6 +1322,39 @@ mod tests {
         // A literal backslash in the existing v2 profile keeps its meaning.
         let legacy = extracted(&gl, false, false).unwrap();
         assert_eq!(legacy[0].journal_id, r"entry\pid");
+    }
+
+    #[test]
+    fn v4_derived_balances_use_escaped_text_and_require_the_exact_gl_fold() {
+        let certificate = "format = \"aicpa_ads_gl_v4\"\naccount_scope_utf8_hex = \"36307c3030\"\n";
+        let escaped = escaped_format(certificate).unwrap();
+        assert!(escaped);
+        let account = utf8_hex(field(certificate, "account_scope_utf8_hex").unwrap()).unwrap();
+        assert_eq!(account, "60|00");
+        let gl = format!(
+            "{GL_HEADER}\nentry\\pid|1|2026-03-10|7|1|60\\p00|D|15.00|USD|2|one\\nline|\\N|\nentry\\pid|2|2026-03-10|7|1|1000|C|15.00|USD|2|one\\nline|\\N|\n"
+        );
+        let entries = extracted(&gl, escaped, false).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].rows[0].account, account);
+        let tb = format!("{TB_HEADER}\n60\\p00|2026-03-31|D|15.00|USD|2\n");
+        assert_eq!(
+            trial_balance_rows(&tb, &entries, "2026-03-31", escaped, Some(&account)),
+            Ok(1)
+        );
+        for bad in [
+            tb.replace("15.00", "15.01"),
+            tb.replace("15.00|USD|2", "15.000|USD|3"),
+            tb.replace("|D|", "|C|"),
+            format!("{TB_HEADER}\n"),
+            format!("{tb}1000|2026-03-31|C|15.00|USD|2\n"),
+        ] {
+            assert!(
+                trial_balance_rows(&bad, &entries, "2026-03-31", escaped, Some(&account)).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(escaped_format(&certificate.replace("v4", "v5")).is_err());
     }
 
     #[test]

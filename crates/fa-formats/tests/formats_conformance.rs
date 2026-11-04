@@ -1634,6 +1634,264 @@ fn ads_account_scope_keeps_whole_entries_binds_the_account_and_refuses_foreign_r
     ));
 }
 
+/// A certificate can faithfully bind an internally false balance assertion.
+/// Readers must check the accounting claim even when every digest is correct.
+#[test]
+fn ads_trial_balance_refuses_certified_false_duplicate_and_invalid_assertions() {
+    let units = UnitCatalog::embedded().unwrap();
+    let source = sample_multi_unit_journal();
+    let package = write_ads_package(&source).unwrap();
+    let rebuild = |assertions| {
+        FormatJournal::new(
+            &source.coordinate.book_name,
+            &source.coordinate.base_unit_code,
+            source.coordinate.base_unit_scale,
+            source.coordinate.effective_through,
+            source.coordinate.known_at_seq,
+            source.accounts.clone(),
+            source.entries.clone(),
+            assertions,
+        )
+        .unwrap()
+    };
+    let mut variants = Vec::new();
+    let mut changed = source.assertions.clone();
+    changed[0].amount.mantissa += 1;
+    variants.push(("false magnitude", changed));
+    let mut changed = source.assertions.clone();
+    changed[0].side = Side::Credit;
+    variants.push(("false side", changed));
+    let mut changed = source.assertions.clone();
+    changed[0].amount.mantissa = -changed[0].amount.mantissa;
+    variants.push(("negative magnitude", changed));
+    let mut changed = source.assertions.clone();
+    changed[0].account_code = "absent".into();
+    variants.push(("unknown account", changed));
+    let mut changed = source.assertions.clone();
+    changed[0].as_of = DateDay::from_ymd(2026, 3, 26).unwrap();
+    variants.push(("future assertion", changed));
+    let mut changed = source.assertions.clone();
+    changed.push(changed[0].clone());
+    variants.push(("duplicate assertion", changed));
+
+    for (label, assertions) in variants {
+        let inconsistent = rebuild(assertions);
+        assert!(write_ads_package(&inconsistent).is_err(), "{label}: writer");
+        let mut forged = package.clone();
+        forged.certificate_toml = forged
+            .certificate_toml
+            .replace(
+                &hex_encode(&source.coordinate.content_digest),
+                &hex_encode(&inconsistent.coordinate.content_digest),
+            )
+            .replace(
+                &hex_encode(&source.coordinate.certificate_digest),
+                &hex_encode(&inconsistent.coordinate.certificate_digest),
+            );
+        forged.trial_balance = format!("{}\n", package.trial_balance.lines().next().unwrap());
+        for row in &inconsistent.assertions {
+            forged.trial_balance.push_str(&format!(
+                "{}|{}|{}|{}|{}|{}\n",
+                row.account_code,
+                fa_formats::format_date_iso(row.as_of),
+                if row.side == Side::Debit { "D" } else { "C" },
+                fa_formats::format_exact_decimal(row.amount.mantissa, row.unit_scale),
+                row.unit_code,
+                row.unit_scale,
+            ));
+        }
+        let error = read_ads_package(&forged, &units).expect_err(label);
+        assert!(
+            !matches!(error, FormatError::CertificateMismatch { .. }),
+            "{label}: digests must be valid so the accounting check catches this: {error}"
+        );
+    }
+}
+
+#[test]
+fn ads_trial_balance_uses_each_assertions_date_and_registered_unit_scale() {
+    let units = UnitCatalog::embedded().unwrap();
+    let mut source = sample_multi_unit_journal();
+    // The same account has a later movement. Its earlier assertion remains
+    // true, and a second assertion at the export cutoff has a different value.
+    let mut later = source.entries[0].clone();
+    later.entry_id = "E-0004".into();
+    later.recorded_seq = 4;
+    later.effective_date = source.coordinate.effective_through;
+    later.legs.retain(|leg| leg.unit_code == "USD");
+    for leg in &mut later.legs {
+        leg.amount.mantissa = 7_500;
+    }
+    source.entries.push(later);
+    let mut earlier = source.assertions[0].clone();
+    earlier.as_of = source.entries[0].effective_date;
+    source.assertions[0].amount.mantissa += 7_500;
+    source.assertions.push(earlier);
+    let journal = FormatJournal::new(
+        &source.coordinate.book_name,
+        "USD",
+        2,
+        source.coordinate.effective_through,
+        4,
+        source.accounts,
+        source.entries,
+        source.assertions,
+    )
+    .unwrap();
+    let package = write_ads_package(&journal).unwrap();
+    let restored = read_ads_package(&package, &units).unwrap();
+    assert_eq!(restored, journal);
+    verify_round_trip_identity("ads", &journal, &restored).unwrap();
+
+    for scale in ["0", "4", "256", "not-a-scale"] {
+        let mut corrupted = package.clone();
+        corrupted.trial_balance = corrupted
+            .trial_balance
+            .replace("|USD|2", &format!("|USD|{scale}"));
+        assert!(
+            matches!(read_ads_package(&corrupted, &units), Err(FormatError::Parse { detail, .. })
+                if detail.contains("Unit_Scale")),
+            "scale={scale}"
+        );
+    }
+    let mut corrupted = package.clone();
+    corrupted.trial_balance =
+        corrupted
+            .trial_balance
+            .replacen("Ending_Balance", "Unrelated_Value", 1);
+    assert!(read_ads_package(&corrupted, &units).is_err());
+}
+
+#[test]
+fn ads_derived_trial_balance_preserves_assertion_free_journals_and_scope() {
+    let units = UnitCatalog::embedded().unwrap();
+    let source = sample_multi_unit_journal();
+    let journal = FormatJournal::new(
+        "Derived | balances\nwithout assertions",
+        "USD",
+        2,
+        source.coordinate.effective_through,
+        source.coordinate.known_at_seq,
+        source.accounts,
+        source.entries,
+        Vec::new(),
+    )
+    .unwrap();
+    for input in [journal.clone(), journal.scoped_to_account("1000").unwrap()] {
+        let package = write_ads_package(&input).unwrap();
+        assert!(
+            package
+                .certificate_toml
+                .contains("format = \"aicpa_ads_gl_v4\"")
+        );
+        assert!(package.trial_balance.lines().count() > 1);
+        let restored = read_ads_package(&package, &units).unwrap();
+        assert!(restored.assertions.is_empty());
+        assert_eq!(restored, input);
+        verify_round_trip_identity("ads-v4", &input, &restored).unwrap();
+        assert_eq!(write_ads_package(&restored).unwrap(), package);
+
+        // Derived rows are not source assertions in the content digest.
+        // Exact recomputation must therefore refuse changes independently.
+        let mut wrong = package.clone();
+        wrong.trial_balance = wrong.trial_balance.replace("|2500.00|", "|2500.01|");
+        assert!(matches!(
+            read_ads_package(&wrong, &units),
+            Err(FormatError::RoundTripMismatch { .. })
+        ));
+        let mut missing = package.clone();
+        missing.trial_balance = format!("{}\n", package.trial_balance.lines().next().unwrap());
+        assert!(read_ads_package(&missing, &units).is_err());
+        let mut duplicate = package.clone();
+        duplicate
+            .trial_balance
+            .push_str(package.trial_balance.lines().nth(1).unwrap());
+        duplicate.trial_balance.push('\n');
+        assert!(read_ads_package(&duplicate, &units).is_err());
+        let mut downgraded = package;
+        downgraded.certificate_toml = downgraded
+            .certificate_toml
+            .replace("aicpa_ads_gl_v4", "aicpa_ads_gl_v3");
+        assert!(matches!(
+            read_ads_package(&downgraded, &units),
+            Err(FormatError::CertificateMismatch { .. })
+        ));
+    }
+}
+
+#[test]
+fn ads_derived_trial_balance_preserves_zero_cells_and_refuses_unrepresentable_magnitudes() {
+    let units = UnitCatalog::embedded().unwrap();
+    let source = sample_multi_unit_journal();
+    let mut opening = source.entries[0].clone();
+    opening.legs.retain(|leg| leg.unit_code == "USD");
+    let mut reversing = opening.clone();
+    reversing.entry_id = "reversing".into();
+    reversing.recorded_seq = 2;
+    for leg in &mut reversing.legs {
+        leg.side = if leg.side == Side::Debit {
+            Side::Credit
+        } else {
+            Side::Debit
+        };
+    }
+    let zero = FormatJournal::new(
+        "zero balances",
+        "USD",
+        2,
+        source.coordinate.effective_through,
+        3,
+        source.accounts.clone(),
+        vec![opening.clone(), reversing],
+        Vec::new(),
+    )
+    .unwrap();
+    let package = write_ads_package(&zero).unwrap();
+    assert_eq!(package.trial_balance.lines().count(), 3);
+    assert!(
+        package
+            .trial_balance
+            .lines()
+            .skip(1)
+            .all(|row| row.contains("|D|0.00|USD|2"))
+    );
+    assert_eq!(read_ads_package(&package, &units).unwrap(), zero);
+
+    // Two valid entries can give one account MIN while another account
+    // offsets it. The balance exists, but its positive C magnitude does not.
+    for leg in &mut opening.legs {
+        leg.amount.mantissa = i128::MAX;
+    }
+    let mut extra = opening.clone();
+    extra.entry_id = "one-more-credit".into();
+    extra.recorded_seq = 2;
+    for leg in &mut extra.legs {
+        leg.amount.mantissa = 1;
+        if leg.side == Side::Debit {
+            leg.account_code = "1200".into();
+        }
+    }
+    let extreme = FormatJournal::new(
+        "minimum balance",
+        "USD",
+        2,
+        source.coordinate.effective_through,
+        3,
+        source.accounts,
+        vec![opening, extra],
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        extreme.fold_balances().unwrap()[&("3000".into(), "USD".into())],
+        i128::MIN
+    );
+    assert!(matches!(
+        write_ads_package(&extreme),
+        Err(FormatError::Overflow { .. })
+    ));
+}
+
 #[test]
 fn tigerbeetle_semantic_corpus_agrees_on_all_scenarios_and_catches_planted_mutation() {
     let corpus = TbCorpus::embedded().expect("tigerbeetle_semantics.toml");

@@ -2,7 +2,7 @@
 //! round-trip reader with coordinate certificate and `FA-INV-04` refold
 //! verification (plan §8.6, §16.3, bead `fa-npi`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_model::EntryClass;
 use fa_money::{Amount, Side};
@@ -16,7 +16,12 @@ use crate::{
 
 const FMT: &str = "aicpa_ads_gl_v2";
 const ESCAPED_FMT: &str = "aicpa_ads_gl_v3";
+// v4 retains v3's text encoding, but its Trial_Balance is derived data,
+// rather than source assertions included in the journal's content digest.
+const DERIVED_FMT: &str = "aicpa_ads_gl_v4";
 const GL_HEADER: &str = "Journal_ID|Journal_Entry_Line_Number|Effective_Date|Recorded_Seq|Entry_Class|GL_Account_Number|Debit_Credit_Indicator|Amount|Transaction_Currency|Unit_Scale|JE_Header_Description|Migrated_From|Line_Description";
+const TB_HEADER: &str =
+    "GL_Account_Number|As_Of_Date|Debit_Credit_Indicator|Ending_Balance|Currency|Unit_Scale";
 
 /// An AICPA Audit Data Standards General Ledger export package.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,13 +39,17 @@ pub struct AdsPackage {
 /// Write a [`FormatJournal`] as an AICPA Audit Data Standards [`AdsPackage`].
 pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatError> {
     let dimensions = journal.has_dimensions();
+    let balances = journal.fold_balances()?;
+    verify_trial_balance(journal, &journal.assertions, false)?;
+    let derived = journal.assertions.is_empty() && !journal.entries.is_empty();
     // v2 has literal fields. Keep its existing bytes only when every field
     // is representable; lossless escaped text is a distinct durable version.
     let unsafe_text = |s: &str| {
         s.chars()
             .any(|c| matches!(c, '|' | '\\' | '"') || c.is_control())
     };
-    let escaped = unsafe_text(&journal.coordinate.book_name)
+    let escaped = derived
+        || unsafe_text(&journal.coordinate.book_name)
         || unsafe_text(&journal.coordinate.base_unit_code)
         || journal
             .accounts
@@ -120,10 +129,7 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
         }
     }
 
-    let balances = journal.fold_balances()?;
-    let mut tb = String::from(
-        "GL_Account_Number|As_Of_Date|Debit_Credit_Indicator|Ending_Balance|Currency|Unit_Scale\n",
-    );
+    let mut tb = format!("{TB_HEADER}\n");
     let mut unit_scale_by_code = BTreeMap::new();
     for e in &journal.entries {
         for l in &e.legs {
@@ -163,11 +169,15 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
                 continue;
             }
             let scale = unit_scale_by_code.get(unit_code).copied().unwrap_or(2);
-            let (dc, mag) = if *signed_bal >= 0 {
-                ("D", *signed_bal)
-            } else {
-                ("C", -*signed_bal)
-            };
+            let dc = if *signed_bal >= 0 { "D" } else { "C" };
+            let mag = signed_bal
+                .checked_abs()
+                .ok_or_else(|| FormatError::Overflow {
+                    format: FMT,
+                    detail: format!(
+                        "Trial_Balance magnitude for {acct_code} {unit_code} exceeds i128"
+                    ),
+                })?;
             let amt_str = format_exact_decimal(mag, scale);
             tb.push_str(&format!(
                 "{}|{}|{}|{}|{}|{}\n",
@@ -185,7 +195,7 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
     // including control characters the registry's small TOML reader omits.
     let (format, book_key, unit_key, book_name, unit_code) = if escaped {
         (
-            ESCAPED_FMT,
+            if derived { DERIVED_FMT } else { ESCAPED_FMT },
             "book_name_utf8_hex",
             "base_unit_code_utf8_hex",
             hex_encode(journal.coordinate.book_name.as_bytes()),
@@ -261,9 +271,10 @@ pub fn read_ads_package(
             format: FMT,
             detail: format!("certificate_toml: {e}"),
         })?;
-    let escaped = match cert_doc.root.get("format").and_then(|v| v.as_str()) {
-        Some(FMT) => false,
-        Some(ESCAPED_FMT) => true,
+    let (escaped, derived) = match cert_doc.root.get("format").and_then(|v| v.as_str()) {
+        Some(FMT) => (false, false),
+        Some(ESCAPED_FMT) => (true, false),
+        Some(DERIVED_FMT) => (true, true),
         _ => return Err(text_error("unknown or absent ADS format version")),
     };
     if cert_doc.root.get("schema_version").and_then(|v| v.as_int()) != Some(1) {
@@ -282,6 +293,11 @@ pub fn read_ads_package(
     if pkg.gl_detail.lines().next() != Some(gl_header.as_str()) {
         return Err(text_error(
             "ADS GL_Detail header differs from its declared dimension encoding",
+        ));
+    }
+    if pkg.trial_balance.lines().next() != Some(TB_HEADER) {
+        return Err(text_error(
+            "ADS Trial_Balance header is not the registered layout",
         ));
     }
     let book_name = cert_doc
@@ -612,6 +628,11 @@ pub fn read_ads_package(
                     format: FMT,
                     unit: unit_code.clone(),
                 })?;
+        if cols[5].parse::<u8>().ok() != Some(unit_scale) {
+            return Err(text_error(
+                "Trial_Balance Unit_Scale differs from its registered unit",
+            ));
+        }
         let mantissa = parse_exact_decimal(FMT, cols[3], unit_scale)?;
         assertions.push(FormatAssertion {
             account_code: acct_code,
@@ -631,7 +652,11 @@ pub fn read_ads_package(
         known_at_seq,
         accounts,
         entries,
-        assertions,
+        if derived {
+            Vec::new()
+        } else {
+            assertions.clone()
+        },
     )?;
     // A scoped package holds exactly its account's extract: every entry
     // names the account and every balance is the account's own.
@@ -640,7 +665,7 @@ pub fn read_ads_package(
             .entries
             .iter()
             .any(|e| !e.legs.iter().any(|l| &l.account_code == code))
-            || journal.assertions.iter().any(|a| &a.account_code != code)
+            || assertions.iter().any(|a| &a.account_code != code)
         {
             return Err(text_error(format!(
                 "an ADS package scoped to account {code} holds an entry or a balance of another account only"
@@ -685,8 +710,159 @@ pub fn read_ads_package(
             observed_hex: hex_encode(&journal.coordinate.certificate_digest),
         });
     }
+    if derived && journal.entries.is_empty() {
+        return Err(text_error(
+            "ADS v4 requires nonempty GL_Detail without source assertions",
+        ));
+    }
+    verify_trial_balance(&journal, &assertions, derived)?;
 
     Ok(journal)
+}
+
+/// A content certificate binds bytes, not their accounting truth. Recompute
+/// every stated cell at its own effective date, including earlier assertions,
+/// and refuse conflicting/duplicate cells even if their certificate is valid.
+/// Sort once and advance a prefix fold, rather than rescanning the GL for every
+/// account. v4 additionally requires the complete, canonical derived balance.
+fn verify_trial_balance(
+    journal: &FormatJournal,
+    stated: &[FormatAssertion],
+    derived: bool,
+) -> Result<(), FormatError> {
+    let accounts: BTreeSet<_> = journal.accounts.iter().map(|a| a.code.as_str()).collect();
+    let mut units = BTreeMap::new();
+    for entry in &journal.entries {
+        if entry.effective_date > journal.coordinate.effective_through
+            || entry.recorded_seq > journal.coordinate.known_at_seq
+        {
+            return Err(text_error(format!(
+                "GL_Detail entry {} lies beyond its export coordinate",
+                entry.entry_id
+            )));
+        }
+        for leg in &entry.legs {
+            let identity = (leg.amount.unit, leg.unit_scale);
+            if units
+                .insert(leg.unit_code.as_str(), identity)
+                .is_some_and(|prior| prior != identity)
+            {
+                return Err(text_error(format!(
+                    "GL_Detail gives {} inconsistent unit identities or scales",
+                    leg.unit_code
+                )));
+            }
+        }
+    }
+    let mut seen = BTreeSet::new();
+    for row in stated {
+        if !accounts.contains(row.account_code.as_str()) {
+            return Err(FormatError::UnknownAccount {
+                format: FMT,
+                account_code: row.account_code.clone(),
+            });
+        }
+        if row.as_of > journal.coordinate.effective_through
+            || row.amount.mantissa < 0
+            || journal
+                .coordinate
+                .account_scope
+                .as_ref()
+                .is_some_and(|code| code != &row.account_code)
+            || units
+                .get(row.unit_code.as_str())
+                .is_some_and(|identity| *identity != (row.amount.unit, row.unit_scale))
+        {
+            return Err(text_error(format!(
+                "Trial_Balance row for {} {} has an invalid date, magnitude, scope or unit scale",
+                row.account_code, row.unit_code
+            )));
+        }
+        if !seen.insert((row.as_of, row.account_code.as_str(), row.unit_code.as_str())) {
+            return Err(text_error(format!(
+                "Trial_Balance duplicates {} {} as of {}",
+                row.account_code,
+                row.unit_code,
+                format_date_iso(row.as_of)
+            )));
+        }
+    }
+    let mut entries: Vec<_> = journal.entries.iter().collect();
+    entries.sort_by_key(|entry| (entry.effective_date, entry.recorded_seq, &entry.entry_id));
+    let mut rows: Vec<_> = stated.iter().collect();
+    rows.sort_by_key(|row| (row.as_of, &row.account_code, &row.unit_code));
+    let mut entries = entries.into_iter().peekable();
+    let mut folded: BTreeMap<(&str, &str), i128> = BTreeMap::new();
+    for row in rows {
+        while let Some(entry) = entries.next_if(|entry| entry.effective_date <= row.as_of) {
+            for leg in &entry.legs {
+                let cell = folded
+                    .entry((leg.account_code.as_str(), leg.unit_code.as_str()))
+                    .or_default();
+                *cell = match leg.side {
+                    Side::Debit => cell.checked_add(leg.amount.mantissa),
+                    Side::Credit => cell.checked_sub(leg.amount.mantissa),
+                }
+                .ok_or_else(|| FormatError::Overflow {
+                    format: FMT,
+                    detail: "Trial_Balance prefix fold exceeds i128".into(),
+                })?;
+            }
+        }
+        let actual = folded
+            .get(&(row.account_code.as_str(), row.unit_code.as_str()))
+            .copied()
+            .unwrap_or(0);
+        let reported = match row.side {
+            Side::Debit => row.amount.mantissa,
+            Side::Credit => -row.amount.mantissa,
+        };
+        if actual != reported {
+            return Err(FormatError::RoundTripMismatch {
+                format: FMT.into(),
+                detail: format!(
+                    "Trial_Balance {} {} as of {} states {reported}; GL_Detail folds to {actual}",
+                    row.account_code,
+                    row.unit_code,
+                    format_date_iso(row.as_of)
+                ),
+            });
+        }
+    }
+    if derived {
+        let expected = journal.fold_balances()?;
+        let expected: Vec<_> = expected
+            .iter()
+            .filter(|((account, _), _)| {
+                journal
+                    .coordinate
+                    .account_scope
+                    .as_ref()
+                    .is_none_or(|scope| scope == account)
+            })
+            .collect();
+        if stated.len() != expected.len()
+            || stated
+                .iter()
+                .zip(expected)
+                .any(|(row, ((account, unit), amount))| {
+                    row.account_code != *account
+                        || row.unit_code != *unit
+                        || row.as_of != journal.coordinate.effective_through
+                        || row.side
+                            != if *amount < 0 {
+                                Side::Credit
+                            } else {
+                                Side::Debit
+                            }
+                })
+        {
+            return Err(text_error(
+                "ADS v4 Trial_Balance must be the complete, ordered GL_Detail fold at its export cutoff",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn text_error(detail: impl Into<String>) -> FormatError {
