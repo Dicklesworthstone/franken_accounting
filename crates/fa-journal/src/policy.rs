@@ -1505,21 +1505,29 @@ pub fn entry_in_scope_by_metadata<V: asupersync::fs::Vfs + Clone>(
     if txn.vertex_has_label(db, vid, label::ENTRY)? != Some(true) {
         return Ok(false);
     }
-    let class = match txn.vertex_property(db, vid, property::CLASS)? {
-        Some(CanonicalScalar::Int(tag)) => u16::try_from(tag)
-            .ok()
-            .map(EntryClass)
-            .filter(|class| class.name().is_some())
-            .ok_or_else(|| KernelError::Corrupt(format!("entry class mirror: {tag}")))?,
-        other => {
-            return Err(KernelError::Corrupt(format!(
-                "entry class mirror: {other:?}"
-            )));
+    // Only a class caveat needs this mirror to judge visibility. Other scope
+    // guards must still exclude an entry with an unreadable payload (or an
+    // absent class mirror) without observing or validating that payload.
+    let class = if capability.classes().is_some() {
+        let class = match txn.vertex_property(db, vid, property::CLASS)? {
+            Some(CanonicalScalar::Int(tag)) => u16::try_from(tag)
+                .ok()
+                .map(EntryClass)
+                .filter(|class| class.name().is_some())
+                .ok_or_else(|| KernelError::Corrupt(format!("entry class mirror: {tag}")))?,
+            other => {
+                return Err(KernelError::Corrupt(format!(
+                    "entry class mirror: {other:?}"
+                )));
+            }
+        };
+        if fa_policy::require_class(capability, Some(class)).is_err() {
+            return Ok(false);
         }
+        Some(class)
+    } else {
+        None
     };
-    if fa_policy::require_class(capability, Some(class)).is_err() {
-        return Ok(false);
-    }
     let day = match txn.vertex_property(db, vid, property::FA_EFFECTIVE_DAY)? {
         Some(CanonicalScalar::Int(d)) => DateDay(
             i32::try_from(d)
@@ -1564,7 +1572,7 @@ fn footprint_in_scope(
     book: &BookContext,
     legs: &[VId],
     day: DateDay,
-    class: EntryClass,
+    class: Option<EntryClass>,
 ) -> bool {
     if capability.accounts().is_some() && legs.is_empty() {
         return false;
@@ -1580,20 +1588,19 @@ fn footprint_in_scope(
         return false;
     }
     let codes: Vec<&str> = period.iter().map(String::as_str).collect();
-    fa_policy::reach_class(
-        capability,
-        &Reach {
-            branch: capability.branch().or(Some(Id128::TRUNK)),
-            observes: capability
-                .known_at_pin()
-                .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
-            periods: Some(&codes),
-            through: Some(day),
-            accounts: Some(legs),
-        },
-        accounts,
-        class,
-    )
+    let reach = Reach {
+        branch: capability.branch().or(Some(Id128::TRUNK)),
+        observes: capability
+            .known_at_pin()
+            .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+        periods: Some(&codes),
+        through: Some(day),
+        accounts: Some(legs),
+    };
+    match class {
+        Some(class) => fa_policy::reach_class(capability, &reach, accounts, class),
+        None => fa_policy::reach(capability, &reach, accounts),
+    }
     .is_ok()
 }
 

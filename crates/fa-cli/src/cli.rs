@@ -2698,6 +2698,15 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
                 Fail::Refusal(refusal)
             })?;
     }
+    // Certifying these reports retains an immutable certificate. Refuse an
+    // unsupported rehearsal prerequisite before opening the book, including
+    // the AccessEvent a bound read would otherwise publish on its first open.
+    if required.contains(&fa_policy::Op::Produce)
+        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
+    {
+        fa_policy::admit_direct_write(authority.capability())
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    }
     bound_scope_refusal(
         authority.capability(),
         required,

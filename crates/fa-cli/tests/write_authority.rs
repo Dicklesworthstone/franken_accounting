@@ -353,6 +353,50 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
     use Admitted::{Reaches, RetainsCertificate, Succeeds};
     let mut rows = vec![
         row(
+            &[
+                "close",
+                "start",
+                "--run",
+                "matrix-run",
+                "--period",
+                "FY2026-P03",
+                "--tasks",
+                "close-tasks.json",
+            ],
+            &[Op::Read, Op::Close],
+            Reaches,
+        ),
+        row(
+            &[
+                "close",
+                "step",
+                "--run",
+                "matrix-run",
+                "--task",
+                "matrix-task",
+                "--dry-run",
+            ],
+            &[Op::Read, Op::Close],
+            Reaches,
+        ),
+        row(
+            &[
+                "close",
+                "step",
+                "--run",
+                ZERO_DIGEST,
+                "--task",
+                "matrix-task",
+            ],
+            &[Op::Read, Op::Close, Op::Approve],
+            Reaches,
+        ),
+        row(
+            &["close", "run", "--run", ZERO_DIGEST],
+            &[Op::Read, Op::Close, Op::Approve],
+            Reaches,
+        ),
+        row(
             &["tb", "--period", "FY2026-P03", "--certify"],
             &[Op::Read, Op::Produce],
             RetainsCertificate,
@@ -1833,6 +1877,13 @@ fn requires_dry_run_operator_tokens_refuse_control_and_metadata_writes_but_allow
         argv(&["checkpoint", "create"]),
         argv(&["registers", "materialize", "--period", "FY2026-P03"]),
         argv(&["tb", "--period", "FY2026-P03", "--certify"]),
+        argv(&[
+            "tb",
+            "--period",
+            "FY2026-P03",
+            "--certificate-out",
+            "unrehearsed.cert",
+        ]),
     ];
     for words in &writes {
         let before = m.book.head().unwrap();
@@ -1844,6 +1895,10 @@ fn requires_dry_run_operator_tokens_refuse_control_and_metadata_writes_but_allow
         );
         assert_eq!(m.book.head().unwrap(), before, "{words:?} published");
     }
+    assert!(
+        !m.dir.join("unrehearsed.cert").exists(),
+        "refused certificate production must create no output file"
+    );
     for words in [
         argv(&["tb", "--period", "FY2026-P03"]),
         argv(&["recover", "outcomes", "--dry-run"]),

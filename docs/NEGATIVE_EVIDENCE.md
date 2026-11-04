@@ -2415,3 +2415,40 @@ The capture then failed independent verification because it never reached
 published valid verdict or resume credit. The separate original Tier 0 reached
 its unchanged 1,800-second compile cap: remote 137 after 1,804,185 ms, format
 PASS/check FAIL, wrapper 1. Neither result authorizes a fold, push or closure.
+
+## 2026-11-04 — Reconciliation exposed authorization-order and coverage defects
+
+The unlanded 953b25b candidate reconciled 05090127 with owner 7ebfffc2.
+Its original unfiltered journal/CLI authorization packet compiled and completed
+with exit 101: operator tokens 15 passed/1 failed, write authority 1/2,
+bank matches 53/0, Genesis 391/1, and journal policy 81/1. The remote run
+finished at 01:17:09 UTC after 1,396,260 ms. All five failures are retained;
+the candidate was not merged, published or used to close a Bead.
+
+Two original armed outside-scope controls failed with `entry class mirror:
+None`: class-aware metadata admission inspected that mirror even for tokens
+without a class caveat. It now reads the class mirror only when that caveat
+requires it. Account and period guards retain their original behavior, a
+class-scoped request still requires the actual valid class mirror, and an
+unscoped consumer still detects the deliberately unreadable entry payload.
+Neither armed control is edited.
+
+`tb --certify` correctly refused a required-rehearsal token, but only after
+the bound read's AccessEvent moved the head from 6 to 7. Certifying report
+admission now rejects the unsupported publication before opening the book.
+The original unchanged-head assertion remains; a certificate-file twin also
+requires no output file. Ordinary reads and read-only proof bundles keep their
+separate access-receipt contract.
+
+The new class-scoped CLI fixture issued a close-only token although the actual
+period route requires read and close, so a missing-read refusal masked the
+class boundary. Its controller now holds both required operations; the exact
+class-refusal, matching-class success and unscoped success assertions remain.
+The write matrix also lacked the existing CloseRun start, step and run routes.
+They now have rows, including the step-preview operation set; no writing route
+is exempted, and the original coverage checker remains unchanged.
+
+The separate 953b25b compile gate and policy/CLI packet reached their original
+1,800-second caps with exit 137 before tests executed. They provide no compile
+PASS or test credit. Corrected-source native execution, exact-tree Tier 0 and
+the complete Tier 1 proof remain required.

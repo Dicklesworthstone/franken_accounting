@@ -26,6 +26,9 @@ fn issue(f: &mut Fixture, holder: &str, op: &str, class: Option<&str>) -> Launch
     if let Some(class) = class {
         words.extend(["--class", class]);
     }
+    if op == "close" {
+        words.extend(["--op", "read", "--grant", "read"]);
+    }
     let issued = f.owner(&words);
     assert_eq!(text(&issued, "event"), "capability_issued");
     let token = CapabilityToken::decode(&std::fs::read(f.dir.join(&output)).unwrap()).unwrap();
