@@ -1095,10 +1095,7 @@ fn current_destination_requirements_cannot_be_filled_with_invented_asset_dimensi
     let before = f.h.db.frontier().unwrap();
     assert!(f.h.publish_plan(plan, &cap()).is_err());
     let refusal = f.h.post(posting(reviewed.clone())).unwrap_err();
-    assert_eq!(
-        refusal.code,
-        fa_journal::refusal::code::DIMENSION_MISSING
-    );
+    assert_eq!(refusal.code, fa_journal::refusal::code::DIMENSION_MISSING);
     assert_eq!(f.h.db.frontier().unwrap(), before);
 
     let mut invented = reviewed.clone();

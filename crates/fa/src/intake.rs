@@ -47,7 +47,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 .and_then(|()| {
                     fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
                 })
-                .and_then(|()| fa_policy::admit_control_write(capability)),
+                .and_then(|()| fa_policy::admit_direct_write(capability)),
             IntakeAction::ImportRun | IntakeAction::BankImport => {
                 let key = fa_policy::sod::control_key("ImportControl", None, "Import");
                 let op = policy::steward()?.preparer_op(&key).ok_or_else(|| {

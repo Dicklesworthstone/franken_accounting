@@ -709,12 +709,12 @@ pub fn verify_at<V: Vfs + Clone>(
     }
 }
 
-fn admit_activation<V: Vfs + Clone>(
+fn admit_definition<V: Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     capability: &Capability,
 ) -> Outcome<()> {
-    if let Err(denial) = fa_policy::admit(
+    if let Err(denial) = fa_policy::admit_preparation(
         capability,
         &Intent {
             principal: capability.holder(),
@@ -723,9 +723,10 @@ fn admit_activation<V: Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
-    )
-    .and_then(|()| fa_policy::reach(capability, &Reach::whole_book(true), None))
-    {
+        &Reach::whole_book(true),
+        None,
+        None,
+    ) {
         return Ok(Err(fa_journal::policy::refusal(&denial)));
     }
     if let Err(denial) = fa_policy::current(capability, db.frontier().map_err(KernelError::from)?) {
@@ -803,7 +804,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         effective_from: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<StatementDefinitionPlan> {
-        if let Err(refusal) = admit_activation(&self.db, &self.context, capability)? {
+        if let Err(refusal) = admit_definition(&self.db, &self.context, capability)? {
             return Ok(Err(refusal));
         }
         if let Err(refusal) = definition_valid(&definition) {
@@ -865,8 +866,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         plan: StatementDefinitionPlan,
         approvals: Vec<ApprovalRef>,
     ) -> Outcome<ActivatedStatementDefinition> {
+        if let Err(denial) = fa_policy::admit_direct_write(capability) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         checkpoint(&cx.query())?;
-        if let Err(refusal) = admit_activation(&self.db, &self.context, capability)? {
+        if let Err(refusal) = admit_definition(&self.db, &self.context, capability)? {
             return Ok(Err(refusal));
         }
         if plan.book_id != self.context.book_id || plan.principal_ref != capability.holder() {

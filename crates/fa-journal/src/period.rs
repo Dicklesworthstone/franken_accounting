@@ -1186,6 +1186,9 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     approvals: &[ApprovalRef],
 ) -> Outcome<Transitioned> {
+    if let Err(denial) = fa_policy::admit_direct_write(capability) {
+        return Ok(Err(policy::refusal(&denial)));
+    }
     if let Err(refusal) = admit_transition(db, book, period_code, t, principal_ref, capability)? {
         return Ok(Err(refusal));
     }
@@ -1415,6 +1418,9 @@ async fn transition_planned_in<V: asupersync::fs::Vfs + Clone>(
     completion: Option<&crate::close_run::TaskCompletion>,
 ) -> Outcome<Transitioned> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
+    if let Err(denial) = fa_policy::admit_direct_write(capability) {
+        return Ok(Err(policy::refusal(&denial)));
+    }
     if let Err(refusal) = admit_transition(
         db,
         book,
@@ -1634,7 +1640,7 @@ fn admit_transition<V: asupersync::fs::Vfs + Clone>(
     let calendar_period = policy::calendar_period(book, period_code);
     let reached = [period_code];
     let through = calendar_period.as_ref().map(PeriodDef::last_day);
-    if let Err(denial) = fa_policy::admit_within_class(
+    if let Err(denial) = fa_policy::admit_preparation(
         capability,
         &Intent {
             principal,
@@ -1651,7 +1657,7 @@ fn admit_transition<V: asupersync::fs::Vfs + Clone>(
             accounts: None,
         },
         None,
-        EntryClass::PERIOD_CONTROL,
+        Some(EntryClass::PERIOD_CONTROL),
     ) {
         return Ok(Err(policy::refusal(&denial)));
     }

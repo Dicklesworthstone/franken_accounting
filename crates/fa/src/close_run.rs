@@ -282,13 +282,7 @@ impl Book {
         description: &str,
         transition_input: Option<CloseRunTransition>,
     ) -> Outcome<CloseRunExecution> {
-        self.execute_close_run_with_rehearsal(
-            name,
-            capability,
-            description,
-            transition_input,
-            None,
-        )
+        self.execute_close_run_with_rehearsal(name, capability, description, transition_input, None)
     }
 
     /// Execute only the combined close selected by the caller's reviewed

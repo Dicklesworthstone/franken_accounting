@@ -887,7 +887,10 @@ fn close_run_selected_rehearsal_rejects_offsetting_activity_and_accepts_a_fresh_
     ];
     let progress = ok(&f.book, &args);
     assert_eq!(text(&progress, "state"), "complete");
-    assert_eq!(text(&progress, "rehearsal"), fresh.strip_prefix("C:").unwrap());
+    assert_eq!(
+        text(&progress, "rehearsal"),
+        fresh.strip_prefix("C:").unwrap()
+    );
     assert_eq!(get(&progress, "completed").as_arr().unwrap().len(), 2);
     assert_eq!(head(&f.book), before + 2);
     assert_eq!(run(&f.book, &args).0, 6);
@@ -1001,7 +1004,14 @@ fn close_run_selected_rehearsal_requires_the_exact_run_family_and_locator() {
     assert_eq!(
         run(
             &f.book,
-            &["close", "status", "--run", "binding", "--rehearsal", &selected],
+            &[
+                "close",
+                "status",
+                "--run",
+                "binding",
+                "--rehearsal",
+                &selected
+            ],
         )
         .0,
         2,

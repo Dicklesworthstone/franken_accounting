@@ -257,6 +257,7 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 - `8K-EQ-D-CHG-FY1998`, derived by `difference` from `8K-EQ-D-FY1998`, `8K-EQ-D-FY1997`: -135,000,000.00 USD
 - `8K-EQ-D-CHG-FY1999`, derived by `difference` from `8K-EQ-D-FY1999`, `8K-EQ-D-FY1998`: -386,000,000.00 USD
 - `8K-EQ-D-CHG-FY2000`, derived by `difference` from `8K-EQ-D-FY2000`, `8K-EQ-D-FY1999`: -330,000,000.00 USD
+- `ENR-BRIDGE-FY1999`, an interpretation of `10K-TA-A-FY1999`, `10K-EQ-A-FY1999`, `10K-NI-A-FY1999`, read by `case-author-1` and second reader `case-second-reader`: The single-year FY1999 8-K bridge book holds total assets, equity and net income on separate asset, equity and revenue accounts. Each stock figure and its restatement adjustments post against a liability balancing account; net income and its adjustments post against a separate equity balancing account. Neither balancing account is read, published or compared. Every figure posts in full in FY1999, rather than as a change from an earlier year, and the equity bridge excludes the net-income balancing account. This is the book's encoding of the three reported figures, not a sourced claim about Enron's account-level journal.
 - `ENR-BRIDGE-8K`, an interpretation of `10K-TA-A-FY1997`, `10K-DEBT-A-FY1997`, `10K-EQ-A-FY1997`, `10K-NI-A-FY1998`, read by `case-author-1` and second reader `case-second-reader`: The 8-K bridge book holds four of the figures its Table 1 bridges, each on its own account: total assets on an asset account, debt on a liability account, equity on an equity account, and net income on a revenue account. A book needs balanced entries, so total assets, debt and equity each post against one liability account that holds what they leave, and net income posts against an equity account that holds its closing. Neither balancing account is read, published or compared. A stock figure posts in its first year, FY1997, and in each later year as its change from the year before, so the certified balance at each year-end is the printed figure; a stock line's adjustments post per printed column in FY1997, and in each later year as the change in the line's total adjustment, the sum of its printed columns. Net income is a flow: each year's figure and each of its adjustments post in that year. Each adjustment posts against the same balancing account as the figure it adjusts.
 - `N3-TA-D-FY1997`, derived by `sum` from `N3-TA-D1-FY1997`, `N3-TA-D4-FY1997`: 372,000,000.00 USD
 - `10K-TA-A-CHG-FY1998`, derived by `difference` from `10K-TA-A-FY1998`, `10K-TA-A-FY1997`: 6,798,000,000.00 USD
@@ -508,6 +509,54 @@ Declared defaults (each an encoding choice the record does not fix):
 | `evidence_attached` | `placeholder_reviewed` | the FY2000 10-K and the 8-K are cited through their stubs, reviewed by case-second-reader (plan §2.7) |
 | `leg_split` | `statement_remainder` | each bridged figure posts against one balancing account the bridge never reads (ENR-BRIDGE-8K), so every entry balances on the figure alone (plan §3.8) |
 | `effective_date` | `reporting_period_last_day` | a fiscal year's figure, or its change, is as of the fiscal year-end, the period's last day |
+| `case_determination_date` | `restating_filing_date` | the restating filing's date (the 8-K's filing date, 2001-11-08) is public, fixed and never precedes the restated figures (plan §2.6); §7.1 has no Item 4.02 8-K row |
+| `reason` | `WrongAmount` | the restating filing corrects amounts previously reported; the book holds no account-level cause, and a restatement is never Fraud (K-REASON) |
+
+### Book `statement-bridge-8k-fy1999` (statement)
+
+franken_accounting's own `jet.self_sourced_evidence` self-disclosure (`E-SELF-statement-bridge-8k-fy1999`): not yet evaluated: filler_invariance.
+
+Opened 1999-01-01 in USD, on the `custom` calendar.
+
+| Period | Start | End | Fiscal year | Kind |
+|---|---|---|---|---|
+| `FY1999` | 1999-01-01 | 1999-12-31 | 1999 | Normal |
+
+| Account | Type | Named by |
+|---|---|---|
+| `1000` | Asset | `10K-TA-A-FY1999` |
+| `2000` | Liability | `ENR-BRIDGE-8K` |
+| `3000` | Equity | `10K-EQ-A-FY1999` |
+| `3900` | Equity | `ENR-BRIDGE-8K` |
+| `4000` | Revenue | `10K-NI-A-FY1999` |
+
+| Intent | Fact | Class | Effective |
+|---|---|---|---|
+| `10K-TA-A-FY1999` | `10K-TA-A-FY1999` | Original | 1999-12-31 |
+| `10K-EQ-A-FY1999` | `10K-EQ-A-FY1999` | Original | 1999-12-31 |
+| `10K-NI-A-FY1999` | `10K-NI-A-FY1999` | Original | 1999-12-31 |
+| `delta-10K-TA-A-FY1999-1` | `8K-TA-D1-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-TA-A-FY1999-2` | `8K-TA-D2-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-TA-A-FY1999-3` | `8K-TA-D4-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-EQ-A-FY1999-1` | `8K-EQ-D1-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-EQ-A-FY1999-2` | `8K-EQ-D2-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-EQ-A-FY1999-3` | `8K-EQ-D4-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-NI-A-FY1999-1` | `8K-NI-D1-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-NI-A-FY1999-2` | `8K-NI-D2-FY1999` | Restatement | 1999-12-31 |
+| `delta-10K-NI-A-FY1999-3` | `8K-NI-D4-FY1999` | Restatement | 1999-12-31 |
+
+| Document | Stands for | Grade |
+|---|---|---|
+| `DOC-ENR-10K` | `SRC-ENR-008` | AgentUpload |
+| `DOC-ENR-8K` | `SRC-ENR-002` | AgentUpload |
+
+Declared defaults (each an encoding choice the record does not fix):
+
+| Attribute | Rule | Why |
+|---|---|---|
+| `evidence_attached` | `placeholder_reviewed` | the FY2000 10-K and the 8-K are cited through their stubs, reviewed by case-second-reader (plan §2.7) |
+| `leg_split` | `statement_remainder` | each bridged figure posts against one balancing account the bridge never reads (ENR-BRIDGE-FY1999), so every entry balances on the figure alone (plan §3.8) |
+| `effective_date` | `reporting_period_last_day` | a FY1999 figure is as of the fiscal year-end, the period's last day |
 | `case_determination_date` | `restating_filing_date` | the restating filing's date (the 8-K's filing date, 2001-11-08) is public, fixed and never precedes the restated figures (plan §2.6); §7.1 has no Item 4.02 8-K row |
 | `reason` | `WrongAmount` | the restating filing corrects amounts previously reported; the book holds no account-level cause, and a restatement is never Fraud (K-REASON) |
 
@@ -803,5 +852,6 @@ The runner reads each restatement case back with `fa case show` after its histor
 |---|---|---|---|
 | `E-CASE-enr-10q` | `statement-bridge-10q` | PASS | kind=case_show read=case show,enr-10q state=Closed case_kind=Restatement determined_on=2001-11-19 authority=DOC-ENR-10Q disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 superseded=FY1997:SupersededBy:later_entries=5 superseded=FY1998:SupersededBy:later_entries=10 superseded=FY1999:SupersededBy:later_entries=16 superseded=FY2000:SupersededBy:later_entries=22 |
 | `E-CASE-enr-8k` | `statement-bridge-8k` | PASS | kind=case_show read=case show,enr-8k state=Closed case_kind=Restatement determined_on=2001-11-08 authority=DOC-ENR-8K disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 superseded=FY1997:SupersededBy:later_entries=5 superseded=FY1998:SupersededBy:later_entries=10 superseded=FY1999:SupersededBy:later_entries=16 superseded=FY2000:SupersededBy:later_entries=22 |
+| `E-CASE-enr-8k-fy1999` | `statement-bridge-8k-fy1999` | PASS | kind=case_show read=case show,enr-8k-fy1999 state=Closed case_kind=Restatement determined_on=2001-11-08 authority=DOC-ENR-8K disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 superseded=FY1999:SupersededBy:later_entries=9 |
 | `E-CASE-enr-raptor` | `native` | PASS | kind=case_show read=case show,enr-raptor state=Closed case_kind=Restatement determined_on=2001-11-19 authority=DOC-ENR-10Q disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3 |
 

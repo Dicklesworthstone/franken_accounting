@@ -1180,9 +1180,11 @@ impl Oracle {
         if !row.is_leaf {
             return Err(code::NOT_A_LEAF);
         }
-        if allowed.iter().chain(forbidden).any(|value| {
-            !self.dimension_values.contains_key(&(kind, value.clone()))
-        }) {
+        if allowed
+            .iter()
+            .chain(forbidden)
+            .any(|value| !self.dimension_values.contains_key(&(kind, value.clone())))
+        {
             return Err(code::STRUCTURE);
         }
         let key = (kind, account.to_string());
@@ -2970,9 +2972,11 @@ impl Oracle {
                     self.dimension_constraints
                         .get(&(tag.dimension, l.account.clone()))
                         .is_some_and(|constraint| {
-                            constraint.allowed.as_ref().is_some_and(|allowed| {
-                                !allowed.contains(&tag.code)
-                            }) || constraint.forbidden.contains(&tag.code)
+                            constraint
+                                .allowed
+                                .as_ref()
+                                .is_some_and(|allowed| !allowed.contains(&tag.code))
+                                || constraint.forbidden.contains(&tag.code)
                         })
                 })
             {

@@ -32,10 +32,9 @@ use crate::post::{
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{edge_id, replacement_vid, resolution_vid, reversal_vid, scalar_bytes};
 
-/// Only this module constructs the token. It can discharge a required
-/// rehearsal for a single or replacement plan after authenticating the
-/// artifact and binding its current caller. Publication still reproduces
-/// and compares every original native effect before the certificate is retained.
+/// Only this verifier can discharge a required rehearsal for a single or
+/// replacement plan, after authenticating the artifact and caller binding.
+/// Publication still reproduces and compares all original native effects.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct VerifiedPostPlan(());
 
@@ -553,7 +552,7 @@ pub async fn commit_plan<V: Vfs + Clone>(
         .collect();
     // Authentication of the plan never replaces admission of the caller.
     // Do this before observing the identity, retained certificate, or head.
-    if let Err(denial) = fa_policy::admit_class(
+    if let Err(denial) = fa_policy::admit_base_for_post(
         &capability,
         &fa_policy::Intent {
             principal: proposal.principal_ref,
@@ -562,8 +561,15 @@ pub async fn commit_plan<V: Vfs + Clone>(
             book: book.book_id,
             legs: &explicit,
         },
-        proposal.class,
-    ) {
+    )
+    .and_then(|()| {
+        fa_policy::reach_class(
+            &capability,
+            &fa_policy::Reach::whole_book(true),
+            None,
+            proposal.class,
+        )
+    }) {
         return Ok(Err(policy::refusal(&denial)));
     }
     if let Err(denial) = fa_policy::current(&capability, db.frontier()?) {
@@ -1051,7 +1057,7 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
             .iter()
             .map(|leg| (leg.amount.unit, leg.amount.mantissa))
             .collect();
-        if let Err(denial) = fa_policy::admit_class(
+        if let Err(denial) = fa_policy::admit_base_for_post(
             &capability,
             &fa_policy::Intent {
                 principal: proposal.principal_ref,
@@ -1060,8 +1066,15 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
                 book: book.book_id,
                 legs: &explicit,
             },
-            proposal.class,
-        ) {
+        )
+        .and_then(|()| {
+            fa_policy::reach_class(
+                &capability,
+                &fa_policy::Reach::whole_book(true),
+                None,
+                proposal.class,
+            )
+        }) {
             return Ok(Err(policy::refusal(&denial)));
         }
     }
