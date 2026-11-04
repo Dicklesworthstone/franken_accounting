@@ -173,13 +173,14 @@ impl DimensionConstraintSpec {
 
     #[must_use]
     fn permits(&self, value: &str) -> bool {
-        self.allowed
-            .as_ref()
-            .is_none_or(|values| values.binary_search_by(|code| code.as_str().cmp(value)).is_ok())
-            && self
-                .forbidden
+        self.allowed.as_ref().is_none_or(|values| {
+            values
                 .binary_search_by(|code| code.as_str().cmp(value))
-                .is_err()
+                .is_ok()
+        }) && self
+            .forbidden
+            .binary_search_by(|code| code.as_str().cmp(value))
+            .is_err()
     }
 
     fn is_clear(&self) -> bool {
@@ -250,17 +251,17 @@ fn projection(
         ),
         (
             property::TARGET_REF,
-            scalar_bytes("dimension constraint control", control.0.to_le_bytes().to_vec())?,
+            scalar_bytes(
+                "dimension constraint control",
+                control.0.to_le_bytes().to_vec(),
+            )?,
         ),
     ];
     props.sort_by_key(|(key, _)| key.0);
     Ok(props)
 }
 
-fn declared(
-    book: &BookContext,
-    row: &VertexRow,
-) -> Result<DimensionConstraintRow, KernelError> {
+fn declared(book: &BookContext, row: &VertexRow) -> Result<DimensionConstraintRow, KernelError> {
     if !crate::entry_storage::has_class_mirror(row, EntryClass::SCHEMA_CONTROL) {
         return Err(corrupt("policy source is not a schema control"));
     }
@@ -296,7 +297,9 @@ fn declared(
         ) != row.vid
         || entry_mirrors(&entry)? != row.props
     {
-        return Err(corrupt("policy control identity, coordinate, or mirrors differ"));
+        return Err(corrupt(
+            "policy control identity, coordinate, or mirrors differ",
+        ));
     }
     Ok(DimensionConstraintRow {
         vid: dimension_constraint_vid(book.book_id, &spec.dimension, spec.account),
@@ -330,14 +333,13 @@ fn read_constraint(
     {
         return Err(corrupt("policy projection identity or mirrors differ"));
     }
-    let source = read_vertex(target)?
-        .ok_or_else(|| corrupt("policy projection names an absent control"))?;
+    let source =
+        read_vertex(target)?.ok_or_else(|| corrupt("policy projection names an absent control"))?;
     let recorded = declared(book, &source)?;
-    if recorded.vid != row.vid
-        || recorded.spec != spec
-        || recorded.recorded_at < row.created_at
-    {
-        return Err(corrupt("policy projection differs from its immutable control"));
+    if recorded.vid != row.vid || recorded.spec != spec || recorded.recorded_at < row.created_at {
+        return Err(corrupt(
+            "policy projection differs from its immutable control",
+        ));
     }
     Ok(recorded)
 }
@@ -371,7 +373,6 @@ pub fn constraints_at<V: Vfs + Clone>(
     });
     Ok(policies)
 }
-
 
 /// Replace one account's exact-code policy under current whole-book
 /// SchemaChange authority. Same-key retries return the original control even
@@ -407,7 +408,9 @@ pub async fn record_dimension_constraint<V: Vfs + Clone>(
     );
     let entry = proposal.clone().seal(Vec::new(), None)?;
     if entry.encode()?.len() > MAX_CONTROL_BYTES {
-        return Ok(Err(usage("the policy control exceeds its bounded inline storage")));
+        return Ok(Err(usage(
+            "the policy control exceeds its bounded inline storage",
+        )));
     }
     let evid = entry_vid(book.book_id, &principal.0.to_le_bytes(), key);
     let vid = dimension_constraint_vid(book.book_id, kind.code, spec.account);
@@ -485,12 +488,13 @@ pub async fn record_dimension_constraint<V: Vfs + Clone>(
         }
     };
     let account = AccountRow::decode(&account_row)?;
-    if bytes(&account_row, property::BOOK_ID, "constrained account book")?
-        != book.book_id.0
+    if bytes(&account_row, property::BOOK_ID, "constrained account book")? != book.book_id.0
         || account.vid != AccountRow::vid_for(book.book_id, &account.code)
     {
         txn.abort();
-        return Err(corrupt("the constrained account's book or identity differs"));
+        return Err(corrupt(
+            "the constrained account's book or identity differs",
+        ));
     }
     if !account.is_leaf {
         txn.abort();
@@ -575,7 +579,10 @@ pub async fn record_dimension_constraint<V: Vfs + Clone>(
             vid,
             property::TARGET_REF,
             target,
-            scalar_bytes("dimension constraint control", evid.0.to_le_bytes().to_vec())?,
+            scalar_bytes(
+                "dimension constraint control",
+                evid.0.to_le_bytes().to_vec(),
+            )?,
             WriteMismatchPolicy::AbortWrite,
         );
     } else {
@@ -648,13 +655,15 @@ pub(crate) fn admit_dimension_constraints(
         };
         let policy = read_constraint(book, &row, &mut read_vertex)?;
         if policy.spec.account != leg.account_ref || policy.spec.dimension != kind.code {
-            return Err(corrupt("a leg observed another account or dimension's policy"));
+            return Err(corrupt(
+                "a leg observed another account or dimension's policy",
+            ));
         }
         let Some(value_row) = read_vertex(*value_vid)? else {
             return Ok(Some(super::unknown_value(kind, *value_vid, ordinal)));
         };
-        let Some(value) = DimensionValueRow::decode(&value_row)?
-            .filter(|value| value.dimension_id == kind.id)
+        let Some(value) =
+            DimensionValueRow::decode(&value_row)?.filter(|value| value.dimension_id == kind.id)
         else {
             return Ok(Some(super::unknown_value(kind, *value_vid, ordinal)));
         };
@@ -662,7 +671,9 @@ pub(crate) fn admit_dimension_constraints(
             || value_row.labels.as_slice() != [label::DIMENSION_VALUE]
             || bytes(&value_row, property::BOOK_ID, "leg dimension value book")? != book.book_id.0
         {
-            return Err(corrupt("a leg's constrained value has another book or identity"));
+            return Err(corrupt(
+                "a leg's constrained value has another book or identity",
+            ));
         }
         if !policy.spec.permits(&value.spec.code) {
             return Ok(Some(
@@ -687,7 +698,6 @@ pub(crate) fn admit_dimension_constraints(
     }
     Ok(None)
 }
-
 
 #[cfg(test)]
 mod tests {

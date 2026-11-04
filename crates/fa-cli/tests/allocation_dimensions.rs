@@ -637,13 +637,16 @@ fn a_keyed_controllers_review_approval_is_signed_and_plans_the_allocation() {
     f.assert_dimensions(&legs[2], "SALES");
 }
 
-
 /// Policies survive process reopen, replace independently of required
 /// dimensions, and leave earlier prefixes and historical reversals usable.
 #[test]
 fn account_dimension_constraints_enforce_exact_values_and_replay_history() {
     let f = Fixture::new();
-    let document = write(&f.dir, "constraint-evidence.txt", "Dimension policy posting evidence");
+    let document = write(
+        &f.dir,
+        "constraint-evidence.txt",
+        "Dimension policy posting evidence",
+    );
     let evidence = ok(
         &f.book,
         &[
@@ -666,7 +669,13 @@ fn account_dimension_constraints_enforce_exact_values_and_replay_history() {
         );
         run(
             &f.book,
-            &["post", "--intent", &intent, "--evidence", text(&evidence, "oid")],
+            &[
+                "post",
+                "--intent",
+                &intent,
+                "--evidence",
+                text(&evidence, "oid"),
+            ],
         )
     };
     let before = f.head();
@@ -720,7 +729,10 @@ fn account_dimension_constraints_enforce_exact_values_and_replay_history() {
         ],
     );
     assert_eq!(get(&retry, "already_recorded"), &Json::Bool(true));
-    assert_eq!(get(&retry, "control_entry"), get(&recorded, "control_entry"));
+    assert_eq!(
+        get(&retry, "control_entry"),
+        get(&recorded, "control_entry")
+    );
     assert_eq!(f.head(), unchanged);
     let (code, conflict) = run(
         &f.book,
@@ -736,11 +748,19 @@ fn account_dimension_constraints_enforce_exact_values_and_replay_history() {
         ],
     );
     assert_eq!(code, 6, "{}", conflict.render());
-    assert!(conflict.render().contains("FA-REF-032"), "{}", conflict.render());
+    assert!(
+        conflict.render().contains("FA-REF-032"),
+        "{}",
+        conflict.render()
+    );
     assert_eq!(f.head(), unchanged);
     let (code, forbidden) = post("shared-refused", r#"{"cost_center":"SHARED"}"#);
     assert_eq!(code, 3, "{}", forbidden.render());
-    assert!(forbidden.render().contains("FA-REF-207"), "{}", forbidden.render());
+    assert!(
+        forbidden.render().contains("FA-REF-207"),
+        "{}",
+        forbidden.render()
+    );
     assert_eq!(f.head(), unchanged);
     let (code, allowed) = post("eng-permitted", r#"{"cost_center":"ENG"}"#);
     assert_eq!(code, 0, "{}", allowed.render());
@@ -748,7 +768,13 @@ fn account_dimension_constraints_enforce_exact_values_and_replay_history() {
 
     ok(
         &f.book,
-        &["dimension", "constrain", "cost_center", "6100", "--allow-none"],
+        &[
+            "dimension",
+            "constrain",
+            "cost_center",
+            "6100",
+            "--allow-none",
+        ],
     );
     ok(
         &f.book,
@@ -757,7 +783,11 @@ fn account_dimension_constraints_enforce_exact_values_and_replay_history() {
     let unchanged = f.head();
     let (code, forbidden) = post("eng-refused", r#"{"cost_center":"ENG"}"#);
     assert_eq!(code, 3, "{}", forbidden.render());
-    assert!(forbidden.render().contains("FA-REF-207"), "{}", forbidden.render());
+    assert!(
+        forbidden.render().contains("FA-REF-207"),
+        "{}",
+        forbidden.render()
+    );
     assert_eq!(f.head(), unchanged);
     let (code, optional) = post("untagged-permitted", "{}");
     assert_eq!(code, 0, "{}", optional.render());
@@ -768,7 +798,11 @@ fn account_dimension_constraints_enforce_exact_values_and_replay_history() {
     let unchanged = f.head();
     let (code, missing) = post("untagged-refused", "{}");
     assert_eq!(code, 3, "{}", missing.render());
-    assert!(missing.render().contains("FA-REF-005"), "{}", missing.render());
+    assert!(
+        missing.render().contains("FA-REF-005"),
+        "{}",
+        missing.render()
+    );
     assert_eq!(f.head(), unchanged);
     let clear = ok(
         &f.book,
@@ -798,7 +832,10 @@ fn account_dimension_constraints_enforce_exact_values_and_replay_history() {
     assert_eq!(rows.len(), 1);
     assert_eq!(text(&rows[0], "account"), "6100");
     assert_eq!(get(&rows[0], "allowed").render(), r#"["ENG","SALES"]"#);
-    assert_eq!(get(&rows[0], "control_entry"), get(&recorded, "control_entry"));
+    assert_eq!(
+        get(&rows[0], "control_entry"),
+        get(&recorded, "control_entry")
+    );
     let current = ok(&f.book, &["dimension", "constraints", "cost_center"]);
     let rows = get(&current, "constraints").as_arr().unwrap();
     assert_eq!(rows.len(), 1);
@@ -816,13 +853,69 @@ fn dimension_constraint_cli_rejects_ambiguous_or_unknown_policies_without_writes
     let before = f.head();
     for args in [
         vec!["dimension", "constrain", "cost_center", "6100"],
-        vec!["dimension", "constrain", "cost_center", "6100", "--allow", "ENG", "--allow", "ENG"],
-        vec!["dimension", "constrain", "cost_center", "6100", "--allow", "ENG", "--forbid", "ENG"],
-        vec!["dimension", "constrain", "cost_center", "6100", "--allow-none", "--allow", "ENG"],
-        vec!["dimension", "constrain", "cost_center", "6100", "--clear", "--forbid", "ENG"],
-        vec!["dimension", "constrain", "cost_center", "6100", "--allow", ""],
-        vec!["dimension", "constrain", "cost_center", "6100", "--allow", "NO-SUCH-CENTER"],
-        vec!["dimension", "constrain", "cost_center", "6100", "--allow", "ENG", "--remove"],
+        vec![
+            "dimension",
+            "constrain",
+            "cost_center",
+            "6100",
+            "--allow",
+            "ENG",
+            "--allow",
+            "ENG",
+        ],
+        vec![
+            "dimension",
+            "constrain",
+            "cost_center",
+            "6100",
+            "--allow",
+            "ENG",
+            "--forbid",
+            "ENG",
+        ],
+        vec![
+            "dimension",
+            "constrain",
+            "cost_center",
+            "6100",
+            "--allow-none",
+            "--allow",
+            "ENG",
+        ],
+        vec![
+            "dimension",
+            "constrain",
+            "cost_center",
+            "6100",
+            "--clear",
+            "--forbid",
+            "ENG",
+        ],
+        vec![
+            "dimension",
+            "constrain",
+            "cost_center",
+            "6100",
+            "--allow",
+            "",
+        ],
+        vec![
+            "dimension",
+            "constrain",
+            "cost_center",
+            "6100",
+            "--allow",
+            "NO-SUCH-CENTER",
+        ],
+        vec![
+            "dimension",
+            "constrain",
+            "cost_center",
+            "6100",
+            "--allow",
+            "ENG",
+            "--remove",
+        ],
         vec!["dimension", "list", "cost_center", "--allow", "ENG"],
         vec!["dimension", "constraints", "cost_center", "--clear"],
     ] {
@@ -832,7 +925,14 @@ fn dimension_constraint_cli_rejects_ambiguous_or_unknown_policies_without_writes
     }
     let denied = ok(
         &f.book,
-        &["dimension", "constrain", "cost_center", "6100", "--forbid", "SALES"],
+        &[
+            "dimension",
+            "constrain",
+            "cost_center",
+            "6100",
+            "--forbid",
+            "SALES",
+        ],
     );
     assert_eq!(get(&denied, "allowed"), &Json::Null);
     assert_eq!(get(&denied, "forbidden").render(), r#"["SALES"]"#);

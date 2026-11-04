@@ -655,11 +655,7 @@ fn history<V: Vfs + Clone>(
                     .ok_or_else(|| corrupt("charge difference overflow"))?;
                 if delta <= 0
                     || entry.proposal.legs
-                        != charge_legs(
-                            &schedule.spec,
-                            Amount::new(cost.unit, delta),
-                            &dimensions,
-                        )
+                        != charge_legs(&schedule.spec, Amount::new(cost.unit, delta), &dimensions)
                     || entry.proposal.effective_period.as_ref() != Some(&basis.through_period)
                     || entry.proposal.effective_date != selected.end.pred().map_err(corrupt)?
                     || entry.proposal.extensions.len() != 1

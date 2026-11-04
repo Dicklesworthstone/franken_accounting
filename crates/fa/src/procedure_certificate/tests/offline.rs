@@ -575,15 +575,12 @@ fn round_amounts_requires_complete_signed_payloads_and_an_independent_outer_pin_
         .unwrap();
     r.bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "checkpoint")
         .unwrap();
-    r.bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "prefix")
-        .unwrap();
+    r.bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "prefix").unwrap();
     let count_offset = r.offset();
     let count = r.u32("records").unwrap();
     assert!(count > 0);
     r.u32("proposal length").unwrap();
-    let first_record = r
-        .bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "record")
-        .unwrap();
+    let first_record = r.bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "record").unwrap();
     assert!(!first_record.is_empty());
     let first_end = r.offset();
     let mut w = Writer::new();
@@ -721,9 +718,7 @@ fn round_amounts_offline_scope_is_explicit_and_production_authority_precedes_obs
     for capability in [
         cap(&["read"]),
         cap(&["produce"]),
-        cap(&["read", "produce"])
-            .for_accounts(&["1000"])
-            .unwrap(),
+        cap(&["read", "produce"]).for_accounts(&["1000"]).unwrap(),
         cap(&["read", "produce"]).known_at_most(ordinary.known_at()),
         cap(&["read", "produce"]).expiring_at(before),
     ] {
@@ -810,11 +805,10 @@ fn round_amounts_refuses_replacement_sources_but_preserves_earlier_certificates(
     let cx = f.cx();
     let (_, corrected) = f
         .runtime
-        .block_on(f.book.post_replacement_pair(
-            &cx,
-            request(undo),
-            request(replacement),
-        ))
+        .block_on(
+            f.book
+                .post_replacement_pair(&cx, request(undo), request(replacement)),
+        )
         .unwrap()
         .unwrap();
     let current = f.certify(&round_request(&f, 3, None)).certificate;

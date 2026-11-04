@@ -703,6 +703,7 @@ pub(crate) fn judge(
     };
     // The proven entries the export selects, by recorded sequence.
     let mut proven: BTreeMap<u64, Vec<Proven>> = BTreeMap::new();
+    let mut migration_visibility = None;
     for (leaf, envelope, legs, proposal) in records {
         let Some(day) = envelope.effective_day else {
             continue;
@@ -717,10 +718,14 @@ pub(crate) fn judge(
             continue;
         }
         if envelope.class == CLASS_MIGRATION {
-            let read = balances
-                .iter()
-                .map(|balance| (&balance.claim, balance.contributing.as_slice()));
-            match chunk_visibility(leaf, day, &legs, read) {
+            let visibility = migration_visibility.get_or_insert_with(|| {
+                MigrationVisibility::new(
+                    balances
+                        .iter()
+                        .map(|balance| (&balance.claim, balance.contributing.as_slice())),
+                )
+            });
+            match visibility.chunk_visibility(leaf, day, &legs) {
                 Some(true) => {}
                 // Its run hides it: the export selects it no more than the
                 // fold does.
@@ -848,34 +853,83 @@ pub(crate) fn judge(
     out
 }
 
-/// Whether the migration chunk at `leaf`, effective on `day`, with `legs`
-/// counts (fa-mv0f). A verified balance over one of its cells, cut off on or
-/// after its day, decides that from the run bodies it carries, and only the
-/// migration-aware format verifies such a cell: its fold reads the chunk
-/// exactly when the chunk's run makes it visible. So the answer is
-/// `Some(true)` when such a balance read it, `Some(false)` when such
-/// balances exist and none read it (its run hides it), and `None` when none
-/// covers it, so that its visibility is not proven.
-fn chunk_visibility<'a>(
-    leaf: u64,
-    day: i32,
-    legs: &[Leg],
-    balances: impl IntoIterator<Item = (&'a crate::BalanceClaim, &'a [u64])>,
-) -> Option<bool> {
-    let mut covered = false;
-    for (claim, contributing) in balances {
-        let covers = legs
-            .iter()
-            .any(|leg| (leg.account, leg.unit) == (claim.account, claim.unit))
-            && claim.effective_through.is_none_or(|through| through >= day);
-        if covers {
-            if contributing.contains(&leaf) {
-                return Some(true);
+/// Visibility witnesses indexed once, on the first selected migration chunk.
+/// Building visits each verified balance and contributing leaf once; queries
+/// perform at most two logarithmic map lookups per leg, regardless of the
+/// number of balance claims or chunks in their histories.
+#[derive(Default)]
+struct MigrationVisibility {
+    cells: BTreeMap<(u128, u32), MigrationCoverage>,
+}
+
+struct MigrationCoverage {
+    /// Greatest cutoff among all balance claims over this cell.
+    through: i32,
+    /// Greatest cutoff among the claims that actually read each leaf. A
+    /// union of leaf IDs alone would incorrectly accept a leaf whose only
+    /// witness ends before its day, when a later claim covers but hides it.
+    read_through: BTreeMap<u64, i32>,
+}
+
+impl MigrationVisibility {
+    fn new<'a, I: IntoIterator<Item = &'a u64>>(
+        balances: impl IntoIterator<Item = (&'a crate::BalanceClaim, I)>,
+    ) -> Self {
+        let mut index = Self::default();
+        for (claim, contributing) in balances {
+            // Civil days are i32, so an unbounded claim covers exactly the
+            // same possible days as one ending at i32::MAX.
+            let through = claim.effective_through.unwrap_or(i32::MAX);
+            let coverage = index
+                .cells
+                .entry((claim.account, claim.unit))
+                .or_insert_with(|| MigrationCoverage {
+                    through,
+                    read_through: BTreeMap::new(),
+                });
+            coverage.through = coverage.through.max(through);
+            for &leaf in contributing {
+                coverage
+                    .read_through
+                    .entry(leaf)
+                    .and_modify(|cutoff| *cutoff = (*cutoff).max(through))
+                    .or_insert(through);
+            }
+        }
+        index
+    }
+
+    /// Whether the chunk counts (fa-mv0f). A verified balance over one of
+    /// its cells, cut off on or after its day, decides that from its run
+    /// bodies. `Some(true)` means such a balance read it; `Some(false)`
+    /// means covering balances exist but none read it; `None` means its
+    /// visibility is unproven. Only migration-aware proofs can verify a
+    /// balance over a cell containing a migration chunk.
+    fn chunk_visibility<'a>(
+        &self,
+        leaf: u64,
+        day: i32,
+        legs: impl IntoIterator<Item = &'a Leg>,
+    ) -> Option<bool> {
+        let mut covered = false;
+        for leg in legs {
+            let Some(coverage) = self.cells.get(&(leg.account, leg.unit)) else {
+                continue;
+            };
+            if coverage.through < day {
+                continue;
             }
             covered = true;
+            if coverage
+                .read_through
+                .get(&leaf)
+                .is_some_and(|through| *through >= day)
+            {
+                return Some(true);
+            }
         }
+        covered.then_some(false)
     }
-    covered.then_some(false)
 }
 
 /// The registered account type names (`account_types.toml`, tags 1..=8),
@@ -1451,6 +1505,38 @@ mod tests {
         }
     }
 
+    fn chunk_visibility<'a>(
+        leaf: u64,
+        day: i32,
+        legs: &[Leg],
+        balances: impl IntoIterator<Item = (&'a crate::BalanceClaim, &'a [u64])>,
+    ) -> Option<bool> {
+        MigrationVisibility::new(balances).chunk_visibility(leaf, day, legs)
+    }
+
+    // The original scan is deliberately retained as an independent oracle.
+    fn literal_chunk_visibility<'a>(
+        leaf: u64,
+        day: i32,
+        legs: &[Leg],
+        balances: impl IntoIterator<Item = (&'a crate::BalanceClaim, &'a [u64])>,
+    ) -> Option<bool> {
+        let mut covered = false;
+        for (claim, contributing) in balances {
+            let covers = legs
+                .iter()
+                .any(|leg| (leg.account, leg.unit) == (claim.account, claim.unit))
+                && claim.effective_through.is_none_or(|through| through >= day);
+            if covers {
+                if contributing.contains(&leaf) {
+                    return Some(true);
+                }
+                covered = true;
+            }
+        }
+        covered.then_some(false)
+    }
+
     #[test]
     fn migration_chunks_follow_their_runs_visibility() {
         let (cash, revenue, usd, day) = (7u128, 9u128, 1u32, 100);
@@ -1517,6 +1603,136 @@ mod tests {
             );
         }
         assert_eq!(chunk_visibility(3, day, &legs, std::iter::empty()), None);
+    }
+
+    #[test]
+    fn migration_visibility_index_matches_scan_for_overlapping_cutoffs() {
+        let claim = |account, unit, effective_through| crate::BalanceClaim {
+            account,
+            unit,
+            effective_through,
+            debits: 0,
+            credits: 0,
+        };
+        let leg = |account, unit| Leg {
+            debit: true,
+            account,
+            unit,
+            mantissa: 5,
+        };
+        // In particular, the early cash witness reads leaf 0, but the
+        // later cash witnesses do not: coverage and membership cutoffs
+        // must remain separate. Repeated and unordered leaves must not
+        // change this existential decision either.
+        let histories = [
+            (claim(7, 1, Some(99)), vec![2, 0, 2]),
+            (claim(7, 1, Some(100)), vec![1]),
+            (claim(7, 1, None), vec![3]),
+            (claim(9, 1, Some(101)), vec![0, 4]),
+            (claim(7, 2, Some(100)), vec![5]),
+            (claim(11, 1, Some(i32::MIN)), vec![6]),
+            (claim(11, 1, Some(i32::MAX)), vec![7]),
+        ];
+        let leg_sets = [
+            vec![],
+            vec![leg(7, 1)],
+            vec![leg(9, 1)],
+            vec![leg(7, 2)],
+            vec![leg(7, 3)],
+            vec![leg(11, 1)],
+            vec![leg(7, 1), leg(9, 1)],
+            vec![leg(9, 1), leg(7, 1)],
+            vec![leg(7, 1), leg(7, 1), leg(7, 2)],
+            vec![leg(99, 99)],
+        ];
+        for mask in 0..(1usize << histories.len()) {
+            let mut balances: Vec<_> = histories
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) != 0)
+                .map(|(_, (claim, contributing))| (claim, contributing.as_slice()))
+                .collect();
+            for reverse in [false, true] {
+                if reverse {
+                    balances.reverse();
+                }
+                let index = MigrationVisibility::new(balances.iter().copied());
+                for day in [i32::MIN, i32::MIN + 1, 98, 99, 100, 101, 102, i32::MAX] {
+                    for leaf in 0..9 {
+                        for legs in &leg_sets {
+                            assert_eq!(
+                                index.chunk_visibility(leaf, day, legs),
+                                literal_chunk_visibility(leaf, day, legs, balances.iter().copied(),),
+                                "claims {mask}, reversed {reverse}, leaf {leaf}, day {day}, legs {legs:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn migration_visibility_reads_witnesses_once_for_a_hundred_thousand_chunks_and_cells() {
+        use std::cell::Cell;
+
+        let claim = |account| crate::BalanceClaim {
+            account,
+            unit: 1,
+            effective_through: Some(100),
+            debits: 0,
+            credits: 0,
+        };
+        for count in [1_000u64, 10_000, 100_000] {
+            for many_cells in [false, true] {
+                // Exercise both original quadratic cases: one cell with
+                // a long contributing history, and many balance claims
+                // whose chunks would each rescan that claim list.
+                let histories: Vec<_> = if many_cells {
+                    (0..count)
+                        .map(|leaf| (claim(u128::from(leaf)), vec![leaf]))
+                        .collect()
+                } else {
+                    vec![(claim(0), (0..count).collect())]
+                };
+                let balance_visits = Cell::new(0u64);
+                let leaf_visits = Cell::new(0u64);
+                let balances = histories.iter().map(|(claim, contributing)| {
+                    balance_visits.set(balance_visits.get() + 1);
+                    (
+                        claim,
+                        contributing.iter().inspect(|_| {
+                            leaf_visits.set(leaf_visits.get() + 1);
+                        }),
+                    )
+                });
+                let index = MigrationVisibility::new(balances);
+                let probes = Cell::new(0u64);
+                let visibility = |leaf, day, leg: &Leg| {
+                    index.chunk_visibility(
+                        leaf,
+                        day,
+                        std::iter::once(leg).inspect(|_| probes.set(probes.get() + 1)),
+                    )
+                };
+                for leaf in (0..count).rev() {
+                    let leg = Leg {
+                        debit: true,
+                        account: if many_cells { u128::from(leaf) } else { 0 },
+                        unit: 1,
+                        mantissa: 5,
+                    };
+                    assert_eq!(visibility(leaf, 100, &leg), Some(true));
+                    assert_eq!(visibility(leaf + count, 100, &leg), Some(false));
+                    assert_eq!(visibility(leaf, 101, &leg), None);
+                    let other_unit = Leg { unit: 2, ..leg };
+                    assert_eq!(visibility(leaf, 100, &other_unit), None);
+                }
+                assert_eq!(balance_visits.get(), if many_cells { count } else { 1 });
+                assert_eq!(leaf_visits.get(), count);
+                assert_eq!(probes.get(), 4 * count);
+            }
+        }
     }
 
     #[test]

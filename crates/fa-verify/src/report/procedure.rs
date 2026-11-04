@@ -90,7 +90,10 @@ pub(super) fn recognizes(bytes: &[u8]) -> bool {
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     if bytes.len() > MAX_REPORT_BUNDLE_BYTES {
-        return Err(failed("bounded_input", "procedure certificate exceeds 64 MiB"));
+        return Err(failed(
+            "bounded_input",
+            "procedure certificate exceeds 64 MiB",
+        ));
     }
     let mut r = Reader::new(bytes);
     if r.bytes(64, "procedure.format")? != FORMAT {
@@ -230,7 +233,8 @@ fn decision_card(policy_oid: &[u8; 32], power: u32, population: u64) -> Vec<u8> 
         w.fixed(&150i64.to_le_bytes()).fixed(&650i64.to_le_bytes());
     } else {
         candidate(&mut w, b"registry_default", 0, 0);
-        w.fixed(&(-200i64).to_le_bytes()).fixed(&2200i64.to_le_bytes());
+        w.fixed(&(-200i64).to_le_bytes())
+            .fixed(&2200i64.to_le_bytes());
     }
     candidate(&mut w, b"registry_default", 0, 0);
     if calibrated {
@@ -405,9 +409,11 @@ fn recompute(
                     )
                 })?;
             if *mantissa != 0 && mantissa.checked_rem(base) == Some(0) {
-                round_legs.push(u16::try_from(ordinal).map_err(|_| {
-                    failed("bounded_input", "procedure leg ordinal exceeds u16")
-                })?);
+                round_legs.push(
+                    u16::try_from(ordinal).map_err(|_| {
+                        failed("bounded_input", "procedure leg ordinal exceeds u16")
+                    })?,
+                );
             }
         }
         if !round_legs.is_empty() {
@@ -431,7 +437,11 @@ fn recompute(
             );
             findings.push(VerifiedRoundAmountFinding {
                 entry: entry.identity,
-                severity: if round_legs.len() == entry.legs.len() { 2 } else { 1 },
+                severity: if round_legs.len() == entry.legs.len() {
+                    2
+                } else {
+                    1
+                },
                 round_legs,
                 narrative,
             });
@@ -534,7 +544,11 @@ mod tests {
 
     fn population() -> Vec<Entry> {
         vec![
-            entry(1, 1, vec![(1, 9_007_199_254_800_000), (1, -9_007_199_254_800_000)]),
+            entry(
+                1,
+                1,
+                vec![(1, 9_007_199_254_800_000), (1, -9_007_199_254_800_000)],
+            ),
             entry(256, 1, vec![(2, 1000), (2, 1000)]),
             entry(2, 1, vec![(1, 100_000), (1, 50_001), (1, 49_999)]),
             entry(3, 2, vec![(1, 100_000), (1, 100_000)]),
@@ -547,11 +561,17 @@ mod tests {
     fn exact_scale_zero_and_large_amounts_use_live_legs_and_canonical_cite_order() {
         let (verified, output) = recompute([1; 16], 9, 3, population(), &registry()).unwrap();
         assert_eq!(
-            (verified.population, verified.live_entries, verified.live_legs),
+            (
+                verified.population,
+                verified.live_entries,
+                verified.live_legs
+            ),
             (6, 4, 9)
         );
         assert_eq!(
-            verified.findings.iter()
+            verified
+                .findings
+                .iter()
                 .map(|f| (f.entry, f.severity, f.round_legs.clone()))
                 .collect::<Vec<_>>(),
             vec![(256, 2, vec![0, 1]), (1, 2, vec![0, 1]), (2, 1, vec![0])]
@@ -562,7 +582,10 @@ mod tests {
         );
         let mut reordered = population();
         reordered.reverse();
-        assert_eq!(recompute([1; 16], 9, 3, reordered, &registry()).unwrap().1, output);
+        assert_eq!(
+            recompute([1; 16], 9, 3, reordered, &registry()).unwrap().1,
+            output
+        );
         let request = Certificate {
             source: &[],
             registry_digest: [0; 32],
@@ -572,16 +595,28 @@ mod tests {
             known_at: 9,
             round_power: 3,
         };
-        assert_eq!(replay(&request, [1; 16], 9, population(), &registry()).unwrap().0, verified);
+        assert_eq!(
+            replay(&request, [1; 16], 9, population(), &registry())
+                .unwrap()
+                .0,
+            verified
+        );
         let mut forged = output.clone();
         *forged.last_mut().unwrap() ^= 1;
-        let forged = Certificate { output: &forged, ..request };
+        let forged = Certificate {
+            output: &forged,
+            ..request
+        };
         assert_eq!(
-            replay(&forged, [1; 16], 9, population(), &registry()).unwrap_err().predicate,
+            replay(&forged, [1; 16], 9, population(), &registry())
+                .unwrap_err()
+                .predicate,
             "procedure_recomputation"
         );
         assert_eq!(
-            replay(&request, [2; 16], 9, population(), &registry()).unwrap_err().predicate,
+            replay(&request, [2; 16], 9, population(), &registry())
+                .unwrap_err()
+                .predicate,
             "procedure_selection"
         );
     }
@@ -593,7 +628,9 @@ mod tests {
             for ordinal in 1..=length {
                 let previous = entries.last().unwrap();
                 let mut reversal = entry(1000 - ordinal, 4, previous.legs.clone());
-                reversal.supersession.push((previous.identity, previous.digest, 1));
+                reversal
+                    .supersession
+                    .push((previous.identity, previous.digest, 1));
                 entries.push(reversal);
             }
             let (verified, _) = recompute([1; 16], 9, 3, entries, &registry()).unwrap();
@@ -611,37 +648,53 @@ mod tests {
     fn invalid_lineage_unknown_units_and_overflow_cannot_produce_a_result() {
         let original = entry(1, 1, vec![(1, 100_000)]);
         let mut first = entry(2, 4, original.legs.clone());
-        first.supersession.push((original.identity, original.digest, 1));
+        first
+            .supersession
+            .push((original.identity, original.digest, 1));
         let mut second = entry(3, 4, original.legs.clone());
         second.supersession = first.supersession.clone();
-        assert_eq!(liveness(&[original, first, second]).unwrap_err().predicate, "procedure_lineage");
+        assert_eq!(
+            liveness(&[original, first, second]).unwrap_err().predicate,
+            "procedure_lineage"
+        );
 
         let mut a = entry(1, 4, vec![(1, 100_000)]);
         let mut b = entry(2, 4, a.legs.clone());
         a.supersession.push((b.identity, b.digest, 1));
         b.supersession.push((a.identity, a.digest, 1));
-        assert_eq!(liveness(&[a, b]).unwrap_err().predicate, "procedure_lineage");
+        assert_eq!(
+            liveness(&[a, b]).unwrap_err().predicate,
+            "procedure_lineage"
+        );
 
         let mut replacement = entry(1, 1, vec![(1, 100_000)]);
         replacement.supersession.push((2, [0; 32], 2));
         assert_eq!(
-            recompute([1; 16], 9, 3, vec![replacement], &registry()).unwrap_err().predicate,
+            recompute([1; 16], 9, 3, vec![replacement], &registry())
+                .unwrap_err()
+                .predicate,
             "procedure_profile"
         );
         let unknown = entry(1, 1, vec![(99, 100_000)]);
         assert_eq!(
-            recompute([1; 16], 9, 3, vec![unknown], &registry()).unwrap_err().predicate,
+            recompute([1; 16], 9, 3, vec![unknown], &registry())
+                .unwrap_err()
+                .predicate,
             "procedure_units"
         );
         let mut large_scale = registry();
         large_scale.unit_scales.insert(1, 38);
         assert_eq!(
-            recompute([1; 16], 9, 3, population(), &large_scale).unwrap_err().predicate,
+            recompute([1; 16], 9, 3, population(), &large_scale)
+                .unwrap_err()
+                .predicate,
             "procedure_arithmetic"
         );
         let too_many_cites = entry(1, 1, vec![(1, 100_000); MAX_CITES]);
         assert_eq!(
-            recompute([1; 16], 9, 3, vec![too_many_cites], &registry()).unwrap_err().predicate,
+            recompute([1; 16], 9, 3, vec![too_many_cites], &registry())
+                .unwrap_err()
+                .predicate,
             "bounded_input"
         );
     }
@@ -653,7 +706,10 @@ mod tests {
         let controls = |n| (0..n).map(|id| entry(id, 17, Vec::new())).collect();
         let (small, _) = recompute([1; 16], 9, 2, controls(99), &registry()).unwrap();
         let (large, _) = recompute([1; 16], 9, 2, controls(100), &registry()).unwrap();
-        assert_eq!((small.live_entries, large.live_legs, large.findings.len()), (0, 0, 0));
+        assert_eq!(
+            (small.live_entries, large.live_legs, large.findings.len()),
+            (0, 0, 0)
+        );
         assert_eq!(small.decision_card[small.decision_card.len() - 17], 3);
         assert_eq!(
             &small.decision_card[small.decision_card.len() - 16..small.decision_card.len() - 8],

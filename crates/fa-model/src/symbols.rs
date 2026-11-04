@@ -431,7 +431,9 @@ mod tests {
     #[test]
     fn entry_fragments_preserve_the_literal_previous_symbol_table() {
         let mut current = SymbolTable::compiled();
-        current.labels.retain(|_, id| *id <= label::ENTRY_FRAGMENT.0);
+        current
+            .labels
+            .retain(|_, id| *id <= label::ENTRY_FRAGMENT.0);
         assert_eq!(current.label("EntryFragment"), Some(LabelId(66)));
         let mut previous = current.clone();
         assert_eq!(previous.labels.remove("EntryFragment"), Some(66));
@@ -458,10 +460,9 @@ mod tests {
         assert_eq!(
             previous.digest(),
             Digest([
-                0xbb, 0xb0, 0x65, 0x9c, 0x58, 0x7c, 0x4e, 0xd9,
-                0x3f, 0x9f, 0xfc, 0x97, 0x44, 0x77, 0xf4, 0x25,
-                0x17, 0x1e, 0x95, 0xd0, 0x25, 0xe0, 0xa7, 0xf2,
-                0xc8, 0x97, 0xb4, 0x36, 0x3c, 0x3f, 0x6a, 0xf7,
+                0xbb, 0xb0, 0x65, 0x9c, 0x58, 0x7c, 0x4e, 0xd9, 0x3f, 0x9f, 0xfc, 0x97, 0x44, 0x77,
+                0xf4, 0x25, 0x17, 0x1e, 0x95, 0xd0, 0x25, 0xe0, 0xa7, 0xf2, 0xc8, 0x97, 0xb4, 0x36,
+                0x3c, 0x3f, 0x6a, 0xf7,
             ])
         );
         assert_ne!(current.digest(), previous.digest());
@@ -469,7 +470,9 @@ mod tests {
         assert_eq!(current.properties, previous.properties);
         assert_eq!(current.relations, previous.relations);
         let mut renamed = previous.clone();
-        renamed.labels.insert("DifferentDimensionConstraint".into(), 67);
+        renamed
+            .labels
+            .insert("DifferentDimensionConstraint".into(), 67);
         assert!(!current.matches_label_prefix_digest(renamed.digest()));
         let mut rebound = previous;
         rebound.labels.insert("Entry".into(), 67);

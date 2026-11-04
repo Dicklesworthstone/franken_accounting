@@ -452,9 +452,7 @@ pub(super) fn execute(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let resume_review = if rehearsal.is_some() {
         if matches!(
             &execution.stop,
-            Some(
-                CloseRunStop::TransitionRequired { .. } | CloseRunStop::TransitionReview { .. }
-            )
+            Some(CloseRunStop::TransitionRequired { .. } | CloseRunStop::TransitionReview { .. })
         ) {
             human.push_str(&format!("\nReview the remaining state with fa close dry-run --run {name} --certify. Use its fresh digest with --rehearsal when resuming; completed task receipts are retained."));
         }

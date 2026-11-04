@@ -1219,7 +1219,10 @@ fn reviewed_close_execution_preserves_native_approvals_and_receipt_only_freshnes
         )
         .unwrap()
         .unwrap();
-    assert!(matches!(missing.stop, Some(fa::CloseRunStop::Refused { .. })));
+    assert!(matches!(
+        missing.stop,
+        Some(fa::CloseRunStop::Refused { .. })
+    ));
     assert!(missing.completed.is_empty());
     assert_eq!(f.book.head().unwrap(), before);
     let approval = f

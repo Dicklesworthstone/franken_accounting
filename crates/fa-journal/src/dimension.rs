@@ -27,12 +27,12 @@
 
 mod constraint;
 
+pub(crate) use constraint::admit_dimension_constraints;
 pub use constraint::{
     DimensionConstraintRecorded, DimensionConstraintRow, DimensionConstraintSpec,
     MAX_DIMENSION_CONSTRAINT_BYTES, MAX_DIMENSION_CONSTRAINT_VALUES,
     SCHEMA_CHANGE_DIMENSION_CONSTRAINT, constraints_at, record_dimension_constraint,
 };
-pub(crate) use constraint::admit_dimension_constraints;
 
 use std::collections::{BTreeMap, BTreeSet};
 

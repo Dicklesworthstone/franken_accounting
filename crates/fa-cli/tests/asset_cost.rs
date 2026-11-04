@@ -503,9 +503,7 @@ fn assert_charge(
         );
         let shown = rows(&rows(data(review), "legs")[index], "dimensions");
         assert_eq!(shown.len(), proposal.legs[index].dimension_set.len());
-        for (shown, (dimension, value)) in
-            shown.iter().zip(&proposal.legs[index].dimension_set)
-        {
+        for (shown, (dimension, value)) in shown.iter().zip(&proposal.legs[index].dimension_set) {
             assert_eq!(integer(shown, "dimension"), i128::from(*dimension));
             assert_eq!(text(shown, "value"), format!("{:032x}", value.0));
         }
@@ -1313,10 +1311,7 @@ fn asset_register_tracks_recorded_balances_and_reversals_without_writes() {
 
 #[test]
 fn dimensioned_acquisitions_retain_attribution_in_charge_review_plan_and_posting() {
-    for (kind, verb) in [
-        ("depreciation", "depreciate"),
-        ("amortization", "amortize"),
-    ] {
+    for (kind, verb) in [("depreciation", "depreciate"), ("amortization", "amortize")] {
         let mut f = Fixture::new();
         for (dimension, value) in [
             ("cost_center", "MACHINING"),
@@ -1351,13 +1346,7 @@ fn dimensioned_acquisitions_retain_attribution_in_charge_review_plan_and_posting
         let source = ok(
             &f.book,
             "post attributed acquisition",
-            &[
-                "post",
-                "--intent",
-                &source_path,
-                "--evidence",
-                &f.evidence,
-            ],
+            &["post", "--intent", &source_path, "--evidence", &f.evidence],
         );
         f.acquisition = text(data(&source), "vid").into();
         let acquisition = f.entry(&f.acquisition);
@@ -1390,13 +1379,7 @@ fn dimensioned_acquisitions_retain_attribution_in_charge_review_plan_and_posting
         let refused = call(
             &f.book,
             "refuse redirected asset charge",
-            &[
-                verb,
-                "--review",
-                &forged_bytes,
-                "--digest",
-                &forged_digest,
-            ],
+            &[verb, "--review", &forged_bytes, "--digest", &forged_digest],
             2,
         );
         assert_eq!(text(data(&refused), "refusal_id"), code::STRUCTURE);
@@ -1439,13 +1422,7 @@ fn dimensioned_acquisitions_retain_attribution_in_charge_review_plan_and_posting
         }
 
         let february = f.review(verb, "dimensioned", "FY2026-P02", "dimensioned-february");
-        assert_charge(
-            &february,
-            &spec,
-            "33.34 USD",
-            "FY2026-P02",
-            "2026-02-28",
-        );
+        assert_charge(&february, &spec, "33.34 USD", "FY2026-P02", "2026-02-28");
         ok(
             &f.book,
             "close source center after January",
