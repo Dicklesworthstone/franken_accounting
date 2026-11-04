@@ -262,22 +262,30 @@ fn unsupported(message: String) -> Refusal {
     )
 }
 
-/// The `ScopeIndexComplete` proof `request` asks for, against `journal`.
-pub fn prove(journal: &Journal, request: &ScopeRequest) -> Outcome<Vec<u8>> {
+/// Validate the supported scope without constructing its index or proofs.
+pub(crate) fn account_interval(request: &ScopeRequest) -> Result<(VId, i32, i32), Refusal> {
     match request {
-        ScopeRequest::Account { account, from, to } if from <= to => Ok(Ok(ScopeIndex::of(
-            journal,
-        )
-        .proof(journal, account.0, *from, *to)?)),
-        ScopeRequest::Account { from, to, .. } => Ok(Err(unsupported(format!(
+        ScopeRequest::Account { account, from, to } if from <= to => Ok((*account, *from, *to)),
+        ScopeRequest::Account { from, to, .. } => Err(unsupported(format!(
             "the effective-day interval [{from}, {to}] is inverted"
-        )))),
-        ScopeRequest::Book { from, to } => Ok(Err(unsupported(format!(
+        ))),
+        ScopeRequest::Book { from, to } => Err(unsupported(format!(
             "a whole-book interval [{from}, {to}] is not one run of the scope index"
-        )))),
-        ScopeRequest::Accounts { accounts, from, to } => Ok(Err(unsupported(format!(
+        ))),
+        ScopeRequest::Accounts { accounts, from, to } => Err(unsupported(format!(
             "{} accounts in [{from}, {to}] are not one run of the scope index, and per-account proofs say nothing about the accounts not named",
             accounts.len()
-        )))),
+        ))),
     }
+}
+
+/// The `ScopeIndexComplete` proof `request` asks for, against `journal`.
+pub fn prove(journal: &Journal, request: &ScopeRequest) -> Outcome<Vec<u8>> {
+    let (account, from, to) = match account_interval(request) {
+        Ok(interval) => interval,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    Ok(Ok(
+        ScopeIndex::of(journal).proof(journal, account.0, from, to)?
+    ))
 }
