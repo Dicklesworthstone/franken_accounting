@@ -2539,11 +2539,19 @@ fn applications_settle_open_items_within_the_open_amount_and_reversal_undoes_the
         .expect("admitted")
         .entry_ref();
     assert_eq!(h.applied_to(invoice.vid, 0), 25_000);
-    // Reversing the reversal of an applying entry would re-apply: refused.
+    // Reapplication is supported, but the second receipt already consumed
+    // 250.00: restoring 300.00 would exceed the remaining 250.00 capacity.
+    let before_restore = h.db.frontier().unwrap();
+    let before_restore_rows = h.db.vertices().unwrap();
     let r = h
         .post(h.request(h.reversal_of_entry(rev_1, b"rev-rev-1"), &["post"]))
         .unwrap_err();
-    assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL));
+    assert_eq!((r.code, r.exit), ("FA-REF-072", exit::REFUSAL));
+    assert!(r.message.contains("requires 300.00 USD"), "{r}");
+    assert!(r.message.contains("only 250.00 USD is open"), "{r}");
+    assert_eq!(h.applied_to(invoice.vid, 0), 25_000);
+    assert_eq!(h.db.frontier().unwrap(), before_restore);
+    assert_eq!(h.db.vertices().unwrap(), before_restore_rows);
     // Once the last receipt is reversed, the invoice itself can be reversed,
     // and nothing can be applied to a reversed entry.
     h.post(h.request(h.reversal_of_entry(receipt_2, b"rev-rcpt-2"), &["post"]))

@@ -24,7 +24,16 @@ Foreign-valued ancestry remains unsupported rather than substituting native
 amounts for its recorded valuation relief. New negative cases consume the
 released capacity elsewhere or reverse the source item; both require refusal
 without any publication. The existing positive chain now continues through
-four reversals. These changes still require their own native qualification.
+four reversals. Native `36f6b828` subsequently executed 595 passing tests and
+one failure: all 14 CLI subledger cases and all ten typed-difference native
+cases passed, including the new parity and current-capacity negatives. The
+remaining older native test still expected unsupported FA-REF-102. Its
+scenario restores 300.00 after a different receipt consumed 250.00 of an
+invoice's 500.00, so the current accounting refusal is FA-REF-072. Its
+corrected expectation retains refusal and adds exact required/open amounts,
+applied-mirror equality, and full unchanged-row/head checks. No negative test
+was removed or changed into acceptance. Final native and exact-tree gates
+remain required.
 
 The pending module separately executed five passing tests and one failing
 test on `224d31b9`. Its disjoint-account case still shared the original
