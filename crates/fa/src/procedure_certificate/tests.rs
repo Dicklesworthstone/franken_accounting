@@ -884,3 +884,6 @@ mod input_cases;
 
 #[path = "tests/bank.rs"]
 mod bank_cases;
+
+#[path = "tests/offline.rs"]
+mod offline;
