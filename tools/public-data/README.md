@@ -10,6 +10,17 @@ Python 3.11 or newer is required. All helper code uses the standard library.
 Network access occurs only when explicitly preparing a dataset without a local
 `--source`. Tests and bundle reconstruction are offline.
 
+The companion [House quarterly disbursement adapter](../../docs/HOUSE_DISBURSEMENTS.md)
+provides explicit `fetch`, `profile`, `prepare` and `verify` commands for the
+complete April–June 2026 detail and independent summary publications. Its default
+CAO organization has 3,855 monetary observations and 174 publisher controls;
+all 352 analysis journals and 7,710 legs passed the separate native replay and
+the [real Beancount/hledger oracle](../../docs/conformance/plaintext-external-oracle.md).
+That guide documents its mixed AP/AR/GL streams, duplicate preservation,
+original blank dates, quarter-end analysis policy and full-publication refusals.
+House acquisition occurs only through its explicit `fetch` command; preparing
+and verifying already acquired originals is offline.
+
 ## Executed native coverage
 
 The complete HMRC March 2025 extract passed a fresh grouped native workflow on

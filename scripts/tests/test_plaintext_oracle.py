@@ -17,6 +17,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import plaintext_oracle as oracle
@@ -290,6 +291,27 @@ class ExternalToolTests(unittest.TestCase):
         self.assertIn("bean-query net/posting-count", report["error"])
         self.assertIn("bean_check_validates_untouched_export", report["checks"])
         self.assertEqual(json.loads((root / "oracle/report.json").read_text())["status"], "FAIL")
+
+    def test_valid_source_unicode_separators_and_literal_metadata_controls(self):
+        texts = fixtures()
+        narration = "Vendor\u2028north\u2029office\x85reference\vdetail"
+        account_name = "Account\x00name\vline\u2028branch\u2029section\x85reference"
+        texts["csv_gl"] = ("# fa_csv_text_encoding_v1|percent-utf8\n" + texts["csv_gl"]).replace(
+            "|Account 1000.10|", "|" + quote(account_name, safe="") + "|").replace("Control 1", narration)
+        texts["beancount"] = texts["beancount"].replace(
+            'fa_name: "Account 1000.10"', 'fa_name: "' + account_name + '"').replace(
+            '"Control 1"', '"' + narration + '"')
+        # Native hledger displays control characters without creating physical
+        # lines, and preserves the complete source string in its hex metadata.
+        display = narration.replace("\x85", "\\u{85}").replace("\v", "\\u{b}")
+        texts["hledger_journal"] = texts["hledger_journal"].replace(
+            "fa_name:Account 1000.10", "fa_name_hex_v1:" + account_name.encode().hex()).replace(
+            "2024-01-01 * Control 1  ; fa_entry_id:entry-1 fa_seq:2 fa_class:12\n",
+            f"2024-01-01 * {display}  ; fa_entry_id:entry-1 fa_seq:2 fa_class:12 "
+            f"fa_description_hex_v1:{narration.encode().hex()}\n")
+        _, report = self.run_external(texts)
+        self.assertEqual(report["status"], "PASS", report.get("error"))
+        self.assertEqual((report["entries"], report["postings"], report["account_currency_cells"]), (4, 8, 5))
 
     def test_balanced_hledger_amount_change_still_fails_external_differential(self):
         texts = fixtures()

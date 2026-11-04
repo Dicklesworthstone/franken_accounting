@@ -1,0 +1,4782 @@
+{
+  "earlier_attempts": [
+    {
+      "error": "CheckError: native command ['migrate', 'open', '--intent', '/workspace/scratch/50fa1275d487/house-cao-native/migration-run.json'] exited 2, expected 0: {\"authority\":{\"ops\":null,\"posture\":\"embedded-owner\",\"principal\":\"operator\",\"profile\":\"Human\"},\"book\":\"0ccde984e874c2aed44152a0545ecb09\",\"certificate\":null,\"coordinate\":{\"branch\":\"trunk\",\"effective\":\"all\",\"known_at\":21,\"time_evidence\":null},\"data\":{\"cite\":\"plan §8.6, Appendix A MigrationRun\",\"class\":\"usage\",\"detail\":null,\"exit\":2,\"fix\":\"fix the named field of the run body and open again\",\"message\":\"the trial balance at the end of `FY2026-P04`: line 2 (`expense-14e5fd0539b1952a`): a declared line is never zero; omit it\",\"refusal\":{\"alternatives\":[],\"code\":\"FA-REF-100\",\"docs\":\"fa explain refusal FA-REF-100\",\"exit\":2,\"fix\":{\"argv\":null,\"command\":null,\"or_field_change\":null,\"rerun_with\":null,\"text\":\"fix the named field of the run body and open again\"},\"id\":\"FA-REF-100:4595cfc5148eadce\",\"what_failed\":\"the trial balance at the end of `FY2026-P04`: line 2 (`expense-14e5fd0539b1952a`): a declared line is never zero; omit it\",\"where\":{},\"why\":{\"cite\":\"plan §8.6, Appendix A MigrationRun\"}},\"refusal_id\":\"FA-REF-100\"},\"event\":\"error\",\"next_actions\":[],\"v\":1,\"warnings\":[]}\nrefused FA-REF-100 (exit 2): the trial balance at the end of `FY2026-P04`: line 2 (`expense-14e5fd0539b1952a`): a declared line is never zero; omit it [plan §8.6, Appendix A MigrationRun] fix: fix the named field of the run body and open again\n",
+      "native_calls": 30,
+      "resolution": "Project only nonzero NET lines into native migration TB declarations, while retaining all source controls, zero-net gross activity and every original observation.",
+      "result_sha256": "9f9271c7655801e0fa644b8d23cdcfc18fd8ad983ebeabbde72304f73d8d5f8b",
+      "status": "FAIL"
+    },
+    {
+      "elapsed_seconds": 234.274,
+      "followup": "Final run additionally requires exact book/period/effective/known-at/mode and unchanged helper/preparation bytes.",
+      "native_calls": 118,
+      "result_sha256": "2284af331176a1168fe5d83ea77debb0fc6356c3766b3e733b0490ce7ccb53d1",
+      "status": "PASS"
+    }
+  ],
+  "external_commands": [
+    {
+      "command": [
+        "/root/.local/bin/bean-check",
+        "--version"
+      ],
+      "elapsed_ms": 164,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "01-bean_check-version.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 16,
+        "file": "01-bean_check-version.stdout",
+        "sha256": "8b43a16ae1d314e5b136b36cad7667de9c6bfcbf2bb768ae2b21a24ecf7df05e"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "--version"
+      ],
+      "elapsed_ms": 214,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "02-bean_query-version.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 33,
+        "file": "02-bean_query-version.stdout",
+        "sha256": "8844e58c92110812b210705f5ab2de25ffc3f642e6dad788358f82bae91133c6"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--version"
+      ],
+      "elapsed_ms": 13,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "03-hledger-version.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 29,
+        "file": "03-hledger-version.stdout",
+        "sha256": "85a89abb22b0da64f3824a996a4b13e9528cfae00551a9dcacdf090489aa10bb"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-check",
+        "/workspace/scratch/50fa1275d487/house-cao-oracle-final/inputs/journal.beancount"
+      ],
+      "elapsed_ms": 316,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "04-bean-check.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 0,
+        "file": "04-bean-check.stdout",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/house-cao-oracle-final/inputs/journal.beancount",
+        "SELECT account, currency, sum(number) AS total, count(*) AS postings GROUP BY account, currency ORDER BY account, currency;"
+      ],
+      "elapsed_ms": 515,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "05-beanquery-net.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 5853,
+        "file": "05-beanquery-net.stdout",
+        "sha256": "54d49a0a65337f2f0f98aa23bc2595da19bd8b24270b43c745e1d1aac1fc7b90"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/house-cao-oracle-final/inputs/journal.beancount",
+        "SELECT account, currency, sum(number) AS total, count(*) AS postings WHERE number > 0 GROUP BY account, currency ORDER BY account, currency;"
+      ],
+      "elapsed_ms": 477,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "06-beanquery-debit.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 5746,
+        "file": "06-beanquery-debit.stdout",
+        "sha256": "20b8cf5c43a4eac0cc8ad6cace4ea6ea0b4604190b48ca24a35dbcebc2c4ead1"
+      }
+    },
+    {
+      "command": [
+        "/root/.local/bin/bean-query",
+        "-f",
+        "csv",
+        "/workspace/scratch/50fa1275d487/house-cao-oracle-final/inputs/journal.beancount",
+        "SELECT account, currency, sum(number) AS total, count(*) AS postings WHERE number < 0 GROUP BY account, currency ORDER BY account, currency;"
+      ],
+      "elapsed_ms": 471,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "07-beanquery-credit.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 810,
+        "file": "07-beanquery-credit.stdout",
+        "sha256": "b0c8b92f5ea7dfb4138aa43a49630d4d3ca571681dcbb6777f260abf8bd008f9"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/house-cao-oracle-final/inputs/journal.hledger",
+        "print",
+        "-O",
+        "csv"
+      ],
+      "elapsed_ms": 265,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "08-hledger-postings.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 1797353,
+        "file": "08-hledger-postings.stdout",
+        "sha256": "04e6cd09eaeb153460fcb31aa20bae0cc2eb780a0b31faebc243e36a69485d77"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/house-cao-oracle-final/inputs/journal.hledger",
+        "balance",
+        "--flat",
+        "--no-total",
+        "--empty",
+        "-O",
+        "csv",
+        "cur:^USD$"
+      ],
+      "elapsed_ms": 214,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "09-hledger-00-net.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 5450,
+        "file": "09-hledger-00-net.stdout",
+        "sha256": "ae6bf3534dcafd735f805687662af6298137808a759a2080a1d8ba36bacaf514"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/house-cao-oracle-final/inputs/journal.hledger",
+        "balance",
+        "--flat",
+        "--no-total",
+        "--empty",
+        "-O",
+        "csv",
+        "cur:^USD$",
+        "amt:>0"
+      ],
+      "elapsed_ms": 319,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "10-hledger-00-debit.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 5449,
+        "file": "10-hledger-00-debit.stdout",
+        "sha256": "7a0b0ad8e81b38632c6f8d585dc474d0ccee9eed0fa0b2f40501d18cc997979b"
+      }
+    },
+    {
+      "command": [
+        "/workspace/scratch/50fa1275d487/bin/hledger",
+        "--no-conf",
+        "-f",
+        "/workspace/scratch/50fa1275d487/house-cao-oracle-final/inputs/journal.hledger",
+        "balance",
+        "--flat",
+        "--no-total",
+        "--empty",
+        "-O",
+        "csv",
+        "cur:^USD$",
+        "amt:<0"
+      ],
+      "elapsed_ms": 214,
+      "exit": 0,
+      "stderr": {
+        "bytes": 0,
+        "file": "11-hledger-00-credit.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 752,
+        "file": "11-hledger-00-credit.stdout",
+        "sha256": "18c18182b79f5409ee82483e9d61080ad9e4db5685e4eb5a1ddbc48fa1d4872a"
+      }
+    }
+  ],
+  "external_commands_sha256": "4f0418eb2b245b51635cdfa0fdf3e1f49be4bc3eacfc06c8378b75d975c003f7",
+  "external_oracle": {
+    "account_currency_cells": 105,
+    "checks": [
+      "bean_check_validates_untouched_export",
+      "beanquery_net_and_counts_match_every_native_cell",
+      "beanquery_debit_and_counts_match_every_native_cell",
+      "beanquery_credit_and_counts_match_every_native_cell",
+      "hledger_parsed_postings_match_native_net_gross_and_counts",
+      "hledger_independent_net_balances_match_every_native_cell",
+      "hledger_independent_gross_debits_match_every_native_cell",
+      "hledger_independent_gross_credits_match_every_native_cell",
+      "original_snapshot_and_executable_hashes_unchanged"
+    ],
+    "command_transcript": {
+      "bytes": 5476,
+      "file": "commands.jsonl",
+      "sha256": "4f0418eb2b245b51635cdfa0fdf3e1f49be4bc3eacfc06c8378b75d975c003f7"
+    },
+    "commands": 11,
+    "compared_controls": {
+      "bytes": 28311,
+      "file": "expected.json",
+      "sha256": "91fa518d0a60c57a9a328fd9b33376b13ef17fd9bc398046ceac76fab16859bd"
+    },
+    "coordinate": {
+      "base": "USD@2",
+      "book": "House published disbursements ANALYSIS ONLY",
+      "certificate_digest": "3c2f6a060c4d37517ffda2be5966431eec4091b5958fb189af498f553f0a2b63",
+      "content_digest": "ef2e26dd51dd6ca46e6684a9762cd47d9c1aba7bf5e0b76aceca57bdf885df2f",
+      "effective_through": "2026-06-30",
+      "entries": "352",
+      "known_at": "1440"
+    },
+    "currencies": {
+      "USD": 2
+    },
+    "declared_accounts": 121,
+    "entries": 352,
+    "format": "fa-plaintext-oracle-v1",
+    "helper_sha256": "17feacada9c2978de921303cac2ea1bc78625d5bf02beb4165b76e5867a05b33",
+    "input_files": {
+      "beancount": {
+        "bytes": 1008287,
+        "original_path": "/workspace/scratch/50fa1275d487/house-cao-native-final/journal.beancount",
+        "sha256": "653a7af1c0a311e14e007160e4a04baa7bfff9749aeb6a9ddc47428e83e1a6ef",
+        "snapshot": "inputs/journal.beancount"
+      },
+      "csv_gl": {
+        "bytes": 2326999,
+        "original_path": "/workspace/scratch/50fa1275d487/house-cao-native-final/native.csv",
+        "sha256": "7593d2bce9e2f834db4e560e234676689775823879ca96f2d0e94dc9a6d36155",
+        "snapshot": "inputs/native.csv"
+      },
+      "hledger": {
+        "bytes": 498112,
+        "original_path": "/workspace/scratch/50fa1275d487/house-cao-native-final/journal.hledger",
+        "sha256": "18ba7e2b781d2c6a13a95e345974688715801f015386118f0d8a9f82f8bd20f3",
+        "snapshot": "inputs/journal.hledger"
+      }
+    },
+    "postings": 7710,
+    "python_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+    "scope": "Exact signed-unit balances, separate debit/credit activity and posting counts for every account/currency cell in the three same-coordinate native exports. No cost conversion, market valuation, lot, dimension, evidence-custody, original-source authenticity or full-book completeness claim. Native export certificate verification and original-source reconciliation remain separate.",
+    "status": "PASS",
+    "tool_hash_scope": "Hashes bind the resolved executable files; Python launcher hashes do not bind all installed package dependencies.",
+    "tools": {
+      "bean_check": {
+        "bytes": 227,
+        "path": "/root/.local/bin/bean-check",
+        "sha256": "be8d5543540749ca2f4e456c1ca46acf30b82966c783628a98363de791b8926e",
+        "version": "Beancount 3.2.0"
+      },
+      "bean_query": {
+        "bytes": 219,
+        "path": "/root/.local/bin/bean-query",
+        "sha256": "628b1a9aa2e574bf78b6a415c64d9d8f646d0a113ec8eb5ce2562a8ff479028e",
+        "version": "beanquery 0.2.0, beancount 3.2.0"
+      },
+      "hledger": {
+        "bytes": 68837064,
+        "path": "/workspace/scratch/50fa1275d487/bin/hledger",
+        "sha256": "f4cb2b67ef40a1d2806e6347ec0baafcf23d5313daa3982be0c0606b3ad84bb8",
+        "version": "hledger 1.52.4, linux-x86_64"
+      }
+    }
+  },
+  "external_report_sha256": "bcaa996060b91c781be76ffcf63c407a42025b084eca6490f7838d43923e6bc1",
+  "native": {
+    "approval_group_requests": 12,
+    "bundle_sha256": "850e457d61dda7263441857a4276372c0e04d1456118e34d7bd0dfca386cba3f",
+    "certificate_digest": "613e19fb27833e3aca9d0790a6e73b283a3cb94bd08be08308367fe0561a618b",
+    "checkpoint_public_key": "4b33f4384aa47920d12b24986b557a03a9ed8af947f605a6bbb0ef8ed59e709b",
+    "checks": [
+      "complete_original_detail_and_summary_pins",
+      "publisher_summary_reconciled_before_native_writes",
+      "subtotal_and_office_total_rows_not_posted",
+      "original_blank_dates_and_service_periods_retained",
+      "all_retained_source_document_bytes_match_after_reopen",
+      "every_prepared_leg_matches_declared_source_model",
+      "balanced_one_cent_change_refused_against_independent_controls_without_publication",
+      "source_manifest_binds_every_original_proposal",
+      "exact_prepare_and_stage_retries",
+      "staged_invisibility",
+      "complete_population_and_cumulative_tieout",
+      "atomic_finalization",
+      "nine_monthly_gross_net_and_historical_controls",
+      "exact_book_period_effective_and_known_at_coordinates",
+      "registers_equal_native_fold",
+      "terminal_source_binding_and_receipt_retry",
+      "every_exported_dated_leg_and_memo",
+      "same_coordinate_csv_beancount_and_hledger_exports",
+      "native_export_verification",
+      "certified_report_replay",
+      "independent_source_bound_report_verification",
+      "tampered_report_refused"
+    ],
+    "documents": {
+      "controls.json": "5d8603756dcb9f0365f2f6982871af9bd65f829a875bf46e8495cf623246bc77",
+      "expected_tb.json": "b561be8887d9cf134a1a91aadd69bc32b21a8f23724020d89b363640ee540117",
+      "legacy.csv": "6365f77b9745210ff1a3a4f0beb3a6ea0abc22b44589ddb4624c9b83b3369001",
+      "provenance.jsonl": "b70cce57dbfbb4ee2ede5122e95d8935370f8a4f5cdc5a685e8030f1fecd9595",
+      "raw-detail.csv": "ae0cc2e43b1d373198021b2e44756683911f79d44986ad40f400e5bac97d7c39",
+      "raw-summary.csv": "0805d006cc2fe0f0dcda3d7f8e445f8f7bd7259352d64e511b68e8c14133cebc",
+      "receipt.json": "82b771944578cd61b280fde695a5dc5b3c8f61650bedf89b7fe4869951229c68",
+      "records.jsonl": "f43bc9e828e08ae28d16053a3acf30232098715e8e9cf430d2bf93f155377ebf"
+    },
+    "elapsed_seconds": 195.898,
+    "entry_count": 352,
+    "evidence_group_requests": 6,
+    "executables": {
+      "fa": {
+        "fingerprint": [
+          27,
+          297605,
+          235424736,
+          1793749109055231578,
+          1793749109129587786
+        ],
+        "path": "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "sha256": "acaae9c492073da98944c6c63366e58eefa64d419dab0fcbcbe2ced31c71eaa3"
+      },
+      "fa_verify": {
+        "fingerprint": [
+          27,
+          297547,
+          20226944,
+          1793749109127232079,
+          1793749109355233667
+        ],
+        "path": "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa-verify",
+        "sha256": "1be431b3b84628d3f44d370155048d2a173b378a82a3ff3a56efc8e9d4fdff9e"
+      }
+    },
+    "export_known_at": 1440,
+    "exports": {
+      "beancount": {
+        "path": "journal.beancount",
+        "sha256": "653a7af1c0a311e14e007160e4a04baa7bfff9749aeb6a9ddc47428e83e1a6ef"
+      },
+      "csv-gl": {
+        "path": "native.csv",
+        "sha256": "7593d2bce9e2f834db4e560e234676689775823879ca96f2d0e94dc9a6d36155"
+      },
+      "hledger": {
+        "path": "journal.hledger",
+        "sha256": "18ba7e2b781d2c6a13a95e345974688715801f015386118f0d8a9f82f8bd20f3"
+      }
+    },
+    "finalized_at": 1439,
+    "helper_sha256": "11e829858f538cf55e45315b8b6a6ff78266bdb0162ebeaf1d39eb58876a6045",
+    "helpers": {
+      "scripts/house_disbursements_replay.py": "11e829858f538cf55e45315b8b6a6ff78266bdb0162ebeaf1d39eb58876a6045",
+      "scripts/public_ledger.py": "43ee04174028db1c6751d027af45791c2fa394af920dc71f44298e3ea5af684c",
+      "scripts/public_ledger_source.py": "c71fa2225f8e52d8ce85deb900d691306eff2e6f1e12e3ae8516654ae1548fd8",
+      "tools/public-data/house_disbursements.py": "c6c57f753553fe8d05caf9b541739ffc33d52052f0bfc602ae8f615b5f76d188",
+      "tools/public-data/public_spend.py": "b8142a53f45d395e5fed2ce588b4aeda91708c0e85caf8e08c8845f0fbb46c1a",
+      "tools/public-data/run_live.py": "93db72c30fe0735e4f6111e3af84eb14ac4a8dcebddc5444db0af1e6a33cf267"
+    },
+    "leg_count": 7710,
+    "migration_run": "791e7764e81a6ada1c17300b36693779",
+    "monthly_controls": [
+      {
+        "cells": 74,
+        "effective_through": "2026-04-30",
+        "invisible": false,
+        "known_at": 1439,
+        "period": "FY2026-P04"
+      },
+      {
+        "cells": 88,
+        "effective_through": "2026-05-31",
+        "invisible": false,
+        "known_at": 1439,
+        "period": "FY2026-P05"
+      },
+      {
+        "cells": 105,
+        "effective_through": "2026-06-30",
+        "invisible": false,
+        "known_at": 1439,
+        "period": "FY2026-P06"
+      },
+      {
+        "cells": 105,
+        "effective_through": "2026-07-31",
+        "invisible": false,
+        "known_at": 1439,
+        "period": "FY2026-P07"
+      },
+      {
+        "cells": 105,
+        "effective_through": "2026-08-31",
+        "invisible": false,
+        "known_at": 1439,
+        "period": "FY2026-P08"
+      },
+      {
+        "cells": 105,
+        "effective_through": "2026-09-30",
+        "invisible": false,
+        "known_at": 1439,
+        "period": "FY2026-P09"
+      },
+      {
+        "cells": 105,
+        "effective_through": "2026-10-31",
+        "invisible": false,
+        "known_at": 1439,
+        "period": "FY2026-P10"
+      },
+      {
+        "cells": 105,
+        "effective_through": "2026-11-30",
+        "invisible": false,
+        "known_at": 1439,
+        "period": "FY2026-P11"
+      },
+      {
+        "cells": 105,
+        "effective_through": "2026-12-31",
+        "invisible": false,
+        "known_at": 1439,
+        "period": "FY2026-P12"
+      }
+    ],
+    "native_calls": 118,
+    "native_export": {
+      "entries": 352,
+      "legs": 7710
+    },
+    "one_cent_refusal": {
+      "authority": {
+        "ops": null,
+        "posture": "embedded-owner",
+        "principal": "operator",
+        "profile": "Human"
+      },
+      "book": "2c85f513da21e95e7739e5be4c023674",
+      "certificate": null,
+      "coordinate": {
+        "branch": "trunk",
+        "effective": "all",
+        "known_at": 24,
+        "time_evidence": null
+      },
+      "data": {
+        "cite": null,
+        "class": "usage",
+        "detail": null,
+        "exit": 2,
+        "fix": "reconcile the opening entry selection, source dates, account mapping and every declared cumulative period balance; no package or chunk was recorded",
+        "message": "the complete mapped source does not tie exactly to the independently declared trial balance through `FY2026-P04`",
+        "refusal": null,
+        "refusal_id": null
+      },
+      "event": "error",
+      "next_actions": [],
+      "v": 1,
+      "warnings": []
+    },
+    "organization": "FISCAL YEAR 2026 CHIEF ADMIN OFCR OF THE HOUSE",
+    "output_digest": "fab8543593ee89a573481dbc4d15b06af10678a8e7bdfad0b23069f85130f72c",
+    "prepared_files": {
+      "account_map.json": "35c2d1928e9b6307cb493f9a1e1e3bced80ffad3bd077678d442a8c1ff4433b5",
+      "chart.json": "e64784151cec8972a0d3900ed6239917d97b6573c13f685196560317dc7a3bcd",
+      "columns.toml": "cd9a44166aae0748bbe8681a9f77f8862a1a3204b1d006c2e2e349e04960608f",
+      "controls.json": "08a3e68f700e4cec6e953fd21ba8713a0e751de5bd3a9fcd16449130d8ab7ad5",
+      "expected_tb.json": "a0b95931897d4314ed42b47c54a3c402cb76fca0d4c221df6e9e0f92d051de30",
+      "legacy.csv": "a94a76c63d803c93082c3af97281677674078db2e216ef7479cf351f5803499d",
+      "provenance.jsonl": "b8d2d0a3af6d5be37d6756cc9a6929c2853fbf80d6d7c4ccea48c8c84ce53ee3",
+      "raw-detail.csv": "948ea680f24c2f654263e91641df4e3a1d7b9f2b3568f701be8b62421a5c3e92",
+      "raw-summary.csv": "4828ceb94cc1dc67bbdc4faa276ef0cc0e36cbc3f4dcf0a84f9e1f54b005b28b",
+      "receipt.json": "02fb5410e881fa9743db12c1215b5504e06d21e3cf0f5672af97c99c5af8b2ca",
+      "records.jsonl": "abeb3008ddc5a8c9d40b874ce41ce96f73d65d31adce98fca2d66b74b43c3ccf",
+      "summary-records.jsonl": "9c3e430f4e48091c68e92a4037e61f9227db33e2979c79293b4e73eaad9dd1ef"
+    },
+    "scope": "Complete selected House organization's published quarterly disbursements; explicit expenditure/offset analysis book, not an original double-entry GL. Missing transaction dates use the disclosed quarter-end analysis assignment. Fixture reviewer roles are not independent human examination. The caller trusts the local test-book key.",
+    "source_binding": {
+      "book_id": "2c85f513da21e95e7739e5be4c023674",
+      "complete": true,
+      "expected_chunks": 352,
+      "manifest_digest": "417d7261dddea73f5cf88678d814475da5d61672322cf956af33d0c2fb952002",
+      "manifest_vid": "7207b093fbce8e414fdb0bdd3bfeaf57",
+      "missing_chunks": [],
+      "package_commit": "1ce96342ba9a49dd298d5f8882dc55349e876e90c00dc653f1f8c709319fe24c",
+      "package_oid": "c8e707fbdf6bd8b6814888c1c944253ef52b456a1f7f8d1efb91bfd424f35e96",
+      "recorded_chunks": 352,
+      "run_body_digest": "c55048d2692078d90f443852d7a340499f0c380cbfb07be2ba1456ff3cf7d426",
+      "run_vid": "791e7764e81a6ada1c17300b36693779",
+      "source_commit": "c62133cf64ec13e899533c82cc83eda07eb4f96c67505e1a9e2008d2e451bebb",
+      "source_oid": "6365f77b9745210ff1a3a4f0beb3a6ea0abc22b44589ddb4624c9b83b3369001",
+      "source_rows": 7710,
+      "unexpected_chunks": []
+    },
+    "source_binding_receipt": {
+      "already_recorded": false,
+      "control_entry": "21312cbb57f51f225346f581dd07e7b2",
+      "recorded_at": 26
+    },
+    "source_controls_sha256": "08a3e68f700e4cec6e953fd21ba8713a0e751de5bd3a9fcd16449130d8ab7ad5",
+    "source_receipt_sha256": "02fb5410e881fa9743db12c1215b5504e06d21e3cf0f5672af97c99c5af8b2ca",
+    "source_report": {
+      "bind_leaf_index": 24,
+      "major": 1,
+      "manifest_bytes": 17122,
+      "minor": 1,
+      "source_witnesses": 1
+    },
+    "source_stats": {
+      "budget_object_code_count": 62,
+      "data_sources": {
+        "AP": 2315,
+        "AR": 1,
+        "GL": 1539
+      },
+      "distinct_nonblank_documents": 894,
+      "duplicate_detail_rows": 54,
+      "fiscal_or_legislative_years": [
+        "FY2026"
+      ],
+      "missing_transaction_dates": 1056,
+      "negative_minor": "-21962254",
+      "negative_rows": 47,
+      "net_minor": "3558135389",
+      "nonblank_document_rows": 2799,
+      "organization_codes": [
+        "30AO000"
+      ],
+      "positive_minor": "3580097643",
+      "positive_rows": 3808,
+      "program_count": 49,
+      "retained_detail_file_records": 4010,
+      "row_count": 3855,
+      "unparsed_service_dates": 0,
+      "zero_rows": 0
+    },
+    "status": "PASS",
+    "verifier": [
+      {
+        "checks": [
+          {
+            "check": "checkpoint",
+            "detail": {
+              "book_id": "2c85f513da21e95e7739e5be4c023674",
+              "branch_id": "00000000000000000000000000000000",
+              "leaf_count": 732,
+              "not_judged": [],
+              "oid": "0be156513e8cf70c68846d9054ea10f2d3ab1189f7549ea56716941377b0d7a9",
+              "root": "5758758355d33a99660a9e31907218a968b04c44af33d2fbf10f80d43b567bc4",
+              "scope_index_root": "8093c149dac64e5ec7f28e5b9cf0e4345c6d402f2c3decfdeb87bfb409136a3c",
+              "signed_by": [
+                "94db08af90a8d4208604c24e65113bf73ee0f8b0a4da6cf70b28fd691c0ba886"
+              ],
+              "state_oid": "d8e4cf672e135148e9fe67bffb132889b371cd8f659145402a896cfcf2e43741",
+              "substrate_chain_commitment": "8b85d107ffbea91514193383459a22873aaf9a897dde9d6a003c1e5a568f618f",
+              "through_seq": 1441
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "signature"
+          },
+          {
+            "check": "report_bundle",
+            "detail": {
+              "bundle_digest": "3a97517b07c7a4e8c462310b1be849bffa9bb095fa93d1b654e1b93c6382e9e6",
+              "certificate_digest": "613e19fb27833e3aca9d0790a6e73b283a3cb94bd08be08308367fe0561a618b",
+              "effective_through": 20634,
+              "known_at": 1440,
+              "native_read_attestations": "retained; not used as outsider proofs",
+              "output_digest": "fab8543593ee89a573481dbc4d15b06af10678a8e7bdfad0b23069f85130f72c",
+              "records": 732,
+              "report_mode": "stock",
+              "rows": 105,
+              "unit_universe_source": "not-applicable"
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "f7781eae6417b57af6fa55b352194306",
+              "code": "expense-029c892b2a1f89fa",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "2759406",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "95c00d4a4c5b7724b9ff8611c4cf3ffb",
+              "code": "expense-0c601c99bc349d35",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "28994584",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "87bc75d2be5cacc3d316d704d5ea7685",
+              "code": "expense-14e5fd0539b1952a",
+              "credits": "7316383",
+              "credits_pending": "0",
+              "debits": "2514068028",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "14d4820211cb05d463f1763ea950222b",
+              "code": "expense-1911f6b28f4d2ec9",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "880730",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "5626863b0693e1b35eb0b88011fd2927",
+              "code": "expense-1b570da0cdc1d468",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "827785",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "c664a7296822cf7535b197b5493ffb60",
+              "code": "expense-20182a88bdfd4ce1",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "150000",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "3d4ad63ac2bf1200696e50f413c1155b",
+              "code": "expense-20f127145be79343",
+              "credits": "25196",
+              "credits_pending": "0",
+              "debits": "411250",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "26667accd26bed18daf4573140db5a31",
+              "code": "expense-23bbd4453cc4a400",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "533900",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "3d0d4d9219e0440c56e97afd5d224d16",
+              "code": "expense-2490e88a5f99fe6d",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "750000",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "6093a97ccb242f54580b9f2b8ff9b53c",
+              "code": "expense-274060e8f2a745d2",
+              "credits": "13999",
+              "credits_pending": "0",
+              "debits": "673857",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "8401468078e9b7c78fe58e3f82d5507d",
+              "code": "expense-27a6a68c905763d5",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "411985",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "165ca96074163d9f9cfceefc6773eb76",
+              "code": "expense-27e1e1b95c57424e",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "988561",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "bef3a042f2194791f2dbd97d948e10bf",
+              "code": "expense-2936e42d0022ea49",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "3272405",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "5a886e2f9f92025642e11c0fee781019",
+              "code": "expense-2bd2135e97950f13",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "1399500",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "05197d67de8f14bbe559ab23054be843",
+              "code": "expense-2c00e56e956c6cfd",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "457155",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "43b8c2fa082437918234553b7de80ece",
+              "code": "expense-392b09be4f33632e",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "5400000",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "5837f1ae1daf97c03f9d41dab5ab7f15",
+              "code": "expense-39c9664f795ddb34",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "25200000",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "c1ba74e059f99f3ebca13703dce7c949",
+              "code": "expense-415ed05e7a70054b",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "181430611",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "bfd6182ec6d801ab1dc998d1fc6a2ad8",
+              "code": "expense-4635a087dc998bf5",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "55478850",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "ca1da0d569ef68940121e39353f4f4a7",
+              "code": "expense-4783fd1a49e5c5bb",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "4446746",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "a099297c510f478beaa62300004d2f8b",
+              "code": "expense-4887b1ecdf488a90",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "5677353",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "00595b22f2fbddd8c7b0200cc1733c99",
+              "code": "expense-4a2c4ab07324c369",
+              "credits": "2346463",
+              "credits_pending": "0",
+              "debits": "26883177",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "761cd5543a1c62a276693f0543b81bb9",
+              "code": "expense-4ac3561a655cf291",
+              "credits": "170190",
+              "credits_pending": "0",
+              "debits": "60671995",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "57894d51ba6674969c20eb5cd50ffad6",
+              "code": "expense-50dddda2a99536e9",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "4821910",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "34872d04f556dad31220a9bc2254ddd2",
+              "code": "expense-518edd0853c9f51d",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "15056009",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "e420ceb74c3f8a117a112b3ba7682a18",
+              "code": "expense-53c2ad15706fc895",
+              "credits": "5680268",
+              "credits_pending": "0",
+              "debits": "89928170",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "f91ed08f14cd1293ddf544d553825b10",
+              "code": "expense-54f9c61f7fc1cc2d",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "212469",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "5fb96335f061ad3bb1368de9136c5f7b",
+              "code": "expense-5b4162ab6f622eba",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "94382",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "22d0115c284f8d56cfacc1c82ace372a",
+              "code": "expense-5e8b0afc4a3cb968",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "7188882",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "5c3a77e6f2379209646dd51c892ee798",
+              "code": "expense-6140913cb97cd4e7",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "38800",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "5a0586fa393e1dcfcb21fd46afb311b5",
+              "code": "expense-615c46c2fc969532",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "15680017",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "a9b199dbba07b9a776558da4feed8429",
+              "code": "expense-61bdf5a36870cad2",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "16722",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "0382bee703a45c3f2902a607adcc493f",
+              "code": "expense-67ff42a1f868163d",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "6389600",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "5a22e58ce7b2c2f18d3ed0e9fd0ccb76",
+              "code": "expense-6df82a62d5c0d4b1",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "9889000",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "fe85b04883186dcfac141e620c6ebf2c",
+              "code": "expense-6fca0cb0d8d9ce34",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "3161850",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "a5885ff4ed8e6b048dc50d957119bab2",
+              "code": "expense-701ef52fb435e6ee",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "45370",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "47105856437ef8fe4911d5de54c656b8",
+              "code": "expense-71a4fb00d0c6a5a4",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "4821",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "cd2d3c1303f17ac4e8d80ad17a41a6ad",
+              "code": "expense-71fe0d43176d1650",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "8267",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "94616532d95b397c5106a19356a6a6e1",
+              "code": "expense-72325dd5297bde81",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "515496",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "a41e80fa8a5282d18aa978be1d6486ad",
+              "code": "expense-72b2641d2dbe10b3",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "210296",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "b1e5f16eddef748aa2f22e03c090d2d4",
+              "code": "expense-765bf8043e8f69b9",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "10774386",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "c1db32d60b6a3a2e00e0d9dfe28f12b3",
+              "code": "expense-766a0613344545ac",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "3487064",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "f103b2c18fd6fef2b55dbd7b7e008d56",
+              "code": "expense-78b62b1f6e4ef3af",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "1666056",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "17211f4cb0167f5d4ac8a84160a8888b",
+              "code": "expense-79aa8ac42ab159eb",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "82500",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "1dd2cf64b7da7c687de33d0f264121d1",
+              "code": "expense-7f78c6844abf62dd",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "2300",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "3b90782ee12b301d2203e80eaee1b9ac",
+              "code": "expense-7fbd3e2a463fcbd0",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "6678466",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "82c46391a8090d4cff66fe3aa51cc10e",
+              "code": "expense-820785fad49a4680",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "699282",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "0442c847245a581f3dc612a1a452409f",
+              "code": "expense-822a77af6471b0fd",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "19793351",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "135d88a1ce3bf8bb28441f16d94bc159",
+              "code": "expense-82647c6ea216f8d4",
+              "credits": "161019",
+              "credits_pending": "0",
+              "debits": "17331342",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "a613555dd5ea1c7151ac058fd03928d6",
+              "code": "expense-827dfed2902cfdfb",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "45981105",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "43778b8035fafff75733bbca12d1d856",
+              "code": "expense-8336ca2e3071b465",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "1291800",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "3762eb6de464c748fd868555f8bec44e",
+              "code": "expense-83a34c5c68a0e096",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "6895932",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "0cb29b09c40113bffc05ea2690f2baed",
+              "code": "expense-871f55180555134d",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "4599165",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "4471dbb1e7877fe5ea6b8934785c1015",
+              "code": "expense-896e85e2cc8cc87b",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "76569",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "3dbe37330d6df46f012a7b0d660d94db",
+              "code": "expense-8bea272aae8087c9",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "113795",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "139de45c7f49e9e2d8ad63a288051a00",
+              "code": "expense-8cdf788128e5c651",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "25694102",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "6f6154ababb93e21a9f71cca5efd0807",
+              "code": "expense-8f0cb48774649ab6",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "2717855",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "94e2c7b21d65ce2970941d4fdf9bc91f",
+              "code": "expense-8f16cc924ff02b88",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "15793727",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "fc5ae470648722f60d8df52e30d8a851",
+              "code": "expense-91d1af16ea455e13",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "5350",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "02c3004f6251c0f606f2b1e7e4ef917f",
+              "code": "expense-963aec8cc22434d6",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "37106430",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "3df0a4f7f1aa45218970fdc570f9be1a",
+              "code": "expense-96500605ea8d25f4",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "7339986",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "bdbbe4161b9bd8fbeb67544a84b9e5bb",
+              "code": "expense-9c2e982781f1d25a",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "742229",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "cf43bb157b9fbbdada0e88db888f9073",
+              "code": "expense-9f8b2e1425966909",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "69117",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "af7384073ec64f45b2461ab5e57c5600",
+              "code": "expense-a0321310cadd883c",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "1237500",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "9fdbbd733bdfaf3313bca5dac551529f",
+              "code": "expense-a1f58de75018e2f7",
+              "credits": "7600",
+              "credits_pending": "0",
+              "debits": "181428",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "1ef2d685e814e169ab7466cb41bf4c79",
+              "code": "expense-a75a30e74799af2a",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "5029189",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "17083822596af87317cf2783d53d55b8",
+              "code": "expense-af00e7731de96b6c",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "253108",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "3a4f04d7f176db9a274586225660c76b",
+              "code": "expense-b08132001479ac3a",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "7890550",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "45c326c0c2ca46217e5e57e12d24b222",
+              "code": "expense-b1b0030537bdea27",
+              "credits": "3452300",
+              "credits_pending": "0",
+              "debits": "27466707",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "553c8701834ec51bafeb961c335d15b8",
+              "code": "expense-b47bb151ba26bcc9",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "22547934",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "9b3cc53d6bd04b43d0cf3c2ac852c3d4",
+              "code": "expense-b72ef0523adce606",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "9069200",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "f05b36f6836848aacb71a053aa187426",
+              "code": "expense-b83073d0f6f4a7a9",
+              "credits": "12545",
+              "credits_pending": "0",
+              "debits": "107064",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "f88a5734a1031e2c22f3a1792e5a8815",
+              "code": "expense-b8e9310c5d25f333",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "5211",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "1a4d094cbccc94d7a0800ec7838f49a9",
+              "code": "expense-be3bd617b2094e72",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "21186236",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "4536ba5e35b19bf3a2d5f731d86117d0",
+              "code": "expense-c6789d251dba0a9f",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "31630800",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "094bbc8d5663b412a1e680fa05f778cf",
+              "code": "expense-ca5168f37c4a067f",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "8981600",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "59c281e248e63a1f7aa93693c7078774",
+              "code": "expense-d080b1b9533af09a",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "1990263",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "43fadfb372a400ff6c04485714b3d068",
+              "code": "expense-d104e064ae613e1e",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "662756",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "27cf4c60f1134324f7cc08356d0d695d",
+              "code": "expense-d18cd5f559c1fe2a",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "392500",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "8501068b1903b79a425afe6f4e6ae9d7",
+              "code": "expense-d24b2f0f8be493a7",
+              "credits": "640",
+              "credits_pending": "0",
+              "debits": "651559",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "d75171905e93f398be65ad88c35940c8",
+              "code": "expense-d69698f0a8864d7c",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "4378459",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "15f098e831e8f757f363a2aef3f496dd",
+              "code": "expense-da5c158340d80d8d",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "3553818",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "203ea1be3f5c85113c97ceb523d723b7",
+              "code": "expense-db0f99926cdc54db",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "1695892",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "1a1c6a23dc89550086517b8931e4f499",
+              "code": "expense-dbba088e777e606b",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "5813770",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "fd4ab006e1cf871b709ceeefa6cd14b4",
+              "code": "expense-dc2c0dd096afbeae",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "399800",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "03fd0b2d4c00a0400089f78b69a984e6",
+              "code": "expense-de8fab79e248d84e",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "1475201",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "e780df859d216975f101e0ded64e8144",
+              "code": "expense-debf9cc7a99939fc",
+              "credits": "1980300",
+              "credits_pending": "0",
+              "debits": "11095546",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "c36224b3f3cd88437447183633e7d776",
+              "code": "expense-e07cc4b78072cd1c",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "1304484",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "67ed4220fe298205023b5c2341a7f06b",
+              "code": "expense-e1d84cb3dcedb26b",
+              "credits": "795351",
+              "credits_pending": "0",
+              "debits": "19405123",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "a27839c890d1aa69bdcdf65143fdcdf7",
+              "code": "expense-e257b0cc853ccf51",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "5258",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "27ea09c53b1d5c8f18abc91e0dc561d2",
+              "code": "expense-e48f67895e3d4271",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "4079474",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "46f75baae01e3a0452cf0f99014f3d7a",
+              "code": "expense-e5875ab641b9da9d",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "512960",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "6abf133363cffe4c5b50b35326df4c06",
+              "code": "expense-e733e7cb70ff40b0",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "131497",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "d298962fce770f6c4a688af2688bc742",
+              "code": "expense-e757345abbf9c49b",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "2766281",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "8c59e4ccad16d9a1e67d451fbbe2fdb7",
+              "code": "expense-edfcba8e14e4c72f",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "437841",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "3c5b2cea8bd5fcaf22d895a92c1e6344",
+              "code": "expense-ef277567d32c25de",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "13000",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "35adbe3e107f9f2f5d602cdddaf3f3d1",
+              "code": "expense-f1041bbdbcb743f1",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "28482312",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "4d6785b6d12f46f96cc20bc68a1b2768",
+              "code": "expense-f1e4539c057b65ef",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "19907106",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "c3a573236ef664b5dea4eeece9235234",
+              "code": "expense-f35f633d39410c62",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "706660",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "ff6086b00961498c05b60627cd5a1166",
+              "code": "expense-fbef16db48853a8f",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "42888165",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "20020392370bba435ede1b85d62dbd8d",
+              "code": "expense-fc54825b43d4fffd",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "184660",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "633a19d014ddb520b2759f18da137a87",
+              "code": "expense-fd9bfc99547cca70",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "4983188",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "ed6a591ebb9a306bda01a836594b1978",
+              "code": "expense-fdef461cc96beb3c",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "2559612",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "4c46a24a3db9aca4cf1d3f702d5efe27",
+              "code": "expense-ffaea2a1fd6d2d81",
+              "credits": "0",
+              "credits_pending": "0",
+              "debits": "62083",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "trial_balance_row",
+            "detail": {
+              "account": "829907e74b70b882f3da19a2293e218f",
+              "code": "published-disbursement-offset",
+              "credits": "3580097643",
+              "credits_pending": "0",
+              "debits": "21962254",
+              "debits_pending": "0",
+              "unit": 0
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "canonical_report",
+            "detail": {
+              "output_digest": "fab8543593ee89a573481dbc4d15b06af10678a8e7bdfad0b23069f85130f72c"
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "recomputation"
+          },
+          {
+            "check": "production_receipt",
+            "detail": {
+              "signed_by": "94db08af90a8d4208604c24e65113bf73ee0f8b0a4da6cf70b28fd691c0ba886"
+            },
+            "reason": null,
+            "result": "pass",
+            "scope": "signature"
+          }
+        ],
+        "command": "report",
+        "error": null,
+        "tool": "fa-verify",
+        "v": 1,
+        "verdict": "verified"
+      }
+    ]
+  },
+  "native_artifacts": {
+    "journal.beancount": {
+      "bytes": 1008287,
+      "sha256": "653a7af1c0a311e14e007160e4a04baa7bfff9749aeb6a9ddc47428e83e1a6ef"
+    },
+    "journal.hledger": {
+      "bytes": 498112,
+      "sha256": "18ba7e2b781d2c6a13a95e345974688715801f015386118f0d8a9f82f8bd20f3"
+    },
+    "native.csv": {
+      "bytes": 2326999,
+      "sha256": "7593d2bce9e2f834db4e560e234676689775823879ca96f2d0e94dc9a6d36155"
+    },
+    "quarter.fab": {
+      "bytes": 2332990,
+      "sha256": "850e457d61dda7263441857a4276372c0e04d1456118e34d7bd0dfca386cba3f"
+    },
+    "quarter.receipt": {
+      "bytes": 219,
+      "sha256": "e56c5e004108597b23e8867fd5203bdf16735674532b7876e0ddb3c45055ff44"
+    },
+    "replayed.report": {
+      "bytes": 19249,
+      "sha256": "a731a43591773e1a601c7df52ecd6fac3ac9ce6dc0160ad84fb0f8b91827831d"
+    },
+    "report.checkpoint": {
+      "bytes": 288,
+      "sha256": "4a5713d4501cbd00bba6f42b11840e5076fa68296abb56291f8c828f91c76f62"
+    },
+    "tampered-quarter.fab": {
+      "bytes": 2332990,
+      "sha256": "6dcc6485a9772545d71a5f00a0826082175f696b644364a4c53d762dcd9e5e74"
+    }
+  },
+  "native_attribution": "Frozen native executables from the identified commit. Python helpers are bound by their separately recorded hashes. This is not execution evidence for later Rust edits.",
+  "native_commands": [
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "create",
+        "--name",
+        "House published disbursements ANALYSIS ONLY",
+        "--base-unit",
+        "USD",
+        "--calendar",
+        "monthly",
+        "--opening-date",
+        "2027-01-01",
+        "--json"
+      ],
+      "call": 1,
+      "exit": 0,
+      "seconds": 0.098,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "91222e4fdf19c020f74cb087cfc2bbd422a0054d5a7cc126202052eeea75dc38"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "chart",
+        "import",
+        "/workspace/scratch/50fa1275d487/house-cao-prepared/chart.json",
+        "--json"
+      ],
+      "call": 2,
+      "exit": 0,
+      "seconds": 0.21,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "0c0df5ba57b726730f2e2be650fff8bcf4adecc2afd84d14f8658425ce9437df"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--json"
+      ],
+      "call": 3,
+      "exit": 0,
+      "seconds": 0.063,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "fe5aa12849a1eb1b1752ed630656f7a7564194eafb0c945ef48d97827593e22a"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "add",
+        "/workspace/scratch/50fa1275d487/house-cao-prepared/raw-detail.csv",
+        "--kind",
+        "Spreadsheet",
+        "--mime",
+        "text/csv",
+        "--json"
+      ],
+      "call": 4,
+      "exit": 0,
+      "seconds": 0.579,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "5c847ef2eb7334222d08d27b1b375c28f2b740b0fec3c07744074909e8fe2108"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attest",
+        "review",
+        "--document",
+        "ae0cc2e43b1d373198021b2e44756683911f79d44986ad40f400e5bac97d7c39",
+        "--as",
+        "public-data-fixture-reviewer-a",
+        "--grant",
+        "approve",
+        "--json"
+      ],
+      "call": 5,
+      "exit": 0,
+      "seconds": 0.059,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "bd5039ac5616dbfaeaa766a48218f7b561812fbc4df1e871c709189b9b43cdb1"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "add",
+        "/workspace/scratch/50fa1275d487/house-cao-prepared/raw-summary.csv",
+        "--kind",
+        "Spreadsheet",
+        "--mime",
+        "text/csv",
+        "--json"
+      ],
+      "call": 6,
+      "exit": 0,
+      "seconds": 0.069,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "31e771856e5429233a79add9b1c666f6235846f6951228c11643aacb9f2874ab"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attest",
+        "review",
+        "--document",
+        "0805d006cc2fe0f0dcda3d7f8e445f8f7bd7259352d64e511b68e8c14133cebc",
+        "--as",
+        "public-data-fixture-reviewer-a",
+        "--grant",
+        "approve",
+        "--json"
+      ],
+      "call": 7,
+      "exit": 0,
+      "seconds": 0.063,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "2ba2ea55709d3b70bd3728967fae0f8c5cc9a3dd9d4260db892ef7be19b674bb"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "add",
+        "/workspace/scratch/50fa1275d487/house-cao-prepared/legacy.csv",
+        "--kind",
+        "Spreadsheet",
+        "--mime",
+        "text/csv;charset=utf-8",
+        "--json"
+      ],
+      "call": 8,
+      "exit": 0,
+      "seconds": 0.087,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "2419551077c38d412849e6ba92b9935a1d6866f520e8a6c58e6226769b4c4cc8"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attest",
+        "review",
+        "--document",
+        "6365f77b9745210ff1a3a4f0beb3a6ea0abc22b44589ddb4624c9b83b3369001",
+        "--as",
+        "public-data-fixture-reviewer-a",
+        "--grant",
+        "approve",
+        "--json"
+      ],
+      "call": 9,
+      "exit": 0,
+      "seconds": 0.055,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "14be9bc086d95fb9fd5ba9b99221a0e26be577ea63e16fa80df7c71a82787f1a"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "add",
+        "/workspace/scratch/50fa1275d487/house-cao-prepared/records.jsonl",
+        "--kind",
+        "Workpaper",
+        "--mime",
+        "application/x-ndjson",
+        "--json"
+      ],
+      "call": 10,
+      "exit": 0,
+      "seconds": 0.163,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "d3964ee27c933bd88f2e979801d81ae5f4330eabb57cdac188b0387be803eecb"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attest",
+        "review",
+        "--document",
+        "f43bc9e828e08ae28d16053a3acf30232098715e8e9cf430d2bf93f155377ebf",
+        "--as",
+        "public-data-fixture-reviewer-a",
+        "--grant",
+        "approve",
+        "--json"
+      ],
+      "call": 11,
+      "exit": 0,
+      "seconds": 0.04,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "db1477643c46ac045ecc5d8f6ab214f9c63094b1c5bceff6a5a439b3a4528a4a"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "add",
+        "/workspace/scratch/50fa1275d487/house-cao-prepared/provenance.jsonl",
+        "--kind",
+        "Workpaper",
+        "--mime",
+        "application/x-ndjson",
+        "--json"
+      ],
+      "call": 12,
+      "exit": 0,
+      "seconds": 0.137,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "36e6ded96033cbaa603d1f36a3cc9ee1faf5e0dad5e0e24fca4639f050f325ae"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attest",
+        "review",
+        "--document",
+        "b70cce57dbfbb4ee2ede5122e95d8935370f8a4f5cdc5a685e8030f1fecd9595",
+        "--as",
+        "public-data-fixture-reviewer-a",
+        "--grant",
+        "approve",
+        "--json"
+      ],
+      "call": 13,
+      "exit": 0,
+      "seconds": 0.062,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "0615157e3f98a4e6fedc2bc76043543ffc135f2005580256902fafd4b7d47981"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "add",
+        "/workspace/scratch/50fa1275d487/house-cao-prepared/receipt.json",
+        "--kind",
+        "Workpaper",
+        "--mime",
+        "application/json",
+        "--json"
+      ],
+      "call": 14,
+      "exit": 0,
+      "seconds": 0.058,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "930a04679f2d2c65f09240d18bf91a8ca6d375d7e330bb8ec135a50db40bea2e"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attest",
+        "review",
+        "--document",
+        "82b771944578cd61b280fde695a5dc5b3c8f61650bedf89b7fe4869951229c68",
+        "--as",
+        "public-data-fixture-reviewer-a",
+        "--grant",
+        "approve",
+        "--json"
+      ],
+      "call": 15,
+      "exit": 0,
+      "seconds": 0.049,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "9961bce834d35a3f7c0dc93799ad4587a2f149c5f15bf160a91db0219267864d"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "add",
+        "/workspace/scratch/50fa1275d487/house-cao-prepared/expected_tb.json",
+        "--kind",
+        "Workpaper",
+        "--mime",
+        "application/json",
+        "--json"
+      ],
+      "call": 16,
+      "exit": 0,
+      "seconds": 0.062,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "40ee3ce73af3e8b1edb9359316c2b1bdee059cbc59a777b14e81208e7285b73a"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attest",
+        "review",
+        "--document",
+        "b561be8887d9cf134a1a91aadd69bc32b21a8f23724020d89b363640ee540117",
+        "--as",
+        "public-data-fixture-reviewer-a",
+        "--grant",
+        "approve",
+        "--json"
+      ],
+      "call": 17,
+      "exit": 0,
+      "seconds": 0.052,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "c9b05e28dff1bb39cec4230859749abd8b35d4616f7a60cf49e8562e11e80060"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "add",
+        "/workspace/scratch/50fa1275d487/house-cao-prepared/controls.json",
+        "--kind",
+        "Workpaper",
+        "--mime",
+        "application/json",
+        "--json"
+      ],
+      "call": 18,
+      "exit": 0,
+      "seconds": 0.06,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "946452e1952053d0506dbc895c6cbffc60015944edce1eb5bf0c140975a9cef7"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attest",
+        "review",
+        "--document",
+        "5d8603756dcb9f0365f2f6982871af9bd65f829a875bf46e8495cf623246bc77",
+        "--as",
+        "public-data-fixture-reviewer-a",
+        "--grant",
+        "approve",
+        "--json"
+      ],
+      "call": 19,
+      "exit": 0,
+      "seconds": 0.05,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "fc8326ce634f35ae40d3b88029927d6c13d482a04c1aa05f09a3f84a39b17605"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "read",
+        "ae0cc2e43b1d373198021b2e44756683911f79d44986ad40f400e5bac97d7c39",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/document-readback/raw-detail.csv",
+        "--json"
+      ],
+      "call": 20,
+      "exit": 0,
+      "seconds": 4.505,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "fcd9b786dc221e6ba01f692d7f8fa5a45433afc78a6f62177a30c942cd1dc710"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "read",
+        "0805d006cc2fe0f0dcda3d7f8e445f8f7bd7259352d64e511b68e8c14133cebc",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/document-readback/raw-summary.csv",
+        "--json"
+      ],
+      "call": 21,
+      "exit": 0,
+      "seconds": 0.13,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "1b0eb0388e4da86861a94abb22acee361824d717a36999a339f53993fff81013"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "read",
+        "6365f77b9745210ff1a3a4f0beb3a6ea0abc22b44589ddb4624c9b83b3369001",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/document-readback/legacy.csv",
+        "--json"
+      ],
+      "call": 22,
+      "exit": 0,
+      "seconds": 0.329,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "d6f3bfd84748079d8efc80468d269e1cac54aee189ab289e29b8819ff0a700ec"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "read",
+        "f43bc9e828e08ae28d16053a3acf30232098715e8e9cf430d2bf93f155377ebf",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/document-readback/records.jsonl",
+        "--json"
+      ],
+      "call": 23,
+      "exit": 0,
+      "seconds": 1.104,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "6123b3f36ba501da8f2216c4ae70cfb5b1e8b7ffeb1503e17a23358a1a2de7f0"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "read",
+        "b70cce57dbfbb4ee2ede5122e95d8935370f8a4f5cdc5a685e8030f1fecd9595",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/document-readback/provenance.jsonl",
+        "--json"
+      ],
+      "call": 24,
+      "exit": 0,
+      "seconds": 1.201,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "3be1bd81cf259f44f9c471a5cf734ee56eccc18da7443d0d6a3cdafb6975b9f4"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "read",
+        "82b771944578cd61b280fde695a5dc5b3c8f61650bedf89b7fe4869951229c68",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/document-readback/receipt.json",
+        "--json"
+      ],
+      "call": 25,
+      "exit": 0,
+      "seconds": 0.045,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "c05aa10bdfb972a3910668155f356452ed237bf3be641154e9227e19187ea203"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "read",
+        "b561be8887d9cf134a1a91aadd69bc32b21a8f23724020d89b363640ee540117",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/document-readback/expected_tb.json",
+        "--json"
+      ],
+      "call": 26,
+      "exit": 0,
+      "seconds": 0.153,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "15c91e0dfdc9e05492acbcbe54bc4bf0c7796eb8394e5399cbbf11250da52e95"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "read",
+        "5d8603756dcb9f0365f2f6982871af9bd65f829a875bf46e8495cf623246bc77",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/document-readback/controls.json",
+        "--json"
+      ],
+      "call": 27,
+      "exit": 0,
+      "seconds": 0.089,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "57c2781f2a41b153ef09e0b4a420d83061eed83852038b1a5e299ccde62531f9"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "add",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/no-opening-stock.json",
+        "--kind",
+        "Workpaper",
+        "--mime",
+        "application/json",
+        "--json"
+      ],
+      "call": 28,
+      "exit": 0,
+      "seconds": 0.054,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "3d33d3d61a54e8baeddbfed9f92ee0fa3858a6c82a290cded648bcc0fd3d5300"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attest",
+        "review",
+        "--document",
+        "82fe5b3a60054dbf2267d48521dd46ab2a414e9748d16b5e77e7c46c596b4145",
+        "--as",
+        "public-data-fixture-reviewer-a",
+        "--grant",
+        "approve",
+        "--json"
+      ],
+      "call": 29,
+      "exit": 0,
+      "seconds": 0.063,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "11c2d3de4239bb07e9a2e5742a9d1aebb3067029a5a331da2e473ecfeaddf2b1"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "open",
+        "--intent",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/migration-run.json",
+        "--json"
+      ],
+      "call": 30,
+      "exit": 0,
+      "seconds": 0.088,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "b1c3e00fc1bf5ae362aaebc030c91e7c26c3f57fbb68e6537a3d64efdb98b505"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "add",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/one-cent-negative.csv",
+        "--kind",
+        "Spreadsheet",
+        "--mime",
+        "text/csv",
+        "--json"
+      ],
+      "call": 31,
+      "exit": 0,
+      "seconds": 0.101,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "5814c01b8ae64937224e0c6ff75c81249f0f767cc773a229028b1c3350ff8d60"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attest",
+        "review",
+        "--document",
+        "755766c7cd87f39363ed3d4df4dfeabf9ef826151da13baa41183b3fb93eb082",
+        "--as",
+        "public-data-fixture-reviewer-a",
+        "--grant",
+        "approve",
+        "--json"
+      ],
+      "call": 32,
+      "exit": 0,
+      "seconds": 0.053,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "34ee9b684f3fbeca137cee9cd453bc8ad295aaa1045aaa19b0aa50f0d3b00a2b"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "call": 33,
+      "exit": 0,
+      "seconds": 0.045,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "4c74d59ea0664ef67ddb1c718d457048ace598362dddaa6f6e45de5a3c0ab4a1"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "import",
+        "--action",
+        "prepare",
+        "--bind-source",
+        "--intent",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/one-cent-import.json",
+        "--json"
+      ],
+      "call": 34,
+      "exit": 2,
+      "seconds": 0.357,
+      "stderr_sha256": "f100571638142bcf9a5cc7427d76a3f955ebe04441a0caba39bf95e5e9ef6c44",
+      "stdout_sha256": "3c3075532a5ed6364e916954198369b7584ecd9f3e92af0f2408f3fac8c98662"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "call": 35,
+      "exit": 0,
+      "seconds": 0.039,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "4c74d59ea0664ef67ddb1c718d457048ace598362dddaa6f6e45de5a3c0ab4a1"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "show",
+        "791e7764e81a6ada1c17300b36693779",
+        "--json"
+      ],
+      "call": 36,
+      "exit": 0,
+      "seconds": 0.04,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "8d758a960598a1e7dcd08da139338d755b4674578f9b611a736755b7bb29a9ab"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "import",
+        "--action",
+        "prepare",
+        "--bind-source",
+        "--intent",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/import.json",
+        "--json"
+      ],
+      "call": 37,
+      "exit": 0,
+      "seconds": 0.62,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "0fb9ba680fc3d555f8b31de73c2ce2ab126ec672b479238de23bd4cc513d258c"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "call": 38,
+      "exit": 0,
+      "seconds": 0.031,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "122daf9c63f6fda1f4dd53eede37e5ec2b468e1187f9fa10ce4885436b5e2bf1"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P06",
+        "--json"
+      ],
+      "call": 39,
+      "exit": 0,
+      "seconds": 0.044,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "50e915db80ac166d61e579000ef872eeb329c2f48310d30a42e61028e12396f4"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "import",
+        "--action",
+        "prepare",
+        "--bind-source",
+        "--intent",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/import.json",
+        "--json"
+      ],
+      "call": 40,
+      "exit": 0,
+      "seconds": 0.881,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "1d46caa89d0f380df8e1d571e138dc4f21f387af63d42f5e31711a5ff784b582"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "call": 41,
+      "exit": 0,
+      "seconds": 0.031,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "122daf9c63f6fda1f4dd53eede37e5ec2b468e1187f9fa10ce4885436b5e2bf1"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "capability",
+        "issue",
+        "--holder",
+        "public-data-fixture-reviewer-a",
+        "--profile",
+        "human",
+        "--op",
+        "read",
+        "--op",
+        "approve",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-a.token",
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "approve",
+        "--json"
+      ],
+      "call": 42,
+      "exit": 0,
+      "seconds": 0.072,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "90af996f7c54869c693541f7de79cff6ff55507a4eca3cef8564526d1a5aa8ec"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "capability",
+        "issue",
+        "--holder",
+        "public-data-fixture-reviewer-b",
+        "--profile",
+        "human",
+        "--op",
+        "read",
+        "--op",
+        "approve",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-b.token",
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "approve",
+        "--json"
+      ],
+      "call": 43,
+      "exit": 0,
+      "seconds": 0.07,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "ab684f5b67aa4ecd23d7a95733df038eab179333168af0307c8eebf50e658958"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-a.token",
+        "approve",
+        "--proposals",
+        "-",
+        "--json"
+      ],
+      "call": 44,
+      "exit": 0,
+      "seconds": 0.507,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 4483,
+      "stdin_path": "transcript/00044.stdin.bin",
+      "stdin_sha256": "1ee722d454c55fcbc7fb1dba774c83306209940785332660a9807b9d34fe1189",
+      "stdout_sha256": "9a1eb9819cc2c7001ccde5c62c9059d54889e2864b4f1be13ca46d8736bfc07d"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-b.token",
+        "approve",
+        "--proposals",
+        "-",
+        "--json"
+      ],
+      "call": 45,
+      "exit": 0,
+      "seconds": 0.48,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 4483,
+      "stdin_path": "transcript/00045.stdin.bin",
+      "stdin_sha256": "1ee722d454c55fcbc7fb1dba774c83306209940785332660a9807b9d34fe1189",
+      "stdout_sha256": "04ea60381f8cca56b60e33490b3f9d7c10cf71584108b55fb3cf8488d72a61f1"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "import",
+        "--action",
+        "stage",
+        "--package",
+        "c8e707fbdf6bd8b6814888c1c944253ef52b456a1f7f8d1efb91bfd424f35e96",
+        "--intent",
+        "-",
+        "--json"
+      ],
+      "call": 46,
+      "exit": 0,
+      "seconds": 4.384,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 9483,
+      "stdin_path": "transcript/00046.stdin.bin",
+      "stdin_sha256": "5d666f4cef7e9006116c32d754e65f46871b6a5cb3d3548020dbb4729d3a0059",
+      "stdout_sha256": "53abd0540c3087b12f3384837135af334cd76e87af05b7d4b4979b5ae07ba210"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attach",
+        "--entries",
+        "-",
+        "--evidence",
+        "ae0cc2e43b1d373198021b2e44756683911f79d44986ad40f400e5bac97d7c39",
+        "--evidence",
+        "0805d006cc2fe0f0dcda3d7f8e445f8f7bd7259352d64e511b68e8c14133cebc",
+        "--evidence",
+        "82b771944578cd61b280fde695a5dc5b3c8f61650bedf89b7fe4869951229c68",
+        "--evidence",
+        "b70cce57dbfbb4ee2ede5122e95d8935370f8a4f5cdc5a685e8030f1fecd9595",
+        "--json"
+      ],
+      "call": 47,
+      "exit": 0,
+      "seconds": 2.358,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 2435,
+      "stdin_path": "transcript/00047.stdin.bin",
+      "stdin_sha256": "b39a121e30b35113b0950c652d5abe0a1756aa3e24335d3d59009c10ee9099f3",
+      "stdout_sha256": "3249ea841d463ab39212d7e5350d232db19ee0d351244159a558fb0f49e498e2"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "call": 48,
+      "exit": 0,
+      "seconds": 1.659,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "da00f13ffaf92264a9dcdecac75d6db2a1c30b3545e3712797d7dbdd9cc593e1"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "import",
+        "--action",
+        "stage",
+        "--package",
+        "c8e707fbdf6bd8b6814888c1c944253ef52b456a1f7f8d1efb91bfd424f35e96",
+        "--intent",
+        "-",
+        "--json"
+      ],
+      "call": 49,
+      "exit": 0,
+      "seconds": 1.721,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 9483,
+      "stdin_path": "transcript/00049.stdin.bin",
+      "stdin_sha256": "5d666f4cef7e9006116c32d754e65f46871b6a5cb3d3548020dbb4729d3a0059",
+      "stdout_sha256": "568b997d2c3de7979e670894e5266b9447dc1ce09d75af26248775ce0c0b5539"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "call": 50,
+      "exit": 0,
+      "seconds": 0.724,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "da00f13ffaf92264a9dcdecac75d6db2a1c30b3545e3712797d7dbdd9cc593e1"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-a.token",
+        "approve",
+        "--proposals",
+        "-",
+        "--json"
+      ],
+      "call": 51,
+      "exit": 0,
+      "seconds": 0.795,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 4483,
+      "stdin_path": "transcript/00051.stdin.bin",
+      "stdin_sha256": "8be77c131274bad9c668d47fab34acdf9cfa4247a252e4d3224a2be7316f3d8b",
+      "stdout_sha256": "2747e13be1f05f0a707cb067d5821b79c9c7cb773afdadcb86a4b74bd6397777"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-b.token",
+        "approve",
+        "--proposals",
+        "-",
+        "--json"
+      ],
+      "call": 52,
+      "exit": 0,
+      "seconds": 0.806,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 4483,
+      "stdin_path": "transcript/00052.stdin.bin",
+      "stdin_sha256": "8be77c131274bad9c668d47fab34acdf9cfa4247a252e4d3224a2be7316f3d8b",
+      "stdout_sha256": "743485a7cdce3962265df4ba7a6a8b35fc324f2766823a20b4e139f3d0d1f726"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "import",
+        "--action",
+        "stage",
+        "--package",
+        "c8e707fbdf6bd8b6814888c1c944253ef52b456a1f7f8d1efb91bfd424f35e96",
+        "--intent",
+        "-",
+        "--json"
+      ],
+      "call": 53,
+      "exit": 0,
+      "seconds": 86.631,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 9521,
+      "stdin_path": "transcript/00053.stdin.bin",
+      "stdin_sha256": "224a0877f0edd4073f57ca80fc86eaa4a31f51438bc184f20b9a0d7c97a86d19",
+      "stdout_sha256": "34437783c98dc45c05b322b42d4979ba067f3912b53612601e99137bb70deb80"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attach",
+        "--entries",
+        "-",
+        "--evidence",
+        "ae0cc2e43b1d373198021b2e44756683911f79d44986ad40f400e5bac97d7c39",
+        "--evidence",
+        "0805d006cc2fe0f0dcda3d7f8e445f8f7bd7259352d64e511b68e8c14133cebc",
+        "--evidence",
+        "82b771944578cd61b280fde695a5dc5b3c8f61650bedf89b7fe4869951229c68",
+        "--evidence",
+        "b70cce57dbfbb4ee2ede5122e95d8935370f8a4f5cdc5a685e8030f1fecd9595",
+        "--json"
+      ],
+      "call": 54,
+      "exit": 0,
+      "seconds": 1.557,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 2435,
+      "stdin_path": "transcript/00054.stdin.bin",
+      "stdin_sha256": "5f7693b5f9a673291012f6c89780a868f238afc119d80c839f8bec73383f14da",
+      "stdout_sha256": "46e23a01f286641fba3127ea71e1b754b5abb9d332bea73217c587c2f46514b4"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-a.token",
+        "approve",
+        "--proposals",
+        "-",
+        "--json"
+      ],
+      "call": 55,
+      "exit": 0,
+      "seconds": 0.72,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 4483,
+      "stdin_path": "transcript/00055.stdin.bin",
+      "stdin_sha256": "ef78462eef90403013034aac37a50ab968cb877f19dfad70cf2edbb390689c85",
+      "stdout_sha256": "e1bac32a7cd022b7acf8028790a52b173c46c4dfdb662732b4f87189060aab4b"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-b.token",
+        "approve",
+        "--proposals",
+        "-",
+        "--json"
+      ],
+      "call": 56,
+      "exit": 0,
+      "seconds": 0.617,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 4483,
+      "stdin_path": "transcript/00056.stdin.bin",
+      "stdin_sha256": "ef78462eef90403013034aac37a50ab968cb877f19dfad70cf2edbb390689c85",
+      "stdout_sha256": "06be3a3fb637b2f78eb59f19bc54b060a5ed27aad0efc1aac490664c228bc42b"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "import",
+        "--action",
+        "stage",
+        "--package",
+        "c8e707fbdf6bd8b6814888c1c944253ef52b456a1f7f8d1efb91bfd424f35e96",
+        "--intent",
+        "-",
+        "--json"
+      ],
+      "call": 57,
+      "exit": 0,
+      "seconds": 5.284,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 9557,
+      "stdin_path": "transcript/00057.stdin.bin",
+      "stdin_sha256": "97c5606336543fddb280c6aa3cd1a85408965584529891db0e2a276776074ea4",
+      "stdout_sha256": "0a95c97dc39081f7c6ed68a401066e0a3bbc20a9b94851415656a2b8f45715d8"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attach",
+        "--entries",
+        "-",
+        "--evidence",
+        "ae0cc2e43b1d373198021b2e44756683911f79d44986ad40f400e5bac97d7c39",
+        "--evidence",
+        "0805d006cc2fe0f0dcda3d7f8e445f8f7bd7259352d64e511b68e8c14133cebc",
+        "--evidence",
+        "82b771944578cd61b280fde695a5dc5b3c8f61650bedf89b7fe4869951229c68",
+        "--evidence",
+        "b70cce57dbfbb4ee2ede5122e95d8935370f8a4f5cdc5a685e8030f1fecd9595",
+        "--json"
+      ],
+      "call": 58,
+      "exit": 0,
+      "seconds": 0.838,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 2435,
+      "stdin_path": "transcript/00058.stdin.bin",
+      "stdin_sha256": "e3a0b39a97c70e1ef2ead75ac09e66c96a3971c9bc661c8c5c6aceb1796420e5",
+      "stdout_sha256": "4a794db79e31660a2e0c480597bc3522155487dc284446c35fa26e727f974f2e"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-a.token",
+        "approve",
+        "--proposals",
+        "-",
+        "--json"
+      ],
+      "call": 59,
+      "exit": 0,
+      "seconds": 1.003,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 4483,
+      "stdin_path": "transcript/00059.stdin.bin",
+      "stdin_sha256": "75562a6d4f9022eea687b61676920d543f39d2608b8a232203c607b73c1cee19",
+      "stdout_sha256": "721e784b891cba3b37323cf5b414c1af94020d6b83497c8f813afc4cbfa99ec6"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-b.token",
+        "approve",
+        "--proposals",
+        "-",
+        "--json"
+      ],
+      "call": 60,
+      "exit": 0,
+      "seconds": 0.803,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 4483,
+      "stdin_path": "transcript/00060.stdin.bin",
+      "stdin_sha256": "75562a6d4f9022eea687b61676920d543f39d2608b8a232203c607b73c1cee19",
+      "stdout_sha256": "bb3dedb0d81052e5a89094ea705cce5e4b83f11fc26f7b72e4b8585e18546ad4"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "import",
+        "--action",
+        "stage",
+        "--package",
+        "c8e707fbdf6bd8b6814888c1c944253ef52b456a1f7f8d1efb91bfd424f35e96",
+        "--intent",
+        "-",
+        "--json"
+      ],
+      "call": 61,
+      "exit": 0,
+      "seconds": 5.491,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 9557,
+      "stdin_path": "transcript/00061.stdin.bin",
+      "stdin_sha256": "9299f1c8a6509ffbe1ac940748e7d03d2eb34fac5a59e9a2816da98d079642ca",
+      "stdout_sha256": "527e18169e37d6b923d8ae2b3b189a0ec946f3a528ab1649995f79ac1806f99a"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attach",
+        "--entries",
+        "-",
+        "--evidence",
+        "ae0cc2e43b1d373198021b2e44756683911f79d44986ad40f400e5bac97d7c39",
+        "--evidence",
+        "0805d006cc2fe0f0dcda3d7f8e445f8f7bd7259352d64e511b68e8c14133cebc",
+        "--evidence",
+        "82b771944578cd61b280fde695a5dc5b3c8f61650bedf89b7fe4869951229c68",
+        "--evidence",
+        "b70cce57dbfbb4ee2ede5122e95d8935370f8a4f5cdc5a685e8030f1fecd9595",
+        "--json"
+      ],
+      "call": 62,
+      "exit": 0,
+      "seconds": 1.479,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 2435,
+      "stdin_path": "transcript/00062.stdin.bin",
+      "stdin_sha256": "462a4ea4952b49a796fb02a0a4268163672d6f2ea4d539c93fd0dc57e569eb79",
+      "stdout_sha256": "c3bcf4486675a561608e528cab5a32f4c3fc8f92e6c09cacc9b2ad5f797e6e16"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-a.token",
+        "approve",
+        "--proposals",
+        "-",
+        "--json"
+      ],
+      "call": 63,
+      "exit": 0,
+      "seconds": 0.944,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 4483,
+      "stdin_path": "transcript/00063.stdin.bin",
+      "stdin_sha256": "60cdc5ddd0a4b7cb16a8043ed0aee8445a7be24a8fac17e6d6d0ec3256fe8c59",
+      "stdout_sha256": "b8434ca6f79e3e62503d66199c53b9bf2624d3c0d7fcfdd1c6924a9d1b31b202"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-b.token",
+        "approve",
+        "--proposals",
+        "-",
+        "--json"
+      ],
+      "call": 64,
+      "exit": 0,
+      "seconds": 0.876,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 4483,
+      "stdin_path": "transcript/00064.stdin.bin",
+      "stdin_sha256": "60cdc5ddd0a4b7cb16a8043ed0aee8445a7be24a8fac17e6d6d0ec3256fe8c59",
+      "stdout_sha256": "c191ea43f1dc9ac55bed7c7886513ca3fc8bd3ef90d3aedc5a15a515399e0ccd"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "import",
+        "--action",
+        "stage",
+        "--package",
+        "c8e707fbdf6bd8b6814888c1c944253ef52b456a1f7f8d1efb91bfd424f35e96",
+        "--intent",
+        "-",
+        "--json"
+      ],
+      "call": 65,
+      "exit": 0,
+      "seconds": 7.712,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 9557,
+      "stdin_path": "transcript/00065.stdin.bin",
+      "stdin_sha256": "3d6e45f7d6eaceafc9d1d8bd7fac0fbf47d39def49d661c86d9b4e4640774414",
+      "stdout_sha256": "821df9f0e47fa8812b6fc35f97d657d88b63a476d5421a9ac42dcd54c045e481"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attach",
+        "--entries",
+        "-",
+        "--evidence",
+        "ae0cc2e43b1d373198021b2e44756683911f79d44986ad40f400e5bac97d7c39",
+        "--evidence",
+        "0805d006cc2fe0f0dcda3d7f8e445f8f7bd7259352d64e511b68e8c14133cebc",
+        "--evidence",
+        "82b771944578cd61b280fde695a5dc5b3c8f61650bedf89b7fe4869951229c68",
+        "--evidence",
+        "b70cce57dbfbb4ee2ede5122e95d8935370f8a4f5cdc5a685e8030f1fecd9595",
+        "--json"
+      ],
+      "call": 66,
+      "exit": 0,
+      "seconds": 1.541,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 2435,
+      "stdin_path": "transcript/00066.stdin.bin",
+      "stdin_sha256": "79bc0ebef039e868556bd01e9fd691e0d5b715377660d3861d3e7186a5e6e028",
+      "stdout_sha256": "d146b9c6739a18fecd8c8d6538d4bfb5c2749c613e61ed968e84b87c69d839a2"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-a.token",
+        "approve",
+        "--proposals",
+        "-",
+        "--json"
+      ],
+      "call": 67,
+      "exit": 0,
+      "seconds": 1.005,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 2243,
+      "stdin_path": "transcript/00067.stdin.bin",
+      "stdin_sha256": "74f536a823be8bafe382d2136444f6a25a87e6ea1a4779f3e0da252514f5ef30",
+      "stdout_sha256": "15e63de7782f61e9f00fc92e927d71ee201e628d3c3a9c9d83d66f41515ad7fe"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-b.token",
+        "approve",
+        "--proposals",
+        "-",
+        "--json"
+      ],
+      "call": 68,
+      "exit": 0,
+      "seconds": 0.919,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 2243,
+      "stdin_path": "transcript/00068.stdin.bin",
+      "stdin_sha256": "74f536a823be8bafe382d2136444f6a25a87e6ea1a4779f3e0da252514f5ef30",
+      "stdout_sha256": "1060f231a58837539115d5ed0c7a1748ed67e2095a7862d540bb29bad5647d60"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "import",
+        "--action",
+        "stage",
+        "--package",
+        "c8e707fbdf6bd8b6814888c1c944253ef52b456a1f7f8d1efb91bfd424f35e96",
+        "--intent",
+        "-",
+        "--json"
+      ],
+      "call": 69,
+      "exit": 0,
+      "seconds": 5.083,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 4789,
+      "stdin_path": "transcript/00069.stdin.bin",
+      "stdin_sha256": "23b7a6dc97440b088ea479e335e5b8544d31dda2c44820986df9a46c4a4d1877",
+      "stdout_sha256": "2c536d4ea583374be5cbc50e27fbcde6234bf63fdfc5a84bd9462bfd67f9d8a7"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "document",
+        "attach",
+        "--entries",
+        "-",
+        "--evidence",
+        "ae0cc2e43b1d373198021b2e44756683911f79d44986ad40f400e5bac97d7c39",
+        "--evidence",
+        "0805d006cc2fe0f0dcda3d7f8e445f8f7bd7259352d64e511b68e8c14133cebc",
+        "--evidence",
+        "82b771944578cd61b280fde695a5dc5b3c8f61650bedf89b7fe4869951229c68",
+        "--evidence",
+        "b70cce57dbfbb4ee2ede5122e95d8935370f8a4f5cdc5a685e8030f1fecd9595",
+        "--json"
+      ],
+      "call": 70,
+      "exit": 0,
+      "seconds": 1.075,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 1219,
+      "stdin_path": "transcript/00070.stdin.bin",
+      "stdin_sha256": "b6b18558080b67c73a7e4cdd69d69ec4dc02c418d035841d1c4d50b98a823822",
+      "stdout_sha256": "0f0d148e8444f16f8f5daa4365ad6038aa05fe5baef367f1e511e99bc66abd3c"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "import",
+        "--action",
+        "show",
+        "--package",
+        "c8e707fbdf6bd8b6814888c1c944253ef52b456a1f7f8d1efb91bfd424f35e96",
+        "--json"
+      ],
+      "call": 71,
+      "exit": 0,
+      "seconds": 1.07,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "6c8791344c156e00bb4740f597b98c5178b3f47de7178361c576c26c08af5ed7"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "call": 72,
+      "exit": 0,
+      "seconds": 0.661,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "9de270afc5c08f618bc2c63874fbfb5876526ce6bb6b2526bebeeaebb9eecd8b"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P06",
+        "--json"
+      ],
+      "call": 73,
+      "exit": 0,
+      "seconds": 0.799,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "454938bbfa04c4a39e257b669d6df9e0bf714a99535f4e6bebe146d702474e88"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "finalize",
+        "791e7764e81a6ada1c17300b36693779",
+        "--plan-out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/finalize.plan",
+        "--json"
+      ],
+      "call": 74,
+      "exit": 0,
+      "seconds": 0.792,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "c05225fb8377337c52452f09266ec69b990aab3e4f30e849cbd410eb6c3b81bd"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-a.token",
+        "approve",
+        "--proposal",
+        "1dcc06c4e77a13335c4a996306a11bce9ed6c0e52c0010f905402e7e3da3e76f",
+        "--json"
+      ],
+      "call": 75,
+      "exit": 0,
+      "seconds": 0.657,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "acd6fe2e17f6d529df993dddc682f1086d5df539e194afc439a2ae4de9321485"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "--token",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/public-data-fixture-reviewer-b.token",
+        "approve",
+        "--proposal",
+        "1dcc06c4e77a13335c4a996306a11bce9ed6c0e52c0010f905402e7e3da3e76f",
+        "--json"
+      ],
+      "call": 76,
+      "exit": 0,
+      "seconds": 0.976,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "4c9c2550b7d67cdcd7dcc1f1dab77d1b5ef9431f7348e0008c5144597bb90712"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "call": 77,
+      "exit": 0,
+      "seconds": 0.622,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "b5022c2c7db96ee24efdb3e7df4749c405da8c50c8d36086a72ebdc35e8dd2eb"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "finalize",
+        "791e7764e81a6ada1c17300b36693779",
+        "--plan",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/finalize.plan",
+        "--approval",
+        "7e4967023f219da8800073b9e20b6ea7",
+        "--approval",
+        "6eb00406f35f4bdc8b1a0db090a78bac",
+        "--json"
+      ],
+      "call": 78,
+      "exit": 0,
+      "seconds": 1.362,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "dbc3d4bb1d946c77ea9303f315b4449736fafdbdd2b1bb3f0440e41ad7933280"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "call": 79,
+      "exit": 0,
+      "seconds": 0.589,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "11ad0a7ce98b680414729b73227c0744bbe3953207af58fbe88f50ae8e5d05b6"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P04",
+        "--as-known-at",
+        "1439",
+        "--json"
+      ],
+      "call": 80,
+      "exit": 0,
+      "seconds": 0.726,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "e305ffbb90e43d5b8acc9747a878c8585c697568c673a3a689680f02bb561379"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P04",
+        "--as-known-at",
+        "1436",
+        "--json"
+      ],
+      "call": 81,
+      "exit": 0,
+      "seconds": 0.665,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "3aaf63f514c7ac36e649093c1706bf5ae9c6857fb6ff843b4d3425e45fbe7289"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P05",
+        "--as-known-at",
+        "1439",
+        "--json"
+      ],
+      "call": 82,
+      "exit": 0,
+      "seconds": 0.722,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "00ba2bd95648b3315da93b17b1a5895909b95fb1da9689c1f12305c9dcf60643"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P05",
+        "--as-known-at",
+        "1436",
+        "--json"
+      ],
+      "call": 83,
+      "exit": 0,
+      "seconds": 0.799,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "be8096b589e005a196d97054125011e8839744dfc16a49f715e7c271127afd7d"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P06",
+        "--as-known-at",
+        "1439",
+        "--json"
+      ],
+      "call": 84,
+      "exit": 0,
+      "seconds": 0.733,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "8d5705592476eb3b982c911255bb410351b92c7963a8915d06c346585c3fdcd5"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P06",
+        "--as-known-at",
+        "1436",
+        "--json"
+      ],
+      "call": 85,
+      "exit": 0,
+      "seconds": 0.733,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "454938bbfa04c4a39e257b669d6df9e0bf714a99535f4e6bebe146d702474e88"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P07",
+        "--as-known-at",
+        "1439",
+        "--json"
+      ],
+      "call": 86,
+      "exit": 0,
+      "seconds": 0.706,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "8653862f9c977d8936e121d8ad0311d6ca7db0bc70c5dcbbd151a3dee625c378"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P07",
+        "--as-known-at",
+        "1436",
+        "--json"
+      ],
+      "call": 87,
+      "exit": 0,
+      "seconds": 0.653,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "aad7bd548688425d3f89bc99b725208df92b199b6ef451efe3c03aa6db6ab516"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P08",
+        "--as-known-at",
+        "1439",
+        "--json"
+      ],
+      "call": 88,
+      "exit": 0,
+      "seconds": 0.809,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "875af4e3b2a6dc14fcc973b4f601543088ca842103253835948c6fd72c34814e"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P08",
+        "--as-known-at",
+        "1436",
+        "--json"
+      ],
+      "call": 89,
+      "exit": 0,
+      "seconds": 0.741,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "07ac5dc82cc78e3c59490ca8f36f5ed42f5f73b815ed955c86b0324611983d3c"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P09",
+        "--as-known-at",
+        "1439",
+        "--json"
+      ],
+      "call": 90,
+      "exit": 0,
+      "seconds": 0.702,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "fbaba6dd1e7dd9e5d5c2135c037bdfbb46462da80577a40048a751904a45f0bf"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P09",
+        "--as-known-at",
+        "1436",
+        "--json"
+      ],
+      "call": 91,
+      "exit": 0,
+      "seconds": 0.702,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "cf13975428be6c0d311138b6b0fe2cdc795b0928034394a1eab8a56e3e375666"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P10",
+        "--as-known-at",
+        "1439",
+        "--json"
+      ],
+      "call": 92,
+      "exit": 0,
+      "seconds": 0.77,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "1faffe1d4356118f5b632af915e8c5c5b3ce1b812a8091e01c514053f6f385e1"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P10",
+        "--as-known-at",
+        "1436",
+        "--json"
+      ],
+      "call": 93,
+      "exit": 0,
+      "seconds": 0.869,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "330b98c3ba713e4a47134e82c2af16acc43e5f63c55f12860113789f01bdaa3e"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P11",
+        "--as-known-at",
+        "1439",
+        "--json"
+      ],
+      "call": 94,
+      "exit": 0,
+      "seconds": 0.87,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "ea92dc86b20081a7be930754240151dccffd77298f6c938bcc973351fa3a459c"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P11",
+        "--as-known-at",
+        "1436",
+        "--json"
+      ],
+      "call": 95,
+      "exit": 0,
+      "seconds": 0.797,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "d208e37495530bc5a54e28a173516f3b98fb0178398696e4ca61b5e947846560"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P12",
+        "--as-known-at",
+        "1439",
+        "--json"
+      ],
+      "call": 96,
+      "exit": 0,
+      "seconds": 0.943,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "e768cc49f0f72d7d80871fe73a9b7fe504f9ebfca5d84203e6967c75a9ea0215"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P12",
+        "--as-known-at",
+        "1436",
+        "--json"
+      ],
+      "call": 97,
+      "exit": 0,
+      "seconds": 1.077,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "b9ee77f9d4256ffcb2b2a78cfcd2b402acbaad4cb6638c5fb64c974b6de34229"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "registers",
+        "advance",
+        "--period",
+        "FY2026-P06",
+        "--json"
+      ],
+      "call": 98,
+      "exit": 0,
+      "seconds": 1.545,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "60f6749af2890a580dfd325c98e68b38f12c32e3677cbfddbf4f28282d2d1497"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "verify",
+        "registers",
+        "--period",
+        "FY2026-P06",
+        "--json"
+      ],
+      "call": 99,
+      "exit": 0,
+      "seconds": 1.549,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "cd7b932936a2e4688b59c2cad1e779846d6e1a59b66c1a45a75b0a31c144ac6d"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "call": 100,
+      "exit": 0,
+      "seconds": 0.719,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "b27be41e1369a9da79c3424b76c662602e5c8d590349429fed8c3261a562ee46"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "import",
+        "--action",
+        "prepare",
+        "--bind-source",
+        "--intent",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/import.json",
+        "--json"
+      ],
+      "call": 101,
+      "exit": 0,
+      "seconds": 1.66,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "651a3e244b1f09fe86c12e89b60f661e3ac0cc339acf02bf5f643c6cf8a3d376"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "call": 102,
+      "exit": 0,
+      "seconds": 0.714,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "b27be41e1369a9da79c3424b76c662602e5c8d590349429fed8c3261a562ee46"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "migrate",
+        "import",
+        "--action",
+        "stage",
+        "--package",
+        "c8e707fbdf6bd8b6814888c1c944253ef52b456a1f7f8d1efb91bfd424f35e96",
+        "--intent",
+        "-",
+        "--json"
+      ],
+      "call": 103,
+      "exit": 0,
+      "seconds": 1.798,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdin_bytes": 9483,
+      "stdin_path": "transcript/00103.stdin.bin",
+      "stdin_sha256": "5d666f4cef7e9006116c32d754e65f46871b6a5cb3d3548020dbb4729d3a0059",
+      "stdout_sha256": "320bc436fcc298c2f0142116ebd73ccee3e4f08df9eea69fbd2fbb3216df2c99"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "call": 104,
+      "exit": 0,
+      "seconds": 0.732,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "b27be41e1369a9da79c3424b76c662602e5c8d590349429fed8c3261a562ee46"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "book",
+        "info",
+        "--json"
+      ],
+      "call": 105,
+      "exit": 0,
+      "seconds": 0.683,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "b27be41e1369a9da79c3424b76c662602e5c8d590349429fed8c3261a562ee46"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "export",
+        "csv-gl",
+        "--period",
+        "FY2026-P06",
+        "--as-known-at",
+        "1440",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/native.csv",
+        "--json"
+      ],
+      "call": 106,
+      "exit": 0,
+      "seconds": 0.935,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "84eae6551f216777a308bba61c71be25471db9bd450d312f42358c7d0f946910"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "verify",
+        "export",
+        "csv-gl",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/native.csv",
+        "--json"
+      ],
+      "call": 107,
+      "exit": 0,
+      "seconds": 1.349,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "a0b87e3eef59eb04df01446a7de47df2fceeb4a9f604b7da56838669fe2556f1"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "export",
+        "beancount",
+        "--period",
+        "FY2026-P06",
+        "--as-known-at",
+        "1440",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/journal.beancount",
+        "--json"
+      ],
+      "call": 108,
+      "exit": 0,
+      "seconds": 1.115,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "714cf3b25c12b0c5897d68c075caebf7ba53de657604d2e5d35d725e6a914c76"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "verify",
+        "export",
+        "beancount",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/journal.beancount",
+        "--json"
+      ],
+      "call": 109,
+      "exit": 0,
+      "seconds": 1.011,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "4b92f9d914ca08ddc9dff71364c78a76b73cca4575554f432580b19cd3b0c059"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "export",
+        "hledger",
+        "--period",
+        "FY2026-P06",
+        "--as-known-at",
+        "1440",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/journal.hledger",
+        "--json"
+      ],
+      "call": 110,
+      "exit": 0,
+      "seconds": 1.053,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "db698b3797c79a7b2b5999108b4bc054411855c3602f1426bc7cb2d3000f2b93"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "verify",
+        "export",
+        "hledger",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/journal.hledger",
+        "--json"
+      ],
+      "call": 111,
+      "exit": 0,
+      "seconds": 1.098,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "cfd5ad8f7f9379b5f496ae3144d75ec45237cbacb30c11534a6dba35ea1b9efc"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "tb",
+        "--period",
+        "FY2026-P06",
+        "--as-known-at",
+        "1440",
+        "--certify",
+        "--json"
+      ],
+      "call": 112,
+      "exit": 0,
+      "seconds": 1.454,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "a799575459f826ff274df7f1e8c97e516a22f5c141acde5d598d45e75f52f5b3"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "replay",
+        "C:613e19fb27833e3aca9d0790a6e73b283a3cb94bd08be08308367fe0561a618b",
+        "--output",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/replayed.report",
+        "--json"
+      ],
+      "call": 113,
+      "exit": 0,
+      "seconds": 1.931,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "59da1055193919df9b3520b1c0c1b4f9ded4b701c6f6d9f095ed99415f81e569"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "checkpoint",
+        "create",
+        "--grant",
+        "witness",
+        "--json"
+      ],
+      "call": 114,
+      "exit": 0,
+      "seconds": 1.047,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "ff9934fde7d718aaec3d80c7513f46e5eae7ce3f75d571a8e15c2844cfb86f28"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "proof",
+        "signed-checkpoint",
+        "--state",
+        "d8e4cf672e135148e9fe67bffb132889b371cd8f659145402a896cfcf2e43741",
+        "--json"
+      ],
+      "call": 115,
+      "exit": 0,
+      "seconds": 0.985,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "d048d5455d6eb9f81323a07ecc92bec7988dfad062aefe4c9079881840351864"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa",
+        "--book",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/book",
+        "bundle",
+        "produce",
+        "--certificate",
+        "C:613e19fb27833e3aca9d0790a6e73b283a3cb94bd08be08308367fe0561a618b",
+        "--state",
+        "d8e4cf672e135148e9fe67bffb132889b371cd8f659145402a896cfcf2e43741",
+        "--out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/quarter.fab",
+        "--receipt-out",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/quarter.receipt",
+        "--json"
+      ],
+      "call": 116,
+      "exit": 0,
+      "seconds": 1.759,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "461b957cf38c496950598450e204c1264bef6f36016799e120da74b50cc1ecbc"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa-verify",
+        "report",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/quarter.fab",
+        "--key",
+        "4b33f4384aa47920d12b24986b557a03a9ed8af947f605a6bbb0ef8ed59e709b",
+        "--checkpoint",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/report.checkpoint",
+        "--receipt",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/quarter.receipt",
+        "--expect",
+        "613e19fb27833e3aca9d0790a6e73b283a3cb94bd08be08308367fe0561a618b",
+        "--json"
+      ],
+      "call": 117,
+      "exit": 0,
+      "seconds": 0.563,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "ffd991fa4e3ca02f15e739965dd67f8f0592d3ad8408f1124c654b8d818ae75d"
+    },
+    {
+      "argv": [
+        "/workspace/scratch/50fa1275d487/native_68b80d4e/target/debug/fa-verify",
+        "report",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/tampered-quarter.fab",
+        "--key",
+        "4b33f4384aa47920d12b24986b557a03a9ed8af947f605a6bbb0ef8ed59e709b",
+        "--checkpoint",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/report.checkpoint",
+        "--receipt",
+        "/workspace/scratch/50fa1275d487/house-cao-native-final/quarter.receipt",
+        "--expect",
+        "613e19fb27833e3aca9d0790a6e73b283a3cb94bd08be08308367fe0561a618b",
+        "--json"
+      ],
+      "call": 118,
+      "exit": 8,
+      "seconds": 0.171,
+      "stderr_sha256": "c2101d99fcbbc32352d6cf8c5ae25e28723d46906c110f7507dc881ca63b3a24",
+      "stdout_sha256": "8ca09aa32d660ae90276f492dd6afe8dbdcd924c333117b599ff0f3a64a17773"
+    }
+  ],
+  "native_commands_sha256": "7d2afe4a482ec092c03b5ff6257d6e5f26c485338860b0a880fb33c36fc2f621",
+  "native_finished_utc": "2026-11-03T23:58:43.730423+00:00",
+  "native_result_sha256": "5301102ecddb93000d55f9f64569466351d4094e56d6399ddb59a26ff1b99085",
+  "native_source_commit": "68b80d4e6c916013582832626f92edb0d50be08e",
+  "observation": "Complete House CAO Q2 publication through native source-bound migration and two real external accounting tools",
+  "oracle_finished_utc": "2026-11-04T00:00:19.138302+00:00",
+  "preparation_receipt": {
+    "dataset_id": "house-2026-q2",
+    "date_policy": "Use a nonblank published TRANSACTION DATE only when it falls inside the publication quarter. A blank GL TRANSACTION DATE is assigned the quarter's last day solely for this analysis book. Original blanks and service-period dates remain unchanged in retained evidence. Service dates never substitute for transaction dates; no monthly distribution of undated payroll is inferred. A malformed service-date literal remains unparsed with an explicit diagnostic. Published two-digit years are interpreted as 2000 through 2099 in this source.",
+    "entry_group_policy": "At most 12 nonzero source rows with one analysis effective date; deterministic analysis grouping, not original journal membership.",
+    "files": {
+      "account_map.json": {
+        "bytes": 7031,
+        "sha256": "35c2d1928e9b6307cb493f9a1e1e3bced80ffad3bd077678d442a8c1ff4433b5"
+      },
+      "chart.json": {
+        "bytes": 22082,
+        "sha256": "e64784151cec8972a0d3900ed6239917d97b6573c13f685196560317dc7a3bcd"
+      },
+      "columns.toml": {
+        "bytes": 319,
+        "sha256": "cd9a44166aae0748bbe8681a9f77f8862a1a3204b1d006c2e2e349e04960608f"
+      },
+      "controls.json": {
+        "bytes": 305293,
+        "sha256": "08a3e68f700e4cec6e953fd21ba8713a0e751de5bd3a9fcd16449130d8ab7ad5"
+      },
+      "expected_tb.json": {
+        "bytes": 711136,
+        "sha256": "a0b95931897d4314ed42b47c54a3c402cb76fca0d4c221df6e9e0f92d051de30"
+      },
+      "legacy.csv": {
+        "bytes": 1643770,
+        "sha256": "a94a76c63d803c93082c3af97281677674078db2e216ef7479cf351f5803499d"
+      },
+      "provenance.jsonl": {
+        "bytes": 5743279,
+        "sha256": "b8d2d0a3af6d5be37d6756cc9a6929c2853fbf80d6d7c4ccea48c8c84ce53ee3"
+      },
+      "raw-detail.csv": {
+        "bytes": 26169448,
+        "sha256": "948ea680f24c2f654263e91641df4e3a1d7b9f2b3568f701be8b62421a5c3e92"
+      },
+      "raw-summary.csv": {
+        "bytes": 621267,
+        "sha256": "4828ceb94cc1dc67bbdc4faa276ef0cc0e36cbc3f4dcf0a84f9e1f54b005b28b"
+      },
+      "records.jsonl": {
+        "bytes": 5119301,
+        "sha256": "abeb3008ddc5a8c9d40b874ce41ce96f73d65d31adce98fca2d66b74b43c3ccf"
+      },
+      "summary-records.jsonl": {
+        "bytes": 98781,
+        "sha256": "9c3e430f4e48091c68e92a4037e61f9227db33e2979c79293b4e73eaad9dd1ef"
+      }
+    },
+    "full_source_census": {
+      "data_sources": {
+        "AP": 93532,
+        "AR": 359,
+        "GL": 29810
+      },
+      "detail_rows": 123701,
+      "duplicate_detail_rows": 74,
+      "missing_transaction_dates": 16772,
+      "negative_minor": "-849639749",
+      "negative_rows": 4201,
+      "net_minor": "45744956364",
+      "office_total_rows": 1619,
+      "organization_count": 1142,
+      "outside_quarter_transaction_dates": 3,
+      "positive_minor": "46594596113",
+      "positive_rows": 119491,
+      "record_count": 133091,
+      "subtotal_rows": 7771,
+      "summary_rows": 6812,
+      "unparsed_service_dates": 2,
+      "zero_rows": 9
+    },
+    "header_policy": "Only header padding is stripped for field keys. Complete original headers and field bytes remain in the pinned raw publications.",
+    "max_source_rows_per_entry": 12,
+    "model": "house_published_disbursements_v1",
+    "model_boundary": "An expenditure analysis book of the complete selected published organization. Each nonzero DETAIL amount maps to an Expense account for its exact program and category, with an explicit modeled Equity counterpart. These are not the House's original journals, cash balances, opening balances, or full general ledger. Summary and subtotal rows are controls only, never monetary inputs. No original debit/credit counterpart, fiscal-year accrual, or undisclosed appropriation identity is inferred.",
+    "native_validation": "UNRUN: preparation and publisher controls do not establish native accounting execution.",
+    "organization": "FISCAL YEAR 2026 CHIEF ADMIN OFCR OF THE HOUSE",
+    "publication_url": "https://www.house.gov/the-house-explained/open-government/statement-of-disbursements",
+    "publisher": "U.S. House of Representatives, Office of the Chief Administrative Officer",
+    "record_digest_policy": "SHA-256 of UTF-8 JSON containing original header strings and decoded field strings; not a raw byte-slice hash.",
+    "retained_summary_records": 174,
+    "schema_version": 1,
+    "section_policy": "Publication sections are numbered in the original order within one exact organization and end at its printed OFFICE TOTALS. Corresponding detail and summary sections must agree on their complete category, program, and office controls. Repeated labels in separate sections remain distinct controls and are aggregated only for the explicitly declared program/category accounts. A repeated control key within a section is refused as ambiguous.",
+    "source_encoding": "utf-8",
+    "source_identity_policy": "Original file SHA-256 and CSV record ordinal identify each row. Document IDs and identical fields are never deduplicated.",
+    "source_stats": {
+      "budget_object_code_count": 62,
+      "data_sources": {
+        "AP": 2315,
+        "AR": 1,
+        "GL": 1539
+      },
+      "distinct_nonblank_documents": 894,
+      "duplicate_detail_rows": 54,
+      "fiscal_or_legislative_years": [
+        "FY2026"
+      ],
+      "missing_transaction_dates": 1056,
+      "negative_minor": "-21962254",
+      "negative_rows": 47,
+      "net_minor": "3558135389",
+      "nonblank_document_rows": 2799,
+      "organization_codes": [
+        "30AO000"
+      ],
+      "positive_minor": "3580097643",
+      "positive_rows": 3808,
+      "program_count": 49,
+      "retained_detail_file_records": 4010,
+      "row_count": 3855,
+      "unparsed_service_dates": 0,
+      "zero_rows": 0
+    },
+    "sources": {
+      "detail": {
+        "byte_length": 26169448,
+        "max_bytes": 33554432,
+        "sha256": "948ea680f24c2f654263e91641df4e3a1d7b9f2b3568f701be8b62421a5c3e92",
+        "url": "https://www.house.gov/sites/default/files/2026-08/grids/APRIL-JUNE%202026%20SOD%20DETAIL%20GRID-FINAL.csv"
+      },
+      "summary": {
+        "byte_length": 621267,
+        "max_bytes": 1048576,
+        "sha256": "4828ceb94cc1dc67bbdc4faa276ef0cc0e36cbc3f4dcf0a84f9e1f54b005b28b",
+        "url": "https://www.house.gov/sites/default/files/2026-08/grids/APRIL-JUNE%202026%20SOD%20SUMM%20GRID-FINAL.csv"
+      }
+    },
+    "terms_url": "https://www.house.gov/terms-of-use"
+  },
+  "schema_version": 1,
+  "scope": "Every published DETAIL observation of FISCAL YEAR 2026 CHIEF ADMIN OFCR OF THE HOUSE, April-June 2026. Explicit Expense/Equity-offset analysis, not original double-entry GL. Blank transaction dates retain the original blank and use disclosed quarter-end analysis dates. July-December are scoped carry checks only.",
+  "source_profile_evidence": {
+    "path": "evidence/public_spend/house-2026-q2-source-profile-2026-11-03.json",
+    "sha256": "226fd8975715a068a65204db3bd233f102945c54e84095a772de1e4f47d2d2d5"
+  },
+  "status": "PASS",
+  "timing_scope": "Individual shared-host development-binary observations, not a controlled throughput benchmark.",
+  "verification_boundary": "The source adapter separately reconciles 3855 original observations to 174 printed House controls. fa-verify recomputes the native report and authenticates the 7710-row normalized migration witness under a trusted local test checkpoint key; it does not parse the House originals. Fixture reviewer roles are not independent human examinations."
+}

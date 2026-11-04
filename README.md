@@ -2480,7 +2480,21 @@ preserves net balances are explicit negative controls. The helper retains
 tool versions, input hashes and every external command; missing tools are
 `UNRUN`, never substituted with FrankenAccounting's own reader.
 
-These are whole published monthly expenditure extracts, **not original complete
+The [House disbursement workload](docs/HOUSE_DISBURSEMENTS.md) adds a complete
+April–June 2026 CAO office population: **3,855 original transactions**, 47
+credits, 54 repeated records, 49 active programs and 1,056 original blank
+transaction dates. It pins both full House publications and reconciles all
+**174 separately published category/program/office controls** before native
+writes. All **352 journals and 7,710 legs** passed 118 native calls, dated and
+historical balance checks, original-source readback, source-bound report
+verification and independent Beancount/hledger comparison. Blank dates retain
+their original evidence and receive an explicit quarter-end analysis date.
+A balanced one-cent alteration is refused against the publisher controls.
+The guide includes acquisition, whole-publication profiling, preparation,
+native execution and external verification commands with exact source and
+tested-binary identities.
+
+These are whole published expenditure extracts, **not original complete
 double-entry ledgers**. The fixture uses declared modeled Expense accounts and
 an explicitly labeled Equity offset, preserves all source dimensions as
 evidence, and makes no claim to reconstruct bank balances, missing activities,

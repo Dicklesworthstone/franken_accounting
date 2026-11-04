@@ -283,7 +283,9 @@ def read_reference(text: str) -> Reference:
 def read_account_map(text: str, kind: str, reference: Reference) -> dict[str, str]:
     """Read native declarations, not monetary postings or inferred account codes."""
     require(kind in ("beancount", "hledger"), "unknown plaintext format")
-    lines = text.splitlines()
+    # Match native Rust str::lines and the external journal grammars: Unicode
+    # separators and vertical tabs inside source text are not new directives.
+    lines = [line.removesuffix("\r") for line in text.split("\n")]
     metadata = {}
     mapping: dict[str, str] = {}
     seen_codes = set()
@@ -318,7 +320,10 @@ def read_account_map(text: str, kind: str, reference: Reference) -> dict[str, st
                     key, separator, value = following.strip().partition(":")
                     require(separator and key in {"fa_code", "fa_name", "fa_type", "fa_roles_v1"}
                             and key not in values, "Beancount account metadata is malformed or repeated")
-                    values[key] = json.loads(value.strip())
+                    # Beancount strings permit literal control bytes such as
+                    # NUL/VT; JSON's stricter default would reject valid native
+                    # metadata. Quoting and escape syntax remain checked.
+                    values[key] = json.loads(value.strip(), strict=False)
                     require(isinstance(values[key], str), "Beancount account metadata must be text")
                 require({"fa_code", "fa_type"} <= values.keys(), "Beancount account lacks explicit fa_code/fa_type")
                 declare(match[1], values["fa_code"], values["fa_type"])
