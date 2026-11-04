@@ -380,7 +380,7 @@ fn declared_entry(
                 ..
             }
         )
-        || entry_mirrors(&entry)? != row.props
+        || entry_mirrors(entry)? != row.props
     {
         return Err(corrupt("schedule control or mirrors differ"));
     }
