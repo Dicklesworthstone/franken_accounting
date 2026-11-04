@@ -46,7 +46,8 @@ The [source/profile evidence](../evidence/public_spend/house-2026-q2-source-prof
 separately retains the full publication census, source-date diagnostics,
 reconciliation/refusal populations and complete selected preparation controls.
 Its native status correctly remains `UNRUN`: preparation alone did not execute
-FrankenAccounting. The native result linked above supplies that separate proof.
+FrankenAccounting. The separately linked native result records the actual
+execution and its command receipts.
 
 ## Original publications and exact scope
 

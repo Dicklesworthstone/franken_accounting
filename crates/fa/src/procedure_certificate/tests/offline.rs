@@ -575,15 +575,12 @@ fn round_amounts_requires_complete_signed_payloads_and_an_independent_outer_pin_
         .unwrap();
     r.bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "checkpoint")
         .unwrap();
-    r.bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "prefix")
-        .unwrap();
+    r.bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "prefix").unwrap();
     let count_offset = r.offset();
     let count = r.u32("records").unwrap();
     assert!(count > 0);
     r.u32("proposal length").unwrap();
-    let first_record = r
-        .bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "record")
-        .unwrap();
+    let first_record = r.bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "record").unwrap();
     assert!(!first_record.is_empty());
     let first_end = r.offset();
     let mut w = Writer::new();
@@ -718,14 +715,20 @@ fn round_amounts_offline_scope_is_explicit_and_production_authority_precedes_obs
     }
     let mut damaged = ordinary.clone();
     damaged.digest[0] ^= 1;
-    for capability in [
-        cap(&["read"]),
-        cap(&["produce"]),
-        cap(&["read", "produce"])
-            .for_accounts(&["1000"])
-            .unwrap(),
-        cap(&["read", "produce"]).known_at_most(ordinary.known_at()),
-        cap(&["read", "produce"]).expiring_at(before),
+    for (capability, expected_code) in [
+        (cap(&["read"]), "FA-REF-011"),
+        (cap(&["produce"]), "FA-REF-011"),
+        (
+            cap(&["read", "produce"]).for_accounts(&["1000"]).unwrap(),
+            "FA-REF-011",
+        ),
+        (
+            cap(&["read", "produce"]).known_at_most(ordinary.known_at()),
+            "FA-REF-011",
+        ),
+        // Expiry has its own registered refusal; it must still precede
+        // certificate replay and checkpoint selection, including bad inputs.
+        (cap(&["read", "produce"]).expiring_at(before), "FA-REF-014"),
     ] {
         for certificate in [&ordinary, &damaged] {
             for state in [None, Some(Oid([0xff; 32]))] {
@@ -740,7 +743,7 @@ fn round_amounts_offline_scope_is_explicit_and_production_authority_precedes_obs
                     ))
                     .unwrap()
                     .unwrap_err();
-                assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", exit::SAFETY));
+                assert_eq!((refusal.code, refusal.exit), (expected_code, exit::SAFETY));
                 assert_eq!(f.head(), before);
             }
         }
@@ -810,11 +813,10 @@ fn round_amounts_refuses_replacement_sources_but_preserves_earlier_certificates(
     let cx = f.cx();
     let (_, corrected) = f
         .runtime
-        .block_on(f.book.post_replacement_pair(
-            &cx,
-            request(undo),
-            request(replacement),
-        ))
+        .block_on(
+            f.book
+                .post_replacement_pair(&cx, request(undo), request(replacement)),
+        )
         .unwrap()
         .unwrap();
     let current = f.certify(&round_request(&f, 3, None)).certificate;

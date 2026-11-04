@@ -754,6 +754,14 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // all eight prior digests: both original tests pass on x86_64. Keep the
     // four fold/report-byte pins, arithmetic checks and encoding negative.
     // See NEGATIVE_EVIDENCE; this does not qualify aarch64.
+    // GOLDEN-CHANGE: DimensionConstraint=67 is the next additive input.
+    // Actual 32d5ccaf changes only the four certificate/bundle pins below;
+    // consistent symbol/registry inverse c117e4cd restores all eight old pins.
+    // Prior symbol-66 certificate/bundle pins, preserved for attribution:
+    // 8dd34c5f44de5a56a009874b4b93ee69bc6b31d8ebfa2f15c79aeca6be20092a
+    // 079114cd721782303f1fed4b3c9d0f31ba527bb0a9ec157e93549a60f91159f9
+    // 70ea79baf6cb13c4bbbafb69b46a288eb5bfe78a1da869a24ac8511108047950
+    // 8dfb101e216931252cb70a389bead7bdef197f80d48ee2611a6d98f2f20fcd7c
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
@@ -780,7 +788,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "8dd34c5f44de5a56a009874b4b93ee69bc6b31d8ebfa2f15c79aeca6be20092a",
+        "b97693911b660e8cbdef3bba1f36e6ecda6287d7c8440846db5b696e97a20553",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -792,7 +800,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "079114cd721782303f1fed4b3c9d0f31ba527bb0a9ec157e93549a60f91159f9",
+        "dd2d560e1d8590020b02233e2a7af09c4c50baeb32dc50516c5dc4e0461925f2",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -804,13 +812,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "70ea79baf6cb13c4bbbafb69b46a288eb5bfe78a1da869a24ac8511108047950",
+        "829cd908132a4f8e82eda49d854a3983a0fdc516dbd8577961b24730f09541c4",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );
     assert_eq!(
         hex32(&book_run_1.bundle_digest),
-        "8dfb101e216931252cb70a389bead7bdef197f80d48ee2611a6d98f2f20fcd7c",
+        "d3f3e55064493126ac7270e702c3781710fe5364cad4bd5ae0a5920e9baa6269",
         "evidence bundle (.fab) digest drifted on {}",
         std::env::consts::ARCH
     );

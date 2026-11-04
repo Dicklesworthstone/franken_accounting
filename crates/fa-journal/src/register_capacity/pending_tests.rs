@@ -528,16 +528,46 @@ fn pending_batches_recheck_capacity_after_an_intervening_publication() {
 
 #[test]
 fn pending_batch_publication_keeps_a_fitting_changed_prefix() {
-    let mut fixture = Fixture::new();
-    let first = fixture.batch(b"fitting-first", vec![fixture.hold(b"fitting-first-hold")]);
-    let delayed = fixture.batch(
-        b"fitting-delayed",
-        vec![fixture.hold(b"fitting-delayed-hold")],
-    );
-    let first_stage = fixture.stage(&first).unwrap();
-    let delayed_stage = fixture.stage(&delayed).unwrap();
-    fixture.commit(&first, first_stage).unwrap();
-    fixture
-        .commit(&delayed, delayed_stage)
-        .expect("a changed prefix alone does not invalidate a fitting point operation");
+    for disjoint in [false, true] {
+        let mut fixture = Fixture::new();
+        let other = disjoint.then(|| fixture.another_pair());
+        let first = fixture.batch(b"fitting-first", vec![fixture.hold(b"fitting-first-hold")]);
+        let mut hold = fixture.hold(b"fitting-delayed-hold");
+        if let Some((cash, rent)) = other {
+            hold.legs[0].account_ref = rent;
+            hold.legs[1].account_ref = cash;
+        }
+        let delayed = fixture.batch(b"fitting-delayed", vec![hold]);
+        let first_stage = fixture.stage(&first).unwrap();
+        let delayed_stage = fixture.stage(&delayed).unwrap();
+        assert_eq!(first_stage.txn.basis(), delayed_stage.txn.basis());
+        fixture.commit(&first, first_stage).unwrap();
+        let before = fixture.db.frontier().unwrap();
+        let result = fixture.commit(&delayed, delayed_stage);
+        if disjoint {
+            result.expect("a fitting batch with unchanged point witnesses survives a new prefix");
+        } else {
+            // The original fixture reused both accounts. Its pending register
+            // witnesses really change, even though two holds fit the count law.
+            let refusal = result.expect_err("changed account witnesses must still conflict");
+            assert_eq!(
+                (refusal.code, refusal.exit),
+                (code::CONFLICT, exit::CONFLICT)
+            );
+            assert!(refusal.message.contains("witness"));
+            assert_eq!(fixture.db.frontier().unwrap(), before);
+        }
+        let summary = summarize(
+            &fixture.db,
+            &fixture.cx(),
+            fixture.book.book_id,
+            fixture.db.frontier().unwrap(),
+        )
+        .unwrap();
+        let expected = if disjoint { 2 } else { 1 };
+        assert_eq!(
+            summary.cells.unwrap().pending_counts.get("FY2026-P03"),
+            Some(&expected),
+        );
+    }
 }

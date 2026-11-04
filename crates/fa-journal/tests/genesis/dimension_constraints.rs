@@ -46,11 +46,7 @@ fn fixture() -> (Harness, BTreeMap<&'static str, VId>) {
     (h, values)
 }
 
-fn policy(
-    account: VId,
-    allowed: Option<&[&str]>,
-    forbidden: &[&str],
-) -> DimensionConstraintSpec {
+fn policy(account: VId, allowed: Option<&[&str]>, forbidden: &[&str]) -> DimensionConstraintSpec {
     DimensionConstraintSpec {
         dimension: "cost_center".into(),
         account,
@@ -218,10 +214,7 @@ fn compare_post(
     let head = h.db.frontier().unwrap();
     let count = oracle.journal_len();
     let modeled = oracle.post_dimensioned(&intent, &tags);
-    let posted = h.post(h.request(
-        h.proposal(legs, key, EntryClass::ORIGINAL),
-        &["post"],
-    ));
+    let posted = h.post(h.request(h.proposal(legs, key, EntryClass::ORIGINAL), &["post"]));
     match expected {
         Some(expected) => {
             assert!(
@@ -511,10 +504,7 @@ fn dimension_constraints_refuse_atomic_batches_and_dry_runs_without_partial_effe
     record(&mut h, &spec, b"batch-value-policy");
     let first = tagged(&h, Some(values["A"]), b"constraint-batch-good");
     let second = tagged(&h, Some(values["B"]), b"constraint-batch-bad");
-    let batch = h.batch(
-        b"constraint-batch",
-        vec![first.clone(), second.clone()],
-    );
+    let batch = h.batch(b"constraint-batch", vec![first.clone(), second.clone()]);
     let outcome = outcome_vid(&h.book, &batch);
     let cap = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
     let head = h.db.frontier().unwrap();
@@ -529,7 +519,11 @@ fn dimension_constraints_refuse_atomic_batches_and_dry_runs_without_partial_effe
     assert_eq!(h.db.vertices().unwrap(), vertices);
     assert!(h.db.vertex(outcome).unwrap().is_none());
     for proposal in [&first, &second] {
-        assert!(read_entry(&h.db, h.member_ref(proposal).vid).unwrap().is_none());
+        assert!(
+            read_entry(&h.db, h.member_ref(proposal).vid)
+                .unwrap()
+                .is_none()
+        );
     }
 
     let untagged = tagged(&h, None, b"constraint-batch-optional");
@@ -697,11 +691,7 @@ fn dimension_constraints_are_rechecked_when_a_reviewed_draft_promotes() {
     let refusal = h
         .runtime
         .block_on(fa_journal::draft::preview_draft(
-            &mut h.db,
-            &cx,
-            &h.book,
-            &agent,
-            name,
+            &mut h.db, &cx, &h.book, &agent, name,
         ))
         .unwrap()
         .unwrap_err();
@@ -718,11 +708,7 @@ fn dimension_constraints_are_rechecked_when_a_reviewed_draft_promotes() {
     let refreshed = h
         .runtime
         .block_on(fa_journal::draft::preview_draft(
-            &mut h.db,
-            &cx,
-            &h.book,
-            &agent,
-            name,
+            &mut h.db, &cx, &h.book, &agent, name,
         ))
         .unwrap()
         .unwrap()

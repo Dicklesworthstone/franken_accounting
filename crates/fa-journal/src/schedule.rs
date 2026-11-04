@@ -30,8 +30,8 @@
 //! - the date basis recorded as extension 3.
 //!
 //! Execution rechecks the period law against the Reversal row (Open and
-//! SoftClosed admit; Closed needs `post_closed`, which the scheduler never
-//! holds; Locked refuses), live applications against the target, and the
+//! SoftClosed admit; Closed needs an explicitly held `post_closed`, which
+//! the default scheduler lacks; Locked refuses), live applications against the target, and the
 //! ordinary account/subledger and availability laws, current executor authority,
 //! and daily spending limits. A schedule that does not pass is **blocked**: reported,
 //! never minted, and never stalling a batch. A person reverses it by hand.
@@ -436,7 +436,12 @@ pub struct DueReversal {
 }
 
 /// The Reversal row's verdict on the scheduler (which holds `exec_op`).
-fn row_status(matrix: &Admissibility, state: PeriodState, period: &str) -> ReversalStatus {
+fn row_status(
+    matrix: &Admissibility,
+    state: PeriodState,
+    period: &str,
+    executor: Option<&fa_policy::Capability>,
+) -> ReversalStatus {
     if state == PeriodState::Future {
         return ReversalStatus::Waiting {
             period: period.to_string(),
@@ -444,7 +449,13 @@ fn row_status(matrix: &Admissibility, state: PeriodState, period: &str) -> Rever
     }
     match matrix.decide("Reversal", state) {
         Some(Decision::Admit) => ReversalStatus::Due,
-        Some(Decision::With { op, .. }) if op == EXEC_OP => ReversalStatus::Due,
+        Some(Decision::With { op, approvals: 0 })
+            if executor.map_or(op == EXEC_OP, |capability| {
+                fa_policy::Op::from_name(op).is_some_and(|needed| capability.holds(needed))
+            }) =>
+        {
+            ReversalStatus::Due
+        }
         _ => ReversalStatus::Blocked {
             state,
             row: format!("admissibility.toml (Reversal, {})", state.name()),
@@ -528,7 +539,7 @@ pub fn due_reversals_with_witness<V: asupersync::fs::Vfs + Clone>(
                 let state = state_from_scalar(prop(&prow, property::STATE)).ok_or_else(|| {
                     KernelError::Corrupt(format!("period `{}` state mirror", schedule.period))
                 })?;
-                match row_status(&matrix, state, &schedule.period) {
+                match row_status(&matrix, state, &schedule.period, None) {
                     ReversalStatus::Due if live_applications(db, &schedule)? => {
                         ReversalStatus::Blocked {
                             state,
@@ -985,7 +996,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
             format!("target {:032x} was reversed", schedule.target.vid.0),
         )));
     }
-    match row_status(matrix, state, &schedule.period) {
+    match row_status(matrix, state, &schedule.period, Some(capability)) {
         ReversalStatus::Due => {}
         ReversalStatus::Waiting { period } => {
             mints

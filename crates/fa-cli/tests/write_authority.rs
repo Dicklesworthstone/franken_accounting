@@ -1126,6 +1126,18 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::SchemaChange],
             Succeeds,
         ),
+        row(
+            &[
+                "dimension",
+                "constrain",
+                "cost_center",
+                "6100",
+                "--allow",
+                "CC10",
+            ],
+            &[Op::Read, Op::SchemaChange],
+            Succeeds,
+        ),
         // --remove on an account never required writes nothing, so the
         // later rows' legs on 6100 need no cost center.
         row(

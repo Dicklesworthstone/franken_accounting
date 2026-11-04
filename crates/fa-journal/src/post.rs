@@ -1374,11 +1374,9 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     )
 }
 
-/// Reproduce an authenticated portable plan with every ordinary posting law,
-/// restaging that rehearsal under ordinary current commit authority.
-/// Only the plan verifier can construct the token. No public request can
-/// construct it. The verifier compares the resulting effects and retains the
-/// certificate in this transaction before publication.
+/// Reproduce an authenticated portable plan with every ordinary posting law.
+/// The verifier must still compare effects and retain the certificate in this
+/// transaction before publication. No public request can construct its token.
 pub(crate) fn prepare_verified_plan<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -2859,6 +2857,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         let checked = checked_entry_staged(&txn, db, &row);
         txn.abort();
         let (recorded, _) = checked?;
+        // A distinct request cannot claim a pending target's one resolution,
+        // including one staged earlier in this same atomic batch. Its outcome
+        // claim is not committed yet, so checking only committed provenance
+        // would obscure the target conflict as an unrelated key failure.
+        if identity == Identity::Resolution
+            && recorded.proposal.idempotency_key != proposal.idempotency_key
+        {
+            return Ok(Err(identity_conflict(identity, evid)));
+        }
         if crate::outcome::covered_class(recorded.proposal.class)
             && (recorded.approvals != req.approvals
                 || !crate::outcome::verify_recorded(db, &ctx.query(), book, &row, &recorded)?)
