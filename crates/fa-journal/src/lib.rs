@@ -19,6 +19,7 @@
 
 pub mod account_role;
 pub mod allocation;
+mod application;
 pub mod asset_cost;
 pub mod attestation;
 pub mod bank;

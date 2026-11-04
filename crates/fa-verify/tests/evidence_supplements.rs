@@ -715,3 +715,114 @@ fn replacement_and_control_targets_refuse_instead_of_guessing_a_key_identity() {
         ));
     }
 }
+
+/// Wire-only receipt with an explicit discount: Dr cash 121, Dr discount 2,
+/// Cr AR 123 applying the complete invoice. Extension 41 only names the roles
+/// of the actual legs; the entry's ordinary key identity is unchanged.
+fn application_terms_proposal(minor: u16, invoice: Target) -> Vec<u8> {
+    let mut terms = fixture::Wire::default();
+    terms
+        .u16(1) // application terms version
+        .u8(1) // Receipt
+        .u16(0) // cash ordinal
+        .u16(1) // applying ordinal
+        .u32(1) // one named difference
+        .u16(2)
+        .u8(1); // Discount
+    let mut p = fixture::Wire::default();
+    p.u16(1)
+        .u16(minor)
+        .fixed(&fixture::BOOK)
+        .fixed(&[0; 16])
+        .u16(1) // Original
+        .fixed(&20_527i32.to_le_bytes())
+        .u8(0) // document date
+        .fixed(&[0; 32]) // description digest
+        .u8(0) // description subject
+        .fixed(&[0; 24])
+        .bytes(fixture::SECRET)
+        .u8(0) // effective period
+        .u32(3);
+    for (ordinal, side, account, amount) in [(0, 0, 30, 121), (1, 1, 10, 123), (2, 0, 40, 2)] {
+        p.u8(side)
+            .u128(account)
+            .u32(1)
+            .i128(amount)
+            .u8(0) // base valuation
+            .u32(0) // dimensions
+            .u8(0) // memo
+            .u32(u32::from(ordinal == 1));
+        if ordinal == 1 {
+            p.u128(invoice.vid)
+                .fixed(&invoice.digest)
+                .u16(0)
+                .u32(1)
+                .i128(123);
+        }
+    }
+    p.u8(0) // control
+        .u32(1) // unit totals
+        .u32(1)
+        .i128(123)
+        .i128(123)
+        .u8(0) // base totals
+        .bytes(b"evidence-inventory")
+        .fixed(&intent_origin())
+        .u128(7)
+        .u8(0) // session
+        .u32(0) // original evidence
+        .u32(0) // supersession
+        .u8(0) // pending
+        .u32(0) // external IDs
+        .u32(0) // tags
+        .u32(1) // extensions
+        .u16(41)
+        .bytes(&terms.0);
+    p.0
+}
+
+#[test]
+fn minor_nine_application_terms_preserve_target_identity_but_future_minors_refuse() {
+    let (invoice, invoice_target) = posting(8, 3, 20_527, &[]);
+    let (_, ordinary_target) = posting(7, 7, 20_527, &[]);
+    for minor in [9, 10] {
+        let receipt = supplement_fixture::proposal_record(
+            application_terms_proposal(minor, invoice_target),
+            7,
+        );
+        let receipt_target = Target {
+            vid: ordinary_target.vid,
+            digest: receipt.envelope.record_digest,
+        };
+        let j = Journal::new(
+            &[
+                invoice.clone(),
+                receipt,
+                supplement(receipt_target, &fixture::citations(), 11, 8),
+            ],
+            11,
+        );
+        // Generic membership and original-only citation framing still accept
+        // additive extensions. Target identity is the narrower supported claim.
+        verify_prefix_with_records(&j.prefix, &j.checkpoint).unwrap();
+        let original = verify_evidence_prefix_for(&j.prefix, &j.checkpoint, &j.scope()).unwrap();
+        let verified =
+            verify_supplemented_evidence_prefix_for(&j.prefix, &j.checkpoint, &j.scope());
+        if minor == 9 {
+            let verified = verified.unwrap();
+            assert_eq!(verified.inventory, original);
+            assert_eq!(verified.supplements.len(), 1);
+            assert_eq!(verified.supplements[0].entry_vid, ordinary_target.vid);
+            assert_eq!(verified.supplements[0].entry_digest, receipt_target.digest);
+            assert_eq!(verified.supplements[0].citations, fixture::citations());
+        } else {
+            assert!(matches!(
+                verified,
+                Err(EvidenceProductionError::UnsupportedTargetIdentity {
+                    leaf_index: 1,
+                    class: 1,
+                }),
+            ));
+        }
+    }
+}

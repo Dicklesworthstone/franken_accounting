@@ -47,7 +47,10 @@ pub(super) fn entry_identity(
     // Replacement has both historical key-derived and modern target-derived
     // identities with no distinguishing immutable marker. Control identities
     // are separately registered and must not fall through to the posting law.
-    if minor > 8 || !(1..=15).contains(&class) || class == 5 {
+    // Minor 9 adds application terms (extension 41) without changing entry
+    // identities. Its posting semantics remain outside this citation proof;
+    // future minors still refuse rather than assume their identity rules.
+    if minor > 9 || !(1..=15).contains(&class) || class == 5 {
         return Err(EvidenceProductionError::UnsupportedTargetIdentity { leaf_index, class });
     }
     // Complete frame and citation checks apply to referenced targets even if

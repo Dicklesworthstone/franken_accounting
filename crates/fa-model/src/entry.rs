@@ -48,10 +48,11 @@ pub const SCHEMA_MAJOR: u16 = 1;
 /// disposal and its recorded-version account policy; minor 6 admits
 /// source-bound finite asset charges and their exact reversals. Minor 7 binds
 /// case disclosures to their immutable Post and retained statement comparisons.
-/// Minor 8 admits the immutable reviewed CloseRun task graph. A writer may
-/// emit any minor ≤ this; bytes at a higher minor decode with their unknown
-/// extension tags preserved and skipped.
-pub const SCHEMA_MINOR: u16 = 8;
+/// Minor 8 admits the immutable reviewed CloseRun task graph. Minor 9 binds
+/// explicit base-unit receipt/payment differences to their complete legs.
+/// A writer may emit any minor ≤ this; bytes at a higher minor decode with
+/// their unknown extension tags preserved and skipped.
+pub const SCHEMA_MINOR: u16 = 9;
 /// The first minor whose layout carries the trailing extension block.
 pub const EXTENSIONS_MINOR: u16 = 1;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
@@ -273,6 +274,10 @@ pub const ASSET_CHARGE_SCHEMA_MINOR: u16 = 6;
 /// a CloseControl Open record. Native task effects are separate controls.
 pub const CLOSE_RUN_EXTENSION: u16 = 40;
 pub const CLOSE_RUN_SCHEMA_MINOR: u16 = 8;
+/// Extension 41 binds the explicit cash, applying and reason-typed difference
+/// legs of a base-unit receipt/payment; exact reversals preserve the marker.
+pub const APPLICATION_TERMS_EXTENSION: u16 = 41;
+pub const APPLICATION_TERMS_SCHEMA_MINOR: u16 = 9;
 pub const PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR: u16 = 3;
 
 /// The immutable source-period claim of a prior-period adjustment.
@@ -348,6 +353,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     LOT_DISPOSAL_EXTENSION,
     ASSET_CHARGE_EXTENSION,
     CLOSE_RUN_EXTENSION,
+    APPLICATION_TERMS_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1930,6 +1936,32 @@ impl EntryPayload {
         if let Some((_, bytes)) = self
             .extensions
             .iter()
+            .find(|(tag, _)| *tag == APPLICATION_TERMS_EXTENSION)
+        {
+            if self.schema_minor < APPLICATION_TERMS_SCHEMA_MINOR
+                || !matches!(
+                    self.class,
+                    EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL
+                )
+                || (self.class != EntryClass::REVERSAL
+                    && !matches!(&self.origin, EntryOrigin::Intent { .. }))
+            {
+                return Err(invalid(
+                    "extensions.application_terms",
+                    "requires an Original/Adjusting Intent or its exact Reversal at schema minor 9 or later",
+                ));
+            }
+            let terms = crate::ApplicationTerms::decode(bytes).map_err(|_| {
+                invalid(
+                    "extensions.application_terms",
+                    "requires canonical version-1 cash, applying and typed difference bindings",
+                )
+            })?;
+            terms.validate_shape(self.legs.len())?;
+        }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
             .find(|(tag, _)| *tag == CLOSE_RUN_EXTENSION)
         {
             if self.schema_minor < CLOSE_RUN_SCHEMA_MINOR || self.class != EntryClass::CLOSE_CONTROL
@@ -2606,6 +2638,35 @@ impl EntryPayload {
             .transpose()
     }
 
+    /// Bind every cash, applying and reason-typed difference leg before
+    /// sealing. Kernel admission checks the base unit and exact monetary law.
+    pub fn set_application_terms(
+        &mut self,
+        terms: &crate::ApplicationTerms,
+    ) -> Result<(), EntryError> {
+        terms.validate_shape(self.legs.len())?;
+        let bytes = terms.encode()?;
+        self.schema_minor = self.schema_minor.max(APPLICATION_TERMS_SCHEMA_MINOR);
+        match self
+            .extensions
+            .binary_search_by_key(&APPLICATION_TERMS_EXTENSION, |(tag, _)| *tag)
+        {
+            Ok(index) => self.extensions[index].1 = bytes,
+            Err(index) => self
+                .extensions
+                .insert(index, (APPLICATION_TERMS_EXTENSION, bytes)),
+        }
+        Ok(())
+    }
+
+    pub fn application_terms(&self) -> Result<Option<crate::ApplicationTerms>, EntryError> {
+        self.extensions
+            .iter()
+            .find(|(tag, _)| *tag == APPLICATION_TERMS_EXTENSION)
+            .map(|(_, bytes)| crate::ApplicationTerms::decode(bytes).map_err(EntryError::from))
+            .transpose()
+    }
+
     /// Attach the complete intrinsic lot-disposal inputs before sealing the
     /// proposal. Accounting admission reproduces the derived settlement legs.
     pub fn set_lot_disposal_basis(
@@ -2864,6 +2925,98 @@ mod tests {
             LegPayload::simple(Side::Debit, VId(1), Amount::new(USD, 120_000)),
             LegPayload::simple(Side::Credit, VId(2), Amount::new(USD, 120_000)),
         ]
+    }
+
+    fn application_proposal() -> EntryPayload {
+        let mut value = proposal(vec![
+            LegPayload::simple(Side::Debit, VId(1), Amount::new(USD, 9_900)),
+            LegPayload::simple(Side::Credit, VId(2), Amount::new(USD, 10_000)),
+            LegPayload::simple(Side::Debit, VId(3), Amount::new(USD, 100)),
+        ]);
+        value.schema_minor = 0;
+        value
+            .set_application_terms(&crate::ApplicationTerms {
+                direction: crate::ApplicationDirection::Receipt,
+                cash_ordinal: 0,
+                applying_ordinal: 1,
+                differences: vec![crate::ApplicationDifference {
+                    leg_ordinal: 2,
+                    kind: crate::ApplicationDifferenceKind::Discount,
+                }],
+            })
+            .unwrap();
+        value
+    }
+
+    #[test]
+    fn application_terms_activate_minor_nine_and_bind_approvals_and_retry_semantics() {
+        let original = application_proposal();
+        assert_eq!(original.schema_minor, APPLICATION_TERMS_SCHEMA_MINOR);
+        let entry = original.clone().seal(vec![], None).unwrap();
+        assert_eq!(Entry::decode(&entry.encode().unwrap()).unwrap(), entry);
+        let proposal_digest = original.proposal_digest().unwrap();
+        let semantic_digest = original.semantic_digest(&KEY).unwrap();
+        let terms = original.application_terms().unwrap().unwrap();
+        let mut reason = terms.clone();
+        reason.differences[0].kind = crate::ApplicationDifferenceKind::Writeoff;
+        let mut direction = terms.clone();
+        direction.direction = crate::ApplicationDirection::Payment;
+        let mut role = terms;
+        role.cash_ordinal = 2;
+        role.differences[0].leg_ordinal = 0;
+        for changed_terms in [reason, direction, role] {
+            let mut changed = original.clone();
+            changed.set_application_terms(&changed_terms).unwrap();
+            assert_ne!(changed.proposal_digest().unwrap(), proposal_digest);
+            assert_ne!(changed.semantic_digest(&KEY).unwrap(), semantic_digest);
+        }
+        let mut legacy = proposal(two_legs());
+        legacy.schema_minor = 0;
+        assert_eq!(legacy.application_terms().unwrap(), None);
+        let legacy_entry = legacy.seal(vec![], None).unwrap();
+        assert_eq!(
+            Entry::decode(&legacy_entry.encode().unwrap()).unwrap(),
+            legacy_entry
+        );
+    }
+
+    #[test]
+    fn application_terms_refuse_old_minor_unsupported_origin_class_and_unbound_legs() {
+        let original = application_proposal();
+        let mut old_minor = original.clone();
+        old_minor.schema_minor = APPLICATION_TERMS_SCHEMA_MINOR - 1;
+        let mut other_class = original.clone();
+        other_class.class = EntryClass::REPLACEMENT;
+        let mut other_origin = original.clone();
+        other_origin.origin = EntryOrigin::Rule {
+            rule_version_oid: Oid([1; 32]),
+            event_ref: VId(2),
+            inputs_digest: [3; 32],
+        };
+        let mut unbound = original.clone();
+        unbound.legs.extend(two_legs());
+        unbound.unit_totals = EntryPayload::fold_unit_totals(&unbound.legs).unwrap();
+        for bad in [old_minor, other_class, other_origin, unbound] {
+            assert!(matches!(
+                bad.validate_for_write(),
+                Err(EntryError::Invalid {
+                    what: "extensions.application_terms",
+                    ..
+                })
+            ));
+        }
+        // Structural decoding permits exact inherited reversals. The kernel
+        // compares every leg and this marker with the witnessed target.
+        let mut reversal = original.clone();
+        reversal.class = EntryClass::REVERSAL;
+        for leg in &mut reversal.legs {
+            leg.side = leg.side.flipped();
+        }
+        reversal.unit_totals = EntryPayload::fold_unit_totals(&reversal.legs).unwrap();
+        assert!(reversal.validate_for_write().is_ok());
+        let mut adjusting = original;
+        adjusting.class = EntryClass::ADJUSTING;
+        assert!(adjusting.validate_for_write().is_ok());
     }
 
     /// fa-g23: the code's kinds are exactly the registry's rows (ids, names,

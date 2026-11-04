@@ -29,6 +29,8 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, post_document, usage};
 use crate::json::{Json, obj, s};
 
+mod differences;
+
 #[derive(Clone, Copy)]
 enum Kind {
     Invoice,
@@ -158,7 +160,7 @@ impl Settle {
 
     fn example(self) -> String {
         format!(
-            "fa {} --party <code> --number <reference> --date YYYY-MM-DD --cash <code> {} <code> --amount \"1290.00 USD\" [--applies <entry vid>[:<leg>][=<amount>]]... [--evidence <oid>] [--dry-run] --json",
+            "fa {} --party <code> --number <reference> --date YYYY-MM-DD --cash <code> {} <code> --amount \"1290.00 USD\" [--applies <entry vid>[:<leg>][=<amount>]]... [--difference 'kind=Discount account=<code> amount=\"10.00 USD\"']... [--evidence <oid>] [--dry-run] --json",
             self.verb(),
             self.control_flag()
         )
@@ -352,6 +354,7 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
             ));
         }
     }
+    let differences = differences::prepare(args, kind, &amount, cash, control, entity, uses_fx)?;
     let settles = applications(args, &amount, &example)?;
     let control_amount = if uses_fx {
         settles
@@ -367,10 +370,12 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
                 )
             })?
             .to_string()
+    } else if let Some(differences) = &differences {
+        differences.control_amount.clone()
     } else {
         amount.clone()
     };
-    let legs = vec![
+    let mut legs = vec![
         leg_json(
             kind.cash_side(),
             cash,
@@ -390,6 +395,9 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
             settles,
         ),
     ];
+    if let Some(differences) = &differences {
+        legs.extend(differences.legs.iter().cloned());
+    }
     let description = args.flag("--description").map_or_else(
         || match number {
             Some(number) => format!("{} {number}, {party}", capitalized(kind.verb())),
@@ -403,6 +411,9 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
         ("idempotency_key", s(key)),
         ("legs", Json::Arr(legs)),
     ];
+    if let Some(differences) = differences {
+        fields.push(("application", differences.declaration));
+    }
     if uses_fx {
         fields.push((
             "fx",

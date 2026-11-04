@@ -8136,6 +8136,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "prior_period_error",
         "relates_to",
         "fx",
+        "application",
         "external_subledger",
         "obligation_maturity",
         "receivable_maturity",
@@ -8443,6 +8444,7 @@ fn build_post_request_with_prior(
     let mut reversal_valuation_basis = None;
     let mut reversal_lot_basis = None;
     let mut reversal_asset_basis = None;
+    let mut reversal_application_terms = None;
     let mut target_evidence = Vec::new();
     let legs: Vec<LegPayload> = if class == EntryClass::RECLASSIFICATION {
         // A Reclassification names its target and moves part of its legs to
@@ -8695,6 +8697,12 @@ fn build_post_request_with_prior(
             .extensions
             .iter()
             .find(|(tag, _)| *tag == fa_model::entry::ASSET_CHARGE_EXTENSION)
+            .cloned();
+        reversal_application_terms = target
+            .proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::APPLICATION_TERMS_EXTENSION)
             .cloned();
         if let Some(totals) = &mut reversal_base_totals {
             std::mem::swap(&mut totals.debits, &mut totals.credits);
@@ -9054,6 +9062,13 @@ fn build_post_request_with_prior(
         proposal.extensions.push(extension);
         proposal.extensions.sort_by_key(|(tag, _)| *tag);
     }
+    if let Some(extension) = reversal_application_terms {
+        proposal.schema_minor = proposal
+            .schema_minor
+            .max(fa_model::entry::APPLICATION_TERMS_SCHEMA_MINOR);
+        proposal.extensions.push(extension);
+        proposal.extensions.sort_by_key(|(tag, _)| *tag);
+    }
     for evidence in reversal_rate_evidence {
         if !proposal.evidence.contains(&evidence) {
             proposal.evidence.push(evidence);
@@ -9132,6 +9147,7 @@ fn build_post_request_with_prior(
     }
     let proposal = apply_valuation_adjustments(doc, &ctx, proposal)?;
     let proposal = crate::obligation::declare_terms(book, doc, proposal)?;
+    let proposal = crate::application::declare_terms(doc, proposal)?;
     Ok(BuiltPost {
         request: PostRequest {
             proposal,
@@ -9989,6 +10005,7 @@ pub(crate) fn emit_post_plan(
         Json::Null
     };
     let net_effect = reclass_net_effect(book, proposal, &accounts)?;
+    let (application, application_lines) = crate::application::review(proposal)?;
     // What journal-entry testing would flag, said before the commit (plan
     // §5.1, fa-d5un): data only, never a refusal or a change to the plan.
     // The duplicate scan reads other entries. A launch-bound session's own
@@ -10200,6 +10217,10 @@ pub(crate) fn emit_post_plan(
     if let Some((_, line)) = &lot_disposal {
         human.push_str(line);
     }
+    if !application_lines.is_empty() {
+        human.push('\n');
+        human.push_str(&application_lines.join("\n"));
+    }
     if let Some((_, lines)) = &net_effect {
         human.push_str("\nNet effect (the target plus this entry):\n");
         human.push_str(&lines.join("\n"));
@@ -10286,6 +10307,7 @@ pub(crate) fn emit_post_plan(
                     .map_or(Json::Null, |(_, _, moved)| s(moved)),
             ),
             ("valuation", valuation),
+            ("application", application),
             (
                 "resolves",
                 resolves.map_or(Json::Null, |entry| s(format!("{:032x}", entry.vid.0))),
@@ -23172,6 +23194,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "approvals",
                         "legs",
                         "supersedes",
+                        "application",
                     ] {
                         fields.push((absent, Json::Null));
                     }
@@ -23233,6 +23256,8 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             ]))
                         })
                         .collect::<Result<_, Fail>>()?;
+                    let (application, application_lines) =
+                        crate::application::review(&entry.proposal)?;
                     let fields = vec![
                         ("found", Json::Bool(true)),
                         ("vid", s(vid_s)),
@@ -23251,6 +23276,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("description", description),
                         ("approvals", Json::Int(entry.approvals.len() as i128)),
                         ("legs", Json::Arr(legs)),
+                        ("application", application),
                         (
                             "supersedes",
                             Json::Arr(
@@ -23273,6 +23299,10 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     );
                     if let Some(day) = entry.proposal.document_date {
                         human.push_str(&format!("\ndocument dated {}", day.render()));
+                    }
+                    if !application_lines.is_empty() {
+                        human.push('\n');
+                        human.push_str(&application_lines.join("\n"));
                     }
                     for link in &entry.proposal.supersession {
                         let reason = reasons

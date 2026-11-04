@@ -2310,6 +2310,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     //      leg names one. Other dimensions wait for the dimension registry.
     let spec = crate::genesis::read_book_spec(db)?
         .ok_or_else(|| KernelError::Corrupt("no book spec on the root".into()))?;
+    // Typed receipt/payment effects bind every leg and explain the complete
+    // cash/application difference. Target capacity remains the transaction's
+    // ordinary point-witnessed application law below.
+    if let Err(refusal) = crate::application::admit(proposal, spec.base_unit) {
+        return Ok(Err(refusal));
+    }
     let leg_entities = match entity::leg_entities(&spec, &proposal.legs) {
         Ok(e) => e,
         Err(entity::LegEntityError::OtherDimension) => {
@@ -5107,6 +5113,14 @@ pub(crate) fn exact_side_swap(original: &EntryPayload, reversal: &EntryPayload) 
         && original
             .extensions
             .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::APPLICATION_TERMS_EXTENSION)
+            == reversal
+                .extensions
+                .iter()
+                .find(|(tag, _)| *tag == fa_model::entry::APPLICATION_TERMS_EXTENSION)
+        && original
+            .extensions
+            .iter()
             .find(|(tag, _)| *tag == fa_model::entry::ASSET_CHARGE_EXTENSION)
             == reversal
                 .extensions
@@ -5163,7 +5177,7 @@ fn reversal_shape(target: VId) -> Refusal {
             target.0
         ),
         "plan §4.4, §8.2 (a reversal preserves the original valuation, never reprices it)",
-        "post the same accounts, native amounts and retained functional valuations in the same order with debit and credit exchanged; preserve the original FX law, Rate evidence commitments and residual; a different correction is a Replacement",
+        "post the same accounts, native amounts and retained functional valuations in the same order with debit and credit exchanged; preserve the original typed application terms, FX law, Rate evidence commitments and residual; a different correction is a Replacement",
     )
 }
 
