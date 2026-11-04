@@ -15,6 +15,9 @@ mod external;
 #[path = "subledger/certificate.rs"]
 mod certificate;
 
+#[path = "subledger/application.rs"]
+mod application;
+
 #[test]
 fn bound_reader_can_reconcile_but_cannot_register_a_control() {
     use fa_cli::authority::{LaunchAuthority, LaunchProfile};

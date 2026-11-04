@@ -3835,6 +3835,75 @@ mod tests {
     }
 
     #[test]
+    fn typed_settlements_preserve_every_explicit_difference_in_registry_invocations() {
+        let (mcp, reg) = embedded();
+        assert!(mcp.is_repeat("--difference"));
+        let differences = [
+            r#"kind=Discount account=4900 amount="10.00 USD""#,
+            r#"kind=Writeoff account=5900 amount="5.00 USD""#,
+            r#"kind=BankCharge account=5910 amount="2.00 USD""#,
+        ];
+        for (verb, control, applied) in [
+            ("receipt", "receivable", "1017.00 USD"),
+            ("payment", "payable", "1013.00 USD"),
+        ] {
+            let tool = mcp.tool_for(verb, None).expect("typed settlement tool");
+            let schema = tool.input_schema(&mcp, reg);
+            assert_eq!(
+                schema["properties"]["difference"]["type"],
+                json!(["string", "array"])
+            );
+            assert_eq!(
+                schema["properties"]["difference"]["items"]["type"],
+                json!("string")
+            );
+            let mut arguments = json!({
+                "party": "counterparty",
+                "date": "2026-03-31",
+                "cash": "1000",
+                "amount": "1000.00 USD",
+                "applies": [format!("{}:0={applied}", "ab".repeat(16))],
+                "difference": differences,
+                "key": "explicit-differences",
+                "dry_run": true
+            });
+            arguments[control] = json!(if verb == "receipt" { "1100" } else { "2100" });
+            let invocation = tool
+                .invocation(&mcp, reg, &arguments)
+                .expect("registered explicit differences");
+            assert_eq!(invocation.argv[0], verb);
+            assert!(invocation.stdin.is_none());
+            let parsed = args::parse(&invocation.argv, &reg.value_flags(), &reg.switches())
+                .expect("difference is a registered value flag");
+            assert_eq!(parsed.flag_all("--difference"), differences);
+            assert_eq!(parsed.flag("--amount"), Some("1000.00 USD"));
+            assert!(parsed.switch("--dry-run"));
+
+            arguments["difference"] = json!(differences[0]);
+            let single = tool
+                .invocation(&mcp, reg, &arguments)
+                .expect("one exact declaration also accepts a string");
+            let parsed = args::parse(&single.argv, &reg.value_flags(), &reg.switches()).unwrap();
+            assert_eq!(parsed.flag_all("--difference"), [differences[0]]);
+
+            for invalid in [
+                json!([null]),
+                json!([true]),
+                json!([10]),
+                json!([differences[0], 10]),
+                json!({"kind": "Discount", "amount": 10}),
+                json!(10),
+            ] {
+                arguments["difference"] = invalid;
+                assert!(
+                    tool.invocation(&mcp, reg, &arguments).is_err(),
+                    "{verb} must preserve exact string declarations: {arguments}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn year_end_close_reviews_and_singleton_drafts_use_agent_read_and_post() {
         use fa_cli::authority::{LaunchAuthority, LaunchProfile};
 
