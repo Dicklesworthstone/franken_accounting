@@ -6081,6 +6081,13 @@ fields = ["name:string", "bytes:int", "digest:hex"]
 # a book reaches all of it at the head, so a token carrying any scope caveat
 # is refused on the bound route, never answered with a filtered result.
 
+# Outcome recovery prepares under the same whole-book authority as publication.
+# The handler checks direct-write admission before opening the book to publish.
+[[bound]]
+verbs = ["recover"]
+subcommands = ["outcomes"]
+ops = ["read", "schema_change"]
+
 # Plans and dry runs of period transitions publish nothing.
 [[bound]]
 verbs = ["period"]

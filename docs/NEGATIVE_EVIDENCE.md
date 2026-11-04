@@ -4,6 +4,34 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-04 — fa-d48q read-only preparation was stranded at two surfaces
+
+The native `9435e377` facade library run passed 714 tests and failed
+`required_rehearsal_allows_statement_preapproval_but_refuses_unverified_activation`:
+statement-definition planning called raw write admission and returned
+FA-REF-011 instead of preparing the definition. Preparation now uses the
+explicit nonpublishing admission contract; activation checks direct-write
+admission before any frontier read and retains its transaction authority
+witness. The existing positive, refusal and unchanged-head assertions remain.
+
+The same source's original five-target authorization run passed all 16
+operator-token, 53 bank, 392 genesis and 82 journal-policy tests, but the
+write-authority matrix passed two tests and failed its required-rehearsal
+preview test. The `recover outcomes --dry-run` handler already prepared and
+aborted its native transaction, but its launch-bound registry row was missing.
+The shared registry now requires Read and SchemaChange for that exact target;
+whole-book scope admission still precedes observation. Publication additionally
+checks direct-write admission before opening the book. Both preview and
+publication enter the existing exact-operation matrix; recovery of projections
+remains host-only. Public admissibility now recognizes the same nonpublishing
+preview exception as the dispatch confirmation gate.
+
+These are observed integration defects, not grounds to relax the global write
+guard, operation ceilings, class caveats or mandatory read receipts. The exact
+`9435e377` Tier-0 PASS proves formatting and compilation only. Native tests on
+the repaired source, the separately preserved missing-receipt fault control,
+and the final full repository gate remain required before closure.
+
 ## 2026-10-10 — fa-pri / fa-p7r arithmetic review
 
 - **Native imbalance absorbed as valuation rounding.** The former

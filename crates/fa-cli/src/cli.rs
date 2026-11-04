@@ -2578,6 +2578,7 @@ pub fn bound_command_admissible(
         && !correction_draft_only(verb, args)
         && !closing_draft_only(verb, args)
         && !revaluation_draft_only(verb, args)
+        && !recovery_preview_only(verb, args)
         && !(authority.can_confirm() && confirmed(args))
     {
         for d in reg.dangerous_for(verb, sub) {

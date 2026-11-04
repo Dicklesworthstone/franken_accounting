@@ -128,11 +128,6 @@ const HOST_ONLY: &[(&str, Option<&str>, &str)] = &[
         "needs schema_change on trunk and --yes, outside every launch ceiling",
     ),
     (
-        "recover",
-        Some("outcomes"),
-        "rebuilds the idempotency namespace: schema_change on trunk and --yes after a dry-run preview, outside every launch ceiling",
-    ),
-    (
         "rule",
         Some("test"),
         "reads a rule's golden corpus, a host directory of case files, and writes nothing; MCP evaluates a rule over a recorded event inline (fa-c34)",
@@ -352,6 +347,16 @@ fn write_files(dir: &Path, files: &[(&str, &str)]) {
 fn rows(document: &str, entry: &str) -> Vec<Row> {
     use Admitted::{Reaches, RetainsCertificate, Succeeds};
     let mut rows = vec![
+        row(
+            &["recover", "outcomes", "--dry-run"],
+            &[Op::Read, Op::SchemaChange],
+            Succeeds,
+        ),
+        row(
+            &["recover", "outcomes", "--yes", "--basis", "0"],
+            &[Op::Read, Op::SchemaChange],
+            Reaches,
+        ),
         row(
             &[
                 "close",
