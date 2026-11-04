@@ -12,6 +12,9 @@ use fa_cli::cli::{Files, Stdin};
 use fa_cli::entry::fa_with_authority;
 use fa_cli::json::{self, Json};
 
+#[path = "bank/outstanding.rs"]
+mod outstanding;
+
 fn data(value: &Json) -> &Json {
     value.get("data").expect("robot data")
 }

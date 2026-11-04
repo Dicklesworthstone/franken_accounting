@@ -43,11 +43,14 @@ pub use lifecycle::{
 };
 pub(crate) use reconciliation::verify_history_at as verify_reconciliation_history_at;
 pub use reconciliation::{
-    BankReconciliationLock, BankReconciliationPreparation, BankReconciliationRecorded,
-    BankReconciliationRequest, BankReconciliationState, BankReconciliationStatus,
-    PreparedBankReconciliation, ReconciliationHistory, bank_reconciliation_status,
-    extend_reconciliation_history, prepare_bank_reconciliation, read_bank_reconciliation_states,
-    reconcile_bank_statement, verify_bank_reconciliation_history, witness_reconciliation_locks,
+    BankOutstandingItem, BankOutstandingLeg, BankReconciliationLock, BankReconciliationPreparation,
+    BankReconciliationRecorded, BankReconciliationRequest, BankReconciliationState,
+    BankReconciliationStatus, MAX_BANK_OUTSTANDING_ITEMS, PreparedBankReconciliation,
+    ReconciliationHistory, bank_reconciliation_status, extend_reconciliation_history,
+    prepare_bank_reconciliation, prepare_bank_reconciliation_with_outstanding,
+    read_bank_reconciliation_states, reconcile_bank_statement,
+    reconcile_bank_statement_with_outstanding, verify_bank_reconciliation_history,
+    witness_reconciliation_locks,
 };
 pub use wire::BankMatchConfirmation;
 use wire::{BankLine, claim_props, match_props};

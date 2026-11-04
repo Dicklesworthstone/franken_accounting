@@ -39,8 +39,8 @@ mod reconciliation;
 pub use confirmation::{BankConfirmationRequest, BankConfirmationStatus, BankStatusRequest};
 pub use fa_journal::bank::{
     BankDecisionRef, BankMatchConfirmation, BankMatchHistory, BankMatchLineage, BankMatchRecorded,
-    BankReconciliationRecorded, BankReconciliationState, BankReconciliationStatus,
-    BankUnmatchRecorded, BankUnmatchRequest,
+    BankOutstandingItem, BankOutstandingLeg, BankReconciliationRecorded, BankReconciliationState,
+    BankReconciliationStatus, BankUnmatchRecorded, BankUnmatchRequest,
 };
 pub use reconciliation::BankReconciliationRequest;
 

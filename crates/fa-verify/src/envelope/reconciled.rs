@@ -2,6 +2,9 @@
 //! interpretations. This checks canonical shape and the self-contained source
 //! bindings. Inclusion authenticates the claim; decoding alone does not refold
 //! cash or prove that its native confirmations and imports existed.
+//! Tag 3 preserves the exact-close wire bytes. Tag 11 additionally checks the
+//! canonical outstanding-leg list and checked cash-minus-outstanding equation;
+//! it does not independently establish those legs' existence or eligibility.
 
 use std::collections::BTreeSet;
 
@@ -15,6 +18,7 @@ mod csv_layout;
 // independent verifier does not link the kernel's model or registry decoder.
 const MAX_BANK_LINES: usize = 1022;
 const MAX_PREDECESSORS: usize = 4096;
+const MAX_BANK_OUTSTANDING_ITEMS: usize = 1024;
 const WORKPAPER_KIND: u8 = 21;
 
 pub(super) struct Source {
@@ -152,6 +156,7 @@ pub(super) fn read(
     r: &mut Reader<'_>,
     book: [u8; 16],
     commit_seq: u64,
+    with_outstanding: bool,
 ) -> Result<Source, DecodeError> {
     let manifest_oid = r.fixed::<32>("reconciled.manifest_oid")?;
     let current = manifest(r.bytes(MAX_RECORD_BYTES, "reconciled.manifest")?)?;
@@ -213,7 +218,7 @@ pub(super) fn read(
     if imported == 0
         || imported > evaluated
         || first_import.is_some_and(|previous| previous >= imported)
-        || cash != closing
+        || (!with_outstanding && cash != closing)
         || count != line_count
     {
         return Err(r.error("reconciled.exact_close", Reason::BadTag(0)));
@@ -228,6 +233,36 @@ pub(super) fn read(
             return Err(r.error("reconciled.matches", Reason::Unsorted));
         }
         previous = Some(matched);
+    }
+    if with_outstanding {
+        let count = r.count(MAX_BANK_OUTSTANDING_ITEMS, 66, "reconciled.outstanding")?;
+        if count == 0 {
+            return Err(r.error("reconciled.outstanding", Reason::BadTag(0)));
+        }
+        let mut previous = None;
+        let mut outstanding = 0_i128;
+        for _ in 0..count {
+            let entry = r.u128("reconciled.outstanding.entry_vid")?;
+            r.fixed::<32>("reconciled.outstanding.entry_digest")?;
+            let ordinal = r.u16("reconciled.outstanding.leg_ordinal")?;
+            let amount = r.i128("reconciled.outstanding.signed_amount")?;
+            let key = (entry, ordinal);
+            if previous.is_some_and(|prior| prior >= key) {
+                return Err(r.error("reconciled.outstanding", Reason::Unsorted));
+            }
+            // A native debit is positive and a native credit is its checked
+            // negation. Neither zero nor i128::MIN can name such a cash leg.
+            if amount == 0 || amount == i128::MIN {
+                return Err(r.error("reconciled.outstanding.signed_amount", Reason::BadTag(0)));
+            }
+            outstanding = outstanding
+                .checked_add(amount)
+                .ok_or_else(|| r.error("reconciled.outstanding.sum", Reason::BadTag(0)))?;
+            previous = Some(key);
+        }
+        if cash.checked_sub(outstanding) != Some(closing) {
+            return Err(r.error("reconciled.adjusted_close", Reason::BadTag(0)));
+        }
     }
     Ok(source)
 }

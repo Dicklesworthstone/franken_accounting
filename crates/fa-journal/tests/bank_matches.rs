@@ -33,6 +33,8 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
+#[path = "bank_matches/outstanding.rs"]
+mod outstanding_tests;
 #[path = "bank_matches/reconciliation.rs"]
 mod reconciliation_tests;
 

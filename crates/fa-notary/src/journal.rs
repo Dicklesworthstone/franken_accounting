@@ -1246,7 +1246,7 @@ mod tests {
         })
     }
 
-    fn reconciled(declared_csv: bool) -> Record {
+    fn reconciled(declared_csv: bool, with_outstanding: bool) -> Record {
         let account = VId(19);
         let unit = fa_money::UnitId(1);
         let closing = fa_time::DateDay::from_ymd(2026, 3, 31).expect("statement date");
@@ -1300,7 +1300,7 @@ mod tests {
                 import_receipt_hash: [0x73; 32],
                 import_recorded_at: CommitSeq(6),
                 evaluated_known_at: CommitSeq(8),
-                cash_balance: 0,
+                cash_balance: if with_outstanding { 5 } else { 0 },
                 cash_fold_digest: fa_model::domain_digest(
                     b"fa:bank-reconciled-cash-fold:v1",
                     &[
@@ -1311,6 +1311,18 @@ mod tests {
                     ],
                 ),
                 matches: Vec::new(),
+                outstanding: if with_outstanding {
+                    vec![fa_journal::bank::BankOutstandingItem {
+                        entry_ref: EntryRef {
+                            vid: VId(200),
+                            entry_digest: [0x81; 32],
+                        },
+                        leg_ordinal: 1,
+                        signed_amount: 5,
+                    }]
+                } else {
+                    Vec::new()
+                },
             })),
             subject: Subject::Document(manifest_oid),
             principal: VId(11),
@@ -1332,8 +1344,10 @@ mod tests {
     fn every_evidence_kind_matches_the_verifier_byte_for_byte() {
         for (record, kind, class) in [
             (review(), KIND_ATTESTATION, 2),
-            (reconciled(false), KIND_ATTESTATION, 3),
-            (reconciled(true), KIND_ATTESTATION, 3),
+            (reconciled(false, false), KIND_ATTESTATION, 3),
+            (reconciled(true, false), KIND_ATTESTATION, 3),
+            (reconciled(false, true), KIND_ATTESTATION, 11),
+            (reconciled(true, true), KIND_ATTESTATION, 11),
             (confirmed(), KIND_ATTESTATION, 5),
             (represented(), KIND_ATTESTATION, 9),
             (receipt(1, 7), KIND_IMPORT_RECEIPT, 3),

@@ -3994,6 +3994,20 @@ impl Book {
         )))
     }
 
+    /// Close a statement with explicit immutable uncleared cash-leg references.
+    /// The kernel derives the amounts and checks the bridge; it posts no money.
+    pub fn reconcile_bank_statement_with_outstanding(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: crate::bank::BankReconciliationRequest,
+        outstanding: Vec<crate::bank::BankOutstandingLeg>,
+    ) -> Outcome<crate::bank::BankReconciliationRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.reconcile_bank_statement_with_outstanding(
+            &purposes, capability, request, outstanding,
+        )))
+    }
+
     /// Reverify each original closing claim and compare its cash contribution
     /// and active match sets with one selected prefix under current authority.
     /// No governed statement or counterparty text is disclosed.
@@ -5749,6 +5763,27 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(
             core.produce_due_date_aging_reconciliation_bundle(
+                &purposes, principal, capability, state, certificate, expected,
+            )
+        ))
+    }
+
+    /// Export an original native AR/AP reconciliation for independent replay.
+    /// Current whole-book Read and Produce authority are required. `expected`
+    /// supplies the recipient's exact code, control account, civil cutoff and
+    /// fixed recorded prefix; the outer certificate and both registry closures
+    /// remain unchanged. Returns `None` if the selected checkpoint is absent.
+    pub fn produce_native_subledger_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::NativeSubledgerCertificate,
+        expected: &crate::NativeSubledgerRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.produce_native_subledger_bundle(
                 &purposes, principal, capability, state, certificate, expected,
             )
         ))

@@ -7,12 +7,12 @@ schema_version = 1
 name = "Attestation"
 owner = "fa-journal::attestation"
 major = 1
-minor = 1
+minor = 2
 signed_digest_domain = "fa:attestation:v1"
 externally_verifiable = false
 
 fields = ["version:u16", "claim:tagged_claim", "subject_refs:list<subject_ref>", "principal_ref:u128", "evidence_refs:list<bytes32>", "signed_digest:bytes32", "auth_trailer:capability_or_signature"]
-claim_tags = ["1:Prepared", "2:Reviewed", "3:Reconciled", "4:RegisterEquals", "5:Confirmed", "6:Examined", "7:Custom", "8:ManualAssertion"]
+claim_tags = ["1:Prepared", "2:Reviewed", "3:Reconciled", "4:RegisterEquals", "5:Confirmed", "6:Examined", "7:Custom", "8:ManualAssertion", "11:ReconciledOutstanding"]
 
 [[decision]]
 field = "signature"
@@ -25,5 +25,12 @@ tracking_bead = "fa-kae"
 field = "claim.Reconciled"
 appendix_a = "3:Reconciled; plan §5.7 / §9.4 exact statement close"
 code_type = "fa-journal::attestation::ReconciledClaim; native Attestation storage"
-rationale = "The reserved claim tag now binds the retained canonical bank manifest and complete predecessor manifests, actual ImportRun receipt coordinate, evaluated native prefix, cumulative posted cash through the statement date, contribution digest, and exact sorted active confirmation references. Read, Reconcile, Privileged and Human admission precede observation. New closes use the reviewed current prefix, all statement lines must be confirmed under the exact interpretation with cash legs effective through the close, and the cumulative balance must equal the statement close. Pending and unpublished/excluded migration entries do not contribute. No adjusted outstanding-items reconciliation is claimed. Native creation history rejects mutation, retirement, relabeling and restore-after-rewrite of the attestation and its strong edges. ATTESTS to the cash account is the posting transaction's phantom-protection anchor; CITES retains source/import/match evidence. A later monetary or match correction produces live drift without changing the original historical claim. The unchanged capability trailer does not claim external signature verification."
+rationale = "The reserved claim tag now binds the retained canonical bank manifest and complete predecessor manifests, actual ImportRun receipt coordinate, evaluated native prefix, cumulative posted cash through the statement date, contribution digest, and exact sorted active confirmation references. Read, Reconcile, Privileged and Human admission precede observation. New closes use the reviewed current prefix, all statement lines must be confirmed under the exact interpretation with cash legs effective through the close, and the cumulative balance must equal the statement close. Pending and unpublished/excluded migration entries do not contribute. Tag 3 retains exactly its original bytes and no outstanding-item count; a nonempty adjusted reconciliation uses tag 11. Native creation history rejects mutation, retirement, relabeling and restore-after-rewrite of the attestation and its strong edges. ATTESTS to the cash account is the posting transaction's phantom-protection anchor; CITES retains source/import/match evidence. A later monetary or match correction produces live drift without changing the original historical claim. The unchanged capability trailer does not claim external signature verification."
+tracking_bead = "fa-2ek"
+
+[[decision]]
+field = "claim.ReconciledOutstanding"
+appendix_a = "11:ReconciledOutstanding; plan §5.7 / §9.4 adjusted statement close"
+code_type = "fa-journal::attestation::ReconciledClaim.outstanding: Vec<fa-journal::bank::BankOutstandingItem>; native Attestation version 1"
+rationale = "Tag 11 retains every common tag-3 claim field through the matches list, then appends u32 count and count items of (entry_vid:u128, entry_digest:bytes32, leg_ordinal:u16, signed_amount:i128), with no per-item length prefix. The nonempty list is bounded by max_bank_outstanding_items=1024 and sorted strictly by (entry_vid, leg_ordinal); a repeated leg with another digest is still a duplicate. Amounts are nonzero and exclude i128::MIN: native admission derives a positive debit or negative credit from the exact witnessed live cash leg in the statement account and unit, effective through the close and not actively matched. Checked i128 arithmetic requires cash_balance minus the sum of signed outstanding amounts to equal the manifest closing balance. The recorded references and amounts are immutable; historical verification and live drift recheck their source bindings. An empty selection uses the old tag 3 and does not append an empty list, even though a nonempty list may have a zero net total. Newly published tag-11 complete Attestation payloads also obey max_bank_reconciliation_payload_bytes=12288 before staging, preserving native row headroom; count and byte bounds never authorize omission, and legacy tag-3 admission and wire decoder limits remain unchanged. The dependency-free inclusion decoder checks canonical shape, retained bank-manifest bindings and the adjusted equation, but does not establish native cash folding, match history, outstanding-leg existence or eligibility, authority admission, or economic truth."
 tracking_bead = "fa-2ek"

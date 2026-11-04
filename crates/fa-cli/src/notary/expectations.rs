@@ -323,6 +323,22 @@ pub(crate) fn portfolio_bundle_expectation(
     }
 }
 
+/// Native party/control reconciliation answers a fixed recipient question.
+/// Its exported certificate never supplies its own expected control or cutoff.
+pub(crate) fn native_subledger_bundle_expectation(
+    args: &Args,
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+) -> Result<fa::NativeSubledgerRequest, Fail> {
+    match parse(args, book, principal, capability)? {
+        Expected::NativeSubledger(request) => Ok(request),
+        _ => Err(invalid(
+            "native subledger export requires --expect JSON with kind native-subledger-reconciliation, code, control_account, through and fixed known_at",
+        )),
+    }
+}
+
 /// Use the recipient's independently retained scope and original-leg decisions.
 /// The certificate being exported never supplies its own expected inputs.
 pub(crate) fn split_cash_flow_bundle_expectation(
