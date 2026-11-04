@@ -752,11 +752,31 @@ checked again by the native posting kernel.
 fa close start --run march --period FY2026-P03 --tasks close-tasks.json --as controller --json
 fa close status --run march --json
 fa close dry-run --run march --certify --json
-fa close run --run march --as controller --yes --json
+fa close run --run march --rehearsal C:<combined-review-digest> --as controller --yes --json
+fa close dry-run --run march --certify --json
 fa close step --run march --task finish --key march-close --reason Scheduled \
   --as controller --dry-run --plan-out march-close.plan --json
-fa close run --run march --task finish --plan march-close.plan --as controller --yes --json
+fa close run --run march --rehearsal C:<remaining-review-digest> \
+  --task finish --plan march-close.plan --as controller --yes --json
 ```
+
+Every `close run` first rehearses all unfinished monetary tasks together.
+Passing `--rehearsal C:<digest>` additionally binds the invocation to the exact
+retained combined certificate the operator reviewed. It fully replays that
+certificate, checks that its monetary baseline is still current, and compares
+the current graph, completed receipts, ordered tasks and exact balance rows
+before publishing a task. A retention or approval commit alone is allowed;
+later contributing entries invalidate the review even when offsetting entries
+restore the same net balances.
+
+The selected digest is returned in the `rehearsal` field of
+`close_run_progress`. After any partial or completed execution, this strict
+mode needs a new combined review of the remaining state, as shown before the
+period task above. Existing completion receipts remain the baseline and their
+effects are never applied again. The old certificate remains available for
+historical replay. This selection is checked for the current invocation;
+durable run-level attachment of the combined certificate remains a separate
+lifecycle feature.
 
 `close run` chooses ready tasks in task-ID order and refreshes the native basis
 after every publication. It skips tasks with durable completion receipts, so

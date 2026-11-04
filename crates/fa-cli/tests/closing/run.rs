@@ -612,6 +612,15 @@ fn close_events(f: &Fixture, args: &[&str]) -> Vec<Json> {
         .collect()
 }
 
+fn combined_certificate(f: &Fixture, name: &str) -> String {
+    let events = close_events(f, &["close", "dry-run", "--run", name, "--certify"]);
+    let certificate = events
+        .iter()
+        .find(|event| text(event, "event") == "report_certificate")
+        .unwrap();
+    format!("C:{}", text(certificate, "oid"))
+}
+
 #[test]
 fn combined_close_rehearsal_retains_and_replays_after_real_execution() {
     let f = Fixture::new(false);
@@ -705,6 +714,8 @@ fn combined_close_rehearsal_retains_and_replays_after_real_execution() {
             "run",
             "--run",
             "combined",
+            "--rehearsal",
+            &oid,
             "--task",
             "finish",
             "--key",
@@ -720,18 +731,38 @@ fn combined_close_rehearsal_retains_and_replays_after_real_execution() {
     );
     assert_eq!(executed.len(), 2);
     assert_eq!(text(&executed[0], "state"), "transition-review");
+    assert_eq!(
+        text(&executed[0], "rehearsal"),
+        oid.strip_prefix("C:").unwrap()
+    );
     assert_eq!(get(&executed[0], "completed").as_arr().unwrap().len(), 2);
     assert_eq!(text(&executed[1], "event"), "close_task_planned");
     assert_eq!(
         get(task(&status(&f, "combined"), "finish"), "completion"),
         &Json::Null
     );
-    ok(
+    let remaining = combined_certificate(&f, "combined");
+    let completed = ok(
         &f.book,
         &[
-            "close", "run", "--run", "combined", "--task", "finish", "--plan", &plan_path, "--as",
-            CONTROLLER, "--yes",
+            "close",
+            "run",
+            "--run",
+            "combined",
+            "--rehearsal",
+            &remaining,
+            "--task",
+            "finish",
+            "--plan",
+            &plan_path,
+            "--as",
+            CONTROLLER,
+            "--yes",
         ],
+    );
+    assert_eq!(
+        text(&completed, "rehearsal"),
+        remaining.strip_prefix("C:").unwrap()
     );
     let after = head(&f.book);
     let output_path = f.dir.join("combined-replayed.bin").display().to_string();
@@ -785,4 +816,196 @@ fn combined_close_review_rejects_conflicting_selectors_before_retention() {
         assert_eq!(run(&f.book, &args).0, 2);
         assert_eq!(head(&f.book), before);
     }
+}
+
+#[test]
+fn close_run_selected_rehearsal_rejects_offsetting_activity_and_accepts_a_fresh_review() {
+    let f = Fixture::new(false);
+    let first = reviewed_draft(&f, "selected-first", "15.00");
+    let second = reviewed_draft(&f, "selected-second", "5.00");
+    let definition = format!(
+        r#"[
+        {{"id":"first","certificate":"{first}"}},
+        {{"id":"second","depends_on":["first"],"certificate":"{second}"}}
+    ]"#
+    );
+    ok(
+        &f.book,
+        &[
+            "close",
+            "start",
+            "--run",
+            "selected",
+            "--period",
+            PERIOD,
+            "--tasks",
+            &definition,
+            "--as",
+            CONTROLLER,
+        ],
+    );
+    let selected = combined_certificate(&f, "selected");
+    f.post("selected-later", "1000", "4000", "2.00");
+    f.post("selected-offset", "4000", "1000", "2.00");
+    let before = head(&f.book);
+    for _ in 0..2 {
+        let (code, refusal) = run(
+            &f.book,
+            &[
+                "close",
+                "run",
+                "--run",
+                "selected",
+                "--rehearsal",
+                &selected,
+                "--as",
+                CONTROLLER,
+                "--yes",
+            ],
+        );
+        assert_eq!(
+            code, 6,
+            "a changed source requires a fresh review: {refusal:?}"
+        );
+        assert_eq!(head(&f.book), before);
+        let view = status(&f, "selected");
+        assert_eq!(get(task(&view, "first"), "completion"), &Json::Null);
+        assert_eq!(get(task(&view, "second"), "completion"), &Json::Null);
+    }
+    let fresh = combined_certificate(&f, "selected");
+    let before = head(&f.book);
+    let args = [
+        "close",
+        "run",
+        "--run",
+        "selected",
+        "--rehearsal",
+        &fresh,
+        "--as",
+        CONTROLLER,
+        "--yes",
+    ];
+    let progress = ok(&f.book, &args);
+    assert_eq!(text(&progress, "state"), "complete");
+    assert_eq!(text(&progress, "rehearsal"), fresh.strip_prefix("C:").unwrap());
+    assert_eq!(get(&progress, "completed").as_arr().unwrap().len(), 2);
+    assert_eq!(head(&f.book), before + 2);
+    assert_eq!(run(&f.book, &args).0, 6);
+    assert_eq!(
+        head(&f.book),
+        before + 2,
+        "the completed review is stale and cannot repeat its effects"
+    );
+
+    let complete = combined_certificate(&f, "selected");
+    let before = head(&f.book);
+    let retried = ok(
+        &f.book,
+        &[
+            "close",
+            "run",
+            "--run",
+            "selected",
+            "--rehearsal",
+            &complete,
+            "--as",
+            CONTROLLER,
+            "--yes",
+        ],
+    );
+    assert_eq!(text(&retried, "state"), "complete");
+    assert!(get(&retried, "completed").as_arr().unwrap().is_empty());
+    assert_eq!(head(&f.book), before);
+}
+
+#[test]
+fn close_run_selected_rehearsal_requires_the_exact_run_family_and_locator() {
+    let f = Fixture::new(false);
+    let first = reviewed_draft(&f, "binding-first", "15.00");
+    let other = reviewed_draft(&f, "binding-other", "15.00");
+    for (name, certificate) in [("binding", &first), ("other", &other)] {
+        let definition = format!(r#"[{{"id":"one","certificate":"{certificate}"}}]"#);
+        ok(
+            &f.book,
+            &[
+                "close",
+                "start",
+                "--run",
+                name,
+                "--period",
+                PERIOD,
+                "--tasks",
+                &definition,
+                "--as",
+                CONTROLLER,
+            ],
+        );
+    }
+    let selected = combined_certificate(&f, "binding");
+    let unknown = format!("C:{}", "00".repeat(32));
+    let before = head(&f.book);
+    for (name, selector) in [
+        ("binding", first.as_str()),
+        ("binding", unknown.as_str()),
+        ("binding", "C:invalid"),
+        ("other", selected.as_str()),
+    ] {
+        assert_ne!(
+            run(
+                &f.book,
+                &[
+                    "close",
+                    "run",
+                    "--run",
+                    name,
+                    "--rehearsal",
+                    selector,
+                    "--as",
+                    CONTROLLER,
+                    "--yes",
+                ],
+            )
+            .0,
+            0,
+            "wrong family, missing digest, malformed locator or another run must refuse",
+        );
+        assert_eq!(head(&f.book), before);
+    }
+    for name in ["binding", "other"] {
+        assert_eq!(
+            get(task(&status(&f, name), "one"), "completion"),
+            &Json::Null
+        );
+    }
+    assert_eq!(
+        run(
+            &f.book,
+            &[
+                "close",
+                "run",
+                "--run",
+                "binding",
+                "--rehearsal",
+                &selected,
+                "--rehearsal",
+                &selected,
+                "--as",
+                CONTROLLER,
+                "--yes",
+            ],
+        )
+        .0,
+        2,
+        "a repeated selector cannot silently replace the operator's choice",
+    );
+    assert_eq!(
+        run(
+            &f.book,
+            &["close", "status", "--run", "binding", "--rehearsal", &selected],
+        )
+        .0,
+        2,
+        "the execution selector belongs only to close run",
+    );
+    assert_eq!(head(&f.book), before);
 }
