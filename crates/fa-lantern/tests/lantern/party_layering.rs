@@ -321,6 +321,42 @@ fn a_counterparty_cycle_through_one_clearing_account_is_found_through_parties() 
     assert!(none.findings.is_empty(), "{:?}", none.findings);
 }
 
+#[test]
+fn a_party_cycle_cannot_close_with_an_earlier_same_day_transfer() {
+    use fa_lantern::graph::PartyCircularFlows;
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = None;
+    let (_, a) = party(&h, &mut snapshot, "SHELL-A");
+    let (_, b) = party(&h, &mut snapshot, "SHELL-B");
+    let (_, c) = party(&h, &mut snapshot, "SHELL-C");
+    let date = day(2026, 1, 5);
+    let ab = transfer(&mut h, 921, date, "1010", Some(b), "1010", Some(a), 100_000);
+    let bc = transfer(&mut h, 923, date, "1010", Some(c), "1010", Some(b), 100_000);
+    let ca = transfer(&mut h, 922, date, "1010", Some(a), "1010", Some(c), 100_000);
+    snapshot.entries = vec![ab, bc, ca];
+    let procedure = PartyCircularFlows::new().unwrap();
+    let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+    assert!(result.findings.is_empty(), "{:?}", result.findings);
+
+    // The same PAID edges with forward recorded sequences remain a positive
+    // cycle. These are projection fixtures; the account controls post natively.
+    for (index, entry) in snapshot.entries.iter_mut().enumerate() {
+        entry.recorded_at = CommitSeq(930 + u64::try_from(index).unwrap());
+    }
+    let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+    assert_eq!(result.findings.len(), 1, "{:?}", result.findings);
+    let cited: Vec<_> = result.findings[0]
+        .cites
+        .iter()
+        .filter_map(|cite| match cite {
+            Cite::Entry(vid) => Some(*vid),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cited, vec![VId(921), VId(923), VId(922)]);
+}
+
 /// fa-b6xs acceptance 1 (the differential half): the PAID projection equals
 /// fa-reference's literal fold (`paid_fold`, its own limb arithmetic) over
 /// seeded generated histories: one or two units, an implicit, a single named

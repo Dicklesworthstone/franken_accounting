@@ -3,10 +3,92 @@
 //! positive motifs and the otherwise identical separated controls.
 
 use super::*;
-use fa_lantern::graph::{Communities, RelatedPartyExposure, ShellSignature};
+use fa_lantern::graph::{CircularFlows, Communities, RelatedPartyExposure, ShellSignature};
 
 const ENTITY_A: VId = VId(70_001);
 const ENTITY_B: VId = VId(70_002);
+
+fn assert_native_same_day_cycle(order: &[(&'static str, &'static str)], expected: bool) {
+    let mut h = harness();
+    let date = day(2026, 1, 5);
+    let entries: Vec<_> = order
+        .iter()
+        .map(|&(from, to)| h.post(&Spec::simple(date, to, from, 100_000)))
+        .collect();
+    assert!(h.posted.windows(2).all(|pair| pair[0].1 < pair[1].1));
+    let snapshot = h.snapshot();
+    let procedure = CircularFlows::new().unwrap();
+    let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+    h.assert_cites_resolve(&result);
+    if expected {
+        assert_eq!(result.findings.len(), 1, "{:?}", result.findings);
+        let finding = &result.findings[0];
+        let cited: Vec<_> = finding
+            .cites
+            .iter()
+            .filter_map(|cite| match cite {
+                Cite::Entry(vid) => Some(*vid),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cited, entries);
+        assert_eq!(finding.statistic.value, 100_000);
+    } else {
+        assert!(
+            result.findings.is_empty(),
+            "same-day transfers {order:?} require a backwards recorded hop: {:?}",
+            result.findings
+        );
+    }
+    let mut permuted = snapshot.clone();
+    permuted.entries.reverse();
+    assert_eq!(
+        run_over(&permuted, &h.book, &procedure).unwrap().findings,
+        result.findings
+    );
+    assert!(
+        determinism(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
+}
+
+#[test]
+fn circular_flows_cannot_close_with_an_earlier_same_day_transfer() {
+    assert_native_same_day_cycle(
+        &[("1000", "1010"), ("1010", "1020"), ("1020", "1000")],
+        true,
+    );
+    // The closing transfer was recorded before the intermediate one.
+    assert_native_same_day_cycle(
+        &[("1000", "1010"), ("1020", "1000"), ("1010", "1020")],
+        false,
+    );
+}
+
+#[test]
+fn circular_flows_cannot_continue_with_an_earlier_same_day_transfer() {
+    assert_native_same_day_cycle(
+        &[
+            ("1000", "1010"),
+            ("1010", "1020"),
+            ("1020", "1200"),
+            ("1200", "1000"),
+        ],
+        true,
+    );
+    // The final transfer is in order, but reaching it would require going
+    // backwards from B->C to the earlier C->D transfer.
+    assert_native_same_day_cycle(
+        &[
+            ("1000", "1010"),
+            ("1020", "1200"),
+            ("1010", "1020"),
+            ("1200", "1000"),
+        ],
+        false,
+    );
+}
 
 fn reseal(entry: &mut fa_lantern::SnapshotEntry) {
     let mut proposal = entry.entry.proposal.clone();
