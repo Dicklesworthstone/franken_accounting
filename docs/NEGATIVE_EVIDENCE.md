@@ -3703,3 +3703,11 @@ Native rerun remains required. The same candidate's strict Clippy natively
 passed (`-D warnings`, 101575 ms), but RCH returned outer 1; official recovery
 returned 0. Exact Tier 0 likewise had native check 0 / 634690 ms and outer
 1, yielding 1 PASS / 1 FAIL / 0 UNRUN and no exact-tree PASS authority.
+
+Validation correction: the batched formatting check for the new foundation
+fixture returned 1 for a long iterator expression. The agent committed
+`5b5d8047` before inspecting that result, incorrectly writing that formatting
+passed. The line is now wrapped manually; the failed result and original
+commit remain in history. No gate or formatter rule is changed. Subsequent
+commits must wait for inspection of every required check result, rather than
+continuing merely because the tool call itself returned successfully.

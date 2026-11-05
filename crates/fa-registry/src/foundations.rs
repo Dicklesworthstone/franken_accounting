@@ -773,7 +773,11 @@ mod tests {
             ("franken_markdown-icc", "0.7.0"),
             ("franken_markdown-math", "0.3.0"),
         ] {
-            let pin = stack.foundations.iter().find(|pin| pin.name == name).unwrap();
+            let pin = stack
+                .foundations
+                .iter()
+                .find(|pin| pin.name == name)
+                .unwrap();
             assert_eq!(
                 pin.source,
                 "git+https://github.com/Dicklesworthstone/franken_markdown"
