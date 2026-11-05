@@ -104,7 +104,10 @@ fn exported(book: &Path, args: &[&str]) -> Json {
     let line = ok(book, &argv);
     assert_eq!(text(&line, "event"), "proof_exported");
     assert_eq!(text(&line, "kind"), args[0]);
-    if args[0] == "signed-checkpoint" {
+    if args[0] == "access-log" {
+        assert_eq!(text(&line, "signatures"), "ed25519");
+        assert_eq!(text(&line, "trust"), "recipient_book_branch_and_checkpoint_key");
+    } else if args[0] == "signed-checkpoint" {
         assert_eq!(text(&line, "signatures"), "ed25519");
         assert_eq!(text(&line, "trust"), "checkpoint_public_key");
     } else if args[0] == "state" {

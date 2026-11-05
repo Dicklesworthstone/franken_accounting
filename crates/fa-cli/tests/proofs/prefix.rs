@@ -240,3 +240,211 @@ fn native_prefixes_keep_admission_before_io_and_cannot_expand_bound_host_authori
     );
     assert_eq!(book.head().unwrap(), before);
 }
+
+#[test]
+fn portable_access_log_export_verifies_offline_and_preserves_its_retained_checkpoint() {
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    let auditor = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "portable-access-auditor",
+        LaunchProfile::Preparer,
+        &["read"],
+    )
+    .unwrap();
+    let other = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "portable-access-other",
+        LaunchProfile::Preparer,
+        &["read"],
+    )
+    .unwrap();
+    let after = f.head();
+    for authority in [&auditor, &other] {
+        let (code, log) = bound(authority, &["access", "log"]);
+        assert_eq!(code, 0, "{}", log.render());
+    }
+    let events = f.open().access_log(fgdb_types::CommitSeq(after)).unwrap();
+    assert_eq!(events.len(), 2);
+    let created = f.checkpoint();
+    let oid = text(&created, "oid");
+    let expected = fa_verify::AccessLogExpectation {
+        book_id: BOOK_ID.0,
+        branch_id: Id128::TRUNK.0,
+        checkpoint_oid: Some(unhex(text(&created, "checkpoint_oid")).try_into().unwrap()),
+    };
+    // The fixture independently retains its key and identities before asking
+    // the exporter for an artifact; no trust key is taken from that artifact.
+    let key = f.open().checkpoint_public_key();
+    let request = fa_verify::AccessLogRequest {
+        after_seq: after,
+        through_seq: u64::try_from(integer(&created, "through_seq")).unwrap(),
+        principal: Some(principal_vid("portable-access-auditor").0),
+    };
+    let proof = exported(&f.book, &["access-log", "--state", oid]);
+    assert_eq!(text(&proof, "scope"), "seq_range_complete");
+    assert_eq!(
+        text(get(&proof, "claim"), "payload_coverage"),
+        "all_checkpoint_records"
+    );
+    assert_eq!(
+        text(get(&proof, "claim"), "meaning"),
+        "recorded_pre_disclosure_attempts"
+    );
+    let retained = bytes(&proof);
+    let verified = fa_verify::verify_access_log_proof(&retained, &[key], &request, &expected)
+        .expect("native producer bytes pass the independent verifier");
+    let selected = events
+        .iter()
+        .find(|event| Some(event.record.principal.0) == request.principal)
+        .unwrap();
+    assert_eq!(verified.events.len(), 1);
+    assert_eq!(verified.events[0].recorded_at, selected.recorded_at.0);
+    assert_eq!(verified.events[0].principal, selected.record.principal.0);
+    assert_eq!(verified.events[0].command, selected.record.command);
+    assert_eq!(verified.events[0].request_digest, selected.record.request_digest);
+    assert!(verified.checked_records > events.len());
+    assert!(
+        fa_verify::verify_access_log_proof(
+            &retained,
+            &[key],
+            &fa_verify::AccessLogRequest {
+                principal: Some(u128::MAX),
+                ..request
+            },
+            &expected,
+        )
+        .unwrap()
+        .events
+        .is_empty()
+    );
+    assert_eq!(
+        fa_verify::verify_access_log_proof(
+            &retained,
+            &[key],
+            &request,
+            &fa_verify::AccessLogExpectation {
+                book_id: [0xfe; 16],
+                ..expected
+            },
+        )
+        .unwrap_err()
+        .predicate,
+        "access.identity"
+    );
+
+    let (code, later_read) = bound(&auditor, &["access", "log"]);
+    assert_eq!(code, 0, "{}", later_read.render());
+    f.post("after-access-proof", "2026-03-20", "2.00", &evidence);
+    f.checkpoint();
+    let before = f.head();
+    assert_eq!(bytes(&exported(&f.book, &["access-log", "--state", oid])), retained);
+    let latest = bytes(&exported(&f.book, &["access-log"]));
+    assert_eq!(
+        fa_verify::verify_access_log_proof(&latest, &[key], &request, &expected)
+            .unwrap_err()
+            .predicate,
+        "access.checkpoint_pin",
+        "a newer legitimate checkpoint cannot replace an exact retained pin"
+    );
+    let path = f.dir.join("access-log.proof");
+    let file = exported(
+        &f.book,
+        &["access-log", "--state", oid, "--out", path.to_str().unwrap()],
+    );
+    assert_eq!(get(&file, "bytes"), &Json::Null);
+    assert_eq!(std::fs::read(&path).unwrap(), retained);
+    assert_eq!(f.head(), before, "proof export publishes no checkpoint");
+
+    // Leave the original source path unavailable. The independent CLI can
+    // read exactly one proof file; it cannot open the preserved source book.
+    std::fs::rename(&f.book, f.dir.join("retained-source-book")).unwrap();
+    assert!(!f.book.exists());
+    let args = [
+        "access-log",
+        path.to_str().unwrap(),
+        "--book",
+        &fa_verify::blake3::hex(&expected.book_id),
+        "--branch",
+        &fa_verify::blake3::hex(&expected.branch_id),
+        "--expect-checkpoint",
+        &fa_verify::blake3::hex(&expected.checkpoint_oid.unwrap()),
+        "--key",
+        &fa_verify::blake3::hex(&key),
+        "--after-seq",
+        &request.after_seq.to_string(),
+        "--through-seq",
+        &request.through_seq.to_string(),
+        "--reader",
+        &format!("{:032x}", request.principal.unwrap()),
+        "--json",
+    ]
+    .map(str::to_string);
+    let read = |requested: &str| {
+        if requested == path.to_str().unwrap() {
+            std::fs::read(&path)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "offline verifier may read only the retained proof",
+            ))
+        }
+    };
+    let output = fa_verify::cli::run(&args, &read);
+    assert_eq!(output.exit, 0, "{}\n{}", output.stdout, output.stderr);
+    let result = json::parse(output.stdout.trim()).unwrap();
+    let check = &get(&result, "checks").as_arr().unwrap()[0];
+    assert_eq!(text(check, "scope"), "access_log_complete");
+    let detail = get(check, "detail");
+    assert_eq!(text(detail, "source_selection"), "recipient_bound");
+    assert_eq!(integer(detail, "count"), 1);
+}
+
+#[test]
+fn portable_access_log_export_requires_current_whole_book_read_and_produce() {
+    let missing = temp_dir().join("absent-access-source");
+    for grants in [&["read"][..], &["produce"][..], &[][..]] {
+        let authority = LaunchAuthority::new(
+            missing.clone(),
+            None,
+            "access-proof-agent",
+            LaunchProfile::Agent,
+            grants,
+        )
+        .unwrap();
+        let (code, _) = bound(&authority, &["proof", "access-log"]);
+        assert_eq!(code, 7);
+    }
+    assert!(!missing.exists(), "operation denial precedes source I/O");
+    let f = Fixture::new();
+    f.checkpoint();
+    let book = f.open();
+    let before = book.head().unwrap();
+    let holder = principal_vid("access-proof-auditor");
+    let capability = Capability::embedded(holder, &["read", "produce"]).unwrap();
+    let unknown = fa::ProofRequest {
+        state: Some(Oid([0xff; 32])),
+        kind: fa::ProofKind::AccessLog,
+    };
+    for restricted in [
+        capability.clone().expiring_at(before),
+        capability.clone().for_accounts(&["1000"]).unwrap(),
+        capability.clone().for_periods(&["FY2026-P03"]).unwrap(),
+        capability
+            .clone()
+            .for_classes(&[fa_model::EntryClass::PERIOD_CONTROL])
+            .unwrap(),
+    ] {
+        assert_eq!(
+            book.export_proof(holder, &restricted, unknown)
+                .unwrap()
+                .unwrap_err()
+                .exit,
+            7,
+            "authority is checked before resolving the deliberately unknown state"
+        );
+    }
+    assert_eq!(book.head().unwrap(), before);
+}

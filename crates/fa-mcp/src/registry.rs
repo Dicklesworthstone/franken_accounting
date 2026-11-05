@@ -2970,6 +2970,7 @@ mod tests {
                 "consistency",
                 "suffix",
                 "prefix",
+                "access-log",
                 "balance",
                 "evidence-disclosure"
             ])
@@ -3040,6 +3041,10 @@ mod tests {
             (
                 json!({"kind": "prefix", "state": "latest"}),
                 vec!["proof", "prefix", "--state", "latest", "--json"],
+            ),
+            (
+                json!({"kind": "access-log", "state": state}),
+                vec!["proof", "access-log", "--state", &state, "--json"],
             ),
             (
                 json!({"kind": "balance", "state": state, "account": "1000", "unit": "USD", "as_of": "2026-03-31"}),

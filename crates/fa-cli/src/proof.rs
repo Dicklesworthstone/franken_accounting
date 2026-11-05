@@ -12,7 +12,7 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, Files, Out, hex, usage};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa proof signed-checkpoint|checkpoint|state|inclusion|consistency|suffix|prefix|balance|evidence-disclosure --state <oid|latest> [--out <new-file>] --json";
+const EXAMPLE: &str = "fa proof signed-checkpoint|checkpoint|state|inclusion|consistency|suffix|prefix|access-log|balance|evidence-disclosure --state <oid|latest> [--out <new-file>] --json";
 
 const SUFFIX_EXAMPLE: &str = "fa proof suffix --state <retained-state-oid> [--next-state <oid|latest>] [--out <new-directory>] --json";
 
@@ -74,7 +74,7 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage("proof takes --with-record only once", EXAMPLE));
     }
     let applicable: &[&str] = match kind {
-        "signed-checkpoint" | "checkpoint" | "state" | "prefix" => &[],
+        "signed-checkpoint" | "checkpoint" | "state" | "prefix" | "access-log" => &[],
         "inclusion" => &["--entry"],
         "consistency" | "suffix" => &["--next-state"],
         "balance" => &["--account", "--unit", "--as-of"],
@@ -321,6 +321,7 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "signed-checkpoint" => ProofKind::SignedCheckpoint,
         "prefix" if args.switch("--with-record") => ProofKind::PrefixWithRecords,
         "prefix" => ProofKind::Prefix,
+        "access-log" => ProofKind::AccessLog,
         "inclusion" => ProofKind::Inclusion {
             entry: entry.ok_or_else(|| usage("--entry is required", EXAMPLE))?,
             with_record: args.switch("--with-record"),
@@ -411,6 +412,19 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("with_record", Json::Bool(true)),
             ("payload_coverage", s("all_checkpoint_entries")),
         ]),
+        ProofKind::AccessLog => obj(vec![
+            ("with_record", Json::Bool(true)),
+            ("payload_coverage", s("all_checkpoint_records")),
+            ("signature_scope", s("checkpoint")),
+            ("meaning", s("recorded_pre_disclosure_attempts")),
+            (
+                "access_after_seq",
+                state
+                    .state
+                    .access_after
+                    .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+            ),
+        ]),
         ProofKind::Balance {
             account,
             unit,
@@ -432,8 +446,10 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let encoded = output.is_none().then(|| hex(&artifact.bytes));
     let public_key = hex(&book.checkpoint_public_key());
-    let signed = matches!(proof_kind, ProofKind::SignedCheckpoint);
-    let trust_note = if proof_kind == ProofKind::State {
+    let signed = matches!(proof_kind, ProofKind::SignedCheckpoint | ProofKind::AccessLog);
+    let trust_note = if proof_kind == ProofKind::AccessLog {
+        "The file contains the canonical state, its signed checkpoint and every checkpoint payload. Verify your independently selected source and interval with `fa-verify access-log <proof-file> --book <expected-book-id> --branch <expected-branch-id> --key <trusted-key> --after-seq <exclusive-start> --through-seq <inclusive-end> [--reader <principal-vid>] [--expect-checkpoint <retained-checkpoint-oid>]`. The result proves recorded access attempts; successful delivery is not established.".to_string()
+    } else if proof_kind == ProofKind::State {
         format!(
             "Authenticate this full state's oid against its signed checkpoint. Export signed-checkpoint and prefix --with-record using the same --state {}. A raw 80-byte checkpoint does not bind the evidence or access coverage boundaries. Verify an independently selected access-log interval with `fa-verify access-log <prefix-file> --state <state-file> --checkpoint <signed-checkpoint-file> --key {public_key} --after-seq <exclusive-start> --through-seq <inclusive-end> [--reader <principal-vid>]`.",
             hex(&state.oid.0),
@@ -492,7 +508,9 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("signatures", s(if signed { "ed25519" } else { "unsigned" })),
             (
                 "trust",
-                s(if signed {
+                s(if proof_kind == ProofKind::AccessLog {
+                    "recipient_book_branch_and_checkpoint_key"
+                } else if signed {
                     "checkpoint_public_key"
                 } else if proof_kind == ProofKind::State {
                     "signed_state_oid_required"

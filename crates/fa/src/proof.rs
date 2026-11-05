@@ -5,8 +5,8 @@
 //! trusts: either the state's `TransparencyCheckpoint` signed by the book's
 //! key ([`ProofKind::SignedCheckpoint`], checked with `--key`), or the raw
 //! 80-byte statement ([`ProofKind::Checkpoint`]) whose trust the outsider
-//! establishes separately. A proof never authenticates its own anchor, and
-//! no artifact here carries document receipts. The exported checkpoint is a
+//! establishes separately. A proof never authenticates its own anchor or the
+//! authenticity of source documents. The exported checkpoint is a
 //! candidate trust anchor, never its own proof of authenticity.
 //! Balance exports are always payload-complete v3 (`prove_balance_complete`,
 //! refused rather than truncated). Legacy notary v1/v2 balance APIs remain
@@ -16,6 +16,9 @@
 //! any account, unit, or migration-balance policy. Prefix retains v1 bytes.
 //! State exports the full canonical AccumulatorState, including its evidence
 //! and access coverage boundaries, for binding to a signed checkpoint's oid.
+//! AccessLog packages that state, its signed checkpoint and the full native
+//! prefix in one bounded file. The recipient selects the book, branch, interval
+//! and optional reader independently; the result proves recorded attempts.
 
 use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
@@ -33,6 +36,10 @@ use crate::{BookError, Outcome};
 
 /// Shared producer limit; the standalone verifier also bounds its input.
 pub const MAX_PROOF_BYTES: usize = fa_notary::migration_balance::MAX_BALANCE_PROOF_BYTES;
+/// State, signed checkpoint and native payload-complete prefix, each length-prefixed.
+pub const ACCESS_LOG_PROOF_FORMAT: &[u8] = b"fa:access-log-proof:v1";
+const MAX_ACCESS_STATE_BYTES: usize = 4096;
+const MAX_ACCESS_CHECKPOINT_BYTES: usize = 128 * 1024;
 
 pub mod code {
     /// The requested checkpoint is not on this book's recorded state chain.
@@ -66,6 +73,10 @@ pub enum ProofKind {
     /// Every envelope AND entry payload, including controls and staged entries.
     /// Explicit whole-book disclosure for independent scope derivation.
     PrefixWithRecords,
+    /// One portable state, signed checkpoint and full payload prefix. The
+    /// recipient supplies its own book, branch, recording interval and reader.
+    /// This discloses the whole prefix, including other readers and entries.
+    AccessLog,
     /// Exact posted amounts with every prefix entry payload for scope derivation.
     /// This is whole-book disclosure, not an account-filtered entry export.
     Balance {
@@ -85,6 +96,7 @@ impl ProofKind {
             Self::Inclusion { .. } => "inclusion",
             Self::Consistency { .. } => "consistency",
             Self::Prefix | Self::PrefixWithRecords => "prefix",
+            Self::AccessLog => "access-log",
             Self::Balance { .. } => "balance",
         }
     }
@@ -95,7 +107,7 @@ impl ProofKind {
             Self::State | Self::Checkpoint | Self::SignedCheckpoint => "entry_prefix",
             Self::Inclusion { .. } => "inclusion",
             Self::Consistency { .. } => "consistency",
-            Self::Prefix | Self::PrefixWithRecords => "seq_range_complete",
+            Self::Prefix | Self::PrefixWithRecords | Self::AccessLog => "seq_range_complete",
             Self::Balance { .. } => "recomputation",
         }
     }
@@ -356,6 +368,45 @@ pub(crate) fn export_suffix<V: Vfs + Clone>(
     }))
 }
 
+/// Bound every component and their aggregate framing before allocating the
+/// portable transport. Selection belongs to the recipient, so no payload is
+/// filtered from the native prefix here.
+fn access_log_proof(state: &[u8], checkpoint: &[u8], prefix: &[u8]) -> Result<Vec<u8>, Refusal> {
+    let limit = || {
+        Refusal::new(
+            code::PROOF_EXPORT_LIMIT,
+            exit::USAGE,
+            "the complete access-log proof exceeds its component or 64 MiB aggregate limit",
+            "plan §9.7 / §13.3 (bounded full-prefix access-attempt evidence)",
+            "select an earlier checkpoint; access-log proofs never omit records to fit the transport",
+        )
+    };
+    if state.len() > MAX_ACCESS_STATE_BYTES || checkpoint.len() > MAX_ACCESS_CHECKPOINT_BYTES {
+        return Err(limit());
+    }
+    let size = [
+        4,
+        ACCESS_LOG_PROOF_FORMAT.len(),
+        4,
+        state.len(),
+        4,
+        checkpoint.len(),
+        4,
+        prefix.len(),
+    ]
+    .into_iter()
+    .try_fold(0usize, usize::checked_add)
+    .filter(|size| *size <= MAX_PROOF_BYTES)
+    .ok_or_else(limit)?;
+    let mut writer = Writer::with_capacity(size);
+    writer
+        .bytes(ACCESS_LOG_PROOF_FORMAT)
+        .bytes(state)
+        .bytes(checkpoint)
+        .bytes(prefix);
+    writer.finish().map_err(|_| limit())
+}
+
 pub(crate) fn export<V: Vfs + Clone>(
     db: &Database<V>,
     ctx: &fgdb_types::context::PurposeContexts,
@@ -400,6 +451,25 @@ pub(crate) fn export<V: Vfs + Clone>(
         ProofKind::Prefix => fa_notary::prove_prefix(db, book, &checkpoint.state)?,
         ProofKind::PrefixWithRecords => {
             fa_notary::prefix::prove_prefix_with_records(db, book, &checkpoint.state)?
+        }
+        ProofKind::AccessLog => {
+            if checkpoint.state.access_after.is_none() {
+                return Ok(Err(Refusal::new(
+                    fa_notary::code::SCOPE_UNSUPPORTED,
+                    exit::REFUSAL,
+                    "the selected checkpoint does not authenticate access-event coverage",
+                    "plan §9.7 / §13.3 (access extracts require a signed coverage boundary)",
+                    "select a checkpoint whose canonical state declares access-event coverage",
+                )));
+            }
+            let signed = match fa_notary::stored_checkpoint(db, ctx, book, &checkpoint, signer)? {
+                Ok(signed) => signed,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            match fa_notary::prefix::prove_prefix_with_records(db, book, &checkpoint.state)? {
+                Ok(prefix) => access_log_proof(&checkpoint.bytes, &signed.bytes, &prefix),
+                Err(refusal) => Err(refusal),
+            }
         }
         ProofKind::Balance {
             account,
