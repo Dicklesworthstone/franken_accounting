@@ -601,6 +601,8 @@ fn cgse_digest_hex(decisions: &[(&str, &str)], n: usize, m: usize, term: &str) -
 /// `graph.circular_flows`: directed k-cycles in the money-flow DiGraph where
 /// bottleneck flow retains at least `min_retention_bps` of the initial leg,
 /// decomposed by `fnx_algorithms::strongly_connected_components` with a CGSE witness.
+/// Version 2 advances every hop in effective/recorded order, including the
+/// closing hop; version 1 could revisit an earlier same-day transfer.
 pub struct CircularFlows {
     params: Params,
 }
@@ -611,7 +613,7 @@ impl Procedure for CircularFlows {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -651,7 +653,7 @@ impl Procedure for PartyCircularFlows {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1141,22 +1143,28 @@ fn circular_flows(
                 visited_accts.insert(first.to);
                 let mut cur_acct = first.to;
                 let mut cur_day = first.effective_date.0;
+                let mut last_idx = start_idx;
                 let mut min_flow = first.mantissa;
                 let mut closed = false;
                 while path_indices.len() < max_hops {
                     work.compare(1)?;
+                    // SCC filtering preserves the effective/recorded/identity
+                    // order above. Advance past the last accepted hop, not
+                    // merely past the first one, on both search paths.
                     if let Some((close_idx, close_leg)) = scc_legs
                         .iter()
                         .enumerate()
-                        .skip(start_idx + 1)
+                        .skip(last_idx + 1)
                         .find(|(idx, l)| {
                             !used[*idx]
                                 && !path_indices.contains(idx)
                                 && l.from == cur_acct
                                 && l.to == first.from
                                 && l.effective_date.0 >= cur_day
-                                && (l.effective_date.0 - first.effective_date.0) <= window_days
-                                && l.entry != scc_legs[*path_indices.last().unwrap()].entry
+                                && (i64::from(l.effective_date.0)
+                                    - i64::from(first.effective_date.0))
+                                    <= i64::from(window_days)
+                                && l.entry != scc_legs[last_idx].entry
                         })
                     {
                         let candidate_min = min_flow.min(close_leg.mantissa);
@@ -1172,13 +1180,14 @@ fn circular_flows(
                         break;
                     }
                     let mut next_opt = None;
-                    for (idx, l) in scc_legs.iter().enumerate().skip(start_idx + 1) {
+                    for (idx, l) in scc_legs.iter().enumerate().skip(last_idx + 1) {
                         if !used[idx]
                             && !path_indices.contains(&idx)
                             && l.from == cur_acct
                             && !visited_accts.contains(&l.to)
                             && l.effective_date.0 >= cur_day
-                            && (l.effective_date.0 - first.effective_date.0) <= window_days
+                            && (i64::from(l.effective_date.0) - i64::from(first.effective_date.0))
+                                <= i64::from(window_days)
                             && amount_share_bps(
                                 l.mantissa.min(min_flow),
                                 first.mantissa,
@@ -1194,6 +1203,7 @@ fn circular_flows(
                         visited_accts.insert(next_leg.to);
                         cur_acct = next_leg.to;
                         cur_day = next_leg.effective_date.0;
+                        last_idx = next_idx;
                         min_flow = min_flow.min(next_leg.mantissa);
                     } else {
                         break;

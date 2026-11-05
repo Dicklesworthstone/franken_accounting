@@ -506,8 +506,160 @@ pub fn render_svg(
 /// new page.
 const PDF_BOTTOM: i64 = 48;
 
-/// What every page dictionary holds besides its parent and contents.
-const PAGE_DICT_TAIL: &str = "/MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >>";
+/// Font resources shared by every page.
+const PAGE_RESOURCES: &str = "/Resources << /Font << /F1 4 0 R >> >>";
+const PDF_COORDINATE_SCALE: i128 = 100_000_000;
+
+struct PdfTableLayout {
+    /// Each column's left edge and width, in whole PDF points.
+    columns: Vec<(i128, i128)>,
+    right: i128,
+}
+
+fn pdf_layout_error() -> StatementError {
+    StatementError::Input("PDF column geometry has an invalid scale or integer range".into())
+}
+
+/// Measure exactly the glyphs `escape_pdf_string` will put on the page.
+fn pdf_text_width(font: &Font, text: &str, size: i128) -> Result<i128, StatementError> {
+    let advance = text
+        .chars()
+        .try_fold(0_i128, |advance, ch| {
+            let displayed = if ch.is_ascii_graphic() || ch == ' ' {
+                ch
+            } else {
+                '?'
+            };
+            advance.checked_add(i128::from(font.advance_width(font.glyph_index(displayed))))
+        })
+        .ok_or_else(pdf_layout_error)?;
+    advance
+        .checked_mul(size)
+        .and_then(|value| value.checked_mul(PDF_COORDINATE_SCALE))
+        .and_then(|value| value.checked_div(i128::from(font.units_per_em)))
+        .ok_or_else(pdf_layout_error)
+}
+
+fn pdf_text_width_points(font: &Font, text: &str, size: i128) -> Result<i128, StatementError> {
+    pdf_text_width(font, text, size)?
+        .checked_add(99_999_999)
+        .and_then(|value| value.checked_div(PDF_COORDINATE_SCALE))
+        .ok_or_else(pdf_layout_error)
+}
+
+fn pdf_page_width(content_right: i128) -> Result<i128, StatementError> {
+    let width = content_right
+        .checked_add(36)
+        .ok_or_else(pdf_layout_error)?
+        .max(612);
+    // Adobe PDF Reference 1.7, Appendix C: default user-space dimensions
+    // cannot exceed 14,400 units. This renderer does not set /UserUnit.
+    if width > 14_400 {
+        return Err(StatementError::Input(
+            "PDF content exceeds the 14400-unit page limit; reduce columns or label length, or render HTML".into(),
+        ));
+    }
+    Ok(width)
+}
+
+fn pdf_columns(widths: &[i128]) -> Result<PdfTableLayout, StatementError> {
+    let mut left = 36_i128;
+    let mut columns = Vec::with_capacity(widths.len());
+    for &width in widths {
+        columns.push((left, width));
+        left = left.checked_add(width).ok_or_else(pdf_layout_error)?;
+    }
+    Ok(PdfTableLayout {
+        columns,
+        right: left.max(576),
+    })
+}
+
+fn pdf_row_fits(
+    table: &MarkdownTable,
+    cells: &[String],
+    layout: &PdfTableLayout,
+    font: &Font,
+) -> Result<bool, StatementError> {
+    let mut previous_end = None;
+    let limit = layout
+        .right
+        .checked_sub(6)
+        .and_then(|value| value.checked_mul(PDF_COORDINATE_SCALE))
+        .ok_or_else(pdf_layout_error)?;
+    for (index, text) in cells
+        .iter()
+        .enumerate()
+        .filter(|(_, text)| !text.is_empty())
+    {
+        let x = pdf_cell_x(table, index, text, font, layout)?;
+        let end = x
+            .checked_add(pdf_text_width(font, text, 8)?)
+            .ok_or_else(pdf_layout_error)?;
+        if end > limit || previous_end.is_some_and(|previous| x < previous) {
+            return Ok(false);
+        }
+        if table.alignments.get(index) == Some(&ColumnAlignment::Right) {
+            let &(left, width) = layout.columns.get(index).ok_or_else(pdf_layout_error)?;
+            let right = left
+                .checked_add(width)
+                .and_then(|value| value.checked_sub(6))
+                .and_then(|value| value.checked_mul(PDF_COORDINATE_SCALE))
+                .ok_or_else(pdf_layout_error)?;
+            if end > right {
+                return Ok(false);
+            }
+        }
+        previous_end = Some(end.checked_add(600_000_000).ok_or_else(pdf_layout_error)?);
+    }
+    Ok(true)
+}
+
+fn pdf_table_layout(table: &MarkdownTable, font: &Font) -> Result<PdfTableLayout, StatementError> {
+    let count = table.headers.len();
+    if count == 0
+        || table.alignments.len() != count
+        || table.rows.iter().any(|row| row.cells.len() != count)
+    {
+        return Err(StatementError::Input(
+            "PDF table headers, alignments and row widths must agree".into(),
+        ));
+    }
+    let count_wide = i128::try_from(count).map_err(|_| pdf_layout_error())?;
+    let width = 540_i128
+        .checked_div(count_wide)
+        .ok_or_else(pdf_layout_error)?;
+    let mut widths = vec![width; count];
+    let initial = pdf_columns(&widths)?;
+    let mut fits = true;
+    for cells in std::iter::once(table.headers.as_slice())
+        .chain(table.rows.iter().map(|row| row.cells.as_slice()))
+    {
+        if !pdf_row_fits(table, cells, &initial, font)? {
+            fits = false;
+            break;
+        }
+    }
+    if fits {
+        return Ok(initial);
+    }
+    // Retain existing geometry when the text fits. Crowded tables receive
+    // full measured columns; no amount is clipped, shortened or scaled down.
+    for cells in std::iter::once(table.headers.as_slice())
+        .chain(table.rows.iter().map(|row| row.cells.as_slice()))
+    {
+        for (width, text) in widths.iter_mut().zip(cells) {
+            *width = (*width).max(
+                pdf_text_width_points(font, text, 8)?
+                    .checked_add(12)
+                    .ok_or_else(pdf_layout_error)?,
+            );
+        }
+    }
+    let expanded = pdf_columns(&widths)?;
+    pdf_page_width(expanded.right)?;
+    Ok(expanded)
+}
 
 /// PDF coordinates and font metrics use fixed decimal presentation units;
 /// accounting amounts have already been formatted by the exact Markdown IR.
@@ -536,47 +688,25 @@ fn pdf_cell_x(
     index: usize,
     text: &str,
     font: &Font,
-) -> Result<String, StatementError> {
-    let invalid_geometry = || {
-        StatementError::Input("PDF column geometry has an invalid scale or integer range".into())
-    };
-    let columns = i128::try_from(table.headers.len().max(1)).map_err(|_| invalid_geometry())?;
-    let column = i128::try_from(index).map_err(|_| invalid_geometry())?;
-    let width = 540_i128.checked_div(columns).ok_or_else(invalid_geometry)?;
-    let left = column
-        .checked_mul(width)
-        .and_then(|value| value.checked_add(36))
-        .and_then(|value| value.checked_mul(100_000_000))
-        .ok_or_else(invalid_geometry)?;
+    layout: &PdfTableLayout,
+) -> Result<i128, StatementError> {
+    let &(left_points, width) = layout.columns.get(index).ok_or_else(pdf_layout_error)?;
+    let left = left_points
+        .checked_mul(PDF_COORDINATE_SCALE)
+        .ok_or_else(pdf_layout_error)?;
     let x = match table.alignments.get(index) {
         Some(ColumnAlignment::Right) => {
-            let advance = text
-                .chars()
-                .try_fold(0_i128, |advance, ch| {
-                    let displayed = if ch.is_ascii_graphic() || ch == ' ' {
-                        ch
-                    } else {
-                        '?'
-                    };
-                    advance.checked_add(i128::from(font.advance_width(font.glyph_index(displayed))))
-                })
-                .ok_or_else(invalid_geometry)?;
-            let text_width = advance
-                .checked_mul(800_000_000)
-                .and_then(|value| value.checked_div(i128::from(font.units_per_em)))
-                .ok_or_else(invalid_geometry)?;
-            let right = column
-                .checked_add(1)
-                .and_then(|value| value.checked_mul(width))
-                .and_then(|value| value.checked_add(36))
+            let text_width = pdf_text_width(font, text, 8)?;
+            let right = left_points
+                .checked_add(width)
                 .and_then(|value| value.checked_sub(6))
-                .and_then(|value| value.checked_mul(100_000_000))
-                .ok_or_else(invalid_geometry)?;
-            left.max(right.checked_sub(text_width).ok_or_else(invalid_geometry)?)
+                .and_then(|value| value.checked_mul(PDF_COORDINATE_SCALE))
+                .ok_or_else(pdf_layout_error)?;
+            left.max(right.checked_sub(text_width).ok_or_else(pdf_layout_error)?)
         }
         _ => left,
     };
-    Ok(pdf_number(x))
+    Ok(x)
 }
 
 /// One content stream per page. A table that does not fit continues on the
@@ -584,33 +714,25 @@ fn pdf_cell_x(
 /// dropped, and a statement that fits one page renders exactly as before.
 fn build_pdf_content_streams(
     ir: &StatementMarkdownIr,
-    created_iso: &str,
-    ir_digest_hex: &str,
+    title: &str,
+    metadata: &str,
+    tables: &[(&MarkdownTable, PdfTableLayout)],
     font: &Font,
 ) -> Result<Vec<String>, StatementError> {
     let mut pages = Vec::new();
     let mut s = String::new();
     let mut y: i64 = 750;
     s.push_str("BT /F1 11 Tf 36 766 Td (");
-    s.push_str(&escape_pdf_string(&format!(
-        "FrankenAccounting Statement: {} (v{})",
-        ir.definition_name, ir.definition_version
-    )));
+    s.push_str(&escape_pdf_string(title));
     s.push_str(") Tj ET\n");
 
     s.push_str(&format!("BT /F1 8 Tf 36 {y} Td ("));
-    s.push_str(&escape_pdf_string(&format!(
-        "Book: {}  Known-At: {}  Created: {}  IR: {}",
-        ir.book_id.to_hex(),
-        ir.known_at,
-        created_iso,
-        &ir_digest_hex[..16]
-    )));
+    s.push_str(&escape_pdf_string(metadata));
     s.push_str(") Tj ET\n");
     y -= 20;
 
-    for table in &ir.tables {
-        y = render_pdf_table(&mut pages, &mut s, ir, table, y, font)?;
+    for (table, layout) in tables {
+        y = render_pdf_table(&mut pages, &mut s, ir, table, y, font, layout)?;
         y -= 12;
     }
     pages.push(s);
@@ -639,6 +761,7 @@ fn render_pdf_table(
     table: &MarkdownTable,
     mut y: i64,
     font: &Font,
+    layout: &PdfTableLayout,
 ) -> Result<i64, StatementError> {
     // The unit line and the column headers take 28 points above the first
     // row; a table whose first row would fall below the margin starts on a
@@ -646,13 +769,13 @@ fn render_pdf_table(
     if !table.rows.is_empty() && y - 28 < PDF_BOTTOM {
         y = next_pdf_page(pages, s, ir);
     }
-    y = render_pdf_table_heading(s, table, y, false, font)?;
+    y = render_pdf_table_heading(s, table, y, false, font, layout)?;
     for row in &table.rows {
         if y < PDF_BOTTOM {
             y = next_pdf_page(pages, s, ir);
-            y = render_pdf_table_heading(s, table, y, true, font)?;
+            y = render_pdf_table_heading(s, table, y, true, font, layout)?;
         }
-        render_pdf_row(s, table, row, y, font)?;
+        render_pdf_row(s, table, row, y, font, layout)?;
         y -= 14;
     }
     Ok(y)
@@ -664,6 +787,7 @@ fn render_pdf_table_heading(
     mut y: i64,
     continued: bool,
     font: &Font,
+    layout: &PdfTableLayout,
 ) -> Result<i64, StatementError> {
     s.push_str(&format!("BT /F1 9 Tf 36 {y} Td ("));
     s.push_str(&escape_pdf_string(&format!(
@@ -677,15 +801,16 @@ fn render_pdf_table_heading(
     y -= 14;
 
     for (idx, header) in table.headers.iter().enumerate() {
-        let x = pdf_cell_x(table, idx, header, font)?;
+        let x = pdf_number(pdf_cell_x(table, idx, header, font, layout)?);
         s.push_str(&format!(
             "BT /F1 8 Tf {x} {y} Td ({}) Tj ET\n",
             escape_pdf_string(header)
         ));
     }
     let header_line_y = y - 3;
+    let right = layout.right;
     s.push_str(&format!(
-        "1 w 36 {header_line_y} m 576 {header_line_y} l S\n"
+        "1 w 36 {header_line_y} m {right} {header_line_y} l S\n"
     ));
     Ok(y - 14)
 }
@@ -696,13 +821,15 @@ fn render_pdf_row(
     row: &MarkdownRow,
     y: i64,
     font: &Font,
+    layout: &PdfTableLayout,
 ) -> Result<(), StatementError> {
+    let right = layout.right;
     if matches!(row.footing, FootingRule::Single | FootingRule::Double) {
         let top_y = y + 9;
-        s.push_str(&format!("1 w 36 {top_y} m 576 {top_y} l S\n"));
+        s.push_str(&format!("1 w 36 {top_y} m {right} {top_y} l S\n"));
     }
     for (idx, cell) in row.cells.iter().enumerate() {
-        let x = pdf_cell_x(table, idx, cell, font)?;
+        let x = pdf_number(pdf_cell_x(table, idx, cell, font, layout)?);
         s.push_str(&format!(
             "BT /F1 8 Tf {x} {y} Td ({}) Tj ET\n",
             escape_pdf_string(cell)
@@ -713,16 +840,16 @@ fn render_pdf_row(
         FootingRule::Single => {
             let bot_y = y - 3;
             s.push_str(&format!(
-                "% footing:single {}\n1 w 36 {bot_y} m 576 {bot_y} l S\n",
-                row.line_code
+                "% footing:single {}\n1 w 36 {bot_y} m {right} {bot_y} l S\n",
+                escape_pdf_string(&row.line_code)
             ));
         }
         FootingRule::Double => {
             let bot1 = y - 2;
             let bot2 = y - 5;
             s.push_str(&format!(
-                "% footing:double {}\n1 w 36 {bot1} m 576 {bot1} l 36 {bot2} m 576 {bot2} l S\n",
-                row.line_code
+                "% footing:double {}\n1 w 36 {bot1} m {right} {bot1} l 36 {bot2} m {right} {bot2} l S\n",
+                escape_pdf_string(&row.line_code)
             ));
         }
     }
@@ -749,7 +876,40 @@ fn render_pdf_internal(
     let ir_digest_hex = hex_bytes(&ir_digest.0);
     let created_iso = format_utc_epoch_iso8601(creation_epoch_secs);
     let created_pdf = format_utc_epoch_pdf_date(creation_epoch_secs);
-    let content_streams = build_pdf_content_streams(ir, &created_iso, &ir_digest_hex, &font)?;
+    let title = format!(
+        "FrankenAccounting Statement: {} (v{})",
+        ir.definition_name, ir.definition_version
+    );
+    let metadata = format!(
+        "Book: {}  Known-At: {}  Created: {}  IR: {}",
+        ir.book_id.to_hex(),
+        ir.known_at,
+        created_iso,
+        &ir_digest_hex[..16]
+    );
+    let mut page_width = 612_i128;
+    for (text, size) in [(title.as_str(), 11), (metadata.as_str(), 8)] {
+        let right = pdf_text_width_points(&font, text, size)?
+            .checked_add(36)
+            .ok_or_else(pdf_layout_error)?;
+        page_width = page_width.max(pdf_page_width(right)?);
+    }
+    let mut tables = Vec::with_capacity(ir.tables.len());
+    for table in &ir.tables {
+        let layout = pdf_table_layout(table, &font)?;
+        page_width = page_width.max(pdf_page_width(layout.right)?);
+        let heading = format!(
+            "Unit: {} (id={}, scale={}), continued",
+            table.unit_code, table.unit_id, table.unit_scale
+        );
+        let right = pdf_text_width_points(&font, &heading, 9)?
+            .checked_add(36)
+            .ok_or_else(pdf_layout_error)?;
+        page_width = page_width.max(pdf_page_width(right)?);
+        tables.push((table, layout));
+    }
+    let content_streams = build_pdf_content_streams(ir, &title, &metadata, &tables, &font)?;
+    let page_dict_tail = format!("/MediaBox [0 0 {page_width} 792] {PAGE_RESOURCES}");
     let content_stream = &content_streams[0];
     // Page 1 keeps objects 3 (page) and 8 (contents); every later page is a
     // (page, contents) pair numbered from 10, after the Info object.
@@ -826,7 +986,7 @@ fn render_pdf_internal(
             content_streams.len()
         )
         .into_bytes(),
-        format!("<< /Type /Page /Parent 2 0 R {PAGE_DICT_TAIL} /Contents 8 0 R >>").into_bytes(),
+        format!("<< /Type /Page /Parent 2 0 R {page_dict_tail} /Contents 8 0 R >>").into_bytes(),
         format!("<< /Type /Font /Subtype /TrueType /BaseFont /CMUTypewriter-Regular /Encoding /WinAnsiEncoding /FirstChar 32 /LastChar 126 /Widths [{widths}] /FontDescriptor {descriptor_id} 0 R /ToUnicode {unicode_id} 0 R >>").into_bytes(),
         format!(
             "<< /Type /Metadata /Subtype /XML /Length {} >>\nstream\n{}\nendstream",
@@ -856,7 +1016,7 @@ fn render_pdf_internal(
     for (i, stream) in more_pages.iter().enumerate() {
         let contents = 11 + 2 * i;
         objects.push(
-            format!("<< /Type /Page /Parent 2 0 R {PAGE_DICT_TAIL} /Contents {contents} 0 R >>")
+            format!("<< /Type /Page /Parent 2 0 R {page_dict_tail} /Contents {contents} 0 R >>")
                 .into_bytes(),
         );
         objects.push(
@@ -1572,6 +1732,7 @@ mod tests {
             alignments: vec![ColumnAlignment::Right],
             rows: Vec::new(),
         };
+        let layout = pdf_table_layout(&table, &font).unwrap();
         let mut drawn = String::new();
         for (value, y) in [("1.00", 100), ("12.00", 86)] {
             render_pdf_row(
@@ -1584,11 +1745,135 @@ mod tests {
                 },
                 y,
                 &font,
+                &layout,
             )
             .unwrap();
         }
         assert!(drawn.contains("553.20312500 100 Td (1.00) Tj"), "{drawn}");
         assert!(drawn.contains("549.00390625 86 Td (12.00) Tj"), "{drawn}");
+    }
+
+    #[test]
+    fn pdf_comparatives_keep_large_amounts_and_labels_inside_the_page() {
+        let (definition, mut statement) = sample_bs(10, i128::MAX / 2, 0);
+        let mut comparative = statement.columns[0].clone();
+        comparative.label = "Comparative".into();
+        statement.columns.push(comparative);
+        for line in &mut statement.lines {
+            line.amounts.push(line.amounts[0]);
+        }
+        let ir = render_statement_ir(&statement, &definition, &sample_units()).unwrap();
+        let before = ir.canonical_bytes().unwrap();
+        let bytes = render_pdfa(&ir, 1_792_454_400).unwrap();
+        assert_eq!(bytes, render_pdfa(&ir, 1_792_454_400).unwrap());
+        assert_eq!(ir.canonical_bytes().unwrap(), before);
+        let pdf = String::from_utf8_lossy(&bytes);
+        let width: i128 = pdf
+            .split_once("/MediaBox [0 0 ")
+            .unwrap()
+            .1
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let expected_amount = ir.tables[0].rows[0].cells[2].clone();
+        assert!(pdf.contains(&format!("({expected_amount}) Tj")));
+
+        // This pinned monospaced face has a 1075-unit advance at 2048 units
+        // per em. At eight points, one glyph is exactly 4.19921875 points.
+        // Read the emitted text operators, independently of the layout helper.
+        let font = Font::parse_static(fmd_font::bundled::CM_TYPEWRITER).unwrap();
+        let mut rows = std::collections::BTreeMap::<i64, Vec<(i128, String)>>::new();
+        for line in pdf.lines().filter(|line| line.starts_with("BT /F1 8 Tf ")) {
+            let (position, rest) = line.split_once(" Td (").unwrap();
+            let encoded = rest.strip_suffix(") Tj ET").unwrap();
+            let mut text = String::new();
+            let mut chars = encoded.chars();
+            while let Some(ch) = chars.next() {
+                text.push(if ch == '\\' {
+                    chars.next().unwrap()
+                } else {
+                    ch
+                });
+            }
+            if text.is_empty() {
+                continue;
+            }
+            for ch in text.chars() {
+                assert_eq!(font.advance_width(font.glyph_index(ch)), 1075);
+            }
+            let mut fields = position.split_whitespace().skip(4);
+            let x = fields.next().unwrap();
+            let (whole, fraction) = x.split_once('.').unwrap_or((x, "00000000"));
+            assert_eq!(fraction.len(), 8);
+            let x =
+                whole.parse::<i128>().unwrap() * 100_000_000 + fraction.parse::<i128>().unwrap();
+            let y = fields.next().unwrap().parse::<i64>().unwrap();
+            rows.entry(y).or_default().push((x, text));
+        }
+        for cells in rows.values() {
+            for pair in cells.windows(2) {
+                let end = pair[0].0 + pair[0].1.len() as i128 * 419_921_875;
+                assert!(
+                    end + 600_000_000 <= pair[1].0,
+                    "overlapping cells: {pair:?}"
+                );
+            }
+            let (x, text) = cells.last().unwrap();
+            assert!(
+                x + text.len() as i128 * 419_921_875 <= (width - 36) * 100_000_000,
+                "text escapes the page: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn pdf_footing_comments_cannot_inject_content_operators() {
+        let (definition, statement) = sample_bs(10, 50_025, 12_005);
+        let ir = render_statement_ir(&statement, &definition, &sample_units()).unwrap();
+        let injection = "BT /F1 48 Tf 36 600 Td (INJECTED) Tj ET";
+        for footing in [FootingRule::Single, FootingRule::Double] {
+            let mut ir = ir.clone();
+            let row = ir.tables[0]
+                .rows
+                .iter_mut()
+                .find(|row| row.footing == footing)
+                .unwrap();
+            row.line_code = format!("row\r\n{injection}\n%");
+            row.cells[0] = row.line_code.clone();
+            let ir = StatementMarkdownIr::decode(&ir.canonical_bytes().unwrap()).unwrap();
+            let before = ir.digest().unwrap();
+            let bytes = render_pdfa(&ir, 1_792_454_400).unwrap();
+            let pdf = String::from_utf8_lossy(&bytes);
+            assert!(!pdf.lines().any(|line| line == injection));
+            assert!(
+                pdf.contains("INJECTED"),
+                "the row's visible text is retained"
+            );
+            assert_eq!(ir.digest().unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn pdf_refuses_tables_beyond_the_default_user_space_limit() {
+        let (definition, statement) = sample_bs(10, 50_025, 12_005);
+        let mut ir = render_statement_ir(&statement, &definition, &sample_units()).unwrap();
+        ir.tables[0].headers = vec!["column".into(); 16];
+        ir.tables[0].alignments = vec![ColumnAlignment::Left; 16];
+        ir.tables[0].rows = vec![MarkdownRow {
+            line_code: "wide".into(),
+            footing: FootingRule::None,
+            cells: vec!["W".repeat(512); 16],
+        }];
+        let ir = StatementMarkdownIr::decode(&ir.canonical_bytes().unwrap()).unwrap();
+        for render in [render_pdf, render_pdfa] {
+            let error = render(&ir, 1_792_454_400).expect_err("the table cannot fit a PDF page");
+            assert!(
+                matches!(&error, StatementError::Input(message) if message.contains("14400-unit page limit")),
+                "wrong refusal: {error}"
+            );
+        }
     }
 
     #[test]

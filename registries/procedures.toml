@@ -1137,13 +1137,13 @@ meaning = "ISO 4217 numeric code of the currency examined (840 = USD)."
 
 [[procedure]]
 id = "graph.circular_flows"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L34"
 tie_break = "entry_vid"
 complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
 calibration = "uncalibrated"
-summary = "Directed k-cycles (2..=max_hops) in the money-flow DiGraph within window_days where the bottleneck flow retains at least min_retention_bps of the initial outbound leg, decomposed by fnx strongly_connected_components with a CGSE witness."
+summary = "Directed k-cycles (2..=max_hops) in the money-flow DiGraph within window_days where the bottleneck flow retains at least min_retention_bps of the initial outbound leg, decomposed by fnx strongly_connected_components with a CGSE witness. Version 2 advances every hop, including closure, in effective/recorded order with the entry-identity tie break; version 1 could walk backwards within a day."
 
 [[parameter]]
 procedure = "graph.circular_flows"
@@ -1165,13 +1165,13 @@ meaning = "Minimum ratio of cycle bottleneck flow to first-hop flow in basis poi
 
 [[procedure]]
 id = "graph.party_circular_flows"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L67"
 tie_break = "entry_vid"
 complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
 calibration = "uncalibrated"
-summary = "graph.circular_flows over the party-level PAID projection (plan §4.1 PAID, §11.4; fa-b6xs): directed k-cycles (2..=max_hops) between parties within window_days whose bottleneck retains at least min_retention_bps of the first hop, decomposed by fnx strongly_connected_components with a CGSE witness, naming the parties. It sees money returning to a counterparty through others when every hop runs through one clearing account, which the account-level graph cannot."
+summary = "graph.circular_flows over the party-level PAID projection (plan §4.1 PAID, §11.4; fa-b6xs): directed k-cycles (2..=max_hops) between parties within window_days whose bottleneck retains at least min_retention_bps of the first hop, decomposed by fnx strongly_connected_components with a CGSE witness, naming the parties. It sees money returning to a counterparty through others when every hop runs through one clearing account, which the account-level graph cannot. Version 2 advances every hop, including closure, in effective/recorded order with the entry-identity tie break; version 1 could walk backwards within a day."
 
 [[parameter]]
 procedure = "graph.party_circular_flows"
