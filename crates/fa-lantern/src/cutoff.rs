@@ -354,6 +354,120 @@ procedure_boilerplate!(
     "recon.attested_register_compare"
 );
 
+struct InstrumentUnitRun {
+    // None means the entry posts several units to this account, and therefore
+    // mismatches every instrument unit. Some(unit) means only that unit occurs.
+    unit: Option<u32>,
+    end: usize,
+}
+
+#[derive(Default)]
+struct InstrumentAccountUnits {
+    entries: Vec<VId>,
+    runs: Vec<InstrumentUnitRun>,
+    only_unit: BTreeMap<u32, usize>,
+}
+
+/// A live posting contributes once per mirrored account, even with repeated
+/// legs or multiple units. Counts answer matching instruments without visiting
+/// their entries; runs skip an arbitrarily long matching citation prefix.
+#[derive(Default)]
+struct InstrumentUnitIndex {
+    accounts: BTreeMap<VId, InstrumentAccountUnits>,
+}
+
+impl InstrumentUnitIndex {
+    fn read(
+        snapshot: &Snapshot,
+        live: &[&crate::SnapshotEntry],
+        work: &mut Meter<'_>,
+    ) -> Result<Self, LanternError> {
+        let mut mirrored = BTreeSet::new();
+        for instrument in snapshot.rea.instruments.values() {
+            work.compare(1)?;
+            mirrored.insert(instrument.mirrors_account);
+        }
+        if mirrored.is_empty() {
+            return Ok(Self::default());
+        }
+        let mut observed: BTreeMap<VId, BTreeMap<VId, Option<u32>>> = BTreeMap::new();
+        for entry in live {
+            work.entry()?;
+            for leg in &entry.entry.proposal.legs {
+                work.leg()?;
+                if !mirrored.contains(&leg.account_ref) {
+                    continue;
+                }
+                work.compare(1)?;
+                observed
+                    .entry(leg.account_ref)
+                    .or_default()
+                    .entry(entry.vid)
+                    .and_modify(|unit| {
+                        if *unit != Some(leg.amount.unit.0) {
+                            *unit = None;
+                        }
+                    })
+                    .or_insert(Some(leg.amount.unit.0));
+            }
+        }
+        let mut accounts = BTreeMap::new();
+        for (account, observed) in observed {
+            let mut index = InstrumentAccountUnits::default();
+            for (entry, unit) in observed {
+                work.compare(1)?;
+                index.entries.push(entry);
+                if let Some(unit) = unit {
+                    *index.only_unit.entry(unit).or_default() += 1;
+                }
+                let end = index.entries.len();
+                if let Some(run) = index.runs.last_mut()
+                    && run.unit == unit
+                {
+                    run.end = end;
+                } else {
+                    index.runs.push(InstrumentUnitRun { unit, end });
+                }
+            }
+            accounts.insert(account, index);
+        }
+        Ok(Self { accounts })
+    }
+
+    fn mismatches(
+        &self,
+        account: VId,
+        unit: u32,
+        work: &mut Meter<'_>,
+    ) -> Result<(u64, Vec<VId>), LanternError> {
+        let Some(index) = self.accounts.get(&account) else {
+            return Ok((0, Vec::new()));
+        };
+        let count = index.entries.len() - index.only_unit.get(&unit).copied().unwrap_or(0);
+        let mut cites = Vec::with_capacity(count.min(MAX_CITES - 1));
+        if count > 0 {
+            let mut start = 0;
+            for run in &index.runs {
+                work.compare(1)?;
+                if run.unit != Some(unit) {
+                    for entry in index.entries[start..run.end]
+                        .iter()
+                        .take(MAX_CITES - 1 - cites.len())
+                    {
+                        work.compare(1)?;
+                        cites.push(*entry);
+                    }
+                }
+                if cites.len() == MAX_CITES - 1 {
+                    break;
+                }
+                start = run.end;
+            }
+        }
+        Ok((count as u64, cites))
+    }
+}
+
 impl Procedure for ReconAttestedRegisterCompare {
     fn id(&self) -> &'static str {
         Self::ID
@@ -427,24 +541,14 @@ impl Procedure for ReconAttestedRegisterCompare {
         // 2. Check every Instrument vertex mirroring an account for unit consistency
         let mut live = snapshot.live_postings_through(through)?;
         live.sort_by_key(|e| e.vid);
+        let instrument_units = InstrumentUnitIndex::read(snapshot, &live, work)?;
         for inst in snapshot.rea.instruments.values() {
             work.compare(1)?;
-            let mut mismatched_entries = Vec::new();
-            for e in &live {
-                work.entry()?;
-                for leg in &e.entry.proposal.legs {
-                    work.leg()?;
-                    if leg.account_ref == inst.mirrors_account && leg.amount.unit != inst.unit {
-                        mismatched_entries.push(e.vid);
-                    }
-                }
-            }
-            if !mismatched_entries.is_empty() {
-                mismatched_entries.sort_unstable();
-                mismatched_entries.dedup();
-                let count = mismatched_entries.len() as u64;
+            let (count, mismatched_entries) =
+                instrument_units.mismatches(inst.mirrors_account, inst.unit.0, work)?;
+            if count > 0 {
                 let mut cites = vec![Cite::Account(inst.mirrors_account)];
-                for evid in mismatched_entries.into_iter().take(MAX_CITES - 1) {
+                for evid in mismatched_entries {
                     cites.push(Cite::Entry(evid));
                 }
                 out.push(finding(

@@ -599,3 +599,467 @@ fn a_register_comparison_cannot_silently_omit_its_participating_entries() {
         );
     }
 }
+
+fn instrument(snapshot: &mut Snapshot, id: u128, account: VId, unit: UnitId) {
+    snapshot.rea.instruments.insert(
+        VId(id),
+        fa_journal::rea::InstrumentRow {
+            vid: VId(id),
+            code: format!("BANK-{id}"),
+            name: "unit consistency witness".into(),
+            kind: fa_model::InstrumentKind::BankAccount,
+            unit,
+            held_at_party: PREPARER,
+            mirrors_account: account,
+            external_ids: Vec::new(),
+            created_at: CommitSeq(1),
+        },
+    );
+}
+
+/// The original instrument-by-entry-by-leg loop, including unique entry counts
+/// and the earliest bounded citations. This intentionally retains its scan cost.
+fn literal_instrument_findings(snapshot: &Snapshot) -> (Vec<Finding>, u64) {
+    let mut live = snapshot
+        .live_postings_through(snapshot.coordinate.effective_through)
+        .unwrap();
+    live.sort_by_key(|entry| entry.vid);
+    let population = (snapshot.attestations.len() + snapshot.rea.instruments.len()) as u64;
+    let mut findings = Vec::new();
+    let mut entries_read = 0;
+    for instrument in snapshot.rea.instruments.values() {
+        let mut entries = Vec::new();
+        for entry in &live {
+            entries_read += 1;
+            for leg in &entry.entry.proposal.legs {
+                if leg.account_ref == instrument.mirrors_account
+                    && leg.amount.unit != instrument.unit
+                {
+                    entries.push(entry.vid);
+                }
+            }
+        }
+        entries.sort_unstable();
+        entries.dedup();
+        if !entries.is_empty() {
+            let count = entries.len() as u64;
+            let mut cites = vec![Cite::Account(instrument.mirrors_account)];
+            cites.extend(
+                entries
+                    .into_iter()
+                    .take(fa_lantern::MAX_CITES - 1)
+                    .map(Cite::Entry),
+            );
+            findings.push(Finding {
+                procedure: ReconAttestedRegisterCompare::ID.into(),
+                version: 2,
+                severity: Severity::Critical,
+                statistic: Statistic::count("instrument_unit_mismatch_entries", count, population.max(1)),
+                cites,
+                narrative: format!(
+                    "instrument {} mirrors account in unit {}, but {count} posting(s) use a different unit",
+                    instrument.code, instrument.unit.0
+                ),
+            });
+        }
+    }
+    (findings, entries_read)
+}
+
+#[test]
+fn instrument_unit_index_matches_literal_findings_across_units_entries_and_history() {
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.entries.clear();
+    let usd = h.usd;
+    let foreign = UnitId(usd.0 + 1);
+    let other = UnitId(usd.0 + 2);
+    let expense = h.account("6000");
+    for (id, account, unit) in [
+        (5001, expense, usd),
+        (5002, expense, foreign),
+        (5003, expense, other),
+        (5004, h.account("2000"), usd),
+        (5005, h.account("1000"), usd),
+        (5006, h.account("1010"), foreign),
+    ] {
+        instrument(&mut snapshot, id, account, unit);
+    }
+    let original = posting(&mut h, 1001, 10, day(2026, 1, 5), 100, None, None);
+    snapshot.entries.push(original.clone());
+    let mut changed = posting(&mut h, 1002, 11, day(2026, 1, 10), 100, None, None);
+    for leg in &mut changed.entry.proposal.legs {
+        leg.amount.unit = foreign;
+    }
+    snapshot.entries.push(changed.clone());
+    // Multiple source rows for one VID still count once. Their combined
+    // units make this entry disagree with either individual expected unit.
+    let mut repeated = changed.clone();
+    for leg in &mut repeated.entry.proposal.legs {
+        leg.amount.unit = usd;
+    }
+    snapshot.entries.push(repeated);
+    let mut mixed = posting(&mut h, 1003, 12, day(2026, 1, 15), 100, None, None);
+    mixed.entry.proposal.legs.extend([
+        LegPayload::simple(Side::Debit, expense, Amount::new(foreign, 100)),
+        LegPayload::simple(Side::Credit, h.account("2000"), Amount::new(foreign, 100)),
+        LegPayload::simple(Side::Debit, expense, Amount::new(usd, 100)),
+        LegPayload::simple(Side::Credit, expense, Amount::new(usd, 100)),
+    ]);
+    snapshot.entries.push(mixed);
+    let mut same = posting(&mut h, 1004, 13, day(2026, 1, 20), 100, None, None);
+    same.entry.proposal.legs[1].account_ref = expense;
+    snapshot.entries.push(same);
+    let mut elsewhere = posting(&mut h, 1005, 14, day(2026, 1, 25), 100, None, None);
+    elsewhere.entry.proposal.legs[0].account_ref = h.account("1000");
+    for leg in &mut elsewhere.entry.proposal.legs {
+        leg.amount.unit = other;
+    }
+    snapshot.entries.push(elsewhere);
+    let mut source = changed.clone();
+    source.vid = VId(1006);
+    source.entry.proposal.effective_date = day(2026, 1, 5);
+    let mut reversal = posting(
+        &mut h,
+        1007,
+        15,
+        day(2026, 1, 20),
+        -100,
+        None,
+        Some(&source),
+    );
+    for leg in &mut reversal.entry.proposal.legs {
+        leg.amount.unit = foreign;
+    }
+    snapshot.entries.extend([source, reversal]);
+    let mut replacement = changed.clone();
+    replacement.vid = VId(1008);
+    replacement.entry.proposal.class = EntryClass::REPLACEMENT;
+    replacement.entry.proposal.effective_date = day(2026, 1, 25);
+    replacement
+        .entry
+        .proposal
+        .supersession
+        .push(fa_model::Supersession {
+            target: fa_model::EntryRef {
+                vid: original.vid,
+                entry_digest: original.entry.entry_digest,
+            },
+            kind: SupersessionKind::Replaces,
+            reason_code: 1,
+        });
+    snapshot.entries.push(replacement);
+    // Irrelevant malformed schema controls must not be newly interpreted by
+    // an index that only consumes the already-selected live posting legs.
+    let mut control = original.clone();
+    control.vid = VId(1009);
+    control.entry.proposal.class = EntryClass::SCHEMA_CONTROL;
+    control.entry.proposal.legs.clear();
+    control.entry.proposal.control = Some(fa_model::ControlPayload::SchemaChange {
+        kind: fa_model::rea::SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS,
+        canonical_bytes: vec![0xff],
+    });
+    snapshot.entries.push(control);
+    let mut empty_claim = claim(&h, day(2026, 1, 31), None, 0);
+    empty_claim.account = h.account("1010");
+    attest(&h, &mut snapshot, 6001, empty_claim);
+    let procedure = ReconAttestedRegisterCompare::new().unwrap();
+    for through in [None, Some(day(2026, 1, 10)), Some(day(2026, 1, 20))] {
+        snapshot.coordinate.effective_through = through;
+        let (expected, _) = literal_instrument_findings(&snapshot);
+        assert!(!expected.is_empty());
+        for order in 0..3 {
+            let mut work = Meter::new(ReconAttestedRegisterCompare::ID, None, None);
+            assert_eq!(
+                procedure.run(&snapshot, &h.book, &mut work).unwrap(),
+                expected,
+                "through={through:?} order={order}"
+            );
+            if order == 0 {
+                snapshot.entries.reverse();
+            } else {
+                snapshot.entries.rotate_left(3);
+            }
+        }
+    }
+}
+
+#[test]
+fn instrument_unit_index_keeps_exact_counts_and_earliest_bounded_citations() {
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    let template = posting(&mut h, 100_000, 10, day(2026, 1, 5), 1, None, None);
+    let foreign = UnitId(h.usd.0 + 1);
+    let n = 2 * fa_lantern::MAX_CITES + 17;
+    snapshot.entries = (0..n)
+        .map(|i| {
+            let mut entry = template.clone();
+            entry.vid = VId(100_000 + i as u128);
+            if i % 3 != 0 {
+                for leg in &mut entry.entry.proposal.legs {
+                    leg.amount.unit = foreign;
+                }
+            }
+            entry
+        })
+        .collect();
+    for (id, unit) in [
+        (9001, h.usd),
+        (9002, foreign),
+        (9003, UnitId(foreign.0 + 1)),
+    ] {
+        instrument(&mut snapshot, id, h.account("6000"), unit);
+    }
+    let (expected, _) = literal_instrument_findings(&snapshot);
+    let mut work = Meter::new(ReconAttestedRegisterCompare::ID, None, None);
+    let actual = ReconAttestedRegisterCompare::new()
+        .unwrap()
+        .run(&snapshot, &h.book, &mut work)
+        .unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(actual[0].cites.len(), fa_lantern::MAX_CITES);
+    assert!(actual[0].statistic.value > (fa_lantern::MAX_CITES - 1) as i128);
+    assert_eq!(actual[2].statistic.value, n as i128);
+    assert_eq!(
+        actual[2].cites.last(),
+        Some(&Cite::Entry(VId(
+            100_000 + (fa_lantern::MAX_CITES - 2) as u128
+        )))
+    );
+}
+
+fn instrument_population(h: &mut Harness, n: u64) -> Snapshot {
+    let mut snapshot = h.snapshot();
+    let mut template = posting(h, 1_000_000, 10, day(2026, 1, 5), 1, None, None);
+    template.entry.proposal.legs[1].account_ref = h.account("1000");
+    snapshot.entries = (0..n)
+        .map(|i| {
+            let mut entry = template.clone();
+            entry.vid = VId(1_000_000 + u128::from(i));
+            entry
+        })
+        .collect();
+    for i in 0..n {
+        instrument(
+            &mut snapshot,
+            3_000_000 + u128::from(i),
+            h.account(if i % 997 == 0 { "6000" } else { "1000" }),
+            h.usd,
+        );
+    }
+    snapshot
+}
+
+fn plant_instrument_mismatch(h: &Harness, snapshot: &mut Snapshot) {
+    let foreign = UnitId(h.usd.0 + 1);
+    // A single discrepant entry after a large matching prefix. Both units
+    // remain balanced, and the unmirrored clearing account needs no index.
+    snapshot.entries.last_mut().unwrap().entry.proposal.legs = vec![
+        LegPayload::simple(Side::Debit, h.account("6000"), Amount::new(foreign, 1)),
+        LegPayload::simple(Side::Credit, h.account("2000"), Amount::new(foreign, 1)),
+        LegPayload::simple(Side::Debit, h.account("1000"), Amount::new(h.usd, 1)),
+        LegPayload::simple(Side::Credit, h.account("2000"), Amount::new(h.usd, 1)),
+    ];
+}
+
+#[test]
+fn hundred_thousand_instruments_do_not_rescan_hundred_thousand_entries() {
+    const N: u64 = 100_000;
+    let mut h = harness();
+    let procedure = ReconAttestedRegisterCompare::new().unwrap();
+    // The literal implementation remains live on a smaller population.
+    let mut small = instrument_population(&mut h, 128);
+    plant_instrument_mismatch(&h, &mut small);
+    let (expected, old_entries) = literal_instrument_findings(&small);
+    let mut work = Meter::new(ReconAttestedRegisterCompare::ID, None, None);
+    assert_eq!(procedure.run(&small, &h.book, &mut work).unwrap(), expected);
+    assert_eq!(old_entries, 128 * 128);
+    assert_eq!(work.work().entries, 2 * 128);
+
+    let mut snapshot = instrument_population(&mut h, N);
+    let mut work = Meter::new(ReconAttestedRegisterCompare::ID, Some(80 * N), None);
+    assert!(
+        procedure
+            .run(&snapshot, &h.book, &mut work)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(work.work().entries, 2 * N);
+    assert_eq!(work.work().legs, 4 * N);
+    assert!(work.work().comparisons <= 50 * N);
+
+    plant_instrument_mismatch(&h, &mut snapshot);
+    let mut work = Meter::new(ReconAttestedRegisterCompare::ID, Some(80 * N), None);
+    let actual = procedure.run(&snapshot, &h.book, &mut work).unwrap();
+    let expected: Vec<_> = (0..N).step_by(997).map(|i| Finding {
+        procedure: ReconAttestedRegisterCompare::ID.into(),
+        version: 2,
+        severity: Severity::Critical,
+        statistic: Statistic::count("instrument_unit_mismatch_entries", 1, N),
+        cites: vec![Cite::Account(h.account("6000")), Cite::Entry(VId(1_000_000 + u128::from(N - 1)))],
+        narrative: format!("instrument BANK-{} mirrors account in unit {}, but 1 posting(s) use a different unit", 3_000_000 + u128::from(i), h.usd.0),
+    }).collect();
+    assert_eq!(actual, expected);
+    assert_eq!(work.work().entries, 2 * N);
+    assert_eq!(work.work().legs, 4 * N + 4);
+    assert!(work.work().comparisons <= 50 * N, "{:?}", work.work());
+    assert!(
+        work.work().within_registered_bound(
+            &fa_lantern::bind(ReconAttestedRegisterCompare::ID)
+                .unwrap()
+                .complexity,
+            &snapshot
+        )
+    );
+}
+
+#[test]
+fn instrument_unit_index_dense_citations_fit_registered_comparison_bound() {
+    const ENTRIES: u64 = 128;
+    const INSTRUMENTS: u64 = 1024;
+    let mut h = harness();
+    let mut snapshot = instrument_population(&mut h, ENTRIES);
+    snapshot.rea.instruments.clear();
+    let foreign = UnitId(h.usd.0 + 1);
+    for (i, entry) in snapshot.entries.iter_mut().enumerate() {
+        if i % 2 != 0 {
+            for leg in &mut entry.entry.proposal.legs {
+                leg.amount.unit = foreign;
+            }
+        }
+    }
+    for i in 0..INSTRUMENTS {
+        instrument(
+            &mut snapshot,
+            3_000_000 + u128::from(i),
+            h.account("6000"),
+            h.usd,
+        );
+    }
+    let (expected, literal_entries) = literal_instrument_findings(&snapshot);
+    let mut work = Meter::new(ReconAttestedRegisterCompare::ID, Some(500_000), None);
+    let actual = ReconAttestedRegisterCompare::new()
+        .unwrap()
+        .run(&snapshot, &h.book, &mut work)
+        .unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.len(), INSTRUMENTS as usize);
+    assert!(actual.iter().all(|finding| {
+        finding.statistic.value == i128::from(ENTRIES / 2)
+            && finding.cites.len() == (ENTRIES / 2 + 1) as usize
+    }));
+    assert_eq!(literal_entries, ENTRIES * INSTRUMENTS);
+    assert_eq!(work.work().entries, 2 * ENTRIES);
+    assert_eq!(work.work().legs, 4 * ENTRIES);
+    // The previous component bound charged instrument scans as entry/leg
+    // visits and allowed only one comparison per instrument. It does not
+    // cover the actual, now-metered bounded run and citation traversal.
+    let previous_comparisons =
+        4 * INSTRUMENTS * u64::from((INSTRUMENTS + 1).ilog2()) + 4 * ENTRIES + INSTRUMENTS;
+    assert!(work.work().comparisons > previous_comparisons);
+    assert!(
+        work.work().within_registered_bound(
+            &fa_lantern::bind(ReconAttestedRegisterCompare::ID)
+                .unwrap()
+                .complexity,
+            &snapshot
+        )
+    );
+}
+
+#[test]
+fn instrument_unit_index_obeys_budget_and_cancellation_during_preparation() {
+    struct CancelAtCheck {
+        checks: std::cell::Cell<u64>,
+        at: u64,
+    }
+    impl fa_lantern::Cancellation for CancelAtCheck {
+        fn cancelled(&self) -> bool {
+            self.checks.set(self.checks.get() + 1);
+            self.checks.get() >= self.at
+        }
+    }
+    let mut h = harness();
+    let mut snapshot = instrument_population(&mut h, 512);
+    snapshot.rea.instruments.clear();
+    let procedure = ReconAttestedRegisterCompare::new().unwrap();
+    let observe = CancelAtCheck {
+        checks: std::cell::Cell::new(0),
+        at: u64::MAX,
+    };
+    let mut baseline = Meter::new(ReconAttestedRegisterCompare::ID, None, Some(&observe));
+    assert!(
+        procedure
+            .run(&snapshot, &h.book, &mut baseline)
+            .unwrap()
+            .is_empty()
+    );
+    let baseline = baseline.work();
+    for i in 0..1024 {
+        instrument(&mut snapshot, 3_000_000 + i, h.account("6000"), h.usd);
+    }
+    let mut work = Meter::new(
+        ReconAttestedRegisterCompare::ID,
+        Some(baseline.total()),
+        None,
+    );
+    assert!(
+        matches!(procedure.run(&snapshot, &h.book, &mut work), Err(LanternError::BudgetExhausted { used, .. }) if used == baseline.total() + 1)
+    );
+    assert_eq!(work.work().entries, baseline.entries);
+    assert_eq!(work.work().legs, baseline.legs);
+
+    // Metadata indexing and the first live-entry visit fit. Refuse the first
+    // additional leg, rather than silently running an unmetered preparation.
+    let budget = baseline.total() + 1024 + 1;
+    let mut work = Meter::new(ReconAttestedRegisterCompare::ID, Some(budget), None);
+    assert!(
+        matches!(procedure.run(&snapshot, &h.book, &mut work), Err(LanternError::BudgetExhausted { used, .. }) if used == budget + 1)
+    );
+    assert_eq!(work.work().entries, baseline.entries + 1);
+    assert_eq!(work.work().legs, baseline.legs + 1);
+    for extra_checks in [1, 2] {
+        let cancel = CancelAtCheck {
+            checks: std::cell::Cell::new(0),
+            at: observe.checks.get() + extra_checks,
+        };
+        let mut work = Meter::new(ReconAttestedRegisterCompare::ID, None, Some(&cancel));
+        assert!(
+            matches!(procedure.run(&snapshot, &h.book, &mut work), Err(LanternError::Cancelled { used, .. }) if used > baseline.total())
+        );
+        if extra_checks == 1 {
+            assert_eq!(work.work().entries, baseline.entries);
+            assert_eq!(work.work().legs, baseline.legs);
+        } else {
+            assert!(work.work().entries > baseline.entries);
+            assert!(work.work().legs > baseline.legs);
+        }
+    }
+}
+
+#[test]
+fn instrument_unit_index_preserves_claim_and_lineage_refusal_order() {
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    let source = posting(&mut h, 1001, 10, day(2026, 1, 5), 100, None, None);
+    let reverse_a = posting(&mut h, 1002, 11, day(2026, 1, 6), -100, None, Some(&source));
+    let reverse_b = posting(&mut h, 1003, 12, day(2026, 1, 7), -100, None, Some(&source));
+    snapshot.entries = vec![source, reverse_a, reverse_b];
+    let procedure = ReconAttestedRegisterCompare::new().unwrap();
+    // Liveness validation still runs even with no instruments to index.
+    let mut work = Meter::new(ReconAttestedRegisterCompare::ID, None, None);
+    assert!(
+        matches!(procedure.run(&snapshot, &h.book, &mut work), Err(LanternError::Kernel(KernelError::Corrupt(message))) if message.contains("reversed twice"))
+    );
+    instrument(&mut snapshot, 5001, h.account("6000"), h.usd);
+    attest(
+        &h,
+        &mut snapshot,
+        6001,
+        claim(&h, day(2026, 1, 31), Some("UNDECLARED"), 0),
+    );
+    let mut work = Meter::new(ReconAttestedRegisterCompare::ID, None, None);
+    assert!(
+        matches!(procedure.run(&snapshot, &h.book, &mut work), Err(LanternError::Parameter { name, .. }) if name == "attestation")
+    );
+}
