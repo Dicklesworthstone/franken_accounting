@@ -46,8 +46,8 @@ today_barrier_count = 0
 derived_objects = "0"
 hot_object_exceptions = []
 external_authorities = "none"
-complexity_witness = "O(1) register cell lookup + O(tail_legs) bounded tail fold"
-notes = "register cell + bounded tail fold"
+complexity_witness = "O(1) register cell lookup plus its exact tail for a known cell. Native maintained TB/activity serving also enumerates snapshot vertex metadata and reads per-period/account/unit cells. If any period lacks usable state, one shared canonical Entry-prefix scan establishes which periods contain legs, including migration visibility. A monetary tail overflow refolds the complete selected journal for its source diagnosis."
+notes = "No publication. Whole-report work is history-dependent; Served::tail_length counts only tail decodes, excluding metadata and empty-period validation. Missing IN_BOOK or IN_PERIOD edges cannot establish completeness or emptiness (fa-7apf)."
 
 [[operation_class]]
 id = "certified_report"
@@ -61,8 +61,8 @@ today_barrier_count = 0
 derived_objects = "1 Certificate (persisted lazily on request)"
 hot_object_exceptions = []
 external_authorities = "none"
-complexity_witness = "O(accounts + tail_legs) pure over registers and tail"
-notes = "pure over registers and tail"
+complexity_witness = "Native served TB/activity reads include O(snapshot vertices) metadata enumeration, per-period/account/unit cell lookups and exact tail folds. An unservable period adds one shared complete canonical-prefix population scan; literal fallback folds the selected visible legs. Certification retains its existing certified-read and closure costs."
+notes = "Derived membership edges are not completeness evidence. Metadata and population scans are read costs, not new publications or authoritative balance objects; no measured book-size-independent report bound is claimed (fa-7apf)."
 
 [[operation_class]]
 id = "single_entry_post"

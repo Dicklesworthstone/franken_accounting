@@ -1302,6 +1302,231 @@ fn recovery_refuses_to_rewrite_an_account_forged_as_a_register() {
     assert_eq!(fold_period(&h.db, &h.book, &h.march).unwrap(), fold);
 }
 
+/// Compare both served entry points with the independent literal selector at
+/// the same snapshot. Topology damage must not change either report, and reads
+/// never repair derived state or publish a new accounting coordinate.
+fn assert_served_reports_match_payloads(
+    h: &Harness,
+    periods: &[String],
+    at: CommitSeq,
+    maintained: bool,
+) {
+    let before = h.db.frontier().unwrap();
+    let stock = trial_balance_at(&h.db, &h.book, periods, Some(at)).unwrap();
+    let activity = period_activity(&h.db, &h.book, periods, Some(at)).unwrap();
+    let ctx = h.ctx();
+    let answers = [
+        (
+            fa_registers::trial_balance_served_at(&h.db, &h.book, periods, Some(at)).unwrap(),
+            &stock,
+        ),
+        (
+            fa_registers::trial_balance_served_at_with_context(
+                &h.db,
+                &ctx.query(),
+                &h.book,
+                periods,
+                Some(at),
+            )
+            .unwrap(),
+            &stock,
+        ),
+        (
+            fa_registers::period_activity_served_at(&h.db, &h.book, periods, Some(at)).unwrap(),
+            &activity,
+        ),
+        (
+            fa_registers::period_activity_served_at_with_context(
+                &h.db,
+                &ctx.query(),
+                &h.book,
+                periods,
+                Some(at),
+            )
+            .unwrap(),
+            &activity,
+        ),
+    ];
+    for ((actual, served), expected) in answers {
+        assert_eq!(
+            actual.canonical_bytes().unwrap(),
+            expected.canonical_bytes().unwrap(),
+            "snapshot {}: {served:?}",
+            at.0
+        );
+        assert_eq!(&actual, expected);
+        assert_eq!(
+            matches!(&served, fa_registers::Served::Maintained(_)),
+            maintained,
+            "snapshot {}: {served:?}",
+            at.0
+        );
+    }
+    assert_eq!(h.db.frontier().unwrap(), before, "reads never publish");
+}
+
+#[test]
+fn served_reports_do_not_mistake_a_missing_entry_period_edge_for_an_empty_period() {
+    for pending in [false, true] {
+        let mut h = harness();
+        let selection = vec![h.march.clone()];
+        let empty_at = h.db.frontier().unwrap();
+        assert!(
+            trial_balance_at(&h.db, &h.book, &selection, Some(empty_at))
+                .unwrap()
+                .rows
+                .is_empty()
+        );
+        assert_served_reports_match_payloads(&h, &selection, empty_at, true);
+
+        let posted = if pending {
+            let legs = h.expense_legs(12_345);
+            h.hold(legs, b"unmaintained-hold")
+        } else {
+            h.post_rent(12_345, b"unmaintained-rent")
+        };
+        let evid = posted.entry_ref().vid;
+        let entry_before = h.db.vertex(evid).unwrap().unwrap();
+        let uncached_at = h.db.frontier().unwrap();
+        let expected = trial_balance_at(&h.db, &h.book, &selection, Some(uncached_at)).unwrap();
+        let totals = if pending {
+            &expected.pending_unit_totals
+        } else {
+            &expected.unit_totals
+        };
+        assert_eq!(totals.get(&h.usd.0), Some(&(12_345, 12_345)));
+        assert!(
+            h.db
+                .vertex(fa_registers::maintainer::state_vid(h.book.book_id, &h.march))
+                .unwrap()
+                .is_none(),
+            "the first posting has no maintained cells that could mask the defect"
+        );
+        assert_served_reports_match_payloads(&h, &selection, uncached_at, false);
+
+        let pvid = period_vid(&h.book.calendar.id, &h.march);
+        let edge = h
+            .db
+            .edges()
+            .unwrap()
+            .into_iter()
+            .find(|edge| {
+                edge.entry.src == evid
+                    && edge.entry.dst == pvid
+                    && edge.entry.relation == relation::IN_PERIOD
+            })
+            .expect("the posted entry has its derived period edge");
+        let mut damage = WriteBatch::new(relation::IN_PERIOD);
+        damage.delete_edge(edge.entry.eid);
+        h.write_derived(damage);
+        let damaged_at = h.db.frontier().unwrap();
+        assert!(
+            !h.db
+                .in_neighbours(pvid, relation::IN_PERIOD)
+                .unwrap()
+                .contains(&evid)
+        );
+        assert_eq!(h.db.vertex(evid).unwrap(), Some(entry_before));
+        assert_served_reports_match_payloads(&h, &selection, damaged_at, false);
+
+        // Future postings and damage do not turn a historically empty,
+        // unmaintained period into a populated one.
+        assert_served_reports_match_payloads(&h, &selection, empty_at, true);
+        assert_served_reports_match_payloads(&h, &selection, uncached_at, false);
+    }
+}
+
+#[test]
+fn served_stock_includes_an_earlier_period_without_its_book_membership_edge() {
+    let mut h = harness();
+    h.post_rent(12_345, b"march-stock");
+    h.materialize_march();
+    let april = h.open_april();
+    let mut proposal = h.proposal(h.expense_legs(678), b"april-activity", EntryClass::ORIGINAL);
+    proposal.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
+    h.commit(proposal);
+    h.materialize_period(&april);
+
+    let selection = vec![april];
+    let march_selection = vec![h.march.clone()];
+    let intact_at = h.db.frontier().unwrap();
+    let stock = trial_balance_at(&h.db, &h.book, &selection, Some(intact_at)).unwrap();
+    let activity = period_activity(&h.db, &h.book, &selection, Some(intact_at)).unwrap();
+    assert_eq!(stock.unit_totals.get(&h.usd.0), Some(&(13_023, 13_023)));
+    assert_eq!(activity.unit_totals.get(&h.usd.0), Some(&(678, 678)));
+    assert_served_reports_match_payloads(&h, &selection, intact_at, true);
+    assert_served_reports_match_payloads(&h, &march_selection, intact_at, true);
+
+    let pvid = period_vid(&h.book.calendar.id, &h.march);
+    let period_before = h.db.vertex(pvid).unwrap().unwrap();
+    let root = fa_journal::rows::book_root();
+    let edge = h
+        .db
+        .edges()
+        .unwrap()
+        .into_iter()
+        .find(|edge| {
+            edge.entry.src == pvid
+                && edge.entry.dst == root
+                && edge.entry.relation == relation::IN_BOOK
+        })
+        .expect("March has a derived book membership edge");
+    let mut damage = WriteBatch::new(relation::IN_BOOK);
+    damage.delete_edge(edge.entry.eid);
+    h.write_derived(damage);
+    let damaged_at = h.db.frontier().unwrap();
+    assert!(
+        !h.db
+            .in_neighbours(root, relation::IN_BOOK)
+            .unwrap()
+            .contains(&pvid)
+    );
+    assert_eq!(h.db.vertex(pvid).unwrap(), Some(period_before));
+
+    // A stock selected through April still includes March. The explicit
+    // period activity and the intact historical snapshots remain exact too.
+    for at in [intact_at, damaged_at] {
+        assert_served_reports_match_payloads(&h, &selection, at, true);
+        assert_served_reports_match_payloads(&h, &march_selection, at, true);
+    }
+}
+
+#[test]
+fn served_reports_keep_intact_account_metadata_without_book_membership_edges() {
+    let mut h = harness();
+    h.post_rent(12_345, b"account-membership");
+    h.materialize_march();
+    let selection = vec![h.march.clone()];
+    let intact_at = h.db.frontier().unwrap();
+    assert_served_reports_match_payloads(&h, &selection, intact_at, true);
+
+    let root = fa_journal::rows::book_root();
+    let accounts_before = [h.cash, h.rent].map(|vid| h.db.vertex(vid).unwrap().unwrap());
+    let edges = h.db.edges().unwrap();
+    let mut damage = WriteBatch::new(relation::IN_BOOK);
+    for account in &accounts_before {
+        let edge = edges
+            .iter()
+            .find(|edge| {
+                edge.entry.src == account.vid
+                    && edge.entry.dst == root
+                    && edge.entry.relation == relation::IN_BOOK
+            })
+            .expect("the account has a derived book membership edge");
+        damage.delete_edge(edge.entry.eid);
+    }
+    h.write_derived(damage);
+    let damaged_at = h.db.frontier().unwrap();
+    let linked = h.db.in_neighbours(root, relation::IN_BOOK).unwrap();
+    for account in accounts_before {
+        assert!(!linked.contains(&account.vid));
+        assert_eq!(h.db.vertex(account.vid).unwrap(), Some(account));
+    }
+    for at in [intact_at, damaged_at] {
+        assert_served_reports_match_payloads(&h, &selection, at, true);
+    }
+}
+
 #[test]
 fn missing_entry_period_projection_does_not_hide_journal_contributions() {
     let mut h = harness();

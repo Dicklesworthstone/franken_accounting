@@ -1064,11 +1064,11 @@ fn maintained_trial_balances_equal_the_literal_fold_at_every_step() {
     );
 }
 
-/// fa-715 complexity witness: once maintenance has caught up, a head trial
-/// balance decodes only the entries committed after the cursors (its
-/// tail), however much unrelated history the journal holds. 300 postings
-/// to a later period change neither the answer nor the decoded tail; one
-/// new March posting is decoded once per maintained contributing period.
+/// fa-715 tail-work witness: 300 postings to a later period change neither
+/// the answer nor the decoded tail; one new March posting is decoded once
+/// per maintained contributing period. This counter excludes snapshot metadata
+/// enumeration and the canonical-prefix scan used to prove unmaintained
+/// periods empty; it is not a witness of total history-independent read work.
 #[test]
 fn a_maintained_head_read_decodes_only_its_tail_regardless_of_unrelated_history() {
     let (mut k, mut oracle, periods) = setup();
