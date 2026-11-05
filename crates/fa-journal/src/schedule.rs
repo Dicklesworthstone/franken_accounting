@@ -450,9 +450,10 @@ fn row_status(
     match matrix.decide("Reversal", state) {
         Some(Decision::Admit) => ReversalStatus::Due,
         Some(Decision::With { op, approvals: 0 })
-            if executor.map_or(op == EXEC_OP, |capability| {
-                fa_policy::Op::from_name(op).is_some_and(|needed| capability.holds(needed))
-            }) =>
+            if op == EXEC_OP
+                && executor.is_none_or(|capability| {
+                    fa_policy::Op::from_name(op).is_some_and(|needed| capability.holds(needed))
+                }) =>
         {
             ReversalStatus::Due
         }

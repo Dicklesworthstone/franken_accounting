@@ -271,7 +271,20 @@ fn draft_branch_confinement_keeps_ceiling_revocation_and_required_rehearsal_chec
     assert_eq!(h.db.frontier().unwrap(), before);
     assert_eq!(h.draft(name).state, DraftState::Open);
 
-    let required = post_only_draft_capability(&h, "unrehearsed-control").with_requires_dry_run();
+    // Tag 12 is explicit on a non-Agent base profile. Agent-profile tokens
+    // already require posting rehearsal, and their canonical constructor
+    // deliberately does not add this separate control-write caveat.
+    let required = Capability::new(AGENT, Profile::Human, &[Op::Post], PRINCIPAL)
+        .unwrap()
+        .with_operator_kind(fa_policy::OperatorKind::Agent)
+        .unwrap()
+        .on_branch(fa_model::draft_branch(
+            h.book.book_id,
+            "unrehearsed-control",
+        ))
+        .unwrap()
+        .with_requires_dry_run();
+    assert!(required.has_requires_dry_run_caveat());
     let before = h.db.frontier().unwrap();
     let denied = h.open_draft(required, "unrehearsed-control").unwrap_err();
     assert!(denied.message.contains("requires_dry_run"), "{denied}");

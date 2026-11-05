@@ -3311,3 +3311,31 @@ expected exit 7 / FA-REF-011 and exact promotion assertions were preserved.
 Raw outer/remote 101 (8601 ms) remains; this is another fixture error, not a
 product-law failure or a pass for the full suite. The second unfiltered genesis
 request again did not execute (initializer 73 / outer 103).
+
+### 2026-11-05 — complete journal suite exposes two safety defects and a fixture error
+
+The unfiltered genesis run on `cd8311d0` executed all 450 cases: 447 passed,
+3 failed, none ignored or filtered; outer/remote 101, 79378 ms. Evidence is
+`fa-gap-work-20261031.lM8xfA/genesis-cd8311d0-hz3-request3-20261105.log` and `.exit`.
+
+`compound_carrying_keeps_full_history_tamper_refusals` returned carrying data
+after unrelated retained-entry damage. Earlier revaluation-input replay did
+not verify immutability through the selected current prefix. The repair runs
+the existing complete entry-history verifier at that prefix before auditing
+allocations. All delete, relabel, rewrite, restore, literal/compound parity and
+intact historical-coordinate controls remain unchanged (`fa-pvt7`).
+
+`closed_reversal_sweep_requires_system_authority_even_for_an_agent_operator`
+failed at the real System caller's Closed-period assertion, not the Human
+profile refusal. Execution substituted the caller's extra `post_closed` for
+the schedule's recorded `post`. The repair requires both the recorded operation
+and the executor's actual authority; SoftClosed execution and all original
+profile/period assertions remain (`fa-61i4`).
+
+The draft rehearsal negative constructed an Agent-profile capability, for which
+`with_requires_dry_run` deliberately emits no redundant tag 12. Its expected
+explicit control restriction was absent. The fixture now uses a Human base
+with an Agent operator, the same draft confinement and actual tag 12, and
+asserts that the flag is present. The original refusal and unchanged-head
+assertions remain. Production capability formats and lifecycle admission are
+unchanged (`fa-d48q`). These repairs still require native and full qualification.

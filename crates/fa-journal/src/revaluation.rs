@@ -1075,6 +1075,11 @@ pub(crate) fn verify_item_history<V: Vfs + Clone>(
     source: VId,
     at: CommitSeq,
 ) -> Outcome<()> {
+    // Replaying an allocation's earlier input prefixes cannot establish that
+    // the caller's selected prefix still preserves every retained Entry.
+    // Check that complete prefix as well, including unrelated Entry damage
+    // and mutations that were subsequently restored.
+    crate::entry_history::verify_entry_history(db, cx, book, Some(at))?;
     let mut adjustments = Vec::new();
     for row in db.vertices_at(at)? {
         cx.query()
