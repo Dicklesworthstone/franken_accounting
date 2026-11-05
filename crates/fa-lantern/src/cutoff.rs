@@ -761,6 +761,92 @@ pub struct PartyMasterChanges {
 }
 procedure_boilerplate!(PartyMasterChanges, "party.master_changes");
 
+struct PartyMasterUpdate {
+    entry: VId,
+    recorded: u64,
+    code: String,
+    party: VId,
+    value: VId,
+}
+
+/// Each alias retains positions in the original `(recorded, entry)` order.
+/// A posting only joins updates for its dimension values and commit window;
+/// unrelated history never multiplies the number of posting-leg comparisons.
+struct PartyMasterIndex {
+    by_value: BTreeMap<VId, Vec<(u64, usize)>>,
+}
+
+impl PartyMasterIndex {
+    fn new(updates: &[PartyMasterUpdate], work: &mut Meter<'_>) -> Result<Self, LanternError> {
+        let mut by_value: BTreeMap<VId, Vec<(u64, usize)>> = BTreeMap::new();
+        for (index, update) in updates.iter().enumerate() {
+            work.compare(1)?;
+            by_value
+                .entry(update.party)
+                .or_default()
+                .push((update.recorded, index));
+            if update.value != update.party {
+                work.compare(1)?;
+                by_value
+                    .entry(update.value)
+                    .or_default()
+                    .push((update.recorded, index));
+            }
+        }
+        Ok(Self { by_value })
+    }
+
+    fn boundary(
+        updates: &[(u64, usize)],
+        sequence: u64,
+        inclusive: bool,
+        work: &mut Meter<'_>,
+    ) -> Result<usize, LanternError> {
+        let (mut lo, mut hi) = (0, updates.len());
+        while lo < hi {
+            work.compare(1)?;
+            let mid = lo + (hi - lo) / 2;
+            if updates[mid].0 < sequence || (inclusive && updates[mid].0 == sequence) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        Ok(lo)
+    }
+
+    fn matching(
+        &self,
+        dimensions: &[(u32, VId)],
+        recorded: u64,
+        window: u32,
+        work: &mut Meter<'_>,
+    ) -> Result<BTreeSet<usize>, LanternError> {
+        let from = recorded.saturating_sub(u64::from(window));
+        let mut values = BTreeSet::new();
+        let mut selected = BTreeSet::new();
+        for &(_, value) in dimensions {
+            work.compare(1)?;
+            if !values.insert(value) {
+                continue;
+            }
+            let Some(updates) = self.by_value.get(&value) else {
+                continue;
+            };
+            let lo = Self::boundary(updates, from, false, work)?;
+            let hi = Self::boundary(updates, recorded, true, work)?;
+            for &(_, index) in &updates[lo..hi] {
+                work.compare(1)?;
+                // A leg may name both the Party and its dimension value (or
+                // repeat a value in different dimensions). It still yields
+                // exactly one finding per matching update, in update order.
+                selected.insert(index);
+            }
+        }
+        Ok(selected)
+    }
+}
+
 impl Procedure for PartyMasterChanges {
     fn id(&self) -> &'static str {
         Self::ID
@@ -787,7 +873,7 @@ impl Procedure for PartyMasterChanges {
         }
 
         // Collect all UpdatePartyIdentifiers schema controls
-        let mut updates: Vec<(VId, u64, String, VId, VId)> = Vec::new();
+        let mut updates = Vec::new();
         for e in &snapshot.entries {
             work.entry()?;
             if let Some(ControlPayload::SchemaChange {
@@ -801,47 +887,49 @@ impl Procedure for PartyMasterChanges {
                     || (pvid, format!("{:032x}", pvid.0)),
                     |p| (p.dimension_value_vid, p.code.clone()),
                 );
-                updates.push((e.vid, e.recorded_at.0, code, pvid, pval_vid));
+                updates.push(PartyMasterUpdate {
+                    entry: e.vid,
+                    recorded: e.recorded_at.0,
+                    code,
+                    party: pvid,
+                    value: pval_vid,
+                });
             }
         }
-        updates.sort_by_key(|(vid, seq, _, _, _)| (*seq, *vid));
+        updates.sort_by_key(|update| (update.recorded, update.entry));
 
         if updates.is_empty() {
             return Ok(Vec::new());
         }
-
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| (e.recorded_at, e.vid));
         let population = live.len() as u64;
+        let index = PartyMasterIndex::new(&updates, work)?;
         let mut out = Vec::new();
 
         for e in &live {
             for leg in &e.entry.proposal.legs {
                 work.leg()?;
-                for (ctrl_vid, ctrl_seq, code, pvid, pval_vid) in &updates {
+                for position in
+                    index.matching(&leg.dimension_set, e.recorded_at.0, window_commits, work)?
+                {
                     work.compare(1)?;
-                    if leg
-                        .dimension_set
-                        .iter()
-                        .any(|(_, d)| d == pval_vid || d == pvid)
-                        && e.recorded_at.0 >= *ctrl_seq
-                        && e.recorded_at.0 - *ctrl_seq <= u64::from(window_commits)
-                    {
-                        let dist = e.recorded_at.0 - *ctrl_seq;
-                        let mut cites = vec![Cite::Entry(e.vid), Cite::Entry(*ctrl_vid)];
-                        if snapshot.rea.parties.contains_key(pvid) {
-                            cites.push(Cite::Principal(*pvid));
-                        }
-                        out.push(finding(
-                            Self::ID,
-                            Severity::High,
-                            Statistic::count("commits_after_master_change", dist, population),
-                            cites,
-                            format!(
-                                "posting to party {code} recorded {dist} commit(s) after party identifier change"
-                            ),
-                        ));
+                    let update = &updates[position];
+                    let dist = e.recorded_at.0 - update.recorded;
+                    let mut cites = vec![Cite::Entry(e.vid), Cite::Entry(update.entry)];
+                    if snapshot.rea.parties.contains_key(&update.party) {
+                        cites.push(Cite::Principal(update.party));
                     }
+                    out.push(finding(
+                        Self::ID,
+                        Severity::High,
+                        Statistic::count("commits_after_master_change", dist, population),
+                        cites,
+                        format!(
+                            "posting to party {} recorded {dist} commit(s) after party identifier change",
+                            update.code
+                        ),
+                    ));
                 }
             }
         }
