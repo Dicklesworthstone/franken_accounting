@@ -173,6 +173,15 @@ fn post_only_draft_disposal_checks_declared_quantity_and_derived_cost_ceilings()
         denied.message.contains("ceiling"),
         "the generated 104 cost is independently admitted: {denied}"
     );
+    assert_eq!(denied.code, fa_policy::denial::code::CEILING);
+    assert_eq!(
+        denied.message,
+        "generated posting effects exceed the capability's permitted scope or amount ceiling"
+    );
+    assert!(
+        denied.detail.is_none(),
+        "denied cost must not leak: {denied:?}"
+    );
     let denied = prepare_lot_disposal(
         &f.h.db,
         &f.h.ctx(),

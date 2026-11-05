@@ -1197,28 +1197,9 @@ pub fn prepare_fx_settlement_group_in_draft<V: Vfs + Clone>(
         Err(refusal) => return Ok(Err(refusal)),
     };
     let proposal = prepared.into_proposal();
-    match admission.admit_proposal(db, book, &proposal)? {
-        Ok(()) => Ok(Ok(proposal)),
-        // A denied derived effect is not an admitted disclosure. In particular,
-        // CeilingExceeded includes the rejected mantissa, which would reveal
-        // carrying relief even though the completed proposal is withheld.
-        // Caller-declared amount diagnostics above remain precise.
-        Err(refusal)
-            if matches!(
-                refusal.code,
-                code::CAPABILITY | fa_policy::denial::code::CEILING
-            ) =>
-        {
-            Ok(Err(Refusal::new(
-                refusal.code,
-                refusal.exit,
-                "generated settlement effects exceed the capability's permitted scope or amount ceiling",
-                "plan §15.2 (source-derived effects require admission before disclosure); fa-txgy.7",
-                "use a capability that admits every generated settlement effect",
-            )))
-        }
-        Err(refusal) => Ok(Err(refusal)),
-    }
+    Ok(admission
+        .admit_derived_proposal(db, book, &proposal)?
+        .map(|()| proposal))
 }
 
 /// Compose complete single-item effects at one prefix. One retained rate and

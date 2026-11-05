@@ -816,6 +816,15 @@ fn draft_source_subledger_admits_generated_amounts_and_rechecks_revocation() {
         .unwrap()
         .unwrap_err();
     assert!(denied.message.contains("ceiling"), "{denied}");
+    assert_eq!(denied.code, fa_policy::denial::code::CEILING);
+    assert_eq!(
+        denied.message,
+        "generated posting effects exceed the capability's permitted scope or amount ceiling"
+    );
+    assert!(
+        denied.detail.is_none(),
+        "denied summary must not leak: {denied:?}"
+    );
     assert_eq!(
         f.book.head().unwrap(),
         head,

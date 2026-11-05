@@ -551,7 +551,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         if let (Some(admission), Ok(proposal)) = (draft, &result)
             && let Err(refusal) = self.query(cx, |db, book| {
-                Ok(admission.admit_proposal(db, book, proposal)?)
+                Ok(admission.admit_derived_proposal(db, book, proposal)?)
             })?
         {
             return Ok(Err(refusal));

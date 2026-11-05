@@ -236,6 +236,34 @@ impl DraftSourceAdmission {
         )
         .map(|result| result.map(|_| ()))
     }
+
+    /// Admit completed source-derived effects before disclosing them. Policy
+    /// diagnostics may name a rejected amount, unit or source route, so a
+    /// denied output gets a bounded refusal with no derived values or detail.
+    /// Caller-supplied templates retain precise diagnostics via `admit_proposal`.
+    pub fn admit_derived_proposal<V: asupersync::fs::Vfs + Clone>(
+        &self,
+        db: &Database<V>,
+        book: &BookContext,
+        proposal: &EntryPayload,
+    ) -> Outcome<()> {
+        Ok(self.admit_proposal(db, book, proposal)?.map_err(|refusal| {
+            if matches!(
+                refusal.code,
+                code::CAPABILITY | fa_policy::denial::code::CEILING
+            ) {
+                Refusal::new(
+                    refusal.code,
+                    refusal.exit,
+                    "generated posting effects exceed the capability's permitted scope or amount ceiling",
+                    "plan §15.2 (source-derived effects require admission before disclosure); fa-txgy.7",
+                    "use a capability that admits every generated posting effect",
+                )
+            } else {
+                refusal
+            }
+        }))
+    }
 }
 
 /// Admit only named-source derivation for an explicitly branch-confined

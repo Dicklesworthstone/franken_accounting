@@ -144,7 +144,7 @@ fn confined_carrying_checks_declared_and_generated_ceilings_without_source_balan
     assert_eq!(denied.code, fa_policy::denial::code::CEILING);
     assert_eq!(
         denied.message,
-        "generated settlement effects exceed the capability's permitted scope or amount ceiling"
+        "generated posting effects exceed the capability's permitted scope or amount ceiling"
     );
     assert!(denied.detail.is_none(), "{denied:?}");
     assert_eq!(f.h.db.frontier().unwrap(), head);
