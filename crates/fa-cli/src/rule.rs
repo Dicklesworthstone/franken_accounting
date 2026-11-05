@@ -21,7 +21,8 @@ use fa_time::DateDay;
 
 use crate::args::Args;
 use crate::cli::{
-    Ctx, Fail, find_event, hex, known_at_read_flag, parse_vid, read_plan_bytes, usage,
+    Ctx, Fail, check_post_planning_options, emit_post_plan, find_event, hex, known_at_read_flag,
+    parse_vid, read_plan_bytes, usage,
 };
 use crate::json::{Json, obj, s};
 
@@ -31,14 +32,36 @@ const LIST: &str = "fa rule list [--as-known-at HEAD|<seq>]";
 const SHOW: &str = "fa rule show <ir_digest> [--as-known-at HEAD|<seq>]";
 const ACTIVATE: &str = "fa rule activate <ir_digest> --from YYYY-MM-DD [--key K] --dry-run";
 const COMMIT: &str = "fa rule activate --plan <file|-> --approval <vid> --approval <vid>";
-const DERIVE: &str =
-    "fa rule derive [--rule <ir_digest> [--input <name>=<value>]... [--key K]] --event <code|vid>";
+const DERIVE: &str = "fa rule derive [--rule <ir_digest> [--input <name>=<value>]... [--key K] [--dry-run [--plan-out <new-file>]]] --event <code|vid>";
 const EVAL: &str = "fa rule eval (<rule-file|-> | --rule <ir_digest>) --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
 const TEST: &str = "fa rule test (<rule-file|-> | --rule <ir_digest>) --golden <file|dir>...";
 const GOLDEN: &str = "a golden case: [event] kind = \"sale\", occurred_on = \"2026-03-12\", resources = [\"net:40.00 USD\"]; optional [inputs] as_of = \"2026-03-31\"; [expect] legs = [\"debit 1000 40.00 USD\", \"credit 6000 40.00 USD region=EU\"] with an optional effective = \"2026-03-12\" and, for a rule that reverses, reverse_on = \"2026-04-01\", or refused = \"<part of the refusal>\"";
 const BACKTEST: &str = "fa rule backtest (<rule-file|-> | --rule <ir_digest>) [--compare <ir_digest>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
 
 pub(crate) fn rule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    // The registry admits options for the whole verb. Reject unsupported
+    // modes before any handler reads inputs or publishes a control/entry.
+    let subcommand = args.positional.get(1).map(String::as_str);
+    if args.switch("--dry-run") && !matches!(subcommand, Some("activate" | "derive")) {
+        return Err(usage(
+            "--dry-run is supported only by rule activate and rule derive",
+            format!("{ACTIVATE} | {DERIVE}"),
+        ));
+    }
+    if args.flag("--plan-out").is_some() && subcommand != Some("derive") {
+        return Err(usage(
+            "--plan-out is supported only by rule derive --dry-run",
+            DERIVE,
+        ));
+    }
+    if (args.flag("--plan").is_some() || !args.flag_all("--approval").is_empty())
+        && subcommand != Some("activate")
+    {
+        return Err(usage(
+            "--plan and --approval belong to rule activate; commit a derivation with fa commit --plan",
+            COMMIT,
+        ));
+    }
     match args.positional.get(1).map(String::as_str) {
         Some("check") => check(ctx, args),
         Some("propose") => propose(ctx, args),
@@ -459,9 +482,11 @@ fn commit_activation(
 }
 
 /// `fa rule derive --rule <ir_digest> --event <code|vid> [--input …] [--key K]`:
-/// post the entry the version derives from the event. The kernel re-runs
-/// the derivation in the commit and posts only what it derives.
+/// Prepare a portable native plan with --dry-run, or post the entry the
+/// version derives from the event. Both paths run the kernel's derivation
+/// and output-authority checks; committing a plan revalidates them.
 fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    check_post_planning_options(args)?;
     if args.positional.len() != 2 {
         return Err(usage(
             "rule derive takes no positional; name the version with --rule",
@@ -472,6 +497,12 @@ fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage("rule derive needs --event", DERIVE));
     };
     let Some(rule) = args.flag("--rule") else {
+        if args.switch("--dry-run") {
+            return Err(usage(
+                "rule derive --dry-run requires one explicit --rule",
+                DERIVE,
+            ));
+        }
         return derive_all(ctx, args, target);
     };
     let digest = digest_arg(rule, DERIVE)?;
@@ -506,6 +537,13 @@ fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some(key) => key.to_string(),
         None => default_key(&digest, event_vid, &rule, &given)?,
     };
+    if args.switch("--dry-run") {
+        let intent =
+            book.prepare_rule_entry(&cap, &digest, event_vid, &given, key.as_bytes())??;
+        let plan = book.plan(intent, &cap)??;
+        ctx.out.at_book(&book)?;
+        return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan, &cap);
+    }
     let posted = book.derive_rule_entry(&cap, &digest, event_vid, &given, key.as_bytes())??;
     ctx.out.at_book(&book)?;
     crate::cli::emit_posted(&ctx.out, posted, rule.produces().name(), false, None, None)

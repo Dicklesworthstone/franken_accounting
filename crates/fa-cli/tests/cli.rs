@@ -29534,3 +29534,307 @@ fn procedure_families_run_every_member_and_trace_is_procedure_run() -> std::io::
     assert!(out.contains("names no registered account type"), "{out}");
     Ok(())
 }
+
+/// A Canon derivation uses the native portable plan protocol. A dry-run
+/// remains nonpublishing even with --yes, and ignored mode flags cannot
+/// turn a planning request into a post or a rule-version publication.
+#[test]
+fn a_rule_derivation_plan_is_portable_and_dry_run_never_posts() -> std::io::Result<()> {
+    let (book, evidence, dir) = envelope_book("canon-portable-plan")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    let head = || {
+        let keys = fa::BookKeys::load(&book.join("book.keys")).unwrap();
+        fa::Book::open_dir(&book, keys, fa::Entropy::deterministic(0xc34))
+            .unwrap()
+            .head()
+            .unwrap()
+    };
+    for (code, amount) in [("EV-PLAN", "net:40.00 USD"), ("EV-OVER", "net:40.01 USD")] {
+        ok(&[
+            "event",
+            "record",
+            "--code",
+            code,
+            "--kind",
+            "sale",
+            "--occurred-on",
+            "2026-03-12",
+            "--evidence",
+            &evidence,
+            "--resource",
+            amount,
+            "--json",
+        ]);
+    }
+    let source = write(
+        &dir,
+        "bounded.rule",
+        r#"rule portable_sale v1 for event Sale {
+  authority {
+    debit "1000" upto "40.00 USD"
+    credit "6000" upto "40.00 USD"
+  }
+  let net = event.resource("net", "USD")
+  debit "1000" net
+  credit "6000" net
+}"#,
+    );
+    let digest = text(
+        &doc(&ok(&["rule", "propose", &source, "--json"])),
+        "ir_digest",
+    )
+    .to_string();
+    let activation = doc(&ok(&[
+        "rule",
+        "activate",
+        &digest,
+        "--from",
+        "2026-03-01",
+        "--dry-run",
+        "--json",
+    ]));
+    let activation_file = write(&dir, "activation.plan", text(&activation, "bytes"));
+    let proposal = text(&activation, "proposal_digest");
+    let approval = |who: &str| {
+        text(
+            &doc(&ok(&[
+                "approve",
+                "--proposal",
+                proposal,
+                "--as",
+                who,
+                "--json",
+            ])),
+            "approval_vid",
+        )
+        .to_string()
+    };
+    let (a, b) = (approval("controller-a"), approval("controller-b"));
+    ok(&[
+        "rule",
+        "activate",
+        "--plan",
+        &activation_file,
+        "--approval",
+        &a,
+        "--approval",
+        &b,
+        "--json",
+    ]);
+
+    let before = head();
+    let source_v2 = write(
+        &dir,
+        "unpublished.rule",
+        &std::fs::read_to_string(&source)?.replace(" v1 ", " v2 "),
+    );
+    let path = dir.join("derivation.plan");
+    let path_text = path.to_str().unwrap();
+    let invalid_modes = [
+        vec![
+            "rule",
+            "derive",
+            "--event",
+            "EV-PLAN",
+            "--dry-run",
+            "--yes",
+            "--json",
+        ],
+        vec![
+            "rule",
+            "propose",
+            &source_v2,
+            "--dry-run",
+            "--yes",
+            "--json",
+        ],
+        vec![
+            "rule",
+            "derive",
+            "--rule",
+            &digest,
+            "--event",
+            "EV-PLAN",
+            "--plan-out",
+            path_text,
+            "--yes",
+            "--json",
+        ],
+        vec![
+            "rule",
+            "derive",
+            "--rule",
+            &digest,
+            "--event",
+            "EV-PLAN",
+            "--plan",
+            &activation_file,
+            "--yes",
+            "--json",
+        ],
+        vec![
+            "rule",
+            "derive",
+            "--rule",
+            &digest,
+            "--event",
+            "EV-PLAN",
+            "--approval",
+            &a,
+            "--yes",
+            "--json",
+        ],
+    ];
+    for args in invalid_modes {
+        let (code, out, err) = run(&args);
+        assert_eq!(code, 2, "{args:?}\n{out}\n{err}");
+        assert_eq!(head(), before, "an unsupported mode must not publish");
+        assert!(!path.exists());
+    }
+
+    // Planning enforces the rule's ceiling before creating the plan file.
+    let (code, out, err) = run(&[
+        "rule",
+        "derive",
+        "--rule",
+        &digest,
+        "--event",
+        "EV-OVER",
+        "--dry-run",
+        "--plan-out",
+        path_text,
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}\n{err}"
+    );
+    assert_eq!(head(), before);
+    assert!(!path.exists());
+
+    // Inline transport is complete, and planning needs no confirmation.
+    let inline = ok(&[
+        "rule",
+        "derive",
+        "--rule",
+        &digest,
+        "--event",
+        "EV-PLAN",
+        "--dry-run",
+        "--json",
+    ]);
+    assert_eq!(text(&robot_line(&inline), "event"), "plan");
+    let inline_data = doc(&inline);
+    assert_eq!(text(&inline_data, "intent_kind"), "RuleDerived");
+    assert!(!text(&inline_data, "bytes").is_empty());
+    assert_eq!(inline_data.get("file"), Some(&Json::Null));
+    assert_eq!(head(), before);
+
+    // --yes must not override --dry-run. A saved artifact is independently
+    // decodable and retains the Rule origin, event, exact inputs and evidence.
+    let planned = ok(&[
+        "rule",
+        "derive",
+        "--rule",
+        &digest,
+        "--event",
+        "EV-PLAN",
+        "--dry-run",
+        "--plan-out",
+        path_text,
+        "--yes",
+        "--json",
+    ]);
+    let data = doc(&planned);
+    assert_eq!(text(&data, "intent_kind"), "RuleDerived");
+    assert_eq!(int(&data, "snapshot_seq"), Some(i128::from(before.0)));
+    assert_eq!(text(&data, "file"), path_text);
+    let bytes = std::fs::read(&path)?;
+    let decoded = fa::PostPlan::decode(&bytes).unwrap();
+    assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
+    assert!(matches!(
+        &decoded.proposal().origin,
+        fa_model::EntryOrigin::Rule { .. }
+    ));
+    assert_eq!(decoded.proposal().evidence.len(), 1);
+    assert_eq!(decoded.proposal().legs.len(), 2);
+    assert!(
+        decoded
+            .proposal()
+            .extensions
+            .iter()
+            .any(|(tag, _)| { *tag == fa_model::entry::RULE_INPUTS_EXTENSION })
+    );
+    assert_eq!(head(), before);
+
+    // A RuleDerived intent is a native-plan input, not a legacy manual
+    // posting or approval review. Even an independent approver cannot
+    // publish a receipt by relabeling that intent as an entry review.
+    let review_path = dir.join("rule.intent");
+    std::fs::write(&review_path, decoded.intent().canonical_bytes().unwrap())?;
+    let review_digest: String = decoded
+        .intent()
+        .digest()
+        .unwrap()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    for args in [
+        vec![
+            "approve",
+            "--review",
+            review_path.to_str().unwrap(),
+            "--digest",
+            &review_digest,
+            "--as",
+            "controller-a",
+            "--json",
+        ],
+        vec![
+            "post",
+            "--review",
+            review_path.to_str().unwrap(),
+            "--digest",
+            &review_digest,
+            "--dry-run",
+            "--json",
+        ],
+    ] {
+        let (code, out, err) = run(&args);
+        assert_eq!(code, 2, "{args:?}\n{out}\n{err}");
+        assert!(out.contains("Intent-origin"), "{out}");
+        assert_eq!(head(), before, "unsupported reviews must not publish");
+    }
+
+    // The suggested next action must preserve the read/post capability.
+    let envelope = robot_line(&planned);
+    let action = text(&arr(&envelope, "next_actions")[0], "command");
+    assert!(action.contains("--grant 'read'"), "{action}");
+    let committed = doc(&ok(&[
+        "commit", "--plan", path_text, "--grant", "read", "--json",
+    ]));
+    assert_eq!(committed.get("already_recorded"), Some(&Json::Bool(false)));
+    assert_eq!(text(&committed, "plan_digest"), text(&data, "plan_digest"));
+    let vid = text(&committed, "vid").to_string();
+    let after = head();
+    assert!(after > before);
+    let shown = ok(&["entry", "show", &vid, "--json"]);
+    assert!(shown.contains("40.00 USD"), "{shown}");
+
+    // Each CLI call reopens the book. Lost-acknowledgement retries use the
+    // saved bytes and return the same entry without another publication.
+    let again = doc(&ok(&[
+        "commit", "--plan", path_text, "--grant", "read", "--json",
+    ]));
+    assert_eq!(again.get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(text(&again, "vid"), vid);
+    assert_eq!(head(), after);
+    Ok(())
+}

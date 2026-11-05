@@ -2051,7 +2051,7 @@ fa dimension close cost_center CC10 --on 2026-07-01 --book acme.fabook --json
 fa dimension list cost_center --book acme.fabook --json
 fa tb --period FY2026-P03 --dimension cost_center=CC --book acme.fabook --json
 
-# A Canon posting rule (plan §10.3): a small, total, typed language from an REA event and declared inputs to legs. fa rule check compiles it against the book's units, resolves every rounding law and dimension, and refuses it unless its debits provably equal its credits in every unit; it reports the content address of its IR. fa rule propose journals it as a RuleVersion addressed by that digest under rule_change (the kernel compiles the source itself; the same IR again writes nothing), fa rule list|show read the versions, fa rule eval shows the legs a file or a journaled version derives from a recorded event, fa rule activate binds the rule's name to a version from a date under dual control (two independent Human approvers), and fa rule derive posts the entry the version in force derives from an event, which the kernel re-derives inside the commit and refuses unless it reproduces exactly (FA-INV-05 rule-reproduction); without --rule, every rule in force for the event's kind derives its entry. A rule names the class it produces: Original by default, or `produces Adjusting` for accruals, deferrals and depreciation, which a soft-closed period admits. fa rule backtest reports every recorded event whose entry a candidate version would change against the version in force (or --compare), and fa rule test runs a rule over its golden corpus of TOML cases, exiting 8 unless every case holds (available today; rule families bound to intents are next, fa-c34).
+# A Canon posting rule (plan §10.3): a small, total, typed language from an REA event and declared inputs to legs. fa rule check compiles it against the book's units, resolves every rounding law and dimension, and refuses it unless its debits provably equal its credits in every unit; it reports the content address of its IR. fa rule propose journals it as a RuleVersion addressed by that digest under rule_change (the kernel compiles the source itself; the same IR again writes nothing), fa rule list|show read the versions, fa rule eval shows the legs a file or a journaled version derives from a recorded event, fa rule activate binds the rule's name to a version from a date under dual control (two independent Human approvers), and fa rule derive posts the entry the version in force derives from an event, which the kernel re-derives inside the commit and refuses unless it reproduces exactly (FA-INV-05 rule-reproduction); without --rule, every rule in force for the event's kind derives its entry. A rule names the class it produces: Original by default, or `produces Adjusting` for accruals, deferrals and depreciation, which a soft-closed period admits. fa rule backtest reports every recorded event whose entry a candidate version would change against the version in force (or --compare), and fa rule test runs a rule over its golden corpus of TOML cases, exiting 8 unless every case holds (available today; explicit derivations also have portable single-entry plans, while broader rule-family dispatch from business intents remains in fa-c34).
 #   rule sale_with_tax v1 for event Sale {
 #     inputs { as_of: date }
 #     authority {
@@ -2072,6 +2072,9 @@ fa rule eval --rule <ir_digest> --event EV-1001 --input as_of=2026-03-31 --book 
 fa rule activate <ir_digest> --from 2026-04-01 --dry-run --book acme.fabook --json   # then two approvers: fa approve --proposal <digest>
 fa rule activate --plan <plan-bytes-file> --approval <vid> --approval <vid> --book acme.fabook --json
 fa rule derive --rule <ir_digest> --event EV-1001 --input as_of=2026-04-30 --book acme.fabook --json
+# Or rehearse one derivation, review its exact native plan, then commit it:
+fa rule derive --rule <ir_digest> --event EV-1001 --input as_of=2026-04-30 --dry-run --plan-out sale.plan --book acme.fabook --json
+fa commit --plan sale.plan --grant read --book acme.fabook --json
 fa rule derive --event EV-1002 --book acme.fabook --json   # every rule in force for the event; rules with inputs are listed as skipped
 fa rule backtest sale_with_tax_v2.rule --from 2026-01-01 --to 2026-03-31 --input as_of=2026-03-31 --book acme.fabook --json
 fa rule test sale_with_tax.rule --golden rules/sale_with_tax/golden --book acme.fabook --json   # exit 8 names each failing case
@@ -2086,6 +2089,17 @@ IR digest and requires a new dual-controlled activation. `rule check` and
 `rule show` report the grants. Existing sources without the block retain their
 original IR bytes and report `authority: "legacy_unbounded"`; their caller's
 capability checks still apply.
+
+A single-rule `derive --dry-run` runs the same native admission as posting and
+aborts the staged transaction. Its portable `RuleDerived` plan retains the sealed
+proposal, rule version, event, inputs, evidence, admitted effects, snapshot and
+caller capability. `fa commit --plan` independently revalidates that artifact;
+an intervening publication requires another dry run, and an exact retry returns
+the recorded entry. The embedded-owner example uses `--grant read` at commit
+because derivation plans bind both read and post authority. Multi-rule derivation
+requires separate explicitly selected plans. Unsupported dry-run and plan options
+refuse before a rule handler can write. Rule-derived intents are currently
+single-entry plans; batch, replacement and scenario containers refuse them.
 
 An account-subtree extract needs authenticated hierarchy and complete account/range coverage, or the complete-prefix fallback. Membership alone does not prove scope completeness. A stock balance also needs its contributing opening history or an explicitly labeled baseline plus complete delta; the verifier reports these predicates separately.
 
