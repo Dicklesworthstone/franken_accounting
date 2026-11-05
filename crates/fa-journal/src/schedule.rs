@@ -667,6 +667,7 @@ pub(crate) struct Mints {
     cells: BTreeMap<VId, CellRun>,
     accounts: BTreeMap<VId, AccountRow>,
     tracker: crate::batch::TemplateByteTracker,
+    capacity: crate::register_capacity::ScheduledReversalCapacity,
     /// Corroborated tick used by an Open preparation, including an empty
     /// candidate population. Other minting paths do not use this field.
     pub(crate) opening_tick: Option<VId>,
@@ -683,6 +684,7 @@ impl Mints {
             cells: BTreeMap::new(),
             accounts: BTreeMap::new(),
             tracker: crate::batch::TemplateByteTracker::default(),
+            capacity: crate::register_capacity::ScheduledReversalCapacity::default(),
             opening_tick: None,
             minted: Vec::new(),
             blocked: Vec::new(),
@@ -1167,7 +1169,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         Ok(usage) => usage,
         Err(refusal) => return execution_refusal(mints, schedule, trigger, refusal),
     };
-    if let Err(refusal) = crate::register_capacity::admit_addition(
+    let capacity = match mints.capacity.prepare(
         txn,
         db,
         ctx,
@@ -1175,8 +1177,9 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         rvid,
         &entry,
     )? {
-        return execution_refusal(mints, schedule, trigger, refusal);
-    }
+        Ok(capacity) => capacity,
+        Err(refusal) => return execution_refusal(mints, schedule, trigger, refusal),
+    };
     let mirrors = crate::entry_storage::stored_mirrors(&entry)?;
     let mut next_tracker = mints.tracker.checkpoint();
     next_tracker.create_vertex(relation::HAS_LEG, rvid, 1, &mirrors);
@@ -1251,6 +1254,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     // The next reversal must observe this entry and quota receipt in the
     // same overlay. Publishing remains the caller's single atomic commit.
     txn.write_ordered(db, batches)?;
+    mints.capacity.accept(capacity);
     mints.minted.push((schedule.target, entry.entry_ref(rvid)));
     Ok(Ok(true))
 }
