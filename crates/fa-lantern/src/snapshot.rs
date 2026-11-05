@@ -524,8 +524,9 @@ impl Snapshot {
             }
         }
         let mut unreversed = std::collections::BTreeSet::new();
+        let mut liveness = fa_registers::open_items::ReversalLiveness::new(&reversed_by);
         for e in self.entries.iter().filter(in_window) {
-            if fa_registers::open_items::is_live(e.vid, &reversed_by)? {
+            if liveness.is_live(e.vid)? {
                 unreversed.insert(e.vid);
             }
         }
