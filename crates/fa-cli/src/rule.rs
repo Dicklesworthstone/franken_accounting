@@ -21,8 +21,8 @@ use fa_time::DateDay;
 
 use crate::args::Args;
 use crate::cli::{
-    Ctx, Fail, check_post_planning_options, emit_post_plan, find_event, hex, known_at_read_flag,
-    parse_vid, read_plan_bytes, usage,
+    Ctx, Fail, check_post_planning_options, emit_batch_plan, emit_post_plan, find_event, hex,
+    known_at_read_flag, parse_vid, read_plan_bytes, usage,
 };
 use crate::json::{Json, obj, s};
 
@@ -32,7 +32,7 @@ const LIST: &str = "fa rule list [--as-known-at HEAD|<seq>]";
 const SHOW: &str = "fa rule show <ir_digest> [--as-known-at HEAD|<seq>]";
 const ACTIVATE: &str = "fa rule activate <ir_digest> --from YYYY-MM-DD [--key K] --dry-run";
 const COMMIT: &str = "fa rule activate --plan <file|-> --approval <vid> --approval <vid>";
-const DERIVE: &str = "fa rule derive [--rule <ir_digest> [--input <name>=<value>]... [--key K] [--dry-run [--plan-out <new-file>]]] --event <code|vid>";
+const DERIVE: &str = "fa rule derive --event <code|vid> [--rule <ir_digest> [--input <name>=<value>]... [--key K]] [--dry-run [--plan-out <new-file>]]";
 const EVAL: &str = "fa rule eval (<rule-file|-> | --rule <ir_digest>) --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
 const TEST: &str = "fa rule test (<rule-file|-> | --rule <ir_digest>) --golden <file|dir>...";
 const GOLDEN: &str = "a golden case: [event] kind = \"sale\", occurred_on = \"2026-03-12\", resources = [\"net:40.00 USD\"]; optional [inputs] as_of = \"2026-03-31\"; [expect] legs = [\"debit 1000 40.00 USD\", \"credit 6000 40.00 USD region=EU\"] with an optional effective = \"2026-03-12\" and, for a rule that reverses, reverse_on = \"2026-04-01\", or refused = \"<part of the refusal>\"";
@@ -496,13 +496,13 @@ fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let Some(target) = args.flag("--event") else {
         return Err(usage("rule derive needs --event", DERIVE));
     };
+    if args.flag_all("--rule").len() > 1 {
+        return Err(usage(
+            "name one --rule, or omit it to derive the complete matching set atomically",
+            DERIVE,
+        ));
+    }
     let Some(rule) = args.flag("--rule") else {
-        if args.switch("--dry-run") {
-            return Err(usage(
-                "rule derive --dry-run requires one explicit --rule",
-                DERIVE,
-            ));
-        }
         return derive_all(ctx, args, target);
     };
     let digest = digest_arg(rule, DERIVE)?;
@@ -535,7 +535,7 @@ fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let given = inputs(&rule, &args.flag_all("--input"), &book.context().units)?;
     let key = match args.flag("--key") {
         Some(key) => key.to_string(),
-        None => default_key(&digest, event_vid, &rule, &given)?,
+        None => default_key(event_vid, &rule, &given)?,
     };
     if args.switch("--dry-run") {
         let intent =
@@ -552,28 +552,17 @@ fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// The request itself, within the 64-byte key bound: deriving the same
 /// version over the same event with the same inputs is a retry.
 fn default_key(
-    digest: &[u8; 32],
     event: fgdb_types::VId,
     rule: &CompiledRule,
     inputs: &Inputs,
 ) -> Result<String, Fail> {
-    Ok(hex(&fa_model::domain_digest(
-        b"fa-cli:rule-derive-key:v1",
-        &[
-            digest,
-            &event.0.to_le_bytes(),
-            &fa_canon_inputs_digest(rule, inputs)?,
-        ],
-    )))
+    fa::rule::default_derivation_key(rule, event, inputs)
+        .map_err(|error| usage(format!("the inputs do not fit the rule: {error}"), DERIVE))
 }
 
-/// `fa rule derive --event <code|vid>` without `--rule`: every activated
-/// rule whose version in force on the event's date reads this event's kind
-/// derives its entry (plan §10.2 RecordEvent: the book's rules derive
-/// entries from an event). A rule that declares inputs is reported as
-/// skipped: derive it with `--rule` and `--input`. Each derivation is its
-/// own entry under its default key; on a refusal the command stops with
-/// it, and running it again is a retry of the derivations already posted.
+/// Without --rule, derive the complete active matching set in one native
+/// atomic batch. A required input, missing rule, or any refused member
+/// prevents every publication. --dry-run retains the same complete request.
 fn derive_all(ctx: &mut Ctx<'_>, args: &Args, target: &str) -> Result<(), Fail> {
     if !args.flag_all("--input").is_empty() || args.flag("--key").is_some() {
         return Err(usage(
@@ -597,88 +586,56 @@ fn derive_all(ctx: &mut Ctx<'_>, args: &Args, target: &str) -> Result<(), Fail> 
             "fa event list --book <dir> --json",
         )
     })?;
-    let (_, names) = book.rule_names(Some(rea.known_at), &cap)??;
-    let mut derived = Vec::new();
-    let mut skipped = Vec::new();
-    for name in &names {
-        let Some(digest) = name.bindings.in_force(event.spec.occurred_on) else {
-            continue;
-        };
-        let (_, version) = book.rule_version(&digest, Some(rea.known_at), &cap)??;
-        let rule = version
-            .ok_or_else(|| {
-                Fail::Internal(format!(
-                    "rule {} binds a version the book does not hold",
-                    name.name
-                ))
-            })?
-            .rule;
-        if rule.event() != event.spec.kind {
-            continue;
-        }
-        if !rule.inputs().is_empty() {
-            skipped.push(obj(vec![
-                ("rule", s(&name.name)),
-                ("ir_digest", s(hex(&digest))),
-                (
-                    "reason",
-                    s("it declares inputs: derive it with --rule and --input"),
-                ),
-            ]));
-            continue;
-        }
-        let none = Inputs::new();
-        let key = default_key(&digest, event.vid, &rule, &none)?;
-        let posted = book.derive_rule_entry(&cap, &digest, event.vid, &none, key.as_bytes())??;
-        let (entry_ref, recorded_at, already) = match posted {
-            fa_journal::Posted::Committed {
-                entry_ref,
-                recorded_at,
-                ..
-            } => (entry_ref, recorded_at, false),
-            fa_journal::Posted::AlreadyRecorded {
-                entry_ref,
-                recorded_at,
-            } => (entry_ref, recorded_at, true),
-        };
-        derived.push(obj(vec![
-            ("rule", s(&name.name)),
-            ("ir_digest", s(hex(&digest))),
-            ("vid", s(format!("{:032x}", entry_ref.vid.0))),
-            ("recorded_at", Json::Int(i128::from(recorded_at.0))),
-            ("already_recorded", Json::Bool(already)),
-        ]));
+    let fa::rule::PreparedRuleBatch {
+        event_code,
+        rules,
+        batch,
+    } = book.prepare_rule_batch(&cap, event.vid)??;
+    if args.switch("--dry-run") {
+        let plan = book.plan_batch(batch, &cap)??;
+        return emit_batch_plan(&ctx.out, &book, &ctx.files, args, &plan, &cap);
     }
+    let posted = book.post_batch(batch, &cap)??;
+    if posted.entries.len() != rules.len() {
+        return Err(Fail::Internal(
+            "the recorded automatic batch has a different member count".into(),
+        ));
+    }
+    let derived = rules
+        .iter()
+        .zip(&posted.entries)
+        .map(|(rule, entry)| {
+            obj(vec![
+                ("rule", s(&rule.name)),
+                ("ir_digest", s(hex(&rule.ir_digest))),
+                ("vid", s(format!("{:032x}", entry.vid.0))),
+                ("recorded_at", Json::Int(i128::from(posted.recorded_at.0))),
+                ("already_recorded", Json::Bool(posted.already_recorded)),
+            ])
+        })
+        .collect::<Vec<_>>();
     ctx.out.at_book(&book)?;
     let human = format!(
-        "event {}: {} rule-derived entr{} posted or already recorded, {} rule{} skipped",
-        event.spec.code,
+        "event {event_code}: {} rule-derived entr{} {} atomically at sequence {}; no rules skipped",
         derived.len(),
         if derived.len() == 1 { "y" } else { "ies" },
-        skipped.len(),
-        if skipped.len() == 1 { "" } else { "s" },
+        if posted.already_recorded {
+            "already recorded"
+        } else {
+            "posted"
+        },
+        posted.recorded_at.0,
     );
     ctx.out.event(
         "rule_derivations",
         vec![
-            ("event_code", s(&event.spec.code)),
+            ("event_code", s(&event_code)),
             ("derived", Json::Arr(derived)),
-            ("skipped", Json::Arr(skipped)),
+            ("skipped", Json::Arr(Vec::new())),
         ],
         &human,
     );
     Ok(())
-}
-
-/// The inputs' digest, for a default key: deriving the same version over
-/// the same event with the same inputs again is a retry.
-fn fa_canon_inputs_digest(rule: &CompiledRule, inputs: &Inputs) -> Result<[u8; 32], Fail> {
-    let bytes = fa::rule::encode_inputs(rule, inputs)
-        .map_err(|e| usage(format!("the inputs do not fit the rule: {e}"), DERIVE))?;
-    Ok(fa_model::domain_digest(
-        fa::rule::CANON_INPUTS_DOMAIN,
-        &[&bytes],
-    ))
 }
 
 /// `fa rule list [--as-known-at HEAD|<seq>]`.

@@ -63,6 +63,7 @@ use crate::templates;
 use crate::verbs::{self, Condition, Dangerous, Registry, Verb};
 
 mod batch_plan;
+pub(crate) use batch_plan::emit as emit_batch_plan;
 mod correction_review;
 mod outcome_recovery;
 
@@ -2402,7 +2403,7 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
         || (verb == "fx" && args.positional.get(1).map(String::as_str) == Some("revalue"))
         || (verb == "rule"
             && args.positional.get(1).map(String::as_str) == Some("derive")
-            && args.flag("--rule").is_some()
+            && args.flag_all("--rule").len() <= 1
             && args.switch("--dry-run")
             && args.flag("--plan").is_none()
             && args.flag_all("--approval").is_empty()))

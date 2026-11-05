@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 
 use fa::{BatchPlan, PostIntent};
-use fa_model::{ControlPayload, Disposition, Entry, EntryClass, EntryPayload, SupersessionKind};
+use fa_model::{
+    ControlPayload, Disposition, Entry, EntryClass, EntryOrigin, EntryPayload, SupersessionKind,
+};
 use fa_policy::Capability;
 use fgdb_types::VId;
 
@@ -252,7 +254,7 @@ pub(super) fn emit_draft_members(
     Ok(())
 }
 
-pub(super) fn emit(
+pub(crate) fn emit(
     out: &Out,
     book: &Book,
     files: &Files,
@@ -265,6 +267,7 @@ pub(super) fn emit(
     let plan_digest = hex(&plan.digest().map_err(encode)?);
     let certificate_digest = hex(&plan.certificate_digest().map_err(encode)?);
     let certificate = plan.certificate();
+    let automatic = plan.batch().automatic_event();
     let accounts: BTreeMap<_, _> = book.accounts()?.into_iter().map(|a| (a.vid, a)).collect();
     let reasons = ReasonCodes::embedded().map_err(|error| Fail::Internal(error.to_string()))?;
     let mut members = Vec::new();
@@ -273,6 +276,12 @@ pub(super) fn emit(
         plan.prepared_entries().len(),
         certificate.snapshot_seq.0
     );
+    if let Some(event) = automatic {
+        human.push_str(&format!(
+            "\nComplete active rule set for event {:032x}; every matching rule is included.",
+            event.0,
+        ));
+    }
     for (index, ((intent, entry), period)) in plan
         .batch()
         .members()
@@ -344,11 +353,31 @@ pub(super) fn emit(
                 ),
             ]));
         }
+        let derivation = match &proposal.origin {
+            EntryOrigin::Rule {
+                rule_version_oid,
+                event_ref,
+                inputs_digest,
+            } => {
+                human.push_str(&format!(
+                    "\n  Rule {} over event {:032x}",
+                    hex(&rule_version_oid.0),
+                    event_ref.0,
+                ));
+                obj(vec![
+                    ("ir_digest", s(hex(&rule_version_oid.0))),
+                    ("event", s(format!("{:032x}", event_ref.0))),
+                    ("inputs_digest", s(hex(inputs_digest))),
+                ])
+            }
+            _ => Json::Null,
+        };
         let pending = proposal.pending.as_ref();
         members.push(obj(vec![
             ("index", Json::Int(index as i128)),
             ("vid", s(format!("{:032x}", vid.0))),
             ("class", s(proposal.class.name().unwrap_or("?"))),
+            ("derivation", derivation),
             ("effective_date", s(proposal.effective_date.render())),
             ("period", s(period)),
             ("idempotency_key", s(hex(&proposal.idempotency_key))),
@@ -432,7 +461,9 @@ pub(super) fn emit(
         command
     };
     let actions = if rehearsal || bound_release {
-        let warning = if rehearsal {
+        let warning = if rehearsal && automatic.is_some() {
+            "This Agent-profile rule batch is a rehearsal and cannot commit to trunk (FA-REF-013). A Human holding read and post must independently prepare the complete event derivation with --dry-run, review the new batch plan, and commit it under that same capability."
+        } else if rehearsal {
             "This Agent-profile batch is a rehearsal and cannot commit to trunk (FA-REF-013). Append the complete batch with --draft <name>; another authorized principal reviews and promotes the draft."
         } else {
             "MCP cannot confirm a batch that releases a reservation. Ask the operator to independently prepare, review and confirm the complete batch."
@@ -464,7 +495,14 @@ pub(super) fn emit(
     out.event_with_actions(
         "batch_plan",
         vec![
-            ("intent_kind", s("PostBatch")),
+            (
+                "intent_kind",
+                s(if automatic.is_some() {
+                    "AutomaticRules"
+                } else {
+                    "PostBatch"
+                }),
+            ),
             ("idempotency_key", s(hex(plan.batch().idempotency_key()))),
             ("principal", s(format!("{:032x}", certificate.principal.0))),
             ("intent_digest", s(hex(&certificate.intent_digest))),
@@ -493,7 +531,14 @@ pub(super) fn emit(
             ("members", Json::Arr(members)),
             ("bytes", s(encoded)),
             ("file", args.flag("--plan-out").map_or(Json::Null, s)),
-            ("scope", s("same-snapshot-batch")),
+            (
+                "scope",
+                s(if automatic.is_some() {
+                    "same-snapshot-automatic-rules"
+                } else {
+                    "same-snapshot-batch"
+                }),
+            ),
             ("authority", s(out.authority_posture())),
         ],
         &human,
