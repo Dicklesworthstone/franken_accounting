@@ -9,9 +9,13 @@
 //! scratch rehearsal and independent promotion reuse these same source laws.
 //! The private draft proof cannot authorize a mixed or ordinary atomic batch.
 
+mod history;
 mod items;
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
+
+pub use history::RevaluationHistoryWork;
 
 use asupersync::fs::Vfs;
 use fa_model::entry::{EXTENSIONS_MINOR, FX_REVALUATION_EXTENSION};
@@ -68,6 +72,7 @@ pub struct PreparedFxRevaluation {
     evidence: EvidenceRef,
     base_totals: Option<BaseTotals>,
     population_work: crate::carrying::CarryingPopulationWork,
+    history_work: RevaluationHistoryWork,
 }
 
 impl PreparedFxRevaluation {
@@ -78,6 +83,12 @@ impl PreparedFxRevaluation {
     /// replay of older revaluation publications required by historical audit.
     pub fn population_work(&self) -> crate::carrying::CarryingPopulationWork {
         self.population_work
+    }
+    /// Shared immutable-index work and remaining source hashing in the audit
+    /// of prior publications. Historical metadata verification still runs at
+    /// every original cutoff; this is not a whole-request linearity claim.
+    pub fn history_work(&self) -> RevaluationHistoryWork {
+        self.history_work
     }
     pub fn basis(&self) -> &FxRevaluationBasis {
         &self.basis
@@ -585,12 +596,28 @@ fn observe<V: Vfs + Clone>(
     at: CommitSeq,
     budget: &mut ArithmeticBudget<'_, impl Sized>,
 ) -> Outcome<PreparedFxRevaluation> {
+    observe_using(db, cx, book, request, at, budget, None)
+        .map(|outcome| outcome.map(|(prepared, _)| prepared))
+}
+
+fn observe_using<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    request: &FxRevaluationRequest,
+    at: CommitSeq,
+    budget: &mut ArithmeticBudget<'_, impl Sized>,
+    history: Option<&history::AuthenticatedHistory>,
+) -> Outcome<(PreparedFxRevaluation, history::VerifiedEntryPrefix)> {
     if at.0 == 0 || at > db.frontier()? {
         return Ok(Err(changed(
             "the revaluation observation is outside this book's recorded history",
         )));
     }
-    crate::entry_history::verify_entry_history(db, cx, book, Some(at))?;
+    let verified_prefix = match history {
+        Some(history) => history.reuse_proof(book, at)?,
+        None => history::verify_prefix(db, cx, book, at)?,
+    };
     crate::migration::verify_run_visibility_at(db, book, at)?;
     if !crate::period::verify_periods(db, book, Some(at))?.is_green() {
         return Err(KernelError::Corrupt(
@@ -616,7 +643,11 @@ fn observe<V: Vfs + Clone>(
         Err(refusal) => return Ok(Err(refusal)),
     };
     let chart = crate::chart::read_at(db, book, at)?;
-    let Some(routes) = fx_revaluation_routes_at(db, book, date, at)? else {
+    let selected_routes = match history {
+        Some(history) => history.routes_at(db, book, date, at)?,
+        None => fx_revaluation_routes_at(db, book, date, at)?.map(std::rc::Rc::new),
+    };
+    let Some(routes) = selected_routes else {
         return Ok(Err(unsupported(
             "no journaled FX route map applies at period end",
         )));
@@ -683,14 +714,38 @@ fn observe<V: Vfs + Clone>(
     let mut entries = Vec::new();
     let mut runs = BTreeMap::new();
     let mut release_recognition = items::ReleaseRecognition::default();
-    for row in db.vertices_at(at)? {
+    type SourceEntry<'a> = Result<(CommitSeq, VId, Cow<'a, Entry>), KernelError>;
+    let candidates: Box<dyn Iterator<Item = SourceEntry<'_>> + '_> = match history {
+        Some(history) => Box::new(
+            history
+                .source_entries(
+                    cx,
+                    request.source_account,
+                    route.valuation_account,
+                    at,
+                    request.item_allocation,
+                )?
+                .into_iter()
+                .map(|(seq, vid, entry)| Ok((*seq, *vid, Cow::Borrowed(entry)))),
+        ),
+        None => Box::new(db.vertices_at(at)?.into_iter().filter_map(|row| {
+            if let Err(error) = cx.query().checkpoint() {
+                return Some(Err(fgdb::WriteTxnError::Interrupted(error).into()));
+            }
+            if !row.labels.contains(&label::ENTRY) {
+                return None;
+            }
+            Some(
+                crate::entry_storage::decode_at(db, &row, at)
+                    .map(|entry| (row.created_at, row.vid, Cow::Owned(entry))),
+            )
+        })),
+    };
+    for candidate in candidates {
         cx.query()
             .checkpoint()
             .map_err(fgdb::WriteTxnError::Interrupted)?;
-        if !row.labels.contains(&label::ENTRY) {
-            continue;
-        }
-        let entry = crate::entry_storage::decode_at(db, &row, at)?;
+        let (recorded_at, vid, entry) = candidate?;
         if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
             return Err(KernelError::Corrupt(
                 "revaluation source belongs to another book or branch".into(),
@@ -712,7 +767,7 @@ fn observe<V: Vfs + Clone>(
                 if let Err(refusal) = items::recognized_release(
                     db,
                     at,
-                    row.vid,
+                    vid,
                     &entry,
                     request.source_account,
                     &route,
@@ -721,13 +776,13 @@ fn observe<V: Vfs + Clone>(
                     return Ok(Err(refusal));
                 }
                 if entry.proposal.effective_date <= date {
-                    entries.push((row.created_at, row.vid, entry));
+                    entries.push((recorded_at, vid, entry));
                 }
                 continue;
             }
             let prior = match recognized_adjustment(
                 &entry,
-                row.created_at,
+                recorded_at,
                 request.source_account,
                 &route,
                 spec.base_unit,
@@ -735,9 +790,14 @@ fn observe<V: Vfs + Clone>(
                 Ok(prior) => prior,
                 Err(refusal) => return Ok(Err(refusal)),
             };
-            let Some(old_routes) =
-                fx_revaluation_routes_at(db, book, prior.closing_date, prior.observed_at)?
-            else {
+            let old_routes = match history {
+                Some(history) => {
+                    history.routes_at(db, book, prior.closing_date, prior.observed_at)?
+                }
+                None => fx_revaluation_routes_at(db, book, prior.closing_date, prior.observed_at)?
+                    .map(std::rc::Rc::new),
+            };
+            let Some(old_routes) = old_routes else {
                 return Ok(Err(invalid(
                     "a retained valuation adjustment has no original route map",
                 )));
@@ -767,7 +827,7 @@ fn observe<V: Vfs + Clone>(
             }
         }
         if entry.proposal.effective_date <= date {
-            entries.push((row.created_at, row.vid, entry));
+            entries.push((recorded_at, vid, entry));
         }
     }
     entries.sort_by_key(|(recorded_at, vid, _)| (*recorded_at, *vid));
@@ -791,6 +851,9 @@ fn observe<V: Vfs + Clone>(
             };
             if leg_entity != entity {
                 continue;
+            }
+            if let Some(history) = history {
+                history.contribution_hashed();
             }
             hash.update(&recorded_at.0.to_le_bytes());
             hash.update(&vid.0.to_le_bytes());
@@ -903,6 +966,7 @@ fn observe<V: Vfs + Clone>(
             date,
             entity,
             &entries,
+            history.map(history::AuthenticatedHistory::index),
             source_native_net,
             source_base_net,
             prior_adjustment_net,
@@ -920,38 +984,45 @@ fn observe<V: Vfs + Clone>(
         None
     };
     population_work.release_lineage_entries_read = release_recognition.lineage_entries_read();
-    Ok(Ok(PreparedFxRevaluation {
-        request: FxRevaluationRequest {
-            entity,
-            ..request.clone()
+    if let Some(history) = history {
+        history.carrying_work(population_work);
+    }
+    Ok(Ok((
+        PreparedFxRevaluation {
+            request: FxRevaluationRequest {
+                entity,
+                ..request.clone()
+            },
+            basis: FxRevaluationBasis {
+                period: request.period.clone(),
+                closing_date: date,
+                observed_at: at,
+                source_account: request.source_account,
+                entity,
+                routes_entry: routes.control_entry,
+                routes_digest: routes.digest,
+                rate_document: request.rate_document,
+                rate_commit: evidence.doc_commit,
+                source_digest: hash.finalize().0,
+                item_allocation,
+            },
+            route,
+            native_unit,
+            base_unit: spec.base_unit,
+            source_native_net,
+            source_base_net,
+            prior_adjustment_net,
+            current_carrying_net,
+            target_base_net,
+            delta,
+            legs,
+            evidence,
+            base_totals,
+            population_work,
+            history_work: RevaluationHistoryWork::default(),
         },
-        basis: FxRevaluationBasis {
-            period: request.period.clone(),
-            closing_date: date,
-            observed_at: at,
-            source_account: request.source_account,
-            entity,
-            routes_entry: routes.control_entry,
-            routes_digest: routes.digest,
-            rate_document: request.rate_document,
-            rate_commit: evidence.doc_commit,
-            source_digest: hash.finalize().0,
-            item_allocation,
-        },
-        route,
-        native_unit,
-        base_unit: spec.base_unit,
-        source_native_net,
-        source_base_net,
-        prior_adjustment_net,
-        current_carrying_net,
-        target_base_net,
-        delta,
-        legs,
-        evidence,
-        base_totals,
-        population_work,
-    }))
+        verified_prefix,
+    )))
 }
 
 fn reproduces(
@@ -1053,31 +1124,24 @@ fn observe_verified<V: Vfs + Clone>(
     at: CommitSeq,
     budget: &mut ArithmeticBudget<'_, impl Sized>,
 ) -> Outcome<PreparedFxRevaluation> {
-    let prepared = match observe(db, cx, book, request, at, budget)? {
-        Ok(prepared) => prepared,
+    let (mut prepared, proof) = match observe_using(db, cx, book, request, at, budget, None)? {
+        Ok(observed) => observed,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let history = history::AuthenticatedHistory::read_verified(db, cx, book, proof)?;
     let mut adjustments = Vec::new();
-    for row in db.vertices_at(at)? {
+    for (recorded_at, vid, entry) in
+        history.adjustments(cx, prepared.route.valuation_account, at)?
+    {
         cx.query()
             .checkpoint()
             .map_err(fgdb::WriteTxnError::Interrupted)?;
-        if !row.labels.contains(&label::ENTRY) {
-            continue;
-        }
-        let entry = crate::entry_storage::decode_at(db, &row, at)?;
-        if entry.proposal.class != EntryClass::REVALUATION
-            || !entry
-                .proposal
-                .legs
-                .iter()
-                .any(|leg| leg.account_ref == prepared.route.valuation_account)
-        {
+        if entry.proposal.class != EntryClass::REVALUATION {
             continue;
         }
         let basis = match recognized_adjustment(
-            &entry,
-            row.created_at,
+            entry,
+            *recorded_at,
             request.source_account,
             &prepared.route,
             prepared.base_unit,
@@ -1085,7 +1149,7 @@ fn observe_verified<V: Vfs + Clone>(
             Ok(basis) => basis,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        adjustments.push((row.created_at, row.vid, entry.proposal, basis));
+        adjustments.push((*recorded_at, *vid, &entry.proposal, basis));
     }
     adjustments.sort_by_key(|(created_at, vid, _, _)| (*created_at, *vid));
     if adjustments.windows(2).any(|pair| pair[0].0 == pair[1].0) {
@@ -1106,17 +1170,26 @@ fn observe_verified<V: Vfs + Clone>(
             KernelError::Corrupt("a retained revaluation has sequence zero".into())
         })?);
         for prefix in [basis.observed_at, before_publication] {
-            let reproduced = match observe(db, cx, book, &prior_request, prefix, budget)? {
-                Ok(reproduced) => reproduced,
+            let reproduced = match observe_using(
+                db,
+                cx,
+                book,
+                &prior_request,
+                prefix,
+                budget,
+                Some(&history),
+            )? {
+                Ok((reproduced, _)) => reproduced,
                 Err(refusal) => return Ok(Err(refusal)),
             };
-            if !reproduces(&reproduced, &basis, &proposal) {
+            if !reproduces(&reproduced, &basis, proposal) {
                 return Err(KernelError::Corrupt(
                     "a retained FX adjustment does not reproduce its original observation and publication basis".into(),
                 ));
             }
         }
     }
+    prepared.history_work = history.work();
     Ok(Ok(prepared))
 }
 

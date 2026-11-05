@@ -19,9 +19,9 @@ pub(crate) use allocated::ReleaseIndex as AllocatedReleaseIndex;
 pub(crate) use allocated::basis as allocated_basis;
 pub(crate) use allocated::covers_valuation_account;
 pub(crate) use allocated::{has_allocated_basis, verify_allocated_fx_structure};
-pub(crate) use history::CarryingHistory;
 pub use history::CarryingPopulationWork;
 pub(crate) use history::cached_liveness as reversal_liveness;
+pub(crate) use history::{CarryingHistory, CarryingIndex};
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};

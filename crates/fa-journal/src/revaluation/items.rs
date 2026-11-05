@@ -41,7 +41,8 @@ pub(super) fn population<V: Vfs + Clone>(
     at: CommitSeq,
     date: DateDay,
     entity: Option<VId>,
-    entries: &[(CommitSeq, VId, Entry)],
+    entries: &[(CommitSeq, VId, Cow<'_, Entry>)],
+    shared_index: Option<&std::rc::Rc<crate::carrying::CarryingIndex>>,
     native: i128,
     historical: i128,
     valuation: i128,
@@ -132,6 +133,13 @@ pub(super) fn population<V: Vfs + Clone>(
     // literal single-item fold does.
     let history = if sources.is_empty() {
         None
+    } else if let Some(index) = shared_index {
+        Some(crate::carrying::CarryingHistory::from_index(
+            spec.clone(),
+            std::rc::Rc::clone(index),
+            at,
+            false,
+        )?)
     } else {
         Some(crate::carrying::CarryingHistory::read_at(db, cx, book, at)?)
     };
