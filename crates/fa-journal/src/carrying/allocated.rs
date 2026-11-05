@@ -40,24 +40,181 @@ pub(crate) fn basis(proposal: &EntryPayload) -> Result<FxSettlementValuationBasi
     FxSettlementValuationBasis::decode(raw).map_err(invalid)
 }
 
+/// Parsed immutable release metadata for all items in one recorded group.
+/// Keep a failed range law until its original use point: check_release first
+/// compares the declaration, while retained_shape and coverage read ranges
+/// first. Caching must preserve those refusal priorities.
+pub(crate) struct ReleaseIndex {
+    declared: FxSettlementValuationBasis,
+    by_ordinal: BTreeMap<u16, usize>,
+    by_valuation: BTreeMap<VId, Vec<usize>>,
+    account_legs: BTreeMap<VId, Vec<usize>>,
+    ranges: Result<Vec<core::ops::Range<usize>>, Refusal>,
+    range_by_ordinal: BTreeMap<usize, usize>,
+}
+
+impl ReleaseIndex {
+    pub(crate) fn new(
+        proposal: &EntryPayload,
+        work: &mut CarryingPopulationWork,
+    ) -> Result<Self, Refusal> {
+        let declared = basis(proposal)?;
+        let ranges = settlement_ranges_counted(proposal, &mut work.settlement_legs_examined);
+        let range_by_ordinal = ranges.as_ref().map_or_else(
+            |_| BTreeMap::new(),
+            |ranges| {
+                ranges
+                    .iter()
+                    .enumerate()
+                    .map(|(index, range)| (range.start, index))
+                    .collect()
+            },
+        );
+        let mut by_ordinal = BTreeMap::new();
+        let mut by_valuation: BTreeMap<VId, Vec<usize>> = BTreeMap::new();
+        for (index, release) in declared.items.iter().enumerate() {
+            work.release_items_examined += 1;
+            by_ordinal.insert(release.applying_ordinal, index);
+            by_valuation
+                .entry(release.valuation_account)
+                .or_default()
+                .push(index);
+        }
+        let mut account_legs: BTreeMap<VId, Vec<usize>> = BTreeMap::new();
+        for (ordinal, leg) in proposal.legs.iter().enumerate() {
+            work.release_legs_examined += 1;
+            account_legs
+                .entry(leg.account_ref)
+                .or_default()
+                .push(ordinal);
+        }
+        Ok(Self {
+            declared,
+            by_ordinal,
+            by_valuation,
+            account_legs,
+            ranges,
+            range_by_ordinal,
+        })
+    }
+
+    fn ranges(&self) -> Result<&[core::ops::Range<usize>], Refusal> {
+        self.ranges
+            .as_ref()
+            .map(Vec::as_slice)
+            .map_err(Clone::clone)
+    }
+
+    pub(super) fn retained_shape(
+        &self,
+        proposal: &EntryPayload,
+        work: &mut CarryingPopulationWork,
+    ) -> Result<(), Refusal> {
+        let ranges = self.ranges()?;
+        if self.declared.items.len() != ranges.len() {
+            return Err(invalid(
+                "retained valuation release does not cover its complete settlement components",
+            ));
+        }
+        for (release, range) in self.declared.items.iter().zip(ranges) {
+            work.release_items_examined += 1;
+            if usize::from(release.applying_ordinal) != range.start {
+                return Err(invalid(
+                    "retained valuation release does not cover its complete settlement components",
+                ));
+            }
+        }
+        for release in &self.declared.items {
+            self.check_release(proposal, release, work)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn valuation_accounts(&self) -> impl Iterator<Item = VId> + '_ {
+        self.by_valuation
+            .keys()
+            .chain(self.account_legs.keys())
+            .copied()
+    }
+
+    pub(crate) fn covers_valuation_account(
+        &self,
+        proposal: &EntryPayload,
+        source: VId,
+        route: &crate::chart::FxRevaluationRoute,
+        work: &mut CarryingPopulationWork,
+    ) -> Result<(), Refusal> {
+        let ranges = self.ranges()?;
+        let mut covered = BTreeSet::new();
+        if let Some(releases) = self.by_valuation.get(&route.valuation_account) {
+            for &index in releases {
+                work.release_items_examined += 1;
+                let release = &self.declared.items[index];
+                let range = self
+                    .range_by_ordinal
+                    .get(&usize::from(release.applying_ordinal))
+                    .map(|index| &ranges[*index])
+                    .ok_or_else(|| invalid("valuation release has no authenticated component"))?;
+                if proposal.legs[range.start].account_ref != source
+                    || release.unrealized_account != route.unrealized_account
+                {
+                    return Err(invalid(
+                        "a valuation leaf is used by another source's release",
+                    ));
+                }
+                self.check_release(proposal, release, work)?;
+                if release.valuation_relief.mantissa != 0 {
+                    covered.insert(range.end - 2);
+                }
+            }
+        }
+        if let Some(legs) = self.account_legs.get(&route.valuation_account) {
+            for ordinal in legs {
+                work.release_legs_examined += 1;
+                if !covered.contains(ordinal) {
+                    return Err(invalid(
+                        "the dedicated valuation leaf contains a settlement leg outside its exact allocated release",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_release(
+        &self,
+        proposal: &EntryPayload,
+        expected: &FxSettlementValuationRelease,
+        work: &mut CarryingPopulationWork,
+    ) -> Result<(), Refusal> {
+        work.release_items_examined += 1;
+        if self
+            .by_ordinal
+            .get(&expected.applying_ordinal)
+            .map(|index| &self.declared.items[*index])
+            != Some(expected)
+        {
+            return Err(invalid(
+                "valuation release or its original carrying source differs from retained history",
+            ));
+        }
+        let ranges = self.ranges()?;
+        let range = self
+            .range_by_ordinal
+            .get(&usize::from(expected.applying_ordinal))
+            .map(|index| &ranges[*index])
+            .ok_or_else(|| invalid("valuation release names no complete settlement component"))?;
+        check_release_legs(&proposal.legs[range.clone()], expected, work)
+    }
+
+    pub(super) fn ranges_valid(&self) -> bool {
+        self.ranges.is_ok()
+    }
+}
+
 pub(super) fn retained_shape(proposal: &EntryPayload) -> Result<(), Refusal> {
-    let declared = basis(proposal)?;
-    let ranges = settlement_ranges(proposal)?;
-    if declared.items.len() != ranges.len()
-        || declared
-            .items
-            .iter()
-            .zip(ranges)
-            .any(|(row, range)| usize::from(row.applying_ordinal) != range.start)
-    {
-        return Err(invalid(
-            "retained valuation release does not cover its complete settlement components",
-        ));
-    }
-    for release in &declared.items {
-        check_release(proposal, release)?;
-    }
-    Ok(())
+    let mut work = CarryingPopulationWork::default();
+    ReleaseIndex::new(proposal, &mut work)?.retained_shape(proposal, &mut work)
 }
 
 pub(crate) fn covers_valuation_account(
@@ -65,37 +222,9 @@ pub(crate) fn covers_valuation_account(
     source: VId,
     route: &crate::chart::FxRevaluationRoute,
 ) -> Result<(), Refusal> {
-    let declared = basis(proposal)?;
-    let ranges = settlement_ranges(proposal)?;
-    let mut covered = BTreeSet::new();
-    for release in &declared.items {
-        if release.valuation_account != route.valuation_account {
-            continue;
-        }
-        let range = ranges
-            .iter()
-            .find(|range| range.start == usize::from(release.applying_ordinal))
-            .ok_or_else(|| invalid("valuation release has no authenticated component"))?;
-        if proposal.legs[range.start].account_ref != source
-            || release.unrealized_account != route.unrealized_account
-        {
-            return Err(invalid(
-                "a valuation leaf is used by another source's release",
-            ));
-        }
-        check_release(proposal, release)?;
-        if release.valuation_relief.mantissa != 0 {
-            covered.insert(range.end - 2);
-        }
-    }
-    if proposal.legs.iter().enumerate().any(|(ordinal, leg)| {
-        leg.account_ref == route.valuation_account && !covered.contains(&ordinal)
-    }) {
-        return Err(invalid(
-            "the dedicated valuation leaf contains a settlement leg outside its exact allocated release",
-        ));
-    }
-    Ok(())
+    let mut work = CarryingPopulationWork::default();
+    ReleaseIndex::new(proposal, &mut work)?
+        .covers_valuation_account(proposal, source, route, &mut work)
 }
 
 pub(super) fn release_basis(
@@ -189,22 +318,38 @@ pub(crate) fn check_release(
         .into_iter()
         .find(|range| range.start == usize::from(expected.applying_ordinal))
         .ok_or_else(|| invalid("valuation release names no complete settlement component"))?;
-    let legs = &proposal.legs[range];
+    check_release_legs(
+        &proposal.legs[range],
+        expected,
+        &mut CarryingPopulationWork::default(),
+    )
+}
+
+fn check_release_legs(
+    legs: &[LegPayload],
+    expected: &FxSettlementValuationRelease,
+    work: &mut CarryingPopulationWork,
+) -> Result<(), Refusal> {
     let tail = release_legs(&legs[0], expected)?;
     if tail.len() > legs.len() || !legs.ends_with(&tail) {
         return Err(invalid(
             "valuation release must explicitly reverse the allocated valuation and unrealized accounts",
         ));
     }
-    if expected.valuation_account == expected.unrealized_account
-        || legs[..legs.len() - tail.len()].iter().any(|leg| {
-            leg.account_ref == expected.valuation_account
-                || leg.account_ref == expected.unrealized_account
-        })
-    {
+    if expected.valuation_account == expected.unrealized_account {
         return Err(invalid(
             "valuation and unrealized destinations must be distinct from every settlement core account",
         ));
+    }
+    for leg in &legs[..legs.len() - tail.len()] {
+        work.release_legs_examined += 1;
+        if leg.account_ref == expected.valuation_account
+            || leg.account_ref == expected.unrealized_account
+        {
+            return Err(invalid(
+                "valuation and unrealized destinations must be distinct from every settlement core account",
+            ));
+        }
     }
     Ok(())
 }

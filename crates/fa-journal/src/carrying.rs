@@ -14,10 +14,16 @@
 //! adjustments never acquire an inferred allocation.
 
 mod allocated;
+mod history;
+pub(crate) use allocated::ReleaseIndex as AllocatedReleaseIndex;
+pub(crate) use allocated::basis as allocated_basis;
 pub(crate) use allocated::covers_valuation_account;
-pub(crate) use allocated::{basis as allocated_basis, check_release as check_allocated_release};
 pub(crate) use allocated::{has_allocated_basis, verify_allocated_fx_structure};
+pub(crate) use history::CarryingHistory;
+pub use history::CarryingPopulationWork;
+pub(crate) use history::cached_liveness as reversal_liveness;
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
@@ -245,6 +251,21 @@ pub(crate) fn open_item_carrying_inner<V: Vfs + Clone>(
     ordinal: u16,
     at: CommitSeq,
 ) -> Outcome<CarryingOpenItem> {
+    open_item_carrying_observed(db, cx, book, target, ordinal, at, None)
+}
+
+/// The same monetary fold with an optional shared, fixed-prefix observation.
+/// The literal single-item reader remains the comparison path: only candidate
+/// selection and already authenticated metadata differ in the population path.
+pub(crate) fn open_item_carrying_observed<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    target: EntryRef,
+    ordinal: u16,
+    at: CommitSeq,
+    history: Option<&CarryingHistory>,
+) -> Outcome<CarryingOpenItem> {
     let query = cx.query();
     query
         .checkpoint()
@@ -254,10 +275,28 @@ pub(crate) fn open_item_carrying_inner<V: Vfs + Clone>(
             "carrying-value prefix is beyond the retained frontier",
         )));
     }
-    let Some((original, recorded)) = crate::post::read_entry_at(db, target.vid, at)? else {
-        return Ok(Err(invalid(
-            "the foreign open item does not exist at this prefix",
-        )));
+    let (original, recorded) = match history {
+        Some(history) => {
+            if history.at != at || history.spec.book_id != book.book_id {
+                return Err(KernelError::Corrupt(
+                    "carrying observation belongs to another book or prefix".into(),
+                ));
+            }
+            let Some((original, recorded)) = history.original(target.vid) else {
+                return Ok(Err(invalid(
+                    "the foreign open item does not exist at this prefix",
+                )));
+            };
+            (Cow::Borrowed(original), recorded)
+        }
+        None => {
+            let Some((original, recorded)) = crate::post::read_entry_at(db, target.vid, at)? else {
+                return Ok(Err(invalid(
+                    "the foreign open item does not exist at this prefix",
+                )));
+            };
+            (Cow::Owned(original), recorded)
+        }
     };
     if original.entry_digest != target.entry_digest
         || original.proposal.book_id != book.book_id
@@ -271,7 +310,10 @@ pub(crate) fn open_item_carrying_inner<V: Vfs + Clone>(
     let Some(leg) = original.proposal.legs.get(usize::from(ordinal)) else {
         return Ok(Err(invalid("target ordinal is outside the original entry")));
     };
-    let spec = crate::fx::book_spec_at(db, book, at)?;
+    let spec = match history {
+        Some(history) => Cow::Borrowed(&history.spec),
+        None => Cow::Owned(crate::fx::book_spec_at(db, book, at)?),
+    };
     let Some(original_base) = leg.base_amount else {
         return Ok(Err(invalid(
             "the original foreign item has no retained base valuation",
@@ -295,94 +337,109 @@ pub(crate) fn open_item_carrying_inner<V: Vfs + Clone>(
     }
     let mut entries = Vec::new();
     let mut reversals = BTreeMap::new();
-    for row in db.vertices_at(at)? {
-        query
-            .checkpoint()
-            .map_err(fgdb::WriteTxnError::Interrupted)?;
-        if !row.labels.contains(&label::ENTRY) {
-            continue;
-        }
-        let Some((entry, seq)) = crate::post::read_entry_at(db, row.vid, at)? else {
-            continue;
-        };
-        if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
-            continue;
-        }
-        if entry.proposal.class == EntryClass::REVERSAL {
-            for link in &entry.proposal.supersession {
-                if link.kind == SupersessionKind::Reverses
-                    && reversals.insert(link.target.vid, row.vid).is_some()
-                {
-                    return Err(KernelError::Corrupt(
-                        "an application has duplicate reversal successors".into(),
-                    ));
+    if history.is_none() {
+        for row in db.vertices_at(at)? {
+            query
+                .checkpoint()
+                .map_err(fgdb::WriteTxnError::Interrupted)?;
+            if !row.labels.contains(&label::ENTRY) {
+                continue;
+            }
+            let Some((entry, seq)) = crate::post::read_entry_at(db, row.vid, at)? else {
+                continue;
+            };
+            if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
+                continue;
+            }
+            if entry.proposal.class == EntryClass::REVERSAL {
+                for link in &entry.proposal.supersession {
+                    if link.kind == SupersessionKind::Reverses
+                        && reversals.insert(link.target.vid, row.vid).is_some()
+                    {
+                        return Err(KernelError::Corrupt(
+                            "an application has duplicate reversal successors".into(),
+                        ));
+                    }
                 }
             }
+            entries.push((seq, row.vid, entry));
         }
-        entries.push((seq, row.vid, entry));
     }
-    if !live(target.vid, &reversals)? {
+    let target_is_live = match history {
+        Some(history) => history.is_live(cx, target.vid)?,
+        None => live(target.vid, &reversals)?,
+    };
+    if !target_is_live {
         return Ok(Err(invalid("the target open item is reversed")));
     }
     // A valuation contra account carries an aggregate adjustment, not a
     // per-item allocation. Refuse instead of assigning it to this invoice.
-    let chart = crate::chart::read_at(db, book, at)?;
-    let valuation_accounts: BTreeSet<_> = chart
-        .fx_revaluation_routes()
-        .iter()
-        .filter_map(|routes| {
-            routes
-                .routes
-                .get(&leg.account_ref)
-                .map(|route| route.valuation_account)
-        })
-        .collect();
-    for (seq, vid, entry) in &entries {
-        if *seq < recorded
-            || !live(*vid, &reversals)?
-            || entry.proposal.class == EntryClass::REVERSAL
-        {
-            continue;
+    if let Some(history) = history {
+        if let Err(refusal) = history.check_source(db, cx, book, leg.account_ref, recorded)? {
+            return Ok(Err(refusal));
         }
-        let adjustment = entry
-            .proposal
-            .extensions
+    } else {
+        let chart = crate::chart::read_at(db, book, at)?;
+        let valuation_accounts: BTreeSet<_> = chart
+            .fx_revaluation_routes()
             .iter()
-            .find(|(tag, _)| *tag == FX_REVALUATION_EXTENSION)
-            .map(|(_, raw)| FxRevaluationBasis::decode(raw))
-            .transpose()
-            .map_err(|error| KernelError::Corrupt(error.to_string()))?;
-        if has_allocated_basis(&entry.proposal) {
-            if let Err(refusal) = allocated::retained_shape(&entry.proposal) {
-                return Ok(Err(refusal));
+            .filter_map(|routes| {
+                routes
+                    .routes
+                    .get(&leg.account_ref)
+                    .map(|route| route.valuation_account)
+            })
+            .collect();
+        for (seq, vid, entry) in &entries {
+            if *seq < recorded
+                || !live(*vid, &reversals)?
+                || entry.proposal.class == EntryClass::REVERSAL
+            {
+                continue;
             }
-            for routes in chart.fx_revaluation_routes() {
-                if let Some(route) = routes.routes.get(&leg.account_ref)
-                    && let Err(refusal) =
-                        allocated::covers_valuation_account(&entry.proposal, leg.account_ref, route)
-                {
+            let adjustment = entry
+                .proposal
+                .extensions
+                .iter()
+                .find(|(tag, _)| *tag == FX_REVALUATION_EXTENSION)
+                .map(|(_, raw)| FxRevaluationBasis::decode(raw))
+                .transpose()
+                .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+            if has_allocated_basis(&entry.proposal) {
+                if let Err(refusal) = allocated::retained_shape(&entry.proposal) {
                     return Ok(Err(refusal));
                 }
+                for routes in chart.fx_revaluation_routes() {
+                    if let Some(route) = routes.routes.get(&leg.account_ref)
+                        && let Err(refusal) = allocated::covers_valuation_account(
+                            &entry.proposal,
+                            leg.account_ref,
+                            route,
+                        )
+                    {
+                        return Ok(Err(refusal));
+                    }
+                }
+                continue;
             }
-            continue;
-        }
-        if adjustment.as_ref().is_some_and(|basis| {
-            basis.source_account == leg.account_ref && basis.item_allocation.is_some()
-        }) {
-            continue;
-        }
-        let source_adjustment =
-            adjustment.is_some_and(|basis| basis.source_account == leg.account_ref);
-        if source_adjustment
-            || entry
-                .proposal
-                .legs
-                .iter()
-                .any(|other| valuation_accounts.contains(&other.account_ref))
-        {
-            return Ok(Err(invalid(
-                "the source account has valuation adjustments without a registered per-item relief allocation; its carrying basis cannot be inferred",
-            )));
+            if adjustment.as_ref().is_some_and(|basis| {
+                basis.source_account == leg.account_ref && basis.item_allocation.is_some()
+            }) {
+                continue;
+            }
+            let source_adjustment =
+                adjustment.is_some_and(|basis| basis.source_account == leg.account_ref);
+            if source_adjustment
+                || entry
+                    .proposal
+                    .legs
+                    .iter()
+                    .any(|other| valuation_accounts.contains(&other.account_ref))
+            {
+                return Ok(Err(invalid(
+                    "the source account has valuation adjustments without a registered per-item relief allocation; its carrying basis cannot be inferred",
+                )));
+            }
         }
     }
     entries.sort_by_key(|(seq, vid, _)| (*seq, *vid));
@@ -407,7 +464,24 @@ pub(crate) fn open_item_carrying_inner<V: Vfs + Clone>(
     })?;
     let stripped = current.restrict::<asupersync::cx::cap::None>();
     let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
-    for (seq, vid, entry) in entries {
+    let indices: Box<dyn Iterator<Item = usize>> = match history {
+        Some(history) => {
+            let entity = crate::revaluation::item_entity(&spec, leg)
+                .map_err(|error| KernelError::Corrupt(error.message))?;
+            Box::new(
+                history
+                    .events((target.vid, ordinal), leg.account_ref, entity, recorded)
+                    .into_iter(),
+            )
+        }
+        None => Box::new(0..entries.len()),
+    };
+    for index in indices {
+        let (seq, vid, entry) = match history {
+            Some(history) => history.event(index),
+            None => &entries[index],
+        };
+        let (seq, vid) = (*seq, *vid);
         query
             .checkpoint()
             .map_err(fgdb::WriteTxnError::Interrupted)?;
@@ -415,24 +489,34 @@ pub(crate) fn open_item_carrying_inner<V: Vfs + Clone>(
         if seq < recorded {
             continue;
         }
-        if let Some((_, raw)) = entry
-            .proposal
-            .extensions
-            .iter()
-            .find(|(tag, _)| *tag == FX_REVALUATION_EXTENSION)
-        {
-            let basis = FxRevaluationBasis::decode(raw)
-                .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+        let adjustment = match history {
+            Some(history) => history.adjustment(index).map(Cow::Borrowed),
+            None => entry
+                .proposal
+                .extensions
+                .iter()
+                .find(|(tag, _)| *tag == FX_REVALUATION_EXTENSION)
+                .map(|(_, raw)| {
+                    FxRevaluationBasis::decode(raw)
+                        .map(Cow::Owned)
+                        .map_err(|error| KernelError::Corrupt(error.to_string()))
+                })
+                .transpose()?,
+        };
+        if let Some(basis) = adjustment {
             if basis.source_account == leg.account_ref
                 && crate::revaluation::item_entity(&spec, leg)
                     .map_err(|error| KernelError::Corrupt(error.message))?
                     == basis.entity
                 && let Some(allocation) = &basis.item_allocation
             {
-                let item = allocation
-                    .items
-                    .iter()
-                    .find(|item| item.target.vid == target.vid && item.ordinal == ordinal);
+                let item = match history {
+                    Some(history) => history.allocation_item(index, (target.vid, ordinal)),
+                    None => allocation
+                        .items
+                        .iter()
+                        .find(|item| item.target.vid == target.vid && item.ordinal == ordinal),
+                };
                 if let Some(item) = item {
                     if item.target != target
                         || item.open_native != open_native
@@ -444,25 +528,36 @@ pub(crate) fn open_item_carrying_inner<V: Vfs + Clone>(
                             "retained item allocation does not reproduce the item's preceding carrying components",
                         )));
                     }
-                    let Some(routes) = crate::chart::fx_revaluation_routes_at(
-                        db,
-                        book,
-                        basis.closing_date,
-                        basis.observed_at,
-                    )?
-                    else {
-                        return Ok(Err(invalid("item allocation has no retained route map")));
+                    let route = match history {
+                        Some(history) => match history.route(db, book, index)? {
+                            Ok(route) => route,
+                            Err(refusal) => return Ok(Err(refusal)),
+                        },
+                        None => {
+                            let Some(routes) = crate::chart::fx_revaluation_routes_at(
+                                db,
+                                book,
+                                basis.closing_date,
+                                basis.observed_at,
+                            )?
+                            else {
+                                return Ok(Err(invalid(
+                                    "item allocation has no retained route map",
+                                )));
+                            };
+                            let Some(route) = routes.routes.get(&leg.account_ref).copied() else {
+                                return Ok(Err(invalid("item allocation has no source route")));
+                            };
+                            if routes.control_entry != basis.routes_entry
+                                || routes.digest != basis.routes_digest
+                            {
+                                return Ok(Err(invalid(
+                                    "item allocation route commitment differs from history",
+                                )));
+                            }
+                            route
+                        }
                     };
-                    let Some(route) = routes.routes.get(&leg.account_ref).copied() else {
-                        return Ok(Err(invalid("item allocation has no source route")));
-                    };
-                    if routes.control_entry != basis.routes_entry
-                        || routes.digest != basis.routes_digest
-                    {
-                        return Ok(Err(invalid(
-                            "item allocation route commitment differs from history",
-                        )));
-                    }
                     valuation_open_base = item
                         .target_base
                         .checked_sub(historical_open_base)
@@ -502,115 +597,138 @@ pub(crate) fn open_item_carrying_inner<V: Vfs + Clone>(
                 }
             }
         } else if entry.proposal.class.carries_open_items() {
-            for (applying_ordinal, applying) in entry.proposal.legs.iter().enumerate() {
-                for application in &applying.settles {
-                    if application.target.vid != target.vid || application.ordinal != ordinal {
-                        continue;
-                    }
-                    let spot = entry.proposal.base_totals.as_ref().is_some_and(|totals| {
-                        totals.fx_law_oid == FxLawId::SettlementSpotCarrying.oid()
-                    });
-                    if application.target != target
-                        || applying.settles.len() != 1
-                        || if spot {
-                            application.amount.mantissa > applying.amount.mantissa
-                        } else {
-                            application.amount != applying.amount
-                                || settlement_ranges(&entry.proposal).is_err()
-                        }
-                        || applying.account_ref != leg.account_ref
-                        || applying.side == leg.side
-                        || applying.dimension_set != leg.dimension_set
-                        || !is_source_bound(&entry.proposal)
-                    {
-                        return Ok(Err(invalid(
-                            "retained application has no unambiguous single-target recorded carrying relief",
-                        )));
-                    }
-                    let relief = if spot {
-                        match spot_application_relief(
-                            db,
-                            book,
-                            &entry.proposal,
-                            application.amount,
-                            seq,
-                            &mut budget,
-                        )? {
-                            Ok(relief) => relief,
-                            Err(refusal) => return Ok(Err(refusal)),
-                        }
+            let applications: Cow<'_, [(usize, usize)]> = match history {
+                Some(history) => Cow::Borrowed(history.applications((target.vid, ordinal), index)),
+                None => Cow::Owned(
+                    entry
+                        .proposal
+                        .legs
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(leg_ordinal, applying)| {
+                            applying.settles.iter().enumerate().filter_map(
+                                move |(application_ordinal, application)| {
+                                    (application.target.vid == target.vid
+                                        && application.ordinal == ordinal)
+                                        .then_some((leg_ordinal, application_ordinal))
+                                },
+                            )
+                        })
+                        .collect(),
+                ),
+            };
+            for &(applying_ordinal, application_ordinal) in applications.iter() {
+                let applying = &entry.proposal.legs[applying_ordinal];
+                let application = &applying.settles[application_ordinal];
+                let spot = entry.proposal.base_totals.as_ref().is_some_and(|totals| {
+                    totals.fx_law_oid == FxLawId::SettlementSpotCarrying.oid()
+                });
+                if application.target != target
+                    || applying.settles.len() != 1
+                    || if spot {
+                        application.amount.mantissa > applying.amount.mantissa
                     } else {
-                        let Some(relief) = applying.base_amount else {
-                            return Ok(Err(invalid(
-                                "retained application lacks recorded base relief",
-                            )));
-                        };
-                        relief
+                        application.amount != applying.amount
+                            || match history {
+                                Some(history) => !history.settlement_ranges_valid(index),
+                                None => settlement_ranges(&entry.proposal).is_err(),
+                            }
+                    }
+                    || applying.account_ref != leg.account_ref
+                    || applying.side == leg.side
+                    || applying.dimension_set != leg.dimension_set
+                    || !is_source_bound(&entry.proposal)
+                {
+                    return Ok(Err(invalid(
+                        "retained application has no unambiguous single-target recorded carrying relief",
+                    )));
+                }
+                let relief = if spot {
+                    match spot_application_relief(
+                        db,
+                        book,
+                        &entry.proposal,
+                        application.amount,
+                        seq,
+                        &mut budget,
+                    )? {
+                        Ok(relief) => relief,
+                        Err(refusal) => return Ok(Err(refusal)),
+                    }
+                } else {
+                    let Some(relief) = applying.base_amount else {
+                        return Ok(Err(invalid(
+                            "retained application lacks recorded base relief",
+                        )));
                     };
-                    let expected = match remaining_carrying_relief(
+                    relief
+                };
+                let expected = match remaining_carrying_relief(
+                    &mut budget,
+                    open_native,
+                    historical_open_base,
+                    application.amount,
+                ) {
+                    Ok(value) => value,
+                    Err(refusal) => return Ok(Err(refusal)),
+                };
+                if relief != expected {
+                    return Ok(Err(invalid(
+                        "retained application base relief does not reproduce RemainingCarryingValue",
+                    )));
+                }
+                let allocated_relief = if has_allocated_basis(&entry.proposal) {
+                    let total = match remaining_carrying_relief(
                         &mut budget,
                         open_native,
-                        historical_open_base,
+                        open_base,
                         application.amount,
                     ) {
                         Ok(value) => value,
                         Err(refusal) => return Ok(Err(refusal)),
                     };
-                    if relief != expected {
+                    let expected_release = match allocated::release_basis(
+                        applying_ordinal,
+                        source_hash.finalize().0,
+                        expected,
+                        total,
+                        valuation_route,
+                        valuation_routes_entry,
+                        valuation_routes_digest,
+                    ) {
+                        Ok(value) => value,
+                        Err(refusal) => return Ok(Err(refusal)),
+                    };
+                    let checked = match history {
+                        Some(history) => history.check_release(index, &expected_release),
+                        None => allocated::check_release(&entry.proposal, &expected_release),
+                    };
+                    if let Err(refusal) = checked {
+                        return Ok(Err(refusal));
+                    }
+                    expected_release.valuation_relief.mantissa
+                } else {
+                    if valuation_route.is_some() {
                         return Ok(Err(invalid(
-                            "retained application base relief does not reproduce RemainingCarryingValue",
+                            "an allocated carrying item requires its explicit valuation-release law",
                         )));
                     }
-                    let allocated_relief = if has_allocated_basis(&entry.proposal) {
-                        let total = match remaining_carrying_relief(
-                            &mut budget,
-                            open_native,
-                            open_base,
-                            application.amount,
-                        ) {
-                            Ok(value) => value,
-                            Err(refusal) => return Ok(Err(refusal)),
-                        };
-                        let expected_release = match allocated::release_basis(
-                            applying_ordinal,
-                            source_hash.finalize().0,
-                            expected,
-                            total,
-                            valuation_route,
-                            valuation_routes_entry,
-                            valuation_routes_digest,
-                        ) {
-                            Ok(value) => value,
-                            Err(refusal) => return Ok(Err(refusal)),
-                        };
-                        if let Err(refusal) =
-                            allocated::check_release(&entry.proposal, &expected_release)
-                        {
-                            return Ok(Err(refusal));
-                        }
-                        expected_release.valuation_relief.mantissa
-                    } else {
-                        if valuation_route.is_some() {
-                            return Ok(Err(invalid(
-                                "an allocated carrying item requires its explicit valuation-release law",
-                            )));
-                        }
-                        0
-                    };
-                    effect.0 = effect
-                        .0
-                        .checked_add(application.amount.mantissa)
-                        .ok_or_else(|| {
-                            KernelError::Corrupt("native application sum overflow".into())
-                        })?;
-                    effect.1 = effect.1.checked_add(relief.mantissa).ok_or_else(|| {
-                        KernelError::Corrupt("base application sum overflow".into())
+                    0
+                };
+                effect.0 = effect
+                    .0
+                    .checked_add(application.amount.mantissa)
+                    .ok_or_else(|| {
+                        KernelError::Corrupt("native application sum overflow".into())
                     })?;
-                    effect.2 = effect
-                        .2
-                        .checked_add(allocated_relief)
-                        .ok_or_else(|| KernelError::Corrupt("valuation relief overflow".into()))?;
-                }
+                effect.1 = effect
+                    .1
+                    .checked_add(relief.mantissa)
+                    .ok_or_else(|| KernelError::Corrupt("base application sum overflow".into()))?;
+                effect.2 = effect
+                    .2
+                    .checked_add(allocated_relief)
+                    .ok_or_else(|| KernelError::Corrupt("valuation relief overflow".into()))?;
             }
         }
         if effect != (0, 0, 0) {
@@ -857,9 +975,17 @@ pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
 pub(crate) fn settlement_ranges(
     proposal: &EntryPayload,
 ) -> Result<Vec<core::ops::Range<usize>>, Refusal> {
+    settlement_ranges_counted(proposal, &mut 0)
+}
+
+fn settlement_ranges_counted(
+    proposal: &EntryPayload,
+    visited: &mut usize,
+) -> Result<Vec<core::ops::Range<usize>>, Refusal> {
     let mut starts = Vec::new();
     let mut targets = BTreeSet::new();
     for (ordinal, leg) in proposal.legs.iter().enumerate() {
+        *visited += 1;
         if leg.settles.is_empty() {
             continue;
         }

@@ -488,6 +488,161 @@ pub fn pinned_bank_candidate(
     Ok(reference.is_empty() || reference == normalize_reference(&entry.reference))
 }
 
+type DatedCandidates = BTreeSet<(i32, usize)>;
+
+#[derive(Default)]
+struct CashCandidates {
+    all: DatedCandidates,
+    references: BTreeMap<String, DatedCandidates>,
+    counterparties: BTreeMap<String, DatedCandidates>,
+}
+
+/// A request-local index of unconsumed cash legs. The final join is ordered by
+/// input position, not by the index keys: candidate/feature order is part of
+/// the replayable decision card, including when ordinals repeat.
+#[derive(Default)]
+struct CashCandidateIndex {
+    amounts: BTreeMap<(i128, u8), CashCandidates>,
+    units: BTreeMap<UnitId, BTreeSet<usize>>,
+    ordinals: BTreeMap<u64, Vec<usize>>,
+    references: Vec<String>,
+    counterparties: Vec<String>,
+    #[cfg(test)]
+    range_visits: usize,
+}
+
+impl CashCandidateIndex {
+    fn new(entries: &[BookCandidateEntry]) -> Self {
+        let mut index = Self::default();
+        for (position, entry) in entries.iter().enumerate() {
+            let reference = normalize_reference(&entry.reference);
+            let counterparty = normalize_counterparty(&entry.counterparty);
+            let dated = (entry.effective_date.0, position);
+            let group = index
+                .amounts
+                .entry((entry.amount.mantissa, entry.side as u8))
+                .or_default();
+            group.all.insert(dated);
+            group
+                .references
+                .entry(reference.clone())
+                .or_default()
+                .insert(dated);
+            if !counterparty.is_empty() {
+                group
+                    .counterparties
+                    .entry(counterparty.clone())
+                    .or_default()
+                    .insert(dated);
+            }
+            index
+                .units
+                .entry(entry.amount.unit)
+                .or_default()
+                .insert(position);
+            index
+                .ordinals
+                .entry(entry.entry_ordinal)
+                .or_default()
+                .push(position);
+            index.references.push(reference);
+            index.counterparties.push(counterparty);
+        }
+        index
+    }
+
+    fn select(
+        &mut self,
+        line: &BankStatementLine,
+        reference: &str,
+        counterparty: &str,
+        window: i32,
+    ) -> Result<BTreeSet<usize>, ReconciliationError> {
+        // The literal matcher diagnoses the first unconsumed foreign-unit
+        // entry even when its amount/direction/date would not match. Preserve
+        // that error and its input order before pruning any candidates.
+        if let Some((_, actual)) = self
+            .units
+            .iter()
+            .filter(|(unit, _)| **unit != line.amount.unit)
+            .filter_map(|(unit, positions)| positions.first().map(|position| (*position, *unit)))
+            .min_by_key(|(position, _)| *position)
+        {
+            return Err(ReconciliationError::UnitMismatch {
+                expected: line.amount.unit,
+                actual,
+            });
+        }
+        let mut selected = BTreeSet::new();
+        if window < 0 {
+            return Ok(selected);
+        }
+        let side = match line.side {
+            Side::Debit => Side::Credit,
+            Side::Credit => Side::Debit,
+        };
+        let Some(group) = self.amounts.get(&(line.amount.mantissa, side as u8)) else {
+            return Ok(selected);
+        };
+        let from = line.booking_date.0.saturating_sub(window);
+        let through = line.booking_date.0.saturating_add(window);
+        let mut extend = |candidates: &DatedCandidates| {
+            for (_, position) in candidates.range((from, 0)..=(through, usize::MAX)) {
+                #[cfg(test)]
+                {
+                    self.range_visits += 1;
+                }
+                selected.insert(*position);
+            }
+        };
+        if reference.is_empty() {
+            extend(&group.all);
+        } else {
+            if let Some(candidates) = group.references.get(reference) {
+                extend(candidates);
+            }
+            if !counterparty.is_empty()
+                && let Some(candidates) = group.counterparties.get(counterparty)
+            {
+                extend(candidates);
+            }
+        }
+        Ok(selected)
+    }
+
+    fn consume(&mut self, ordinal: u64, entries: &[BookCandidateEntry]) {
+        let Some(positions) = self.ordinals.remove(&ordinal) else {
+            return;
+        };
+        // Consumption is by ordinal in the original law, not by identity or
+        // position. Remove every alias so later lines never rescan spent legs.
+        for position in positions {
+            let entry = &entries[position];
+            let dated = (entry.effective_date.0, position);
+            if let Some(group) = self
+                .amounts
+                .get_mut(&(entry.amount.mantissa, entry.side as u8))
+            {
+                group.all.remove(&dated);
+                if let Some(candidates) = group.references.get_mut(&self.references[position]) {
+                    candidates.remove(&dated);
+                }
+                if let Some(candidates) =
+                    group.counterparties.get_mut(&self.counterparties[position])
+                {
+                    candidates.remove(&dated);
+                }
+            }
+            if let Some(positions) = self.units.get_mut(&entry.amount.unit) {
+                positions.remove(&position);
+                if positions.is_empty() {
+                    self.units.remove(&entry.amount.unit);
+                }
+            }
+        }
+    }
+}
+
 /// Run the Teller candidate generator and adaptive [`DecisionCard`] matcher
 /// over `bank_lines` and `book_entries`.
 ///
@@ -497,156 +652,507 @@ pub fn pinned_bank_candidate(
 /// 2. `|booking_date - effective_date| <= config.max_date_window_days`.
 /// 3. Exact normalized reference equality (whenever `bank_line.reference` is non-empty).
 /// 4. Deterministic tie-break by lowest `entry_ordinal`.
+///
+/// Candidates are indexed once by amount, direction, normalized reference and
+/// counterparty, with ordered date ranges. Only eligible unconsumed candidates
+/// enter each line's decision card. Work is O(E log E + B log E + K log E),
+/// excluding text normalization and card encoding, for E cash legs, B lines and
+/// K emitted candidate occurrences. An ambiguous request can itself require
+/// quadratic card output; unrelated ledger entries do not multiply the work.
 pub fn match_bank_lines(
     bank_lines: &[BankStatementLine],
     book_entries: &[BookCandidateEntry],
     config: &MatcherConfig,
     principal: VId,
 ) -> Result<Vec<ReconciliationMatch>, ReconciliationError> {
-    let mut consumed_ordinals = BTreeSet::new();
+    if bank_lines.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut index = CashCandidateIndex::new(book_entries);
     let mut out = Vec::with_capacity(bank_lines.len());
-
     for line in bank_lines {
         let line_oid = line.oid()?;
         let norm_ref = normalize_reference(&line.reference);
         let norm_cp = normalize_counterparty(&line.counterparty);
+        let selected = index.select(line, &norm_ref, &norm_cp, config.max_date_window_days)?;
+        let proposal = match_line(
+            line,
+            line_oid,
+            &norm_ref,
+            &norm_cp,
+            selected.into_iter().map(|position| &book_entries[position]),
+            config,
+            principal,
+        )?;
+        if let Some(ordinal) = proposal.matched_entry_ordinal {
+            index.consume(ordinal, book_entries);
+        }
+        out.push(proposal);
+    }
+    Ok(out)
+}
 
-        let mut candidates = Vec::new();
-        let mut features = Vec::new();
-        let mut fallback_winner: Option<&BookCandidateEntry> = None;
-        let mut adaptive_by_ordinal: BTreeMap<i128, &BookCandidateEntry> = BTreeMap::new();
+fn match_line<'a>(
+    line: &BankStatementLine,
+    line_oid: Oid,
+    norm_ref: &str,
+    norm_cp: &str,
+    entries: impl IntoIterator<Item = &'a BookCandidateEntry>,
+    config: &MatcherConfig,
+    principal: VId,
+) -> Result<ReconciliationMatch, ReconciliationError> {
+    let mut candidates = Vec::new();
+    let mut features = Vec::new();
+    let mut fallback_winner: Option<&BookCandidateEntry> = None;
+    let mut adaptive_by_ordinal: BTreeMap<i128, &BookCandidateEntry> = BTreeMap::new();
 
-        for entry in book_entries {
-            if consumed_ordinals.contains(&entry.entry_ordinal) {
-                continue;
-            }
-            let Some(day_delta) = exact_cash_candidate(line, entry, config.max_date_window_days)?
-            else {
-                continue;
-            };
+    for entry in entries {
+        let Some(day_delta) = exact_cash_candidate(line, entry, config.max_date_window_days)?
+        else {
+            continue;
+        };
 
-            let entry_ref_norm = normalize_reference(&entry.reference);
-            let ref_exact = !norm_ref.is_empty() && norm_ref == entry_ref_norm;
-            let ref_compatible = norm_ref.is_empty() || ref_exact;
-            let cp_exact =
-                !norm_cp.is_empty() && norm_cp == normalize_counterparty(&entry.counterparty);
+        let entry_ref_norm = normalize_reference(&entry.reference);
+        let ref_exact = !norm_ref.is_empty() && norm_ref == entry_ref_norm;
+        let ref_compatible = norm_ref.is_empty() || ref_exact;
+        let cp_exact =
+            !norm_cp.is_empty() && norm_cp == normalize_counterparty(&entry.counterparty);
 
-            if ref_compatible {
-                match fallback_winner {
-                    None => fallback_winner = Some(entry),
-                    Some(prev) if entry.entry_ordinal < prev.entry_ordinal => {
-                        fallback_winner = Some(entry);
-                    }
-                    _ => {}
+        if ref_compatible {
+            match fallback_winner {
+                None => fallback_winner = Some(entry),
+                Some(prev) if entry.entry_ordinal < prev.entry_ordinal => {
+                    fallback_winner = Some(entry);
                 }
-            }
-
-            // Analytic score: higher for exact reference + closer date + counterparty match,
-            // with deterministic tie-breaking favoring lower entry_ordinal.
-            let mut analytic_score: i128 = 1_000 - i128::from(day_delta) * 10;
-            if ref_exact {
-                analytic_score += 500;
-            }
-            if cp_exact {
-                analytic_score += 200;
-            }
-            // Subtract entry_ordinal slightly so lower ordinal wins ties deterministically.
-            let tie_adjusted_score = analytic_score
-                .saturating_mul(1_000_000)
-                .saturating_sub(i128::from(entry.entry_ordinal));
-
-            if ref_compatible || cp_exact {
-                let ord_param = i128::from(entry.entry_ordinal);
-                candidates.push(DecisionCandidate {
-                    action: "match_entry_ordinal".to_string(),
-                    parameter: ord_param,
-                    analytic_score: tie_adjusted_score.max(1),
-                });
-                adaptive_by_ordinal.insert(ord_param, entry);
-
-                features.push(DecisionFeature {
-                    name: format!("cand.{}.date_delta_days", entry.entry_ordinal),
-                    value: i128::from(day_delta),
-                    advisory: false,
-                });
-                features.push(DecisionFeature {
-                    name: format!("cand.{}.ref_exact", entry.entry_ordinal),
-                    value: i128::from(u8::from(ref_exact)),
-                    advisory: false,
-                });
-                features.push(DecisionFeature {
-                    name: format!("cand.{}.cp_exact", entry.entry_ordinal),
-                    value: i128::from(u8::from(cp_exact)),
-                    advisory: false,
-                });
-                if let Some(&learned_bps) = config
-                    .advisory_learned_scores_bps
-                    .get(&(line_oid, entry.entry_ordinal))
-                {
-                    features.push(DecisionFeature {
-                        name: format!("cand.{}.learned_similarity_bps", entry.entry_ordinal),
-                        value: learned_bps,
-                        advisory: true,
-                    });
-                }
+                _ => {}
             }
         }
 
-        let effective_epoch = if config.pinned_fallback_only {
-            None
-        } else {
-            config.policy_epoch
-        };
-        let interval = if config.pinned_fallback_only || candidates.is_empty() {
-            BenefitInterval {
-                lower_bps: 0,
-                upper_bps: 2_000,
+        // Analytic score: higher for exact reference + closer date + counterparty match,
+        // with deterministic tie-breaking favoring lower entry_ordinal.
+        let mut analytic_score: i128 = 1_000 - i128::from(day_delta) * 10;
+        if ref_exact {
+            analytic_score += 500;
+        }
+        if cp_exact {
+            analytic_score += 200;
+        }
+        // Subtract entry_ordinal slightly so lower ordinal wins ties deterministically.
+        let tie_adjusted_score = analytic_score
+            .saturating_mul(1_000_000)
+            .saturating_sub(i128::from(entry.entry_ordinal));
+
+        if ref_compatible || cp_exact {
+            let ord_param = i128::from(entry.entry_ordinal);
+            candidates.push(DecisionCandidate {
+                action: "match_entry_ordinal".to_string(),
+                parameter: ord_param,
+                analytic_score: tie_adjusted_score.max(1),
+            });
+            adaptive_by_ordinal.insert(ord_param, entry);
+
+            features.push(DecisionFeature {
+                name: format!("cand.{}.date_delta_days", entry.entry_ordinal),
+                value: i128::from(day_delta),
+                advisory: false,
+            });
+            features.push(DecisionFeature {
+                name: format!("cand.{}.ref_exact", entry.entry_ordinal),
+                value: i128::from(u8::from(ref_exact)),
+                advisory: false,
+            });
+            features.push(DecisionFeature {
+                name: format!("cand.{}.cp_exact", entry.entry_ordinal),
+                value: i128::from(u8::from(cp_exact)),
+                advisory: false,
+            });
+            if let Some(&learned_bps) = config
+                .advisory_learned_scores_bps
+                .get(&(line_oid, entry.entry_ordinal))
+            {
+                features.push(DecisionFeature {
+                    name: format!("cand.{}.learned_similarity_bps", entry.entry_ordinal),
+                    value: learned_bps,
+                    advisory: true,
+                });
             }
-        } else {
-            BenefitInterval {
-                lower_bps: 250,
-                upper_bps: 750,
-            }
-        };
-
-        let card = decide_bank_match(
-            effective_epoch,
-            config.enforced_policy_epoch,
-            line_oid.0,
-            candidates,
-            features,
-            interval,
-        );
-        card.validate_fallback()?;
-        card.verify_replay(config.enforced_policy_epoch)?;
-
-        let chosen_entry = if card.used_fallback() {
-            fallback_winner
-        } else {
-            adaptive_by_ordinal
-                .get(&card.chosen.parameter)
-                .copied()
-                .or(fallback_winner)
-        };
-
-        let (book_entry_refs, matched_entry_ordinal) = match chosen_entry {
-            Some(entry) => {
-                consumed_ordinals.insert(entry.entry_ordinal);
-                (vec![entry.entry_ref], Some(entry.entry_ordinal))
-            }
-            None => (Vec::new(), None),
-        };
-
-        out.push(ReconciliationMatch {
-            bank_line_ids: vec![line_oid],
-            book_entry_refs,
-            matched_entry_ordinal,
-            residual: None,
-            decision_card: card,
-            principal,
-            supersedes_match_id: None,
-        });
+        }
     }
 
-    Ok(out)
+    let effective_epoch = if config.pinned_fallback_only {
+        None
+    } else {
+        config.policy_epoch
+    };
+    let interval = if config.pinned_fallback_only || candidates.is_empty() {
+        BenefitInterval {
+            lower_bps: 0,
+            upper_bps: 2_000,
+        }
+    } else {
+        BenefitInterval {
+            lower_bps: 250,
+            upper_bps: 750,
+        }
+    };
+
+    let card = decide_bank_match(
+        effective_epoch,
+        config.enforced_policy_epoch,
+        line_oid.0,
+        candidates,
+        features,
+        interval,
+    );
+    card.validate_fallback()?;
+    card.verify_replay(config.enforced_policy_epoch)?;
+
+    let chosen_entry = if card.used_fallback() {
+        fallback_winner
+    } else {
+        adaptive_by_ordinal
+            .get(&card.chosen.parameter)
+            .copied()
+            .or(fallback_winner)
+    };
+
+    let (book_entry_refs, matched_entry_ordinal) = match chosen_entry {
+        Some(entry) => (vec![entry.entry_ref], Some(entry.entry_ordinal)),
+        None => (Vec::new(), None),
+    };
+
+    Ok(ReconciliationMatch {
+        bank_line_ids: vec![line_oid],
+        book_entry_refs,
+        matched_entry_ordinal,
+        residual: None,
+        decision_card: card,
+        principal,
+        supersedes_match_id: None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fa_reference::reconciliation::{RefBankLine, RefBookEntry, naive_fallback_match};
+
+    fn entry(ordinal: u64, amount: i128, day: i32, reference: &str) -> BookCandidateEntry {
+        BookCandidateEntry {
+            entry_ref: EntryRef {
+                vid: VId(u128::from(ordinal) + 1),
+                entry_digest: domain_digest(b"test:bank-entry", &[&ordinal.to_le_bytes()]),
+            },
+            entry_ordinal: ordinal,
+            effective_date: DateDay(day),
+            side: Side::Debit,
+            amount: Amount::new(UnitId(1), amount),
+            counterparty: String::new(),
+            reference: reference.into(),
+        }
+    }
+
+    fn line(ordinal: u32, amount: i128, day: i32, reference: &str) -> BankStatementLine {
+        BankStatementLine {
+            statement_oid: Oid([7; 32]),
+            statement_seq: 1,
+            line_ordinal: ordinal,
+            booking_date: DateDay(day),
+            value_date: DateDay(day),
+            side: Side::Credit,
+            amount: Amount::new(UnitId(1), amount),
+            counterparty: String::new(),
+            reference: reference.into(),
+        }
+    }
+
+    fn config(pinned: bool) -> MatcherConfig {
+        MatcherConfig {
+            policy_epoch: Some([19; 32]),
+            enforced_policy_epoch: [19; 32],
+            max_date_window_days: 5,
+            pinned_fallback_only: pinned,
+            advisory_learned_scores_bps: BTreeMap::new(),
+        }
+    }
+
+    /// The incumbent exhaustive selection, sharing only the unchanged scoring
+    /// and card construction. Counts every visited leg, including consumed ones.
+    fn literal(
+        lines: &[BankStatementLine],
+        entries: &[BookCandidateEntry],
+        config: &MatcherConfig,
+    ) -> Result<(Vec<ReconciliationMatch>, usize), ReconciliationError> {
+        let mut consumed = BTreeSet::new();
+        let mut visits = 0;
+        let mut out = Vec::new();
+        for line in lines {
+            let oid = line.oid()?;
+            let result = match_line(
+                line,
+                oid,
+                &normalize_reference(&line.reference),
+                &normalize_counterparty(&line.counterparty),
+                entries
+                    .iter()
+                    .inspect(|_| visits += 1)
+                    .filter(|entry| !consumed.contains(&entry.entry_ordinal)),
+                config,
+                VId(71),
+            )?;
+            if let Some(ordinal) = result.matched_entry_ordinal {
+                consumed.insert(ordinal);
+            }
+            out.push(result);
+        }
+        Ok((out, visits))
+    }
+
+    fn compare(
+        lines: &[BankStatementLine],
+        entries: &[BookCandidateEntry],
+        config: &MatcherConfig,
+    ) {
+        let expected = literal(lines, entries, config).map(|(matches, _)| matches);
+        let actual = match_bank_lines(lines, entries, config, VId(71));
+        assert_eq!(actual, expected);
+        if let (Ok(actual), Ok(expected)) = (actual, expected) {
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert_eq!(actual.canonical_bytes(), expected.canonical_bytes());
+                actual
+                    .decision_card
+                    .verify_replay(config.enforced_policy_epoch)
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_bank_match_preserves_complete_cards_and_independent_fallback() {
+        let references = ["", " INV-1 ", "inv-1", "inv-2", "other"];
+        let parties = ["", "Acme, Inc.", "ACME", "Other LLC"];
+        for seed in 0..24u64 {
+            let mut state = seed + 1;
+            let mut next = || {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                state >> 32
+            };
+            let entries: Vec<_> = (0..80)
+                .map(|i| {
+                    let mut e = entry(
+                        (i * 17) % 59,
+                        1 + i128::from(next() % 5),
+                        90 + (next() % 21) as i32,
+                        references[(next() % references.len() as u64) as usize],
+                    );
+                    e.entry_ref.vid = VId(u128::from(i) + 1);
+                    e.side = if next().is_multiple_of(2) {
+                        Side::Debit
+                    } else {
+                        Side::Credit
+                    };
+                    e.counterparty = parties[(next() % parties.len() as u64) as usize].into();
+                    e
+                })
+                .collect();
+            let lines: Vec<_> = (0..40)
+                .map(|i| {
+                    let mut l = line(
+                        i,
+                        1 + i128::from(next() % 5),
+                        90 + (next() % 21) as i32,
+                        references[(next() % references.len() as u64) as usize],
+                    );
+                    l.side = if next().is_multiple_of(2) {
+                        Side::Debit
+                    } else {
+                        Side::Credit
+                    };
+                    l.counterparty = parties[(next() % parties.len() as u64) as usize].into();
+                    l
+                })
+                .collect();
+            for pinned in [false, true] {
+                let mut cfg = config(pinned);
+                for line in &lines {
+                    cfg.advisory_learned_scores_bps
+                        .insert((line.oid().unwrap(), seed), 9999);
+                }
+                compare(&lines, &entries, &cfg);
+                cfg.policy_epoch = Some([20; 32]);
+                compare(&lines, &entries, &cfg);
+            }
+            let reference_lines: Vec<_> = lines
+                .iter()
+                .map(|line| RefBankLine {
+                    line_id: line.oid().unwrap().0,
+                    booking_date: line.booking_date,
+                    signed_mantissa: line.signed_cash_delta(),
+                    reference: line.reference.clone(),
+                })
+                .collect();
+            let reference_entries: Vec<_> = entries
+                .iter()
+                .map(|entry| RefBookEntry {
+                    entry_ordinal: entry.entry_ordinal,
+                    effective_date: entry.effective_date,
+                    signed_mantissa: entry.signed_cash_delta(),
+                    reference: entry.reference.clone(),
+                })
+                .collect();
+            let actual = match_bank_lines(&lines, &entries, &config(true), VId(71)).unwrap();
+            let selected: Vec<_> = actual
+                .iter()
+                .map(|m| (m.bank_line_ids[0].0, m.matched_entry_ordinal))
+                .collect();
+            assert_eq!(
+                selected,
+                naive_fallback_match(&reference_lines, &reference_entries, 5)
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_bank_match_keeps_error_precedence_and_extreme_date_windows() {
+        let mut entries = vec![entry(9, 100, 1, "x"), entry(7, 200, 2, "y")];
+        entries[1].amount.unit = UnitId(3);
+        let mut later = entry(1, 100, 1, "x");
+        later.amount.unit = UnitId(2);
+        entries.push(later);
+        let mut lines = vec![line(1, 100, 1, "x")];
+        compare(&lines, &entries, &config(true));
+        assert!(matches!(
+            match_bank_lines(&lines, &entries, &config(true), VId(71)),
+            Err(ReconciliationError::UnitMismatch {
+                actual: UnitId(3),
+                ..
+            })
+        ));
+        lines[0].amount.mantissa = 0;
+        compare(&lines, &entries, &config(true));
+        assert!(matches!(
+            match_bank_lines(&lines, &entries, &config(true), VId(71)),
+            Err(ReconciliationError::InvalidField("amount.mantissa"))
+        ));
+        compare(&[], &entries, &config(true));
+
+        let entries: Vec<_> = [i32::MIN, -1, 0, 1, i32::MAX]
+            .into_iter()
+            .enumerate()
+            .map(|(i, day)| entry(i as u64, i128::MAX, day, ""))
+            .collect();
+        for window in [i32::MIN, -1, 0, 1, i32::MAX] {
+            let mut cfg = config(true);
+            cfg.max_date_window_days = window;
+            for day in [i32::MIN, -1, 0, 1, i32::MAX] {
+                compare(&[line(1, i128::MAX, day, "")], &entries, &cfg);
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_bank_match_consumes_ordinal_aliases_and_preserves_adaptive_ties() {
+        let mut entries = vec![
+            entry(8, 100, 100, "a"),
+            entry(8, 100, 100, "a"),
+            entry(2, 100, 100, "b"),
+        ];
+        entries[1].entry_ref.vid = VId(99);
+        for entry in &mut entries {
+            entry.counterparty = "Acme Ltd".into();
+        }
+        let mut lines = vec![
+            line(1, 100, 100, "a"),
+            line(2, 100, 100, "a"),
+            line(3, 100, 100, "b"),
+        ];
+        for line in &mut lines {
+            line.counterparty = "ACME, INC".into();
+        }
+        for pinned in [true, false] {
+            compare(&lines, &entries, &config(pinned));
+        }
+        let actual = match_bank_lines(&lines, &entries, &config(true), VId(71)).unwrap();
+        assert_eq!(
+            actual
+                .iter()
+                .map(|m| m.matched_entry_ordinal)
+                .collect::<Vec<_>>(),
+            vec![Some(8), None, Some(2)]
+        );
+        // Once all candidates are consumed, another unit is not an error.
+        let entries = vec![entry(1, 100, 100, "a")];
+        let mut lines = vec![line(1, 100, 100, "a"), line(2, 100, 100, "a")];
+        lines[1].amount.unit = UnitId(2);
+        compare(&lines, &entries, &config(true));
+    }
+
+    #[test]
+    fn indexed_bank_match_visits_only_eligible_candidates_at_one_hundred_thousand() {
+        for count in [1_000, 10_000, 100_000] {
+            let entries: Vec<_> = (0..count)
+                .map(|i| entry(i as u64, 100, 100, &format!("invoice-{i}")))
+                .collect();
+            let mut index = CashCandidateIndex::new(&entries);
+            for i in (0..count).rev() {
+                let line = line(i as u32, 100, 100, &format!("invoice-{i}"));
+                let selected = index.select(&line, &line.reference, "", 5).unwrap();
+                assert_eq!(selected, BTreeSet::from([i]));
+                index.consume(entries[i].entry_ordinal, &entries);
+            }
+            assert_eq!(index.range_visits, count);
+            assert!(index.units.is_empty());
+            let absent = line(0, 100, 100, "");
+            assert!(index.select(&absent, "", "", 5).unwrap().is_empty());
+            assert_eq!(index.range_visits, count);
+        }
+    }
+
+    #[test]
+    fn indexed_bank_match_date_ranges_do_not_visit_unrelated_history() {
+        let entries: Vec<_> = (0..100_000)
+            .map(|i| entry(i as u64, 100, i, "same-reference"))
+            .collect();
+        let mut index = CashCandidateIndex::new(&entries);
+        for day in (0..100_000).step_by(100) {
+            let line = line(day as u32, 100, day, "");
+            let selected = index.select(&line, "", "", 0).unwrap();
+            assert_eq!(selected, BTreeSet::from([day as usize]));
+        }
+        assert_eq!(index.range_visits, 1_000);
+    }
+
+    #[test]
+    fn indexed_bank_match_agrees_with_live_exhaustive_incumbent_at_scale() {
+        compare_exhaustive_at_scale(1_000);
+    }
+
+    #[test]
+    #[ignore = "explicit 100-million-visit incumbent benchmark; run with --ignored --nocapture"]
+    fn indexed_bank_match_ten_thousand_lines_agree_with_live_exhaustive_incumbent() {
+        compare_exhaustive_at_scale(10_000);
+    }
+
+    fn compare_exhaustive_at_scale(count: u32) {
+        let entries: Vec<_> = (0..count)
+            .map(|i| entry(i as u64, i128::from(i) + 1, 100, ""))
+            .collect();
+        let lines: Vec<_> = (0..count)
+            .map(|i| line(i, i128::from(i) + 1, 100, ""))
+            .collect();
+        let cfg = config(true);
+        let start = std::time::Instant::now();
+        let actual = match_bank_lines(&lines, &entries, &cfg, VId(71)).unwrap();
+        let indexed = start.elapsed();
+        let start = std::time::Instant::now();
+        let (expected, visits) = literal(&lines, &entries, &cfg).unwrap();
+        let exhaustive = start.elapsed();
+        assert_eq!(actual, expected);
+        assert_eq!(visits, (count as usize) * (count as usize));
+        assert_eq!(actual.len(), count as usize);
+        assert!(actual.iter().all(|m| m.matched_entry_ordinal.is_some()));
+        eprintln!(
+            "bank matcher: {count} lines, {count} cash legs; indexed={indexed:?}, exhaustive={exhaustive:?}, exhaustive_visits={visits}; outputs identical"
+        );
+    }
 }

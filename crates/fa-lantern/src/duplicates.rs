@@ -5,7 +5,7 @@
 //! tolerance and similar descriptions.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::genesis::BookContext;
 use fa_model::limits::MAX_DESCRIPTION_BYTES;
@@ -45,6 +45,318 @@ fn leg_multiset(e: &SnapshotEntry, work: &mut Meter<'_>) -> Result<LegMultiset, 
     Ok(s)
 }
 
+/// A run builds the sparse correction graph once, rather than rebuilding it
+/// from the entire journal for every candidate pair. Most corrections form
+/// single-parent trees: DFS intervals answer their directed ancestry in
+/// constant time after the id lookup. Multi-parent components retain the
+/// exact directed reachability test, charged to the procedure's work budget.
+/// Sharing a common ancestor alone does not make two entries a lineage pair.
+struct Lineages {
+    ids: BTreeMap<VId, usize>,
+    nodes: Vec<LineageNode>,
+}
+
+#[derive(Default)]
+struct LineageNode {
+    parents: Vec<usize>,
+    children: Vec<usize>,
+    component: Option<usize>,
+    interval: Option<(usize, usize)>,
+}
+
+#[derive(Default)]
+struct SelectedLineages {
+    trees: BTreeMap<usize, BTreeMap<usize, usize>>,
+    graphs: BTreeMap<usize, Vec<VId>>,
+}
+
+impl Lineages {
+    fn new(snapshot: &Snapshot, work: &mut Meter<'_>) -> Result<Self, LanternError> {
+        let mut index = Self {
+            ids: BTreeMap::new(),
+            nodes: Vec::new(),
+        };
+        for entry in &snapshot.entries {
+            work.compare(1)?;
+            if entry.entry.proposal.supersession.is_empty() {
+                continue;
+            }
+            let source = index.intern(entry.vid);
+            for edge in &entry.entry.proposal.supersession {
+                work.compare(1)?;
+                let target = index.intern(edge.target.vid);
+                index.nodes[source].parents.push(target);
+                index.nodes[target].children.push(source);
+            }
+        }
+        index.index_components(work)?;
+        Ok(index)
+    }
+
+    fn index_components(&mut self, work: &mut Meter<'_>) -> Result<(), LanternError> {
+        for start in 0..self.nodes.len() {
+            if self.nodes[start].component.is_some() {
+                continue;
+            }
+            let mut stack = vec![start];
+            self.nodes[start].component = Some(start);
+            let mut members = Vec::new();
+            let mut edges = 0_usize;
+            let mut single_parent = true;
+            while let Some(node) = stack.pop() {
+                work.compare(1)?;
+                members.push(node);
+                edges += self.nodes[node].parents.len();
+                single_parent &= self.nodes[node].parents.len() <= 1;
+                let neighbors: Vec<_> = self.nodes[node]
+                    .parents
+                    .iter()
+                    .chain(&self.nodes[node].children)
+                    .copied()
+                    .collect();
+                work.compare(neighbors.len() as u64)?;
+                for neighbor in neighbors {
+                    if self.nodes[neighbor].component.is_none() {
+                        self.nodes[neighbor].component = Some(start);
+                        stack.push(neighbor);
+                    }
+                }
+            }
+            // A connected single-parent component with |V|-1 edges is a
+            // tree. A malformed cycle uses the cycle-safe exact search.
+            if single_parent && edges == members.len().saturating_sub(1) {
+                let root = members
+                    .iter()
+                    .copied()
+                    .find(|&node| self.nodes[node].parents.is_empty())
+                    .expect("a single-parent tree has a root");
+                let mut clock = 0_usize;
+                let mut stack = vec![(root, false)];
+                while let Some((node, exiting)) = stack.pop() {
+                    if exiting {
+                        self.nodes[node].interval.as_mut().expect("entered node").1 = clock;
+                    } else {
+                        work.compare(1)?;
+                        self.nodes[node].interval = Some((clock, clock));
+                        clock += 1;
+                        stack.push((node, true));
+                        stack.extend(
+                            self.nodes[node]
+                                .children
+                                .iter()
+                                .map(|&child| (child, false)),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn intern(&mut self, vid: VId) -> usize {
+        *self.ids.entry(vid).or_insert_with(|| {
+            let node = self.nodes.len();
+            self.nodes.push(LineageNode::default());
+            node
+        })
+    }
+
+    fn node(&self, vid: VId) -> Option<&LineageNode> {
+        self.ids.get(&vid).map(|&node| &self.nodes[node])
+    }
+
+    fn shares(&self, a: VId, b: VId, work: &mut Meter<'_>) -> Result<bool, LanternError> {
+        if a == b {
+            return Ok(true);
+        }
+        let (Some(&a), Some(&b)) = (self.ids.get(&a), self.ids.get(&b)) else {
+            return Ok(false);
+        };
+        let (left, right) = (&self.nodes[a], &self.nodes[b]);
+        if left.component != right.component {
+            return Ok(false);
+        }
+        if let (Some((a_start, a_end)), Some((b_start, b_end))) = (left.interval, right.interval) {
+            return Ok(
+                (a_start <= b_start && b_start < a_end) || (b_start <= a_start && a_start < b_end)
+            );
+        }
+        Ok(self.reaches(a, b, work)? || self.reaches(b, a, work)?)
+    }
+
+    fn reaches(
+        &self,
+        start: usize,
+        goal: usize,
+        work: &mut Meter<'_>,
+    ) -> Result<bool, LanternError> {
+        let mut stack = vec![start];
+        let mut seen = BTreeSet::new();
+        while let Some(node) = stack.pop() {
+            work.compare(1)?;
+            if node == goal {
+                return Ok(true);
+            }
+            if seen.insert(node) {
+                for &parent in &self.nodes[node].parents {
+                    work.compare(1)?;
+                    stack.push(parent);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Keep the existing greedy group semantics without comparing every
+    /// unrelated entry with every earlier member. In a tree, accepted
+    /// intervals are disjoint, so two neighbors decide the next insertion.
+    fn select(
+        &self,
+        vid: VId,
+        selected: &mut SelectedLineages,
+        work: &mut Meter<'_>,
+    ) -> Result<bool, LanternError> {
+        let Some(node) = self.node(vid) else {
+            return Ok(true);
+        };
+        let component = node.component.expect("indexed component");
+        if let Some((start, end)) = node.interval {
+            work.compare(2)?;
+            let intervals = selected.trees.entry(component).or_default();
+            if intervals
+                .range(..=start)
+                .next_back()
+                .is_some_and(|(_, &end)| end > start)
+                || intervals
+                    .range(start..)
+                    .next()
+                    .is_some_and(|(&next, _)| next < end)
+            {
+                return Ok(false);
+            }
+            intervals.insert(start, end);
+        } else {
+            let members = selected.graphs.entry(component).or_default();
+            for &other in members.iter() {
+                work.compare(1)?;
+                if self.shares(other, vid, work)? {
+                    return Ok(false);
+                }
+            }
+            members.push(vid);
+        }
+        Ok(true)
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct LineageRange {
+    len: usize,
+    component: Option<usize>,
+    forest: bool,
+    min_end: usize,
+    max_start: usize,
+}
+
+impl LineageRange {
+    fn combine(left: Self, right: Self) -> Self {
+        if left.len == 0 {
+            return right;
+        }
+        if right.len == 0 {
+            return left;
+        }
+        Self {
+            len: left.len + right.len,
+            component: left
+                .component
+                .filter(|component| Some(*component) == right.component),
+            forest: left.forest && right.forest,
+            min_end: left.min_end.min(right.min_end),
+            max_start: left.max_start.max(right.max_start),
+        }
+    }
+
+    fn may_be_unrelated(self, node: &LineageNode) -> bool {
+        if self.len == 0 {
+            return false;
+        }
+        if self.component != node.component {
+            return true;
+        }
+        match node.interval {
+            Some((start, end)) if self.forest => self.min_end <= start || self.max_start >= end,
+            _ => true,
+        }
+    }
+}
+
+/// Chronological candidates can all belong to one correction chain. Range
+/// extrema skip an entire comparable tree range, rather than repeatedly
+/// walking every remaining candidate for every entry in the chain.
+struct LineageSearch {
+    ranges: Vec<LineageRange>,
+    leaves: usize,
+}
+
+impl LineageSearch {
+    fn new(
+        list: &[(i32, u64, VId)],
+        lineage: &Lineages,
+        work: &mut Meter<'_>,
+    ) -> Result<Self, LanternError> {
+        let leaves = list.len().next_power_of_two();
+        let mut ranges = vec![LineageRange::default(); leaves * 2];
+        for (i, &(_, _, vid)) in list.iter().enumerate() {
+            work.compare(1)?;
+            let node = lineage.node(vid);
+            let interval = node.and_then(|node| node.interval);
+            ranges[leaves + i] = LineageRange {
+                len: 1,
+                component: node.and_then(|node| node.component),
+                forest: interval.is_some(),
+                min_end: interval.map_or(0, |(_, end)| end),
+                max_start: interval.map_or(0, |(start, _)| start),
+            };
+        }
+        for i in (1..leaves).rev() {
+            work.compare(1)?;
+            ranges[i] = LineageRange::combine(ranges[i * 2], ranges[i * 2 + 1]);
+        }
+        Ok(Self { ranges, leaves })
+    }
+
+    fn first_unrelated(
+        &self,
+        list: &[(i32, u64, VId)],
+        from: usize,
+        vid: VId,
+        lineage: &Lineages,
+        work: &mut Meter<'_>,
+    ) -> Result<Option<usize>, LanternError> {
+        let Some(node) = lineage.node(vid) else {
+            return Ok((from < list.len()).then_some(from));
+        };
+        let mut stack = vec![(1_usize, 0_usize, self.leaves)];
+        while let Some((index, start, end)) = stack.pop() {
+            work.compare(1)?;
+            if end <= from || !self.ranges[index].may_be_unrelated(node) {
+                continue;
+            }
+            if index >= self.leaves {
+                if !lineage.shares(vid, list[start].2, work)? {
+                    return Ok(Some(start));
+                }
+            } else {
+                let middle = start + (end - start) / 2;
+                stack.push((index * 2 + 1, middle, end));
+                stack.push((index * 2, start, middle));
+            }
+        }
+        Ok(None)
+    }
+}
+
 /// `duplicates.same_same_same`: same legs, same effective date.
 pub struct SameSameSame {
     params: Params,
@@ -67,29 +379,24 @@ impl Procedure for SameSameSame {
         _book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let mut groups: BTreeMap<(LegMultiset, i32), Vec<VId>> = BTreeMap::new();
+        let mut groups: BTreeMap<(LegMultiset, i32), (Vec<VId>, SelectedLineages)> =
+            BTreeMap::new();
         let mut population = 0u64;
-        let has_supersession = snapshot
-            .entries
-            .iter()
-            .any(|e| !e.entry.proposal.supersession.is_empty());
+        let lineage = Lineages::new(snapshot, work)?;
         for e in snapshot.live_postings()? {
             work.entry()?;
             population += 1;
-            let list = groups
+            let (list, selected) = groups
                 .entry((leg_multiset(e, work)?, e.entry.proposal.effective_date.0))
                 .or_default();
-            if !has_supersession
-                || list
-                    .iter()
-                    .all(|&other| !snapshot.shares_supersession_lineage(other, e.vid))
-            {
+            if lineage.select(e.vid, selected, work)? {
                 list.push(e.vid);
             }
         }
         work.compare(population.saturating_mul(population.max(1).ilog2().into()))?;
         Ok(groups
             .into_values()
+            .map(|(entries, _)| entries)
             .filter(|g| g.len() >= 2)
             .map(|mut g| {
                 g.sort_unstable();
@@ -145,6 +452,7 @@ impl Procedure for SameSameDifferent {
         // `(effective day, recorded sequence, entry)` per leg multiset.
         let mut groups: BTreeMap<LegMultiset, Vec<(i32, u64, VId)>> = BTreeMap::new();
         let mut population = 0u64;
+        let lineage = Lineages::new(snapshot, work)?;
         for e in snapshot.live_postings()? {
             work.entry()?;
             population += 1;
@@ -157,6 +465,11 @@ impl Procedure for SameSameDifferent {
         let mut out = Vec::new();
         for list in groups.values_mut() {
             list.sort_unstable();
+            let search = if lineage.ids.is_empty() {
+                None
+            } else {
+                Some(LineageSearch::new(list, &lineage, work)?)
+            };
             // `next` is the first index on a later date than `list[i]`; it
             // only moves forward, so the scan is linear after the sort.
             let mut next = 0usize;
@@ -166,14 +479,13 @@ impl Procedure for SameSameDifferent {
                     work.compare(1)?;
                     next += 1;
                 }
-                let mut cand = next;
-                while cand < list.len()
-                    && snapshot.shares_supersession_lineage(list[i].2, list[cand].2)
-                {
-                    work.compare(1)?;
-                    cand += 1;
-                }
-                let Some(&(day, _, later)) = list.get(cand) else {
+                let candidate = match &search {
+                    Some(search) => {
+                        search.first_unrelated(list, next, list[i].2, &lineage, work)?
+                    }
+                    None => (next < list.len()).then_some(next),
+                };
+                let Some((day, _, later)) = candidate.map(|index| list[index]) else {
                     continue;
                 };
                 work.compare(1)?;
@@ -328,10 +640,7 @@ impl Procedure for Near {
                 message: format!("{min_similarity} is not in 1..=100"),
             });
         }
-        let has_supersession = snapshot
-            .entries
-            .iter()
-            .any(|e| !e.entry.proposal.supersession.is_empty());
+        let lineage = Lineages::new(snapshot, work)?;
 
         let mut groups: BTreeMap<Shape, Vec<NearEntry>> = BTreeMap::new();
         let mut population = 0u64;
@@ -417,8 +726,7 @@ impl Procedure for Near {
                     }
                     let similarity = similarity_pct(&earlier.bigrams, &later.bigrams);
                     if similarity < u64::from(min_similarity)
-                        || (has_supersession
-                            && snapshot.shares_supersession_lineage(earlier.vid, later.vid))
+                        || lineage.shares(earlier.vid, later.vid, work)?
                     {
                         continue;
                     }
@@ -473,6 +781,172 @@ impl Procedure for Near {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lineage_index(edges: &[(u128, u128)], work: &mut Meter<'_>) -> Lineages {
+        let mut index = Lineages {
+            ids: BTreeMap::new(),
+            nodes: Vec::new(),
+        };
+        for &(source, target) in edges {
+            let source = index.intern(VId(source));
+            let target = index.intern(VId(target));
+            index.nodes[source].parents.push(target);
+            index.nodes[target].children.push(source);
+        }
+        index.index_components(work).unwrap();
+        index
+    }
+
+    /// Deliberately independent, naive edge-list walks: no indexed graph,
+    /// components or intervals are reused by the differential oracle.
+    fn naive_lineage(edges: &[(u128, u128)], a: u128, b: u128) -> bool {
+        let reaches = |start, goal| {
+            let mut todo = vec![start];
+            let mut seen = BTreeSet::new();
+            while let Some(current) = todo.pop() {
+                if current == goal {
+                    return true;
+                }
+                if seen.insert(current) {
+                    todo.extend(
+                        edges
+                            .iter()
+                            .filter_map(|&(source, target)| (source == current).then_some(target)),
+                    );
+                }
+            }
+            false
+        };
+        reaches(a, b) || reaches(b, a)
+    }
+
+    #[test]
+    fn lineage_index_matches_directed_walks_group_selection_and_next_candidates() {
+        let mut cases = vec![
+            vec![],
+            vec![(2, 1), (3, 1), (4, 2), (5, 2), (6, 3)],
+            vec![(2, 1), (3, 1), (4, 2), (4, 3), (5, 4), (6, 2)],
+            vec![(1, 2), (2, 3), (3, 1), (4, 2), (5, 6)],
+            vec![(1, 1), (3, 2), (3, 2)],
+        ];
+        // A deterministic family of forests and multi-parent DAGs, including
+        // unrelated components, siblings and nodes absent from the graph.
+        let mut seed = 13_u64;
+        for case in 0..24 {
+            let mut edges = Vec::new();
+            for source in 2..=18_u128 {
+                seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                if !seed.is_multiple_of(3) {
+                    edges.push((source, 1 + u128::from(seed) % (source - 1)));
+                }
+                if case % 2 == 1 && seed.is_multiple_of(5) {
+                    edges.push((source, 1 + u128::from(seed / 5) % (source - 1)));
+                }
+            }
+            cases.push(edges);
+        }
+        for edges in cases {
+            let mut work = Meter::new(SameSameDifferent::ID, None, None);
+            let index = lineage_index(&edges, &mut work);
+            for a in 0..20 {
+                for b in 0..20 {
+                    assert_eq!(
+                        index.shares(VId(a), VId(b), &mut work).unwrap(),
+                        naive_lineage(&edges, a, b),
+                        "lineage {a}, {b}: {edges:?}"
+                    );
+                }
+            }
+            for reverse in [false, true] {
+                let mut order: Vec<_> = (0..20).collect();
+                if reverse {
+                    order.reverse();
+                }
+                let mut selected = SelectedLineages::default();
+                let mut expected = Vec::new();
+                for &vid in &order {
+                    let accept = expected
+                        .iter()
+                        .all(|&other| !naive_lineage(&edges, vid, other));
+                    assert_eq!(
+                        index.select(VId(vid), &mut selected, &mut work).unwrap(),
+                        accept
+                    );
+                    if accept {
+                        expected.push(vid);
+                    }
+                }
+                let list: Vec<_> = order
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &vid)| (i as i32, i as u64, VId(vid)))
+                    .collect();
+                let search = LineageSearch::new(&list, &index, &mut work).unwrap();
+                for a in 0..20 {
+                    let first_later = order.iter().position(|&vid| vid == a).unwrap() + 1;
+                    for from in first_later..=list.len() {
+                        let expected =
+                            (from..list.len()).find(|&i| !naive_lineage(&edges, a, list[i].2.0));
+                        assert_eq!(
+                            search
+                                .first_unrelated(&list, from, VId(a), &index, &mut work)
+                                .unwrap(),
+                            expected,
+                            "next candidate for {a} from {from}: {edges:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hundred_thousand_corrections_skip_related_ranges_with_linear_work() {
+        const N: u128 = 100_000;
+        let edges: Vec<_> = (2..=N).map(|vid| (vid, vid - 1)).collect();
+        let mut work = Meter::new(SameSameDifferent::ID, Some(1_000_000), None);
+        let index = lineage_index(&edges, &mut work);
+        let list: Vec<_> = (1..=N)
+            .map(|vid| (vid as i32, vid as u64, VId(vid)))
+            .collect();
+        let search = LineageSearch::new(&list, &index, &mut work).unwrap();
+        let mut selected = SelectedLineages::default();
+        for (i, &(_, _, vid)) in list.iter().enumerate() {
+            assert_eq!(
+                search
+                    .first_unrelated(&list, i + 1, vid, &index, &mut work)
+                    .unwrap(),
+                None
+            );
+            assert_eq!(index.select(vid, &mut selected, &mut work).unwrap(), i == 0);
+        }
+        assert!(work.work().comparisons < 10 * N as u64, "{:?}", work.work());
+    }
+
+    #[test]
+    fn lineage_index_and_range_search_honor_budget_and_cancellation() {
+        struct Cancelled;
+        impl crate::Cancellation for Cancelled {
+            fn cancelled(&self) -> bool {
+                true
+            }
+        }
+        let mut work = Meter::new(SameSameDifferent::ID, None, None);
+        let mut index = lineage_index(&[(2, 1)], &mut work);
+        for node in &mut index.nodes {
+            node.component = None;
+        }
+        let mut cancelled = Meter::new(SameSameDifferent::ID, None, Some(&Cancelled));
+        assert!(matches!(
+            index.index_components(&mut cancelled),
+            Err(LanternError::Cancelled { .. })
+        ));
+        let mut budget = Meter::new(SameSameDifferent::ID, Some(0), None);
+        assert!(matches!(
+            LineageSearch::new(&[(0, 0, VId(1))], &index, &mut budget),
+            Err(LanternError::BudgetExhausted { .. })
+        ));
+    }
 
     #[test]
     fn near_tolerance_is_exact_at_its_boundary_and_never_overflows() {

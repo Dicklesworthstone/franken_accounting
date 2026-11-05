@@ -18,7 +18,7 @@ use fa_time::DateDay;
 use fgdb::Database;
 use fgdb_types::{CommitSeq, VId};
 
-use super::{OpenItem, carries_open_items, fold_open_items, is_live};
+use super::{OpenItem, ReversalLiveness, carries_open_items, fold_open_items};
 use crate::{KernelError, RegisterError, entries_at, resolve_known_at};
 
 /// A literal payload fold at both a civil-date cutoff and a recorded prefix.
@@ -140,8 +140,9 @@ fn restrict_effective(
             return Err(KernelError::Corrupt("an entry is reversed twice".into()).into());
         }
     }
+    let mut liveness = ReversalLiveness::new(&reversed_by);
     for (vid, entry, _) in entries.iter() {
-        if !carries_open_items(entry) || !is_live(*vid, &reversed_by)? {
+        if !carries_open_items(entry) || !liveness.is_live(*vid)? {
             continue;
         }
         for leg in &entry.proposal.legs {
@@ -149,7 +150,7 @@ fn restrict_effective(
                 continue;
             }
             for settlement in &leg.settles {
-                if !is_live(settlement.target.vid, &reversed_by)? {
+                if !liveness.is_live(settlement.target.vid)? {
                     return Err(RegisterError::InvalidSelection(format!(
                         "effective cutoff {through} strands a live settlement from \
                          {vid:?} on reversed target {:?}; select a cutoff including \
@@ -345,6 +346,47 @@ mod tests {
             at(&history, "2026-12-31"),
             fold_open_items(&history, Some(RECEIVABLE)).unwrap()
         );
+    }
+
+    #[test]
+    fn open_item_fold_counts_each_long_reversal_link_once() {
+        let invoice = invoice("2026-01-10");
+        let receipt = receipt(&invoice, "2026-01-15");
+        let mut history = vec![invoice, receipt];
+        let reversals = 4_096usize;
+        for index in 0..reversals {
+            history.push(reverse(
+                history.last().unwrap(),
+                u64::try_from(index).unwrap() + 3,
+                "2026-01-20",
+            ));
+        }
+        let (items, links) =
+            super::super::fold_open_items_counted(&history, Some(RECEIVABLE)).unwrap();
+        assert_eq!(links, reversals);
+        assert_eq!(invoice_item(&items).open, 60);
+        assert_eq!(invoice_item(&items).applied, 40);
+        assert_eq!(invoice_item(&items).applications.len(), 1);
+        assert!(invoice_item(&items).applications[0].live);
+        assert_eq!(items.len(), 2);
+        assert_eq!(at(&history, "2026-01-31"), items);
+
+        // One more reversal reopens the invoice, while retaining the undone
+        // receipt in its application history. Neither path may drop the edge.
+        history.push(reverse(
+            history.last().unwrap(),
+            u64::try_from(reversals).unwrap() + 3,
+            "2026-02-01",
+        ));
+        let (after, links) =
+            super::super::fold_open_items_counted(&history, Some(RECEIVABLE)).unwrap();
+        assert_eq!(links, reversals + 1);
+        assert_eq!(invoice_item(&after).open, 100);
+        assert_eq!(invoice_item(&after).applied, 0);
+        assert!(!invoice_item(&after).applications[0].live);
+        assert_eq!(after.len(), 1);
+        assert_eq!(at(&history, "2026-01-31"), items);
+        assert_eq!(at(&history, "2026-02-01"), after);
     }
 
     #[test]
