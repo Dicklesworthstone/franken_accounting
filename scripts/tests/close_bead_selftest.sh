@@ -104,8 +104,6 @@ if [ "${FAKE_CHECK_MODE:-pass}" = "split-1" ]; then
 fi
 
 printf '  fa_journal::retention::tests::floor_enforced: test\n  fa_journal::retention::tests::cadence_checked: test\n  carried::posts_balance: test\nRemote command finished: exit=0\n[RCH] remote hz2 (1s)\n' > "$log_dir/test-list.log"
-d_list="$(sha256sum "$log_dir/test-list.log" | awk '{print $1}')"
-
 cat > "$log_dir/test.log" <<'EOF'
 test fa_journal::retention::tests::floor_enforced ... ok
 test fa_journal::retention::tests::cadence_checked ... ok
@@ -119,6 +117,21 @@ test result: ok. 1 passed; 0 failed; 0 ignored
 Remote command finished: exit=0
 [RCH] remote hz2 (1s)
 EOF
+if [ "${FAKE_CHECK_INVENTORY_SIZE:-3}" -gt 3 ]; then
+  python3 -B - "$log_dir" "$FAKE_CHECK_INVENTORY_SIZE" <<'PY'
+import pathlib, sys
+root, count = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+names = [f'inventory::ledger_report_case_{index:05d}' for index in range(count - 3)]
+listed = root / 'test-list.log'
+listed.write_text(listed.read_text().replace('Remote command finished:',
+                  ''.join(f'  {name}: test\n' for name in names) + 'Remote command finished:', 1))
+tested = root / 'test.log'
+tested.write_text(tested.read_text().replace('test result: ok. 2 passed;',
+                  ''.join(f'test {name} ... ok\n' for name in names)
+                  + f'test result: ok. {count - 1} passed;', 1))
+PY
+fi
+d_list="$(sha256sum "$log_dir/test-list.log" | awk '{print $1}')"
 d_test="$(sha256sum "$log_dir/test.log" | awk '{print $1}')"
 
 {
@@ -344,7 +357,7 @@ unbound_resumed_steps_cannot_authorize_closure() {
   cp -R "$pass_proof" "$forged"
   printf 'test fa_journal::retention::tests::invented ... ok\n' >> "$forged/steps/test.log"
   (
-    cd "$forged"
+    cd "$forged" || fail "cannot enter forged proof fixture $forged"
     : > SHA256SUMS
     while IFS= read -r f; do
       sha256sum "$f" >> SHA256SUMS
@@ -520,6 +533,61 @@ refuses_manifest_without_acceptance_block() {
   fi
 }
 
+large_verified_note_preserves_acceptance_and_ancestry_checks() {
+  local proof="$base/large-closure-proof" proof_commit blob before after rc=0 future_commit
+  proof_commit="$(git rev-parse HEAD)"
+  before="$(sha256sum "$STUB_BEADS_JSONL" | awk '{print $1}')"
+  FAKE_CHECK_MODE=pass FAKE_CHECK_INVENTORY_SIZE=20000 \
+    bash scripts/local_proof.sh --output "$proof" --publish-note \
+      >"$base/large-closure-produce.stdout" 2>"$base/large-closure-produce.stderr" \
+    || fail "large closure fixture could not publish its synthetic proof"
+  blob="$(git notes --ref=fa-verdict list "$proof_commit" | awk '{print $1}')"
+  python3 -B - "$blob" <<'PY' || fail "large closure fixture lacks its complete inventory"
+import hashlib, json, subprocess, sys
+body = subprocess.check_output(['git', 'cat-file', 'blob', sys.argv[1]])
+assert len(body) > 473204, len(body)
+records = [json.loads(line.removeprefix('step_verdict='))
+           for line in body.decode('utf-8').splitlines() if line.startswith('step_verdict=')]
+witness = next(record['witness'] for record in records if record['step'] == 'test')
+names = witness['passed_test_names']
+expected = ['fa_journal::retention::tests::floor_enforced',
+            'fa_journal::retention::tests::cadence_checked']
+expected += [f'inventory::ledger_report_case_{index:05d}' for index in range(19997)]
+expected += ['carried::posts_balance', 'scripts/tests/close_bead_selftest.sh::closes_with_cited_note']
+assert names == expected and len(set(names)) == 20001
+assert witness['passed_tests'] == 20000
+print(f'large-closure bytes={len(body)} sha256={hashlib.sha256(body).hexdigest()} inventory={len(names)} synthetic=true')
+PY
+  FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh fa-good --verdict "$blob" \
+    --commit "$main_commit" --repository "$fixture" --reason "large synthetic inventory" \
+    >"$base/large-closure.stdout" 2>"$base/large-closure.stderr" \
+    || fail "large verified inventory could not authorize its actual acceptance tests"
+  grep -Fq 'CLOSE_BEAD_VERIFIED bead=fa-good' "$base/large-closure.stdout" \
+    || fail "large closure positive did not reach the dry-run authorization boundary"
+
+  FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh fa-missing-test --verdict "$blob" \
+    --commit "$main_commit" --repository "$fixture" --reason "missing large-inventory member" \
+    >"$base/large-missing.stdout" 2>"$base/large-missing.stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "large inventory authorized a test that did not execute"
+  grep -Fq 'missing from verdict' "$base/large-missing.stderr" \
+    || fail "large missing-test control failed outside the inventory boundary"
+
+  printf '// Work committed after the synthetic proof.\n' >> crates/fa/src/lib.rs
+  git add crates/fa/src/lib.rs
+  git commit -q -m "test: later fixture source must not inherit earlier proof"
+  future_commit="$(git rev-parse HEAD)"
+  rc=0
+  FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh fa-good --verdict "$blob" \
+    --commit "$future_commit" --repository "$fixture" --reason "future landing" \
+    >"$base/large-ancestry.stdout" 2>"$base/large-ancestry.stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "large inventory authorized a landing outside its source ancestry"
+  grep -Fq 'does not contain landing commit' "$base/large-ancestry.stderr" \
+    || fail "large ancestry control failed outside the source-commit boundary"
+  after="$(sha256sum "$STUB_BEADS_JSONL" | awk '{print $1}')"
+  [ "$before" = "$after" ] || fail "large closure dry-run changed fixture Beads"
+  gate_pass "close_bead_selftest::large_verified_note_preserves_acceptance_and_ancestry_checks (producer-generated synthetic proof; missing tests and future landing refused; no Rust execution or real Beads mutation)"
+}
+
 parser_unit_tests
 closes_with_cited_note
 matches_integration_tests_by_their_binary
@@ -540,6 +608,7 @@ refuses_failed_test
 refuses_verdict_without_landing_commit
 unbound_resumed_steps_cannot_authorize_closure
 process_closure_and_regression_checks
+large_verified_note_preserves_acceptance_and_ancestry_checks
 
 cd "$source_root" || fail "cannot cd back to $source_root"
 gate_verdict

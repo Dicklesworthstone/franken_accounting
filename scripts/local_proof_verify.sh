@@ -95,10 +95,7 @@ if [ -n "$note_arg" ]; then
   target_script_blob="$(git -C "$repo_for_note" rev-parse --verify "${target_commit}:scripts/check.sh" 2>/dev/null || echo "")"
   note_blob="$(git -C "$repo_for_note" notes --ref=fa-verdict list "$target_commit" 2>/dev/null | awk '{print $1}' || true)"
   [ -n "$note_blob" ] || fail "missing refs/notes/fa-verdict note for $target_commit"
-  note_text="$(git -C "$repo_for_note" notes --ref=fa-verdict show "$target_commit" 2>/dev/null)" \
-    || fail "cannot read refs/notes/fa-verdict note for $target_commit"
-
-  python3 -B - "$target_commit" "$target_tree" "$target_script_blob" "$note_blob" "$note_text" \
+  python3 -B - "$target_commit" "$target_tree" "$target_script_blob" "$note_blob" \
     "$repo_for_note" "$proof_arg" "${BASH_SOURCE[0]}" "$for_close" <<'PY' || exit 1
 import hashlib
 import json
@@ -107,8 +104,8 @@ import re
 import subprocess
 import sys
 
-target_commit, target_tree, target_script_blob, note_blob, note_text = sys.argv[1:6]
-repository, proof_override, verifier, for_close = sys.argv[6:10]
+target_commit, target_tree, target_script_blob, note_blob = sys.argv[1:5]
+repository, proof_override, verifier, for_close = sys.argv[5:9]
 
 def require(cond, msg):
     if not cond:
@@ -124,16 +121,36 @@ def strict_object(pairs):
 
 kv = {}
 steps = []
-for raw in note_text.splitlines():
-    if not raw.strip():
-        continue
-    require("=" in raw, f"malformed note line: {raw}")
-    k, v = raw.split("=", 1)
-    if k == "step_verdict":
-        steps.append(json.loads(v, object_pairs_hook=strict_object))
-    else:
-        require(k not in kv, f"duplicate note key: {k}")
-        kv[k] = v
+# Read the immutable blob selected above, independently of the Python program's
+# stdin. Full inventories exceed per-argument limits; neither argv nor the
+# environment carries note data. The subprocess context closes its pipe on any
+# semantic refusal before waiting, so a large rejected note cannot strand Git.
+require(re.fullmatch(r"[0-9a-f]{40}", note_blob), "invalid selected note blob")
+try:
+    note_reader = subprocess.Popen(
+        ["git", "-C", repository, "cat-file", "blob", note_blob],
+        stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="strict",
+    )
+except OSError:
+    require(False, "cannot read selected verdict note blob")
+with note_reader:
+    require(note_reader.stdout is not None, "cannot open selected note input")
+    try:
+        for physical_line in note_reader.stdout:
+            # Preserve splitlines semantics for every supported line separator.
+            for raw in physical_line.splitlines():
+                if not raw.strip():
+                    continue
+                require("=" in raw, f"malformed note line: {raw}")
+                k, v = raw.split("=", 1)
+                if k == "step_verdict":
+                    steps.append(json.loads(v, object_pairs_hook=strict_object))
+                else:
+                    require(k not in kv, f"duplicate note key: {k}")
+                    kv[k] = v
+    except UnicodeError:
+        require(False, "note is not valid UTF-8")
+    require(note_reader.wait() == 0, "cannot read selected verdict note blob")
 
 require(kv.get("format_version") == "3", "note format_version must be 3")
 require(kv.get("commit") == target_commit, f"note commit {kv.get('commit')} != {target_commit}")

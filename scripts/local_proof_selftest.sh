@@ -44,13 +44,35 @@ cat >> "$fixture/scripts/check.sh" <<'CHECK'
 emit_step() {
   local step="$1" status="$2"
   printf 'fixture gate %s %s\n' "$step" "$status" >"$LOG_DIR/$step.log"
-  if [ "${FAKE_PROOF_MODE:-}" = compile-controls ]; then
+  if [ "${FAKE_PROOF_MODE:-}" = compile-controls ] || [ "${FAKE_PROOF_MODE:-}" = compile-red-controls ]; then
     case "$step" in
       check) printf '    Finished dev profile\n' >>"$LOG_DIR/$step.log" ;;
-      test-list) printf 'sample::one: test\nsample::two: test\n' >>"$LOG_DIR/$step.log" ;;
-      test) printf 'test sample::one ... ok\ntest sample::two ... ok\ntest result: ok. 2 passed; 0 failed; 0 ignored\n' >>"$LOG_DIR/$step.log" ;;
+      test-list|test)
+        python3 -B - "$step" "${FAKE_PROOF_INVENTORY_SIZE:-2}" "$FAKE_PROOF_MODE" >>"$LOG_DIR/$step.log" <<'PY'
+import sys
+step, count, mode = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+assert count >= 2
+names = ['sample::one', 'sample::two'] + [
+    f'inventory::ledger_report_case_{i:05d}' for i in range(count - 2)
+]
+if step == 'test-list':
+    for name in names:
+        print(f'{name}: test')
+else:
+    failed = int(mode == 'compile-red-controls')
+    for i, name in enumerate(names):
+        outcome = 'FAILED' if failed and i == count - 1 else 'ok'
+        print(f'test {name} ... {outcome}')
+    verdict = 'FAILED' if failed else 'ok'
+    print(f'test result: {verdict}. {count - failed} passed; {failed} failed; 0 ignored')
+PY
+        ;;
     esac
-    printf 'Remote command finished: exit=0\n' >>"$LOG_DIR/$step.log"
+    if [ "$status" = FAIL ]; then
+      printf 'Remote command finished: exit=101\n' >>"$LOG_DIR/$step.log"
+    else
+      printf 'Remote command finished: exit=0\n' >>"$LOG_DIR/$step.log"
+    fi
     printf '[RCH] remote fixture-worker (1s)\n' >>"$LOG_DIR/$step.log"
   fi
   local stamp
@@ -59,11 +81,19 @@ emit_step() {
 }
 
 case "${FAKE_PROOF_MODE:-pass}" in
-  compile-controls)
-    for step in check test-list test; do
+  compile-controls|compile-red-controls)
+    for step in check test-list; do
       emit_step "$step" PASS
       printf 'PASS %s\n' "$step"
     done
+    if [ "$FAKE_PROOF_MODE" = compile-red-controls ]; then
+      emit_step test FAIL
+      printf 'FAIL test\nQUALITY GATE RED\n'
+      printf 'QUALITY GATE RED\n' >&2
+      exit 7
+    fi
+    emit_step test PASS
+    printf 'PASS test\n'
     printf 'ALL GATES GREEN\n'
     ;;
   pass)
@@ -116,7 +146,7 @@ chmod +x "$fixture/scripts/"*.sh
 rehash() {
   local proof="$1"
   (
-    cd "$proof"
+    cd "$proof" || fail "cannot enter proof fixture $proof"
     : > SHA256SUMS
     while IFS= read -r file; do
       if command -v sha256sum >/dev/null 2>&1; then
@@ -153,7 +183,7 @@ make_v1_proof() {
   rehash "$target"
 }
 
-cd "$fixture"
+cd "$fixture" || fail "cannot enter repository fixture $fixture"
 git init -q -b main
 git config user.name "Local Proof Self-Test"
 git config user.email "local-proof-selftest@example.invalid"
@@ -238,6 +268,133 @@ fi
 # marker/inventory controls, rather than only checksum mismatch, must reject.
 compile_proof="$base/compile-controls"
 FAKE_PROOF_MODE=compile-controls bash scripts/local_proof.sh --output "$compile_proof" >/dev/null
+
+# Synthetic transport/validation fixtures, never native accounting evidence.
+# Publication uses the real producer's stdin path; note data never becomes argv.
+saved_note_blob="$(git notes --ref=fa-verdict list "$commit_a" | awk '{print $1}')"
+large_proof="$base/large-compile-controls"
+FAKE_PROOF_MODE=compile-controls FAKE_PROOF_INVENTORY_SIZE=20000 \
+  bash scripts/local_proof.sh --output "$large_proof" --publish-note >"$base/large-produce.log" 2>&1
+large_note_blob="$(git notes --ref=fa-verdict list "$commit_a" | awk '{print $1}')"
+
+large_note_inventory_uses_bounded_input_transport() {
+  bash scripts/local_proof_verify.sh --repository "$fixture" --for-close --note "$commit_a" \
+    >"$base/large-note.stdout" 2>"$base/large-note.stderr"
+  bash scripts/local_proof_verify.sh --repository "$fixture" --note "$commit_a" "$large_proof" \
+    >"$base/large-relocated.stdout" 2>"$base/large-relocated.stderr"
+  bash scripts/local_proof_verify.sh --repository "$fixture" "$commit_a" \
+    >"$base/large-commit.stdout" 2>"$base/large-commit.stderr"
+  bash scripts/local_proof_verify.sh --repository "$fixture" --for-resume "$large_proof" \
+    >"$base/large-resume.stdout" 2>"$base/large-resume.stderr"
+  python3 -B - "$large_proof" "$large_note_blob" <<'PY'
+import hashlib, json, pathlib, re, subprocess, sys
+root, blob = pathlib.Path(sys.argv[1]), sys.argv[2]
+body = subprocess.check_output(['git', 'cat-file', 'blob', blob])
+assert len(body) > 473204, len(body)
+records = [json.loads(line.removeprefix('step_verdict='))
+           for line in body.decode('utf-8').splitlines() if line.startswith('step_verdict=')]
+witness = next(record['witness'] for record in records if record['step'] == 'test')
+expected = re.findall(r'^test (\S+) \.\.\. ok$', (root / 'steps/test.log').read_text(), re.M)
+assert len(expected) == 20000 and len(set(expected)) == 20000
+assert witness['passed_test_names'] == expected
+assert witness['passed_tests'] == 20000 and not witness.get('failed_test_names')
+print(f'large-note bytes={len(body)} sha256={hashlib.sha256(body).hexdigest()} inventory={len(expected)} synthetic=true')
+PY
+  printf 'PASS local_proof_selftest::large_note_inventory_uses_bounded_input_transport\n'
+}
+
+large_note_tampering_retains_strict_validation() {
+  python3 -B - "$fixture" "$commit_a" "$large_note_blob" "$base" <<'PY'
+import json, os, pathlib, signal, subprocess, sys
+repository, commit, blob, base = sys.argv[1:]
+original = subprocess.check_output(['git', 'cat-file', 'blob', blob])
+
+def publish(body):
+    subprocess.run(['git', 'notes', '--ref=fa-verdict', 'add', '-f', '-F', '-', commit],
+                   input=body, check=True)
+
+def refused(label, body):
+    publish(body)
+    child = subprocess.Popen(['bash', 'scripts/local_proof_verify.sh', '--repository', repository,
+                              '--note', commit], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             start_new_session=True)
+    try:
+        out, err = child.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        os.killpg(child.pid, signal.SIGKILL)
+        child.communicate()
+        raise AssertionError(f'large {label} left the verifier or Git pipe unsettled')
+    pathlib.Path(base, f'large-{label}.stdout').write_bytes(out)
+    pathlib.Path(base, f'large-{label}.stderr').write_bytes(err)
+    assert child.returncode != 0, label
+    assert b'Argument list too long' not in err, label
+
+try:
+    lines = original.decode('utf-8').splitlines()
+    for label in ['step-tree', 'test-name', 'checksum', 'duplicate-json']:
+        changed = []
+        for line in lines:
+            if label == 'checksum' and line.startswith('proof_sums_sha256='):
+                line = 'proof_sums_sha256=' + '0' * 64
+            elif line.startswith('step_verdict='):
+                record = json.loads(line.removeprefix('step_verdict='))
+                if record['step'] == 'test':
+                    if label == 'step-tree':
+                        record['tree_hash'] = '0' * 40
+                    elif label == 'test-name':
+                        record['witness']['passed_test_names'][0] = 'invented::not_executed'
+                    line = 'step_verdict=' + json.dumps(record, separators=(',', ':'))
+                    if label == 'duplicate-json':
+                        line = line.replace('step_verdict={', 'step_verdict={"step":"test",', 1)
+            changed.append(line)
+        refused(label, ('\n'.join(changed) + '\n').encode('utf-8'))
+    refused('duplicate-note', original + ('commit=' + commit + '\n').encode())
+    refused('truncated', original[:-32])
+    refused('utf8', original + b'\xff\n')
+    refused('malformed-record', original + b'not-a-record\n')
+finally:
+    publish(original)
+PY
+  local kind altered
+  for kind in log manifest; do
+    altered="$base/large-retained-$kind"
+    cp -R "$large_proof" "$altered"
+    if [ "$kind" = log ]; then
+      printf 'test invented::not_executed ... ok\n' >> "$altered/steps/test.log"
+    else
+      printf 'invented=field\n' >> "$altered/manifest.txt"
+    fi
+    if bash scripts/local_proof_verify.sh --repository "$fixture" --note "$commit_a" "$altered" \
+        >"$base/large-retained-$kind.stdout" 2>"$base/large-retained-$kind.stderr"; then
+      fail "large retained $kind mutation passed verification"
+    fi
+  done
+  printf 'PASS local_proof_selftest::large_note_tampering_retains_strict_validation\n'
+}
+
+large_red_note_remains_ineligible_for_close() {
+  local proof="$base/large-red-controls" rc=0
+  FAKE_PROOF_MODE=compile-red-controls FAKE_PROOF_INVENTORY_SIZE=20000 \
+    bash scripts/local_proof.sh --output "$proof" --publish-note \
+      >"$base/large-red-produce.log" 2>&1 || rc=$?
+  [ "$rc" -eq 7 ] || fail "large RED producer lost its original failure exit ($rc)"
+  bash scripts/local_proof_verify.sh --repository "$fixture" --note "$commit_a" \
+    >"$base/large-red.stdout" 2>"$base/large-red.stderr"
+  grep -Fxq 'verdict=red' "$base/large-red.stdout" || fail "large RED note lost its verdict"
+  if bash scripts/local_proof_verify.sh --repository "$fixture" --for-close --note "$commit_a" \
+      >"$base/large-red-close.stdout" 2>"$base/large-red-close.stderr"; then
+    fail "large RED note authorized closure"
+  fi
+  grep -Fq 'closure requires a stable PASS proof' "$base/large-red-close.stderr" \
+    || fail "large RED closure failed outside its verdict boundary"
+  git cat-file blob "$saved_note_blob" | git notes --ref=fa-verdict add -f -F - "$commit_a"
+  printf 'PASS local_proof_selftest::large_red_note_remains_ineligible_for_close\n'
+}
+
+large_note_inventory_uses_bounded_input_transport
+large_note_tampering_retains_strict_validation
+large_red_note_remains_ineligible_for_close
+
 for mutation in completion inventory extra duplicate-key contradictory worker uncertain standard-names; do
   altered="$base/compile-$mutation"
   cp -R "$compile_proof" "$altered"
