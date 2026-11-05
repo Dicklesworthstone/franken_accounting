@@ -6,6 +6,7 @@ use fa_canon::{CompiledRule, Inputs};
 use fa_intents::{BatchPlan, PostBatch, PostIntent, PostPlan};
 use fa_journal::batch::{commit_batch_plan, plan_batch, post_batch};
 use fa_journal::plan::{commit_plan, plan_post};
+use fa_journal::refusal::code;
 use fa_journal::rule::{
     RuleDerivation, activate_rule_version, automatic_rules_at, plan_rule_activation,
     propose_rule_version, rule_derived_proposal,
