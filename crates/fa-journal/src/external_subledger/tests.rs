@@ -187,3 +187,118 @@ fn detail_fold_agrees_with_independent_limb_oracle_over_grouped_histories() {
         }
     }
 }
+
+#[test]
+fn identity_join_searches_large_selected_populations_without_a_second_index() {
+    for count in [16_usize, 1_024, 100_000] {
+        let rows: Vec<_> = (0..count)
+            .map(|index| VertexRow {
+                vid: VId(2 * index as u128 + 2),
+                birth_ordinal: index as u64,
+                created_at: CommitSeq(1),
+                retired_at: None,
+                labels: vec![],
+                props: vec![],
+            })
+            .collect();
+        let mut queries = vec![VId(0), VId(2), VId(2 * count as u128), VId(u128::MAX)];
+        queries.extend((0..128).map(|index| VId((index * 7_919) % (2 * count as u128 + 3))));
+        let mut work = ExternalSubledgerVerificationWork::default();
+        let mut literal_comparisons = 0;
+        for target in &queries {
+            let expected = rows.iter().find(|row| {
+                literal_comparisons += 1;
+                row.vid == *target
+            });
+            assert_eq!(identity_row(&rows, *target, &mut work), expected);
+        }
+        assert!(
+            work.identity_row_comparisons <= queries.len() * (count.ilog2() as usize + 2),
+            "count={count}, work={work:?}"
+        );
+        if count == 100_000 {
+            assert!(literal_comparisons > work.identity_row_comparisons * 1_000);
+        }
+        assert_eq!(work.review_edge_point_reads, 0);
+    }
+    let mut work = ExternalSubledgerVerificationWork::default();
+    assert!(identity_row(&[], VId(1), &mut work).is_none());
+    assert_eq!(work.identity_row_comparisons, 0);
+}
+
+#[test]
+fn review_point_lookup_preserves_exact_identity_topology_and_properties() {
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fgdb::DatabaseKeys;
+    use fgdb_types::EId;
+    use fgdb_types::context::PurposeContexts;
+    use fgdb_types::ids::DatabaseSecurityNamespaceId;
+
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let ctx = PurposeContexts::narrow_runtime_root(&root);
+    let keys = DatabaseKeys::new(
+        [0x5a; 32],
+        DatabaseSecurityNamespaceId([0x5b; 32]),
+        [0x5c; 32],
+    );
+    let mut db = runtime
+        .block_on(Database::open_memory(&ctx.commit(), keys))
+        .unwrap();
+    for (index, case) in [
+        "exact",
+        "identity",
+        "relation",
+        "source",
+        "destination",
+        "properties",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let target = VId(10 * index as u128 + 1);
+        let review = VId(target.0 + 1);
+        let other = VId(target.0 + 2);
+        let expected = edge_id(relation::REVIEWED_BY, target, review);
+        let relation = if case == "relation" {
+            relation::IN_BOOK
+        } else {
+            relation::REVIEWED_BY
+        };
+        let mut write = WriteBatch::new(relation);
+        for vid in [target, review, other] {
+            write.create_vertex(vid, vec![], vec![]);
+        }
+        write.add_edge(
+            if case == "identity" {
+                EId(expected.0 ^ 1)
+            } else {
+                expected
+            },
+            if case == "source" { other } else { target },
+            if case == "destination" { other } else { review },
+            if case == "properties" {
+                vec![(property::CODE, CanonicalScalar::Int(1))]
+            } else {
+                vec![]
+            },
+        );
+        let before = db.frontier().unwrap();
+        runtime.block_on(db.write(&ctx.commit(), write)).unwrap();
+        let at = db.frontier().unwrap();
+        let mut work = ExternalSubledgerVerificationWork::default();
+        assert!(!review_lineage_at(&db, target, review, before, &mut work).unwrap());
+        let actual = review_lineage_at(&db, target, review, at, &mut work).unwrap();
+        let literal = db.edges_at(at).unwrap().iter().any(|edge| {
+            edge.entry.eid == expected
+                && edge.entry.relation == relation::REVIEWED_BY
+                && edge.entry.src == target
+                && edge.entry.dst == review
+                && edge.props.is_empty()
+        });
+        assert_eq!(actual, literal, "case={case}");
+        assert_eq!(actual, case == "exact", "case={case}");
+        assert_eq!(work.review_edge_point_reads, 2, "case={case}");
+    }
+}
