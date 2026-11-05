@@ -1084,6 +1084,19 @@ impl Journal {
             Ok(sums) => sums,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        self.encode_balance_proof(account, unit, through, debits, credits)
+    }
+
+    /// Serialize the unchanged v1 proof after an internal caller has derived
+    /// its complete checked fold from this same immutable journal.
+    pub(crate) fn encode_balance_proof(
+        &self,
+        account: VId,
+        unit: u32,
+        through: Option<i32>,
+        debits: i128,
+        credits: i128,
+    ) -> Outcome<Vec<u8>> {
         let contributing: Vec<(u64, &Leaf)> = self
             .leaves
             .iter()

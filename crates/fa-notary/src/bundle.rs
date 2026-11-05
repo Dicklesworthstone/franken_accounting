@@ -781,17 +781,9 @@ pub fn assemble_with_runs(
     }
     let complete = !matches!(request.scope, BundleScope::Prefix);
     let mut balances = Vec::with_capacity(request.balances.len());
+    let mut proofs = crate::migration_balance::BalanceProofs::new(journal);
     for b in &request.balances {
-        let proof = if complete {
-            journal.balance_proof_complete_auto(
-                b.account,
-                b.unit,
-                b.effective_through,
-                run_bodies,
-            )?
-        } else {
-            journal.balance_proof_auto(b.account, b.unit, b.effective_through, run_bodies)?
-        };
+        let proof = proofs.prove(b.account, b.unit, b.effective_through, run_bodies, complete)?;
         match proof {
             Ok(proof) => balances.push(proof),
             Err(refusal) => return Ok(Err(refusal)),

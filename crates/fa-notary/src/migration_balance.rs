@@ -14,9 +14,12 @@
 //! only membership scope in the independent verifier.
 
 mod source;
+#[cfg(test)]
+mod tests;
 mod transport;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
@@ -69,7 +72,7 @@ impl MigrationSourceInputs for MigrationInputs {
 
 pub(crate) use source::witnesses as source_witnesses;
 
-type Selected<'a> = Vec<(usize, &'a Leaf, Entry)>;
+type Selected<'a> = Vec<(usize, &'a Leaf, Rc<Entry>)>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProofMode {
@@ -105,6 +108,53 @@ fn candidate(leaf: &Leaf, account: VId, unit: u32, through: Option<i32>) -> bool
         && through.is_none_or(|day| e.effective_day.is_some_and(|d| d <= day))
 }
 
+fn authenticate_entry(index: usize, leaf: &Leaf, entry: &Entry) -> Outcome<()> {
+    let rebuilt = LeafEnvelope::of_entry(
+        entry,
+        leaf.envelope.commit_seq,
+        leaf.envelope.within_commit_ordinal,
+    );
+    if rebuilt != leaf.envelope
+        || rebuilt
+            .canonical_bytes()
+            .map_err(fa_model::EntryError::Encode)?
+            != leaf.envelope_bytes
+        || entry.proposal.canonical_bytes()?.len() != leaf.proposal_len
+    {
+        return Ok(Err(refusal(format!(
+            "leaf {index} disagrees with its authoritative entry payload"
+        ))));
+    }
+    Ok(Ok(()))
+}
+
+fn selected_run(index: usize, entry: &Entry, needed: &mut BTreeSet<VId>) -> Result<(), Refusal> {
+    let p = &entry.proposal;
+    match (&p.origin, p.class) {
+        (EntryOrigin::Migration { run_ref, .. }, EntryClass::MIGRATION) if p.control.is_none() => {
+            needed.insert(*run_ref);
+        }
+        (EntryOrigin::Migration { .. }, _) | (_, EntryClass::MIGRATION) => {
+            return Err(refusal(format!(
+                "leaf {index} has inconsistent migration class, origin, or control"
+            )));
+        }
+        (_, EntryClass::MIGRATION_CONTROL) => {}
+        (EntryOrigin::Control { .. }, _) => {
+            return Err(refusal(format!(
+                "posting candidate {index} has a control origin"
+            )));
+        }
+        _ if p.control.is_some() => {
+            return Err(refusal(format!(
+                "posting candidate {index} has an unsupported control payload"
+            )));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn select(
     journal: &Journal,
     account: VId,
@@ -135,22 +185,8 @@ fn select(
             continue;
         }
         let entry = Entry::decode(&leaf.payload)?;
-        let p = &entry.proposal;
-        let rebuilt = LeafEnvelope::of_entry(
-            &entry,
-            leaf.envelope.commit_seq,
-            leaf.envelope.within_commit_ordinal,
-        );
-        if rebuilt != leaf.envelope
-            || rebuilt
-                .canonical_bytes()
-                .map_err(fa_model::EntryError::Encode)?
-                != leaf.envelope_bytes
-            || p.canonical_bytes()?.len() != leaf.proposal_len
-        {
-            return Ok(Err(refusal(format!(
-                "leaf {index} disagrees with its authoritative entry payload"
-            ))));
+        if let Err(r) = authenticate_entry(index, leaf, &entry)? {
+            return Ok(Err(r));
         }
         // A complete proof authenticates exclusion too. The record stays in
         // v3's wire prefix but unrelated controls/holds do not enter the fold
@@ -158,33 +194,257 @@ fn select(
         if !selected {
             continue;
         }
-        match (&p.origin, p.class) {
-            (EntryOrigin::Migration { run_ref, .. }, EntryClass::MIGRATION)
-                if p.control.is_none() =>
-            {
-                needed.insert(*run_ref);
-            }
-            (EntryOrigin::Migration { .. }, _) | (_, EntryClass::MIGRATION) => {
-                return Ok(Err(refusal(format!(
-                    "leaf {index} has inconsistent migration class, origin, or control"
-                ))));
-            }
-            (_, EntryClass::MIGRATION_CONTROL) => {}
-            (EntryOrigin::Control { .. }, _) => {
-                return Ok(Err(refusal(format!(
-                    "posting candidate {index} has a control origin"
-                ))));
-            }
-            _ if p.control.is_some() => {
-                return Ok(Err(refusal(format!(
-                    "posting candidate {index} has an unsupported control payload"
-                ))));
-            }
-            _ => {}
+        if let Err(r) = selected_run(index, &entry, &mut needed) {
+            return Ok(Err(r));
         }
-        records.push((index, leaf, entry));
+        records.push((index, leaf, Rc::new(entry)));
     }
     Ok(Ok((records, needed)))
+}
+
+/// One immutable observation for all balances in a bundle. Successful payload
+/// authentication is reused only while borrowing this exact journal. Each
+/// cell still applies its own cutoff, migration selection, lifecycle laws and
+/// checked fold, in the same leaf order as the single-proof producer.
+///
+/// Entries are decoded lazily, not in a preliminary scan: a malformed later
+/// leaf must never replace an earlier selection refusal. No failure is cached.
+pub(crate) struct BalanceProofs<'a> {
+    journal: &'a Journal,
+    entries: Vec<Option<Rc<Entry>>>,
+    evidence: Vec<bool>,
+    accounts: BTreeMap<VId, Vec<usize>>,
+    controls: Vec<usize>,
+    indexed: bool,
+    completely_authenticated: bool,
+    #[cfg(test)]
+    indexed_leaves: usize,
+    #[cfg(test)]
+    selection_visits: usize,
+    #[cfg(test)]
+    authenticated_entries: usize,
+    #[cfg(test)]
+    authenticated_evidence: usize,
+}
+
+impl<'a> BalanceProofs<'a> {
+    pub(crate) fn new(journal: &'a Journal) -> Self {
+        Self {
+            journal,
+            entries: Vec::new(),
+            evidence: Vec::new(),
+            accounts: BTreeMap::new(),
+            controls: Vec::new(),
+            indexed: false,
+            completely_authenticated: false,
+            #[cfg(test)]
+            indexed_leaves: 0,
+            #[cfg(test)]
+            selection_visits: 0,
+            #[cfg(test)]
+            authenticated_entries: 0,
+            #[cfg(test)]
+            authenticated_evidence: 0,
+        }
+    }
+
+    fn index(&mut self) {
+        if self.indexed {
+            return;
+        }
+        self.entries.resize_with(self.journal.leaves.len(), || None);
+        self.evidence.resize(self.journal.leaves.len(), false);
+        for (index, leaf) in self.journal.leaves.iter().enumerate() {
+            #[cfg(test)]
+            {
+                self.indexed_leaves += 1;
+            }
+            if !leaf.envelope.is_entry() {
+                continue;
+            }
+            if leaf.envelope.class == EntryClass::MIGRATION_CONTROL {
+                self.controls.push(index);
+            }
+            for account in &leaf.envelope.account_vids {
+                let indices = self.accounts.entry(*account).or_default();
+                if indices.last() != Some(&index) {
+                    indices.push(index);
+                }
+            }
+        }
+        self.indexed = true;
+    }
+
+    fn candidates(&self, account: VId) -> Vec<usize> {
+        // The per-account index avoids an account/unit cross product for
+        // large multi-unit entries. candidate() still applies the original
+        // binary-search selectors, pending exclusion and effective cutoff.
+        // All migration controls remain included, even for an empty cell.
+        let mut indices = self.controls.clone();
+        if let Some(account_indices) = self.accounts.get(&account) {
+            indices.extend(account_indices);
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        indices
+    }
+
+    fn select(
+        &mut self,
+        account: VId,
+        unit: u32,
+        through: Option<i32>,
+        complete: bool,
+    ) -> Outcome<(Selected<'a>, BTreeSet<VId>)> {
+        if complete && let Err(r) = transport::preflight(self.journal, through) {
+            return Ok(Err(r));
+        }
+        self.index();
+        let indices = if complete && !self.completely_authenticated {
+            (0..self.journal.leaves.len()).collect()
+        } else {
+            self.candidates(account)
+        };
+        let mut records = Vec::new();
+        let mut needed = BTreeSet::new();
+        for index in indices {
+            #[cfg(test)]
+            {
+                self.selection_visits += 1;
+            }
+            let leaf = &self.journal.leaves[index];
+            let selected = leaf.envelope.is_entry()
+                && (leaf.envelope.class == EntryClass::MIGRATION_CONTROL
+                    || candidate(leaf, account, unit, through));
+            if !complete && !selected {
+                continue;
+            }
+            if !leaf.envelope.is_entry() {
+                if !self.evidence[index] {
+                    if leaf.authenticated_record()?.is_none() {
+                        return Ok(Err(refusal(format!(
+                            "leaf {index} disagrees with its authoritative record payload"
+                        ))));
+                    }
+                    self.evidence[index] = true;
+                    #[cfg(test)]
+                    {
+                        self.authenticated_evidence += 1;
+                    }
+                }
+                continue;
+            }
+            let entry = if let Some(entry) = &self.entries[index] {
+                Rc::clone(entry)
+            } else {
+                let entry = Entry::decode(&leaf.payload)?;
+                if let Err(r) = authenticate_entry(index, leaf, &entry)? {
+                    return Ok(Err(r));
+                }
+                let entry = Rc::new(entry);
+                self.entries[index] = Some(Rc::clone(&entry));
+                #[cfg(test)]
+                {
+                    self.authenticated_entries += 1;
+                }
+                entry
+            };
+            if !selected {
+                continue;
+            }
+            if let Err(r) = selected_run(index, &entry, &mut needed) {
+                return Ok(Err(r));
+            }
+            records.push((index, leaf, entry));
+        }
+        self.completely_authenticated |= complete;
+        Ok(Ok((records, needed)))
+    }
+
+    pub(crate) fn runs_needed(
+        &mut self,
+        account: VId,
+        unit: u32,
+        through: Option<i32>,
+    ) -> Outcome<BTreeSet<VId>> {
+        Ok(self
+            .select(account, unit, through, false)?
+            .map(|(_, needed)| needed))
+    }
+
+    pub(crate) fn prove(
+        &mut self,
+        account: VId,
+        unit: u32,
+        through: Option<i32>,
+        inputs: &dyn MigrationSourceInputs,
+        complete: bool,
+    ) -> Outcome<Vec<u8>> {
+        let (records, needed) = match self.select(account, unit, through, complete)? {
+            Ok(selection) => selection,
+            Err(r) => return Ok(Err(r)),
+        };
+        if !complete && needed.is_empty() {
+            // select authenticated every candidate and established that none
+            // is a migration chunk. The legacy fold therefore needs no second
+            // decode or migration scan. Keep its original gross column order
+            // and exact overflow behavior, including public synthetic inputs.
+            let (mut debits, mut credits) = (0i128, 0i128);
+            for (_, leaf, entry) in &records {
+                if !candidate(leaf, account, unit, through) {
+                    continue;
+                }
+                for leg in entry
+                    .proposal
+                    .legs
+                    .iter()
+                    .filter(|leg| leg.account_ref == account && leg.amount.unit.0 == unit)
+                {
+                    let column = match leg.side {
+                        Side::Debit => &mut debits,
+                        Side::Credit => &mut credits,
+                    };
+                    *column = column.checked_add(leg.amount.mantissa).ok_or_else(|| {
+                        KernelError::Corrupt("a posted balance overflowed i128".into())
+                    })?;
+                }
+            }
+            return self
+                .journal
+                .encode_balance_proof(account, unit, through, debits, credits);
+        }
+        if !complete
+            && inputs
+                .source_manifests()
+                .is_some_and(|manifests| needed.iter().any(|run| manifests.contains_key(run)))
+        {
+            // A source-bound run requires the entire payload population. Its
+            // automatic upgrade keeps the original first selection before the
+            // complete prefix preflight and authentication.
+            return self.prove(account, unit, through, inputs, true);
+        }
+        let mut chosen = Vec::with_capacity(needed.len());
+        for run in &needed {
+            let Some(body) = inputs.bodies().get(run) else {
+                return Ok(Err(refusal(format!(
+                    "migration run {:032x}'s body was not supplied for this balance",
+                    run.0
+                ))));
+            };
+            chosen.push(body.clone());
+        }
+        encode(
+            self.journal,
+            &records,
+            &needed,
+            account,
+            unit,
+            through,
+            &chosen,
+            inputs.source_manifests(),
+            complete,
+        )
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -666,8 +926,9 @@ pub fn bundle_run_bodies<V: asupersync::fs::Vfs + Clone>(
     request: &crate::bundle::BundleRequest,
 ) -> Outcome<MigrationInputs> {
     let mut runs = BTreeSet::new();
+    let mut proofs = BalanceProofs::new(journal);
     for b in &request.balances {
-        match runs_needed(journal, b.account, b.unit, b.effective_through)? {
+        match proofs.runs_needed(b.account, b.unit, b.effective_through)? {
             Ok(needed) => runs.extend(needed),
             Err(r) => return Ok(Err(r)),
         }
