@@ -2562,7 +2562,11 @@ fn unscheduled_cash_flow_screen_uses_one_as_of_for_cash_and_liabilities() {
                 .narrative
                 .contains(&format!("book_liabilities={expected_liabilities},"))
         );
-        assert!(finding.narrative.contains("no contractual maturity conclusion"));
+        assert!(
+            finding
+                .narrative
+                .contains("no contractual maturity conclusion")
+        );
         assert_eq!(
             finding.cites.contains(&Cite::Entry(VId(30))),
             payment_day <= as_of,

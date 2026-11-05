@@ -82,7 +82,7 @@ pub(crate) fn unsupported_batch() -> Refusal {
         exit::REFUSAL,
         "this compound operation cannot combine source-bound lot disposals",
         "plan §5.8–5.10 / §6.5 (the complete lot population is an aggregate dependency)",
-        "use native plans, or an atomic batch or native draft of disposals from distinct lot accounts whose offsets do not touch another member's source; mixed batches, cases and counterfactual scenarios remain unsupported",
+        "use native plans, or an atomic batch or native draft of disposals from distinct lot accounts and ordinary Original postings with no applications; keep ordinary postings outside all lot sources and disposal offsets outside other lot sources; dependent relief, cases and counterfactual scenarios remain unsupported",
     )
 }
 

@@ -972,7 +972,11 @@ fn period_end_timing_reconstructs_historical_periods_liveness_and_exact_citation
         },
     );
     assert_eq!(command.exit, 0, "{}", command.stdout);
-    assert!(command.stdout.contains("\"procedure\":\"jet.period_end_timing\""));
+    assert!(
+        command
+            .stdout
+            .contains("\"procedure\":\"jet.period_end_timing\"")
+    );
     assert!(command.stdout.contains("\"evidence\":\"FA-EVID-L02\""));
     assert!(command.stdout.contains("\"window_days\":3"));
     assert!(command.stdout.contains("\"period\":\"FY2026-P01\""));
@@ -1172,9 +1176,7 @@ fn period_end_timing_requires_complete_signed_history_and_an_authenticated_closu
         )
         .is_ok()
     );
-    assert!(
-        verify_report_expected(&produced.bundle.bytes, &[key], None, None, None).is_err()
-    );
+    assert!(verify_report_expected(&produced.bundle.bytes, &[key], None, None, None).is_err());
     assert!(
         verify_report_expected(
             &produced.bundle.bytes,
@@ -1250,12 +1252,7 @@ fn period_end_timing_uses_each_authenticated_months_own_end_and_citation() {
         .unwrap();
     let mut expected = Vec::new();
     for date in [25, 26, 27, 28] {
-        let mut proposal = template(
-            &f,
-            source,
-            format!("timing-february-{date}").as_bytes(),
-            1,
-        );
+        let mut proposal = template(&f, source, format!("timing-february-{date}").as_bytes(), 1);
         proposal.effective_date = DateDay::from_ymd(2026, 2, date).unwrap();
         let entry = post(&mut f, proposal);
         if date >= 26 {

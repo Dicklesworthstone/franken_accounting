@@ -545,9 +545,7 @@ pub(super) fn verify_procedure(
         || string(row, "calibration")? != "corpus"
         || string(row, "artifact")? != "FA-ART-CAL-01"
     {
-        return Err(invalid(
-            "unsupported procedure registry semantics",
-        ));
+        return Err(invalid("unsupported procedure registry semantics"));
     }
     let parameters: Vec<_> = rows(&procedures, "parameter")?
         .iter()
@@ -565,9 +563,9 @@ pub(super) fn verify_procedure(
     if procedures.arrays.iter().any(|(name, rows)| {
         name != "procedure"
             && name != "parameter"
-            && rows.iter().any(|row| {
-                matches!(row.get("procedure"), Some(Value::Text(id)) if id == profile.id())
-            })
+            && rows.iter().any(
+                |row| matches!(row.get("procedure"), Some(Value::Text(id)) if id == profile.id()),
+            )
     }) {
         return Err(invalid(
             "selected procedure declares unsupported additional inputs",

@@ -275,11 +275,7 @@ fn coordinate(w: &mut Writer, book: &[u8; 16], known_at: u64) {
     w.fixed(book).u64(known_at).u8(0);
 }
 
-fn finding(
-    w: &mut Writer,
-    value: &VerifiedProcedureFinding,
-    profile: VerifiedProcedureParameters,
-) {
+fn finding(w: &mut Writer, value: &VerifiedProcedureFinding, profile: VerifiedProcedureParameters) {
     w.bytes(profile.id().as_bytes())
         .u16(1)
         .u8(value.severity)
@@ -941,7 +937,11 @@ mod tests {
             .unwrap();
             assert_eq!(verified.procedure, "jet.period_end_timing");
             assert_eq!(
-                (verified.population, verified.live_entries, verified.live_legs),
+                (
+                    verified.population,
+                    verified.live_entries,
+                    verified.live_legs
+                ),
                 (6, 4, 0)
             );
             let observed: Vec<_> = verified

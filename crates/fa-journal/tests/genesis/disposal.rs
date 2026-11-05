@@ -373,9 +373,8 @@ fn lot_disposal_keeps_authority_and_request_refusals_before_integrity_checks() {
     tamper_lot_entry(&mut f.h, victim, "retire");
     let at = f.h.db.frontier().unwrap();
     let rows = f.h.db.vertices().unwrap();
-    let template = f
-        .h
-        .proposal(vec![], b"refusal-before-integrity", EntryClass::ORIGINAL);
+    let template =
+        f.h.proposal(vec![], b"refusal-before-integrity", EntryClass::ORIGINAL);
     let denied = prepare_lot_disposal(
         &f.h.db,
         &f.h.ctx(),
