@@ -5,6 +5,9 @@
 //! prefix and the canonical state's access-coverage boundary. Every prefix
 //! payload is independently checked before filtering, including records that
 //! will not appear in the result. Only native complete-prefix v2 is admitted.
+//! A portable access-log proof carries those same three components in one
+//! bounded transport. Its verifier additionally requires the recipient's book
+//! and branch, with an optional exact signed-checkpoint identity pin.
 //!
 //! This proves a complete extract of recorded attempts in `(after, through]`,
 //! not successful delivery, human identity, object-level access, current
@@ -22,6 +25,10 @@ use crate::proof::production::derivation::{
 use crate::state::verify_state;
 
 pub const SCOPE_ACCESS_LOG: &str = "access_log_complete";
+/// Wire: bytes(format), bytes(state), bytes(signed checkpoint), bytes(prefix v2).
+pub const ACCESS_LOG_PROOF_FORMAT: &[u8] = b"fa:access-log-proof:v1";
+/// Includes every component and its framing, not just the largest field.
+pub const MAX_ACCESS_PROOF_BYTES: usize = MAX_PREFIX_PROOF_BYTES;
 pub const MAX_ACCESS_STATE_BYTES: usize = 4096;
 pub const MAX_ACCESS_CHECKPOINT_BYTES: usize = 128 * 1024;
 pub const MAX_ACCESS_TRUSTED_KEYS: usize = 64;
@@ -35,6 +42,17 @@ pub struct AccessLogRequest {
     pub through_seq: u64,
     /// The recorded principal ID. Display names are not identity selectors.
     pub principal: Option<u128>,
+}
+
+/// Independently selected source identity. Trusted keys may sign several
+/// books or branches; accepting a signature does not select the recipient's
+/// source. The optional pin names the exact signed checkpoint's OID, including
+/// its signatures, rather than the canonical state or an unsigned statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AccessLogExpectation {
+    pub book_id: [u8; 16],
+    pub branch_id: [u8; 16],
+    pub checkpoint_oid: Option<[u8; 32]>,
 }
 
 /// A fully authenticated access-attempt payload at its journal position.
@@ -88,12 +106,90 @@ fn error(predicate: &'static str, detail: impl ToString) -> AccessLogError {
 /// Authenticate the existing canonical state, signed checkpoint, and native
 /// v2 full prefix, then answer exactly the recipient's bounded selection.
 /// No input supplies its own trust anchor or changes the recipient's scope.
+/// This compatibility API reports the signed source identity. Use
+/// [`verify_access_log_expected`] to require a particular book and branch.
 pub fn verify_access_log(
     prefix: &[u8],
     state: &[u8],
     signed_checkpoint: &[u8],
     trusted_keys: &[[u8; 32]],
     request: &AccessLogRequest,
+) -> Result<VerifiedAccessLog, AccessLogError> {
+    verify_components(
+        prefix,
+        state,
+        signed_checkpoint,
+        trusted_keys,
+        request,
+        None,
+    )
+}
+
+/// The three-component API with a recipient-owned book, branch and optional
+/// exact signed-checkpoint pin. Source expectations are checked after the
+/// signatures and before decoding any state or prefix payload.
+pub fn verify_access_log_expected(
+    prefix: &[u8],
+    state: &[u8],
+    signed_checkpoint: &[u8],
+    trusted_keys: &[[u8; 32]],
+    request: &AccessLogRequest,
+    expected: &AccessLogExpectation,
+) -> Result<VerifiedAccessLog, AccessLogError> {
+    verify_components(
+        prefix,
+        state,
+        signed_checkpoint,
+        trusted_keys,
+        request,
+        Some(expected),
+    )
+}
+
+/// Verify one portable proof without a source book or separately supplied
+/// components. The transport supplies neither a trust key nor a selection.
+/// Aggregate and per-component bounds are checked before any component is
+/// allocated or decoded; the decoder borrows the original input throughout.
+pub fn verify_access_log_proof(
+    proof: &[u8],
+    trusted_keys: &[[u8; 32]],
+    request: &AccessLogRequest,
+    expected: &AccessLogExpectation,
+) -> Result<VerifiedAccessLog, AccessLogError> {
+    if proof.len() > MAX_ACCESS_PROOF_BYTES {
+        return Err(error(
+            "access.bounds",
+            "complete access-log proof exceeds 64 MiB including framing",
+        ));
+    }
+    let mut r = Reader::new(proof);
+    let format = r
+        .bytes(64, "access.proof.format")
+        .map_err(|e| error("access.proof", e))?;
+    if format != ACCESS_LOG_PROOF_FORMAT {
+        return Err(error("access.proof", "unsupported access-log proof format"));
+    }
+    let state = r
+        .bytes(MAX_ACCESS_STATE_BYTES, "access.proof.state")
+        .map_err(|e| error("access.proof", e))?;
+    let checkpoint = r
+        .bytes(MAX_ACCESS_CHECKPOINT_BYTES, "access.proof.checkpoint")
+        .map_err(|e| error("access.proof", e))?;
+    let prefix = r
+        .bytes(MAX_PREFIX_PROOF_BYTES, "access.proof.prefix")
+        .map_err(|e| error("access.proof", e))?;
+    r.finish("complete access-log proof")
+        .map_err(|e| error("access.proof", e))?;
+    verify_access_log_expected(prefix, state, checkpoint, trusted_keys, request, expected)
+}
+
+fn verify_components(
+    prefix: &[u8],
+    state: &[u8],
+    signed_checkpoint: &[u8],
+    trusted_keys: &[[u8; 32]],
+    request: &AccessLogRequest,
+    expected: Option<&AccessLogExpectation>,
 ) -> Result<VerifiedAccessLog, AccessLogError> {
     if request.after_seq > request.through_seq {
         return Err(error("access.selection", "after_seq exceeds through_seq"));
@@ -127,6 +223,25 @@ pub fn verify_access_log(
     }
     let checkpoint = verify_checkpoint(signed_checkpoint, trusted_keys)
         .map_err(|e| error("access.checkpoint", e))?;
+    if let Some(expected) = expected {
+        if checkpoint.checkpoint.book_id != expected.book_id
+            || checkpoint.checkpoint.branch_id != expected.branch_id
+        {
+            return Err(error(
+                "access.identity",
+                "signed book and branch differ from the recipient's selected source",
+            ));
+        }
+        if expected
+            .checkpoint_oid
+            .is_some_and(|oid| oid != checkpoint.oid)
+        {
+            return Err(error(
+                "access.checkpoint_pin",
+                "signed checkpoint differs from the recipient's exact checkpoint pin",
+            ));
+        }
+    }
     extract(prefix, state, checkpoint, request)
 }
 

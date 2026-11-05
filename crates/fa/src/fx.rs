@@ -462,6 +462,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                                 admission,
                                 &self.blobs,
                                 oid,
+                                fa_journal::redaction::DraftSourceKind::FxRate,
                             ),
                         )
                         .await?

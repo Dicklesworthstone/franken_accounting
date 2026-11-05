@@ -2,25 +2,48 @@
 
 use super::{Args, Check, Json, Read, Usage, Verdict, h, int, key, load, n, s, subject, usage};
 use crate::access_log::{
-    AccessLogRequest, MAX_ACCESS_TRUSTED_KEYS, SCOPE_ACCESS_LOG, VerifiedAccessLog,
-    verify_access_log,
+    ACCESS_LOG_PROOF_FORMAT, AccessLogExpectation, AccessLogRequest, MAX_ACCESS_TRUSTED_KEYS,
+    SCOPE_ACCESS_LOG, VerifiedAccessLog, verify_access_log, verify_access_log_expected,
+    verify_access_log_proof,
 };
 
 pub(super) fn run(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
-    // Validate every option before opening any artifact.
-    let prefix_path = subject(args, "a native v2 complete-prefix file")?;
-    let state_path = args.one("--state").ok_or_else(|| {
-        usage(
-            "access-log needs --state",
-            "export the canonical state named by the signed checkpoint's state_oid",
-        )
-    })?;
-    let checkpoint_path = args.one("--checkpoint").ok_or_else(|| {
-        usage(
-            "access-log needs --checkpoint",
-            "supply the signed checkpoint for that exact state and prefix",
-        )
-    })?;
+    // Validate every option before opening any artifact. Separate components
+    // retain their original grammar; a portable proof requires source identity.
+    let path = subject(
+        args,
+        "a portable access-log proof or native v2 complete-prefix file",
+    )?;
+    let components = match (args.one("--state"), args.one("--checkpoint")) {
+        (Some(state), Some(checkpoint)) => Some((state, checkpoint)),
+        (None, None) => None,
+        _ => {
+            return Err(usage(
+                "access-log requires --state and --checkpoint together",
+                "supply both for a raw prefix, or omit both for a portable access-log proof",
+            ));
+        }
+    };
+    let expected = match (
+        args.one("--book"),
+        args.one("--branch"),
+        args.one("--expect-checkpoint"),
+    ) {
+        (None, None, None) if components.is_some() => None,
+        (Some(book), Some(branch), checkpoint) => Some(AccessLogExpectation {
+            book_id: identity_hex(book, "--book")?,
+            branch_id: identity_hex(branch, "--branch")?,
+            checkpoint_oid: checkpoint
+                .map(|value| identity_hex(value, "--expect-checkpoint"))
+                .transpose()?,
+        }),
+        _ => {
+            return Err(usage(
+                "access-log needs the recipient's --book and --branch",
+                "supply both as 32 hex digits; optionally pin the signed checkpoint with --expect-checkpoint <64 hex>",
+            ));
+        }
+    };
     let raw_keys = args.all("--key");
     if raw_keys.is_empty() || raw_keys.len() > MAX_ACCESS_TRUSTED_KEYS {
         return Err(usage(
@@ -63,11 +86,36 @@ pub(super) fn run(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
         through_seq,
         principal,
     };
-    let prefix = load(read, prefix_path, args.hex)?;
-    let state = load(read, state_path, args.hex)?;
-    let checkpoint = load(read, checkpoint_path, args.hex)?;
-    let check = match verify_access_log(&prefix, &state, &checkpoint, &keys, &request) {
-        Ok(log) => checked(log),
+    let input = load(read, path, args.hex)?;
+    let result = if let Some((state_path, checkpoint_path)) = components {
+        if crate::codec::Reader::new(&input)
+            .bytes(64, "proof.format")
+            .is_ok_and(|format| format == ACCESS_LOG_PROOF_FORMAT)
+        {
+            return Err(usage(
+                "a portable access-log proof already contains its state and signed checkpoint",
+                "omit --state and --checkpoint; supply your expected --book and --branch",
+            ));
+        }
+        let state = load(read, state_path, args.hex)?;
+        let checkpoint = load(read, checkpoint_path, args.hex)?;
+        match expected.as_ref() {
+            Some(expected) => {
+                verify_access_log_expected(&input, &state, &checkpoint, &keys, &request, expected)
+            }
+            None => verify_access_log(&input, &state, &checkpoint, &keys, &request),
+        }
+    } else {
+        let expected = expected.as_ref().ok_or_else(|| {
+            usage(
+                "portable access-log proofs require an independently selected source",
+                "supply --book and --branch as 32 hex digits",
+            )
+        })?;
+        verify_access_log_proof(&input, &keys, &request, expected)
+    };
+    let check = match result {
+        Ok(log) => checked(log, expected.as_ref()),
         Err(error) => Check {
             name: "access_log",
             scope: SCOPE_ACCESS_LOG,
@@ -79,7 +127,26 @@ pub(super) fn run(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
     Ok(vec![check])
 }
 
-fn checked(log: VerifiedAccessLog) -> Check {
+fn identity_hex<const N: usize>(value: &str, flag: &str) -> Result<[u8; N], Usage> {
+    let digits = value.strip_prefix("0x").unwrap_or(value);
+    let invalid = || {
+        usage(
+            format!("access-log {flag} requires exactly {} hex digits", N * 2),
+            "supply the independently retained identity, optionally prefixed by 0x",
+        )
+    };
+    if digits.len() != N * 2 || !digits.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err(invalid());
+    }
+    let mut bytes = [0; N];
+    for (byte, pair) in bytes.iter_mut().zip(digits.as_bytes().chunks_exact(2)) {
+        let text = std::str::from_utf8(pair).map_err(|_| invalid())?;
+        *byte = u8::from_str_radix(text, 16).map_err(|_| invalid())?;
+    }
+    Ok(bytes)
+}
+
+fn checked(log: VerifiedAccessLog, expected: Option<&AccessLogExpectation>) -> Check {
     let events = log
         .events
         .iter()
@@ -109,6 +176,20 @@ fn checked(log: VerifiedAccessLog) -> Check {
             ("branch_id", h(&log.checkpoint.checkpoint.branch_id)),
             ("checkpoint_oid", h(&log.checkpoint.oid)),
             ("state_oid", h(&log.checkpoint.state_oid)),
+            (
+                "source_selection",
+                s(if expected.is_some() {
+                    "recipient_bound"
+                } else {
+                    "signed_identity_reported"
+                }),
+            ),
+            (
+                "expected_checkpoint_oid",
+                expected
+                    .and_then(|expected| expected.checkpoint_oid)
+                    .map_or(Json::Null, |oid| h(&oid)),
+            ),
             (
                 "signed_through_seq",
                 n(log.checkpoint.checkpoint.through_seq),

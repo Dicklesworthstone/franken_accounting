@@ -80,7 +80,8 @@ pub mod state;
 pub mod tree;
 
 pub use access_log::{
-    AccessLogError, AccessLogRequest, VerifiedAccessEvent, VerifiedAccessLog, verify_access_log,
+    AccessLogError, AccessLogExpectation, AccessLogRequest, VerifiedAccessEvent, VerifiedAccessLog,
+    verify_access_log, verify_access_log_expected, verify_access_log_proof,
 };
 pub use attestation_signatures::{AttestationSignatures, verify_attestation_signatures};
 pub use balance::{Balance, BalanceClaim};
