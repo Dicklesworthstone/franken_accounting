@@ -205,6 +205,229 @@ fn undo(proposal: &EntryPayload, target: EntryRef, key: &[u8]) -> EntryPayload {
     reversed
 }
 
+fn tamper_lot_entry(h: &mut Harness, victim: EntryRef, mode: &str) {
+    let before = h.db.frontier().unwrap();
+    let original_row = h.db.vertex(victim.vid).unwrap().unwrap();
+    let (original, _) = fa_journal::post::read_entry_at(&h.db, victim.vid, before)
+        .unwrap()
+        .unwrap();
+    let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+    match mode {
+        "retire" => {
+            damage.delete_vertex(victim.vid);
+        }
+        "relabel" => {
+            damage.set_vertex_label(victim.vid, fa_model::symbols::label::ENTRY, false);
+        }
+        "rewrite" | "restore" => {
+            // The replacement is canonically sealed and all of its Entry
+            // mirrors agree. Payload validation alone cannot detect that it
+            // was substituted after the original native creation.
+            let mut proposal = original.proposal.clone();
+            assert!(proposal.document_date.is_none());
+            proposal.document_date = Some(h.day());
+            let changed = proposal
+                .seal(original.approvals.clone(), original.plan_certificate)
+                .unwrap();
+            assert_ne!(changed.entry_digest, original.entry_digest);
+            for (key, value) in fa_model::entry_mirrors(&changed).unwrap() {
+                damage.set_vertex_property(victim.vid, key, Some(value));
+            }
+        }
+        _ => panic!("unknown lot history fault"),
+    }
+    h.write_raw(damage);
+    if mode == "restore" {
+        let mut restoration = fgdb::WriteBatch::new(relation::IN_BOOK);
+        for (key, value) in fa_model::entry_mirrors(&original).unwrap() {
+            restoration.set_vertex_property(victim.vid, key, Some(value));
+        }
+        h.write_raw(restoration);
+        assert_eq!(
+            h.db.vertex(victim.vid).unwrap().unwrap().props,
+            original_row.props
+        );
+        assert_eq!(
+            fa_journal::post::read_entry_at(&h.db, victim.vid, h.db.frontier().unwrap())
+                .unwrap()
+                .unwrap()
+                .0,
+            original
+        );
+    }
+}
+
+#[test]
+fn lot_disposal_authenticates_complete_selected_entry_history() {
+    for (law, expected_cost) in [(LotLaw::Fifo, 50), (LotLaw::WeightedAverage, 30)] {
+        for source in [false, true] {
+            for mode in ["retire", "relabel", "rewrite", "restore"] {
+                let mut f = Fixture::new(law);
+                let unrelated = f.h.proposal(
+                    f.h.rent_legs(1),
+                    b"unrelated-before-disposal",
+                    EntryClass::ORIGINAL,
+                );
+                let unrelated = f.h.post(posting(unrelated)).unwrap().entry_ref();
+                let prepared = f.prepare(5, b"history-bound-disposal").unwrap();
+                assert_eq!(prepared.outcome().total_relieved_cost, expected_cost);
+                let victim = if source { f.acquisitions[0] } else { unrelated };
+                tamper_lot_entry(&mut f.h, victim, mode);
+                let case = format!("law={law:?}, source={source}, mode={mode}");
+                let at = f.h.db.frontier().unwrap();
+                let rows = f.h.db.vertices().unwrap();
+                let result = prepare_lot_disposal(
+                    &f.h.db,
+                    &f.h.ctx(),
+                    &f.h.book,
+                    &Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
+                    &f.request(5),
+                    f.h.proposal(vec![], b"history-bound-disposal", EntryClass::ORIGINAL),
+                )
+                .map(|outcome| outcome.map(|_| ()));
+                assert!(
+                    matches!(&result, Err(KernelError::Corrupt(_))),
+                    "{case}: {result:?}"
+                );
+
+                if !source {
+                    // An intact target and a caller-updated observation
+                    // prefix must not bypass the same proof at publication.
+                    let mut proposal = prepared.into_proposal();
+                    let mut basis = proposal.lot_disposal_basis().unwrap().unwrap();
+                    basis.known_at = at;
+                    proposal.set_lot_disposal_basis(&basis).unwrap();
+                    let cx = f.h.ctx();
+                    let result = prepare_post(&mut f.h.db, &cx, &f.h.book, posting(proposal))
+                        .map(|outcome| outcome.map(|_| ()));
+                    assert!(
+                        matches!(&result, Err(KernelError::Corrupt(_))),
+                        "{case}: native admission: {result:?}"
+                    );
+                }
+                assert_eq!(f.h.db.frontier().unwrap(), at, "{case}");
+                assert_eq!(f.h.db.vertices().unwrap(), rows, "{case}");
+            }
+        }
+    }
+}
+
+#[test]
+fn lot_disposal_retry_keeps_its_intact_historical_prefix() {
+    for law in [LotLaw::Fifo, LotLaw::WeightedAverage] {
+        for mode in ["retire", "relabel", "rewrite", "restore"] {
+            let mut f = Fixture::new(law);
+            let prepared = f.prepare(5, b"historical-disposal").unwrap();
+            let selected = prepared.basis().known_at;
+            let posted = f.h.post(posting(prepared.proposal().clone())).unwrap();
+            assert!(posted.recorded_at() > selected);
+            let victim = f.acquisitions[0];
+            tamper_lot_entry(&mut f.h, victim, mode);
+            let at = f.h.db.frontier().unwrap();
+            let rows = f.h.db.vertices().unwrap();
+            let fresh = prepare_lot_disposal(
+                &f.h.db,
+                &f.h.ctx(),
+                &f.h.book,
+                &Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
+                &f.request(5),
+                f.h.proposal(vec![], b"new-disposal-after-damage", EntryClass::ORIGINAL),
+            )
+            .map(|outcome| outcome.map(|_| ()));
+            assert!(
+                matches!(&fresh, Err(KernelError::Corrupt(_))),
+                "law={law:?}, mode={mode}: {fresh:?}"
+            );
+            // The recorded identity selects the original intact basis. A
+            // later head failure neither changes its relief nor poisons a
+            // subsequent historical computation.
+            for _ in 0..2 {
+                let retry = f.prepare(5, b"historical-disposal").unwrap();
+                assert_eq!(retry, prepared, "law={law:?}, mode={mode}");
+                assert_eq!(retry.basis().known_at, selected);
+            }
+            assert_eq!(f.h.db.frontier().unwrap(), at);
+            assert_eq!(f.h.db.vertices().unwrap(), rows);
+        }
+    }
+}
+
+#[test]
+fn lot_disposal_keeps_authority_and_request_refusals_before_integrity_checks() {
+    let mut f = Fixture::new(LotLaw::SpecificId);
+    let mut request = f.request(5);
+    request.specific_ids = vec![(f.acquisitions[0], 0)];
+    assert_eq!(
+        f.prepare_request(&request, b"valid-specific-before-damage")
+            .unwrap()
+            .outcome()
+            .total_relieved_cost,
+        50
+    );
+    let unrelated = f.h.proposal(
+        f.h.rent_legs(1),
+        b"unrelated-authority-control",
+        EntryClass::ORIGINAL,
+    );
+    let victim = f.h.post(posting(unrelated)).unwrap().entry_ref();
+    tamper_lot_entry(&mut f.h, victim, "retire");
+    let at = f.h.db.frontier().unwrap();
+    let rows = f.h.db.vertices().unwrap();
+    let template =
+        f.h.proposal(vec![], b"refusal-before-integrity", EntryClass::ORIGINAL);
+    let denied = prepare_lot_disposal(
+        &f.h.db,
+        &f.h.ctx(),
+        &f.h.book,
+        &Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        &request,
+        template.clone(),
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(denied.exit, 7);
+    let capability = Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap();
+    let mut empty = request.clone();
+    empty.quantity.mantissa = 0;
+    let refusal = prepare_lot_disposal(
+        &f.h.db,
+        &f.h.ctx(),
+        &f.h.book,
+        &capability,
+        &empty,
+        template.clone(),
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(refusal.code, fa_journal::refusal::code::SETTLE_SHAPE);
+    let mut forged = request.clone();
+    forged.specific_ids[0].0.entry_digest = [0; 32];
+    let refusal = prepare_lot_disposal(
+        &f.h.db,
+        &f.h.ctx(),
+        &f.h.book,
+        &capability,
+        &forged,
+        template.clone(),
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(refusal.code, fa_journal::refusal::code::SETTLE_SHAPE);
+    assert!(refusal.message.contains("SpecificId names"), "{refusal}");
+    let valid = prepare_lot_disposal(
+        &f.h.db,
+        &f.h.ctx(),
+        &f.h.book,
+        &capability,
+        &request,
+        template,
+    )
+    .map(|outcome| outcome.map(|_| ()));
+    assert!(matches!(valid, Err(KernelError::Corrupt(_))));
+    assert_eq!(f.h.db.frontier().unwrap(), at);
+    assert_eq!(f.h.db.vertices().unwrap(), rows);
+}
+
 #[test]
 fn fifo_disposal_derives_relief_from_the_oldest_layer() {
     for (law, expected_cost) in [

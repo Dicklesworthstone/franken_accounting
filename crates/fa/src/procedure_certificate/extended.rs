@@ -25,9 +25,11 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("benford.first_two_digits", 2),
     ("numbers.relative_size_factor", 1),
     ("numbers.threshold_splitting", 1),
-    ("graph.circular_flows", 1),
+    // Version 2 advances every flow hop in effective/recorded order; the
+    // native source populations and six-part closure remain unchanged.
+    ("graph.circular_flows", 2),
     // fa-b6xs: reads live postings and the REA parties this closure binds.
-    ("graph.party_circular_flows", 1),
+    ("graph.party_circular_flows", 2),
     // Version 2 prunes a start node by the nodes reachable from it.
     ("graph.layering", 2),
     // fa-b6xs: reads live postings and the REA parties this closure binds.
@@ -61,7 +63,7 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("confirm.coverage", 2),
     // Version 3 judges each position as of the effective date (fa-gebi, fa-ti99).
     ("solvency.balance_sheet_test", 3),
-    ("solvency.cash_flow_test", 4),
+    ("solvency.cash_flow_test", 5),
     // fa-6l8g: version 3 attributes party cash through each party's own legs.
     ("lookback.preferences", 3),
     ("lookback.fraudulent_transfer", 1),
@@ -108,8 +110,10 @@ const RETAINED_CLOSURES: &[(&str, u16)] = &[
     ("events.subsequent", 1),
     ("events.subsequent", 2),
     ("expense.capitalization", 1),
+    ("graph.circular_flows", 1),
     ("graph.communities", 1),
     ("graph.layering", 1),
+    ("graph.party_circular_flows", 1),
     ("graph.party_layering", 1),
     ("graph.related_party_exposure", 1),
     ("graph.shell_signature", 1),
@@ -133,6 +137,7 @@ const RETAINED_CLOSURES: &[(&str, u16)] = &[
     ("solvency.cash_flow_test", 1),
     ("solvency.cash_flow_test", 2),
     ("solvency.cash_flow_test", 3),
+    ("solvency.cash_flow_test", 4),
 ];
 
 /// Preserve durable framing, never substitute today's computation for an old

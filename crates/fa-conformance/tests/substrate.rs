@@ -2493,7 +2493,7 @@ mod forensic_semantics {
         relied_upon(
             T,
             held,
-            "retained procedure versions (preferences v3, ponzi v5, distribution v4, solvency cash-flow v4, solvency balance-sheet v3) preserve their declared method, input digest, and exact findings across later journal mutations",
+            "retained procedure versions (preferences v3, ponzi v5, distribution v4, solvency cash-flow v5, solvency balance-sheet v3) preserve their declared method, input digest, and exact findings across later journal mutations",
         );
     }
 }

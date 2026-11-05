@@ -1521,3 +1521,306 @@ fn dispose_dry_run_names_law_and_derived_legs() -> std::io::Result<()> {
     }
     Ok(())
 }
+
+fn sale_fixture(law: &str) -> std::io::Result<(PathBuf, PathBuf, String)> {
+    let (dir, book, evidence) = setup(law)?;
+    let chart = write(
+        &dir,
+        "sale-accounts.json",
+        r#"{"accounts":[
+            {"code":"1100","name":"Trade receivables","type":"Asset","unit":"USD"},
+            {"code":"4000","name":"Sales revenue","type":"Revenue","unit":"USD"}
+        ]}"#,
+    );
+    ok(
+        &book,
+        "declare sale accounts before reviewing cost",
+        &[
+            "chart",
+            "import",
+            &chart,
+            "--key",
+            "sale-accounts",
+            "--json",
+        ],
+    );
+    Ok((dir, book, evidence))
+}
+
+fn ordinary_sale_member(evidence: &str, key: &str) -> Json {
+    json::obj(vec![
+        ("effective_date", json::s("2026-03-15")),
+        ("idempotency_key", json::s(key)),
+        (
+            "evidence",
+            Json::Arr(vec![json::s(evidence.trim_start_matches("D:"))]),
+        ),
+        (
+            "legs",
+            json::parse(
+                r#"[
+                    {"side":"debit","account":"1100","amount":"125.00 USD"},
+                    {"side":"credit","account":"4000","amount":"125.00 USD"}
+                ]"#,
+            )
+            .unwrap(),
+        ),
+    ])
+}
+
+#[test]
+fn inline_sales_and_lot_reviews_publish_exact_revenue_and_cost_together() -> std::io::Result<()> {
+    use fa::{Book, BookKeys, Entropy};
+
+    for (law, cost) in [("FIFO", 5_000), ("WeightedAverage", 3_000)] {
+        for disposal_first in [false, true] {
+            let (dir, book, evidence) = sale_fixture(law)?;
+            let review = disposal_review(&book, &evidence, "1400", "sold-inventory-cost");
+            let original = retained_disposal(&review);
+            let sale = ordinary_sale_member(&evidence, "sold-inventory-revenue");
+            let mut members = vec![sale.clone(), review_member(&review)];
+            if disposal_first {
+                members.reverse();
+            }
+            let before = frontier(&book);
+            let before_lots = remaining_lots(&book, "1400");
+            let disposal_index = usize::from(!disposal_first);
+
+            // Even canonical review bytes with a matching digest cannot
+            // substitute a balanced caller-supplied cost for native relief.
+            let mut forged = original.proposal().clone();
+            forged.legs[2].amount.mantissa += 1;
+            forged.legs[3].amount.mantissa += 1;
+            forged.unit_totals = fa_model::EntryPayload::fold_unit_totals(&forged.legs).unwrap();
+            let forged = fa::PostIntent::new(forged, vec![]).unwrap();
+            let mut poisoned = members.clone();
+            poisoned[disposal_index] = intent_member(&forged);
+            let bad = batch_file(&dir, "false-sale-cost", poisoned);
+            let (status, out, err) = run(
+                &book,
+                "reject fabricated cost without posting revenue",
+                &["batch", "--intent", &bad, "--json"],
+            );
+            assert_eq!(status, 3, "{out}\n{err}");
+            assert!(text(&doc(&out), "message").contains(&format!("member {disposal_index}")));
+            assert_eq!(frontier(&book), before);
+            assert_eq!(remaining_lots(&book, "1400"), before_lots);
+
+            let batch = batch_file(&dir, "complete-inventory-sale", members);
+            let posted = if disposal_first {
+                let plan = dir.join("complete-sale.plan").display().to_string();
+                let preview = ok(
+                    &book,
+                    "review sale and native COGS together",
+                    &[
+                        "batch",
+                        "--intent",
+                        &batch,
+                        "--dry-run",
+                        "--plan-out",
+                        &plan,
+                        "--json",
+                    ],
+                );
+                assert_eq!(field(&preview, "event"), Some("batch_plan"));
+                assert_eq!(frontier(&book), before);
+                assert_eq!(remaining_lots(&book, "1400"), before_lots);
+                let command = suggested_commit(&preview);
+                let args: Vec<&str> = command.iter().map(String::as_str).collect();
+                let posted = ok(&book, "commit reviewed sale and COGS", &args);
+                assert_eq!(field(&posted, "event"), Some("batch_plan_committed"));
+                posted
+            } else {
+                let posted = ok(
+                    &book,
+                    "post sale and native COGS atomically",
+                    &["batch", "--intent", &batch, "--json"],
+                );
+                assert_eq!(field(&posted, "event"), Some("batch_posted"));
+                posted
+            };
+            assert_eq!(
+                doc(&posted).get("already_recorded"),
+                Some(&Json::Bool(false))
+            );
+            let Json::Int(before_seq) = before else {
+                panic!("integer book frontier");
+            };
+            assert_eq!(frontier(&book), Json::Int(before_seq + 1));
+
+            let retry = ok(
+                &book,
+                "retry the exact mixed batch",
+                &["batch", "--intent", &batch, "--json"],
+            );
+            let outcome = doc(&retry);
+            assert_eq!(outcome.get("already_recorded"), Some(&Json::Bool(true)));
+            assert_eq!(arr(&outcome, "members").len(), 2);
+            assert_eq!(frontier(&book), Json::Int(before_seq + 1));
+            let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+            let reopened = Book::open_dir(&book, keys, Entropy::production()).unwrap();
+            let usd = reopened.context().units.lookup("USD").unwrap();
+            for (index, member) in arr(&outcome, "members").iter().enumerate() {
+                let vid = fgdb_types::VId(u128::from_str_radix(text(member, "vid"), 16).unwrap());
+                let (entry, at) = reopened.read_entry(vid).unwrap().unwrap();
+                assert_eq!(i128::from(at.0), before_seq + 1);
+                if index == disposal_index {
+                    assert_eq!(entry.proposal, *original.proposal());
+                    assert_eq!(
+                        entry.proposal.legs[2].amount,
+                        fa_money::Amount::new(usd, cost)
+                    );
+                    assert_eq!(
+                        entry.proposal.legs[3].amount,
+                        fa_money::Amount::new(usd, cost)
+                    );
+                } else {
+                    assert_eq!(entry.proposal.legs.len(), 2);
+                    for (leg, account, side) in [
+                        (&entry.proposal.legs[0], "1100", fa_money::Side::Debit),
+                        (&entry.proposal.legs[1], "4000", fa_money::Side::Credit),
+                    ] {
+                        assert_eq!(
+                            leg.account_ref,
+                            fa_model::account_vid(reopened.context().book_id, account)
+                        );
+                        assert_eq!(leg.side, side);
+                        assert_eq!(leg.amount, fa_money::Amount::new(usd, 12_500));
+                    }
+                }
+            }
+            drop(reopened);
+
+            let later = write(
+                &dir,
+                "later-unrelated-sale.json",
+                &ordinary_sale_member(&evidence, "later-unrelated-sale").render(),
+            );
+            ok(
+                &book,
+                "later sale after the complete inventory sale",
+                &["post", "--intent", &later, "--json"],
+            );
+            let head = frontier(&book);
+            let replay = doc(&ok(
+                &book,
+                "retry original sale after later activity",
+                &["batch", "--intent", &batch, "--json"],
+            ));
+            assert_eq!(replay.get("already_recorded"), Some(&Json::Bool(true)));
+            assert_eq!(replay.get("members"), outcome.get("members"));
+            assert_eq!(replay.get("recorded_at"), outcome.get("recorded_at"));
+            assert_eq!(frontier(&book), head);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_post_only_confined_agent_drafts_sale_and_cost_for_independent_promotion() -> std::io::Result<()>
+{
+    use fa::{Book, BookKeys, Entropy};
+
+    let (dir, book, evidence) = sale_fixture("FIFO")?;
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let open = || Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+    let name = "confined-sale-and-cost";
+    let branch = fa_model::draft_branch(open().context().book_id, name).to_hex();
+    let token = dir.join("sale-agent.token").display().to_string();
+    ok(
+        &book,
+        "issue a post-only agent for the named sale draft",
+        &[
+            "capability",
+            "issue",
+            "--holder",
+            "inventory-agent",
+            "--profile",
+            "agent",
+            "--op",
+            "post",
+            "--branch",
+            &branch,
+            "--out",
+            &token,
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "post",
+            "--json",
+        ],
+    );
+    let issued = fa_policy::CapabilityToken::decode(&std::fs::read(&token)?).unwrap();
+    assert!(!issued.capability().holds(fa_policy::Op::Read));
+    ok(
+        &book,
+        "open the complete sale draft",
+        &["--token", &token, "draft", "new", name, "--json"],
+    );
+    let review = lot_agent_review(&book, &token, &evidence, "1400", "confined-sale-cost");
+    let original = retained_disposal(&review);
+    let batch = batch_file(
+        &dir,
+        "confined-complete-sale",
+        vec![
+            ordinary_sale_member(&evidence, "confined-sale-revenue"),
+            review_member(&review),
+        ],
+    );
+    ok_bound_batch(
+        &book,
+        "retain revenue and exact COGS in one Plan record",
+        &token,
+        &batch,
+        name,
+    );
+    let retained = open().draft(name).unwrap().unwrap();
+    assert_eq!(retained.intents.len(), 2);
+    assert_eq!(retained.intents[0].record, retained.intents[1].record);
+    assert_eq!(retained.intents[1].intent, original);
+    let original_lots: Vec<(String, String)> = vec![
+        ("10.000000 SHARE".into(), "100.00 USD".into()),
+        ("10.000000 SHARE".into(), "20.00 USD".into()),
+    ];
+    assert_eq!(remaining_lots(&book, "1400"), original_lots);
+    let before = frontier(&book);
+    let (status, out, err) = run(
+        &book,
+        "draft composition grants no general read authority",
+        &["--token", &token, "tb", "--period", "FY2026-P03", "--json"],
+    );
+    assert_eq!(status, 7, "{out}\n{err}");
+    assert_eq!(frontier(&book), before);
+    let promoted = doc(&ok(
+        &book,
+        "independent controller promotes the complete sale",
+        &[
+            "draft",
+            "promote",
+            name,
+            "--as",
+            "controller",
+            "--yes",
+            "--json",
+        ],
+    ));
+    let Json::Int(before_seq) = before else {
+        panic!("integer book frontier");
+    };
+    assert_eq!(int(&promoted, "recorded_at"), Some(before_seq + 1));
+    assert_eq!(arr(&promoted, "entries").len(), 2);
+    for (reference, planned) in arr(&promoted, "entries").iter().zip(&retained.intents) {
+        let vid = fgdb_types::VId(u128::from_str_radix(reference.as_str().unwrap(), 16).unwrap());
+        let (entry, at) = open().read_entry(vid).unwrap().unwrap();
+        assert_eq!(entry, *planned.resolved_entry.as_ref().unwrap());
+        assert_eq!(i128::from(at.0), before_seq + 1);
+    }
+    assert_eq!(
+        remaining_lots(&book, "1400"),
+        vec![
+            ("10.000000 SHARE".into(), "20.00 USD".into()),
+            ("5.000000 SHARE".into(), "50.00 USD".into()),
+        ]
+    );
+    Ok(())
+}

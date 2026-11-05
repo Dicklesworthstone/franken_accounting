@@ -857,3 +857,433 @@ fn round_amounts_refuses_replacement_sources_but_preserves_earlier_certificates(
         "an outer pin cannot establish an unsupported replacement identity law"
     );
 }
+
+fn timing_request(f: &Fixture, window_days: i128) -> ProcedureRequest {
+    let mut request =
+        ProcedureRequest::new("jet.period_end_timing", catalog::Inputs::default()).unwrap();
+    request.parameters = request.parameters.set("window_days", window_days).unwrap();
+    request.known_at = Some(f.head());
+    request
+}
+
+#[test]
+fn period_end_timing_reconstructs_historical_periods_liveness_and_exact_citations() {
+    let mut f = Fixture::new(117);
+    let (outside, _) = f.post(28, "3000", "1000", 100_000, false);
+    let (boundary, _) = f.post(29, "3000", "1000", 99_999, false);
+    let (middle, _) = f.post(30, "3000", "1000", 200_000, false);
+    let (last, _) = f.post(31, "3000", "1000", 300_000, false);
+    let (reversed, _) = f.post(31, "3000", "1000", 400_000, false);
+    reverse(&mut f, reversed, b"timing-reverse", 31);
+    let (restored, _) = f.post(31, "3000", "1000", 500_000, false);
+    let undo = reverse(&mut f, restored, b"timing-first-undo", 30);
+    reverse(&mut f, undo, b"timing-undo-the-undo", 31);
+    let mut pending = template(&f, outside, b"timing-pending", 31);
+    pending.class = EntryClass::PENDING;
+    pending.pending = Some(fa_model::Pending {
+        timeout_ns: None,
+        resolution_of: None,
+        disposition: None,
+    });
+    let pending = post(&mut f, pending);
+    let certified = f.certify(&timing_request(&f, 3));
+    let original_at = f.head();
+    let (later, _) = f.post(31, "3000", "1000", 600_000, false);
+    reverse(&mut f, boundary, b"timing-later-reversal", 31);
+    let produced = produce(&mut f, &certified.certificate);
+    let key = f.book.checkpoint_public_key();
+    let verified = verify(&produced, &certified.certificate, key);
+    assert_eq!(verified.known_at, original_at.0);
+    assert!(verified.checkpoint.checkpoint.through_seq > original_at.0);
+    assert!(verified.open_items.is_none());
+    let procedure = verified.procedure.as_ref().unwrap();
+    assert_eq!(procedure.procedure, "jet.period_end_timing");
+    assert_eq!(
+        procedure.parameters,
+        fa_verify::report::VerifiedProcedureParameters::PeriodEndTiming { window_days: 3 }
+    );
+    assert_eq!((procedure.live_entries, procedure.live_legs), (5, 0));
+    let replayed = decode_run(&verified.output).unwrap();
+    assert_eq!(replayed, certified.report);
+    assert_eq!(replayed.evidence, "FA-EVID-L02");
+    assert_eq!(replayed.parameters, vec![("window_days".into(), 3)]);
+    assert_eq!(
+        replayed.work,
+        Work {
+            entries: 5,
+            legs: 0,
+            comparisons: 0,
+        }
+    );
+    assert_eq!(
+        replayed
+            .findings
+            .iter()
+            .map(|f| f.statistic.value)
+            .collect::<Vec<_>>(),
+        vec![2, 1, 0, 0]
+    );
+    for (entry, distance) in [(boundary, 2), (middle, 1), (last, 0), (restored, 0)] {
+        let finding = replayed
+            .findings
+            .iter()
+            .find(|finding| finding.cites.first() == Some(&Cite::Entry(entry)))
+            .unwrap();
+        assert_eq!(finding.severity, Severity::Low);
+        assert_eq!(finding.statistic.name, "days_to_period_end");
+        assert_eq!(
+            (finding.statistic.value, finding.statistic.population),
+            (distance, 5)
+        );
+        assert_eq!(
+            finding.cites,
+            vec![Cite::Entry(entry), Cite::Period("FY2026-P01".into())]
+        );
+        assert_eq!(
+            finding.narrative,
+            format!("effective {distance} day(s) before the period's last day (window 3)")
+        );
+    }
+    for entry in [outside, reversed, undo, pending, later] {
+        assert!(
+            replayed
+                .findings
+                .iter()
+                .all(|finding| !finding.cites.contains(&Cite::Entry(entry)))
+        );
+    }
+    let command = fa_verify::cli::run(
+        &[
+            "report".into(),
+            "timing.fab".into(),
+            "--key".into(),
+            key.iter().map(|byte| format!("{byte:02x}")).collect(),
+            "--receipt".into(),
+            "timing.receipt".into(),
+            "--json".into(),
+        ],
+        &|path| match path {
+            "timing.fab" => Ok(produced.bundle.bytes.clone()),
+            "timing.receipt" => Ok(produced.receipt.clone()),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "unexpected input",
+            )),
+        },
+    );
+    assert_eq!(command.exit, 0, "{}", command.stdout);
+    assert!(
+        command
+            .stdout
+            .contains("\"procedure\":\"jet.period_end_timing\"")
+    );
+    assert!(command.stdout.contains("\"evidence\":\"FA-EVID-L02\""));
+    assert!(command.stdout.contains("\"window_days\":3"));
+    assert!(command.stdout.contains("\"period\":\"FY2026-P01\""));
+    assert_eq!(
+        command
+            .stdout
+            .matches("\"check\":\"procedure_finding\"")
+            .count(),
+        4
+    );
+    assert!(!command.stdout.contains("\"round_power\""));
+    assert!(!command.stdout.contains("\"leg_ordinals\""));
+}
+
+#[test]
+fn period_end_timing_replays_zero_nondefault_windows_and_empty_findings() {
+    let mut f = Fixture::new(118);
+    let empty = f.certify(&timing_request(&f, 3));
+    let produced = produce(&mut f, &empty.certificate);
+    let empty = decode_run(
+        &verify(
+            &produced,
+            &empty.certificate,
+            f.book.checkpoint_public_key(),
+        )
+        .output,
+    )
+    .unwrap();
+    assert!(empty.findings.is_empty());
+    assert_eq!(empty.work, Work::default());
+    assert!(empty.population > 0);
+
+    let (early, _) = f.post(1, "3000", "1000", 100, false);
+    let (outside, _) = f.post(28, "3000", "1000", 99_999, false);
+    let (boundary, _) = f.post(29, "3000", "1000", 200_000, false);
+    let (last, _) = f.post(31, "3000", "1000", 300_000, false);
+    for (window, expected) in [
+        (0, vec![]),
+        (1, vec![last]),
+        (3, vec![boundary, last]),
+        (i128::from(i32::MAX), vec![early, outside, boundary, last]),
+    ] {
+        let certified = f.certify(&timing_request(&f, window));
+        let produced = produce(&mut f, &certified.certificate);
+        let replayed = decode_run(
+            &verify(
+                &produced,
+                &certified.certificate,
+                f.book.checkpoint_public_key(),
+            )
+            .output,
+        )
+        .unwrap();
+        assert_eq!(replayed, certified.report);
+        let observed: BTreeSet<_> = replayed
+            .findings
+            .iter()
+            .map(|finding| {
+                let Cite::Entry(vid) = &finding.cites[0] else {
+                    panic!("entry citation first")
+                };
+                *vid
+            })
+            .collect();
+        assert_eq!(observed, expected.into_iter().collect());
+        assert_eq!(replayed.parameters, vec![("window_days".into(), window)]);
+        assert_eq!(
+            replayed.work,
+            Work {
+                entries: 4,
+                legs: 0,
+                comparisons: 0,
+            }
+        );
+    }
+}
+
+#[test]
+fn repaired_period_end_outputs_cannot_omit_or_forge_findings_periods_or_decisions() {
+    let mut f = Fixture::new(119);
+    let (outside, _) = f.post(28, "3000", "1000", 100_000, false);
+    f.post(29, "3000", "1000", 99_999, false);
+    f.post(31, "3000", "1000", 200_000, false);
+    let certified = f.certify(&timing_request(&f, 3));
+    let produced = produce(&mut f, &certified.certificate);
+    let key = f.book.checkpoint_public_key();
+    verify(&produced, &certified.certificate, key);
+    for variant in [
+        "omitted finding",
+        "false positive",
+        "distance",
+        "period citation",
+        "missing citation",
+        "wrong severity",
+        "finding population",
+        "snapshot population",
+        "entry work",
+        "leg work",
+        "comparison work",
+        "narrative",
+        "parameters",
+        "snapshot digest",
+        "decision population",
+        "decision choice",
+    ] {
+        let mut forged = certified.certificate.clone();
+        let run = &mut forged.report;
+        match variant {
+            "omitted finding" => {
+                run.findings.pop();
+            }
+            "false positive" => run.findings[0].cites[0] = Cite::Entry(outside),
+            "distance" => run.findings[0].statistic.value += 1,
+            "period citation" => run.findings[0].cites[1] = Cite::Period("FY2026-P02".into()),
+            "missing citation" => {
+                run.findings[0].cites.pop();
+            }
+            "wrong severity" => run.findings[0].severity = Severity::Medium,
+            "finding population" => run.findings[0].statistic.population += 1,
+            "snapshot population" => run.population += 1,
+            "entry work" => run.work.entries += 1,
+            "leg work" => run.work.legs += 1,
+            "comparison work" => run.work.comparisons += 1,
+            "narrative" => run.findings[0].narrative.push_str(" invented observation"),
+            "parameters" => run.parameters[0].1 = 4,
+            "snapshot digest" => run.inputs_digest[0] ^= 1,
+            "decision population" => {
+                run.decision_card
+                    .features
+                    .iter_mut()
+                    .find(|feature| feature.name == "population")
+                    .unwrap()
+                    .value += 1;
+            }
+            "decision choice" => {
+                run.decision_card.chosen = run.decision_card.candidates[1].clone();
+            }
+            _ => unreachable!(),
+        }
+        reseal(&mut forged);
+        let bundle = replace_certificate(&produced.bundle.bytes, &forged);
+        // Repaired digests and a fresh outer pin must not replace replay.
+        let error = verify_report_expected(&bundle, &[key], None, None, Some(forged.digest()))
+            .expect_err(variant);
+        assert_eq!(
+            error.predicate, "procedure_recomputation",
+            "{variant}: {error}"
+        );
+    }
+    for variant in [
+        "negative window",
+        "oversized window",
+        "wrong parameter",
+        "wrong evidence",
+    ] {
+        let mut forged = certified.certificate.clone();
+        match variant {
+            "negative window" => forged.report.parameters[0].1 = -1,
+            "oversized window" => forged.report.parameters[0].1 = i128::from(i32::MAX) + 1,
+            "wrong parameter" => forged.report.parameters[0].0 = "round_power".into(),
+            "wrong evidence" => forged.report.evidence = "FA-EVID-L01".into(),
+            _ => unreachable!(),
+        }
+        reseal(&mut forged);
+        let bundle = replace_certificate(&produced.bundle.bytes, &forged);
+        assert!(
+            verify_report_expected(&bundle, &[key], None, None, Some(forged.digest())).is_err(),
+            "{variant}"
+        );
+    }
+}
+
+#[test]
+fn period_end_timing_requires_complete_signed_history_and_an_authenticated_closure() {
+    let mut f = Fixture::new(120);
+    f.post(31, "3000", "1000", 100_000, false);
+    let certified = f.certify(&timing_request(&f, 3));
+    let produced = produce(&mut f, &certified.certificate);
+    let key = f.book.checkpoint_public_key();
+    assert!(
+        verify_report_expected(
+            &produced.bundle.bytes,
+            &[key],
+            None,
+            None,
+            Some(certified.certificate.digest()),
+        )
+        .is_ok()
+    );
+    assert!(
+        verify_report_expected(
+            &produced.bundle.bytes,
+            &[key],
+            None,
+            Some(&produced.receipt),
+            None,
+        )
+        .is_ok()
+    );
+    assert!(verify_report_expected(&produced.bundle.bytes, &[key], None, None, None).is_err());
+    assert!(
+        verify_report_expected(
+            &produced.bundle.bytes,
+            &[],
+            None,
+            Some(&produced.receipt),
+            Some(certified.certificate.digest()),
+        )
+        .is_err()
+    );
+
+    let bytes = &produced.bundle.bytes;
+    let mut reader = Reader::new(bytes);
+    reader.bytes(64, "format").unwrap();
+    reader.u16("major").unwrap();
+    reader.u16("minor").unwrap();
+    reader
+        .bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "certificate")
+        .unwrap();
+    reader
+        .bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "checkpoint")
+        .unwrap();
+    reader
+        .bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "prefix")
+        .unwrap();
+    let count_offset = reader.offset();
+    let count = reader.u32("records").unwrap();
+    assert!(count > 0);
+    reader.u32("proposal length").unwrap();
+    reader
+        .bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "first record")
+        .unwrap();
+    let first_end = reader.offset();
+    let mut writer = Writer::new();
+    writer
+        .fixed(&bytes[..count_offset])
+        .u32(count - 1)
+        .fixed(&bytes[first_end..]);
+    let omitted = writer.finish().unwrap();
+    let mut altered = bytes.clone();
+    altered[first_end - 1] ^= 1;
+    for changed in [omitted, altered] {
+        assert!(
+            verify_report_expected(
+                &changed,
+                &[key],
+                None,
+                None,
+                Some(certified.certificate.digest()),
+            )
+            .is_err(),
+            "period and posting facts must come from every authenticated record"
+        );
+    }
+}
+
+#[test]
+fn period_end_timing_uses_each_authenticated_months_own_end_and_citation() {
+    let mut f = Fixture::new(121);
+    let (source, _) = f.post(1, "3000", "1000", 100_000, false);
+    let cx = f.cx();
+    f.runtime
+        .block_on(f.book.transition_period(
+            &cx,
+            "FY2026-P02",
+            PeriodTransition::Open,
+            PRINCIPAL,
+            1,
+            b"timing-open-february",
+            &cap(&["close"]),
+        ))
+        .unwrap()
+        .unwrap();
+    let mut expected = Vec::new();
+    for date in [25, 26, 27, 28] {
+        let mut proposal = template(&f, source, format!("timing-february-{date}").as_bytes(), 1);
+        proposal.effective_date = DateDay::from_ymd(2026, 2, date).unwrap();
+        let entry = post(&mut f, proposal);
+        if date >= 26 {
+            expected.push((entry, i128::from(28 - date)));
+        }
+    }
+    let certified = f.certify(&timing_request(&f, 3));
+    let produced = produce(&mut f, &certified.certificate);
+    let replayed = decode_run(
+        &verify(
+            &produced,
+            &certified.certificate,
+            f.book.checkpoint_public_key(),
+        )
+        .output,
+    )
+    .unwrap();
+    assert_eq!(replayed, certified.report);
+    assert_eq!(replayed.work.entries, 5);
+    assert_eq!(replayed.findings.len(), expected.len());
+    for (entry, distance) in expected {
+        let finding = replayed
+            .findings
+            .iter()
+            .find(|finding| finding.cites.first() == Some(&Cite::Entry(entry)))
+            .unwrap();
+        assert_eq!(finding.statistic.value, distance);
+        assert_eq!(finding.statistic.population, 5);
+        assert_eq!(
+            finding.cites,
+            vec![Cite::Entry(entry), Cite::Period("FY2026-P02".into())]
+        );
+    }
+}

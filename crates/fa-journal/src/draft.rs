@@ -1326,6 +1326,12 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
         )? {
             return Ok(Err(refusal));
         }
+        if crate::disposal::has_basis(intent.proposal())
+            && !planning_admission(book, &view.body.name).admits_confined_draft_sources(capability)
+            && let Err(refusal) = crate::disposal::authorize(db, book, capability)?
+        {
+            return Ok(Err(refusal));
+        }
         if intent.proposal().class == EntryClass::CLOSING
             && let Err(refusal) = crate::closing::authorize_draft_preparation(db, book, capability)?
         {
@@ -1890,6 +1896,36 @@ async fn promote_draft_in<V: asupersync::fs::Vfs + Clone>(
             "plan intents into it with `fa draft plan <name> --intent <file>`, or discard it",
         )));
     }
+    let admission = Admission::Promote(Promoting {
+        closing_authorized: closing,
+        branch: fa_model::draft_branch(book.book_id, name),
+    });
+    if view
+        .intents
+        .iter()
+        .any(|planned| crate::disposal::has_basis(planned.intent.proposal()))
+    {
+        // Source history belongs to the complete sale/cost workflow. Admit
+        // every retained planner before observing any member's source; the
+        // promoter's approval cannot replace a later planner's authority.
+        for (index, planned) in view.intents.iter().enumerate() {
+            let request = crate::post::PostRequest {
+                proposal: planned.intent.proposal().clone(),
+                approvals: planned.intent.approvals().to_vec(),
+                capability: planned.capability.clone(),
+                plan_certificate: None,
+            };
+            if let Err(refusal) = crate::post::authorize_request(db, book, &request, admission)? {
+                return Ok(Err(refusal.at("member", index)));
+            }
+            if crate::disposal::has_basis(planned.intent.proposal())
+                && !admission.admits_confined_draft_sources(&planned.capability)
+                && let Err(refusal) = crate::disposal::authorize(db, book, &planned.capability)?
+            {
+                return Ok(Err(refusal.at("member", index)));
+            }
+        }
+    }
     // The retained planner's current whole-book authority precedes loading
     // any close source. The promoter supplies Close, never the planner's Post
     // permission, amount ceilings, scope, evidence or approval references.
@@ -1930,10 +1966,6 @@ async fn promote_draft_in<V: asupersync::fs::Vfs + Clone>(
             )));
         }
     };
-    let admission = Admission::Promote(Promoting {
-        closing_authorized: closing,
-        branch: fa_model::draft_branch(book.book_id, name),
-    });
     let mut staged = match correction::stage(
         db,
         ctx,
