@@ -10183,6 +10183,7 @@ impl Harness {
                 &self.book,
                 capability.clone(),
                 batch,
+                None,
             ))
             .expect("batch planning kernel")
     }
@@ -10200,6 +10201,7 @@ impl Harness {
                 &self.book,
                 capability.clone(),
                 plan,
+                None,
             ))
             .expect("batch plan commit kernel")
     }
@@ -10683,7 +10685,7 @@ fn batch_plan_authenticates_chunked_outcomes_and_rejects_a_damaged_fragment() {
     let ctx = h.ctx();
     assert!(matches!(
         h.runtime.block_on(commit_batch_plan(
-            &mut h.db, &ctx, &h.book, capability, plan
+            &mut h.db, &ctx, &h.book, capability, plan, None
         )),
         Err(KernelError::Corrupt(_))
     ));

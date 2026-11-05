@@ -2022,18 +2022,29 @@ fn plan_retention(
 /// The complete native delta (including the IntentOutcome) is authenticated;
 /// even certificate retention is staged before a successful plan is returned
 /// so native capacity refusal cannot be hidden behind a successful preview.
+/// Optional resident history is bound to this database's committed prefix;
+/// staged members never enter it when this rehearsal is aborted.
 pub fn plan_batch<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: Capability,
     batch: PostBatch,
+    carried: Option<&mut crate::post::CarriedHistory>,
 ) -> Outcome<BatchPlan> {
     if let Err(refusal) = authorize_plan_batch(db, book, &capability, &batch, Admission::Plan)? {
         return Ok(Err(refusal));
     }
     let capabilities = vec![capability.clone(); batch.members().len()];
-    let mut staged = match stage_batch(db, ctx, book, &capabilities, &batch, Admission::Plan)? {
+    let mut staged = match stage_batch_with(
+        db,
+        ctx,
+        book,
+        &capabilities,
+        &batch,
+        Admission::Plan,
+        carried,
+    )? {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(BatchStage::Recorded(_)) => {
             return Ok(Err(plan_invalidated(
@@ -2091,12 +2102,14 @@ pub fn plan_batch<V: Vfs + Clone>(
 /// Hydrate checkpoint-opened history only after current whole-book and every
 /// member's native planning authority have been admitted. Loading history
 /// does not publish or alter the batch's intended trunk coordinate.
+/// A resident owner supplies its existing verified history through `carried`.
 pub async fn plan_batch_with_history<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: Capability,
     batch: PostBatch,
+    carried: Option<&mut crate::post::CarriedHistory>,
 ) -> Outcome<BatchPlan> {
     if let Err(refusal) = authorize_plan_batch(db, book, &capability, &batch, Admission::Plan)? {
         return Ok(Err(refusal));
@@ -2107,7 +2120,7 @@ pub async fn plan_batch_with_history<V: Vfs + Clone>(
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
-    plan_batch(db, ctx, book, capability, batch)
+    plan_batch(db, ctx, book, capability, batch, carried)
 }
 
 fn original_vertex<V: Vfs + Clone>(
@@ -2266,12 +2279,15 @@ fn recorded_batch_plan<V: Vfs + Clone>(
 /// reproduce its exact native transaction at the unchanged basis. The same
 /// commit retains the complete plan, ordered outcome and every CITES edge.
 /// An Agent's rehearsal never confers trunk publication authority.
+/// Resident history only accelerates native staging; authentication, exact
+/// effects, current authority and the publication guard remain mandatory.
 pub async fn commit_batch_plan<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: Capability,
     plan: BatchPlan,
+    carried: Option<&mut crate::post::CarriedHistory>,
 ) -> Outcome<BatchPosted> {
     if let Err(error) = plan.validate() {
         return Ok(Err(plan_invalidated(error.to_string())));
@@ -2324,7 +2340,15 @@ pub async fn commit_batch_plan<V: Vfs + Clone>(
         )));
     }
     let capabilities = vec![capability; plan.batch().members().len()];
-    let mut staged = match stage_batch(db, ctx, book, &capabilities, plan.batch(), admission)? {
+    let mut staged = match stage_batch_with(
+        db,
+        ctx,
+        book,
+        &capabilities,
+        plan.batch(),
+        admission,
+        carried,
+    )? {
         Err(refusal) => {
             return Ok(Err(plan_invalidated(format!(
                 "current batch admission refused: {} ({})",
@@ -3519,7 +3543,7 @@ pub(crate) mod tests {
             PostBatch::new(b"over-capsule-batch".to_vec(), over_entries).expect("batch");
         let basis = db.frontier().expect("frontier");
 
-        let plan_refusal = plan_batch(&mut db, &ctx, &book, cap.clone(), over_batch.clone())
+        let plan_refusal = plan_batch(&mut db, &ctx, &book, cap.clone(), over_batch.clone(), None)
             .expect("kernel")
             .expect_err("over-budget batch plan must refuse");
         assert_eq!(plan_refusal.code, code::BATCH_BYTE_BUDGET);

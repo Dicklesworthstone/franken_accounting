@@ -3294,6 +3294,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &self.context,
             capability.clone(),
             batch,
+            Some(&mut self.carried),
         )?)
     }
 
@@ -3311,6 +3312,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &self.context,
             capability.clone(),
             batch,
+            Some(&mut self.carried),
         )
         .await?)
     }
@@ -3324,16 +3326,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &fa_journal::Capability,
     ) -> Outcome<fa_journal::BatchPosted> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        Ok(
-            fa_journal::commit_batch_plan(
-                &mut self.db,
-                cx,
-                &self.context,
-                capability.clone(),
-                plan,
-            )
-            .await?,
+        Ok(fa_journal::commit_batch_plan(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability.clone(),
+            plan,
+            Some(&mut self.carried),
         )
+        .await?)
     }
 
     /// Commit an atomic batch (plan §5.8) under the caller's capability:

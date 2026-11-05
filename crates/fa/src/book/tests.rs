@@ -666,9 +666,9 @@ fn resident_plan_and_commit_carry_only_committed_history_and_match_cold_plans() 
         }
         assert!(suffix_rows.windows(2).all(|pair| pair[0] == pair[1]));
         assert_eq!(suffix_rows.len(), 31);
-        // Only31 minor units remain after32 exact committed additions.
+        // Only 31 minor units remain after 32 exact committed additions.
         // Rehearsals must not consume capacity, and the cache must refuse
-        // precisely where the live literal scan refuses the33rd addition.
+        // precisely where the live literal scan refuses the 33rd addition.
         let mut overflow = fixture.request.proposal.clone();
         overflow.idempotency_key = b"resident-planned-overflow".to_vec();
         for leg in &mut overflow.legs {
@@ -692,6 +692,166 @@ fn resident_plan_and_commit_carry_only_committed_history_and_match_cold_plans() 
         let warm = fixture
             .book
             .plan_with_history(&cx, intent, &capability)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(cold.code, "FA-REF-198");
+        assert_eq!(warm, cold);
+        assert_eq!(fixture.book.db.frontier().unwrap(), before);
+        assert_eq!(fixture.book.db.vertices().unwrap(), rows);
+    });
+}
+
+#[test]
+fn resident_batch_plans_match_cold_history_and_preserve_atomic_capacity() {
+    under_lab(0x6c32, move |root| async move {
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut fixture = prepared_fixture(&root, 0x6c32).await;
+        let capability = fixture.request.capability.clone();
+        let context = fixture.book.context.clone();
+        let template = fixture.request.proposal.clone();
+        let amount = fa_model::limits::MAX_REGISTER_MANTISSA
+            .checked_div(32)
+            .unwrap();
+        let make_batch = |key: &str, amount| {
+            let members = (0..2)
+                .map(|ordinal| {
+                    let mut proposal = template.clone();
+                    proposal.idempotency_key = format!("{key}-{ordinal}").into_bytes();
+                    for leg in &mut proposal.legs {
+                        leg.amount = Amount::new(fixture.usd, amount);
+                    }
+                    proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+                    fa_intents::PostIntent::new(proposal, Vec::new()).unwrap()
+                })
+                .collect();
+            fa_intents::PostBatch::new(key.as_bytes().to_vec(), members).unwrap()
+        };
+        let mut suffix_rows = Vec::new();
+        for index in 0..16u32 {
+            let batch = make_batch(&format!("resident-batch-{index:02}"), amount);
+            let before = fixture.book.db.frontier().unwrap();
+            let cold = fa_journal::plan_batch_with_history(
+                &mut fixture.book.db,
+                &cx,
+                &context,
+                capability.clone(),
+                batch.clone(),
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let warm = if index.is_multiple_of(2) {
+                fixture
+                    .book
+                    .plan_batch(&cx, batch, &capability)
+                    .unwrap()
+                    .unwrap()
+            } else {
+                fixture
+                    .book
+                    .plan_batch_with_history(&cx, batch, &capability)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            };
+            assert_eq!(
+                warm.canonical_bytes().unwrap(),
+                cold.canonical_bytes().unwrap()
+            );
+            assert_eq!(fixture.book.db.frontier().unwrap(), before);
+            let reconciliation = fixture.book.carried.reconciliation().unwrap();
+            let capacity = fixture.book.carried.capacity().unwrap();
+            assert_eq!(reconciliation.verified_at(), before);
+            assert_eq!(capacity.verified_at(), before);
+            assert!(capacity.admitted_from_summary());
+            if index > 0 {
+                // Staging both members reuses this same verified prefix;
+                // capacity extends once per batch, never by book size.
+                assert_eq!(reconciliation.carried_rows(), Some(0));
+                let rows = capacity.carried_rows().expect("batch capacity suffix");
+                assert!(rows > 0);
+                suffix_rows.push(rows);
+            }
+            if index == 7 {
+                let reader = Capability::embedded(capability.holder(), &["read"]).unwrap();
+                let rows = fixture.book.db.vertices().unwrap();
+                let refusal = fixture
+                    .book
+                    .commit_batch_plan(&cx, warm.clone(), &reader)
+                    .await
+                    .unwrap()
+                    .unwrap_err();
+                assert_eq!(refusal.code, fa_journal::refusal::code::PLAN_INVALIDATED);
+                assert_eq!(fixture.book.db.frontier().unwrap(), before);
+                assert_eq!(fixture.book.db.vertices().unwrap(), rows);
+            }
+            let posted = fixture
+                .book
+                .commit_batch_plan(&cx, warm.clone(), &capability)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(posted.entries.len(), 2);
+            for (reference, entry) in posted.entries.iter().zip(warm.prepared_entries()) {
+                assert_eq!(reference.entry_digest, entry.entry_digest);
+            }
+            assert_eq!(
+                fixture
+                    .book
+                    .carried
+                    .reconciliation()
+                    .unwrap()
+                    .carried_rows(),
+                Some(0)
+            );
+            assert_eq!(
+                fixture.book.carried.capacity().unwrap().carried_rows(),
+                Some(0)
+            );
+            assert!(
+                fixture
+                    .book
+                    .carried
+                    .capacity()
+                    .unwrap()
+                    .admitted_from_summary()
+            );
+            if index == 15 {
+                let after = fixture.book.db.frontier().unwrap();
+                let retry = fixture
+                    .book
+                    .commit_batch_plan(&cx, warm, &capability)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(retry.entries, posted.entries);
+                assert!(retry.already_recorded);
+                assert_eq!(fixture.book.db.frontier().unwrap(), after);
+            }
+        }
+        assert_eq!(suffix_rows.len(), 15);
+        assert!(suffix_rows.windows(2).all(|pair| pair[0] == pair[1]));
+        // Each member of 16 minor units fits the remaining 31 units by itself.
+        // Together they must be refused atomically by both paths.
+        let overflow = make_batch("resident-batch-overflow", 16);
+        let before = fixture.book.db.frontier().unwrap();
+        let rows = fixture.book.db.vertices().unwrap();
+        let cold = fa_journal::plan_batch_with_history(
+            &mut fixture.book.db,
+            &cx,
+            &context,
+            capability.clone(),
+            overflow.clone(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        let warm = fixture
+            .book
+            .plan_batch_with_history(&cx, overflow, &capability)
             .await
             .unwrap()
             .unwrap_err();
