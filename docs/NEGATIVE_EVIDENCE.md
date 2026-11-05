@@ -3711,3 +3711,36 @@ passed. The line is now wrapped manually; the failed result and original
 commit remain in history. No gate or formatter rule is changed. Subsequent
 commits must wait for inspection of every required check result, rather than
 continuing merely because the tool call itself returned successfully.
+
+The corrected `b3b96b63` product subsequently executed all 907 selected
+native cases with 0 failures, ignored or filtered: facade 735, cross-target
+2, registers 84 and registry 86 (remote 0 / 170791 ms). Strict workspace
+Clippy with `-D warnings` returned native 0 / 91146 ms; native G0 returned
+0 / 17598 ms with 38/38 required registries present. Each RCH wrapper
+returned outer 1 during retirement. All three official recoveries returned
+0, and separate reads observed dead wrappers, acknowledgment and all four
+source/tree/pair release fields. Recovery does not repair those gate exits.
+
+The original named MUT-020 detector passed once in that unfiltered baseline.
+Archived control `a2408829` changes only the production cache parity
+assignment to `live = false`; every other source byte and the strengthened
+detector remain. Its first hz3 request returned admission exit 120 before
+Cargo started, earning no test credit. The budget guard records
+`started=false`; the generic lease's execution flag describes launching
+the remote guard, not a Cargo test. The identical command was rerouted to
+hz4 after a fresh higher-capacity reading, preserving all default budgets
+and timeouts. It executed exactly the named detector, which failed at
+`cached chain 2` (`false` versus expected `true`), remote/outer 101 /
+130125 ms. Other packages' zero-test runs and all 906 filtered cases earn
+no pass credit. This kills the registered production mutation, not an
+entire 38-mutation campaign. Both attempts were acknowledged and all four
+release fields observed; Gate was restored to the unmutated product.
+Control source is retained in verified recovery pack
+`e34dbdb6d6df6305020309ad789ee30099b89fbe`, never a product ancestor.
+
+The final evidence-only checkpoint records these results before qualification;
+it changes no Rust body, registry input, expected value, gate or test. Exact
+Tier 0, the original full repository gate and the complete workspace test
+remain separate required executions, subject to normal remote admission.
+Shared-service maintenance approval remains unanswered; no service, lease,
+guard, cache, tool pin or budget is altered to obtain a green result.
