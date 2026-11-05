@@ -3689,3 +3689,17 @@ the row actually forces dead. That description was corrected before any edit.
 Unmutated native execution and an isolated one-site forced-dead control are
 still required to prove the original named detector kills the repaired mutant.
 The active prior-source compiler jobs finish naturally before changing Gate.
+
+The full `bdaf63b6` packet then executed all 907 selected cases: facade
+735/0, cross-target 2/0, registers 84/0 and registry 84/2, with no ignored
+or filtered cases. Remote and outer were 101 / 793785 ms. One registry
+failure is the same ambiguous MUT-020. The other fixture still expected
+five foundation rows after three actual owner-package rows were admitted.
+The fixture now requires exactly eight and explicitly checks each new
+foundation's name, full source/revision, version and summary. All five
+original identity checks, all 15 registry epochs and the missing-pin and
+duplicate-name negative controls remain. No parser or admission rule changes.
+Native rerun remains required. The same candidate's strict Clippy natively
+passed (`-D warnings`, 101575 ms), but RCH returned outer 1; official recovery
+returned 0. Exact Tier 0 likewise had native check 0 / 634690 ms and outer
+1, yielding 1 PASS / 1 FAIL / 0 UNRUN and no exact-tree PASS authority.

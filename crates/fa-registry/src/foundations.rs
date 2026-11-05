@@ -761,13 +761,30 @@ mod tests {
         let stack = FoundationStack::embedded().expect("franken-stack.lock parses");
         assert_eq!(stack.schema_version, 1);
         assert_eq!(stack.taken_on, "2026-10-10");
-        assert_eq!(stack.foundations.len(), 5);
+        assert_eq!(stack.foundations.len(), 8);
         let summary = stack.foundations_summary();
         assert!(summary.contains("asupersync@78b64636"), "{summary}");
         assert!(summary.contains("frankengraphdb@b323bd17"), "{summary}");
         assert!(summary.contains("franken_networkx@9d710b1c"), "{summary}");
         assert!(summary.contains("fastmcp-rust@=0.12.0"), "{summary}");
         assert!(summary.contains("frankensympy@bd1ad68a"), "{summary}");
+        for (name, version) in [
+            ("franken_markdown", "0.4.0"),
+            ("franken_markdown-icc", "0.7.0"),
+            ("franken_markdown-math", "0.3.0"),
+        ] {
+            let pin = stack.foundations.iter().find(|pin| pin.name == name).unwrap();
+            assert_eq!(
+                pin.source,
+                "git+https://github.com/Dicklesworthstone/franken_markdown"
+            );
+            assert_eq!(
+                pin.rev.as_deref(),
+                Some("7d0472b240372922384b9e19765f5c785d78ae3a")
+            );
+            assert_eq!(pin.version, version);
+            assert!(summary.contains(&format!("{name}@7d0472b2")), "{summary}");
+        }
         assert_eq!(stack.registry_epochs.len(), 15);
         let intents = stack
             .registry_epochs
