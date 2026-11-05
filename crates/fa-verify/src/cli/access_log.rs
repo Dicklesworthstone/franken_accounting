@@ -139,7 +139,7 @@ fn identity_hex<const N: usize>(value: &str, flag: &str) -> Result<[u8; N], Usag
         return Err(invalid());
     }
     let mut bytes = [0; N];
-    for (byte, pair) in bytes.iter_mut().zip(digits.as_bytes().chunks_exact(2)) {
+    for (byte, pair) in bytes.iter_mut().zip(digits.as_bytes().as_chunks::<2>().0) {
         let text = std::str::from_utf8(pair).map_err(|_| invalid())?;
         *byte = u8::from_str_radix(text, 16).map_err(|_| invalid())?;
     }
