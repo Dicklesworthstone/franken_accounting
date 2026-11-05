@@ -1244,6 +1244,21 @@ mod source_draft_tests {
             let acquisition_id = text(field(&acquired, "data"), "vid").to_string();
             let name = "selected-disposal";
             let (cap, authority) = f.agent("lot-agent", Some(name));
+            for subcommand in ["new", "discard"] {
+                let before = f.book.head().unwrap();
+                let (exit, refused) = f.bound(
+                    &authority,
+                    &["draft", subcommand, "another-draft", "--date", "not-a-date"],
+                    None,
+                );
+                assert_eq!(
+                    exit, 7,
+                    "branch admission precedes default-date observation/parsing: {refused:?}"
+                );
+                assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-011");
+                assert_eq!(field(&refused, "coordinate"), &Json::Null);
+                assert_eq!(f.book.head().unwrap(), before);
+            }
             f.open(&authority, name);
             let target = format!("{acquisition_id}:0");
             let mut args = vec![

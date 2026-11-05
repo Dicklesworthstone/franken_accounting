@@ -3236,3 +3236,11 @@ No accounting admission or test expectation is removed. The positive disposal
 test additionally checks the MCP preflight, and general draft listing/showing
 join the no-read negatives. Corrected native execution is pending; these edits
 are not evidence that the four workflows pass or that the broad bead is done.
+
+Independent source review caught an additional ordering issue before corrected
+execution: lifecycle handlers eagerly derive `control_date` from book metadata,
+even when a date flag is present. New and discard now use `open_admitted` to
+judge conjunctive named-draft Post reach and current issuance before that
+lookup; native lifecycle and transaction checks remain. Wrong-name lifecycle
+requests with an invalid date are added as negatives: branch refusal must
+precede date parsing, reveal no coordinate and leave the head unchanged.
