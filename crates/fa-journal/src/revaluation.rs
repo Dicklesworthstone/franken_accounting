@@ -67,11 +67,17 @@ pub struct PreparedFxRevaluation {
     legs: Vec<LegPayload>,
     evidence: EvidenceRef,
     base_totals: Option<BaseTotals>,
+    population_work: crate::carrying::CarryingPopulationWork,
 }
 
 impl PreparedFxRevaluation {
     pub fn request(&self) -> &FxRevaluationRequest {
         &self.request
+    }
+    /// Work in the selected item population. This excludes the separate
+    /// replay of older revaluation publications required by historical audit.
+    pub fn population_work(&self) -> crate::carrying::CarryingPopulationWork {
+        self.population_work
     }
     pub fn basis(&self) -> &FxRevaluationBasis {
         &self.basis
@@ -676,6 +682,7 @@ fn observe<V: Vfs + Clone>(
     }
     let mut entries = Vec::new();
     let mut runs = BTreeMap::new();
+    let mut release_recognition = items::ReleaseRecognition::default();
     for row in db.vertices_at(at)? {
         cx.query()
             .checkpoint()
@@ -702,9 +709,15 @@ fn observe<V: Vfs + Clone>(
             .any(|leg| leg.account_ref == route.valuation_account)
         {
             if crate::carrying::has_allocated_basis(&entry.proposal) {
-                if let Err(refusal) =
-                    items::recognized_release(db, at, &entry, request.source_account, &route)?
-                {
+                if let Err(refusal) = items::recognized_release(
+                    db,
+                    at,
+                    row.vid,
+                    &entry,
+                    request.source_account,
+                    &route,
+                    &mut release_recognition,
+                )? {
                     return Ok(Err(refusal));
                 }
                 if entry.proposal.effective_date <= date {
@@ -877,6 +890,7 @@ fn observe<V: Vfs + Clone>(
             residual: None,
         });
     }
+    let mut population_work = crate::carrying::CarryingPopulationWork::default();
     let item_allocation = if request.item_allocation {
         match items::population(
             db,
@@ -894,16 +908,18 @@ fn observe<V: Vfs + Clone>(
             prior_adjustment_net,
             target_base_net,
         )? {
-            Ok((allocation, item_legs, item_totals)) => {
-                legs = item_legs;
-                base_totals = item_totals;
-                allocation
+            Ok(population) => {
+                legs = population.legs;
+                base_totals = population.totals;
+                population_work = population.work;
+                population.allocation
             }
             Err(refusal) => return Ok(Err(refusal)),
         }
     } else {
         None
     };
+    population_work.release_lineage_entries_read = release_recognition.lineage_entries_read();
     Ok(Ok(PreparedFxRevaluation {
         request: FxRevaluationRequest {
             entity,
@@ -934,6 +950,7 @@ fn observe<V: Vfs + Clone>(
         legs,
         evidence,
         base_totals,
+        population_work,
     }))
 }
 

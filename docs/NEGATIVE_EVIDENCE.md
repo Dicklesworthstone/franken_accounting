@@ -4,6 +4,23 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-05 — interrupted proof retained a log that changed after finalization
+
+The `a44bc511` shared-slot full-gate attempt recorded global check and Clippy
+as UNRUN. Its first native `fa` library job exhausted six offloader attempts
+without executing: queue timeouts were followed by source-namespace initializer
+refusals. The owned check driver was then terminated, and the next owned RCH
+job was cancelled and recovered with exit 137, acknowledged and source-released.
+No native passing result is credited to that invocation.
+
+The producer finalized a RED/partial proof with exit 143 while that child was
+still settling. Subsequent verification correctly rejected its checksum
+closure: `steps/test-jobs/fa.test.access_accumulator.log` changed after the
+manifest was sealed. The raw proof and logs remain unchanged; no checksum was
+regenerated and no step was relabeled. This interrupted invocation cannot
+authorize closure, publication or split-run reuse. Fresh qualification is
+required after integration.
+
 ## 2026-11-04 — native payment differences need application parity at commit
 
 Integrated source `224d31b9` executed the complete facade (727/0), model
@@ -121,6 +138,27 @@ or an aarch64 qualification. The prior complete manifest and registry remain
 Git blobs `03f0e08e059b5478b59d55bf23825e5b5743d8b1` and
 `04dadb419c96824791bcf70797b2c53f7abb2580`. The updated product source still
 requires its own full native and exact-tree gates.
+
+## 2026-11-05 — full verdict inventories exceeded the process argument limit
+
+The unmodified verifier failed before content validation on the retained
+473,204-byte `9bc4c99a27c1` verdict note: Python could not launch because the
+whole note occupied one command-line argument. The reader now opens the exact
+immutable Git blob selected by the note reference and parses its UTF-8 stream.
+The publisher already uses standard input and remains unchanged. No inventory
+is truncated, and the existing format, source, checksum, step, test-name,
+ancestry and closure rules remain in force.
+
+The actual note now verifies as RED/partial with `check_exit=143`; closure still
+refuses it. Producer-generated synthetic notes larger than that reproduction
+exercise all 20,000 simulated native test names, strict tampering refusals,
+RED inspection and closure rejection. The actual closure command also checks
+named acceptance and landing ancestry against a large synthetic PASS proof.
+These fixture tests establish proof transport and validation, not native Rust
+execution or accounting correctness. The first closure-fixture assertion
+missed the producer's existing shell-test witness; the corrected assertion
+requires the exact ordered 20,001-name inventory and 20,000 simulated native
+results. Both complete selftest scripts subsequently exited zero.
 
 ## 2026-11-04 — historical procedure framing lost registered identities
 

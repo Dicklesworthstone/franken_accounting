@@ -169,6 +169,71 @@ pub fn is_live(vid: VId, reversed_by: &BTreeMap<VId, VId>) -> Result<bool, Regis
     Ok(live)
 }
 
+/// Reusable liveness evaluation for one immutable reversal graph.
+///
+/// Walking each entry's lineage separately revisits every suffix of a long
+/// reversal chain: N entries can follow N(N-1)/2 links. This evaluator records
+/// each reversal target's parity once, so a whole snapshot follows each link
+/// at most once (O(N log N) ordered-map work and O(N) memory). Its borrow binds
+/// the cache to the graph, including its known-at and effective-date selection;
+/// callers must create a new evaluator when either selection changes.
+pub struct ReversalLiveness<'a> {
+    reversed_by: &'a BTreeMap<VId, VId>,
+    // None marks an unresolved path. Encountering it again is a cycle; after
+    // an error these vertices still lead to that cycle and remain invalid.
+    resolved: BTreeMap<VId, Option<bool>>,
+    path: Vec<VId>,
+    links_followed: usize,
+}
+
+impl<'a> ReversalLiveness<'a> {
+    #[must_use]
+    pub fn new(reversed_by: &'a BTreeMap<VId, VId>) -> Self {
+        Self {
+            reversed_by,
+            resolved: BTreeMap::new(),
+            path: Vec::new(),
+            links_followed: 0,
+        }
+    }
+
+    /// Resolve exactly the predicate of [`is_live`], reusing validated suffixes.
+    /// The walk is iterative even for arbitrarily long honest lineages.
+    pub fn is_live(&mut self, vid: VId) -> Result<bool, RegisterError> {
+        self.path.clear();
+        let mut current = vid;
+        let mut live = loop {
+            // Most entries have no reversal. They are immediately live and
+            // need no cache allocation; memory scales with lineage, not with
+            // the unrelated invoice/payment population.
+            let Some(reversal) = self.reversed_by.get(&current) else {
+                break true;
+            };
+            if let Some(cached) = self.resolved.get(&current) {
+                break cached.ok_or_else(|| {
+                    KernelError::Corrupt(format!("reversal lineage of {:032x} cycles", vid.0))
+                })?;
+            }
+            self.resolved.insert(current, None);
+            self.links_followed = self.links_followed.saturating_add(1);
+            self.path.push(current);
+            current = *reversal;
+        };
+        while let Some(ancestor) = self.path.pop() {
+            live = !live;
+            self.resolved.insert(ancestor, Some(live));
+        }
+        Ok(live)
+    }
+
+    /// Actual reversal links followed by this evaluation, independent of wall
+    /// time. Repeated queries of an already resolved suffix add no work here.
+    #[must_use]
+    pub fn links_followed(&self) -> usize {
+        self.links_followed
+    }
+}
+
 /// The open items of the book (optionally one account) as known at `known_at`.
 pub fn open_items<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
@@ -232,6 +297,15 @@ fn fold_open_items(
     entries: &[(VId, Entry, CommitSeq)],
     account: Option<VId>,
 ) -> Result<Vec<OpenItem>, RegisterError> {
+    fold_open_items_counted(entries, account).map(|(items, _)| items)
+}
+
+// Count the resolver used by the actual fold, so a traversal bound protects
+// the report path as well as the standalone lineage evaluator.
+fn fold_open_items_counted(
+    entries: &[(VId, Entry, CommitSeq)],
+    account: Option<VId>,
+) -> Result<(Vec<OpenItem>, usize), RegisterError> {
     let mut reversed_by: BTreeMap<VId, VId> = BTreeMap::new();
     for (vid, entry, _) in entries {
         if entry.proposal.class != EntryClass::REVERSAL {
@@ -244,9 +318,10 @@ fn fold_open_items(
             return Err(KernelError::Corrupt("an entry is reversed twice".into()).into());
         }
     }
+    let mut liveness = ReversalLiveness::new(&reversed_by);
     let mut live: BTreeSet<VId> = BTreeSet::new();
     for (vid, _, _) in entries {
-        if is_live(*vid, &reversed_by)? {
+        if liveness.is_live(*vid)? {
             live.insert(*vid);
         }
     }
@@ -321,7 +396,7 @@ fn fold_open_items(
         }
     }
     items.sort_by_key(|i| (i.account, i.recorded_at, i.entry, i.ordinal));
-    Ok(items)
+    Ok((items, liveness.links_followed()))
 }
 
 /// Compare every posted leg's stored `applied` mirror with the fold. A
@@ -334,22 +409,23 @@ pub fn verify_open_items<V: asupersync::fs::Vfs + Clone>(
     known_at: Option<CommitSeq>,
 ) -> Result<OpenItemVerification, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
-    let items = open_items(db, book, None, Some(seq))?;
+    let entries = entries_at(db, book, seq)?;
+    let items = fold_open_items(&entries, None)?;
     let expected: BTreeMap<(VId, u16), i128> = items
         .iter()
         .map(|i| ((i.entry, i.ordinal), i.applied))
         .collect();
     let mut drift = Vec::new();
     let mut legs_checked = 0usize;
-    for (vid, entry, _) in entries_at(db, book, seq)? {
-        if !carries_open_items(&entry) {
+    for (vid, entry, _) in &entries {
+        if !carries_open_items(entry) {
             continue;
         }
         for i in 0..entry.proposal.legs.len() {
             let ordinal =
                 u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
-            let refolded = expected.get(&(vid, ordinal)).copied().unwrap_or(0);
-            let row = db.vertex_at(leg_vid(vid, ordinal), seq)?.ok_or_else(|| {
+            let refolded = expected.get(&(*vid, ordinal)).copied().unwrap_or(0);
+            let row = db.vertex_at(leg_vid(*vid, ordinal), seq)?.ok_or_else(|| {
                 KernelError::Corrupt(format!("leg {ordinal} of entry {:032x} missing", vid.0))
             })?;
             let stored = applied(&row)?;
@@ -358,7 +434,7 @@ pub fn verify_open_items<V: asupersync::fs::Vfs + Clone>(
             // kernel refuses to apply to such a leg until it is rebuilt.
             if stored != Some(refolded) {
                 drift.push(AppliedDrift {
-                    entry: vid,
+                    entry: *vid,
                     ordinal,
                     stored,
                     refolded,
@@ -488,5 +564,120 @@ mod tests {
             is_live(VId(1), &cyclic),
             Err(RegisterError::Kernel(KernelError::Corrupt(_)))
         ));
+    }
+
+    #[test]
+    fn memoized_liveness_matches_literal_walk_in_any_query_order() {
+        // Several lineages, including shared suffixes, non-contiguous IDs and
+        // targets with no reversal. The literal walker is deliberately kept
+        // independent so this checks semantics rather than cache internals.
+        let reversed_by: BTreeMap<_, _> = (0u64..512)
+            .filter(|id| id % 11 != 0)
+            .map(|id| (VId(u128::from(id)), VId(u128::from(id / 2))))
+            .collect();
+        for order in [
+            (0u64..520).collect::<Vec<_>>(),
+            (0u64..520).rev().collect(),
+            (0u64..520).map(|id| (id * 17) % 521).collect(),
+        ] {
+            let mut cached = ReversalLiveness::new(&reversed_by);
+            for id in order {
+                let vid = VId(u128::from(id));
+                assert_eq!(
+                    cached.is_live(vid).unwrap(),
+                    is_live(vid, &reversed_by).unwrap(),
+                    "entry {id}"
+                );
+            }
+            assert!(cached.links_followed() <= reversed_by.len());
+        }
+    }
+
+    #[test]
+    fn hundred_thousand_entry_lineage_follows_each_link_once() {
+        let count = 100_000usize;
+        let reversed_by: BTreeMap<_, _> = (0..count)
+            .map(|id| (VId(id as u128), VId((id + 1) as u128)))
+            .collect();
+        let mut cached = ReversalLiveness::new(&reversed_by);
+        for id in 0..=count {
+            assert_eq!(
+                cached.is_live(VId(id as u128)).unwrap(),
+                (count - id) % 2 == 0
+            );
+        }
+        assert_eq!(cached.links_followed(), count);
+        // Repeated consumers of the same selected graph do no additional
+        // lineage traversal, even when they enumerate entries backwards.
+        for id in (0..=count).rev() {
+            assert_eq!(
+                cached.is_live(VId(id as u128)).unwrap(),
+                (count - id) % 2 == 0
+            );
+        }
+        assert_eq!(cached.links_followed(), count);
+
+        // The previous per-root walk is a live negative control for the work
+        // bound, on a smaller graph so the test itself remains inexpensive.
+        let control_count = 512usize;
+        let control: BTreeMap<_, _> = (0..control_count)
+            .map(|id| (VId(id as u128), VId((id + 1) as u128)))
+            .collect();
+        let mut old_links_followed = 0usize;
+        let mut improved = ReversalLiveness::new(&control);
+        for id in 0..=control_count {
+            let mut current = VId(id as u128);
+            let mut live = true;
+            while let Some(next) = control.get(&current) {
+                old_links_followed += 1;
+                live = !live;
+                current = *next;
+            }
+            assert_eq!(improved.is_live(VId(id as u128)).unwrap(), live);
+        }
+        assert_eq!(improved.links_followed(), control_count);
+        assert_eq!(old_links_followed, control_count * (control_count + 1) / 2);
+        assert!(old_links_followed > control.len());
+    }
+
+    #[test]
+    fn memoized_liveness_refuses_cycles_without_poisoning_other_lineages() {
+        let reversed_by = BTreeMap::from([
+            (VId(1), VId(2)),
+            (VId(2), VId(3)),
+            (VId(3), VId(2)),
+            (VId(4), VId(4)),
+            (VId(5), VId(6)),
+            (VId(6), VId(7)),
+        ]);
+        let mut cached = ReversalLiveness::new(&reversed_by);
+        for id in [1u128, 2, 3, 4, 1, 4] {
+            assert_eq!(
+                cached.is_live(VId(id)).unwrap_err().to_string(),
+                is_live(VId(id), &reversed_by).unwrap_err().to_string()
+            );
+        }
+        for id in [5u128, 6, 7, 8] {
+            assert_eq!(
+                cached.is_live(VId(id)).unwrap(),
+                is_live(VId(id), &reversed_by).unwrap()
+            );
+        }
+        assert_eq!(cached.links_followed(), reversed_by.len());
+    }
+
+    #[test]
+    fn unrelated_entries_need_no_liveness_cache() {
+        let reversed_by = BTreeMap::from([(VId(1), VId(2))]);
+        let mut cached = ReversalLiveness::new(&reversed_by);
+        for id in 2u128..100_002 {
+            assert!(cached.is_live(VId(id)).unwrap());
+        }
+        assert_eq!(cached.links_followed(), 0);
+        assert!(cached.resolved.is_empty());
+        assert!(cached.path.is_empty());
+        assert!(!cached.is_live(VId(1)).unwrap());
+        assert_eq!(cached.resolved.len(), 1);
+        assert_eq!(cached.links_followed(), 1);
     }
 }

@@ -218,6 +218,25 @@ pub struct PreparedPost {
     append_only: bool,
     /// Prepared by [`prepare_plan`] for a dry run: never published.
     planning: bool,
+    settlement_work: SettlementWork,
+}
+
+/// Work performed to authenticate settlement targets during this preparation.
+/// The counts describe real target reads, not elapsed-time estimates. A target
+/// shared by many applying legs is decoded and checked once per transaction
+/// preparation; every application's handle, amount and dimensions are still
+/// judged separately.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SettlementWork {
+    pub target_entries_checked: usize,
+    /// Maximum decoded targets retained together, before their final use.
+    pub peak_cached_target_entries: usize,
+    /// Includes the absent leg immediately past each target's final ordinal.
+    pub target_leg_mirrors_checked: usize,
+    /// Includes the absent terminal successor that witnesses live lineage.
+    pub reversal_points_checked: usize,
+    /// Outgoing settlements folded to find each target leg's capacity once.
+    pub target_settlement_links_checked: usize,
 }
 
 /// The earlier member staged in this exact transaction. Its capability is
@@ -319,6 +338,11 @@ impl PreparedPost {
     #[must_use]
     pub fn basis(&self) -> CommitSeq {
         self.txn.basis()
+    }
+
+    #[must_use]
+    pub fn settlement_work(&self) -> SettlementWork {
+        self.settlement_work
     }
 
     pub(crate) fn entry(&self) -> &Entry {
@@ -521,6 +545,7 @@ impl PreparedPost {
             template_tracker: _,
             append_only,
             planning,
+            settlement_work: _,
         } = self;
         if planning {
             txn.abort();
@@ -974,7 +999,19 @@ fn footprint_refusal<V: asupersync::fs::Vfs + Clone>(
     reversal_target: Option<EntryRef>,
     resolution: Option<&(EntryRef, Disposition)>,
 ) -> Result<Option<Refusal>, KernelError> {
-    let reached = |vid: VId| reaches(txn, db, book, req, scope, vid);
+    // Scope checks enumerate an entry's complete leg metadata. Repeating
+    // them for each applying leg makes one large settled entry quadratic.
+    // This preparation has one immutable staged basis until all laws pass;
+    // the first successful read keeps every required transaction witness.
+    let mut admitted = BTreeMap::new();
+    let mut reached = |vid: VId| -> Result<bool, KernelError> {
+        if let Some(result) = admitted.get(&vid) {
+            return Ok(*result);
+        }
+        let result = reaches(txn, db, book, req, scope, vid)?;
+        admitted.insert(vid, result);
+        Ok(result)
+    };
     if let Some(target) = reversal_target {
         let mut current = target.vid;
         let mut seen: BTreeSet<VId> = BTreeSet::new();
@@ -3848,25 +3885,50 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     let mut applications: Vec<(u16, VId, i128)> = Vec::new();
     let mut undo: Vec<(u16, VId, i128)> = Vec::new();
     let mut applied_delta: BTreeMap<VId, (i128, i128)> = BTreeMap::new();
+    // Nothing is staged during these laws. Keep each authenticated target
+    // and its live-lineage proof only for this preparation. Repeated
+    // applications no longer decode and walk all of that target's mirrors.
+    // Earlier atomic batch members remain visible through txn, and a later
+    // member gets its own cache after that staged prefix has changed.
+    // Release the decoded payload at its final application: a bulk receipt
+    // citing distinct targets never retains all of their payloads together.
+    let mut settlement_uses: BTreeMap<VId, usize> = BTreeMap::new();
+    for settlement in proposal.legs.iter().flat_map(|leg| &leg.settles) {
+        *settlement_uses.entry(settlement.target.vid).or_default() += 1;
+    }
+    let mut settlement_targets: BTreeMap<VId, (Entry, bool)> = BTreeMap::new();
+    let mut settlement_capacities: BTreeMap<VId, i128> = BTreeMap::new();
+    let mut settlement_work = SettlementWork::default();
     for (i, leg) in proposal.legs.iter().enumerate() {
         let ordinal =
             u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
         for (j, s) in leg.settles.iter().enumerate() {
-            let Some(row) = txn.vertex(db, s.target.vid)? else {
-                txn.abort();
-                return Ok(Err(no_settle_target(i, s.target.vid)));
+            let cached_targets = settlement_targets.len();
+            let (target, lineage_checked) = match settlement_targets.entry(s.target.vid) {
+                MapEntry::Occupied(slot) => slot.into_mut(),
+                MapEntry::Vacant(slot) => {
+                    let Some(row) = txn.vertex(db, s.target.vid)? else {
+                        txn.abort();
+                        return Ok(Err(no_settle_target(i, s.target.vid)));
+                    };
+                    if !row.labels.contains(&label::ENTRY) {
+                        txn.abort();
+                        return Ok(Err(Refusal::new(
+                            code::SETTLE_TARGET,
+                            exit::REFUSAL,
+                            format!("leg {i}: {:032x} is not an entry", s.target.vid.0),
+                            "plan §5.7 (a settlement cites an entry's leg)",
+                            "cite the entry vid from `fa open-items`",
+                        )));
+                    }
+                    let (target, _) =
+                        checked_entry_staged_counted(&txn, db, &row, &mut settlement_work)?;
+                    settlement_work.peak_cached_target_entries = settlement_work
+                        .peak_cached_target_entries
+                        .max(cached_targets + 1);
+                    slot.insert((target, false))
+                }
             };
-            if !row.labels.contains(&label::ENTRY) {
-                txn.abort();
-                return Ok(Err(Refusal::new(
-                    code::SETTLE_TARGET,
-                    exit::REFUSAL,
-                    format!("leg {i}: {:032x} is not an entry", s.target.vid.0),
-                    "plan §5.7 (a settlement cites an entry's leg)",
-                    "cite the entry vid from `fa open-items`",
-                )));
-            }
-            let (target, _) = checked_entry_staged(&txn, db, &row)?;
             if target.entry_digest != s.target.entry_digest {
                 txn.abort();
                 return Ok(Err(Refusal::new(
@@ -3901,7 +3963,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             }
             // A migrated leg is open iff its run is Finalized and its chunk
             // counts (ruling 3733 C1); the run state is a point witness.
-            if let Err(r) = migration::witness_open_item(&txn, db, s.target.vid, &target, i)? {
+            if let Err(r) = migration::witness_open_item(&txn, db, s.target.vid, target, i)? {
                 txn.abort();
                 return Ok(Err(r));
             }
@@ -3910,19 +3972,42 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             // length is legal, so the walk is bounded only by a cycle check
             // (impossible for honest identities, corruption otherwise). Each
             // hop is a witnessed point read, so a concurrent reversal conflicts.
-            // Existence only: a label point read, never the reversal's row.
-            if entry_is_reversed(&txn, db, s.target.vid)? {
-                txn.abort();
-                return Ok(Err(Refusal::new(
-                    code::SETTLE_TARGET,
-                    exit::REFUSAL,
-                    format!(
-                        "leg {i}: entry {:032x} is reversed; nothing of it is open",
-                        s.target.vid.0
-                    ),
-                    "plan §8.2 (a reversed entry nets to zero)",
-                    "apply to the replacement entry, or post a new open item",
-                )));
+            if !*lineage_checked {
+                let mut reversed = false;
+                let mut current = s.target.vid;
+                let mut seen: BTreeSet<VId> = BTreeSet::new();
+                // Existence only: a label point read, never the reversal's row.
+                loop {
+                    settlement_work.reversal_points_checked += 1;
+                    if txn
+                        .vertex_has_label(db, reversal_vid(current), label::ENTRY)?
+                        .is_none()
+                    {
+                        break;
+                    }
+                    if !seen.insert(current) {
+                        return Err(KernelError::Corrupt(format!(
+                            "reversal lineage of {:032x} cycles",
+                            s.target.vid.0
+                        )));
+                    }
+                    reversed = !reversed;
+                    current = reversal_vid(current);
+                }
+                if reversed {
+                    txn.abort();
+                    return Ok(Err(Refusal::new(
+                        code::SETTLE_TARGET,
+                        exit::REFUSAL,
+                        format!(
+                            "leg {i}: entry {:032x} is reversed; nothing of it is open",
+                            s.target.vid.0
+                        ),
+                        "plan §8.2 (a reversed entry nets to zero)",
+                        "apply to the replacement entry, or post a new open item",
+                    )));
+                }
+                *lineage_checked = true;
             }
             let Some(target_leg) = target.proposal.legs.get(usize::from(s.ordinal)) else {
                 txn.abort();
@@ -4017,17 +4102,30 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 .get_mut(&target_leg_vid)
                 .ok_or_else(|| KernelError::Corrupt("applied witness".into()))?;
             // What the target leg itself applied to others consumed it too.
-            let mut consumed: i128 = 0;
-            for t in &target_leg.settles {
-                consumed = consumed
-                    .checked_add(t.amount.mantissa)
-                    .ok_or_else(|| KernelError::Corrupt("applied_out overflow".into()))?;
-            }
-            let capacity = target_leg
-                .amount
-                .mantissa
-                .checked_sub(consumed)
-                .ok_or_else(|| KernelError::Corrupt("applied_out exceeds the leg".into()))?;
+            // This immutable capacity is separate from the growing applied
+            // delta. Compute it lazily after the original witness/shape checks
+            // so both the first corruption error and its precedence stay the
+            // same, without rescanning every outgoing settlement on each use.
+            let capacity = match settlement_capacities.entry(target_leg_vid) {
+                MapEntry::Occupied(slot) => *slot.get(),
+                MapEntry::Vacant(slot) => {
+                    let mut consumed: i128 = 0;
+                    for t in &target_leg.settles {
+                        settlement_work.target_settlement_links_checked += 1;
+                        consumed = consumed
+                            .checked_add(t.amount.mantissa)
+                            .ok_or_else(|| KernelError::Corrupt("applied_out overflow".into()))?;
+                    }
+                    let capacity = target_leg
+                        .amount
+                        .mantissa
+                        .checked_sub(consumed)
+                        .ok_or_else(|| {
+                            KernelError::Corrupt("applied_out exceeds the leg".into())
+                        })?;
+                    *slot.insert(capacity)
+                }
+            };
             if *witnessed > capacity {
                 return Err(KernelError::Corrupt(format!(
                     "leg {:032x} applied mirror {} exceeds its capacity {capacity}; `fa verify open-items` names it",
@@ -4070,6 +4168,14 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 .checked_add(s.amount.mantissa)
                 .ok_or_else(|| KernelError::Corrupt("applied overflow".into()))?;
             applications.push((ordinal, target_leg_vid, s.amount.mantissa));
+            let remaining = settlement_uses
+                .get_mut(&s.target.vid)
+                .ok_or_else(|| KernelError::Corrupt("settlement target use count".into()))?;
+            *remaining -= 1;
+            if *remaining == 0 {
+                settlement_targets.remove(&s.target.vid);
+                settlement_uses.remove(&s.target.vid);
+            }
         }
     }
 
@@ -5049,6 +5155,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         template_tracker,
         append_only,
         planning,
+        settlement_work,
     }))))
 }
 
@@ -5200,10 +5307,23 @@ fn checked_entry_staged<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     row: &VertexRow,
 ) -> Result<(Entry, CommitSeq), KernelError> {
+    checked_entry_staged_counted(txn, db, row, &mut SettlementWork::default())
+}
+
+fn checked_entry_staged_counted<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    row: &VertexRow,
+    work: &mut SettlementWork,
+) -> Result<(Entry, CommitSeq), KernelError> {
+    work.target_entries_checked += 1;
     let entry = crate::entry_storage::decode_staged(txn, db, row)?;
-    checked_entry_with(row, entry, |vid| match db.vertex(vid)? {
-        Some(leg) => Ok(Some(leg)),
-        None => Ok(txn.vertex(db, vid)?),
+    checked_entry_with(row, entry, |vid| {
+        work.target_leg_mirrors_checked += 1;
+        match db.vertex(vid)? {
+            Some(leg) => Ok(Some(leg)),
+            None => Ok(txn.vertex(db, vid)?),
+        }
     })
 }
 

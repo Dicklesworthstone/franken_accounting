@@ -33,6 +33,7 @@ mod report;
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet, btree_map};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
@@ -1027,17 +1028,17 @@ fn materialize_batch<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     fold: &Fold,
 ) -> Result<WriteBatch, RegisterError> {
-    let rows = db.vertices()?;
+    let rows = RegisterRows::from_vertices(db.vertices()?);
     materialize_batch_in(db, book, fold, &rows, &period_memberships(&db.edges()?))
 }
 
-/// [`materialize_batch`] among `rows`, the book's current vertices, and
+/// [`materialize_batch`] among `rows`, the book's indexed current vertices, and
 /// `memberships`, its current period memberships by source.
 fn materialize_batch_in<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     fold: &Fold,
-    rows: &[VertexRow],
+    rows: &RegisterRows,
     memberships: &Memberships,
 ) -> Result<WriteBatch, RegisterError> {
     let pvid = period_vid(&book.calendar.id, &fold.period);
@@ -1208,15 +1209,95 @@ impl Verification {
     }
 }
 
+/// The current vertex scan, indexed once for register selection. The
+/// substrate returns vertices in ascending VId order, so identity lookups
+/// need no second full-book index. Keep every row: an expected register
+/// identity with a missing or authoritative label must still be checked.
+struct RegisterRows {
+    rows: Vec<VertexRow>,
+    by_period: BTreeMap<String, Vec<usize>>,
+    candidate_rows_examined: AtomicUsize,
+}
+
+impl RegisterRows {
+    /// `rows` must be the ascending-VId scan from `Database::vertices`.
+    fn from_vertices(rows: Vec<VertexRow>) -> Self {
+        let mut by_period: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (index, row) in rows.iter().enumerate() {
+            if row.labels.contains(&label::REGISTER)
+                && let Some(CanonicalScalar::Text(period)) = prop(row, property::EFFECTIVE_PERIOD)
+            {
+                by_period
+                    .entry(period.as_str().to_string())
+                    .or_default()
+                    .push(index);
+            }
+        }
+        Self {
+            rows,
+            by_period,
+            candidate_rows_examined: AtomicUsize::new(0),
+        }
+    }
+
+    fn vertex(&self, vid: VId, examined: &mut usize) -> Option<&VertexRow> {
+        self.rows
+            .binary_search_by(|row| {
+                *examined = examined.saturating_add(1);
+                row.vid.cmp(&vid)
+            })
+            .ok()
+            .map(|index| &self.rows[index])
+    }
+
+    /// The full-scan predicate, evaluated only at candidate identities and
+    /// named registers. Borrow rows so repeated verification does not clone
+    /// their property payloads. Sorted output preserves refusal order.
+    fn stored(
+        &self,
+        period: &str,
+        expected: &BTreeSet<VId>,
+        linked: &BTreeSet<VId>,
+    ) -> BTreeMap<VId, &VertexRow> {
+        let mut found = BTreeMap::new();
+        let mut examined = 0usize;
+        for vid in expected {
+            if let Some(row) = self.vertex(*vid, &mut examined) {
+                found.insert(*vid, row);
+            }
+        }
+        for vid in linked {
+            if let Some(row) = self.vertex(*vid, &mut examined)
+                && row.labels.contains(&label::REGISTER)
+            {
+                found.insert(*vid, row);
+            }
+        }
+        for index in self.by_period.get(period).into_iter().flatten() {
+            examined = examined.saturating_add(1);
+            let row = &self.rows[*index];
+            found.insert(row.vid, row);
+        }
+        // One update per selection, not per binary-search comparison. The
+        // shared scan remains Sync, including across async publications.
+        let _ = self.candidate_rows_examined.try_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |count| Some(count.saturating_add(examined)),
+        );
+        found
+    }
+}
+
 /// The stored registers a fold of `fold`'s period would write, among
-/// `rows`, the book's current vertices: its cells' identities, and every
-/// register linked to or naming the period.
-fn stored_registers_in<V: asupersync::fs::Vfs + Clone>(
+/// `rows`: its cells' identities, and every register linked to or naming
+/// the period, including malformed labels, properties and memberships.
+fn stored_registers_in<'a, V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     fold: &Fold,
-    rows: &[VertexRow],
-) -> Result<BTreeMap<VId, VertexRow>, RegisterError> {
+    rows: &'a RegisterRows,
+) -> Result<BTreeMap<VId, &'a VertexRow>, RegisterError> {
     let expected: BTreeSet<_> = fold
         .cells
         .iter()
@@ -1230,10 +1311,7 @@ fn stored_registers_in<V: asupersync::fs::Vfs + Clone>(
         )?
         .into_iter()
         .collect();
-    Ok(rows.iter().filter(|row| {
-        expected.contains(&row.vid) || (row.labels.contains(&label::REGISTER)
-            && (linked.contains(&row.vid) || matches!(prop(row, property::EFFECTIVE_PERIOD), Some(CanonicalScalar::Text(p)) if p.as_str() == fold.period)))
-    }).map(|row| (row.vid, row.clone())).collect())
+    Ok(rows.stored(&fold.period, &expected, &linked))
 }
 
 fn stored_values(row: &VertexRow, pending: bool) -> Result<Option<CellValues>, RegisterError> {
@@ -1290,9 +1368,10 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
 
 type Memberships = BTreeMap<VId, Vec<(fgdb_types::EId, VId)>>;
 
-/// Current-projection scans performed during register verification. These
-/// counters advance at the actual substrate calls and count the returned
-/// rows, including non-register vertices and non-membership edges.
+/// Current-projection reads performed during register verification. Scan
+/// counters advance at the actual substrate calls and count returned rows,
+/// including non-register vertices and non-membership edges. Candidate
+/// selection counts row visits after the one-time vertex indexing pass.
 /// Historical journal folds, checkpoint loads and point reads are separate
 /// work; this is not a count of all work done by verification.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1301,6 +1380,10 @@ pub struct ProjectionReadWork {
     pub vertices_read: usize,
     pub edge_scans: usize,
     pub edges_read: usize,
+    /// Rows inspected by binary identity lookups and named-period selection;
+    /// repeated visits count separately. Index construction is already
+    /// represented by `vertices_read`.
+    pub candidate_rows_examined: usize,
 }
 
 /// What verifying several periods reads of the book, each read once
@@ -1314,7 +1397,7 @@ pub(crate) struct Reads<'a, V: asupersync::fs::Vfs + Clone> {
     pub(crate) book: &'a BookContext,
     periods: BTreeSet<String>,
     folds: BTreeMap<CommitSeq, PeriodFolds>,
-    vertices: Option<Vec<VertexRow>>,
+    vertices: Option<RegisterRows>,
     memberships: Option<Memberships>,
     entry_rows: BTreeMap<CommitSeq, BTreeMap<VId, VertexRow>>,
     projection_work: ProjectionReadWork,
@@ -1359,8 +1442,8 @@ impl<'a, V: asupersync::fs::Vfs + Clone> Reads<'a, V> {
         }
     }
 
-    /// The current vertices, shared by maintenance-state and cell checks.
-    fn current_vertices(&mut self) -> Result<&[VertexRow], RegisterError> {
+    /// The indexed current vertices, shared by maintenance-state and cell checks.
+    fn current_vertices(&mut self) -> Result<&RegisterRows, RegisterError> {
         if self.vertices.is_none() {
             self.projection_work.vertex_scans = self.projection_work.vertex_scans.saturating_add(1);
             let rows = self.db.vertices()?;
@@ -1368,17 +1451,17 @@ impl<'a, V: asupersync::fs::Vfs + Clone> Reads<'a, V> {
                 .projection_work
                 .vertices_read
                 .saturating_add(rows.len());
-            self.vertices = Some(rows);
+            self.vertices = Some(RegisterRows::from_vertices(rows));
         }
         self.vertices
-            .as_deref()
+            .as_ref()
             .ok_or_else(|| KernelError::Corrupt("the current vertices were not read".into()).into())
     }
 
     /// The current vertices and the edges' period memberships. Edges remain
     /// lazy so a broken header or cell digest retains its existing refusal
     /// without introducing a read of unrelated edge history first.
-    fn scans(&mut self) -> Result<(&[VertexRow], &Memberships), RegisterError> {
+    fn scans(&mut self) -> Result<(&RegisterRows, &Memberships), RegisterError> {
         self.current_vertices()?;
         if self.memberships.is_none() {
             self.projection_work.edge_scans = self.projection_work.edge_scans.saturating_add(1);
@@ -1549,6 +1632,9 @@ pub fn verify_periods_with_context_counted<V: asupersync::fs::Vfs + Clone>(
             break;
         }
     }
+    reads.projection_work.candidate_rows_examined = reads.vertices.as_ref().map_or(0, |rows| {
+        rows.candidate_rows_examined.load(Ordering::Relaxed)
+    });
     (results, reads.projection_work)
 }
 
@@ -1614,13 +1700,13 @@ fn verify_period_with_context_in<V: asupersync::fs::Vfs + Clone>(
     Ok(result)
 }
 
-/// Verify the fold's stored projection against `rows`, the book's current
+/// Verify the fold's stored projection against `rows`, the book's indexed current
 /// vertices, and `memberships`, its period memberships ([`period_memberships`]).
 fn verify_projection_in<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     fold: &Fold,
-    rows: &[VertexRow],
+    rows: &RegisterRows,
     memberships: &Memberships,
 ) -> Result<Verification, RegisterError> {
     let period_code = &fold.period;
@@ -1641,12 +1727,12 @@ fn verify_projection_in<V: asupersync::fs::Vfs + Clone>(
             None => (None, None),
             Some(row) => {
                 let metadata_ok = row.labels == vec![label::REGISTER]
-                    && bytes(&row, property::BOOK_ID, "register.book_id")? == book.book_id.0
-                    && bytes(&row, property::ACCOUNT_REF, "register.account_ref")?
+                    && bytes(row, property::BOOK_ID, "register.book_id")? == book.book_id.0
+                    && bytes(row, property::ACCOUNT_REF, "register.account_ref")?
                         == key.account.0.to_le_bytes()
-                    && int(&row, property::UNIT_ID, "register.unit_id")? == i64::from(key.unit_id)
-                    && text(&row, property::EFFECTIVE_PERIOD, "register.period")? == fold.period
-                    && u64::try_from(int(&row, property::WATERMARK, "register.watermark")?).ok()
+                    && int(row, property::UNIT_ID, "register.unit_id")? == i64::from(key.unit_id)
+                    && text(row, property::EFFECTIVE_PERIOD, "register.period")? == fold.period
+                    && u64::try_from(int(row, property::WATERMARK, "register.watermark")?).ok()
                         == Some(fold.watermark.map_or(0, |s| s.0))
                     && linked.contains(&rvid)
                     && !memberships
@@ -1655,7 +1741,7 @@ fn verify_projection_in<V: asupersync::fs::Vfs + Clone>(
                 if !metadata_ok {
                     projection_errors.push(format!("register {:032x}: identity, metadata, watermark or period membership disagrees", rvid.0));
                 }
-                let digest = match prop(&row, property::FA_FOLD_DIGEST) {
+                let digest = match prop(row, property::FA_FOLD_DIGEST) {
                     Some(CanonicalScalar::Bytes(b)) if b.len() == 32 => {
                         let mut d = [0u8; 32];
                         d.copy_from_slice(b.as_slice());
@@ -1668,7 +1754,7 @@ fn verify_projection_in<V: asupersync::fs::Vfs + Clone>(
                     Some(prev) if prev == digest => digest,
                     Some(_) => None,
                 });
-                (stored_values(&row, false)?, stored_values(&row, true)?)
+                (stored_values(row, false)?, stored_values(row, true)?)
             }
         };
         if stored != Some(*posted) {
@@ -2622,6 +2708,135 @@ pub fn periods_for_balance(
 mod tests {
     use super::*;
     use fa_time::{DateDay, PeriodDef, PeriodKind};
+
+    fn selection_row(
+        vid: usize,
+        mut labels: Vec<fgdb_delta_types::LabelId>,
+        period: Option<CanonicalScalar>,
+    ) -> VertexRow {
+        labels.sort_unstable();
+        VertexRow {
+            vid: VId(vid as u128),
+            birth_ordinal: 0,
+            created_at: CommitSeq(1),
+            retired_at: None,
+            labels,
+            props: period
+                .map(|value| (property::EFFECTIVE_PERIOD, value))
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn literal_register_candidates<'a>(
+        rows: &'a [VertexRow],
+        period: &str,
+        expected: &BTreeSet<VId>,
+        linked: &BTreeSet<VId>,
+    ) -> BTreeMap<VId, &'a VertexRow> {
+        rows.iter()
+            .filter(|row| {
+                expected.contains(&row.vid)
+                    || (row.labels.contains(&label::REGISTER)
+                        && (linked.contains(&row.vid)
+                            || matches!(prop(row, property::EFFECTIVE_PERIOD),
+                                Some(CanonicalScalar::Text(p)) if p.as_str() == period)))
+            })
+            .map(|row| (row.vid, row))
+            .collect()
+    }
+
+    #[test]
+    fn indexed_register_candidates_preserve_every_corrupt_selection_route() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<RegisterRows>();
+        let mut rows = Vec::new();
+        let mut expected = BTreeSet::from([VId(u128::MAX)]);
+        let mut linked = BTreeSet::from([VId(u128::MAX)]);
+        for labels in [
+            vec![],
+            vec![label::REGISTER],
+            vec![label::ACCOUNT],
+            vec![label::ACCOUNT, label::REGISTER],
+        ] {
+            for period in [
+                None,
+                Some(CanonicalScalar::ucs_basic_text("P").unwrap()),
+                Some(CanonicalScalar::ucs_basic_text("Q").unwrap()),
+                Some(CanonicalScalar::Int(7)),
+            ] {
+                for is_expected in [false, true] {
+                    for is_linked in [false, true] {
+                        let row = selection_row(rows.len(), labels.clone(), period.clone());
+                        if is_expected {
+                            expected.insert(row.vid);
+                        }
+                        if is_linked {
+                            linked.insert(row.vid);
+                        }
+                        rows.push(row);
+                    }
+                }
+            }
+        }
+        let index = RegisterRows::from_vertices(rows);
+        for period in ["P", "Q", "absent"] {
+            assert_eq!(
+                index.stored(period, &expected, &linked),
+                literal_register_candidates(&index.rows, period, &expected, &linked),
+                "period={period}"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_register_selection_does_not_rescan_large_books_for_each_period() {
+        for unrelated in [1_000, 100_000] {
+            let mut rows: Vec<_> = (0..unrelated)
+                .map(|vid| selection_row(vid, vec![label::ENTRY], None))
+                .collect();
+            let mut periods = Vec::new();
+            for number in 0..32 {
+                let period = format!("P{number}");
+                let start = rows.len();
+                let named = Some(CanonicalScalar::ucs_basic_text(&period).unwrap());
+                // Expected but mislabeled; linked but unnamed; named but
+                // unlinked; non-register naming/linking that must be ignored.
+                rows.push(selection_row(start, vec![label::ACCOUNT], None));
+                rows.push(selection_row(start + 1, vec![label::REGISTER], None));
+                rows.push(selection_row(
+                    start + 2,
+                    vec![label::REGISTER],
+                    named.clone(),
+                ));
+                rows.push(selection_row(start + 3, vec![label::ACCOUNT], named));
+                periods.push((
+                    period,
+                    BTreeSet::from([VId(start as u128), VId(u128::MAX)]),
+                    BTreeSet::from([VId((start + 1) as u128), VId((start + 3) as u128)]),
+                ));
+            }
+            let index = RegisterRows::from_vertices(rows);
+            for (period, expected, linked) in &periods {
+                let actual = index.stored(period, expected, linked);
+                assert_eq!(actual.len(), 3);
+                assert_eq!(
+                    actual,
+                    literal_register_candidates(&index.rows, period, expected, linked)
+                );
+            }
+            let comparisons = usize::try_from(index.rows.len().ilog2()).unwrap() + 2;
+            let bound = periods.len() * (4 * comparisons + 1);
+            let work = index.candidate_rows_examined.load(Ordering::Relaxed);
+            assert!(work <= bound, "unrelated={unrelated}: {work} > {bound}");
+            eprintln!(
+                "register selection vertices={} periods={} indexed_row_visits={work} literal_row_visits={}",
+                index.rows.len(),
+                periods.len(),
+                index.rows.len() * periods.len()
+            );
+        }
+    }
 
     #[test]
     fn cell_net_is_exact_at_the_i128_boundaries_and_none_on_overflow() {

@@ -83,6 +83,8 @@ mod register_capacity;
 mod registration_outcome_keys;
 #[path = "genesis/scheduled_admission.rs"]
 mod scheduled_admission_tests;
+#[path = "genesis/settlement_scaling.rs"]
+mod settlement_scaling_tests;
 #[path = "genesis/subledger.rs"]
 mod subledger_tests;
 #[path = "genesis/time_outcome_keys.rs"]

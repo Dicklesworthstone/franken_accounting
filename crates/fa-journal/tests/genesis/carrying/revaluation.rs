@@ -11,6 +11,9 @@ use fa_reference::fx::{
 };
 use fgdb_types::CommitSeq;
 
+#[path = "revaluation/scaling.rs"]
+mod scaling;
+
 #[test]
 fn mixed_fx_batches_protect_declared_valuation_leaves_before_any_revaluation() {
     for (fx_first, route_month) in [(false, 3), (true, 3), (false, 4), (true, 4)] {

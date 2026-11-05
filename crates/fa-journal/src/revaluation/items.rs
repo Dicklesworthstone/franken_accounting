@@ -6,6 +6,28 @@ use super::*;
 use fa_model::{EntryRef, FxItemRevaluationBasis, FxRevaluationItem, SupersessionKind};
 use std::collections::BTreeSet;
 
+pub(super) struct Population {
+    pub allocation: Option<FxItemRevaluationBasis>,
+    pub legs: Vec<LegPayload>,
+    pub totals: Option<BaseTotals>,
+    pub work: crate::carrying::CarryingPopulationWork,
+}
+
+/// Successful release proofs within exactly one observe call. The caller
+/// creates this after fixing the book, source, route and native prefix; it
+/// never survives that observation or retains another entry's payload.
+#[derive(Default)]
+pub(super) struct ReleaseRecognition {
+    recognized: BTreeSet<VId>,
+    lineage_entries_read: usize,
+}
+
+impl ReleaseRecognition {
+    pub(super) fn lineage_entries_read(&self) -> usize {
+        self.lineage_entries_read
+    }
+}
+
 // These are the exact source coordinates and checked totals already computed
 // by observe; passing them explicitly avoids a second, potentially different fold.
 #[allow(clippy::too_many_arguments)]
@@ -24,11 +46,7 @@ pub(super) fn population<V: Vfs + Clone>(
     historical: i128,
     valuation: i128,
     target: i128,
-) -> Outcome<(
-    Option<FxItemRevaluationBasis>,
-    Vec<LegPayload>,
-    Option<BaseTotals>,
-)> {
+) -> Outcome<Population> {
     let mut reversals = BTreeMap::new();
     let by_id: BTreeMap<_, _> = entries
         .iter()
@@ -55,6 +73,8 @@ pub(super) fn population<V: Vfs + Clone>(
             }
         }
     }
+    let mut work = crate::carrying::CarryingPopulationWork::default();
+    let mut live = BTreeMap::new();
     let mut sources = BTreeMap::new();
     for (_, vid, entry) in entries {
         for (ordinal, leg) in entry.proposal.legs.iter().enumerate() {
@@ -87,7 +107,10 @@ pub(super) fn population<V: Vfs + Clone>(
                     "the complete source population is not composed of valued original open items and their authenticated applications/undos",
                 )));
             }
-            if crate::carrying::live(*vid, &reversals)? {
+            let is_live =
+                crate::carrying::reversal_liveness(*vid, &reversals, &mut live, cx, &mut work)?
+                    .map_err(|detail| KernelError::Corrupt(detail.into()))?;
+            if is_live {
                 sources.insert(
                     (*vid, ordinal as u16),
                     EntryRef {
@@ -103,9 +126,24 @@ pub(super) fn population<V: Vfs + Clone>(
     let mut native_sum = 0;
     let mut historical_sum = 0;
     let mut valuation_sum = 0;
+    // The source selector above remains migration/date scoped. The shared
+    // carrying observation retains the complete prefix so effects after the
+    // requested closing date still make this request refuse, just as the
+    // literal single-item fold does.
+    let history = if sources.is_empty() {
+        None
+    } else {
+        Some(crate::carrying::CarryingHistory::read_at(db, cx, book, at)?)
+    };
     for ((_, ordinal), reference) in sources {
-        let item = match crate::carrying::open_item_carrying_inner(
-            db, cx, book, reference, ordinal, at,
+        let item = match crate::carrying::open_item_carrying_observed(
+            db,
+            cx,
+            book,
+            reference,
+            ordinal,
+            at,
+            history.as_ref(),
         )? {
             Ok(item) => item,
             Err(refusal) => return Ok(Err(refusal)),
@@ -140,6 +178,11 @@ pub(super) fn population<V: Vfs + Clone>(
         }
         carrying.push(item);
     }
+    if let Some(history) = &history {
+        let source_reversal_links = work.reversal_links_examined;
+        work = history.work();
+        work.reversal_links_examined += source_reversal_links;
+    }
     if sides.len() > 1
         || (native_sum, historical_sum, valuation_sum) != (native, historical, valuation)
     {
@@ -153,7 +196,12 @@ pub(super) fn population<V: Vfs + Clone>(
         )));
     }
     if carrying.is_empty() {
-        return Ok(Ok((None, Vec::new(), None)));
+        return Ok(Ok(Population {
+            allocation: None,
+            legs: Vec::new(),
+            totals: None,
+            work,
+        }));
     }
     let magnitude = match target.checked_abs() {
         Some(value) => value,
@@ -219,26 +267,33 @@ pub(super) fn population<V: Vfs + Clone>(
         rate_doc_oids: vec![request.rate_document],
         residual: None,
     });
-    Ok(Ok((
-        Some(FxItemRevaluationBasis {
+    Ok(Ok(Population {
+        allocation: Some(FxItemRevaluationBasis {
             allocation_law: 1,
             allocation_version: 1,
             items,
         }),
         legs,
         totals,
-    )))
+        work,
+    }))
 }
 
 pub(super) fn recognized_release<V: Vfs + Clone>(
     db: &Database<V>,
     at: CommitSeq,
+    vid: VId,
     entry: &Entry,
     source: VId,
     route: &FxRevaluationRoute,
+    recognition: &mut ReleaseRecognition,
 ) -> Outcome<()> {
+    if recognition.recognized.contains(&vid) {
+        return Ok(Ok(()));
+    }
     let mut original = entry.clone();
     let mut seen = BTreeSet::new();
+    let mut path = vec![vid];
     while original.proposal.class == EntryClass::REVERSAL {
         let [link] = original.proposal.supersession.as_slice() else {
             return Ok(Err(invalid(
@@ -248,6 +303,7 @@ pub(super) fn recognized_release<V: Vfs + Clone>(
         if link.kind != SupersessionKind::Reverses || !seen.insert(link.target.vid) {
             return Ok(Err(invalid("valuation release reversal lineage cycles")));
         }
+        recognition.lineage_entries_read += 1;
         let Some((parent, _)) = crate::post::read_entry_at(db, link.target.vid, at)? else {
             return Ok(Err(invalid("valuation release reversal target is missing")));
         };
@@ -258,12 +314,26 @@ pub(super) fn recognized_release<V: Vfs + Clone>(
                 "valuation release reversal differs from its recorded target",
             )));
         }
+        // Even a proved parent must be read to authenticate this new edge's
+        // handle and exact side swap. Only its already successful suffix may
+        // be reused. Publish the newly proved path only after those checks.
+        if recognition.recognized.contains(&link.target.vid) {
+            recognition.recognized.extend(path);
+            return Ok(Ok(()));
+        }
+        path.push(link.target.vid);
         original = parent;
     }
     let basis = match crate::carrying::allocated_basis(&original.proposal) {
         Ok(basis) => basis,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let mut work = crate::carrying::CarryingPopulationWork::default();
+    let release_index =
+        match crate::carrying::AllocatedReleaseIndex::new(&original.proposal, &mut work) {
+            Ok(index) => index,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
     for release in &basis.items {
         let Some(applying) = original
             .proposal
@@ -283,16 +353,17 @@ pub(super) fn recognized_release<V: Vfs + Clone>(
                 )));
             }
             if let Err(refusal) =
-                crate::carrying::check_allocated_release(&original.proposal, release)
+                release_index.check_release(&original.proposal, release, &mut work)
             {
                 return Ok(Err(refusal));
             }
         }
     }
     if let Err(refusal) =
-        crate::carrying::covers_valuation_account(&original.proposal, source, route)
+        release_index.covers_valuation_account(&original.proposal, source, route, &mut work)
     {
         return Ok(Err(refusal));
     }
+    recognition.recognized.extend(path);
     Ok(Ok(()))
 }

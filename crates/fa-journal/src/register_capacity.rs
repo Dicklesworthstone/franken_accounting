@@ -611,11 +611,21 @@ impl Cells {
                 released.insert(target.vid);
             }
         }
-        for target in &released {
-            if self.released.contains(target) || entries.iter().any(|(vid, _)| vid == target) {
-                continue;
+        // A rebuild may contain the entire history. Find its older release
+        // targets in one pass instead of rescanning every entry per target.
+        // Index only unresolved targets, so a history with few resolutions
+        // does not allocate another index over all of its ordinary entries.
+        let mut older: BTreeSet<_> = released.difference(&self.released).copied().collect();
+        if !older.is_empty() {
+            for (vid, _) in entries {
+                older.remove(vid);
+                if older.is_empty() {
+                    break;
+                }
             }
-            if let Some(hold) = earlier(*target)?
+        }
+        for target in older {
+            if let Some(hold) = earlier(target)?
                 && hold.proposal.class == EntryClass::PENDING
                 && !self.fold(&hold, true)
             {
@@ -1053,6 +1063,135 @@ fn fit_columns(
     true
 }
 
+/// Capacity of one live schedule-minting transaction. The owned cells begin
+/// at its authoritative basis and advance only for accepted scheduled
+/// Reversals. They are never a committed `CapacityHistory` and never carried
+/// into another transaction. A failed proof keeps the literal admission path.
+#[derive(Default)]
+pub(crate) struct ScheduledReversalCapacity {
+    initialized: bool,
+    at: Option<CommitSeq>,
+    marker: Option<MarkerRef>,
+    cells: Option<Cells>,
+    work: ScheduledCapacityWork,
+}
+
+/// Work at the actual summary/proof/fallback/fold calls. These counters do
+/// not include substrate staging or the unrelated schedule admission laws.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ScheduledCapacityWork {
+    summary_builds: usize,
+    summary_checks: usize,
+    accepted_folds: usize,
+    accepted_legs: usize,
+    literal_fallbacks: usize,
+}
+
+/// A candidate proved admissible but not yet accepted by the remaining
+/// schedule laws or staged in the transaction. Dropping it changes no sums.
+#[must_use = "accept only after the scheduled reversal has been staged"]
+#[derive(Debug)]
+pub(crate) struct ScheduledReversalCapacityAdmission<'entry> {
+    entry: &'entry Entry,
+    from_summary: bool,
+}
+
+impl ScheduledReversalCapacity {
+    /// The same admission point as `admit_addition`. `staged` is consumed
+    /// only on the literal fallback, never copied or decoded on the fast path.
+    pub(crate) fn prepare<'entry, V: asupersync::fs::Vfs + Clone>(
+        &mut self,
+        txn: &WriteTxn,
+        db: &Database<V>,
+        ctx: &PurposeContexts,
+        staged: impl IntoIterator<Item = VId>,
+        vid: VId,
+        entry: &'entry Entry,
+    ) -> Outcome<ScheduledReversalCapacityAdmission<'entry>> {
+        ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
+        let accounts = accounts([&entry.proposal]);
+        let supported = entry.proposal.class == EntryClass::REVERSAL
+            && entry.proposal.branch_id == Id128::TRUNK
+            && entry.proposal.pending.is_none()
+            && matches!(entry.proposal.origin, EntryOrigin::Schedule { .. });
+        if supported && !accounts.is_empty() {
+            if !self.initialized {
+                // Keep the literal path's account-read precedence. Extra
+                // summary observations must never manufacture a refusal.
+                for account in &accounts {
+                    txn.vertex(db, *account)?;
+                }
+                self.initialized = true;
+                self.work.summary_builds = self.work.summary_builds.saturating_add(1);
+                if let Ok(summary) = summarize(db, ctx, entry.proposal.book_id, txn.basis()) {
+                    self.at = Some(summary.at);
+                    self.marker = summary.marker;
+                    self.cells = summary.cells;
+                }
+            }
+            if self.cells.is_some()
+                && (self.at != Some(txn.basis())
+                    || self.marker.is_none()
+                    || crate::rows::marker_at(db, txn.basis()).ok().flatten() != self.marker)
+            {
+                // Rebuilding here would omit accepted, uncommitted entries.
+                // Stay literal for the rest of this minting transaction.
+                self.cells = None;
+            }
+            if let Some(cells) = &self.cells {
+                self.work.summary_checks = self.work.summary_checks.saturating_add(1);
+                if fits(
+                    txn,
+                    db,
+                    cells,
+                    entry.proposal.book_id,
+                    &accounts,
+                    &[],
+                    Some((vid, entry)),
+                    fa_model::limits::MAX_BATCH_ENTRIES,
+                )
+                .is_ok_and(|admission| admission.fits)
+                {
+                    return Ok(Ok(ScheduledReversalCapacityAdmission {
+                        entry,
+                        from_summary: true,
+                    }));
+                }
+            }
+        }
+        self.work.literal_fallbacks = self.work.literal_fallbacks.saturating_add(1);
+        match admit_addition(txn, db, ctx, staged, vid, entry)? {
+            Ok(()) => Ok(Ok(ScheduledReversalCapacityAdmission {
+                entry,
+                from_summary: false,
+            })),
+            Err(refusal) => Ok(Err(refusal)),
+        }
+    }
+
+    /// Called only after byte/availability admission and successful native
+    /// staging. Reversals add posted columns; the existing fold leaves hold
+    /// counts and release bookkeeping untouched. Unsupported accepted effects
+    /// disable this shortcut instead of being omitted from later admissions.
+    pub(crate) fn accept(&mut self, admission: ScheduledReversalCapacityAdmission<'_>) {
+        if admission.from_summary {
+            if let Some(cells) = &mut self.cells {
+                self.work.accepted_folds = self.work.accepted_folds.saturating_add(1);
+                self.work.accepted_legs = self
+                    .work
+                    .accepted_legs
+                    .saturating_add(admission.entry.proposal.legs.len());
+                if !cells.fold(admission.entry, false) {
+                    self.cells = None;
+                }
+            }
+        } else {
+            self.initialized = true;
+            self.cells = None;
+        }
+    }
+}
+
 /// [`admit`] for a long-lived book that carries `history` between its own
 /// writes: where the carried summary proves the effects fit, admission
 /// answers from it; otherwise it scans exactly as [`admit`] does.
@@ -1138,6 +1277,10 @@ fn admit_carried_including<V: asupersync::fs::Vfs + Clone>(
 #[cfg(test)]
 #[path = "register_capacity/pending_tests.rs"]
 mod pending_tests;
+
+#[cfg(test)]
+#[path = "register_capacity/scheduled_tests.rs"]
+mod scheduled_tests;
 
 #[cfg(test)]
 mod tests {
