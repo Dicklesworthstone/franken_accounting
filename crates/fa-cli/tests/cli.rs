@@ -25108,6 +25108,8 @@ fn a_canon_rule_is_checked_against_the_book_and_derives_legs_from_a_recorded_eve
     assert!(out.contains("\"event\":\"rule_checked\""), "{out}");
     assert_eq!(text(&checked, "rule"), "sale_with_tax");
     assert_eq!(text(&checked, "event_kind"), "sale");
+    assert_eq!(text(&checked, "authority"), "legacy_unbounded");
+    assert_eq!(checked.get("authority_grants"), Some(&Json::Null));
     let digest = text(&checked, "ir_digest").to_string();
     assert_eq!(digest.len(), 64, "{out}");
     assert_eq!(strs(&checked, "accounts"), ["1000", "2300", "6000"]);
@@ -25222,6 +25224,92 @@ fn a_canon_rule_is_checked_against_the_book_and_derives_legs_from_a_recorded_eve
         let (code, out, _) = run(&argv);
         assert_eq!(code, 2, "{args:?}: {out}");
     }
+    Ok(())
+}
+
+#[test]
+fn declared_rule_authority_is_visible_and_refuses_outputs_above_its_ceiling() -> std::io::Result<()>
+{
+    let (book, ev, dir) = envelope_book("canon-authority")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    for (event, amount) in [("AT-LIMIT", "40.00 USD"), ("OVER-LIMIT", "40.01 USD")] {
+        let resource = format!("net:{amount}");
+        let (code, out, err) = run(&[
+            "event",
+            "record",
+            "--code",
+            event,
+            "--kind",
+            "sale",
+            "--occurred-on",
+            "2026-03-12",
+            "--evidence",
+            &ev,
+            "--resource",
+            &resource,
+            "--json",
+        ]);
+        assert_eq!(code, 0, "{out}{err}");
+    }
+    let source = r#"rule bounded_sale v1 for event Sale {
+  authority {
+    debit "1000" upto "40.00 USD"
+    credit "6000" upto "40.00 USD"
+  }
+  let net = event.resource("net", "USD")
+  debit "1000" net
+  credit "6000" net / 4 round HalfEven
+  credit "6000" net - net / 4 round HalfEven
+}"#;
+    let rule = write(&dir, "bounded.rule", source);
+    let (code, out, _) = run(&["rule", "check", &rule, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let checked = doc(&out);
+    assert_eq!(text(&checked, "authority"), "declared");
+    let grants = arr(&checked, "authority_grants");
+    assert_eq!(grants.len(), 2, "{out}");
+    for grant in grants {
+        assert_eq!(text(grant, "ceiling"), "40.00 USD");
+        assert!(arr(grant, "dimensions").is_empty());
+        assert!(matches!(
+            (text(grant, "side"), text(grant, "account")),
+            ("debit", "1000") | ("credit", "6000")
+        ));
+    }
+    let digest = text(&checked, "ir_digest").to_string();
+    let (code, out, _) = run(&["rule", "propose", &rule, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(text(&doc(&out), "authority"), "declared");
+    let (code, out, _) = run(&["rule", "show", &digest, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let shown = doc(&out);
+    assert_eq!(text(&shown, "source"), source);
+    assert_eq!(arr(&shown, "authority_grants"), grants);
+    let (_, before, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+    for selector in [vec![rule.as_str()], vec!["--rule", digest.as_str()]] {
+        let mut args = vec!["rule", "eval"];
+        args.extend(selector);
+        args.extend(["--event", "AT-LIMIT", "--json"]);
+        let (code, out, _) = run(&args);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(text(&doc(&out), "authority"), "declared");
+        assert_eq!(arr(&doc(&out), "legs").len(), 3);
+        let event_index = args.len() - 2;
+        args[event_index] = "OVER-LIMIT";
+        let (code, out, _) = run(&args);
+        assert_eq!(
+            (code, field(&out, "refusal_id")),
+            (3, Some("FA-REF-196")),
+            "{out}"
+        );
+        assert!(out.contains("authority"), "{out}");
+    }
+    let (_, after, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert_eq!(arr(&doc(&after), "rows"), arr(&doc(&before), "rows"));
+    assert_eq!(
+        robot_line(&after).get("coordinate"),
+        robot_line(&before).get("coordinate")
+    );
     Ok(())
 }
 

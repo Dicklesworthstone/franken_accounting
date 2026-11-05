@@ -2,9 +2,10 @@
 //! over a recorded event, and refuse what cannot be proven or computed.
 
 use fa_canon::{
-    CompiledRule, EvalError, InputType, InputValue, Inputs, Produces, compile, evaluate,
+    AuthorityError, AuthorityGrant, CompiledRule, EvalError, InputType, InputValue, Inputs,
+    Produces, RuleAuthority, compile, evaluate, validate_authority,
 };
-use fa_model::{Erasable, EventKind, EventResource, EventSpec, EvidenceRef, Oid, SealKey};
+use fa_model::{Erasable, EventKind, EventResource, EventSpec, EvidenceRef, Oid, SealKey, Writer};
 use fa_money::{Amount, RoundingLaw, Side, Unit, UnitKind, UnitRegistry};
 use fa_time::DateDay;
 
@@ -622,4 +623,422 @@ fn nested_lets_are_proven_without_copying_each_use() {
     let error = compile(&unbalanced, &units).unwrap_err();
     assert!(error.message.contains("does not balance in USD"), "{error}");
     assert!(error.message.len() < 8 * 1024, "{}", error.message.len());
+}
+
+const AUTHORIZED_SPLIT: &str = r#"
+rule bounded_sale v1 for event Sale {
+  authority {
+    debit "1200" upto "100.00 USD" dims { project = "P1", cost_center = "CC1" }
+    credit "4000" upto "100.00 USD"
+  }
+  let net = event.resource("net", "USD")
+  debit "1200" net dims { cost_center = "CC1", project = "P1" }
+  debit "1200" net dims { project = "P1", cost_center = "CC1" }
+  credit "4000" net * 2
+}
+"#;
+
+#[test]
+fn rule_authority_sums_split_legs_and_enforces_exact_ceilings() {
+    let units = units();
+    let rule = compile(AUTHORIZED_SPLIT, &units).unwrap();
+    let RuleAuthority::Declared(grants) = rule.authority() else {
+        panic!("the source declares bounded authority");
+    };
+    assert_eq!(grants.len(), 2);
+    assert_eq!(grants[0].ceiling, usd(&units, 10_000));
+    assert_eq!(
+        grants[0].dims,
+        [
+            ("cost_center".into(), "CC1".into()),
+            ("project".into(), "P1".into())
+        ]
+    );
+
+    for amount in [4_999, 5_000] {
+        let sale = event(EventKind::Sale, vec![("net", usd(&units, amount))]);
+        let result = evaluate(&rule, &sale, &Inputs::new()).unwrap();
+        assert_eq!(result.legs.len(), 3);
+        assert_eq!(result.legs[0].amount, usd(&units, amount));
+        assert_eq!(result.legs[1].amount, usd(&units, amount));
+        assert_eq!(validate_authority(&rule, &result), Ok(()));
+    }
+    let over = event(EventKind::Sale, vec![("net", usd(&units, 5_001))]);
+    assert!(matches!(
+        evaluate(&rule, &over, &Inputs::new()),
+        Err(EvalError::Authority(AuthorityError::CeilingExceeded {
+            grant: 0,
+            requested,
+            ceiling,
+            ..
+        })) if requested == 10_002 && ceiling == usd(&units, 10_000)
+    ));
+    let zero = event(EventKind::Sale, vec![("net", usd(&units, 0))]);
+    assert!(
+        evaluate(&rule, &zero, &Inputs::new())
+            .unwrap()
+            .legs
+            .is_empty()
+    );
+}
+
+#[test]
+fn rule_authority_refuses_forged_cells_and_checked_sum_overflow() {
+    let units = units();
+    let rule = compile(AUTHORIZED_SPLIT, &units).unwrap();
+    let sale = event(EventKind::Sale, vec![("net", usd(&units, 4_000))]);
+    let result = evaluate(&rule, &sale, &Inputs::new()).unwrap();
+    for changed in 0..6 {
+        let mut forged = result.clone();
+        let leg = &mut forged.legs[0];
+        match changed {
+            0 => leg.account = "9999".into(),
+            1 => leg.side = Side::Credit,
+            2 => leg.amount.unit = units.lookup("EUR").unwrap(),
+            3 => leg.dims[0].1 = "CC2".into(),
+            4 => leg.dims.clear(),
+            5 => leg.dims.swap(0, 1),
+            _ => unreachable!(),
+        }
+        assert!(
+            matches!(
+                validate_authority(&rule, &forged),
+                Err(EvalError::Authority(AuthorityError::OutsideScope {
+                    leg: 0,
+                    ..
+                }))
+            ),
+            "changed={changed}"
+        );
+    }
+    for amount in [-1, 0] {
+        let mut forged = result.clone();
+        forged.legs[0].amount = usd(&units, amount);
+        assert!(matches!(
+            validate_authority(&rule, &forged),
+            Err(EvalError::Authority(AuthorityError::NonPositiveLeg {
+                leg: 0,
+                ..
+            }))
+        ));
+    }
+    let mut another_rule = result.clone();
+    another_rule.rule_version_oid[0] ^= 1;
+    assert_eq!(
+        validate_authority(&rule, &another_rule),
+        Err(EvalError::Authority(AuthorityError::WrongRuleVersion))
+    );
+
+    let huge = compile(
+        &format!(
+            "rule huge v1 for event Sale {{ authority {{ \
+             debit \"1\" upto \"{} JPY\" credit \"2\" upto \"{} JPY\" }} \
+             debit \"1\" \"1 JPY\" credit \"2\" \"1 JPY\" }}",
+            i128::MAX,
+            i128::MAX
+        ),
+        &units,
+    )
+    .unwrap();
+    let mut overflowing = evaluate(&huge, &event(EventKind::Sale, vec![]), &Inputs::new()).unwrap();
+    overflowing.legs[0].amount.mantissa = i128::MAX;
+    overflowing.legs.insert(1, overflowing.legs[0].clone());
+    assert!(matches!(
+        validate_authority(&huge, &overflowing),
+        Err(EvalError::Authority(AuthorityError::Overflow {
+            grant: 0,
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn rule_authority_is_static_complete_and_never_implicitly_widened() {
+    let units = units();
+    for (declaration, needle) in [
+        ("", "at least one grant"),
+        (r#"debit "1" upto "1.00 USD""#, "no authority grant"),
+        (
+            r#"debit "1" upto "1.00 EUR" credit "2" upto "1.00 USD""#,
+            "no authority grant",
+        ),
+        (
+            r#"debit "1" upto "1.00 USD" dims { project = "P" } credit "2" upto "1.00 USD""#,
+            "no authority grant",
+        ),
+        (
+            r#"debit "1" upto "0 USD" credit "2" upto "1.00 USD""#,
+            "positive exact amount",
+        ),
+        (
+            r#"debit "1" upto "-1 USD" credit "2" upto "1.00 USD""#,
+            "positive exact amount",
+        ),
+        (
+            r#"debit "1" upto "1.001 USD" credit "2" upto "1.00 USD""#,
+            "fractional digits",
+        ),
+        (
+            r#"debit "1" upto "1 USD" debit "1" upto "2 USD" credit "2" upto "1 USD""#,
+            "unique",
+        ),
+        (
+            r#"debit "1" upto "1 USD" dims { project = "P", project = "Q" } credit "2" upto "1 USD""#,
+            "tagged twice",
+        ),
+        (
+            r#"debit "1" upto "1 USD" dims { unregistered = "P" } credit "2" upto "1 USD""#,
+            "not a registered dimension",
+        ),
+        (
+            r#"debit "1" upto event.resource("net", "USD") credit "2" upto "1 USD""#,
+            "fixed authority ceiling",
+        ),
+    ] {
+        let source = format!(
+            "rule r v1 for event Sale {{ authority {{ {declaration} }} \
+             debit \"1\" \"1.00 USD\" credit \"2\" \"1.00 USD\" }}"
+        );
+        let error = compile(&source, &units).unwrap_err();
+        assert!(error.message.contains(needle), "{source}\n{error}");
+    }
+    let duplicated_header = AUTHORIZED_SPLIT.replace(
+        "  let net",
+        "  authority { debit \"1200\" upto \"100 USD\" }\n  let net",
+    );
+    assert!(compile(&duplicated_header, &units).is_err());
+
+    let mut oversized = String::from("rule r v1 for event Sale { authority { ");
+    oversized.push_str(&r#"debit "1" upto "1 USD" "#.repeat(513));
+    oversized.push_str(r#"} debit "1" "1 USD" credit "2" "1 USD" }"#);
+    assert!(
+        compile(&oversized, &units)
+            .unwrap_err()
+            .message
+            .contains("at most 512")
+    );
+}
+
+/// Write a deliberately editable declaration in the documented extension
+/// format, independent of the private IR encoder. Tests below mutate semantic
+/// fields while preserving the surrounding framing and balanced expressions.
+fn authority_ir_with(
+    rule: &CompiledRule,
+    units: &UnitRegistry,
+    version: u16,
+    grants: &[AuthorityGrant],
+) -> Vec<u8> {
+    let start = rule
+        .ir()
+        .windows(8)
+        .position(|w| w == b"FARAUTH\0")
+        .unwrap();
+    let mut bytes = rule.ir()[..start].to_vec();
+    let mut extension = Writer::new();
+    extension.fixed(b"FARAUTH\0").u16(version);
+    extension.list(grants, |w, grant| {
+        w.u8(if grant.side == Side::Debit { 1 } else { 2 })
+            .str(&grant.account);
+        let unit = units.get(grant.ceiling.unit).unwrap();
+        w.str(&unit.code)
+            .u16(unit.version)
+            .u8(unit.scale)
+            .i128(grant.ceiling.mantissa);
+        w.list(&grant.dims, |w, (kind, code)| {
+            w.str(kind).str(code);
+        });
+    });
+    bytes.extend(extension.finish().unwrap());
+    bytes
+}
+
+#[test]
+fn rule_authority_ir_rejects_unknown_duplicate_noncanonical_and_incomplete_grants() {
+    let units = units();
+    let rule = compile(AUTHORIZED_SPLIT, &units).unwrap();
+    let RuleAuthority::Declared(grants) = rule.authority() else {
+        panic!("declared authority");
+    };
+    assert_eq!(authority_ir_with(&rule, &units, 1, grants), rule.ir());
+    assert_eq!(CompiledRule::decode(rule.ir(), &units).unwrap(), rule);
+    assert!(CompiledRule::decode(&authority_ir_with(&rule, &units, 2, grants), &units).is_err());
+    assert!(CompiledRule::decode(&authority_ir_with(&rule, &units, 1, &[]), &units).is_err());
+    for changed in 0..9 {
+        let mut malformed = grants.clone();
+        match changed {
+            0 => malformed.reverse(),
+            1 => malformed.push(malformed[0].clone()),
+            2 => malformed[0].ceiling.mantissa = 0,
+            3 => malformed[0].ceiling.mantissa = -1,
+            4 => malformed[0].account = "1201".into(),
+            5 => malformed[0].dims.clear(),
+            6 => malformed[0].dims.swap(0, 1),
+            7 => {
+                let duplicate = malformed[0].dims[0].clone();
+                malformed[0].dims.push(duplicate);
+            }
+            8 => malformed[0].account = "X".repeat(1025),
+            _ => unreachable!(),
+        }
+        let bytes = authority_ir_with(&rule, &units, 1, &malformed);
+        assert!(
+            CompiledRule::decode(&bytes, &units).is_err(),
+            "changed={changed}"
+        );
+    }
+    let start = rule
+        .ir()
+        .windows(8)
+        .position(|w| w == b"FARAUTH\0")
+        .unwrap();
+    let mut unknown = rule.ir().to_vec();
+    unknown[start] ^= 1;
+    assert!(CompiledRule::decode(&unknown, &units).is_err());
+    let mut duplicated = rule.ir().to_vec();
+    duplicated.extend(&rule.ir()[start..]);
+    assert!(CompiledRule::decode(&duplicated, &units).is_err());
+    assert!(CompiledRule::decode(&rule.ir()[..rule.ir().len() - 1], &units).is_err());
+    let mut oversized = rule.ir()[..start + 10].to_vec();
+    oversized.extend(513u32.to_le_bytes());
+    assert!(CompiledRule::decode(&oversized, &units).is_err());
+}
+
+#[test]
+fn rule_authority_order_and_unit_ids_do_not_change_the_content_address() {
+    let units = units();
+    let source = r#"rule multi v1 for event Sale {
+        authority {
+            debit "1" upto "2.00 USD" credit "2" upto "2.00 USD"
+            debit "1" upto "3.00 EUR" credit "2" upto "3.00 EUR"
+        }
+        debit "1" "1.00 USD" credit "2" "1.00 USD"
+        debit "1" "1.00 EUR" credit "2" "1.00 EUR"
+    }"#;
+    let reordered = source.replace(
+        "debit \"1\" upto \"2.00 USD\" credit \"2\" upto \"2.00 USD\"\n            debit \"1\" upto \"3.00 EUR\" credit \"2\" upto \"3.00 EUR\"",
+        "credit \"2\" upto \"3.00 EUR\" debit \"1\" upto \"3.00 EUR\" credit \"2\" upto \"2.00 USD\" debit \"1\" upto \"2.00 USD\"",
+    );
+    assert_ne!(source, reordered);
+    let rule = compile(source, &units).unwrap();
+    assert_eq!(compile(&reordered, &units).unwrap(), rule);
+    let changed = source.replace("upto \"2.00 USD\"", "upto \"2.01 USD\"");
+    assert_ne!(
+        compile(&changed, &units).unwrap().ir_digest(),
+        rule.ir_digest()
+    );
+    let mut remapped = UnitRegistry::empty();
+    for code in ["EUR", "USD"] {
+        remapped
+            .register(units.get(units.lookup(code).unwrap()).unwrap().clone())
+            .unwrap();
+    }
+    assert_ne!(remapped.lookup("USD"), units.lookup("USD"));
+    let recompiled = compile(source, &remapped).unwrap();
+    assert_eq!(recompiled.ir(), rule.ir());
+    assert_eq!(
+        CompiledRule::decode(rule.ir(), &remapped).unwrap(),
+        recompiled
+    );
+}
+
+#[test]
+fn legacy_rules_keep_their_original_ir_and_explicit_unbounded_posture() {
+    // Frozen legacy v1 encoding from before the authority extension. Neither
+    // a default tag nor an empty extension may silently change old addresses.
+    const LEGACY_IR: &[u8] = &[
+        1, 0, 0, 0, 114, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 1, 1, 0, 0, 0, 49,
+        1, 3, 0, 0, 0, 85, 83, 68, 0, 0, 2, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 2, 1, 0, 0, 0, 50, 1, 3, 0, 0, 0, 85, 83, 68, 0, 0, 2, 100, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    let units = units();
+    let source = r#"rule r v1 for event Sale { debit "1" "1.00 USD" credit "2" "1.00 USD" }"#;
+    let rule = compile(source, &units).unwrap();
+    assert_eq!(rule.authority(), &RuleAuthority::LegacyUnbounded);
+    assert_eq!(rule.ir(), LEGACY_IR);
+    assert_eq!(CompiledRule::decode(LEGACY_IR, &units).unwrap(), rule);
+    let bounded = source.replace(
+        "{ debit",
+        "{ authority { debit \"1\" upto \"1 USD\" credit \"2\" upto \"1 USD\" } debit",
+    );
+    let declared = compile(&bounded, &units).unwrap();
+    assert!(declared.ir().starts_with(LEGACY_IR));
+    assert_ne!(declared.ir_digest(), rule.ir_digest());
+    let contextual = compile(
+        r#"rule authority v1 for event Sale { inputs { upto: amount("USD") }
+           let authority = upto debit "1" authority credit "2" authority }"#,
+        &units,
+    )
+    .unwrap();
+    assert_eq!(contextual.authority(), &RuleAuthority::LegacyUnbounded);
+}
+
+#[test]
+fn retained_source_binds_authority_without_reinterpreting_historical_units() {
+    let units = units();
+    let mut later = units.clone();
+    let mut usd4 = units.get(units.lookup("USD").unwrap()).unwrap().clone();
+    usd4.version = 1;
+    usd4.scale = 4;
+    later.register(usd4).unwrap();
+    for source in [SALE, AUTHORIZED_SPLIT] {
+        let recorded = compile(source, &units).unwrap();
+        // A naive recompilation chooses today's USD@v1 rather than the
+        // recorded USD@v0. The retained IR still decodes and its source must
+        // be interpreted at that explicit historical binding instead.
+        assert_ne!(compile(source, &later).unwrap().ir(), recorded.ir());
+        let retained = CompiledRule::decode(recorded.ir(), &later).unwrap();
+        assert_eq!(retained.check_source(source, &later), Ok(()));
+        assert_eq!(
+            retained.check_source(&format!("# equivalent layout\n{source}"), &later),
+            Ok(())
+        );
+        assert!(
+            retained
+                .check_source(source, &UnitRegistry::empty())
+                .is_err()
+        );
+    }
+
+    let recorded = compile(AUTHORIZED_SPLIT, &units).unwrap();
+    let broader_source = AUTHORIZED_SPLIT.replace("100.00 USD", "200.00 USD");
+    assert!(
+        recorded
+            .check_source(&broader_source, &units)
+            .unwrap_err()
+            .0
+            .contains("does not reproduce")
+    );
+    let broad = compile(&broader_source, &units).unwrap();
+    assert!(broad.check_source(AUTHORIZED_SPLIT, &units).is_err());
+    let start = recorded
+        .ir()
+        .windows(8)
+        .position(|w| w == b"FARAUTH\0")
+        .unwrap();
+    let downgraded = CompiledRule::decode(&recorded.ir()[..start], &units).unwrap();
+    assert_eq!(downgraded.authority(), &RuleAuthority::LegacyUnbounded);
+    assert!(downgraded.check_source(AUTHORIZED_SPLIT, &units).is_err());
+    let derived = evaluate(
+        &recorded,
+        &event(EventKind::Sale, vec![("net", usd(&units, 1))]),
+        &Inputs::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        validate_authority(&downgraded, &derived),
+        Err(EvalError::Authority(AuthorityError::WrongRuleVersion))
+    );
+
+    let mut other_scale = UnitRegistry::empty();
+    let mut usd3 = units.get(units.lookup("USD").unwrap()).unwrap().clone();
+    usd3.scale = 3;
+    other_scale.register(usd3).unwrap();
+    assert!(
+        recorded
+            .check_source(AUTHORIZED_SPLIT, &other_scale)
+            .unwrap_err()
+            .0
+            .contains("another scale")
+    );
 }

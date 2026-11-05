@@ -6,7 +6,10 @@
 use core::fmt;
 use std::collections::BTreeMap;
 
-use crate::ir::{CANON_INPUTS_DOMAIN, CompiledRule, DateSource, InputType, Node, write_unit};
+use crate::ir::{
+    CANON_INPUTS_DOMAIN, CompiledRule, DateSource, InputType, MAX_LEGS, Node, RuleAuthority,
+    side_tag, write_unit,
+};
 use fa_model::{EventKind, EventSpec, Reader, Writer, domain_digest};
 use fa_money::wide::U256;
 use fa_money::{Amount, Side, UnitId};
@@ -60,8 +63,92 @@ pub struct Derivation {
     pub legs: Vec<DerivedLeg>,
 }
 
+/// A candidate effect outside the declared rule grant. Leg and grant indices
+/// are zero-based; a grant index names the canonical declaration returned by
+/// [`CompiledRule::authority`], including its exact side and dimension set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthorityError {
+    WrongRuleVersion,
+    TooManyLegs {
+        found: usize,
+        limit: usize,
+    },
+    NonPositiveLeg {
+        leg: usize,
+        account: String,
+        amount: Amount,
+    },
+    OutsideScope {
+        leg: usize,
+        account: String,
+        side: Side,
+        unit: UnitId,
+    },
+    CeilingExceeded {
+        grant: usize,
+        account: String,
+        /// Gross mantissa in the ceiling's exact unit.
+        requested: i128,
+        ceiling: Amount,
+    },
+    Overflow {
+        grant: usize,
+        account: String,
+    },
+}
+
+impl fmt::Display for AuthorityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WrongRuleVersion => f.write_str(
+                "the derivation names another rule version; its authority cannot be substituted",
+            ),
+            Self::TooManyLegs { found, limit } => write!(
+                f,
+                "the derivation has {found} legs, above the rule's {limit}-leg bound"
+            ),
+            Self::NonPositiveLeg {
+                leg,
+                account,
+                amount,
+            } => write!(
+                f,
+                "leg #{leg} on {account} has {} minor units; an authority grant admits only positive candidate legs",
+                amount.mantissa
+            ),
+            Self::OutsideScope {
+                leg,
+                account,
+                side,
+                unit,
+            } => write!(
+                f,
+                "leg #{leg} ({side:?} {account}, unit #{}) has no rule authority grant for its exact account, side, unit and dimension set",
+                unit.0
+            ),
+            Self::CeilingExceeded {
+                grant,
+                account,
+                requested,
+                ceiling,
+            } => write!(
+                f,
+                "authority grant #{grant} on {account} permits at most {} minor units of unit #{}, but its generated legs total {}; splitting a cell does not multiply its ceiling",
+                ceiling.mantissa, ceiling.unit.0, requested
+            ),
+            Self::Overflow { grant, account } => write!(
+                f,
+                "the generated legs of authority grant #{grant} on {account} overflow their exact gross amount; nothing is clamped or netted"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for AuthorityError {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EvalError {
+    Authority(AuthorityError),
     WrongEventKind {
         rule: EventKind,
         event: EventKind,
@@ -107,6 +194,7 @@ pub enum EvalError {
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Authority(error) => write!(f, "rule authority: {error}"),
             Self::WrongEventKind { rule, event } => write!(
                 f,
                 "the rule derives from {} events, and this event is a {}",
@@ -170,6 +258,89 @@ impl fmt::Display for EvalError {
 }
 
 impl core::error::Error for EvalError {}
+
+/// Check candidate effects against the authority bound into `rule`'s IR.
+/// Every declared directional cell has one gross ceiling shared by all its
+/// generated legs. Units, sides and complete dimension sets never net or
+/// substitute for each other. Addition is checked before comparison.
+///
+/// This also binds the check to the derivation's named rule version. It does
+/// not reproduce the event computation or grant a caller any capability;
+/// the posting kernel must independently reproduce the rule and intersect
+/// its resulting effects with the caller's current permissions. Legacy IR
+/// without a declaration keeps its explicit `LegacyUnbounded` posture.
+pub fn validate_authority(rule: &CompiledRule, derivation: &Derivation) -> Result<(), EvalError> {
+    let denied = EvalError::Authority;
+    if derivation.rule_version_oid != rule.ir_digest() {
+        return Err(denied(AuthorityError::WrongRuleVersion));
+    }
+    let RuleAuthority::Declared(grants) = rule.authority() else {
+        return Ok(());
+    };
+    if derivation.legs.len() > MAX_LEGS {
+        return Err(denied(AuthorityError::TooManyLegs {
+            found: derivation.legs.len(),
+            limit: MAX_LEGS,
+        }));
+    }
+    let cells: BTreeMap<_, _> = grants
+        .iter()
+        .enumerate()
+        .map(|(index, grant)| {
+            (
+                (
+                    side_tag(grant.side),
+                    grant.account.as_str(),
+                    grant.ceiling.unit,
+                    grant.dims.as_slice(),
+                ),
+                index,
+            )
+        })
+        .collect();
+    let mut gross = vec![0i128; grants.len()];
+    for (index, leg) in derivation.legs.iter().enumerate() {
+        if leg.amount.mantissa <= 0 {
+            return Err(denied(AuthorityError::NonPositiveLeg {
+                leg: index,
+                account: leg.account.clone(),
+                amount: leg.amount,
+            }));
+        }
+        let Some(&grant_index) = cells.get(&(
+            side_tag(leg.side),
+            leg.account.as_str(),
+            leg.amount.unit,
+            leg.dims.as_slice(),
+        )) else {
+            return Err(denied(AuthorityError::OutsideScope {
+                leg: index,
+                account: leg.account.clone(),
+                side: leg.side,
+                unit: leg.amount.unit,
+            }));
+        };
+        let grant = &grants[grant_index];
+        let total = gross[grant_index]
+            .checked_add(leg.amount.mantissa)
+            .ok_or_else(|| {
+                denied(AuthorityError::Overflow {
+                    grant: grant_index,
+                    account: grant.account.clone(),
+                })
+            })?;
+        gross[grant_index] = total;
+        if total > grant.ceiling.mantissa {
+            return Err(denied(AuthorityError::CeilingExceeded {
+                grant: grant_index,
+                account: grant.account.clone(),
+                requested: total,
+                ceiling: grant.ceiling,
+            }));
+        }
+    }
+    Ok(())
+}
 
 struct Frame<'a> {
     rule: &'a CompiledRule,
@@ -349,14 +520,16 @@ pub fn evaluate(
             reverse_on,
         });
     }
-    Ok(Derivation {
+    let derivation = Derivation {
         rule_version_oid: rule.ir_digest(),
         event_digest,
         inputs_digest: domain_digest(CANON_INPUTS_DOMAIN, &[&inputs_bytes]),
         effective,
         reverse_on,
         legs,
-    })
+    };
+    validate_authority(rule, &derivation)?;
+    Ok(derivation)
 }
 
 /// A failure inside one value, before it is attributed to the leg or let

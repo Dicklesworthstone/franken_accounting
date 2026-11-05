@@ -15,7 +15,11 @@
 //!   (`fa:canon-ir:v1`), the content address a `RuleVersion` journals, and
 //!   the rule's static dependency set.
 //! - [`evaluate`] is the interim tree-walking evaluator over that IR. It is
-//!   total: every failure is a typed [`EvalError`], never a guess.
+//!   total: every failure is a typed [`EvalError`], never a guess. A source's
+//!   optional [`RuleAuthority`] declaration bounds its generated directional
+//!   account/unit/dimension cells with exact gross ceilings, independently of
+//!   the caller's capabilities. Older rules explicitly remain unbounded by
+//!   a rule grant, with their existing IR bytes and digest unchanged.
 //!
 //! Totality is by construction: no loops, no recursion, and a `let` may
 //! name only the lets before it.
@@ -34,11 +38,12 @@ use core::fmt;
 
 pub use check::compile;
 pub use eval::{
-    Derivation, DerivedLeg, EvalError, InputValue, Inputs, decode_inputs, encode_inputs, evaluate,
+    AuthorityError, Derivation, DerivedLeg, EvalError, InputValue, Inputs, decode_inputs,
+    encode_inputs, evaluate, validate_authority,
 };
 pub use ir::{
-    CANON_INPUTS_DOMAIN, CANON_IR_DOMAIN, CompiledRule, DateSource, Dependencies, InputDecl,
-    InputType, IrError, LegTemplate, Node, Produces,
+    AuthorityGrant, CANON_INPUTS_DOMAIN, CANON_IR_DOMAIN, CompiledRule, DateSource, Dependencies,
+    InputDecl, InputType, IrError, LegTemplate, Node, Produces, RuleAuthority,
 };
 pub use lex::MAX_SOURCE_BYTES;
 

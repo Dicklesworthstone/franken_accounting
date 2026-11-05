@@ -58,6 +58,9 @@ mod issuance_ancestry;
 #[path = "policy/read_authority.rs"]
 mod read_authority;
 
+#[path = "policy/rule_authority.rs"]
+mod rule_authority;
+
 struct Harness {
     runtime: Runtime,
     root: Cx,

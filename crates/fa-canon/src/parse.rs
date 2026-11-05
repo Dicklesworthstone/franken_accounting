@@ -1,9 +1,11 @@
 //! The rule grammar (plan §10.3), parsed into an untyped syntax tree:
 //!
 //! ```text
-//! rule    := 'rule' NAME 'v'N 'for' 'event' KIND ['produces' CLASS] '{' [inputs] stmt* '}'
+//! rule    := 'rule' NAME 'v'N 'for' 'event' KIND ['produces' CLASS] '{' [inputs] [authority] stmt* '}'
 //! inputs  := 'inputs' '{' NAME ':' type (',' NAME ':' type)* [','] '}'
 //! type    := 'date' | 'amount' '(' "UNIT" ')'
+//! authority := 'authority' '{' grant+ '}'
+//! grant   := ('debit' | 'credit') "ACCOUNT" 'upto' "AMOUNT UNIT" [dims]
 //! stmt    := 'let' NAME '=' expr
 //!          | ('debit' | 'credit') "ACCOUNT" expr ['dims' '{' DIM '=' "CODE" (',' …)* [','] '}']
 //!          | 'effective' date
@@ -15,6 +17,7 @@
 //! ```
 
 use crate::CanonError;
+use crate::ir::MAX_AUTHORITY_GRANTS;
 use crate::lex::{Spanned, Token, tokens};
 use fa_money::Side;
 
@@ -63,7 +66,17 @@ pub(crate) struct SourceRule {
     /// `produces <Class>`, when the rule names its entry class.
     pub produces: Option<(String, Pos)>,
     pub inputs: Vec<SourceInput>,
+    pub authority: Option<(Vec<SourceGrant>, Pos)>,
     pub stmts: Vec<Stmt>,
+}
+
+#[derive(Debug)]
+pub(crate) struct SourceGrant {
+    pub side: Side,
+    pub account: String,
+    pub ceiling: (String, Pos),
+    pub dims: Vec<(String, String, Pos)>,
+    pub pos: Pos,
 }
 
 #[derive(Debug)]
@@ -251,6 +264,11 @@ impl Parser {
         } else {
             Vec::new()
         };
+        let authority = if self.peek_ident("authority") {
+            Some(self.authority()?)
+        } else {
+            None
+        };
         let mut stmts = Vec::new();
         while !self.peek_symbol('}') {
             if stmts.len() >= MAX_STATEMENTS {
@@ -267,8 +285,49 @@ impl Parser {
             event,
             produces,
             inputs,
+            authority,
             stmts,
         })
+    }
+
+    /// A grant names one exact directional cell and a fixed amount ceiling.
+    /// `authority` and `upto` are contextual keywords: older rules may still
+    /// use either word as a rule, input or let name outside this header.
+    fn authority(&mut self) -> Result<(Vec<SourceGrant>, Pos), CanonError> {
+        let pos = self.keyword("authority")?;
+        self.symbol('{')?;
+        let mut grants = Vec::new();
+        while !self.peek_symbol('}') {
+            if grants.len() >= MAX_AUTHORITY_GRANTS {
+                return Err(self.pos().error(format!(
+                    "a rule declares at most {MAX_AUTHORITY_GRANTS} authority grants"
+                )));
+            }
+            let (side, grant_pos) = match self.next("`debit` or `credit`")? {
+                (Token::Ident(word), pos) if word == "debit" => (Side::Debit, pos),
+                (Token::Ident(word), pos) if word == "credit" => (Side::Credit, pos),
+                (_, pos) => {
+                    return Err(pos.error("an authority grant starts with `debit` or `credit`"));
+                }
+            };
+            let (account, _) = self.string("the grant's account code")?;
+            self.keyword("upto")?;
+            let ceiling = self.string("a fixed authority ceiling, such as \"100.00 USD\"")?;
+            let dims = if self.peek_ident("dims") {
+                self.dims()?
+            } else {
+                Vec::new()
+            };
+            grants.push(SourceGrant {
+                side,
+                account,
+                ceiling,
+                dims,
+                pos: grant_pos,
+            });
+        }
+        self.symbol('}')?;
+        Ok((grants, pos))
     }
 
     /// `event.occurred_on`, or a declared date input by name.

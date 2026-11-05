@@ -116,6 +116,9 @@ fn engine(
         &engine_inputs(units, &case.inputs),
     )
     .map_err(|error| match error {
+        EvalError::Authority(error) => {
+            panic!("the legacy differential's rules declare no authority: {error}")
+        }
         EvalError::WrongEventKind { .. } => Failure::WrongEventKind,
         EvalError::UndeclaredInput { .. } => Failure::UndeclaredInput,
         EvalError::MissingInput { .. } => Failure::MissingInput,
