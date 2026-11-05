@@ -1296,6 +1296,108 @@ mod source_draft_tests {
     }
 
     #[test]
+    fn post_only_draft_capability_plans_a_subledger_application_into_its_draft() {
+        let mut f = Fixture::new();
+        let bill = format!(
+            r#"{{"effective_date":"{DATE}","idempotency_key":"retained-payable","evidence":["{}"],"legs":[{{"side":"debit","account":"6000","amount":"100.00 USD"}},{{"side":"credit","account":"2000","amount":"100.00 USD"}}]}}"#,
+            f.evidence
+        );
+        let posted = f.owner(&["post", "--intent", "-"], Some(&bill));
+        let target = text(field(&posted, "data"), "entry").to_string();
+        let target_vid = VId(u128::from_str_radix(&target, 16).unwrap());
+        let (source, _) = f.book.read_entry(target_vid).unwrap().unwrap();
+        let name = "payable-application";
+        let (cap, authority) = f.agent("payment-agent", Some(name));
+        f.open(&authority, name);
+        let before = f.owner(&["tb", "--period", "FY2026-P03"], None);
+        let payment = format!(
+            r#"{{"effective_date":"{DATE}","idempotency_key":"confined-payment","evidence":["{}"],"legs":[{{"side":"debit","account":"2000","amount":"25.00 USD","settles":[{{"entry":"{target}","ordinal":1,"amount":"25.00 USD"}}]}},{{"side":"credit","account":"1000","amount":"25.00 USD"}}]}}"#,
+            f.evidence
+        );
+        let (exit, result) = f.bound(
+            &authority,
+            &["post", "--intent", "-", "--draft", name],
+            Some(&payment),
+        );
+        assert_eq!(exit, 0, "{result:?}");
+        assert_eq!(text(&result, "event"), "draft_planned");
+        let planned = f.book.draft_entries(&cap, name).unwrap().unwrap();
+        assert_eq!(planned.len(), 1);
+        let legs = &planned[0].proposal.legs;
+        assert_eq!(legs.len(), 2);
+        assert_eq!(legs[0].amount.mantissa, 2_500);
+        assert_eq!(legs[1].amount, legs[0].amount);
+        assert_eq!(legs[0].settles.len(), 1);
+        let application = &legs[0].settles[0];
+        assert_eq!(application.target.vid, target_vid);
+        assert_eq!(application.target.entry_digest, source.entry_digest);
+        assert_eq!(application.ordinal, 1);
+        assert_eq!(application.amount.mantissa, 2_500);
+        let after = f.owner(&["tb", "--period", "FY2026-P03"], None);
+        assert_eq!(
+            field(field(&before, "data"), "rows"),
+            field(field(&after, "data"), "rows")
+        );
+        let (exit, refusal) = f.bound(&authority, &["entry", &target], None);
+        assert_eq!(exit, 7, "{refusal:?}");
+        assert_eq!(text(field(&refusal, "data"), "refusal_id"), "FA-REF-011");
+        f.promote_exact(&cap, name, 1);
+    }
+
+    #[test]
+    fn promotion_readmits_a_post_only_draft_against_current_trunk() {
+        let mut f = Fixture::new();
+        let bill = format!(
+            r#"{{"effective_date":"{DATE}","idempotency_key":"promotion-payable","evidence":["{}"],"legs":[{{"side":"debit","account":"6000","amount":"100.00 USD"}},{{"side":"credit","account":"2000","amount":"100.00 USD"}}]}}"#,
+            f.evidence
+        );
+        let posted = f.owner(&["post", "--intent", "-"], Some(&bill));
+        let target = text(field(&posted, "data"), "entry").to_string();
+        let payment = |key: &str, amount: &str, evidence: &str| {
+            format!(
+                r#"{{"effective_date":"{DATE}","idempotency_key":"{key}","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"2000","amount":"{amount} USD","settles":[{{"entry":"{target}","ordinal":1,"amount":"{amount} USD"}}]}},{{"side":"credit","account":"1000","amount":"{amount} USD"}}]}}"#
+            )
+        };
+        let name = "current-payable";
+        let (cap, authority) = f.agent("current-payment-agent", Some(name));
+        f.open(&authority, name);
+        let draft_payment = payment("draft-eighty", "80.00", &f.evidence);
+        let (exit, result) = f.bound(
+            &authority,
+            &["post", "--intent", "-", "--draft", name],
+            Some(&draft_payment),
+        );
+        assert_eq!(exit, 0, "{result:?}");
+        let planned_vid =
+            VId(u128::from_str_radix(text(field(&result, "data"), "entry"), 16).unwrap());
+        let concurrent_payment = payment("trunk-thirty", "30.00", &f.evidence);
+        f.owner(&["post", "--intent", "-"], Some(&concurrent_payment));
+        let head = f.book.head().unwrap();
+        let journal = f.journal();
+        let reviewed = f.book.draft_entries(&cap, name).unwrap().unwrap();
+        let promoter = Capability::embedded(
+            principal_vid("independent-controller"),
+            &["read", "approve"],
+        )
+        .unwrap();
+        let refusal = f
+            .book
+            .promote_draft(
+                promoter,
+                name,
+                DateDay::parse(DATE).unwrap(),
+                "Re-admit the reviewed payment against current retained applications",
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, "FA-REF-072", "{refusal:?}");
+        assert_eq!(f.book.head().unwrap(), head);
+        assert_eq!(f.journal().rows, journal.rows);
+        assert_eq!(f.book.draft_entries(&cap, name).unwrap().unwrap(), reviewed);
+        assert!(f.book.read_entry(planned_vid).unwrap().is_none());
+    }
+
+    #[test]
     fn post_only_draft_capability_prepares_and_appends_a_disposal_review() {
         for law in ["FIFO", "SpecificId"] {
             let mut f = Fixture::new();
