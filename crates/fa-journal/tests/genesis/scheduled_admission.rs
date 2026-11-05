@@ -976,63 +976,81 @@ fn agent_operator_closed_reversal_requires_an_independent_human_approval() {
 
 #[test]
 fn closed_reversal_sweep_requires_system_authority_even_for_an_agent_operator() {
-    let mut h = fixture();
-    let target = accrue(&mut h, 100, b"closed-system-accrual");
-    open(&mut h, &closer(), b"open-before-system-reversal").unwrap();
-    let april_period = h.april.clone();
-    h.transition(
-        &april_period,
-        PeriodTransition::SoftClose,
-        b"softclose-before-system-reversal",
-    )
-    .unwrap();
-    h.transition(
-        &april_period,
-        PeriodTransition::Close,
-        b"close-before-system-reversal",
-    )
-    .unwrap();
-    tick(&mut h, april(), 126);
-    let before = h.db.frontier().unwrap();
-    let system = fa_journal::rows::system_principal(h.book.book_id);
-    for kind in [
-        fa_policy::OperatorKind::Human,
-        fa_policy::OperatorKind::Agent,
-    ] {
-        // Possession of the System principal ID and the posting ops does not
-        // promote a Human base capability to the sweep's System authority.
+    for state in [PeriodState::SoftClosed, PeriodState::Closed] {
+        let mut h = fixture();
+        let target = accrue(&mut h, 100, b"closed-system-accrual");
+        open(&mut h, &closer(), b"open-before-system-reversal").unwrap();
+        let april_period = h.april.clone();
+        h.transition(
+            &april_period,
+            PeriodTransition::SoftClose,
+            b"softclose-before-system-reversal",
+        )
+        .unwrap();
+        if state == PeriodState::Closed {
+            h.transition(
+                &april_period,
+                PeriodTransition::Close,
+                b"close-before-system-reversal",
+            )
+            .unwrap();
+        }
+        assert_eq!(h.period_state(&april_period), state);
+        tick(&mut h, april(), 126);
+        let before = h.db.frontier().unwrap();
+        let system = fa_journal::rows::system_principal(h.book.book_id);
+        for kind in [
+            fa_policy::OperatorKind::Human,
+            fa_policy::OperatorKind::Agent,
+        ] {
+            // Possession of the System principal ID and the posting ops does not
+            // promote a Human base capability to the sweep's System authority.
+            let capability = Capability::new(
+                system,
+                Profile::Human,
+                &[Op::Post, Op::PostClosed],
+                PRINCIPAL,
+            )
+            .unwrap()
+            .with_operator_kind(kind)
+            .unwrap();
+            let refusal = sweep(&mut h, capability).unwrap_err();
+            assert_eq!(
+                (refusal.code, refusal.exit),
+                (code::CAPABILITY, exit::SAFETY),
+                "state={state:?}, operator={kind:?}: {refusal}"
+            );
+            assert!(refusal.message.contains("System principal"), "{refusal}");
+            assert_eq!(h.db.frontier().unwrap(), before);
+            assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+        }
         let capability = Capability::new(
             system,
-            Profile::Human,
+            Profile::System,
             &[Op::Post, Op::PostClosed],
             PRINCIPAL,
         )
-        .unwrap()
-        .with_operator_kind(kind)
         .unwrap();
-        let refusal = sweep(&mut h, capability).unwrap_err();
-        assert_eq!(
-            (refusal.code, refusal.exit),
-            (code::CAPABILITY, exit::SAFETY)
-        );
-        assert!(refusal.message.contains("System principal"), "{refusal}");
-        assert_eq!(h.db.frontier().unwrap(), before);
-        assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+        let batch = sweep(&mut h, capability).unwrap().unwrap();
+        if state == PeriodState::Closed {
+            // The schedule binds exec_op = post. The caller's additional
+            // post_closed capability cannot widen that recorded authority.
+            assert!(batch.minted.is_empty(), "{batch:?}");
+            assert_eq!(
+                batch.blocked,
+                vec![(target, "admissibility.toml (Reversal, Closed)".to_string())],
+                "{batch:?}"
+            );
+            assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+        } else {
+            assert_eq!(batch.minted.len(), 1, "state={state:?}: {batch:?}");
+            assert_eq!(batch.minted[0].0, target);
+            assert_eq!(batch.minted[0].1.vid, reversal_vid(target.vid));
+            assert!(batch.blocked.is_empty(), "{batch:?}");
+        }
+        assert!(verify_schedules(&h.db, &h.book).unwrap().is_green());
+        assert_leg_projections(&h);
     }
-    let capability = Capability::new(
-        system,
-        Profile::System,
-        &[Op::Post, Op::PostClosed],
-        PRINCIPAL,
-    )
-    .unwrap();
-    let batch = sweep(&mut h, capability).unwrap().unwrap();
-    assert_eq!(batch.minted.len(), 1);
-    assert_eq!(batch.minted[0].0, target);
-    assert_eq!(batch.minted[0].1.vid, reversal_vid(target.vid));
-    assert!(batch.blocked.is_empty());
-    assert!(verify_schedules(&h.db, &h.book).unwrap().is_green());
-    assert_leg_projections(&h);
 }
 
 #[test]
