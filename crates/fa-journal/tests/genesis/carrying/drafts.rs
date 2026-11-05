@@ -435,6 +435,34 @@ fn post_only_draft_carrying_matches_native_effects_and_promotes_exactly() {
         let mut direct = request(proposal.clone());
         direct.capability = planner.clone();
         assert_eq!(f.h.post(direct).unwrap_err().exit, exit::SAFETY);
+        let unconfined = Capability::new(
+            AGENT,
+            fa_policy::Profile::Agent,
+            &[fa_policy::Op::Post],
+            PRINCIPAL,
+        )
+        .unwrap();
+        let denied =
+            f.h.plan_draft(unconfined, name, proposal.clone())
+                .unwrap_err();
+        assert_eq!(denied.code, fa_journal::refusal::code::CAPABILITY);
+        assert!(denied.message.contains("requires capability op `read`"));
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+        let mut overlapping = proposal.clone();
+        for application in overlapping
+            .legs
+            .iter_mut()
+            .flat_map(|leg| &mut leg.settles)
+            .skip(1)
+        {
+            application.target = f.target;
+        }
+        let denied =
+            f.h.plan_draft(planner.clone(), name, overlapping)
+                .unwrap_err();
+        assert_eq!(denied.code, fa_journal::refusal::code::SETTLE_SHAPE);
+        assert!(denied.message.contains("distinct existing target legs"));
+        assert_eq!(f.h.db.frontier().unwrap(), head);
         let planned =
             f.h.plan_draft(planner.clone(), name, proposal.clone())
                 .unwrap();
@@ -507,6 +535,41 @@ fn confined_carrying_checks_declared_and_generated_ceilings_without_source_balan
     );
     assert!(denied.detail.is_none(), "{denied:?}");
     assert_eq!(f.h.db.frontier().unwrap(), head);
+    assert_eq!(f.carrying().open_base.mantissa, 10);
+}
+
+#[test]
+fn confined_carrying_plan_does_not_disclose_withheld_relief_for_a_forged_proposal() {
+    let mut f = fixture(3, 10);
+    let name = "withheld-foreign-relief";
+    let planner = confined_planner(&f, name, 3, 2);
+    f.h.open_draft(planner.clone(), name).unwrap();
+    // The real historical relief is 3, which this capability cannot disclose.
+    // A caller can still author a balanced proposal claiming relief of 2.
+    let mut forged = f.prepare(1, b"understated-foreign-relief").into_proposal();
+    forged.principal_ref = AGENT;
+    forged.legs.retain(|leg| leg.account_ref != f.realized);
+    assert_eq!(forged.legs.len(), 4);
+    for leg in &mut forged.legs {
+        leg.base_amount = Some(Amount::new(f.h.usd, 2));
+        if leg.amount.unit == f.h.usd {
+            leg.amount.mantissa = 2;
+        }
+    }
+    forged.unit_totals = EntryPayload::fold_unit_totals(&forged.legs).unwrap();
+    let totals = forged.base_totals.as_mut().unwrap();
+    totals.debits = 4;
+    totals.credits = 4;
+    forged.validate().unwrap();
+    let head = f.h.db.frontier().unwrap();
+    let denied = f.h.plan_draft(planner, name, forged).unwrap_err();
+    assert_eq!(denied.code, fa_journal::refusal::code::SETTLE_SHAPE);
+    assert_eq!(
+        denied.message,
+        "batch member 0: the proposed foreign settlement does not reproduce its admitted source effects; nothing in the batch was recorded"
+    );
+    assert_eq!(f.h.db.frontier().unwrap(), head);
+    assert!(f.h.draft(name).intents.is_empty());
     assert_eq!(f.carrying().open_base.mantissa, 10);
 }
 

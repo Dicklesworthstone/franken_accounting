@@ -231,49 +231,50 @@ fn independent_carrying_batch(
                 crate::carrying::unsupported_batch(),
             )));
         }
-        let mut applying = member
+        let applications: Option<Vec<_>> = member
             .proposal()
             .legs
             .iter()
-            .filter(|leg| !leg.settles.is_empty());
-        let application = applying
-            .next()
-            .and_then(|leg| match leg.settles.as_slice() {
+            .filter(|leg| !leg.settles.is_empty())
+            .map(|leg| match leg.settles.as_slice() {
                 [application] => Some(application),
                 _ => None,
-            });
-        let Some(application) = application.filter(|_| applying.next().is_none()) else {
+            })
+            .collect();
+        let Some(applications) = applications.filter(|items| !items.is_empty()) else {
             return Ok(Err(member_refusal(
                 index,
                 Refusal::new(
                     code::SETTLE_SHAPE,
                     exit::REFUSAL,
-                    "each atomic FX member requires one single-target applying leg",
+                    "each atomic FX member requires one or more single-target applying legs",
                     "plan §5.7–5.10 (independent carrying-value sources)",
-                    "prepare each member through the single-item FX settlement law",
+                    "prepare each member through the single-item or independent-group FX settlement law",
                 ),
             )));
         };
-        // Identity includes the ordinal, not the caller-supplied digest:
-        // forged handles for the same leg must not bypass independence.
-        if !targets.insert((application.target.vid, application.ordinal)) {
-            return Ok(Err(member_refusal(
-                index,
-                Refusal::new(
-                    code::SETTLE_SHAPE,
-                    exit::REFUSAL,
-                    "atomic FX settlements require distinct existing target legs",
-                    "plan §5.7–5.10 (independent carrying-value sources)",
-                    "combine no two applications to the same target leg in one batch; prepare later relief after the earlier publication",
-                ),
-            )));
+        // Identity includes the ordinal, not the caller-supplied digest.
+        // Independence spans every component, including grouped members.
+        for application in applications {
+            if !targets.insert((application.target.vid, application.ordinal)) {
+                return Ok(Err(member_refusal(
+                    index,
+                    Refusal::new(
+                        code::SETTLE_SHAPE,
+                        exit::REFUSAL,
+                        "atomic FX settlements require distinct existing target legs",
+                        "plan §5.7–5.10 (independent carrying-value sources)",
+                        "combine no two applications to the same target leg in one batch; prepare later relief after the earlier publication",
+                    ),
+                )));
+            }
         }
     }
     Ok(Ok(Some(IndependentCarryingBatch(()))))
 }
 
 /// Complete the carrying proof only after every member passed native
-/// preparation, including whole-book FX authority. Recorded retries return
+/// preparation, including FX source authority. Recorded retries return
 /// their existing outcome before this fresh-prefix inspection.
 fn admit_carrying_batch_accounts<V: Vfs + Clone>(
     db: &Database<V>,

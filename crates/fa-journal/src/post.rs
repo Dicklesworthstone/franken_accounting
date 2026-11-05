@@ -3135,6 +3135,20 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     }
     if let Err(refusal) = crate::carrying::validate_post(db, ctx, book, proposal, txn.basis())? {
         txn.abort();
+        if admission.admits_confined_draft_sources(&req.capability)
+            && crate::carrying::is_source_bound(proposal)
+        {
+            // A supplied proposal may intentionally understate its relief.
+            // Keep the validation law, but do not disclose its rejected
+            // source-derived amount through a diagnostic instead of an effect.
+            return Ok(Err(Refusal::new(
+                refusal.code,
+                refusal.exit,
+                "the proposed foreign settlement does not reproduce its admitted source effects",
+                "plan §15.2 (source-derived effects require admission before disclosure); fa-txgy.7",
+                "prepare the settlement from its named sources with a capability that admits every generated effect",
+            )));
+        }
         return Ok(Err(refusal));
     }
     if let Err(refusal) = crate::disposal::validate_post(&txn, db, ctx, book, proposal, admission)?
