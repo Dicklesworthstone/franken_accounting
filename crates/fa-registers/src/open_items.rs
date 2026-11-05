@@ -603,7 +603,7 @@ mod tests {
         for id in 0..=count {
             assert_eq!(
                 cached.is_live(VId(id as u128)).unwrap(),
-                (count - id) % 2 == 0
+                (count - id).is_multiple_of(2)
             );
         }
         assert_eq!(cached.links_followed(), count);
@@ -612,7 +612,7 @@ mod tests {
         for id in (0..=count).rev() {
             assert_eq!(
                 cached.is_live(VId(id as u128)).unwrap(),
-                (count - id) % 2 == 0
+                (count - id).is_multiple_of(2)
             );
         }
         assert_eq!(cached.links_followed(), count);

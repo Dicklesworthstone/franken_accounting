@@ -3559,3 +3559,12 @@ unchanged verifier accepts the retained format-v3 bundle as stable, partial
 RED for tree `9978178a2b711d0148ecbce6fc5820a38595e243`, never as PASS or
 resume evidence. Exact Tier 0 likewise had native check 0 followed by outer
 retirement 1 and supplies no PASS note. No bead is closed by these results.
+
+Strict validation of repaired candidate `27667a5c` no longer reported the
+six PDF arithmetic errors. It returned actual remote/outer 101 on two
+`manual_is_multiple_of` diagnostics in the 100,000-entry register lineage
+test. Those two parity expressions now use `(count - id).is_multiple_of(2)`;
+the same population, exact expected parity, once-per-link work assertions,
+backward enumeration and live literal-walker negative control remain. This
+is a mechanical standard-library expression repair, with no lint allowance
+or test weakening. The new source still requires strict/native validation.
