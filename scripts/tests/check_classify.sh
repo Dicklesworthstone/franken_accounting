@@ -625,6 +625,167 @@ PY
   gate_pass "compiling_steps_share_the_test_profile (all five compile paths; default and explicit empty config)"
 }
 
+conformance_mutation_covers_nested_tests_and_rejects_hidden_failures() {
+  # These are classifier/argv fixtures, never native conformance evidence.
+  local scenario dir rc expected prefix
+  local scenarios=(positive empty-profile hidden-failure wrong-failure
+    missing-test ignored-test baseline-red baseline-unrun vacuous unrun truncated delivery
+    empty-list bad-list duplicate-list duplicate-execution)
+  for scenario in "${scenarios[@]}"; do
+    dir="$base/conformance-$scenario"
+    mkdir -p "$dir/bin" "$dir/state"
+    cat >"$dir/bin/rch" <<'PY'
+#!/usr/bin/env python3
+import json
+import os
+import pathlib
+import sys
+
+scenario = os.environ["FAKE_SCENARIO"]
+args = sys.argv[1:]
+inverse = os.environ.get("FA_CONFORMANCE_INVERT")
+names = [
+    "alpha",
+    "forensic_semantics::retained_versions_preserve_declared_method",
+    "register_capacity::every_activation_path_preserves_representable_cells",
+]
+listing = args[-2:] == ["--", "--list"]
+config = [] if scenario == "empty-profile" else [
+    "--config", "profile.dev.debug=false", "--config", "profile.test.debug=false",
+]
+expected = ["exec", "--", "cargo", "test", "-j", "1", *config,
+            "--locked", "-p", "fa-conformance", "--test", "substrate", "--no-fail-fast"]
+assert args == expected + (["--", "--list"] if listing else []), args
+assert inverse in ["", *names], inverse
+assert os.environ["RCH_REQUIRE_REMOTE"] == "1"
+assert os.environ["RCH_QUEUE_WHEN_BUSY"] == "1"
+assert {"CARGO_TERM_COLOR", "FA_CONFORMANCE_INVERT"} <= set(
+    os.environ["RCH_ENV_ALLOWLIST"].split(",")
+)
+with (pathlib.Path(os.environ["FAKE_STATE"]) / "calls.jsonl").open("a") as output:
+    output.write(json.dumps({"args": args, "inverse": inverse}) + "\n")
+
+def finish(remote, delivery=None):
+    print(f"Remote command finished: exit={remote} in 1ms")
+    raise SystemExit(remote if delivery is None else delivery)
+
+if listing:
+    if scenario == "unrun":
+        print("[RCH] remote required; refusing local fallback")
+        raise SystemExit(103)
+    listed = [] if scenario == "empty-list" else names[:]
+    if scenario == "duplicate-list":
+        listed.append(names[0])
+    for name in listed:
+        print(f"{name}: test")
+    count = 2 if scenario == "bad-list" else len(listed)
+    print(f"{count} tests, 0 benchmarks")
+    finish(0)
+
+if scenario == "baseline-unrun" and not inverse:
+    print("[RCH] remote required; refusing local fallback")
+    raise SystemExit(103)
+
+failed = {inverse} if inverse else set()
+ignored = set()
+executed = names[:]
+if scenario == "baseline-red" and not inverse:
+    failed = {names[1]}
+if inverse == "alpha":
+    if scenario == "hidden-failure":
+        failed.add(names[1])
+    elif scenario == "wrong-failure":
+        failed = {names[1]}
+    elif scenario == "missing-test":
+        executed.pop()
+    elif scenario == "ignored-test":
+        ignored.add(names[2])
+    elif scenario == "vacuous":
+        failed.clear()
+for name in executed:
+    status = "FAILED" if name in failed else "ignored" if name in ignored else "ok"
+    print(f"test {name} ... {status}")
+if scenario == "duplicate-execution" and inverse == "alpha":
+    print(f"test {names[1]} ... ok")
+remote = 101 if failed else 0
+if scenario == "truncated" and inverse == "alpha":
+    finish(remote)
+passed = len(executed) - len(failed) - len(ignored)
+kind = "FAILED" if failed else "ok"
+print(f"test result: {kind}. {passed} passed; {len(failed)} failed; "
+      f"{len(ignored)} ignored; 0 measured; 0 filtered out; finished in 0.01s")
+finish(remote, 102 if scenario == "delivery" and inverse == "alpha" else None)
+PY
+    cat >"$dir/bin/cargo" <<'SH'
+#!/usr/bin/env bash
+printf 'classifier fixture refuses an unexpected direct Cargo invocation\n' >&2
+exit 107
+SH
+    chmod +x "$dir/bin/rch" "$dir/bin/cargo"
+    (
+      export PATH="$dir/bin:$PATH" FAKE_STATE="$dir/state" FAKE_SCENARIO="$scenario"
+      export CHECK_JOBS=1 RCH_ENV_ALLOWLIST=CARGO_TERM_COLOR
+      unset CHECK_TEST_CONFIG
+      [ "$scenario" = empty-profile ] && export CHECK_TEST_CONFIG=""
+      bash "$SOURCE_ROOT/scripts/conformance_mutation.sh"
+    ) >"$dir/stdout.log" 2>&1
+    rc=$?
+    case "$scenario" in
+      positive|empty-profile) expected=0; prefix=PASS ;;
+      unrun|baseline-unrun|truncated|delivery|empty-list|bad-list|duplicate-list) expected=2; prefix=UNRUN ;;
+      *) expected=1; prefix=FAIL ;;
+    esac
+    if [ "$rc" -ne "$expected" ] || ! grep -q "^$prefix " "$dir/stdout.log"; then
+      gate_fail "conformance_mutation_covers_nested_tests_and_rejects_hidden_failures — $scenario expected$expected actual$rc; log $dir/stdout.log"
+      return 1
+    fi
+    if [ "$expected" -eq 0 ]; then
+      python3 - "$dir/state/calls.jsonl" "$dir/stdout.log" <<'PY'
+import json
+import pathlib
+import sys
+
+calls = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
+expected = [
+    "alpha",
+    "forensic_semantics::retained_versions_preserve_declared_method",
+    "register_capacity::every_activation_path_preserves_representable_cells",
+]
+assert len(calls) == 5, calls
+assert calls[0]["args"][-2:] == ["--", "--list"]
+assert calls[0]["inverse"] == calls[1]["inverse"] == ""
+assert [call["inverse"] for call in calls[2:]] == expected
+output = pathlib.Path(sys.argv[2]).read_text()
+for name in expected:
+    assert f"PASS {name} — inverted, and exactly it failed" in output, output
+PY
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        gate_fail "conformance_mutation_covers_nested_tests_and_rejects_hidden_failures — incomplete qualified inventory or runtime switch; $scenario"
+        return 1
+      fi
+    elif [ "$scenario" = baseline-red ] || [ "$scenario" = baseline-unrun ]; then
+      python3 - "$dir/state/calls.jsonl" <<'PY'
+import json
+import pathlib
+import sys
+
+calls = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
+assert len(calls) == 2, calls
+assert calls[0]["args"][-2:] == ["--", "--list"]
+assert calls[1]["args"][-2:] != ["--", "--list"]
+assert all(call["inverse"] == "" for call in calls), calls
+PY
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        gate_fail "conformance_mutation_covers_nested_tests_and_rejects_hidden_failures — $scenario continued after a nonpassing baseline"
+        return 1
+      fi
+    fi
+  done
+  gate_pass "conformance_mutation_covers_nested_tests_and_rejects_hidden_failures (${#scenarios[@]} classifier/argv cases; no native proof)"
+}
+
 ssh_timeout_exit1_is_unrun
 classifier_table_covers_rch_markers_and_exit_codes
 split_test_jobs_compose_one_step
@@ -635,5 +796,6 @@ run_gate_protects_the_step_manifest
 invariant_gates_wait_for_a_passing_test_step
 test_jobs_and_listings_follow_their_package_worker
 compiling_steps_share_the_test_profile
+conformance_mutation_covers_nested_tests_and_rejects_hidden_failures
 
 gate_verdict

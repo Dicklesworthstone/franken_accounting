@@ -1406,7 +1406,7 @@ mod register_capacity {
 
     #[test]
     fn every_activation_path_preserves_representable_cells() {
-        const T: &str = "every_activation_path_preserves_representable_cells";
+        const T: &str = "register_capacity::every_activation_path_preserves_representable_cells";
         use fa_journal::migration::{
             RunBody, RunControlRequest, RunMode, RunState, TrialBalanceLine, kind, open_proposal,
             open_run, plan_run_transition, read_run, transition_run,
@@ -2425,7 +2425,10 @@ mod forensic_semantics {
         // Cash is 0 at Apr 30; the 125.00 due May 20 matures within 30 days
         // and the 1,000.00 due Dec 31 does not.
         let cash_flow = run(&retained, &SolvencyCashFlowTest::new().unwrap());
-        assert_eq!(cash_flow.version, 2);
+        // Versions 3 and 4 retain effective-date obligation visibility and
+        // net overdrafts before flooring liquidity. This fixture has neither
+        // a later settlement nor an overdraft, so its exact result stays put.
+        assert_eq!(cash_flow.version, 4);
         assert_eq!(values(&cash_flow), [12_500], "{:?}", cash_flow.findings);
         let narrative = &cash_flow.findings[0].narrative;
         for part in [
@@ -2438,7 +2441,9 @@ mod forensic_semantics {
         }
         // Payables of 1,125.00 against no assets.
         let balance_sheet = run(&retained, &SolvencyBalanceSheetTest::new().unwrap());
-        assert_eq!(balance_sheet.version, 2);
+        // Version 3 scopes inline valuations to the effective-date window;
+        // this book-basis fixture has no valuation extension to change it.
+        assert_eq!(balance_sheet.version, 3);
         assert_eq!(
             values(&balance_sheet),
             [112_500],
@@ -2488,7 +2493,7 @@ mod forensic_semantics {
         relied_upon(
             T,
             held,
-            "retained procedure versions (preferences v3, ponzi v5, distribution v4, solvency cash-flow v2, solvency balance-sheet v2) preserve their declared method, input digest, and exact findings across later journal mutations",
+            "retained procedure versions (preferences v3, ponzi v5, distribution v4, solvency cash-flow v4, solvency balance-sheet v3) preserve their declared method, input digest, and exact findings across later journal mutations",
         );
     }
 }

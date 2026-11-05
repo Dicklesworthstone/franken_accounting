@@ -56,6 +56,11 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
     journal: &Journal,
     known_at: CommitSeq,
 ) -> Outcome<MigrationInputs> {
+    if known_at > journal.through_seq {
+        return Ok(Err(refused(
+            "the selected checkpoint does not cover the report's known-at",
+        )));
+    }
     let mut needed = BTreeSet::new();
     for leaf in &journal.leaves {
         if !leaf.envelope.is_entry() || leaf.envelope.commit_seq > known_at {

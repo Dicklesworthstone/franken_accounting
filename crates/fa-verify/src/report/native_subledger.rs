@@ -267,7 +267,7 @@ fn designation(
     envelope: &LeafEnvelope,
 ) -> Result<Designation, ReportError> {
     let mut r = Reader::new(body);
-    if &r.fixed::<{ DESIGNATION_FORMAT.len() }>("subledger.designation_format")?
+    if r.fixed::<{ DESIGNATION_FORMAT.len() }>("subledger.designation_format")?
         != DESIGNATION_FORMAT
     {
         return Err(metadata_error("unsupported native subledger designation"));
@@ -339,10 +339,10 @@ pub(super) fn replay(
             }
             Some((15, body)) => {
                 let declaration = designation(body, info.identity, &envelopes[index])?;
-                if declaration.code == certificate.request.code {
-                    if selected.replace(declaration).is_some() {
-                        return Err(metadata_error("duplicate selected subledger declaration"));
-                    }
+                if declaration.code == certificate.request.code
+                    && selected.replace(declaration).is_some()
+                {
+                    return Err(metadata_error("duplicate selected subledger declaration"));
                 }
             }
             _ => {}

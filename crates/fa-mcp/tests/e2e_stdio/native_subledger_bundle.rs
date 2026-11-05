@@ -6,7 +6,9 @@ fn unhex(value: &str) -> Vec<u8> {
     assert!(value.len().is_multiple_of(2));
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect()
 }
@@ -347,9 +349,16 @@ fn retained_native_subledger_requires_an_independent_question_and_recomputes_ove
         }
     }
     assert_eq!(producer.finish(), 0);
+    // Bound report deliveries owe access receipts even when their retained
+    // accounting question is refused. Only those four receipts may publish.
     assert_eq!(
-        head(&b),
-        before,
-        "successful and refused historical bundle exports never publish"
+        access_receipts_since(&b, before, "mcp-agent"),
+        [
+            "bundle produce",
+            "bundle produce",
+            "bundle produce",
+            "bundle produce"
+        ],
+        "successful and refused exports publish only their exact access receipts"
     );
 }

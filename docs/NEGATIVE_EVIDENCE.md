@@ -2980,3 +2980,127 @@ unestablished. Subsequent qualification uses the repository's original
 argument order. No compiler optimization, assertion, time limit, worker
 capacity or gate criterion is relaxed. All owned source leases were
 terminal and acknowledged before applying the fixture correction.
+
+## 2026-11-04 — Conformance mutation omitted qualified tests and failures
+
+The complete c363 model packet executed 374 passing tests and one failure:
+formats passed 148, Lantern passed 212, and substrate conformance passed
+14 with one failure. No test was ignored or filtered. The role-oracle
+membership/value/citation mutants and the original date and solvency
+controls passed. The next conformance assertion expected cash-flow version
+2, but its current constructor and registry declare version 4. Commit
+37f0c685a moved cash-flow and balance-sheet evaluation to effective-date
+semantics at version 3; 718013ad9 advanced cash-flow to version 4 for net
+overdraft liquidity. Source inspection also found the later, unreached
+balance-sheet pin still expected 2 instead of 3.
+
+The test selects current constructors and then replays a retained sequence
+after a head mutation. Its corrected explicit pins are cash-flow 4 and
+balance-sheet 3. Every amount, narrative component, input/findings digest
+comparison and head non-vacuity assertion remains. This fixture has no
+later settlement, overdraft or valuation extension to change its exact
+financial vectors. It does not prove archived version-2 evaluation across
+an algorithm upgrade. No production algorithm or golden output is changed.
+
+Comparing the actual 15 native substrate test names with the mutation
+script's original awk discovered only 13. Both the forensic method test
+and register-capacity test are nested and omitted. The flat-name failure
+parser also drops the actual qualified forensic failure. An initial
+diagnostic assertion incorrectly expected 14 discovered names; the
+corrected read-only comparison proves 13 of 15 and preserves that mistake.
+The repair, tracked by fa-yuc4, discovers the compiled harness inventory,
+requires a complete passing baseline, and inverts every listed test while
+checking that exactly it fails and all others pass. Native commands use
+explicit remote execution, the parent job/profile settings and a forwarded
+runtime inversion variable.
+
+Admission split: previously unexamined qualified tests now require their
+own negative run; red baselines, hidden second failures, omissions,
+duplicates, ignored tests, vacuous inversions, delivery errors and missing
+completion evidence cannot pass. The existing checker is tightened, with
+no new exception, timeout or reduced financial predicate. Fifteen bounded
+classifier/argv fixtures passed in the existing check-classify selftest;
+these fake transcripts are not native conformance evidence. The actual
+positive 15-test baseline and all 15 native inversions remain required.
+
+The c363 corrected CLI packet independently completed 308 passing tests,
+and the complete journal bank-match target passed 64, with no failures,
+ignored or filtered tests. The facade and MCP builds instead reached the
+ordinary compilation cap without executing tests. Strict Clippy found an
+unnecessary reference and nested duplicate-declaration condition in the
+portable verifier; their direct fixes preserve the comparison and
+short-circuit mutation/refusal. All owned source leases were terminal and
+acknowledged before this combined correction. No full repository verdict
+or closure follows from the bounded positives above.
+
+## 2026-11-04 — Checkpoint refusal precedence and bound MCP access receipts
+
+On the frozen correction batch over c363, the complete facade library
+executed 734 passing tests and one failure, with none ignored or filtered.
+Both new bank rehearsal-admission controls passed. The portable native
+subledger authority test expected FA-REF-126 for a checkpoint older than
+the report, but got migration-specific FA-REF-133. The shared producer
+called report::run_bodies before the assembler's covering-prefix check;
+migration input lookup therefore rejected the report frontier even though
+the fixture has no migration. The repair adds that coverage refusal in
+the report-specific helper, using its existing FA-REF-126 constructor.
+The original exact refusal assertion, authority ordering, complete-prefix
+requirement and independent assembler check remain unchanged.
+
+The MCP package then executed 99 passing tests and one failure before its
+ordinary 1800-second command cap ended the remaining campaign. Its library
+passed 63, denial controls 2, stdio integration 31 with one failure, and
+external-subledger integration 3. The new stdio subledger test completed
+historical export and independent exact gross/pending verification for
+retained and inline certificates. Its final assertion incorrectly expected
+the head to remain 14; four admitted deliveries had journaled their
+mandatory AccessEvents, advancing it to 18. Existing access_record policy
+and access_receipts_since checker establish that bound reads, including
+refused accounting questions, owe these receipts. The test now requires
+exactly four ordered `bundle produce` receipts by `mcp-agent`, with no
+other publication allowed. Every original financial, recipient-question,
+certificate, receipt and byte-equality assertion remains. This admits
+only required access evidence, not monetary or metadata mutations.
+The capped command is not a complete MCP passing result.
+
+The repaired mutation runner compiled and listed all 15 tests, but its
+worker then refused the baseline and inversions for capacity. No native
+baseline or inversion passed. A control-flow error in the new runner let
+it continue after gate_verdict returned for that unrun baseline; it now
+exits immediately, and the existing classifier selftest checks that both
+red and unrun baselines stop after listing and baseline. Source review
+also found the formerly omitted register test's switch used an unqualified
+name; its constant now matches its compiled qualified name, preserving
+every race, capacity and atomicity assertion. Native discrimination still
+requires all 15 inversions to execute successfully.
+
+Fresh complete fa-verify passed 925 tests after the two production lint
+fixes, with no failures, ignored or filtered tests. Strict keep-going
+Clippy found two additional constant-pair decoder lints in CLI and MCP
+test helpers; typed two-byte chunks replace the iterator form while their
+existing even-length assertions and exact decoders remain. No suppression,
+accounting predicate, watchdog or worker guard changed. Every owned parent
+and remote source lease was terminal and acknowledged before applying
+this batch. All changed targets and the original full repository proof
+remain required; earlier scoped results do not qualify the new tree.
+
+The corrected batch subsequently completed the full facade library (735
+passed), the complete MCP package (119 passed), and strict workspace and
+all-target Clippy (exit 0). Neither native package ignored or filtered
+tests. The unchanged exact FA-REF-126 checkpoint assertion and both bank
+admission controls passed; MCP's four-receipt bound passed alongside all
+original recipient, amount and certificate checks. Two intervening facade
+builds and the first mutation listing reached their ordinary compilation
+caps without running tests; those attempts retain their UNRUN evidence.
+
+The real mutation continuation then executed the compiled 15-test
+inventory, a complete 15-pass baseline and all 15 separate inversions.
+Each inversion failed exactly its intended test and passed the other 14,
+with none ignored or filtered. The formerly omitted qualified forensic and
+register-capacity tests both discriminated. Its gate exited 0 with 16 PASS,
+zero FAIL and zero UNRUN verdicts. All 16 classifier/argv controls also
+passed, but remain synthetic controls rather than native execution proof.
+These are source-bounded diagnostics over the correction batch, not a
+complete repository verdict, authenticated crate-cache reuse, a measured
+performance win or authority to close a bead. Canonical changes integrated
+after these runs require a fresh exact-tree full repository proof.
