@@ -521,33 +521,62 @@ fn pdf_number(hundred_millionths: i128) -> String {
     )
 }
 
-fn pdf_font_metric(font: &Font, value: i64) -> String {
-    pdf_number(i128::from(value) * 100_000_000_000 / i128::from(font.units_per_em))
+fn pdf_font_metric(font: &Font, value: i64) -> Result<String, StatementError> {
+    let scaled = i128::from(value)
+        .checked_mul(100_000_000_000)
+        .and_then(|value| value.checked_div(i128::from(font.units_per_em)))
+        .ok_or_else(|| {
+            StatementError::Input("PDF font metric has an invalid scale or range".into())
+        })?;
+    Ok(pdf_number(scaled))
 }
 
-fn pdf_cell_x(table: &MarkdownTable, index: usize, text: &str, font: &Font) -> String {
-    let width = 540 / table.headers.len().max(1) as i128;
-    let left = (36 + index as i128 * width) * 100_000_000;
+fn pdf_cell_x(
+    table: &MarkdownTable,
+    index: usize,
+    text: &str,
+    font: &Font,
+) -> Result<String, StatementError> {
+    let invalid_geometry = || {
+        StatementError::Input("PDF column geometry has an invalid scale or integer range".into())
+    };
+    let columns = i128::try_from(table.headers.len().max(1)).map_err(|_| invalid_geometry())?;
+    let column = i128::try_from(index).map_err(|_| invalid_geometry())?;
+    let width = 540_i128.checked_div(columns).ok_or_else(invalid_geometry)?;
+    let left = column
+        .checked_mul(width)
+        .and_then(|value| value.checked_add(36))
+        .and_then(|value| value.checked_mul(100_000_000))
+        .ok_or_else(invalid_geometry)?;
     let x = match table.alignments.get(index) {
         Some(ColumnAlignment::Right) => {
-            let advance: i128 = text
+            let advance = text
                 .chars()
-                .map(|ch| {
+                .try_fold(0_i128, |advance, ch| {
                     let displayed = if ch.is_ascii_graphic() || ch == ' ' {
                         ch
                     } else {
                         '?'
                     };
-                    i128::from(font.advance_width(font.glyph_index(displayed)))
+                    advance.checked_add(i128::from(font.advance_width(font.glyph_index(displayed))))
                 })
-                .sum();
-            let text_width = advance * 800_000_000 / i128::from(font.units_per_em);
-            let right = (36 + (index as i128 + 1) * width - 6) * 100_000_000;
-            left.max(right - text_width)
+                .ok_or_else(invalid_geometry)?;
+            let text_width = advance
+                .checked_mul(800_000_000)
+                .and_then(|value| value.checked_div(i128::from(font.units_per_em)))
+                .ok_or_else(invalid_geometry)?;
+            let right = column
+                .checked_add(1)
+                .and_then(|value| value.checked_mul(width))
+                .and_then(|value| value.checked_add(36))
+                .and_then(|value| value.checked_sub(6))
+                .and_then(|value| value.checked_mul(100_000_000))
+                .ok_or_else(invalid_geometry)?;
+            left.max(right.checked_sub(text_width).ok_or_else(invalid_geometry)?)
         }
         _ => left,
     };
-    pdf_number(x)
+    Ok(pdf_number(x))
 }
 
 /// One content stream per page. A table that does not fit continues on the
@@ -558,7 +587,7 @@ fn build_pdf_content_streams(
     created_iso: &str,
     ir_digest_hex: &str,
     font: &Font,
-) -> Vec<String> {
+) -> Result<Vec<String>, StatementError> {
     let mut pages = Vec::new();
     let mut s = String::new();
     let mut y: i64 = 750;
@@ -581,11 +610,11 @@ fn build_pdf_content_streams(
     y -= 20;
 
     for table in &ir.tables {
-        y = render_pdf_table(&mut pages, &mut s, ir, table, y, font);
+        y = render_pdf_table(&mut pages, &mut s, ir, table, y, font)?;
         y -= 12;
     }
     pages.push(s);
-    pages
+    Ok(pages)
 }
 
 /// Close the current page and open the next one under a continuation line;
@@ -610,23 +639,23 @@ fn render_pdf_table(
     table: &MarkdownTable,
     mut y: i64,
     font: &Font,
-) -> i64 {
+) -> Result<i64, StatementError> {
     // The unit line and the column headers take 28 points above the first
     // row; a table whose first row would fall below the margin starts on a
     // new page.
     if !table.rows.is_empty() && y - 28 < PDF_BOTTOM {
         y = next_pdf_page(pages, s, ir);
     }
-    y = render_pdf_table_heading(s, table, y, false, font);
+    y = render_pdf_table_heading(s, table, y, false, font)?;
     for row in &table.rows {
         if y < PDF_BOTTOM {
             y = next_pdf_page(pages, s, ir);
-            y = render_pdf_table_heading(s, table, y, true, font);
+            y = render_pdf_table_heading(s, table, y, true, font)?;
         }
-        render_pdf_row(s, table, row, y, font);
+        render_pdf_row(s, table, row, y, font)?;
         y -= 14;
     }
-    y
+    Ok(y)
 }
 
 fn render_pdf_table_heading(
@@ -635,7 +664,7 @@ fn render_pdf_table_heading(
     mut y: i64,
     continued: bool,
     font: &Font,
-) -> i64 {
+) -> Result<i64, StatementError> {
     s.push_str(&format!("BT /F1 9 Tf 36 {y} Td ("));
     s.push_str(&escape_pdf_string(&format!(
         "Unit: {} (id={}, scale={}){}",
@@ -648,7 +677,7 @@ fn render_pdf_table_heading(
     y -= 14;
 
     for (idx, header) in table.headers.iter().enumerate() {
-        let x = pdf_cell_x(table, idx, header, font);
+        let x = pdf_cell_x(table, idx, header, font)?;
         s.push_str(&format!(
             "BT /F1 8 Tf {x} {y} Td ({}) Tj ET\n",
             escape_pdf_string(header)
@@ -658,16 +687,22 @@ fn render_pdf_table_heading(
     s.push_str(&format!(
         "1 w 36 {header_line_y} m 576 {header_line_y} l S\n"
     ));
-    y - 14
+    Ok(y - 14)
 }
 
-fn render_pdf_row(s: &mut String, table: &MarkdownTable, row: &MarkdownRow, y: i64, font: &Font) {
+fn render_pdf_row(
+    s: &mut String,
+    table: &MarkdownTable,
+    row: &MarkdownRow,
+    y: i64,
+    font: &Font,
+) -> Result<(), StatementError> {
     if matches!(row.footing, FootingRule::Single | FootingRule::Double) {
         let top_y = y + 9;
         s.push_str(&format!("1 w 36 {top_y} m 576 {top_y} l S\n"));
     }
     for (idx, cell) in row.cells.iter().enumerate() {
-        let x = pdf_cell_x(table, idx, cell, font);
+        let x = pdf_cell_x(table, idx, cell, font)?;
         s.push_str(&format!(
             "BT /F1 8 Tf {x} {y} Td ({}) Tj ET\n",
             escape_pdf_string(cell)
@@ -691,6 +726,7 @@ fn render_pdf_row(s: &mut String, table: &MarkdownTable, row: &MarkdownRow, y: i
             ));
         }
     }
+    Ok(())
 }
 
 fn render_pdf_internal(
@@ -713,7 +749,7 @@ fn render_pdf_internal(
     let ir_digest_hex = hex_bytes(&ir_digest.0);
     let created_iso = format_utc_epoch_iso8601(creation_epoch_secs);
     let created_pdf = format_utc_epoch_pdf_date(creation_epoch_secs);
-    let content_streams = build_pdf_content_streams(ir, &created_iso, &ir_digest_hex, &font);
+    let content_streams = build_pdf_content_streams(ir, &created_iso, &ir_digest_hex, &font)?;
     let content_stream = &content_streams[0];
     // Page 1 keeps objects 3 (page) and 8 (contents); every later page is a
     // (page, contents) pair numbered from 10, after the Info object.
@@ -781,7 +817,7 @@ fn render_pdf_internal(
     let unicode_id = descriptor_id + 2;
     let widths = (' '..='~')
         .map(|ch| pdf_font_metric(&font, i64::from(font.advance_width(font.glyph_index(ch)))))
-        .collect::<Vec<_>>()
+        .collect::<Result<Vec<_>, _>>()?
         .join(" ");
     let mut objects: Vec<Vec<u8>> = vec![
         catalog_obj.into_bytes(),
@@ -838,13 +874,13 @@ fn render_pdf_internal(
     let bbox = bbox
         .iter()
         .map(|&value| pdf_font_metric(&font, i64::from(value)))
-        .collect::<Vec<_>>()
+        .collect::<Result<Vec<_>, _>>()?
         .join(" ");
     objects.push(format!(
         "<< /Type /FontDescriptor /FontName /CMUTypewriter-Regular /Flags 33 /FontBBox [{bbox}] /ItalicAngle 0 /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 {program_id} 0 R >>",
-        pdf_font_metric(&font, i64::from(font.ascent)),
-        pdf_font_metric(&font, i64::from(font.descent)),
-        pdf_font_metric(&font, i64::from(font.ascent)),
+        pdf_font_metric(&font, i64::from(font.ascent))?,
+        pdf_font_metric(&font, i64::from(font.descent))?,
+        pdf_font_metric(&font, i64::from(font.ascent))?,
     ).into_bytes());
     let program = fmd_font::bundled::CM_TYPEWRITER;
     let mut embedded = format!(
@@ -1548,7 +1584,8 @@ mod tests {
                 },
                 y,
                 &font,
-            );
+            )
+            .unwrap();
         }
         assert!(drawn.contains("553.20312500 100 Td (1.00) Tj"), "{drawn}");
         assert!(drawn.contains("549.00390625 86 Td (12.00) Tj"), "{drawn}");

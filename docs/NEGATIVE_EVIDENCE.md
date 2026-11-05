@@ -3522,3 +3522,40 @@ source leases were released before the manual pin edit. Native rerun of the
 complete targets and exact Tier 0/full repository qualification remain
 required; this fixture validation does not close `fa-cet` or prove full
 Markdown-engine adoption or cross-machine acceptance.
+
+### 2026-11-05 — Checked PDF geometry after a real strict-Clippy loss
+
+The final `b88a7193` rendering packet executed all 155 cases (85 CLI
+library, 3 rendered-report integrations and 67 statements library), with
+0 failures, ignored or filtered cases. Remote exit was 0; RCH retirement
+returned outer 1. Official recovery returned 0 and a separate lease read
+confirmed acknowledgment and all four source/tree/pair retirement fields.
+This is native behavior evidence, not an overall gate pass.
+
+The same candidate's strict workspace Clippy returned actual remote 101:
+six `arithmetic_side_effects` diagnostics in the newly added PDF font and
+column geometry. The repair uses checked multiplication, division,
+addition and subtraction, checked index conversion and a checked glyph
+advance fold. Invalid scales or integer ranges return `StatementError::Input`
+through the existing renderer result. Representable arithmetic keeps its
+evaluation order; no saturation, floating layout, lint suppression or
+fixture-pin change is introduced. All literal alignment and byte-pin
+assertions remain. Root format and targeted static UBS returned 0 (0
+critical, 195 warnings, 215 information findings); native strict validation
+of the repaired source remains required.
+
+The obsolete full gate also executed the complete facade library: 734
+passes, 1 failure, 0 ignored or filtered cases, remote/outer 101. The failure
+is the original FA-ART-LAB-04 recorded campaign witness; all 36 newly
+observed certificate digests differ. The unchanged replay and live-versus-lab
+comparisons passed before that final comparison. Its cause remains under
+investigation; no campaign witness or expected digest is changed here.
+
+After the admitted job finished naturally and its source ownership was
+released, the exact owned, stopped check driver (PID 351454, start ticks
+582721411) had no live descendants. Only that driver received TERM/CONT;
+no compiler or RCH child was signalled. Its proof parent ended 143. The
+unchanged verifier accepts the retained format-v3 bundle as stable, partial
+RED for tree `9978178a2b711d0148ecbce6fc5820a38595e243`, never as PASS or
+resume evidence. Exact Tier 0 likewise had native check 0 followed by outer
+retirement 1 and supplies no PASS note. No bead is closed by these results.
