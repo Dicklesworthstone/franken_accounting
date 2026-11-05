@@ -543,7 +543,7 @@ impl PreparedPost {
     /// `capacity` is the owner's carried register-capacity summary, which
     /// admits the post without a book scan where it proves the effects fit
     /// (fa-rcw1), or `None` to admit by the book scan alone.
-    async fn commit_in<V: asupersync::fs::Vfs + Clone>(
+    pub(crate) async fn commit_in<V: asupersync::fs::Vfs + Clone>(
         self,
         db: &mut Database<V>,
         ctx: &PurposeContexts,
@@ -1515,6 +1515,7 @@ pub(crate) fn prepare_verified_plan<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
     verified: crate::plan::VerifiedPostPlan,
+    reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
     prepare_post_in(
         db,
@@ -1525,7 +1526,7 @@ pub(crate) fn prepare_verified_plan<V: asupersync::fs::Vfs + Clone>(
         Admission::VerifiedPlan(verified),
         None,
         None,
-        &mut None,
+        reconciliation,
     )
 }
 
@@ -1538,7 +1539,13 @@ pub(crate) fn prepare_plan<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book: &BookContext,
     req: PostRequest,
+    carried: Option<&mut CarriedHistory>,
 ) -> Outcome<PostPreparation> {
+    let mut fresh = None;
+    let (reconciliation, capacity) = match carried {
+        Some(carried) => (&mut carried.reconciliation, Some(&mut carried.capacity)),
+        None => (&mut fresh, None),
+    };
     let prepared = prepare_post_in(
         db,
         ctx,
@@ -1548,7 +1555,7 @@ pub(crate) fn prepare_plan<V: asupersync::fs::Vfs + Clone>(
         Admission::Plan,
         None,
         None,
-        &mut None,
+        reconciliation,
     )?;
     if let Ok(PostPreparation::Ready(p)) = &prepared {
         let accounts = crate::register_capacity::accounts(
@@ -1560,9 +1567,21 @@ pub(crate) fn prepare_plan<V: asupersync::fs::Vfs + Clone>(
             .iter()
             .map(|m| m.entry_ref.vid)
             .chain(std::iter::once(p.entry_ref.vid));
-        if let Err(refusal) =
-            crate::register_capacity::admit(&p.txn, db, ctx, book.book_id, &accounts, staged)?
-        {
+        let admitted = match capacity {
+            Some(history) => crate::register_capacity::admit_carried(
+                &p.txn,
+                db,
+                ctx,
+                book.book_id,
+                &accounts,
+                staged,
+                history,
+            )?,
+            None => {
+                crate::register_capacity::admit(&p.txn, db, ctx, book.book_id, &accounts, staged)?
+            }
+        };
+        if let Err(refusal) = admitted {
             if let Ok(PostPreparation::Ready(p)) = prepared {
                 p.abort();
             }

@@ -538,6 +538,170 @@ async fn prepared_fixture(root: &Cx, seed: u64) -> PreparedFixture {
     }
 }
 
+#[test]
+fn resident_plan_and_commit_carry_only_committed_history_and_match_cold_plans() {
+    under_lab(0x6c31, move |root| async move {
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut fixture = prepared_fixture(&root, 0x6c31).await;
+        let capability = fixture.request.capability.clone();
+        let context = fixture.book.context.clone();
+        let mut suffix_rows = Vec::new();
+        let amount = fa_model::limits::MAX_REGISTER_MANTISSA
+            .checked_div(32)
+            .unwrap();
+        for index in 0..32u32 {
+            let mut proposal = fixture.request.proposal.clone();
+            proposal.idempotency_key = format!("resident-planned-{index:02}").into_bytes();
+            for leg in &mut proposal.legs {
+                leg.amount = Amount::new(fixture.usd, amount);
+            }
+            proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+            let intent = fa_intents::PostIntent::new(proposal, Vec::new()).unwrap();
+            let before = fixture.book.db.frontier().unwrap();
+            // The literal path is live in this invocation, on the same book,
+            // intent and frontier. Caching must not change the portable plan.
+            let cold = fa_journal::plan_post_with_history(
+                &mut fixture.book.db,
+                &cx,
+                &context,
+                capability.clone(),
+                intent.clone(),
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let warm = if index.is_multiple_of(2) {
+                fixture
+                    .book
+                    .plan(&cx, intent, &capability)
+                    .unwrap()
+                    .unwrap()
+            } else {
+                fixture
+                    .book
+                    .plan_with_history(&cx, intent, &capability)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            };
+            assert_eq!(
+                warm.canonical_bytes().unwrap(),
+                cold.canonical_bytes().unwrap()
+            );
+            assert_eq!(fixture.book.db.frontier().unwrap(), before);
+            let reconciliation = fixture.book.carried.reconciliation().unwrap();
+            let capacity = fixture.book.carried.capacity().unwrap();
+            assert_eq!(reconciliation.verified_at(), before);
+            assert_eq!(capacity.verified_at(), before);
+            assert!(capacity.admitted_from_summary());
+            if index > 0 {
+                let rows = (
+                    reconciliation
+                        .carried_rows()
+                        .expect("reconciliation suffix"),
+                    capacity.carried_rows().expect("capacity suffix"),
+                );
+                assert!(rows.0 > 0 && rows.1 > 0);
+                suffix_rows.push(rows);
+            }
+            if index == 15 {
+                // A warm cache does not let a reader publish a writer's plan.
+                let reader = Capability::embedded(capability.holder(), &["read"]).unwrap();
+                let rows = fixture.book.db.vertices().unwrap();
+                let refusal = fixture
+                    .book
+                    .commit_plan(&cx, warm.clone(), &reader)
+                    .await
+                    .unwrap()
+                    .unwrap_err();
+                assert_eq!(refusal.code, "FA-REF-011");
+                assert_eq!(fixture.book.db.frontier().unwrap(), before);
+                assert_eq!(fixture.book.db.vertices().unwrap(), rows);
+            }
+            let posted = fixture
+                .book
+                .commit_plan(&cx, warm.clone(), &capability)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                posted.entry_ref().entry_digest,
+                warm.prepared_entry().entry_digest
+            );
+            // Planning already verified this prefix. Commit must reuse that
+            // exact state rather than discarding it and rescanning the book.
+            assert_eq!(
+                fixture
+                    .book
+                    .carried
+                    .reconciliation()
+                    .unwrap()
+                    .carried_rows(),
+                Some(0)
+            );
+            assert_eq!(
+                fixture.book.carried.capacity().unwrap().carried_rows(),
+                Some(0)
+            );
+            assert!(
+                fixture
+                    .book
+                    .carried
+                    .capacity()
+                    .unwrap()
+                    .admitted_from_summary()
+            );
+            if index == 31 {
+                let after = fixture.book.db.frontier().unwrap();
+                let retry = fixture
+                    .book
+                    .commit_plan(&cx, warm, &capability)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(retry.entry_ref(), posted.entry_ref());
+                assert_eq!(fixture.book.db.frontier().unwrap(), after);
+            }
+        }
+        assert!(suffix_rows.windows(2).all(|pair| pair[0] == pair[1]));
+        assert_eq!(suffix_rows.len(), 31);
+        // Only31 minor units remain after32 exact committed additions.
+        // Rehearsals must not consume capacity, and the cache must refuse
+        // precisely where the live literal scan refuses the33rd addition.
+        let mut overflow = fixture.request.proposal.clone();
+        overflow.idempotency_key = b"resident-planned-overflow".to_vec();
+        for leg in &mut overflow.legs {
+            leg.amount = Amount::new(fixture.usd, 32);
+        }
+        overflow.unit_totals = EntryPayload::fold_unit_totals(&overflow.legs).unwrap();
+        let intent = fa_intents::PostIntent::new(overflow, Vec::new()).unwrap();
+        let before = fixture.book.db.frontier().unwrap();
+        let rows = fixture.book.db.vertices().unwrap();
+        let cold = fa_journal::plan_post_with_history(
+            &mut fixture.book.db,
+            &cx,
+            &context,
+            capability.clone(),
+            intent.clone(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        let warm = fixture
+            .book
+            .plan_with_history(&cx, intent, &capability)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(cold.code, "FA-REF-198");
+        assert_eq!(warm, cold);
+        assert_eq!(fixture.book.db.frontier().unwrap(), before);
+        assert_eq!(fixture.book.db.vertices().unwrap(), rows);
+    });
+}
+
 fn prepare_fixture_post(
     book: &mut LabBook,
     cx: &PurposeContexts,

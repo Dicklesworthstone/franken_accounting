@@ -101,6 +101,7 @@ fn class_mismatch_refuses_both_portable_planning_entrypoints_before_publication(
             &h.book,
             request.capability,
             intent,
+            None,
         ))
         .unwrap()
         .unwrap_err();

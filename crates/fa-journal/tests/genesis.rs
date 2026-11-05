@@ -6284,8 +6284,15 @@ impl Harness {
         let intent =
             fa_intents::PostIntent::new(request.proposal, request.approvals).expect("typed intent");
         let ctx = self.ctx();
-        plan_post(&mut self.db, &ctx, &self.book, request.capability, intent)
-            .expect("planning kernel")
+        plan_post(
+            &mut self.db,
+            &ctx,
+            &self.book,
+            request.capability,
+            intent,
+            None,
+        )
+        .expect("planning kernel")
     }
 
     fn publish_plan(
@@ -6298,7 +6305,7 @@ impl Harness {
         let book = &self.book;
         let capability = capability.clone();
         self.runtime
-            .block_on(async move { commit_plan(db, &ctx, book, capability, plan).await })
+            .block_on(async move { commit_plan(db, &ctx, book, capability, plan, None).await })
             .expect("plan commit kernel")
     }
 

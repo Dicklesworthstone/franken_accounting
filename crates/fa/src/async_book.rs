@@ -115,7 +115,7 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     /// The verified history carried between this book's own writes, so each
     /// post checks only the commits since the last (fa-rcw1). Bound to `db`'s
     /// own committed prefix by its Chronicle markers.
-    carried: fa_journal::CarriedHistory,
+    pub(crate) carried: fa_journal::CarriedHistory,
     /// The client's principal key, when this handle signs every approval and
     /// attestation it records ([`Self::sign_with_principal_key`], plan
     /// §14.5, fa-kae). Held only for the handle's life; never journaled.
@@ -3232,6 +3232,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &self.context,
             capability.clone(),
             intent,
+            Some(&mut self.carried),
         )?)
     }
 
@@ -3251,6 +3252,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &self.context,
             capability.clone(),
             intent,
+            Some(&mut self.carried),
         )
         .await?)
     }
@@ -3265,10 +3267,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &fa_journal::Capability,
     ) -> Outcome<Posted> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        Ok(
-            fa_journal::commit_plan(&mut self.db, cx, &self.context, capability.clone(), plan)
-                .await?,
+        Ok(fa_journal::commit_plan(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability.clone(),
+            plan,
+            Some(&mut self.carried),
         )
+        .await?)
     }
 
     /// Rehearse all batch members in one carried transaction, then abort.

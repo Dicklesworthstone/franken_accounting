@@ -89,12 +89,16 @@ fn request(intent: &PostIntent, capability: Capability) -> PostRequest {
 /// before a Human acts. That plan binds the Agent's capability, and
 /// [`commit_plan`] refuses it (FA-REF-013), so it is a rehearsal only: no
 /// Agent plan can publish to trunk.
+/// A resident owner may carry verified committed-prefix history; `None`
+/// performs the same checks from the literal history. Aborting a rehearsal
+/// never adds its proposed effects to either committed-prefix cache.
 pub fn plan_post<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: Capability,
     intent: PostIntent,
+    carried: Option<&mut crate::post::CarriedHistory>,
 ) -> Outcome<PostPlan> {
     if let Err(d) = fa_policy::reach_class(
         &capability,
@@ -108,7 +112,7 @@ pub fn plan_post<V: Vfs + Clone>(
         .commitment()
         .map_err(|e| KernelError::Corrupt(format!("capability commitment: {e}")))?;
     let expires_at = capability.expires_at();
-    match prepare_plan(db, ctx, book, request(&intent, capability))? {
+    match prepare_plan(db, ctx, book, request(&intent, capability), carried)? {
         Err(refusal) => Ok(Err(refusal)),
         Ok(PostPreparation::AlreadyRecorded(posted)) => Ok(Err(invalidated(format!(
             "this intent is already recorded as {:032x} at sequence {}; no new effects were planned",
@@ -145,12 +149,14 @@ pub fn plan_post<V: Vfs + Clone>(
 /// Async planning admission for checkpoint-opened reconciliation and quota history. Loading
 /// retained history does not publish anything; it follows current native
 /// authority and scope admission, before the ordinary synchronous pipeline.
+/// `carried`, when present, belongs to this database's long-lived owner.
 pub async fn plan_post_with_history<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: Capability,
     intent: PostIntent,
+    carried: Option<&mut crate::post::CarriedHistory>,
 ) -> Outcome<PostPlan> {
     if let Err(denial) = fa_policy::reach_class(
         &capability,
@@ -174,7 +180,7 @@ pub async fn plan_post_with_history<V: Vfs + Clone>(
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
-    plan_post(db, ctx, book, capability, intent)
+    plan_post(db, ctx, book, capability, intent, carried)
 }
 
 /// The locator namespace is deliberately separate from report certificates.
@@ -525,12 +531,15 @@ async fn recorded_plan<V: Vfs + Clone>(
 /// supplied capability. No field in the artifact grants authority. A stale
 /// accounting frontier, changed policy, changed preparation, or forged plan
 /// returns PlanInvalidated (exit 6), with no publication.
+/// The optional committed-prefix history accelerates the same native checks;
+/// it grants no authority and cannot replace authentication or effect equality.
 pub async fn commit_plan<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: Capability,
     plan: PostPlan,
+    carried: Option<&mut crate::post::CarriedHistory>,
 ) -> Outcome<Posted> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     if let Err(error) = plan.validate() {
@@ -628,12 +637,18 @@ pub async fn commit_plan<V: Vfs + Clone>(
             certificate.snapshot_seq.0,
         ))));
     }
+    let mut fresh = None;
+    let (reconciliation, capacity) = match carried {
+        Some(carried) => (&mut carried.reconciliation, Some(&mut carried.capacity)),
+        None => (&mut fresh, None),
+    };
     let mut prepared = match prepare_verified_plan(
         db,
         ctx,
         book,
         request(plan.intent(), capability),
         VerifiedPostPlan(()),
+        reconciliation,
     )? {
         Err(refusal) => {
             return Ok(Err(invalidated(format!(
@@ -691,7 +706,7 @@ pub async fn commit_plan<V: Vfs + Clone>(
     prepared.retain_plan(db, batch)?;
     // No await or re-read/replan occurs between the effect comparison and
     // publication; &mut Database holds the single-writer handle throughout.
-    match prepared.commit(db, ctx).await? {
+    match prepared.commit_in(db, ctx, None, capacity).await? {
         Err(refusal) if refusal.exit == exit::CONFLICT => Ok(Err(invalidated(refusal.message))),
         Ok(Posted::AlreadyRecorded { .. }) => {
             match recorded_plan(db, ctx, book, &plan, cvid).await? {

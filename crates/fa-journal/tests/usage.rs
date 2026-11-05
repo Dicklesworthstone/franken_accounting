@@ -520,13 +520,20 @@ fn scoped_daily_posts_need_only_actual_post_authority_and_keep_portable_plan_sco
     let intent =
         PostIntent::new(h.proposal(scoped.holder(), 20, b"scoped-plan"), Vec::new()).unwrap();
     let cx = h.cx();
-    let expected = plan::plan_post(&mut h.db, &cx, &h.book, scoped.clone(), intent.clone())
-        .unwrap()
-        .unwrap_err();
+    let expected = plan::plan_post(
+        &mut h.db,
+        &cx,
+        &h.book,
+        scoped.clone(),
+        intent.clone(),
+        None,
+    )
+    .unwrap()
+    .unwrap_err();
     let actual = h
         .runtime
         .block_on(plan::plan_post_with_history(
-            &mut h.db, &cx, &h.book, scoped, intent,
+            &mut h.db, &cx, &h.book, scoped, intent, None,
         ))
         .unwrap()
         .unwrap_err();
@@ -627,7 +634,7 @@ fn planning_aborts_usage_batches_accumulate_and_conflicting_preparations_do_not_
     let cx = h.cx();
     let intent = PostIntent::new(h.proposal(HOLDER, 60, b"dry-run"), Vec::new()).unwrap();
     let at = h.head();
-    let plan = plan::plan_post(&mut h.db, &cx, &h.book, cap.clone(), intent)
+    let plan = plan::plan_post(&mut h.db, &cx, &h.book, cap.clone(), intent, None)
         .unwrap()
         .unwrap();
     assert_eq!(h.head(), at);
@@ -640,7 +647,7 @@ fn planning_aborts_usage_batches_accumulate_and_conflicting_preparations_do_not_
     let at = h.head();
     assert!(
         h.runtime
-            .block_on(plan::commit_plan(&mut h.db, &cx, &h.book, cap, plan))
+            .block_on(plan::commit_plan(&mut h.db, &cx, &h.book, cap, plan, None))
             .unwrap()
             .is_err()
     );
@@ -827,6 +834,7 @@ fn a_committed_plan_consumes_once_and_tick_or_root_revocation_invalidates_prepar
             &h.book,
             cap.clone(),
             intent,
+            None,
         ))
         .unwrap()
         .unwrap();
@@ -839,13 +847,14 @@ fn a_committed_plan_consumes_once_and_tick_or_root_revocation_invalidates_prepar
             &h.book,
             cap.clone(),
             plan.clone(),
+            None,
         ))
         .unwrap()
         .unwrap();
     let at = h.head();
     let retry = h
         .runtime
-        .block_on(plan::commit_plan(&mut h.db, &cx, &h.book, cap, plan))
+        .block_on(plan::commit_plan(&mut h.db, &cx, &h.book, cap, plan, None))
         .unwrap()
         .unwrap();
     assert_eq!(first.entry_ref(), retry.entry_ref());

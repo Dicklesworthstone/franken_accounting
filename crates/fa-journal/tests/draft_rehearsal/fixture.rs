@@ -310,6 +310,7 @@ impl Harness {
             &self.book,
             capability.clone(),
             intent.clone(),
+            None,
         )
         .unwrap()
         .expect("the historical writer admitted this member individually");
