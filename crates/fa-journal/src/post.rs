@@ -1176,13 +1176,20 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
             value: "a direct commit without a verified plan certificate".into(),
         })));
     }
-    let scope = match authorize_effects(
+    let branch = match admission {
+        Admission::PlanDraft(token) => token.branch(),
+        Admission::Promote(token) => token.branch(),
+        Admission::ScratchDraft(token) => token.branch(),
+        _ => proposal.branch_id,
+    };
+    let scope = match authorize_effects_in_branch(
         db,
         book,
         &req.capability,
         proposal.principal_ref,
         proposal,
         planning,
+        branch,
     )? {
         Ok(scope) => scope,
         Err(refusal) => return Ok(Err(refusal)),
@@ -1200,6 +1207,29 @@ pub(crate) fn authorize_effects<V: asupersync::fs::Vfs + Clone>(
     principal: VId,
     proposal: &EntryPayload,
     planning: bool,
+) -> Outcome<Option<fa_policy::AccountScope>> {
+    authorize_effects_in_branch(
+        db,
+        book,
+        capability,
+        principal,
+        proposal,
+        planning,
+        proposal.branch_id,
+    )
+}
+
+/// Only a private draft admission token substitutes its verified logical
+/// branch for the proposal's eventual trunk destination. It grants neither a
+/// new capability nor any exception to the other posting laws.
+fn authorize_effects_in_branch<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    principal: VId,
+    proposal: &EntryPayload,
+    planning: bool,
+    branch: Id128,
 ) -> Outcome<Option<fa_policy::AccountScope>> {
     let explicit: Vec<(fa_money::UnitId, i128)> = proposal
         .legs
@@ -1231,7 +1261,9 @@ pub(crate) fn authorize_effects<V: asupersync::fs::Vfs + Clone>(
         Err(refusal) => return Ok(Err(refusal)),
     };
     let scope = policy::account_scope(db, book, &current)?;
-    if let Err(denial) = policy::payload_reach(capability, book, proposal, scope.as_ref()) {
+    if let Err(denial) =
+        policy::payload_reach_in_branch(capability, book, proposal, scope.as_ref(), branch)
+    {
         return Ok(Err(policy::refusal(&denial)));
     }
     Ok(Ok(scope))

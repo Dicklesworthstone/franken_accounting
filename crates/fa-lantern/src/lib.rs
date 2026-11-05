@@ -810,18 +810,13 @@ impl Work {
                         .saturating_mul(8),
                 })
             }
-            // recon.assertion_drift: one comparison per attestation, plus
-            // one per leg it refolds for that attestation's cell.
-            "O(attestations × legs)" => {
-                let attestations = snapshot.attestations.len() as u64;
-                Some(Self {
-                    entries: 0,
-                    legs: 0,
-                    comparisons: attestations.saturating_mul(legs.saturating_add(1)),
-                })
-            }
             // RegisterEquals v2 indexes gross cell prefixes once, then visits
             // the matching contributions of each discrepant claim to cite.
+            // Assertion drift additionally indexes recorded frontiers, with
+            // a literal VID/leg fallback when gross bounds cannot prove that
+            // prefix reassociation preserves checked-i128 intermediate sums.
+            // Its bound includes both one-time sorts, tree construction,
+            // bounded citation ordering and the conservative literal path.
             // Damages additionally folds live/original lineages; reconciliation
             // indexes live units once, then visits bounded unit runs and cited
             // entries for each mirrored Instrument.
@@ -839,13 +834,20 @@ impl Work {
                 // charge per instrument. Counts still include all mismatches.
                 let instrument_comparisons = instruments
                     .saturating_mul(instrument_cites.saturating_mul(3).saturating_add(3));
+                let claim_cites = entries.min(MAX_CITES as u64);
+                let claim_cite_sort =
+                    claim_cites.saturating_mul(u64::from(claim_cites.max(1).ilog2()) + 1);
                 Some(Self {
                     entries: entries.saturating_mul(instruments.saturating_add(3)),
                     legs: legs.saturating_mul(instruments.saturating_add(3)),
                     comparisons: n_log_n
-                        .saturating_add(legs.saturating_mul(2))
+                        .saturating_add(legs.saturating_mul(8))
                         .saturating_add(
-                            attestations.saturating_mul(legs.saturating_mul(2).saturating_add(1)),
+                            attestations.saturating_mul(
+                                legs.saturating_mul(4)
+                                    .saturating_add(3)
+                                    .saturating_add(claim_cite_sort),
+                            ),
                         )
                         .saturating_add(instrument_comparisons),
                 })

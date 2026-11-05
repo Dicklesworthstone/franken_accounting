@@ -28,6 +28,53 @@ use fixture::*;
 mod close_run_tests;
 
 #[test]
+fn branch_confined_draft_batch_is_rehearsed_and_promoted_with_its_original_authority() {
+    let mut h = Harness::new(None);
+    let name = "confined-batch";
+    let capability = Capability::new(AGENT, Profile::Agent, &[Op::Post], OWNER)
+        .unwrap()
+        .on_branch(fa_model::draft_branch(h.book.book_id, name))
+        .unwrap();
+    h.open(name, capability.clone());
+    let intents = [100, 250]
+        .into_iter()
+        .enumerate()
+        .map(|(i, amount)| {
+            PostIntent::new(
+                h.proposal(
+                    amount,
+                    format!("confined-{i}").as_bytes(),
+                    EntryClass::ORIGINAL,
+                    AGENT,
+                ),
+                Vec::new(),
+            )
+            .unwrap()
+        })
+        .collect();
+    let batch = PostBatch::new(b"confined-batch-key".to_vec(), intents).unwrap();
+    let expected = batch.members().iter().map(member_ref).collect::<Vec<_>>();
+    let planned = h
+        .plan_batch(name, capability.clone(), batch.clone())
+        .unwrap();
+    assert_eq!(planned.plan.unwrap().members().len(), 2);
+    let basis = h.head();
+    let rows = h.db.vertices().unwrap();
+    let (target, _) = h.target();
+    let (scratch, replay) = h.rehearse(target, &reader(), name, basis).unwrap().unwrap();
+    assert_eq!(replay.batch.entries, expected);
+    assert_eq!(cash_balance(&scratch, h.cash), -350);
+    assert_eq!(h.head(), basis);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+    assert_eq!(cash_balance(&h.db, h.cash), 0);
+    let promoted = h.promote(name);
+    assert_eq!(promoted.entries, expected);
+    assert_eq!(cash_balance(&h.db, h.cash), -350);
+    let retry = h.plan_batch(name, capability, batch).unwrap();
+    assert!(retry.recorded.already_recorded);
+}
+
+#[test]
 fn atomic_draft_batch_preserves_dependencies_replay_and_retry_after_promotion() {
     let mut h = Harness::new(None);
     h.open("atomic-order", agent());

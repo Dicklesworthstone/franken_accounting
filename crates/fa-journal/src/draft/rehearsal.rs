@@ -31,7 +31,13 @@ const MAX_SOURCE_BYTES: usize = 1024 + (fa_model::limits::MAX_BATCH_ENTRIES + 1)
 /// through their private staging helper, while owning a fresh MemVfs target
 /// whose original prefix they have validated and replayed completely.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Rehearsing(());
+pub(crate) struct Rehearsing(Id128);
+
+impl Rehearsing {
+    pub(crate) const fn branch(self) -> Id128 {
+        self.0
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DraftRehearsalRequest {
@@ -679,7 +685,10 @@ async fn apply_reviewed_draft(
         .map(|plan| plan.capability.clone())
         .collect();
     let batch = PostBatch::new(promotion_key(view.vid), members).map_err(intent_error)?;
-    let admission = Admission::ScratchDraft(Rehearsing(()));
+    let admission = Admission::ScratchDraft(Rehearsing(fa_model::draft_branch(
+        book.book_id,
+        &view.body.name,
+    )));
     let staged = match correction::stage(
         target,
         cx,

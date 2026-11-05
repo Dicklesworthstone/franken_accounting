@@ -1467,7 +1467,7 @@ version = 2
 claim = "invariant"
 evidence = "FA-EVID-L61"
 tie_break = "account_vid"
-complexity = "O(attestations × legs)"
+complexity = "O(legs log legs + attestations × legs)"
 calibration = "uncalibrated"
 summary = "Exact drift of every RegisterEquals attestation at the snapshot coordinate (plan §9.4, BalanceAssertionDrift): the attested cell (account, unit, entity, period, as-of day) refolded over gross posted activity and compared with the attested amount. A reversal posts in its own period and never erases the original from an earlier period or effective cutoff; pending reservations do not contribute. Untagged legs belong to the sole declared balancing entity; an absent claim entity selects only the unassigned cell, never all entities. Version 1 instead netted supersession across the snapshot and could report false drift across periods. The attestation stays a fact at its evaluated prefix; a finding cites the Attestation, the account, the period and every entry recorded after that prefix whose legs move the cell, with the drift as the statistic. The original evaluated prefix is not re-executed by this procedure. Entries in other cells never contribute. More than 4096 citations in one finding refuses the complete run."
 

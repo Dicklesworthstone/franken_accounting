@@ -220,6 +220,46 @@ fn correction_draft_agent_reviews_exact_pair_then_independent_promoter_publishes
 }
 
 #[test]
+fn correction_pair_keeps_the_branch_confined_planner_through_promotion() {
+    let mut h = harness();
+    let target = rent_target(&mut h);
+    let name = "confined-correction";
+    let agent = Capability::new(
+        AGENT,
+        fa_policy::Profile::Agent,
+        &[fa_policy::Op::Post],
+        PRINCIPAL,
+    )
+    .unwrap()
+    .on_branch(fa_model::draft_branch(h.book.book_id, name))
+    .unwrap();
+    h.open_draft(agent.clone(), name).unwrap();
+    let pair = h.correction_pair(target, h.agent_rent(1_250, b"confined-replacement"));
+    let planned = h.plan_correction(agent.clone(), name, &pair).unwrap();
+    let preview = planned.plan.unwrap();
+    let expected = expected_refs(target, &preview);
+    assert_eq!(cash_net(&h.db, h.cash), -1_000);
+    let before = h.db.frontier().unwrap();
+    let denied = h
+        .plan_correction(agent.clone(), "another-draft", &pair)
+        .unwrap_err();
+    assert!(denied.message.contains("branch"), "{denied}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let promoted = h.promote(h.approver_capability(), name).unwrap();
+    assert_eq!(promoted.entries, expected);
+    assert_eq!(cash_net(&h.db, h.cash), -1_250);
+    for (reference, member) in expected.iter().zip(preview.members()) {
+        let (entry, _) = read_entry(&h.db, reference.vid).unwrap().unwrap();
+        assert_eq!(entry, member.entry);
+        assert_eq!(entry.proposal.branch_id, Id128::TRUNK);
+        assert_eq!(entry.proposal.principal_ref, AGENT);
+    }
+    let retry = h.plan_correction(agent, name, &pair).unwrap();
+    assert!(retry.recorded.already_recorded);
+    assert_eq!(retry.recorded.control_entry, planned.recorded.control_entry);
+}
+
+#[test]
 fn correction_draft_replacement_redeclares_settlements_after_atomic_application_undo() {
     let mut h = harness();
     let invoice = h

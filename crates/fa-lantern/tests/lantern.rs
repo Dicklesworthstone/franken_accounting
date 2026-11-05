@@ -6757,6 +6757,174 @@ mod assertion_drift_period_tests {
         );
     }
 
+    /// The pre-index algorithm: each claim independently walks the posted
+    /// stream in VID/leg order. Keep this literal, including its arithmetic
+    /// refusal order, so it cannot agree with a broken prefix index by sharing
+    /// that index. Counts include the previously uncharged entry scans.
+    fn literal_findings(
+        snapshot: &Snapshot,
+        book: &BookContext,
+    ) -> Result<(Vec<Finding>, u64), LanternError> {
+        let mut entries: Vec<_> = snapshot.entries.iter().filter(|e| e.posts()).collect();
+        entries.sort_by_key(|e| e.vid);
+        let entities = &snapshot.declared_entities;
+        let implicit = (entities.len() == 1)
+            .then(|| entities.values().next().copied())
+            .flatten();
+        let population = snapshot
+            .attestations
+            .values()
+            .filter(|s| matches!(s.attestation.claim, AttestationClaim::RegisterEquals(_)))
+            .count() as u64;
+        let mut findings = Vec::new();
+        let mut visits = 0;
+        for (attestation, stored) in &snapshot.attestations {
+            let AttestationClaim::RegisterEquals(claim) = &stored.attestation.claim else {
+                continue;
+            };
+            let entity = claim
+                .entity
+                .as_ref()
+                .map(|code| {
+                    entities.get(code).copied().ok_or_else(|| LanternError::Parameter {
+                        procedure: AssertionDrift::ID.into(),
+                        name: "attestation".into(),
+                        message: format!(
+                            "attestation {:032x} names entity `{code}`, which this book does not declare",
+                            attestation.0
+                        ),
+                    })
+                })
+                .transpose()?;
+            let mut fold = 0i128;
+            let mut later = BTreeSet::new();
+            for entry in &entries {
+                visits += 1;
+                if entry.period != claim.period
+                    || entry.entry.proposal.effective_date > claim.as_of_effective
+                {
+                    continue;
+                }
+                let mut moved = false;
+                for leg in &entry.entry.proposal.legs {
+                    visits += 1;
+                    if leg.account_ref != claim.account || leg.amount.unit.0 != claim.unit_id {
+                        continue;
+                    }
+                    let leg_entity = leg
+                        .dimension_set
+                        .iter()
+                        .find(|(dimension, _)| *dimension == fa_model::LEGAL_ENTITY_DIMENSION)
+                        .filter(|(_, value)| entities.values().any(|declared| declared == value))
+                        .map(|(_, value)| *value)
+                        .or(implicit);
+                    if leg_entity != entity {
+                        continue;
+                    }
+                    let magnitude = i128::try_from(leg.amount.mantissa.unsigned_abs())
+                        .map_err(|_| LanternError::Overflow("assertion_drift leg magnitude"))?;
+                    let signed = match leg.side {
+                        Side::Debit => magnitude,
+                        Side::Credit => magnitude
+                            .checked_neg()
+                            .ok_or(LanternError::Overflow("assertion_drift leg sign"))?,
+                    };
+                    fold = fold
+                        .checked_add(signed)
+                        .ok_or(LanternError::Overflow("assertion_drift fold"))?;
+                    moved = true;
+                }
+                if moved && entry.recorded_at > claim.evaluated_known_at {
+                    later.insert(entry.vid);
+                }
+            }
+            if fold == claim.mantissa {
+                continue;
+            }
+            let drift = fold
+                .checked_sub(claim.mantissa)
+                .ok_or(LanternError::Overflow("assertion_drift drift"))?;
+            let magnitude = i128::try_from(drift.unsigned_abs())
+                .map_err(|_| LanternError::Overflow("assertion_drift drift magnitude"))?;
+            let mut cites = vec![
+                Cite::Attestation(*attestation),
+                Cite::Account(claim.account),
+            ];
+            if snapshot.periods.contains_key(&claim.period) {
+                cites.push(Cite::Period(claim.period.clone()));
+            }
+            if later.len() > fa_lantern::MAX_CITES - cites.len() {
+                return Err(LanternError::Parameter {
+                    procedure: AssertionDrift::ID.into(),
+                    name: "attestation".into(),
+                    message: format!(
+                        "attestation {:032x} drifted through {} later entries, more than one finding cites ({}); no entry is omitted and no partial run is returned",
+                        attestation.0,
+                        later.len(),
+                        fa_lantern::MAX_CITES
+                    ),
+                });
+            }
+            let cause = if later.is_empty() {
+                "no entry recorded after the evaluated prefix moves this cell; this run compares the selected fold and does not re-evaluate the original prefix".to_string()
+            } else {
+                format!(
+                    "{} entr{} recorded after the attestation move{} the cell",
+                    later.len(),
+                    if later.len() == 1 { "y" } else { "ies" },
+                    if later.len() == 1 { "s" } else { "" }
+                )
+            };
+            cites.extend(later.into_iter().map(Cite::Entry));
+            let scale = book
+                .units
+                .get(UnitId(claim.unit_id))
+                .ok_or_else(|| KernelError::Corrupt("a leg names an unregistered unit".into()))?
+                .scale;
+            let shown = |amount| Amount::new(UnitId(claim.unit_id), amount).render(&book.units);
+            let code = snapshot
+                .accounts
+                .get(&claim.account)
+                .map_or("?", |a| a.code.as_str());
+            findings.push(Finding {
+                procedure: AssertionDrift::ID.into(),
+                version: 2,
+                severity: Severity::Critical,
+                statistic: Statistic {
+                    name: "assertion_drift".into(),
+                    value: magnitude,
+                    scale,
+                    population: population.max(1),
+                },
+                cites,
+                narrative: format!(
+                    "account {code} period {}{}: attested {} at sequence {}; the posted fold at this snapshot is {} (drift {}); {cause}",
+                    claim.period,
+                    claim.entity.as_ref().map_or_else(String::new, |e| format!(" entity {e}")),
+                    shown(claim.mantissa), claim.evaluated_known_at.0, shown(fold), shown(drift)
+                ),
+            });
+        }
+        Ok((findings, visits))
+    }
+
+    fn compare_with_literal(snapshot: &Snapshot, book: &BookContext) -> fa_lantern::Work {
+        let expected = literal_findings(snapshot, book)
+            .map(|(findings, _)| findings)
+            .map_err(|error| error.to_string());
+        let mut meter = Meter::new(AssertionDrift::ID, None, None);
+        let actual = AssertionDrift::new()
+            .unwrap()
+            .run(snapshot, book, &mut meter)
+            .map_err(|error| error.to_string());
+        assert_eq!(actual, expected);
+        assert!(meter.work().within_registered_bound(
+            &fa_lantern::bind(AssertionDrift::ID).unwrap().complexity,
+            snapshot,
+        ));
+        meter.work()
+    }
+
     #[test]
     fn a_reversal_in_a_later_period_is_not_assertion_drift() {
         let mut h = harness();
@@ -6959,6 +7127,282 @@ mod assertion_drift_period_tests {
                 .contains("does not re-evaluate the original prefix")
         );
         assert!(!finding.narrative.contains("never matched"));
+    }
+
+    #[test]
+    fn assertion_drift_index_matches_literal_cells_cutoffs_and_recorded_frontiers() {
+        let mut h = harness();
+        let template = liability(&mut h, 1, 1, day(2026, 1, 1), 1, None);
+        let usd = h.usd;
+        let eur = h.book.units.lookup("EUR").unwrap();
+        let alpha = VId(91_001);
+        let beta = VId(91_002);
+        for entity_count in 0..=2 {
+            let mut snapshot = h.snapshot();
+            snapshot.declared_entities.clear();
+            for (code, vid) in [("ALPHA", alpha), ("BETA", beta)]
+                .into_iter()
+                .take(entity_count)
+            {
+                snapshot.declared_entities.insert(code.into(), vid);
+            }
+            snapshot.entries.clear();
+            // A deliberately earlier report cutoff must not override a
+            // RegisterEquals claim's own cutoff in this procedure.
+            snapshot.coordinate.effective_through = Some(day(2026, 1, 1));
+            for i in 0..97u64 {
+                let mut entry = template.clone();
+                entry.vid = VId(500_000 + u128::from((i * 37) % 97));
+                entry.recorded_at = CommitSeq((i * 11) % 103);
+                entry.entry.proposal.effective_date = DateDay(day(2026, 1, 1).0 + (i % 31) as i32);
+                if i.is_multiple_of(4) {
+                    entry.period = h.period_code(day(2026, 2, 1));
+                }
+                if i.is_multiple_of(11) {
+                    entry.entry.proposal.class = EntryClass::PENDING;
+                } else if i.is_multiple_of(13) {
+                    entry.entry.proposal.class = EntryClass::REVERSAL;
+                }
+                for leg in &mut entry.entry.proposal.legs {
+                    leg.amount.unit = if i.is_multiple_of(3) { eur } else { usd };
+                    leg.amount.mantissa =
+                        i128::from(i % 7) * if i.is_multiple_of(5) { -13 } else { 13 };
+                    leg.dimension_set = match i % 5 {
+                        0 => vec![(fa_model::LEGAL_ENTITY_DIMENSION, alpha)],
+                        1 => vec![(fa_model::LEGAL_ENTITY_DIMENSION, beta)],
+                        2 => vec![(fa_model::LEGAL_ENTITY_DIMENSION, VId(99_999))],
+                        3 => vec![(fa_model::LEGAL_ENTITY_DIMENSION + 1, alpha)],
+                        _ => Vec::new(),
+                    };
+                }
+                // Multiple matching legs, including zero/net-zero movement,
+                // still cite an entry once, exactly as the literal scan does.
+                if i.is_multiple_of(7) {
+                    let mut debit = entry.entry.proposal.legs[1].clone();
+                    debit.side = Side::Debit;
+                    debit.amount.mantissa = 7;
+                    let mut credit = debit.clone();
+                    credit.side = Side::Credit;
+                    entry.entry.proposal.legs.extend([debit, credit]);
+                }
+                snapshot.entries.push(entry);
+            }
+            for i in 0..72u128 {
+                let mut assertion = claim(&h, day(2026, 1, [5, 15, 31][i as usize % 3]), 0);
+                assertion.account = h.account(["2000", "6000", "1000"][i as usize % 3]);
+                assertion.unit_id = if i.is_multiple_of(2) { usd.0 } else { eur.0 };
+                assertion.evaluated_known_at = CommitSeq([0, 10, 50, u64::MAX][i as usize % 4]);
+                if i.is_multiple_of(6) {
+                    assertion.period = h.period_code(day(2026, 2, 1));
+                }
+                if entity_count > 0 && i.is_multiple_of(4) {
+                    assertion.entity = Some("ALPHA".into());
+                } else if entity_count > 1 && i % 4 == 1 {
+                    assertion.entity = Some("BETA".into());
+                }
+                attest(&h, &mut snapshot, 600_000 + i, assertion);
+            }
+            for order in 0..3 {
+                compare_with_literal(&snapshot, &h.book);
+                if order == 0 {
+                    snapshot.entries.reverse();
+                } else {
+                    snapshot.entries.rotate_left(23);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn assertion_drift_index_preserves_literal_overflow_and_refusal_order() {
+        let mut h = harness();
+        let template = liability(&mut h, 1, 20, day(2026, 1, 5), 1, None);
+        let posting = |id, amount: i128| {
+            let mut entry = template.clone();
+            entry.vid = VId(id);
+            for leg in &mut entry.entry.proposal.legs {
+                let liability = leg.account_ref == h.account("2000");
+                leg.side = if (amount >= 0) == liability {
+                    Side::Debit
+                } else {
+                    Side::Credit
+                };
+                leg.amount.mantissa = amount.checked_abs().unwrap_or(i128::MIN);
+            }
+            entry
+        };
+        let mut snapshot = h.snapshot();
+        snapshot.entries = vec![posting(3, 1), posting(1, i128::MAX), posting(2, -i128::MAX)];
+        attest(&h, &mut snapshot, 95_201, claim(&h, day(2026, 1, 10), 0));
+        // Gross exceeds i128, but the VID-ordered fold is MAX, 0, 1: valid.
+        compare_with_literal(&snapshot, &h.book);
+        snapshot.entries[2].vid = VId(4);
+        let error = literal_findings(&snapshot, &h.book).unwrap_err();
+        assert!(matches!(
+            error,
+            LanternError::Overflow("assertion_drift fold")
+        ));
+        compare_with_literal(&snapshot, &h.book);
+
+        // An invalid magnitude must not overtake an earlier fold overflow,
+        // and must not fail an earlier effective prefix or a different cell.
+        let mut invalid = posting(5, i128::MIN);
+        invalid.entry.proposal.effective_date = day(2026, 1, 25);
+        snapshot.entries.push(invalid.clone());
+        compare_with_literal(&snapshot, &h.book);
+        snapshot.entries = vec![posting(1, 1), invalid.clone()];
+        compare_with_literal(&snapshot, &h.book);
+        attest(&h, &mut snapshot, 95_201, claim(&h, day(2026, 1, 31), 0));
+        let error = literal_findings(&snapshot, &h.book).unwrap_err();
+        assert!(matches!(
+            error,
+            LanternError::Overflow("assertion_drift leg magnitude")
+        ));
+        compare_with_literal(&snapshot, &h.book);
+        invalid.entry.proposal.legs[1].amount.unit = UnitId(u32::MAX);
+        snapshot.entries = vec![posting(1, 1), invalid];
+        compare_with_literal(&snapshot, &h.book);
+
+        snapshot.entries = vec![posting(1, 1)];
+        attest(
+            &h,
+            &mut snapshot,
+            95_201,
+            claim(&h, day(2026, 1, 31), i128::MIN),
+        );
+        assert!(matches!(
+            literal_findings(&snapshot, &h.book),
+            Err(LanternError::Overflow("assertion_drift drift"))
+        ));
+        compare_with_literal(&snapshot, &h.book);
+        snapshot.entries = vec![posting(1, -1)];
+        attest(
+            &h,
+            &mut snapshot,
+            95_201,
+            claim(&h, day(2026, 1, 31), i128::MAX),
+        );
+        assert!(matches!(
+            literal_findings(&snapshot, &h.book),
+            Err(LanternError::Overflow("assertion_drift drift magnitude"))
+        ));
+        compare_with_literal(&snapshot, &h.book);
+        let mut unknown = claim(&h, day(2026, 1, 31), 0);
+        unknown.entity = Some("UNDECLARED".into());
+        attest(&h, &mut snapshot, 95_200, unknown);
+        assert!(matches!(
+            literal_findings(&snapshot, &h.book),
+            Err(LanternError::Parameter { .. })
+        ));
+        compare_with_literal(&snapshot, &h.book);
+    }
+
+    fn dense_assertion_snapshot(h: &mut Harness, entries: u64, assertions: u64) -> Snapshot {
+        let template = liability(h, 1, 1, day(2026, 1, 5), 1, None);
+        let mut snapshot = h.snapshot();
+        snapshot.entries.clear();
+        snapshot.entries.reserve(entries as usize);
+        // Read-path fixtures isolate assertion evaluation from journal write
+        // throughput. Every source entry belongs to the same two cells.
+        for i in 0..entries {
+            let mut entry = template.clone();
+            entry.vid = VId(1_000_000 + u128::from(i));
+            entry.recorded_at = CommitSeq(i + 1);
+            snapshot.entries.push(entry);
+        }
+        for i in 0..assertions {
+            let mut assertion = claim(
+                h,
+                day(2026, 1, 31),
+                -i128::from(entries) + i128::from(i % 2),
+            );
+            assertion.evaluated_known_at = CommitSeq(entries - 1);
+            attest(h, &mut snapshot, 2_000_000 + u128::from(i), assertion);
+        }
+        snapshot
+    }
+
+    #[test]
+    fn assertion_drift_index_preserves_complete_citations_and_duplicate_vids() {
+        let mut h = harness();
+        let mut snapshot = dense_assertion_snapshot(&mut h, 9, 2);
+        let mut assertion = claim(&h, day(2026, 1, 31), 0);
+        assertion.evaluated_known_at = CommitSeq(0);
+        attest(&h, &mut snapshot, 2_000_000, assertion.clone());
+        // Duplicate source VIDs are not a canonical snapshot, but the old
+        // fold counts both rows and deduplicates their cites. Do not silently
+        // turn that behavior into a different sum or an inflated cite count.
+        snapshot.entries[1].vid = snapshot.entries[0].vid;
+        compare_with_literal(&snapshot, &h.book);
+
+        let n = fa_lantern::MAX_CITES as u64 + 7;
+        let mut snapshot = dense_assertion_snapshot(&mut h, n, 0);
+        attest(&h, &mut snapshot, 2_000_000, assertion.clone());
+        let error = literal_findings(&snapshot, &h.book).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("drifted through {n} later entries"))
+        );
+        compare_with_literal(&snapshot, &h.book);
+        // Exactly the remaining citation capacity succeeds without omissions.
+        let overhead = 2 + usize::from(snapshot.periods.contains_key(&assertion.period));
+        let available = fa_lantern::MAX_CITES - overhead;
+        assertion.evaluated_known_at = CommitSeq(n - available as u64);
+        attest(&h, &mut snapshot, 2_000_000, assertion);
+        snapshot.entries.reverse();
+        let (expected, _) = literal_findings(&snapshot, &h.book).unwrap();
+        assert_eq!(expected[0].cites.len(), fa_lantern::MAX_CITES);
+        compare_with_literal(&snapshot, &h.book);
+    }
+
+    #[test]
+    fn assertion_drift_index_visits_hundred_thousand_postings_once() {
+        let mut h = harness();
+        let procedure = AssertionDrift::new().unwrap();
+        let small = dense_assertion_snapshot(&mut h, 512, 256);
+        let (expected, literal_visits) = literal_findings(&small, &h.book).unwrap();
+        let mut work = Meter::new(AssertionDrift::ID, None, None);
+        assert_eq!(procedure.run(&small, &h.book, &mut work).unwrap(), expected);
+        assert!(
+            literal_visits > 8 * work.work().total(),
+            "literal={literal_visits}, indexed={:?}",
+            work.work()
+        );
+
+        const N: u64 = 100_000;
+        const ASSERTIONS: u64 = 2_000;
+        let mut snapshot = dense_assertion_snapshot(&mut h, N, 2);
+        // Execute the literal oracle over the full source scale for the two
+        // representative claims before extending the claim population. Half
+        // the claims match; half drift by one and cite only the final entry.
+        let (mut oracle, _) = literal_findings(&snapshot, &h.book).unwrap();
+        assert_eq!(oracle.len(), 1);
+        let mut expected_template = oracle.pop().unwrap();
+        expected_template.statistic.population = ASSERTIONS;
+        for i in 2..ASSERTIONS {
+            let mut assertion = claim(&h, day(2026, 1, 31), -i128::from(N) + i128::from(i % 2));
+            assertion.evaluated_known_at = CommitSeq(N - 1);
+            attest(&h, &mut snapshot, 2_000_000 + u128::from(i), assertion);
+        }
+        let mut work = Meter::new(AssertionDrift::ID, Some(100 * N), None);
+        let actual = procedure.run(&snapshot, &h.book, &mut work).unwrap();
+        let expected: Vec<_> = (1..ASSERTIONS)
+            .step_by(2)
+            .map(|i| {
+                let mut finding = expected_template.clone();
+                finding.cites[0] = Cite::Attestation(VId(2_000_000 + u128::from(i)));
+                finding
+            })
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(work.work().entries, N);
+        assert_eq!(work.work().legs, 2 * N);
+        assert!(work.work().comparisons < 90 * N, "{:?}", work.work());
+        assert!(work.work().within_registered_bound(
+            &fa_lantern::bind(AssertionDrift::ID).unwrap().complexity,
+            &snapshot,
+        ));
     }
 }
 

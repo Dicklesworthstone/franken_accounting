@@ -189,6 +189,16 @@ pub fn draft_vid(book: Id128, name: &str) -> VId {
     derive_vid(b"fa:vid:draft:v1", &[&book.0, name.as_bytes()])
 }
 
+/// The logical branch of a named intent-log draft (plan §15.2, R-BR).
+/// Its hexadecimal spelling is the DraftSet vertex id, so a capability can
+/// be confined before the draft is opened. The retained proposals still name
+/// trunk: only the admitted draft planner or independent promoter may judge
+/// their branch reach at this logical coordinate.
+#[must_use]
+pub fn draft_branch(book: Id128, name: &str) -> Id128 {
+    Id128(draft_vid(book, name).0.to_be_bytes())
+}
+
 /// One named immutable close-run definition per book (plan §7.5).
 #[must_use]
 pub fn close_run_vid(book: Id128, name: &str) -> VId {

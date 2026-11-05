@@ -170,3 +170,166 @@ fn draft_authority_refuses_before_decoding_corrupt_or_absent_lifecycle_targets()
         assert_eq!(h.db.vertices().unwrap(), rows);
     }
 }
+
+fn post_only_draft_capability(h: &Harness, name: &str) -> Capability {
+    Capability::new(AGENT, Profile::Agent, &[Op::Post], PRINCIPAL)
+        .unwrap()
+        .on_branch(fa_model::draft_branch(h.book.book_id, name))
+        .unwrap()
+}
+
+#[test]
+fn a_post_only_branch_capability_plans_only_its_named_draft_and_preserves_promotion() {
+    let mut h = harness();
+    let name = "confined-agent";
+    let capability = post_only_draft_capability(&h, name);
+    let branch = fa_model::draft_branch(h.book.book_id, name);
+    let opened = h.open_draft(capability.clone(), name).unwrap();
+    assert_eq!(branch.to_hex(), format!("{:032x}", opened.draft.0));
+    assert_ne!(branch, Id128::TRUNK);
+    assert_ne!(branch, fa_model::draft_branch(h.book.book_id, "another"));
+
+    let proposal = h.agent_rent(123, b"confined-member");
+    let expected = h.member_ref(&proposal);
+    let planned = h
+        .plan_draft(capability.clone(), name, proposal.clone())
+        .unwrap();
+    assert_eq!(
+        planned.plan.unwrap().members()[0]
+            .entry
+            .entry_ref(expected.vid),
+        expected
+    );
+    assert!(h.db.vertex(expected.vid).unwrap().is_none());
+    let before = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+
+    let retry = h
+        .plan_draft(capability.clone(), name, proposal.clone())
+        .unwrap();
+    assert!(retry.recorded.already_recorded);
+    for other in ["another", "does-not-exist"] {
+        let denied = h.open_draft(capability.clone(), other).unwrap_err();
+        assert!(denied.message.contains("branch"), "{denied}");
+        let denied = h
+            .plan_draft(capability.clone(), other, proposal.clone())
+            .unwrap_err();
+        assert!(denied.message.contains("branch"), "{denied}");
+        let denied = h.discard(capability.clone(), other).unwrap_err();
+        assert!(denied.message.contains("branch"), "{denied}");
+    }
+    let mut direct = h.request(proposal.clone(), &["post"]);
+    direct.capability = capability.clone();
+    assert!(
+        h.post(direct.clone()).is_err(),
+        "no direct Agent trunk publication"
+    );
+    let denied = h.post_plan(direct).unwrap_err();
+    assert!(
+        denied.message.contains("branch"),
+        "no portable trunk plan: {denied}"
+    );
+    assert!(fa_policy::admit_read(&capability, AGENT, h.book.book_id).is_err());
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+
+    let promoted = h.promote(h.approver_capability(), name).unwrap();
+    assert_eq!(promoted.entries, vec![expected]);
+    let (posted, at) = read_entry(&h.db, expected.vid).unwrap().unwrap();
+    assert_eq!(posted.proposal, proposal);
+    assert_eq!(at, promoted.recorded_at);
+    assert_eq!(posted.proposal.branch_id, Id128::TRUNK);
+    assert_eq!(posted.proposal.principal_ref, AGENT);
+    assert!(
+        h.plan_draft(capability, name, proposal)
+            .unwrap()
+            .recorded
+            .already_recorded
+    );
+}
+
+#[test]
+fn draft_branch_confinement_keeps_ceiling_revocation_and_required_rehearsal_checks() {
+    let mut h = harness();
+    let name = "confined-laws";
+    let capability = post_only_draft_capability(&h, name)
+        .with_ceiling(h.usd, 200)
+        .unwrap();
+    h.open_draft(capability.clone(), name).unwrap();
+    let before = h.db.frontier().unwrap();
+    let denied = h
+        .plan_draft(capability.clone(), name, h.agent_rent(201, b"too-much"))
+        .unwrap_err();
+    assert!(denied.message.contains("ceiling"), "{denied}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    h.plan_draft(capability.clone(), name, h.agent_rent(200, b"admitted"))
+        .unwrap();
+    h.revoke(&capability, 91);
+    let before = h.db.frontier().unwrap();
+    let denied = h.promote(h.approver_capability(), name).unwrap_err();
+    assert_eq!(denied.code, "FA-REF-023", "{denied}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.draft(name).state, DraftState::Open);
+
+    let required = post_only_draft_capability(&h, "unrehearsed-control").with_requires_dry_run();
+    let before = h.db.frontier().unwrap();
+    let denied = h.open_draft(required, "unrehearsed-control").unwrap_err();
+    assert!(denied.message.contains("requires_dry_run"), "{denied}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn a_draft_branch_cannot_be_rebound_by_replacing_the_retained_body() {
+    let mut h = harness();
+    let name = "confined-original";
+    let owner = post_only_draft_capability(&h, name);
+    let opened = h.open_draft(owner.clone(), name).unwrap();
+    let other = "confined-rebound";
+    let other_owner = post_only_draft_capability(&h, other);
+    h.open_draft(other_owner.clone(), other).unwrap();
+    let other_body = h.draft(other).body;
+    let mut damage = WriteBatch::new(relation::IN_CASE);
+    for (key, value) in [
+        (
+            property::FA_PAYLOAD,
+            fa_journal::rows::scalar_bytes("draft body", other_body.canonical_bytes().unwrap())
+                .unwrap(),
+        ),
+        (
+            property::FA_DIGEST,
+            fa_journal::rows::scalar_bytes("draft digest", other_body.digest().unwrap().to_vec())
+                .unwrap(),
+        ),
+        (
+            property::CODE,
+            fa_journal::rows::scalar_text("draft name", other).unwrap(),
+        ),
+    ] {
+        damage.set_vertex_property(opened.draft, key, Some(value));
+    }
+    let cx = h.ctx();
+    h.runtime
+        .block_on(h.db.write(&cx.commit(), damage))
+        .unwrap();
+    let before = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+
+    // A caller confined elsewhere is refused before the corrupted root is
+    // decoded, while its actual owner must not mint a token for the new name.
+    let denied = h
+        .plan_draft(other_owner, name, h.agent_rent(100, b"wrong-branch"))
+        .unwrap_err();
+    assert!(denied.message.contains("branch"), "{denied}");
+    let request = h.draft_request(owner);
+    let intent =
+        fa_intents::PostIntent::new(h.agent_rent(100, b"rebound-body"), Vec::new()).unwrap();
+    let error = h
+        .runtime
+        .block_on(plan_into_draft(
+            &mut h.db, &cx, &h.book, name, intent, request,
+        ))
+        .unwrap_err();
+    assert!(error.to_string().contains("identity or mirrors"), "{error}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+}
