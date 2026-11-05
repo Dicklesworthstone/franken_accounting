@@ -174,14 +174,14 @@ fn historical_extended_versions_keep_their_complete_native_closure() {
         ("recon.intercompany", &[1]),
         ("recon.lapping", &[1]),
         ("solvency.balance_sheet_test", &[1, 2]),
-        ("solvency.cash_flow_test", &[1, 2, 3]),
+        ("solvency.cash_flow_test", &[1, 2, 3, 4]),
     ];
     assert_eq!(
         histories
             .iter()
             .map(|(_, versions)| versions.len())
             .sum::<usize>(),
-        42
+        43
     );
     for &(id, versions) in histories {
         for &version in versions {
@@ -357,10 +357,10 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
         // fa-6l8g moved the party-attributing procedures to version 3, and
         // fa-yugf.83 the investor-population ones on to version 4. As-of
         // netting moved aging.inventory to version 3; cash-overdraft netting
-        // moved the cash-flow solvency screen to version 4.
+        // and a shared cash/liability cutoff moved the cash-flow screen to 5.
         let version = match id {
             "lookback.preferences" | "aging.inventory" => 3,
-            "solvency.cash_flow_test" => 4,
+            "solvency.cash_flow_test" => 5,
             "ponzi.net_investment" => 5,
             "distribution.rising_tide" | "distribution.pro_rata" => 4,
             _ => 2,

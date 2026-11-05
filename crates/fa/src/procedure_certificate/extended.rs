@@ -61,7 +61,7 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("confirm.coverage", 2),
     // Version 3 judges each position as of the effective date (fa-gebi, fa-ti99).
     ("solvency.balance_sheet_test", 3),
-    ("solvency.cash_flow_test", 4),
+    ("solvency.cash_flow_test", 5),
     // fa-6l8g: version 3 attributes party cash through each party's own legs.
     ("lookback.preferences", 3),
     ("lookback.fraudulent_transfer", 1),
@@ -133,6 +133,7 @@ const RETAINED_CLOSURES: &[(&str, u16)] = &[
     ("solvency.cash_flow_test", 1),
     ("solvency.cash_flow_test", 2),
     ("solvency.cash_flow_test", 3),
+    ("solvency.cash_flow_test", 4),
 ];
 
 /// Preserve durable framing, never substitute today's computation for an old

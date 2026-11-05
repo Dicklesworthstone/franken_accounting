@@ -1802,7 +1802,7 @@ impl Procedure for SolvencyCashFlowTest {
         Self::ID
     }
     fn version(&self) -> u16 {
-        4
+        5
     }
     fn params(&self) -> &Params {
         &self.params
