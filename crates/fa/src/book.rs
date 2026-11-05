@@ -3831,6 +3831,27 @@ impl Book {
         )))
     }
 
+    /// Derive only settlement posting effects for the holder's own open draft.
+    /// Remaining carrying balances are not part of this source-only response.
+    pub fn prepare_fx_settlement_group_in_draft(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+        requests: &[crate::FxSettlementRequest],
+        template: fa_model::EntryPayload,
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_fx_settlement_group_in_draft(
+            &purposes, capability, name, requests, template, &mut budget,
+        )))
+    }
+
     /// Exact functional-currency period activity at a retained journal prefix.
     /// Pending holds stay separate. This is not cumulative stock or a certificate.
     pub fn functional_period_activity(

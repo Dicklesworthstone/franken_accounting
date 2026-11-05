@@ -981,7 +981,9 @@ pub fn prepare_fx_settlement<V: Vfs + Clone>(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
 ) -> Outcome<PreparedFxSettlement> {
     cx.query().with_restriction(|| {
-        prepare_fx_settlement_inner(db, cx, book, capability, request, template, budget, None)
+        prepare_fx_settlement_inner(
+            db, cx, book, capability, request, template, budget, None, None,
+        )
     })
 }
 
@@ -997,7 +999,57 @@ pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
     template: EntryPayload,
     budget: &mut ArithmeticBudget<'_, impl Sized>,
 ) -> Outcome<PreparedFxSettlementGroup> {
-    if let Err(refusal) = crate::revaluation::authorize(db, book, capability)? {
+    prepare_fx_settlement_group_with_admission(
+        db, cx, book, capability, requests, template, budget, None,
+    )
+}
+
+/// Derive only the reviewed effects for an admitted owned draft. Carrying
+/// populations and remaining balances are never returned by this authority.
+pub fn prepare_fx_settlement_group_in_draft<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    admission: &crate::draft::DraftSourceAdmission,
+    requests: &[FxSettlementRequest],
+    template: EntryPayload,
+    budget: &mut ArithmeticBudget<'_, impl Sized>,
+) -> Outcome<EntryPayload> {
+    let prepared = match prepare_fx_settlement_group_with_admission(
+        db,
+        cx,
+        book,
+        admission.capability(),
+        requests,
+        template,
+        budget,
+        Some(admission),
+    )? {
+        Ok(prepared) => prepared,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if let Err(refusal) = admission.admit_proposal(db, book, &prepared.proposal)? {
+        return Ok(Err(refusal));
+    }
+    Ok(Ok(prepared.proposal))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_fx_settlement_group_with_admission<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    requests: &[FxSettlementRequest],
+    template: EntryPayload,
+    budget: &mut ArithmeticBudget<'_, impl Sized>,
+    draft: Option<&crate::draft::DraftSourceAdmission>,
+) -> Outcome<PreparedFxSettlementGroup> {
+    let authority = match draft {
+        Some(admission) => admission.admit_proposal(db, book, &template)?,
+        None => crate::revaluation::authorize(db, book, capability)?,
+    };
+    if let Err(refusal) = authority {
         return Ok(Err(refusal));
     }
     if requests.is_empty() || requests.len() > MAX_FX_SETTLEMENT_ITEMS {
@@ -1033,6 +1085,7 @@ pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
                 template.clone(),
                 budget,
                 Some(&mut audits),
+                draft,
             )
         })? {
             Ok(prepared) => prepared,
@@ -1190,8 +1243,13 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
     mut template: EntryPayload,
     budget: &mut ArithmeticBudget<'_, impl Sized>,
     audits: Option<&mut SuccessfulHistoryAudits>,
+    draft: Option<&crate::draft::DraftSourceAdmission>,
 ) -> Outcome<PreparedFxSettlement> {
-    if let Err(refusal) = crate::revaluation::authorize(db, book, capability)? {
+    let authority = match draft {
+        Some(admission) => admission.admit_proposal(db, book, &template)?,
+        None => crate::revaluation::authorize(db, book, capability)?,
+    };
+    if let Err(refusal) = authority {
         return Ok(Err(refusal));
     }
     if template.book_id != book.book_id

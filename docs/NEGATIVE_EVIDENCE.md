@@ -3338,4 +3338,28 @@ explicit control restriction was absent. The fixture now uses a Human base
 with an Agent operator, the same draft confinement and actual tag 12, and
 asserts that the flag is present. The original refusal and unchanged-head
 assertions remain. Production capability formats and lifecycle admission are
-unchanged (`fa-d48q`). These repairs still require native and full qualification.
+unchanged (`fa-d48q`).
+
+On `55a2797b` / tree `0a60b739`, the complete genesis suite then passed all
+450 cases, with none failed, ignored or filtered. The complete authority and
+writing targets passed 18 and 3 cases respectively. Strict workspace/all-target
+Clippy completed with `-D warnings`. Each remote command returned 0, followed
+by outer RCH exit 1 during retirement/finalization. Official recovery and a
+separate lease read observed acknowledgment and source/tree/pair retirement;
+they do not repair those original exit codes. The original full repository
+gate and exact Tier 0 remain unqualified. Two broader workspace test requests
+were refused with exit 120 before Cargo started because normal disk admission
+could not cover the original 40 GiB growth reservation, 10 GiB protected floor
+and active reservations. Neither request supplies test evidence; no disk
+budget, reservation ledger, gate or daemon guard was changed.
+
+The remaining `fa-txgy.7` carrying-settlement factory still demanded whole-book
+Read even after its caller admitted an owned draft. Its new purpose-bound
+path returns only derived EntryPayload effects; it never returns the existing
+PreparedFxSettlementGroup's CarryingOpenItem balances. Direct factories keep
+Read admission, the draft path uses governed Rate-source reads, and both use
+the same exact carrying derivation and publication checks. New positive CLI
+coverage requires a retained 100 EUR / 110 USD payable to draft a 120 USD
+settlement with an explicit 10 USD loss and exact independent promotion;
+wrong-branch and ordinary entry/document reads must still refuse. Native
+execution and complete qualification of this additional slice are pending.
