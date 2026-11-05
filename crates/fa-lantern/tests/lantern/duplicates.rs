@@ -182,10 +182,10 @@ fn near_duplicates_report_an_entry_past_the_candidate_cap() {
     assert_eq!(f.statistic, Statistic::count("capped_entries", 1, 66));
     assert_eq!(f.cites, vec![Cite::Entry(posted[0])]);
     assert_eq!(r.work.comparisons, {
-        // The sort's charge, then 64 comparisons for the first entry and
-        // 65 - i for every later entry i.
+        // One sparse-lineage scan, the sort's charge, then 64 comparisons
+        // for the first entry and 65 - i for every later entry i.
         let sort = 66 * u64::from(66_u64.ilog2());
-        sort + 64 + (1..66).map(|i| 65 - i).sum::<u64>()
+        snapshot.entries.len() as u64 + sort + 64 + (1..66).map(|i| 65 - i).sum::<u64>()
     });
     let row = fa_lantern::bind(Near::ID).unwrap();
     assert!(
@@ -193,4 +193,103 @@ fn near_duplicates_report_an_entry_past_the_candidate_cap() {
         "{:?}",
         r.work
     );
+}
+
+#[test]
+fn exact_duplicate_procedures_handle_hundred_thousand_postings_with_linear_scan_work() {
+    const N: u64 = 100_000;
+    let mut h = harness();
+    let date = day(2026, 1, 10);
+    let period = h.period_code(date);
+    let usd = h.usd;
+    let template = make_snapshot_entry(
+        &mut h,
+        VId(1),
+        CommitSeq(1),
+        date,
+        &period,
+        EntryClass::ORIGINAL,
+        vec![
+            ("6000", Side::Debit, usd, 100),
+            ("1000", Side::Credit, usd, 100),
+        ],
+        Vec::new(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let mut snapshot = h.snapshot();
+    // This isolates the analytical read path from posting/storage costs.
+    // The old next-date search rebuilt the entire snapshot's lineage map
+    // for each of the 50,000 first-date entries, even without corrections.
+    snapshot.entries = (1..=N)
+        .map(|i| {
+            let mut entry = template.clone();
+            entry.vid = VId(u128::from(i));
+            entry.recorded_at = CommitSeq(i);
+            if i > N / 2 {
+                entry.entry.proposal.effective_date = day(2026, 2, 10);
+            }
+            entry
+        })
+        .collect();
+    let mut work = Meter::new(SameSameDifferent::ID, Some(6 * N), None);
+    let findings = SameSameDifferent::new()
+        .unwrap()
+        .run(&snapshot, &h.book, &mut work)
+        .unwrap();
+    assert!(findings.is_empty()); // The two dates are 31 days apart.
+    assert_eq!(work.work().entries, N);
+    assert_eq!(work.work().legs, 2 * N);
+    assert!(work.work().comparisons <= 3 * N);
+    assert!(work.work().within_registered_bound(
+        &fa_lantern::bind(SameSameDifferent::ID).unwrap().complexity,
+        &snapshot
+    ));
+
+    for entry in &mut snapshot.entries {
+        entry.entry.proposal.effective_date = date;
+    }
+    // One unrelated correction used to force every duplicate to compare
+    // against all earlier group members, scanning the whole snapshot each
+    // time. It must neither change the group nor multiply its work.
+    let unrelated = make_snapshot_entry(
+        &mut h,
+        VId(u128::from(N + 1)),
+        CommitSeq(N + 1),
+        date,
+        &period,
+        EntryClass::REPLACEMENT,
+        vec![
+            ("6000", Side::Debit, usd, 200),
+            ("1000", Side::Credit, usd, 200),
+        ],
+        vec![fa_model::Supersession {
+            target: fa_model::EntryRef {
+                vid: VId(u128::from(N + 2)),
+                entry_digest: [0; 32],
+            },
+            kind: SupersessionKind::Replaces,
+            reason_code: 1,
+        }],
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    snapshot.entries.push(unrelated);
+    let mut work = Meter::new(SameSameSame::ID, Some(32 * N), None);
+    let findings = SameSameSame::new()
+        .unwrap()
+        .run(&snapshot, &h.book, &mut work)
+        .unwrap();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].statistic, Statistic::count("entries", N, N + 1));
+    assert_eq!(findings[0].cites.len(), fa_lantern::MAX_CITES);
+    assert_eq!(findings[0].cites[0], Cite::Entry(VId(1)));
+    assert!(work.work().within_registered_bound(
+        &fa_lantern::bind(SameSameSame::ID).unwrap().complexity,
+        &snapshot
+    ));
 }
