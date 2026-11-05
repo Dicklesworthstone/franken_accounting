@@ -459,6 +459,28 @@ impl PreparedPost {
                 .is_some_and(|total| {
                     total.fx_law_oid == crate::fx::FxLawId::SettlementCarryingBasis.oid()
                 });
+        // An ordinary spot-valued reversal in an admitted draft has already
+        // passed the exact side-swap and witnessed valuation-ancestry checks.
+        // It introduces no new rate, application relief or fold-derived
+        // extension. Keep its aggregate classification: stage_batch retains
+        // the complete prefix guard and repeats it at publication.
+        let recorded_draft_spot_undo = matches!(
+            admission,
+            Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
+        ) && self.request.proposal.class == EntryClass::REVERSAL
+            && self.request.proposal.extensions.is_empty()
+            && self
+                .request
+                .proposal
+                .legs
+                .iter()
+                .all(|leg| leg.settles.is_empty())
+            && self
+                .request
+                .proposal
+                .base_totals
+                .as_ref()
+                .is_some_and(|total| total.fx_law_oid == crate::fx::FxLawId::SpotClose.oid());
         // A case's PPA members have already passed case membership and the
         // retained-earnings role fold in prepare_post_in. They share one
         // committed basis; stage_batch retains the aggregate dependency and
@@ -475,6 +497,7 @@ impl PreparedPost {
                 && !singleton_closing
                 && !singleton_revaluation
                 && !recorded_carrying_undo
+                && !recorded_draft_spot_undo
                 && !case_adjustment)
         {
             self.txn.abort();

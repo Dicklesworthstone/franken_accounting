@@ -1246,6 +1246,7 @@ mod source_draft_tests {
         );
         let reviewed = f.book.draft_entries(&cap, name).unwrap().unwrap();
         assert_eq!(reviewed.len(), 1);
+        assert_eq!(reviewed[0].proposal.legs.len(), 2);
         assert!(
             reviewed[0]
                 .proposal
@@ -1253,6 +1254,10 @@ mod source_draft_tests {
                 .iter()
                 .all(|leg| leg.base_amount.is_some())
         );
+        for leg in &reviewed[0].proposal.legs {
+            assert_eq!(leg.amount.mantissa, 10_000);
+            assert_eq!(leg.base_amount.unwrap().mantissa, 11_000);
+        }
 
         // This second append resolves a named entry retained only in this
         // draft. It must use the admitted draft's prefix, not a trunk read or
@@ -1267,6 +1272,21 @@ mod source_draft_tests {
         );
         assert_eq!(exit, 0, "{reversed:?}");
         assert_eq!(text(&reversed, "event"), "draft_planned");
+        let paired = f.book.draft_entries(&cap, name).unwrap().unwrap();
+        assert_eq!(paired.len(), 2);
+        assert_eq!(paired[0].proposal, reviewed[0].proposal);
+        let original = &paired[0].proposal;
+        let reversal = &paired[1].proposal;
+        assert_eq!(reversal.class, fa_model::EntryClass::REVERSAL);
+        assert_eq!(reversal.base_totals, original.base_totals);
+        assert_eq!(reversal.legs.len(), original.legs.len());
+        for (source, undo) in original.legs.iter().zip(&reversal.legs) {
+            assert_eq!(undo.account_ref, source.account_ref);
+            assert_eq!(undo.amount, source.amount);
+            assert_eq!(undo.base_amount, source.base_amount);
+            assert_eq!(undo.dimension_set, source.dimension_set);
+            assert_ne!(undo.side, source.side);
+        }
         let after = f.owner(&["tb", "--period", "FY2026-P03"], None);
         assert_eq!(
             field(field(&before, "data"), "rows"),

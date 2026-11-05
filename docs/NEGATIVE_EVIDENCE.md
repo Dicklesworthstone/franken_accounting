@@ -3273,3 +3273,22 @@ check now uses an explicit independent canonical argument vector; unreviewed
 and wrong-MIME draft-plan refusals retain unchanged head, no access records
 and unchanged full accounting payloads. Production audit selection is unchanged.
 This correction was made before another native run, not presented as a test pass.
+
+### 2026-11-05 — ordinary FX draft reversal rejected by batch composition
+
+Native `authority_cli` on `1cf18d0e` ran all 16 cases: 15 passed and the
+FX draft case failed; all 3 `write_authority` cases passed. The original
+purchase planned successfully, but reversing that retained draft entry returned
+exit 5 from `PreparedPost::into_member`. The exact side-swap had passed posting
+validation; batch composition rejected its aggregate-sensitive classification.
+Raw evidence is `fa-gap-work-20261031.lM8xfA/draft-authority-1cf18d0e-hz3-20261105.log`
+and `.exit` (outer and remote 101, 678867 ms). No unchanged assertion retry
+or passing credit is attributed to this result.
+
+The repair admits only ordinary SpotClose reversals in admitted draft protocols,
+with no application legs or extensions. It leaves `requires_aggregate_basis`,
+valuation ancestry, exact side-swap validation and the batch publication frontier
+guard intact. The original positive regression remains and now also asserts
+literal 100.00 EUR / 110.00 USD values and retained reversal effects. Qualification
+of this repair is pending; other FX laws and source-derived reversal families
+receive no new admission from this change.
