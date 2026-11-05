@@ -1842,18 +1842,20 @@ mod tests {
             (format, digest(&bytes), bytes.len())
         })
         .collect();
-        // Deliberate title-only correction: removing the unsupported `Certified `
-        // claim shortens PDF/PDF-A by ten bytes. Other format pins stay unchanged.
+        // GOLDEN-CHANGE: embed the pinned font/Unicode map, declare the IR
+        // metadata schema, use actual integer glyph advances and a complete
+        // honestly named RGB profile. Native semantic controls, Poppler and
+        // veraPDF validate the new output. Other format pins stay unchanged.
         let pinned: Vec<(&str, String, usize)> = [
             (
                 "pdf",
-                "d8aa60c433a3d51a2346c294d7ab82ba9de376e3a21ab65e886d2402750cd202",
-                4341,
+                "445695f7f44a2058cba7f320c1fc4f0aa77d6af8aea10f1be60162a47bce7d11",
+                222584,
             ),
             (
                 "pdfa",
-                "a24fa6a8b6c38a0cf250672953b92eb13af85cdc7106e760d77e056d34d4f16d",
-                4378,
+                "ec5a5d10c56914e573dd1c9f359ec34df9b62f6cdbc3341e38eda39a0dd920d8",
+                222621,
             ),
             (
                 "html",

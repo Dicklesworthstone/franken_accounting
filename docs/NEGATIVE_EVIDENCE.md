@@ -3469,3 +3469,56 @@ is renamed to `has_rgb_output_intent`; its hook predicate and positive
 assertion remain identical, with no durable-format change or compatibility
 shim. Actual new client/external validation and final byte pins remain
 pending. Full Markdown renderer adoption is still open.
+
+The repaired `da7bf6f1` history module subsequently executed 6 passes,
+0 failures, 0 ignored and 220 filtered library cases (2.57 seconds), with
+remote 0 / 652871 ms. All original semantic and exact-work assertions ran.
+RCH returned outer 1 during retirement; official recovery returned 0 and a
+separate lease read observed acknowledgment and all source/tree/pair
+retirement fields true. This is scoped behavior evidence, not the complete
+226-case library or a repository verdict. Its first attempted command omitted
+Cargo's `--` separator before `--nocapture`, returned usage exit 1 and ran
+no tests; that agent command error remains retained.
+
+### 2026-11-05 — GOLDEN-CHANGE: validated embedded fonts and complete RGB output profile
+
+Candidate `b3113ae4` / tree `ad4168f9` executed CLI library 85/0,
+rendered reports 3/0 and statements library 66/1, with no ignored or filtered
+cases. Remote and outer exit were 101 (243166 ms). The sole failure remained
+the original byte-pin comparison; the new complete-profile control and all
+font/schema, exact IR, amount, footing and determinism assertions passed.
+
+The actual completed-child rounded PDF/A is SHA-256
+`f8523d02e2807c42cfb9b78e020485e44dd4dfae278229c3e92a817905567508`,
+252888 bytes. Source device/inode/size/mtime/hash matched before and after
+exclusive copying, and its producing child was gone. Both `pdffonts` and
+`pdftotext` returned 0 with empty stderr; the former ICC warning is absent.
+Embedding, Unicode mapping, rounded 126/100/26, four pages and the scope
+notice remain. The same pinned veraPDF PDF/A-2b validator returned 0:
+144 rules and 5987 checks passed, none failed, with normal completion and
+no parse, encryption, OOM or exception case. Retained XML SHA-256 is
+`46e8281ea10e9a9414d187d30b196b6ec3e971d86787c3b05eddd246a1293eb6`.
+The old three-rule loss and intermediate ICC warning remain retained.
+
+Only the two PDF fixture pins are now changed manually, from the observed
+native `fa:rendering-file:v1` digest/size vectors:
+
+- PDF: `d8aa60c433a3d51a2346c294d7ab82ba9de376e3a21ab65e886d2402750cd202`
+  / 4341 bytes becomes
+  `445695f7f44a2058cba7f320c1fc4f0aa77d6af8aea10f1be60162a47bce7d11`
+  / 222584 bytes.
+- PDF/A: `a24fa6a8b6c38a0cf250672953b92eb13af85cdc7106e760d77e056d34d4f16d`
+  / 4378 bytes becomes
+  `ec5a5d10c56914e573dd1c9f359ec34df9b62f6cdbc3341e38eda39a0dd920d8`
+  / 222621 bytes.
+
+The semantic changes are an embedded pinned font/Unicode map, declared IR
+metadata schema, exact font-metric numeric placement and the complete,
+honestly named RGB profile. HTML, SVG and Markdown hashes and sizes remain
+identical. Accounting amounts, IR/certificates, TimeEvidence timestamps,
+scope text and footing assertions are unchanged. No assertion, negative
+control or gate is weakened. All owned project parents had ended and observed
+source leases were released before the manual pin edit. Native rerun of the
+complete targets and exact Tier 0/full repository qualification remain
+required; this fixture validation does not close `fa-cet` or prove full
+Markdown-engine adoption or cross-machine acceptance.
