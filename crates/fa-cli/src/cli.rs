@@ -173,6 +173,7 @@ pub fn handled_verbs() -> Vec<&'static str> {
 }
 
 /// What a command can end with besides success.
+#[derive(Debug)]
 pub(crate) enum Fail {
     Usage(UsageError),
     Refusal(Refusal),
