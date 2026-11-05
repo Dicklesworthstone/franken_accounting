@@ -714,18 +714,19 @@ impl Mints {
 }
 
 /// The availability law on the reversal's posted legs, composed with the
-/// moves already staged in `mints` (one generation per entry per cell).
-/// `Ok(Some(why))` blocks the mint and leaves `mints` unchanged.
+/// moves already staged in `cells` (one generation per entry per cell).
+/// `Ok(Some(why))` blocks the mint and leaves `cells` unchanged.
 fn judge_limits(
     mut read_vertex: impl FnMut(VId) -> Result<Option<fgdb::VertexRow>, KernelError>,
     book: &BookContext,
-    mints: &mut Mints,
+    accounts: &mut BTreeMap<VId, AccountRow>,
+    cells: &mut BTreeMap<VId, CellRun>,
     legs: &[LegPayload],
     period: &str,
 ) -> Result<Option<String>, KernelError> {
     let mut moves: BTreeMap<VId, (VId, Option<String>, Movement)> = BTreeMap::new();
     for leg in legs {
-        let account = match mints.accounts.entry(leg.account_ref) {
+        let account = match accounts.entry(leg.account_ref) {
             MapEntry::Occupied(o) => o.into_mut(),
             MapEntry::Vacant(v) => {
                 let row = read_vertex(leg.account_ref)?.ok_or_else(|| {
@@ -750,14 +751,13 @@ fn judge_limits(
     }
     let mut next: Vec<(VId, LimitCell, LimitCell)> = Vec::with_capacity(moves.len());
     for (cvid, (account_vid, cell_period, m)) in moves {
-        let account = mints
-            .accounts
+        let account = accounts
             .get(&account_vid)
             .ok_or_else(|| KernelError::Corrupt("judged account row".into()))?;
         let lim = account
             .limit
             .ok_or_else(|| KernelError::Corrupt("judged account has no limit".into()))?;
-        let (before, current) = match mints.cells.get(&cvid) {
+        let (before, current) = match cells.get(&cvid) {
             Some(run) => (run.before, run.after),
             None => {
                 let row = read_vertex(cvid)?
@@ -798,7 +798,7 @@ fn judge_limits(
         }
     }
     for (cvid, before, after) in next {
-        mints.cells.insert(cvid, CellRun { before, after });
+        cells.insert(cvid, CellRun { before, after });
     }
     Ok(None)
 }
@@ -1178,7 +1178,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         return execution_refusal(mints, schedule, trigger, refusal);
     }
     let mirrors = crate::entry_storage::stored_mirrors(&entry)?;
-    let mut next_tracker = mints.tracker.clone();
+    let mut next_tracker = mints.tracker.checkpoint();
     next_tracker.create_vertex(relation::HAS_LEG, rvid, 1, &mirrors);
     next_tracker.record_object_stage(relation::HAS_LEG, &entry.encode()?);
     next_tracker.record_entry_outcome_claim(relation::HAS_LEG, &entry.proposal);
@@ -1207,14 +1207,15 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     if let Some(why) = judge_limits(
         |vid| Ok(txn.vertex(db, vid)?),
         book,
-        mints,
+        &mut mints.accounts,
+        &mut mints.cells,
         &entry.proposal.legs,
         &schedule.period,
     )? {
         mints.blocked.push((schedule.target, why));
         return Ok(Ok(true));
     }
-    mints.tracker = next_tracker;
+    next_tracker.commit();
     let pvid = period_vid(&book.calendar.id, &schedule.period);
     let mut has_leg = WriteBatch::new(relation::HAS_LEG);
     has_leg.create_vertex(rvid, vec![label::ENTRY], mirrors);
@@ -1419,7 +1420,8 @@ pub(crate) fn recorded_open_mints<V: asupersync::fs::Vfs + Clone>(
                 let _ = judge_limits(
                     |vid| Ok(db.vertex_at(vid, before)?),
                     book,
-                    &mut mints,
+                    &mut mints.accounts,
+                    &mut mints.cells,
                     &legs,
                     &s.period,
                 )?;
@@ -1459,7 +1461,8 @@ pub(crate) fn recorded_open_mints<V: asupersync::fs::Vfs + Clone>(
         if let Some(why) = judge_limits(
             |vid| Ok(db.vertex_at(vid, before)?),
             book,
-            &mut mints,
+            &mut mints.accounts,
+            &mut mints.cells,
             &legs,
             &s.period,
         )? {

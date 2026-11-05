@@ -651,7 +651,7 @@ fn outcome_of<V: Vfs + Clone>(
 fn opt_scalar_len(value: Option<&CanonicalScalar>) -> usize {
     match value {
         None => 1,
-        Some(scalar) => 5 + scalar.encode().expect("canonical scalar").len(),
+        Some(scalar) => 5 + scalar.canonical_encoded_len().expect("canonical scalar"),
     }
 }
 
@@ -675,16 +675,17 @@ const fn bytes_scalar_encoded_len(raw_len: usize) -> usize {
 /// (fa-q7vt). The pinned substrate retains every submitted relation coordinate,
 /// including empty ones after property changes cancel or fold into a creation
 /// in another coordinate. Its framing remains charged even with no net rows.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct TemplateByteTracker {
     relations: std::collections::BTreeSet<fgdb_delta_types::RelationId>,
     row_bytes: usize,
     created_vertices: std::collections::BTreeMap<VId, CreatedVertexBytes>,
     property_updates:
         std::collections::BTreeMap<(VId, fgdb_delta_types::PropertyKeyId), PropertyUpdate>,
+    undo: Option<TemplateByteUndo>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct CreatedVertexBytes {
     row_bytes: usize,
     props: std::collections::BTreeMap<fgdb_delta_types::PropertyKeyId, usize>,
@@ -692,16 +693,125 @@ struct CreatedVertexBytes {
 
 /// The original value remains the comparison basis across repeated updates.
 /// A change back to that value contributes no row; its coordinate remains.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct PropertyUpdate {
     before: Option<CanonicalScalar>,
     before_len: usize,
     row_bytes: usize,
 }
 
+/// First-touch undo records for one speculative member. A created-row snapshot
+/// copies only that row's bounded property lengths, never the staged prefix.
+/// Existing property updates keep their immutable before-image in place: only
+/// their previous byte contribution must be restored.
+#[derive(Debug, Default)]
+struct TemplateByteUndo {
+    row_bytes: usize,
+    new_relations: Vec<fgdb_delta_types::RelationId>,
+    created_vertices: std::collections::BTreeMap<VId, Option<CreatedVertexBytes>>,
+    property_updates:
+        std::collections::BTreeMap<(VId, fgdb_delta_types::PropertyKeyId), Option<usize>>,
+}
+
+impl Clone for TemplateByteTracker {
+    fn clone(&self) -> Self {
+        // A clone is an independent snapshot, including when inspected during
+        // a checkpoint; it must not inherit another tracker's rollback state.
+        Self {
+            relations: self.relations.clone(),
+            row_bytes: self.row_bytes,
+            created_vertices: self.created_vertices.clone(),
+            property_updates: self.property_updates.clone(),
+            undo: None,
+        }
+    }
+}
+
+/// A speculative member's byte accounting. Dropping the guard restores its
+/// exact starting state; acceptance must explicitly call `commit`.
+#[must_use = "call commit to accept the speculative member"]
+pub(crate) struct TemplateByteCheckpoint<'a> {
+    tracker: &'a mut TemplateByteTracker,
+}
+
+impl TemplateByteCheckpoint<'_> {
+    pub(crate) fn commit(self) {
+        self.tracker.undo = None;
+    }
+}
+
+impl std::ops::Deref for TemplateByteCheckpoint<'_> {
+    type Target = TemplateByteTracker;
+
+    fn deref(&self) -> &Self::Target {
+        self.tracker
+    }
+}
+
+impl std::ops::DerefMut for TemplateByteCheckpoint<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.tracker
+    }
+}
+
+impl Drop for TemplateByteCheckpoint<'_> {
+    fn drop(&mut self) {
+        let Some(undo) = self.tracker.undo.take() else {
+            return;
+        };
+        for (vid, previous) in undo.created_vertices {
+            match previous {
+                Some(created) => {
+                    self.tracker.created_vertices.insert(vid, created);
+                }
+                None => {
+                    self.tracker.created_vertices.remove(&vid);
+                }
+            }
+        }
+        for (key, previous) in undo.property_updates {
+            match previous {
+                Some(row_bytes) => {
+                    self.tracker
+                        .property_updates
+                        .get_mut(&key)
+                        .expect("checkpoint preserves original property updates")
+                        .row_bytes = row_bytes;
+                }
+                None => {
+                    self.tracker.property_updates.remove(&key);
+                }
+            }
+        }
+        for relation in undo.new_relations {
+            self.tracker.relations.remove(&relation);
+        }
+        self.tracker.row_bytes = undo.row_bytes;
+    }
+}
+
 impl TemplateByteTracker {
+    /// Speculate on one member without cloning the accepted prefix. Nested
+    /// checkpoints are rejected before replacing the outer rollback state.
+    pub(crate) fn checkpoint(&mut self) -> TemplateByteCheckpoint<'_> {
+        assert!(self.undo.is_none(), "nested template byte checkpoints");
+        self.undo = Some(TemplateByteUndo {
+            row_bytes: self.row_bytes,
+            ..TemplateByteUndo::default()
+        });
+        TemplateByteCheckpoint { tracker: self }
+    }
+
+    fn touch_relation(&mut self, relation: fgdb_delta_types::RelationId) {
+        if self.relations.insert(relation)
+            && let Some(undo) = &mut self.undo
+        {
+            undo.new_relations.push(relation);
+        }
+    }
+
     fn add_row(&mut self, relation: fgdb_delta_types::RelationId, bytes: usize) {
-        self.relations.insert(relation);
+        self.touch_relation(relation);
         self.row_bytes += bytes;
     }
 
@@ -718,7 +828,7 @@ impl TemplateByteTracker {
             labels_len,
             props
                 .iter()
-                .map(|(k, v)| (*k, v.encode().expect("canonical scalar").len())),
+                .map(|(k, v)| (*k, v.canonical_encoded_len().expect("canonical scalar"))),
         );
     }
 
@@ -731,6 +841,11 @@ impl TemplateByteTracker {
     ) {
         let props: std::collections::BTreeMap<_, _> = props.into_iter().collect();
         let row_bytes = 38 + 8 * labels_len + props.values().map(|len| 12 + len).sum::<usize>();
+        if let Some(undo) = &mut self.undo {
+            undo.created_vertices
+                .entry(vid)
+                .or_insert_with(|| self.created_vertices.get(&vid).cloned());
+        }
         let previous = self
             .created_vertices
             .insert(vid, CreatedVertexBytes { row_bytes, props });
@@ -880,7 +995,7 @@ impl TemplateByteTracker {
         let bytes = 75
             + props
                 .iter()
-                .map(|(_, v)| 12 + v.encode().expect("canonical scalar").len())
+                .map(|(_, v)| 12 + v.canonical_encoded_len().expect("canonical scalar"))
                 .sum::<usize>();
         self.add_row(relation, bytes);
     }
@@ -893,11 +1008,16 @@ impl TemplateByteTracker {
         before: Option<CanonicalScalar>,
         after: Option<CanonicalScalar>,
     ) {
-        self.relations.insert(relation);
+        self.touch_relation(relation);
         if let Some(created) = self.created_vertices.get_mut(&vid) {
+            if let Some(undo) = &mut self.undo {
+                undo.created_vertices
+                    .entry(vid)
+                    .or_insert_with(|| Some(created.clone()));
+            }
             let after_len = after
                 .as_ref()
-                .map(|value| value.encode().expect("canonical scalar").len());
+                .map(|value| value.canonical_encoded_len().expect("canonical scalar"));
             let before_len = match after_len {
                 Some(len) => created.props.insert(key, len),
                 None => created.props.remove(&key),
@@ -907,6 +1027,13 @@ impl TemplateByteTracker {
             created.row_bytes = created.row_bytes - removed + added;
             self.row_bytes = self.row_bytes - removed + added;
             return;
+        }
+        if let Some(undo) = &mut self.undo {
+            undo.property_updates.entry((vid, key)).or_insert_with(|| {
+                self.property_updates
+                    .get(&(vid, key))
+                    .map(|update| update.row_bytes)
+            });
         }
         let update = self
             .property_updates
@@ -2979,6 +3106,322 @@ pub(crate) mod tests {
                 70 + 2 * 53 + vertex_bytes * ROWS + update_bytes * remaining,
                 "after restoring update {remaining}",
             );
+        }
+    }
+
+    fn assert_template_trackers_equal(
+        actual: &TemplateByteTracker,
+        expected: &TemplateByteTracker,
+    ) {
+        assert_eq!(actual.total_bytes(), expected.total_bytes());
+        assert_eq!(actual.relations, expected.relations);
+        assert_eq!(actual.row_bytes, expected.row_bytes);
+        assert_eq!(actual.created_vertices, expected.created_vertices);
+        assert_eq!(actual.property_updates, expected.property_updates);
+    }
+
+    #[test]
+    fn template_byte_checkpoints_match_cloned_candidates_for_every_admission_history() {
+        const CANDIDATES: usize = 8;
+        let bytes = |len| scalar_bytes("checkpoint fixture", vec![42; len]).unwrap();
+        let chunked = vec![42; object::CHUNK_BYTES + 1];
+        let apply = |tracker: &mut TemplateByteTracker, candidate: usize, edit: usize| {
+            let vid = VId(10 + candidate as u128);
+            let shared = VId(1);
+            let existing = VId(2);
+            let changed = VId(100 + candidate as u128);
+            match edit {
+                0 => tracker.create_vertex(
+                    relation::HAS_LEG,
+                    vid,
+                    1,
+                    &[(property::FA_PAYLOAD, bytes(7))],
+                ),
+                1 => tracker.set_vertex_property(
+                    relation::IN_BOOK,
+                    vid,
+                    property::FA_PAYLOAD,
+                    Some(bytes(7)),
+                    Some(bytes(17)),
+                ),
+                2 => tracker.set_vertex_property(
+                    relation::IN_BOOK,
+                    vid,
+                    property::FA_PAYLOAD,
+                    Some(bytes(17)),
+                    None,
+                ),
+                3 => tracker.set_vertex_property(
+                    relation::IN_BOOK,
+                    vid,
+                    property::GENERATION,
+                    None,
+                    Some(CanonicalScalar::Int(7)),
+                ),
+                4 => tracker.set_vertex_property(
+                    relation::IN_BOOK,
+                    shared,
+                    property::FA_PAYLOAD,
+                    Some(bytes(7)),
+                    Some(bytes(candidate + 9)),
+                ),
+                5..=7 => tracker.set_vertex_property(
+                    relation::IN_BOOK,
+                    existing,
+                    property::GENERATION,
+                    Some(CanonicalScalar::Int(9)),
+                    match edit {
+                        5 => Some(CanonicalScalar::Int(7)),
+                        6 => None,
+                        _ => Some(CanonicalScalar::Int(10 + candidate as i64)),
+                    },
+                ),
+                8 | 9 => tracker.set_vertex_property(
+                    relation::IN_BATCH,
+                    changed,
+                    property::TARGET_REF,
+                    None,
+                    (edit == 8).then(|| bytes(8)),
+                ),
+                10 => tracker.add_edge(
+                    relation::IN_UNIT,
+                    &[(property::ORDINAL, CanonicalScalar::Int(2))],
+                ),
+                11 => tracker.record_object_stage(relation::FOR, &chunked),
+                // Replacement and subsequent property edits must preserve the
+                // first snapshot, rather than overwrite it with an intermediate.
+                12 => tracker.create_vertex(
+                    relation::HAS_LEG,
+                    shared,
+                    2,
+                    &[(property::FA_PAYLOAD, bytes(32))],
+                ),
+                13 => tracker.set_vertex_property(
+                    relation::IN_BOOK,
+                    shared,
+                    property::FA_PAYLOAD,
+                    Some(bytes(32)),
+                    Some(bytes(63)),
+                ),
+                14 => tracker.create_vertex(
+                    relation::HAS_LEG,
+                    shared,
+                    1,
+                    &[(property::FA_PAYLOAD, bytes(candidate + 9))],
+                ),
+                15 => tracker.set_vertex_property(
+                    relation::EVIDENCED_BY,
+                    changed,
+                    property::GENERATION,
+                    None,
+                    None,
+                ),
+                _ => unreachable!("fixture edit"),
+            }
+        };
+        for accepted in 0..(1 << CANDIDATES) {
+            let mut tracker = TemplateByteTracker::default();
+            tracker.create_vertex(
+                relation::HAS_LEG,
+                VId(1),
+                1,
+                &[(property::FA_PAYLOAD, bytes(7))],
+            );
+            tracker.set_vertex_property(
+                relation::IN_BOOK,
+                VId(2),
+                property::GENERATION,
+                Some(CanonicalScalar::Int(7)),
+                Some(CanonicalScalar::Int(9)),
+            );
+            let mut baseline = tracker.clone();
+            for candidate in 0..CANDIDATES {
+                // The previous admission strategy cloned the accepted prefix
+                // and discarded that clone on refusal or a full byte budget.
+                let mut cloned_candidate = baseline.clone();
+                {
+                    let mut checkpoint = tracker.checkpoint();
+                    for edit in 0..16 {
+                        apply(&mut cloned_candidate, candidate, edit);
+                        apply(&mut checkpoint, candidate, edit);
+                        assert_template_trackers_equal(&checkpoint, &cloned_candidate);
+                    }
+                    if accepted & (1 << candidate) != 0 {
+                        checkpoint.commit();
+                        baseline = cloned_candidate;
+                    }
+                }
+                assert!(tracker.undo.is_none());
+                assert_template_trackers_equal(&tracker, &baseline);
+            }
+        }
+    }
+
+    #[test]
+    fn template_byte_checkpoint_restores_errors_and_rejects_nested_checkpoints() {
+        let mut tracker = TemplateByteTracker::default();
+        tracker.create_vertex(
+            relation::HAS_LEG,
+            VId(1),
+            1,
+            &[(property::GENERATION, CanonicalScalar::Int(7))],
+        );
+        let baseline = tracker.clone();
+        let result = (|| -> Result<(), &'static str> {
+            let mut candidate = tracker.checkpoint();
+            candidate.set_vertex_property(
+                relation::IN_BOOK,
+                VId(1),
+                property::GENERATION,
+                Some(CanonicalScalar::Int(7)),
+                None,
+            );
+            candidate.add_edge(relation::IN_BATCH, &[]);
+            let admission: Result<(), _> = Err("candidate refused");
+            admission?;
+            candidate.commit();
+            Ok(())
+        })();
+        assert_eq!(result, Err("candidate refused"));
+        assert_template_trackers_equal(&tracker, &baseline);
+        assert!(tracker.undo.is_none());
+
+        let nested = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut candidate = tracker.checkpoint();
+            candidate.add_edge(relation::IN_BATCH, &[]);
+            let _nested = candidate.checkpoint();
+        }));
+        let panic = nested.expect_err("nested checkpoints must be rejected");
+        let message = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str));
+        assert_eq!(message, Some("nested template byte checkpoints"),);
+        assert_template_trackers_equal(&tracker, &baseline);
+        assert!(tracker.undo.is_none());
+
+        // A copied speculative view has no borrowed rollback responsibility.
+        // Its own checkpoint cannot discard the original guard's undo log.
+        let mut candidate = tracker.checkpoint();
+        candidate.add_edge(relation::IN_BATCH, &[]);
+        let mut independent = (*candidate).clone();
+        let speculative_bytes = independent.total_bytes();
+        {
+            let mut independent_candidate = independent.checkpoint();
+            independent_candidate.add_edge(relation::IN_UNIT, &[]);
+        }
+        assert_eq!(independent.total_bytes(), speculative_bytes);
+        drop(candidate);
+        assert_template_trackers_equal(&tracker, &baseline);
+        independent.checkpoint().commit();
+        assert_eq!(independent.total_bytes(), speculative_bytes);
+    }
+
+    #[test]
+    fn template_byte_checkpoints_admit_one_hundred_thousand_members_without_prefix_copies() {
+        // This is a tracker complexity fixture, not an increase to the native
+        // transaction limit. Every candidate changes two created vertices and
+        // two property updates, regardless of the accepted prefix's size.
+        const MEMBERS: usize = 100_000;
+        let mut tracker = TemplateByteTracker::default();
+        let original = CanonicalScalar::Int(7);
+        let scalar_len = original.encode().unwrap().len();
+        let vertex_bytes = 38 + 8 + 12 + scalar_len;
+        let update_bytes = 30 + 2 * (5 + scalar_len);
+        let shared_created = VId((2 * MEMBERS + 1) as u128);
+        let shared_existing = VId((2 * MEMBERS + 2) as u128);
+        tracker.create_vertex(
+            relation::HAS_LEG,
+            shared_created,
+            1,
+            &[(property::GENERATION, original.clone())],
+        );
+        tracker.set_vertex_property(
+            relation::IN_BOOK,
+            shared_existing,
+            property::GENERATION,
+            Some(original.clone()),
+            Some(CanonicalScalar::Int(8)),
+        );
+        let mut accepted = 0;
+        let expanded = scalar_bytes("checkpoint size change", vec![42; 17]).unwrap();
+        for member in 0..MEMBERS {
+            let before_bytes = tracker.total_bytes();
+            let before_relations = tracker.relations.len();
+            let mut candidate = tracker.checkpoint();
+            candidate.create_vertex(
+                relation::HAS_LEG,
+                VId((member + 1) as u128),
+                1,
+                &[(property::GENERATION, original.clone())],
+            );
+            candidate.set_vertex_property(
+                relation::IN_BOOK,
+                shared_existing,
+                property::GENERATION,
+                Some(CanonicalScalar::Int(8)),
+                Some(original.clone()),
+            );
+            assert_eq!(
+                candidate.total_bytes(),
+                before_bytes + vertex_bytes - update_bytes,
+            );
+            candidate.set_vertex_property(
+                relation::IN_BOOK,
+                shared_existing,
+                property::GENERATION,
+                Some(original.clone()),
+                Some(CanonicalScalar::Int(8)),
+            );
+            for after in [Some(expanded.clone()), None] {
+                candidate.set_vertex_property(
+                    relation::IN_BOOK,
+                    shared_created,
+                    property::FA_PAYLOAD,
+                    None,
+                    after,
+                );
+            }
+            for after in [CanonicalScalar::Int(8), original.clone()] {
+                candidate.set_vertex_property(
+                    relation::IN_BATCH,
+                    VId((MEMBERS + member + 1) as u128),
+                    property::GENERATION,
+                    Some(original.clone()),
+                    Some(after),
+                );
+            }
+            candidate.add_edge(relation::FOR, &[]);
+            assert_eq!(
+                candidate.total_bytes(),
+                before_bytes
+                    + vertex_bytes
+                    + 75
+                    + 53 * (candidate.relations.len() - before_relations),
+            );
+            let undo = candidate.undo.as_ref().unwrap();
+            assert_eq!(undo.created_vertices.len(), 2);
+            assert_eq!(undo.property_updates.len(), 2);
+            assert!(undo.new_relations.len() <= 2);
+            assert_eq!(
+                undo.property_updates
+                    .get(&(shared_existing, property::GENERATION)),
+                Some(&Some(update_bytes)),
+            );
+            if member % 3 == 0 {
+                drop(candidate);
+            } else {
+                candidate.commit();
+                accepted += 1;
+            }
+            let relations = if accepted == 0 { 2 } else { 4 };
+            assert_eq!(
+                tracker.total_bytes(),
+                70 + 53 * relations + vertex_bytes * (accepted + 1) + update_bytes + 75 * accepted,
+            );
+            assert_eq!(tracker.created_vertices.len(), accepted + 1);
+            assert_eq!(tracker.property_updates.len(), accepted + 1);
+            assert!(tracker.undo.is_none());
         }
     }
 
