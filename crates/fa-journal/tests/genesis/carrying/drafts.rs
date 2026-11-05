@@ -4,6 +4,197 @@
 use super::*;
 use fgdb::WriteBatch;
 
+fn quoted_original(f: &mut Fixture, law: FxLawId, key: &[u8]) -> EntryPayload {
+    let (as_of, purpose) = match law {
+        FxLawId::SpotClose => (f.h.day(), FxRatePurpose::SpotClose),
+        FxLawId::PeriodAverage => (
+            DateDay::from_ymd(2026, 3, 31).unwrap(),
+            FxRatePurpose::PeriodAverage,
+        ),
+        _ => panic!("a quoted original requires SpotClose or PeriodAverage"),
+    };
+    let rate = FxRateDocument::new(
+        FxRateTerms {
+            base_unit: f.h.usd,
+            quote_unit: f.foreign,
+            rate_num: 1,
+            rate_den: 3,
+            rounding: RoundingLaw::HalfEven,
+        },
+        as_of,
+        1,
+        purpose,
+        "immutable quotation for an atomic original and reversal",
+    )
+    .unwrap();
+    f.h.add_document(
+        &rate
+            .document(f.h.book.book_id, PRINCIPAL, HUMAN_UPLOAD)
+            .unwrap(),
+    )
+    .unwrap();
+    let receivable = account_vid(f.h.book.book_id, "1211");
+    let revenue = account_vid(f.h.book.book_id, "4011");
+    let original = f.h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, receivable, Amount::new(f.foreign, 8)),
+            LegPayload::simple(Side::Credit, revenue, Amount::new(f.foreign, 4)),
+            LegPayload::simple(Side::Credit, revenue, Amount::new(f.foreign, 4)),
+        ],
+        key,
+        EntryClass::ORIGINAL,
+    );
+    let stripped = Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(100_000, 0), 4096);
+    let spec = fa_journal::genesis::read_book_spec(&f.h.db)
+        .unwrap()
+        .unwrap();
+    let valued =
+        value_proposal(&mut budget, original, &spec, &f.h.book.units, law, &[rate]).unwrap();
+    assert_eq!(
+        valued
+            .legs
+            .iter()
+            .map(|leg| leg.base_amount.unwrap().mantissa)
+            .collect::<Vec<_>>(),
+        [3, 2, 1],
+        "the exact undo must retain the original's rounding residual"
+    );
+    valued
+}
+
+#[test]
+fn recorded_fx_reversals_compose_with_staged_originals_and_confined_drafts() {
+    for law in [FxLawId::SpotClose, FxLawId::PeriodAverage] {
+        for draft in [false, true] {
+            let mut f = fixture(3, 10);
+            let mut original = quoted_original(&mut f, law, b"atomic-quoted-original");
+            if draft {
+                original.principal_ref = AGENT;
+            }
+            let target = f.h.member_ref(&original);
+            let reversal = undo(&original, target, b"atomic-quoted-reversal");
+            let expected = [original.clone(), reversal.clone()];
+            let (entries, recorded_at) = if draft {
+                let name = "quoted-original-and-undo";
+                let planner = confined_source_capability(&f, name);
+                f.h.open_draft(planner.clone(), name).unwrap();
+                f.h.plan_draft(planner.clone(), name, original).unwrap();
+                let planned = f.h.plan_draft(planner.clone(), name, reversal).unwrap();
+                let preview = planned.plan.unwrap();
+                assert_eq!(preview.members().len(), 2);
+                for (member, proposal) in preview.members().iter().zip(&expected) {
+                    assert_eq!(&member.entry.proposal, proposal);
+                }
+                assert!(read_entry(&f.h.db, target.vid).unwrap().is_none());
+                assert!(
+                    read_entry(&f.h.db, reversal_vid(target.vid))
+                        .unwrap()
+                        .is_none()
+                );
+                assert!(fa_policy::admit_read(&planner, AGENT, f.h.book.book_id).is_err());
+                let before = f.h.db.frontier().unwrap();
+                let promoted = f.h.promote(f.h.approver_capability(), name).unwrap();
+                assert_eq!(promoted.recorded_at.0, before.0 + 1);
+                for (reference, member) in promoted.entries.iter().zip(preview.members()) {
+                    assert_eq!(reference.entry_digest, member.entry.entry_digest);
+                }
+                (promoted.entries, promoted.recorded_at)
+            } else {
+                let batch = f.h.batch(b"atomic-quoted-batch", vec![original, reversal]);
+                let before = f.h.db.frontier().unwrap();
+                let posted = f.post_fx_batch(batch.clone()).unwrap();
+                assert_eq!(posted.recorded_at.0, before.0 + 1);
+                let retry = f.post_fx_batch(batch).unwrap();
+                assert!(retry.already_recorded);
+                assert_eq!(retry.entries, posted.entries);
+                assert_eq!(retry.recorded_at, posted.recorded_at);
+                assert_eq!(f.h.db.frontier().unwrap(), posted.recorded_at);
+                (posted.entries, posted.recorded_at)
+            };
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0], target);
+            assert_eq!(entries[1].vid, reversal_vid(target.vid));
+            for (reference, proposal) in entries.iter().zip(&expected) {
+                let (entry, sequence) = read_entry(&f.h.db, reference.vid).unwrap().unwrap();
+                assert_eq!(&entry.proposal, proposal);
+                assert_eq!(sequence, recorded_at);
+            }
+            assert_eq!(f.carrying().open_native.mantissa, 3);
+            assert_eq!(f.carrying().open_base.mantissa, 10);
+            f.verify();
+        }
+    }
+}
+
+#[test]
+fn recorded_fx_reversal_batches_reject_forged_handles_and_side_swaps_atomically() {
+    for law in [FxLawId::SpotClose, FxLawId::PeriodAverage] {
+        for forged_handle in [false, true] {
+            let mut f = fixture(3, 10);
+            let original = quoted_original(&mut f, law, b"forged-quoted-original");
+            let target = f.h.member_ref(&original);
+            let mut reversal = undo(&original, target, b"forged-quoted-reversal");
+            let expected_code = if forged_handle {
+                reversal.supersession[0].target.entry_digest[0] ^= 1;
+                fa_journal::refusal::code::REVERSAL_TARGET
+            } else {
+                // Still balanced and validly valued, but no longer the
+                // original's exact account-by-account side swap.
+                reversal.legs[1].account_ref = f.conversion;
+                fa_journal::refusal::code::REVERSAL_SHAPE
+            };
+            let batch = f.h.batch(b"forged-quoted-batch", vec![original, reversal]);
+            let outcome = fa_journal::batch::outcome_vid(&f.h.book, &batch);
+            let before = f.h.db.frontier().unwrap();
+            let rows = f.h.db.vertices().unwrap();
+            let refused = f.post_fx_batch(batch).unwrap_err();
+            assert_eq!(refused.code, expected_code, "{law:?}: {refused}");
+            assert!(refused.message.contains("member 1"), "{refused}");
+            assert_eq!(f.h.db.frontier().unwrap(), before);
+            assert_eq!(f.h.db.vertices().unwrap(), rows);
+            assert!(f.h.db.vertex(outcome).unwrap().is_none());
+            assert!(read_entry(&f.h.db, target.vid).unwrap().is_none());
+            assert!(
+                read_entry(&f.h.db, reversal_vid(target.vid))
+                    .unwrap()
+                    .is_none()
+            );
+            f.verify();
+        }
+    }
+}
+
+#[test]
+fn recorded_fx_reversal_batch_plans_keep_the_complete_prefix_guard() {
+    for law in [FxLawId::SpotClose, FxLawId::PeriodAverage] {
+        let mut f = fixture(3, 10);
+        let original = quoted_original(&mut f, law, b"guarded-quoted-original");
+        let target = f.h.member_ref(&original);
+        let reversal = undo(&original, target, b"guarded-quoted-reversal");
+        let batch = f.h.batch(b"guarded-quoted-batch", vec![original, reversal]);
+        let capability = Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap();
+        let before = f.h.db.frontier().unwrap();
+        let plan = f.h.planned_batch(batch.clone(), &capability).unwrap();
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+        let document =
+            f.h.document(INVOICE, HUMAN_UPLOAD, b"unrelated later evidence");
+        f.h.add_document(&document).unwrap();
+        let before = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let refused = f.h.publish_batch_plan(plan, &capability).unwrap_err();
+        assert_eq!(refused.code, fa_journal::refusal::code::PLAN_INVALIDATED);
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        assert!(read_entry(&f.h.db, target.vid).unwrap().is_none());
+        let fresh = f.h.planned_batch(batch, &capability).unwrap();
+        let posted = f.h.publish_batch_plan(fresh, &capability).unwrap();
+        assert_eq!(posted.recorded_at.0, before.0 + 1);
+        assert_eq!(posted.entries.len(), 2);
+        f.verify();
+    }
+}
+
 fn confined_source_capability(f: &Fixture, name: &str) -> Capability {
     Capability::new(
         AGENT,

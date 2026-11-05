@@ -1199,6 +1199,8 @@ mod source_draft_tests {
                     path.to_str().unwrap(),
                     "--kind",
                     "Workpaper",
+                    "--mime",
+                    fa::EXTERNAL_SUBLEDGER_MIME,
                     "--grade",
                     "HumanUpload",
                 ],
@@ -1272,7 +1274,7 @@ mod source_draft_tests {
         // draft. It must use the admitted draft's prefix, not a trunk read or
         // another draft's private members.
         let reversal = format!(
-            r#"{{"class":"Reversal","effective_date":"{DATE}","idempotency_key":"confined-reversal","reverses":"E:{planned}","reason":"WrongAmount"}}"#
+            r#"{{"class":"Reversal","effective_date":"{DATE}","idempotency_key":"confined-reversal","reverses":"{planned}","reason":"WrongAmount"}}"#
         );
         let (exit, reversed) = f.bound(
             &authority,
@@ -1759,7 +1761,7 @@ mod source_draft_tests {
         );
         assert!(matches!(exit, 3 | 6), "{out:?}");
         let refused = result_event(&out);
-        assert_eq!(text(&refused, "event"), "refusal");
+        assert_eq!(text(&refused, "event"), "error");
         assert_eq!(
             f.book.head().unwrap(),
             before,

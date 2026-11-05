@@ -445,19 +445,35 @@ impl PreparedPost {
         let singleton_revaluation =
             proofs.revaluation.is_some() && self.request.proposal.class == EntryClass::REVALUATION;
         // The posting pipeline has already witnessed the exact side-swap
-        // and staged its recorded UNSETTLES effects. Legacy carrying undos
-        // therefore compose through those transactional application mirrors;
-        // they do not calculate a new relief from another batch member.
-        // stage_batch still retains and checks the complete prefix guard.
-        let recorded_carrying_undo = self.request.proposal.class == EntryClass::REVERSAL
+        // and staged its recorded UNSETTLES effects. Ordinary quoted FX and
+        // legacy carrying undos therefore compose through those transactional
+        // ancestry and application mirrors, including an earlier staged
+        // Original. They never derive a new valuation from another member.
+        // Other aggregate protocols still require their own proofs, and
+        // stage_batch retains and checks the complete prefix guard.
+        let recorded_fx_undo = self.request.proposal.class == EntryClass::REVERSAL
             && !crate::carrying::has_allocated_basis(&self.request.proposal)
+            && !crate::revaluation::is_source_bound(&self.request.proposal)
+            && !crate::disposal::has_basis(&self.request.proposal)
+            && !crate::asset_cost::has_basis(&self.request.proposal)
+            && !self.request.proposal.extensions.iter().any(|(tag, _)| {
+                *tag == fa_model::entry::PRIOR_PERIOD_ADJUSTMENT_EXTENSION
+                    || *tag == fa_model::entry::YEAR_END_CLOSE_EXTENSION
+            })
             && self
                 .request
                 .proposal
                 .base_totals
                 .as_ref()
                 .is_some_and(|total| {
-                    total.fx_law_oid == crate::fx::FxLawId::SettlementCarryingBasis.oid()
+                    matches!(
+                        crate::fx::FxLawId::from_oid(&total.fx_law_oid),
+                        Some(
+                            crate::fx::FxLawId::SpotClose
+                                | crate::fx::FxLawId::PeriodAverage
+                                | crate::fx::FxLawId::SettlementCarryingBasis
+                        )
+                    )
                 });
         // A case's PPA members have already passed case membership and the
         // retained-earnings role fold in prepare_post_in. They share one
@@ -474,7 +490,7 @@ impl PreparedPost {
                 && !independent_asset_charge
                 && !singleton_closing
                 && !singleton_revaluation
-                && !recorded_carrying_undo
+                && !recorded_fx_undo
                 && !case_adjustment)
         {
             self.txn.abort();
