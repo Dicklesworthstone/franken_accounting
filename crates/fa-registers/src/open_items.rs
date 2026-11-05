@@ -555,6 +555,13 @@ mod tests {
                 "chain {n}"
             );
             assert!(is_live(VId(n as u128), &reversed_by).unwrap(), "tip {n}");
+            let mut cached = ReversalLiveness::new(&reversed_by);
+            assert_eq!(
+                cached.is_live(VId(0)).unwrap(),
+                n.is_multiple_of(2),
+                "cached chain {n}"
+            );
+            assert!(cached.is_live(VId(n as u128)).unwrap(), "cached tip {n}");
         }
         let mut cyclic = BTreeMap::new();
         cyclic.insert(VId(1), VId(2));
@@ -562,6 +569,10 @@ mod tests {
         cyclic.insert(VId(3), VId(1));
         assert!(matches!(
             is_live(VId(1), &cyclic),
+            Err(RegisterError::Kernel(KernelError::Corrupt(_)))
+        ));
+        assert!(matches!(
+            ReversalLiveness::new(&cyclic).is_live(VId(1)),
             Err(RegisterError::Kernel(KernelError::Corrupt(_)))
         ));
     }

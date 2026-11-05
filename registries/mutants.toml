@@ -206,11 +206,11 @@ description = "Omit watermark CommitSeq from register fold_digest calculation."
 [[mutant]]
 id = "MUT-020"
 file = "crates/fa-registers/src/open_items.rs"
-find = "live = !live;"
-replace = "live = false;"
+find = "            live = !live;\n            self.resolved.insert(ancestor, Some(live));"
+replace = "            live = false;\n            self.resolved.insert(ancestor, Some(live));"
 law = "FA-INV-08.reversed-once"
 killed_by = ["fa-registers::lib::open_items::tests::liveness_is_parity_over_arbitrarily_long_chains_and_cycles_are_corruption"]
-description = "Break reversal-of-reversal parity in open_items::is_live so revived entries stay dead."
+description = "Break production memoized reversal-of-reversal parity so revived entries stay dead; the original detector checks both cached and literal walks."
 
 [[mutant]]
 id = "MUT-021"

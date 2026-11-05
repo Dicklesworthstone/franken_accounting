@@ -3665,3 +3665,27 @@ and render semantics remain, while foundation-input certificate bytes change.
 That phrase is corrected in place, with this explanation and its prior Git
 history retained. Formatting, targeted static UBS and docs-sync pass; final
 native execution and complete qualification of the corrected tree remain open.
+
+### 2026-11-05 — Preserve MUT-020 on the memoized production liveness path
+
+Native G0 on `bdaf63b6` returned real remote/outer 1 / 17457 ms:
+`MUT-020`'s `live = !live;` selector matches three sites after the memoized
+walk and its literal work control were added. This is a registration failure,
+not an accounting failure or an offloader refusal. The exact-unique-match
+validator remains unchanged.
+
+The selector now includes the adjacent cache-publication statement, uniquely
+targeting the production `ReversalLiveness` parity step. Its replacement still
+forces `live = false`, making revived entries stay dead. The law and original
+`killed_by` test name remain. That original detector now additionally checks
+the cached head and tip against the same literal expected parity at every
+original chain length, plus cached cycle refusal. Every original literal
+assertion and population stays. This strengthens the existing detector rather
+than registering a duplicate test or moving the mutation to a reference-only
+path. All 38 registered selectors have exactly one current source match.
+
+The first commentary called the mutation forced-live before reading its row;
+the row actually forces dead. That description was corrected before any edit.
+Unmutated native execution and an isolated one-site forced-dead control are
+still required to prove the original named detector kills the repaired mutant.
+The active prior-source compiler jobs finish naturally before changing Gate.
