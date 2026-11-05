@@ -1203,13 +1203,20 @@ pub fn prepare_fx_settlement_group_in_draft<V: Vfs + Clone>(
         // CeilingExceeded includes the rejected mantissa, which would reveal
         // carrying relief even though the completed proposal is withheld.
         // Caller-declared amount diagnostics above remain precise.
-        Err(refusal) if refusal.code == code::CAPABILITY => Ok(Err(Refusal::new(
-            code::CAPABILITY,
-            refusal.exit,
-            "generated settlement effects exceed the capability's permitted scope or amount ceiling",
-            "plan §15.2 (source-derived effects require admission before disclosure); fa-txgy.7",
-            "use a capability that admits every generated settlement effect",
-        ))),
+        Err(refusal)
+            if matches!(
+                refusal.code,
+                code::CAPABILITY | fa_policy::denial::code::CEILING
+            ) =>
+        {
+            Ok(Err(Refusal::new(
+                refusal.code,
+                refusal.exit,
+                "generated settlement effects exceed the capability's permitted scope or amount ceiling",
+                "plan §15.2 (source-derived effects require admission before disclosure); fa-txgy.7",
+                "use a capability that admits every generated settlement effect",
+            )))
+        }
         Err(refusal) => Ok(Err(refusal)),
     }
 }

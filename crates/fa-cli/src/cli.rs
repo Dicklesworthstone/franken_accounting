@@ -2682,10 +2682,20 @@ pub fn bound_command_admissible(
     let agent_correction_review = (verb == "replace"
         || (verb == "reverse" && args.flag("--replace-with").is_some()))
         && (args.switch("--review-only") || args.flag("--review-out").is_some());
+    // This mode derives a proposal only after the handler resolves the
+    // capability's own open draft. It cannot restore or publish a review.
+    let agent_disposal_review = verb == "dispose"
+        && authority.capability().branch().is_some()
+        && (args.switch("--review-only") || args.flag("--review-out").is_some())
+        && args.flag("--review").is_none()
+        && args.flag("--digest").is_none()
+        && !args.switch("--dry-run")
+        && args.flag("--plan-out").is_none();
     if authority.profile() == crate::authority::LaunchProfile::Agent
         && is_monetary_trunk_post
         && !agent_rehearsal
         && !agent_correction_review
+        && !agent_disposal_review
     {
         return Err(format!(
             "`{}` writes or plans monetary entries on trunk, which the Agent profile cannot perform (FA-REF-013)",
@@ -6674,6 +6684,29 @@ pub(crate) fn draft_intent_json(book: &Book, planned: &fa_journal::PlannedIntent
     ])
 }
 
+/// Admit the named logical branch before a lifecycle command discloses the
+/// book coordinate. The native lifecycle still checks ownership and state.
+fn admit_named_draft_write(book: &Book, capability: &Capability, name: &str) -> Result<(), Fail> {
+    fa_policy::admit_within(
+        capability,
+        &fa_policy::Intent {
+            principal: capability.holder(),
+            trunk: false,
+            op: fa_policy::Op::Post,
+            book: book.context().book_id,
+            legs: &[],
+        },
+        &fa_policy::Reach {
+            branch: Some(fa_model::draft_branch(book.context().book_id, name)),
+            ..fa_policy::Reach::whole_book(false)
+        },
+        None,
+    )
+    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    book.admit_current(capability)??;
+    Ok(())
+}
+
 /// `fa draft new|plan|list|show|promote|discard` (plan §15.2, bead fa-s7x):
 /// an intent log that reaches trunk only when a principal holding `approve`
 /// who is not its owner promotes it, replaying every intent in one batch.
@@ -6683,7 +6716,9 @@ fn draft_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("new") => {
             let name = draft_name(args, "new")?.to_string();
             let capability = ctx.capability(args, &["post"])?;
-            let mut book = ctx.books.open(args)?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                admit_named_draft_write(book, &capability, &name)
+            })?;
             let date = control_date(args, &book)?;
             let default_desc = format!("draft {name}");
             let description = args.flag("--description").unwrap_or(&default_desc);
@@ -6835,7 +6870,9 @@ fn draft_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("discard") => {
             let name = draft_name(args, "discard")?.to_string();
             let capability = ctx.capability(args, &["post"])?;
-            let mut book = ctx.books.open(args)?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                admit_named_draft_write(book, &capability, &name)
+            })?;
             let date = control_date(args, &book)?;
             let default_desc = format!("discard draft {name}");
             let description = args

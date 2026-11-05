@@ -1374,6 +1374,184 @@ mod source_draft_tests {
     }
 
     #[test]
+    fn confined_source_routes_reach_native_admission_without_widening_direct_routes() {
+        let mut f = Fixture::new();
+        let name = "source-dispatch";
+        let (_, authority) = f.agent("source-dispatch-agent", Some(name));
+        let reg = registry().unwrap();
+        let parse = |argv: &[&str]| {
+            fa_cli::args::parse(
+                &argv
+                    .iter()
+                    .map(|value| (*value).to_string())
+                    .collect::<Vec<_>>(),
+                &reg.value_flags(),
+                &reg.switches(),
+            )
+            .unwrap()
+        };
+        for argv in [
+            vec!["draft", "new", name],
+            vec!["draft", "plan", name],
+            vec!["draft", "discard", name],
+            vec!["post", "--draft", name],
+            vec!["invoice", "--draft", name],
+            vec!["bill", "--draft", name],
+            vec!["receipt", "--draft", name],
+            vec!["payment", "--draft", name],
+            vec!["batch", "--draft", name],
+            vec!["subledger", "feed", "--draft", name],
+            vec!["dispose", "--review-only"],
+            vec!["dispose", "--review-out", "review.bin"],
+        ] {
+            let parsed = parse(&argv);
+            assert_eq!(
+                fa_cli::cli::bound_command_ops(argv[0], &parsed),
+                Some(&[Op::Post][..]),
+                "{argv:?}"
+            );
+            assert!(
+                fa_cli::cli::bound_command_admissible(reg, argv[0], &parsed, &authority).is_ok(),
+                "the typed handler must judge its own named source: {argv:?}"
+            );
+        }
+        for argv in [
+            vec!["post"],
+            vec!["post", "--dry-run"],
+            vec!["post", "--draft", name, "--scenario", "other"],
+            vec!["dispose"],
+            vec!["dispose", "--dry-run"],
+            vec!["dispose", "--review-only", "--review", "aa"],
+            vec!["subledger", "feed"],
+            vec!["draft", "list"],
+            vec!["entry", "show", "1"],
+            vec!["document", "read", "1"],
+            vec!["tb"],
+        ] {
+            assert!(
+                fa_cli::cli::bound_command_admissible(reg, argv[0], &parse(&argv), &authority)
+                    .is_err(),
+                "source-only routes grant neither trunk publication nor general reads: {argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn subledger_draft_flag_never_falls_through_to_native_publication_or_reads() {
+        let mut f = Fixture::new();
+        for command in [
+            vec![
+                "subledger",
+                "add",
+                "AP",
+                "--control",
+                "2000",
+                "--kind",
+                "payables",
+            ],
+            vec!["subledger", "list"],
+            vec!["subledger", "show", "AP"],
+            vec!["subledger", "verify", "AP", "--as-of", DATE],
+            vec!["subledger", "detail", "--input", "-"],
+            vec!["subledger", "verify-feed", "1"],
+            vec![
+                "subledger",
+                "reconcile-feed",
+                "vendor-ap",
+                "--control",
+                "2000",
+                "--as-of",
+                DATE,
+            ],
+        ] {
+            let mut argv = vec!["--book".into(), f.dir.to_string_lossy().into_owned()];
+            argv.extend(command.iter().map(|arg| (*arg).to_string()));
+            argv.extend(["--draft".into(), "must-not-publish".into(), "--json".into()]);
+            let head = f.book.head().unwrap();
+            let (exit, out) = fa_cli::cli::run(
+                &argv,
+                Books::Held {
+                    book: &mut f.book,
+                    dir: f.dir.clone(),
+                },
+                Files {
+                    cwd: None,
+                    stdin: Stdin::Missing,
+                },
+                true,
+            );
+            assert_eq!(exit, 2, "{command:?}: {out:?}");
+            let refused = result_event(&out);
+            assert!(text(field(&refused, "data"), "message").contains("--draft"));
+            assert_eq!(field(&refused, "book"), &Json::Null);
+            assert_eq!(field(&refused, "coordinate"), &Json::Null);
+            assert_eq!(f.book.head().unwrap(), head);
+        }
+    }
+
+    #[test]
+    fn typed_external_feed_drafts_with_post_only_and_rejects_other_draft_names() {
+        let mut f = Fixture::new();
+        let source = f.external_source();
+        f.owner(
+            &["attest", "review", &source, "--as", "independent-reviewer"],
+            None,
+        );
+        let name = "typed-external-summary";
+        let (cap, authority) = f.agent("typed-feed-agent", Some(name));
+        f.open(&authority, name);
+        for command in ["new", "discard"] {
+            let before = f.book.head().unwrap();
+            let (exit, refused) = f.bound(&authority, &["draft", command, "another-draft"], None);
+            assert_eq!(exit, 7, "{refused:?}");
+            assert_eq!(field(&refused, "book"), &Json::Null);
+            assert_eq!(field(&refused, "coordinate"), &Json::Null);
+            assert!(text(field(&refused, "data"), "message").contains("branch"));
+            assert_eq!(f.book.head().unwrap(), before);
+        }
+        let (exit, planned) = f.bound(
+            &authority,
+            &[
+                "subledger",
+                "feed",
+                "--document",
+                &source,
+                "--date",
+                DATE,
+                "--key",
+                "typed-source-summary",
+                "--draft",
+                name,
+            ],
+            None,
+        );
+        assert_eq!(exit, 0, "{planned:?}");
+        assert_eq!(text(&planned, "event"), "draft_planned");
+        let entries = f.book.draft_entries(&cap, name).unwrap().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].proposal.legs.len(), 2);
+        assert!(
+            entries[0]
+                .proposal
+                .legs
+                .iter()
+                .all(|leg| leg.amount.mantissa == 10_000)
+        );
+        f.promote_exact(&cap, name, 1);
+
+        let (_, unconfined) = f.agent("unconfined-disposal-reviewer", None);
+        let head = f.book.head().unwrap();
+        let (exit, refused) = f.bound(&unconfined, &["dispose", "--review-only"], None);
+        assert_eq!(
+            exit, 7,
+            "an unconfined token receives no source admission: {refused:?}"
+        );
+        assert_eq!(field(&refused, "coordinate"), &Json::Null);
+        assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-011");
+        assert_eq!(f.book.head().unwrap(), head);
+    }
+
+    #[test]
     fn post_only_draft_capability_still_refuses_balance_entry_and_document_reads() {
         let mut f = Fixture::new();
         let name = "bounded-source";

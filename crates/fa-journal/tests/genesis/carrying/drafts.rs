@@ -125,7 +125,7 @@ fn confined_carrying_checks_declared_and_generated_ceilings_without_source_balan
         )
         .unwrap()
         .unwrap_err();
-        assert_eq!(denied.code, fa_journal::refusal::code::CAPABILITY);
+        assert_eq!(denied.code, fa_policy::denial::code::CEILING);
         assert!(denied.message.contains("ceiling"), "{denied}");
         assert_eq!(f.h.db.frontier().unwrap(), head);
     }
@@ -141,7 +141,7 @@ fn confined_carrying_checks_declared_and_generated_ceilings_without_source_balan
     )
     .unwrap()
     .unwrap_err();
-    assert_eq!(denied.code, fa_journal::refusal::code::CAPABILITY);
+    assert_eq!(denied.code, fa_policy::denial::code::CEILING);
     assert_eq!(
         denied.message,
         "generated settlement effects exceed the capability's permitted scope or amount ceiling"

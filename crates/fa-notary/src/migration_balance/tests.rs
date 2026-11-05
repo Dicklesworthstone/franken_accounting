@@ -185,7 +185,7 @@ fn shared_proofs_match_literal_bytes_across_cells_cutoffs_and_evidence() {
         posting(5, 100, VId(20), 1, 3_000),
     ]
     .into_iter()
-    .map(|(vid, entry, seq)| (vid, crate::journal::Record::Entry(entry), seq))
+    .map(|(vid, entry, seq)| (vid, crate::journal::Record::Entry(Box::new(entry)), seq))
     .collect();
     records.push((
         VId(600),
