@@ -1454,6 +1454,19 @@ pub fn payload_reach(
     proposal: &EntryPayload,
     accounts: Option<&AccountScope>,
 ) -> Result<(), Denial> {
+    payload_reach_in_branch(capability, book, proposal, accounts, proposal.branch_id)
+}
+
+/// The draft protocol supplies a validated logical branch while keeping the
+/// exact reviewed trunk proposal unchanged. All other callers use the actual
+/// payload branch through `payload_reach`.
+pub(crate) fn payload_reach_in_branch(
+    capability: &Capability,
+    book: &BookContext,
+    proposal: &EntryPayload,
+    accounts: Option<&AccountScope>,
+    branch: Id128,
+) -> Result<(), Denial> {
     fa_policy::require_class(capability, Some(proposal.class))?;
     let legs: Vec<VId> = proposal.legs.iter().map(|l| l.account_ref).collect();
     let mut periods: Vec<String> = resolved_period(
@@ -1472,7 +1485,7 @@ pub fn payload_reach(
     fa_policy::reach_class(
         capability,
         &Reach {
-            branch: Some(proposal.branch_id),
+            branch: Some(branch),
             observes: fa_policy::Observes::Head,
             periods: Some(&codes),
             through: Some(through),

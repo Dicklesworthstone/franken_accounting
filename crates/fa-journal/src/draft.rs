@@ -93,6 +93,7 @@ const PROMOTION_KEY_DOMAIN: &[u8] = b"fa:draft-promotion-key:v1";
 #[derive(Clone, Copy, Debug)]
 pub struct Promoting {
     closing_authorized: bool,
+    branch: Id128,
 }
 
 impl Promoting {
@@ -101,13 +102,34 @@ impl Promoting {
     pub(crate) const fn authorizes_closing(self) -> bool {
         self.closing_authorized
     }
+
+    pub(crate) const fn branch(self) -> Id128 {
+        self.branch
+    }
 }
 
 /// Only a draft's admitted preview can revalidate retained aggregate sources
 /// across its own journaled planning records. This remains a zero-write plan,
 /// and does not grant either promotion or direct trunk authority.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Planning(());
+pub(crate) struct Planning(Id128);
+
+impl Planning {
+    pub(crate) const fn branch(self) -> Id128 {
+        self.0
+    }
+}
+
+fn planning_admission(book: &BookContext, name: &str) -> Admission {
+    Admission::PlanDraft(Planning(fa_model::draft_branch(book.book_id, name)))
+}
+
+fn draft_reach(book: &BookContext, name: &str) -> fa_policy::Reach<'static> {
+    fa_policy::Reach {
+        branch: Some(fa_model::draft_branch(book.book_id, name)),
+        ..fa_policy::Reach::whole_book(false)
+    }
+}
 
 /// The `state` projection of a `DraftSet` (lifecycle-by-transition).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -610,6 +632,7 @@ fn admit<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     capability: &Capability,
     kind: Kind,
+    name: &str,
 ) -> Outcome<()> {
     let op = steward()?
         .transition_op("DraftControl", kind.transition())
@@ -619,7 +642,15 @@ fn admit<V: asupersync::fs::Vfs + Clone>(
                 kind.transition()
             ))
         })?;
-    if let Err(d) = fa_policy::admit(
+    // An intent-log lifecycle act reaches its named logical draft. Promotion
+    // still requires the original whole-book promoter authority; the private
+    // Promoting token below binds each planner's separate branch confinement.
+    let reach = if matches!(kind, Kind::Promote) {
+        fa_policy::Reach::whole_book(false)
+    } else {
+        draft_reach(book, name)
+    };
+    if let Err(d) = fa_policy::admit_within(
         capability,
         &Intent {
             principal: capability.holder(),
@@ -628,6 +659,8 @@ fn admit<V: asupersync::fs::Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        &reach,
+        None,
     ) {
         return Ok(Err(denial(&d)));
     }
@@ -760,7 +793,23 @@ fn recorded_or_conflict(
 }
 
 fn draft_row_body(row: &VertexRow) -> Result<DraftBody, KernelError> {
-    DraftBody::decode(&bytes(row, property::FA_PAYLOAD, "draft._fa_payload")?)
+    let payload = bytes(row, property::FA_PAYLOAD, "draft._fa_payload")?;
+    let body = DraftBody::decode(&payload)?;
+    // The requested name admits a logical branch before this row is read.
+    // Its retained body must denote that same identity before a private
+    // planning, promotion or rehearsal token can use the body's name.
+    if body.vid() != row.vid
+        || payload != body.canonical_bytes()?
+        || bytes(row, property::FA_DIGEST, "draft._fa_digest")? != body.digest()?
+        || bytes(row, property::BOOK_ID, "draft.book_id")? != body.book_id.0
+        || crate::rows::text(row, property::CODE, "draft.code")? != body.name
+    {
+        return Err(KernelError::Corrupt(format!(
+            "draft {:032x} payload does not match its identity or mirrors",
+            row.vid.0
+        )));
+    }
+    Ok(body)
 }
 
 /// Witness the draft inside `txn` (a property-granular point read of its
@@ -884,7 +933,7 @@ pub async fn open_draft<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = check_name(name) {
         return Ok(Err(r));
     }
-    if let Err(r) = admit(db, book, &req.capability, Kind::Open)? {
+    if let Err(r) = admit(db, book, &req.capability, Kind::Open, name)? {
         return Ok(Err(r));
     }
     let body = DraftBody {
@@ -1055,7 +1104,7 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
     // Every retained planner is admitted before loading native history; a
     // caller's authority cannot replace a previous member's capability.
     for (intent, capability) in batch.members().iter().zip(&capabilities) {
-        if let Err(d) = fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None) {
+        if let Err(d) = fa_policy::reach(capability, &draft_reach(book, &view.body.name), None) {
             return Ok(Err(denial(&d)));
         }
         let request = crate::post::PostRequest {
@@ -1064,7 +1113,12 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
             capability: capability.clone(),
             plan_certificate: None,
         };
-        if let Err(refusal) = crate::post::authorize_request(db, book, &request, Admission::Plan)? {
+        if let Err(refusal) = crate::post::authorize_request(
+            db,
+            book,
+            &request,
+            planning_admission(book, &view.body.name),
+        )? {
             return Ok(Err(refusal));
         }
         if intent.proposal().class == EntryClass::CLOSING
@@ -1093,7 +1147,7 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
         book,
         &capabilities,
         &batch,
-        Admission::PlanDraft(Planning(())),
+        planning_admission(book, &view.body.name),
     )? {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(BatchStage::Recorded(_)) => {
@@ -1151,10 +1205,7 @@ fn owned_draft<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = check_name(name) {
         return Ok(Err(refusal));
     }
-    if let Err(d) = fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None) {
-        return Ok(Err(denial(&d)));
-    }
-    if let Err(refusal) = admit(db, book, capability, Kind::Plan)? {
+    if let Err(refusal) = admit(db, book, capability, Kind::Plan, name)? {
         return Ok(Err(refusal));
     }
     let vid = draft_vid(book.book_id, name);
@@ -1262,7 +1313,7 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = check_name(name) {
         return Ok(Err(r));
     }
-    if let Err(r) = admit(db, book, &req.capability, Kind::Plan)? {
+    if let Err(r) = admit(db, book, &req.capability, Kind::Plan, name)? {
         return Ok(Err(r));
     }
     let p = intent.proposal();
@@ -1461,7 +1512,7 @@ pub async fn discard_draft<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = check_name(name) {
         return Ok(Err(r));
     }
-    if let Err(r) = admit(db, book, &req.capability, Kind::Discard)? {
+    if let Err(r) = admit(db, book, &req.capability, Kind::Discard, name)? {
         return Ok(Err(r));
     }
     let Some(view) = read_draft(db, &ctx.query(), book, name)? else {
@@ -1567,7 +1618,7 @@ async fn promote_draft_in<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = check_name(name) {
         return Ok(Err(r));
     }
-    if let Err(r) = admit(db, book, &req.capability, Kind::Promote)? {
+    if let Err(r) = admit(db, book, &req.capability, Kind::Promote, name)? {
         return Ok(Err(r));
     }
     let Some(view) = read_draft(db, &ctx.query(), book, name)? else {
@@ -1676,6 +1727,7 @@ async fn promote_draft_in<V: asupersync::fs::Vfs + Clone>(
     };
     let admission = Admission::Promote(Promoting {
         closing_authorized: closing,
+        branch: fa_model::draft_branch(book.book_id, name),
     });
     let mut staged = match correction::stage(
         db,

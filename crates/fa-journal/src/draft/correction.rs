@@ -253,7 +253,7 @@ pub(super) fn stage<V: asupersync::fs::Vfs + Clone>(
     }
     if !matches!(
         admission,
-        Admission::Plan | Admission::Promote(_) | Admission::ScratchDraft(_)
+        Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
     ) || capabilities.len() != 2
         || capabilities[0] != capabilities[1]
         || batch.members().len() != 2
@@ -373,19 +373,30 @@ async fn preview_pair<V: asupersync::fs::Vfs + Clone>(
 ) -> Outcome<DraftPreview> {
     let batch = PostBatch::new(promotion_key(view.vid), members).map_err(intent_error)?;
     for (member, capability) in batch.members().iter().zip(&capabilities) {
-        if let Err(d) = fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None) {
+        if let Err(d) = fa_policy::reach(capability, &draft_reach(book, &view.body.name), None) {
             return Ok(Err(denial(&d)));
         }
-        if let Err(refusal) =
-            crate::post::authorize_request(db, book, &request(member, capability), Admission::Plan)?
-        {
+        if let Err(refusal) = crate::post::authorize_request(
+            db,
+            book,
+            &request(member, capability),
+            planning_admission(book, &view.body.name),
+        )? {
             return Ok(Err(refusal));
         }
     }
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
-    let staged = match stage(db, ctx, book, &capabilities, &batch, Admission::Plan, true)? {
+    let staged = match stage(
+        db,
+        ctx,
+        book,
+        &capabilities,
+        &batch,
+        planning_admission(book, &view.body.name),
+        true,
+    )? {
         Ok(staged) => staged,
         Err(refusal) => return Ok(Err(refusal)),
     };
