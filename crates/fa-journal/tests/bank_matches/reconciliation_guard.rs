@@ -428,6 +428,55 @@ fn a_reconciliation_history_carries_forward_over_postings_and_not_over_a_close()
 }
 
 #[test]
+fn a_carried_reconciliation_history_witnesses_only_the_affected_accounts() {
+    let mut h = Harness::new();
+    let (import, _, _) = confirmed_source(&mut h);
+    let recorded = close(&mut h, import);
+    let cash = account_vid(h.book.book_id, "1000");
+    let revenue = account_vid(h.book.book_id, "4000");
+    let mut history = None;
+    let expected = locks(&mut h, cash, &mut None);
+
+    assert!(locks(&mut h, revenue, &mut history).is_empty());
+    assert_eq!(history.as_ref().unwrap().lock_candidates_examined(), 0);
+    assert_eq!(locks(&mut h, cash, &mut history), expected);
+    assert_eq!(history.as_ref().unwrap().lock_candidates_examined(), 1);
+
+    // Reusing the same basis must still witness the relevant attestation,
+    // but it does not replay history or examine closes of other accounts.
+    assert!(locks(&mut h, revenue, &mut history).is_empty());
+    assert_eq!(history.as_ref().unwrap().carried_rows(), Some(0));
+    assert_eq!(history.as_ref().unwrap().lock_candidates_examined(), 0);
+    let cx = h.cx();
+    let txn = h.db.begin(&cx.txn()).unwrap();
+    let selected = witness_reconciliation_locks(
+        &h.db,
+        &cx,
+        &h.book,
+        &txn,
+        &[revenue, cash, revenue, cash],
+        &mut history,
+    )
+    .unwrap()
+    .unwrap();
+    txn.abort();
+    assert_eq!(
+        selected, expected,
+        "duplicate accounts do not duplicate locks"
+    );
+    assert_eq!(selected[0].attestation.vid, recorded.attestation_vid);
+    assert_eq!(history.as_ref().unwrap().lock_candidates_examined(), 1);
+
+    let plain = after_statement(&h, b"indexed-history-later");
+    post_request(&mut h, plain).unwrap();
+    assert!(locks(&mut h, revenue, &mut history).is_empty());
+    assert!(history.as_ref().unwrap().carried_rows().unwrap() > 0);
+    assert_eq!(history.as_ref().unwrap().lock_candidates_examined(), 0);
+    assert_eq!(locks(&mut h, cash, &mut history), expected);
+    assert_eq!(history.as_ref().unwrap().lock_candidates_examined(), 1);
+}
+
+#[test]
 fn a_carried_reconciliation_history_never_crosses_to_another_database() {
     // Two books at one frontier: one closed its statement, the other did not.
     let mut closed = Harness::new();
