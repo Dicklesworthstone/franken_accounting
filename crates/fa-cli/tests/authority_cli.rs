@@ -984,6 +984,15 @@ mod source_draft_tests {
         }
 
         fn agent(&mut self, holder: &str, draft: Option<&str>) -> (Capability, LaunchAuthority) {
+            self.scoped_agent(holder, draft, |cap| cap)
+        }
+
+        fn scoped_agent(
+            &mut self,
+            holder: &str,
+            draft: Option<&str>,
+            attenuate: impl FnOnce(Capability) -> Capability,
+        ) -> (Capability, LaunchAuthority) {
             let issuer =
                 Capability::embedded(principal_vid("draft-issuer"), &["issue_capability", "post"])
                     .unwrap();
@@ -1003,6 +1012,7 @@ mod source_draft_tests {
                     .on_branch(draft_branch(self.book.context().book_id, name))
                     .unwrap();
             }
+            cap = attenuate(cap);
             self.book
                 .issue_capability(
                     issuer,
@@ -1376,6 +1386,47 @@ mod source_draft_tests {
                 .all(|leg| leg.amount.mantissa == 10_000)
         );
         f.promote_exact(&cap, name, 1);
+    }
+
+    #[test]
+    fn unbranched_draft_writers_refuse_other_scope_caveats_before_observation() {
+        let mut f = Fixture::new();
+        for scope in ["accounts", "periods", "classes"] {
+            let (_, authority) =
+                f.scoped_agent(&format!("literal-{scope}"), None, |cap| match scope {
+                    "accounts" => cap.for_accounts(&["1000"]).unwrap(),
+                    "periods" => cap.for_periods(&["FY2026-P03"]).unwrap(),
+                    "classes" => cap.for_classes(&[fa_model::EntryClass::ORIGINAL]).unwrap(),
+                    _ => unreachable!(),
+                });
+            let literal = format!(
+                r#"{{"effective_date":"{DATE}","idempotency_key":"literal-scoped","evidence":["{}"],"legs":[{{"side":"debit","account":"6000","amount":"1.00 USD"}},{{"side":"credit","account":"1000","amount":"1.00 USD"}}]}}"#,
+                f.evidence
+            );
+            let batch =
+                format!(r#"{{"idempotency_key":"literal-scoped-batch","intents":[{literal}]}}"#);
+            for (argv, input) in [
+                (
+                    vec!["post", "--draft", "unobserved-draft", "--intent", "-"],
+                    &literal,
+                ),
+                (
+                    vec!["batch", "--draft", "unobserved-draft", "--intent", "-"],
+                    &batch,
+                ),
+                (
+                    vec!["draft", "plan", "unobserved-draft", "--intent", "-"],
+                    &literal,
+                ),
+            ] {
+                let before = f.book.head().unwrap();
+                let (exit, refused) = f.bound(&authority, &argv, Some(input));
+                assert_eq!(exit, 7, "{scope} {argv:?}: {refused:?}");
+                assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-011");
+                assert_eq!(field(&refused, "coordinate"), &Json::Null);
+                assert_eq!(f.book.head().unwrap(), before);
+            }
+        }
     }
 
     #[test]

@@ -79,27 +79,28 @@ pub(crate) fn admit_draft_intent_sources(
     doc: &Json,
     name: &str,
 ) -> Result<(), Fail> {
+    // Judge every caveat even when there is no branch caveat: delegating this
+    // command's reach must not let account/period/class restrictions observe
+    // a draft or its coordinate before the native planner refuses them.
+    // Retained ordinary retries remain possible after closure; only new
+    // source derivation below requires an open draft.
+    fa_policy::admit_within(
+        capability,
+        &fa_policy::Intent {
+            principal: capability.holder(),
+            trunk: false,
+            op: fa_policy::Op::Post,
+            book: book.context().book_id,
+            legs: &[],
+        },
+        &fa_policy::Reach {
+            branch: Some(fa_model::draft_branch(book.context().book_id, name)),
+            ..fa_policy::Reach::whole_book(false)
+        },
+        None,
+    )
+    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     if capability.branch().is_some() {
-        // Even a literal or dependent intent must name the confined branch
-        // before the book opener can disclose its coordinate. Keep retained
-        // ordinary retries possible after closure; only new source derivation
-        // below requires an open draft.
-        fa_policy::admit_within(
-            capability,
-            &fa_policy::Intent {
-                principal: capability.holder(),
-                trunk: false,
-                op: fa_policy::Op::Post,
-                book: book.context().book_id,
-                legs: &[],
-            },
-            &fa_policy::Reach {
-                branch: Some(fa_model::draft_branch(book.context().book_id, name)),
-                ..fa_policy::Reach::whole_book(false)
-            },
-            None,
-        )
-        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
         if needs_source_read(doc) {
             book.admit_draft_sources(capability, name)??;
         } else {
