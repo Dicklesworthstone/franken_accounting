@@ -119,10 +119,74 @@ pub fn prepare_lot_disposal<V: Vfs + Clone>(
     book: &BookContext,
     capability: &Capability,
     request: &LotDisposalRequest,
+    template: EntryPayload,
+) -> Outcome<PreparedLotDisposal> {
+    prepare_lot_disposal_with_admission(db, cx, book, capability, None, request, template)
+}
+
+/// Admit the explicit disposal request before its source history is hydrated
+/// or observed. The requested quantity is an effect even while its empty
+/// template has no legs; the source-derived cost is checked after derivation.
+pub fn admit_draft_request<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    admission: &crate::draft::DraftSourceAdmission,
+    request: &LotDisposalRequest,
+    template: &EntryPayload,
+) -> Outcome<()> {
+    if let Err(refusal) = admission.admit_proposal(db, book, template)? {
+        return Ok(Err(refusal));
+    }
+    Ok(fa_policy::admit_base_for_plan(
+        admission.capability(),
+        &fa_policy::Intent {
+            principal: template.principal_ref,
+            trunk: true,
+            op: Op::Post,
+            book: book.book_id,
+            legs: &[(request.quantity.unit, request.quantity.mantissa)],
+        },
+    )
+    .map_err(|denial| crate::policy::refusal(&denial)))
+}
+
+/// Derive a reviewed disposal for the planner's own explicitly confined
+/// draft. This shares the complete source reconstruction with ordinary
+/// preparation and returns only admitted effects, never a reusable read grant.
+pub fn prepare_lot_disposal_in_draft<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    admission: &crate::draft::DraftSourceAdmission,
+    request: &LotDisposalRequest,
+    template: EntryPayload,
+) -> Outcome<PreparedLotDisposal> {
+    prepare_lot_disposal_with_admission(
+        db,
+        cx,
+        book,
+        admission.capability(),
+        Some(admission),
+        request,
+        template,
+    )
+}
+
+fn prepare_lot_disposal_with_admission<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    draft: Option<&crate::draft::DraftSourceAdmission>,
+    request: &LotDisposalRequest,
     mut template: EntryPayload,
 ) -> Outcome<PreparedLotDisposal> {
     cx.query().with_restriction(|| {
-        if let Err(refusal) = authorize(db, book, capability)? {
+        let authorized = match draft {
+            Some(admission) => admit_draft_request(db, book, admission, request, &template)?,
+            None => authorize(db, book, capability)?,
+        };
+        if let Err(refusal) = authorized {
             return Ok(Err(refusal));
         }
         if template.book_id != book.book_id
@@ -192,6 +256,11 @@ pub fn prepare_lot_disposal<V: Vfs + Clone>(
             .and_then(|()| template.validate())
         {
             return Ok(Err(invalid(error)));
+        }
+        if let Some(admission) = draft
+            && let Err(refusal) = admission.admit_proposal(db, book, &template)?
+        {
+            return Ok(Err(refusal));
         }
         Ok(Ok(PreparedLotDisposal {
             basis,

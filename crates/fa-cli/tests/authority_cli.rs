@@ -869,3 +869,466 @@ fn positional_flag_text_and_file_cwd_cannot_rebind_the_configured_book() {
     assert!(!authority.book().exists());
     assert!(!other.join("another-book").exists());
 }
+
+mod source_draft_tests {
+    use super::*;
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_model::{Id128, draft_branch, principal_vid};
+    use fa_money::UnitRegistry;
+    use fa_policy::{Capability, CapabilityToken, Op, Profile, possession_digest};
+    use fa_time::{DateDay, FiscalCalendar};
+    use fgdb_types::VId;
+
+    const DATE: &str = "2026-03-15";
+
+    fn field<'a>(value: &'a Json, key: &str) -> &'a Json {
+        value
+            .get(key)
+            .unwrap_or_else(|| panic!("missing {key}: {value:?}"))
+    }
+
+    fn text<'a>(value: &'a Json, key: &str) -> &'a str {
+        field(value, key)
+            .as_str()
+            .unwrap_or_else(|| panic!("{key}: {value:?}"))
+    }
+
+    fn result_event(out: &Captured) -> Json {
+        let lines: Vec<_> = out.stdout.lines().collect();
+        assert_eq!(lines.len(), 1, "{out:?}");
+        registry()
+            .unwrap()
+            .check_line(lines[0])
+            .unwrap_or_else(|e| panic!("{e}: {out:?}"));
+        json::parse(lines[0]).unwrap()
+    }
+
+    struct Fixture {
+        book: Book,
+        dir: PathBuf,
+        evidence: String,
+        rate: String,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let dir = fixture().join("source-draft-book");
+            let units = UnitRegistry::embedded().unwrap();
+            let book = Book::create_memory(
+                BookKeys::for_development(0x6a),
+                BookSpec {
+                    book_id: Id128([0x6b; 16]),
+                    name: "Confined source-derived drafts".into(),
+                    base_unit: units.lookup("USD").unwrap(),
+                    calendar: FiscalCalendar::monthly("source-drafts", 1, 1).unwrap(),
+                    time_zone_policy: None,
+                    entities: Vec::new(),
+                    opening_date: None,
+                },
+                Entropy::deterministic(106),
+            )
+            .unwrap();
+            let mut f = Self {
+                book,
+                dir,
+                evidence: String::new(),
+                rate: String::new(),
+            };
+            f.owner(&["chart", "import", "-"], Some(r#"{"accounts":[{"code":"1000","name":"USD Cash","type":"Asset","unit":"USD"},{"code":"2000","name":"USD Payables","type":"Liability","unit":"USD"},{"code":"2100","name":"EUR Payables","type":"Liability","unit":"EUR"},{"code":"6000","name":"USD Expense","type":"Expense","unit":"USD"},{"code":"6100","name":"EUR Purchases","type":"Expense","unit":"EUR"}]}"#));
+            f.owner(&["period", "create", "--fiscal-year", "2026"], None);
+            f.owner(&["period", "open", "FY2026-P03"], None);
+            let evidence = f.owner(
+                &[
+                    "document",
+                    "add",
+                    "-",
+                    "--kind",
+                    "Receipt",
+                    "--grade",
+                    "HumanUpload",
+                ],
+                Some("Independent vendor invoice for the confined draft."),
+            );
+            f.evidence = text(field(&evidence, "data"), "oid").into();
+            let oid = f.evidence.clone();
+            f.owner(
+                &["attest", "review", &oid, "--as", "independent-reviewer"],
+                None,
+            );
+            let rate = f.owner(&["fx", "rate", "add", "--from-json", "-"], Some(r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"11","rate_den":"10","rounding":"HalfEven","as_of":"2026-03-15","retrieved_at_ns":1772712000000000000,"purpose":"spot_close","source":"independently retained quote"}"#));
+            f.rate = text(field(&rate, "data"), "oid").into();
+            f
+        }
+
+        fn owner(&mut self, args: &[&str], input: Option<&str>) -> Json {
+            let mut argv: Vec<String> =
+                vec!["--book".into(), self.dir.to_string_lossy().into_owned()];
+            argv.extend(args.iter().map(|arg| (*arg).to_string()));
+            argv.push("--json".into());
+            let (exit, out) = fa_cli::cli::run(
+                &argv,
+                Books::Held {
+                    book: &mut self.book,
+                    dir: self.dir.clone(),
+                },
+                Files {
+                    cwd: None,
+                    stdin: input
+                        .map_or(Stdin::Missing, |s| Stdin::Forwarded(s.as_bytes().to_vec())),
+                },
+                true,
+            );
+            assert_eq!(exit, 0, "owner argv={argv:?}\n{out:?}");
+            result_event(&out)
+        }
+
+        fn agent(&mut self, holder: &str, draft: Option<&str>) -> (Capability, LaunchAuthority) {
+            let issuer =
+                Capability::embedded(principal_vid("draft-issuer"), &["issue_capability", "post"])
+                    .unwrap();
+            let secret = [0x6c; 32];
+            let mut cap = Capability::new(
+                principal_vid(holder),
+                Profile::Agent,
+                &[Op::Post],
+                issuer.holder(),
+            )
+            .unwrap()
+            .for_books(&[self.book.context().book_id])
+            .unwrap()
+            .holder_bound(possession_digest(&secret));
+            if let Some(name) = draft {
+                cap = cap
+                    .on_branch(draft_branch(self.book.context().book_id, name))
+                    .unwrap();
+            }
+            self.book
+                .issue_capability(
+                    issuer,
+                    cap.clone(),
+                    DateDay::parse(DATE).unwrap(),
+                    format!("issue-{holder}-{}", draft.unwrap_or("unconfined")).as_bytes(),
+                    "Only prepare postings within the named draft",
+                )
+                .unwrap()
+                .unwrap();
+            let token = CapabilityToken::new(holder, cap.clone(), secret).unwrap();
+            let authority = LaunchAuthority::from_token(self.dir.clone(), None, &token).unwrap();
+            assert!(!cap.holds(Op::Read));
+            (cap, authority)
+        }
+
+        fn bound(
+            &mut self,
+            authority: &LaunchAuthority,
+            args: &[&str],
+            input: Option<&str>,
+        ) -> (u8, Json) {
+            let (exit, mut events) = self.bound_events(authority, args, input);
+            assert_eq!(events.len(), 1, "argv={args:?}: {events:?}");
+            (exit, events.remove(0))
+        }
+
+        fn bound_events(
+            &mut self,
+            authority: &LaunchAuthority,
+            args: &[&str],
+            input: Option<&str>,
+        ) -> (u8, Vec<Json>) {
+            let mut argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+            argv.push("--json".into());
+            let (exit, out) = run_with_authority(
+                &argv,
+                Books::Held {
+                    book: &mut self.book,
+                    dir: self.dir.clone(),
+                },
+                Files {
+                    cwd: None,
+                    stdin: input
+                        .map_or(Stdin::Missing, |s| Stdin::Forwarded(s.as_bytes().to_vec())),
+                },
+                authority,
+                true,
+            );
+            let events: Vec<_> = out
+                .stdout
+                .lines()
+                .map(|line| {
+                    registry()
+                        .unwrap()
+                        .check_line(line)
+                        .unwrap_or_else(|error| panic!("{error}: {out:?}"));
+                    let value = json::parse(line).unwrap();
+                    assert_eq!(
+                        value.get("authority"),
+                        Some(&authority.envelope_json()),
+                        "{out:?}"
+                    );
+                    value
+                })
+                .collect();
+            assert!(!events.is_empty(), "argv={argv:?}: {out:?}");
+            eprintln!(
+                "source-draft argv={argv:?} exit={exit}\nstdout={}\nstderr={}",
+                out.stdout, out.stderr
+            );
+            (exit, events)
+        }
+
+        fn open(&mut self, authority: &LaunchAuthority, name: &str) {
+            let (exit, result) =
+                self.bound(authority, &["draft", "new", name, "--date", DATE], None);
+            assert_eq!(exit, 0, "{result:?}");
+            assert_eq!(text(&result, "event"), "draft_opened");
+        }
+
+        fn fx_intent(&self, key: &str) -> String {
+            format!(
+                r#"{{"effective_date":"{DATE}","idempotency_key":"{key}","evidence":["{}"],"legs":[{{"side":"debit","account":"6100","amount":"100.00 EUR"}},{{"side":"credit","account":"2100","amount":"100.00 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{}"]}}}}"#,
+                self.evidence, self.rate
+            )
+        }
+
+        fn external_source(&mut self) -> String {
+            let input = format!(
+                r#"{{"feed":"vendor-ap","batch_key":"march-confined","effective_date":"{DATE}","rows":[{{"source_digest":"{}","account":"6000","side":"debit","amount":"100.00 USD"}},{{"source_digest":"{}","account":"2000","side":"credit","amount":"100.00 USD"}}]}}"#,
+                "01".repeat(32),
+                "02".repeat(32)
+            );
+            let path = self
+                .dir
+                .parent()
+                .unwrap()
+                .join("retained-external-detail.bin");
+            self.owner(
+                &[
+                    "subledger",
+                    "detail",
+                    "--input",
+                    "-",
+                    "--out",
+                    path.to_str().unwrap(),
+                ],
+                Some(&input),
+            );
+            let retained = self.owner(
+                &[
+                    "document",
+                    "add",
+                    path.to_str().unwrap(),
+                    "--kind",
+                    "Workpaper",
+                    "--grade",
+                    "HumanUpload",
+                ],
+                None,
+            );
+            text(field(&retained, "data"), "oid").into()
+        }
+
+        fn promote_exact(&mut self, cap: &Capability, name: &str, expected_count: usize) {
+            let reviewed = self.book.draft_entries(cap, name).unwrap().unwrap();
+            assert_eq!(reviewed.len(), expected_count);
+            let promoted = self.owner(
+                &[
+                    "draft",
+                    "promote",
+                    name,
+                    "--date",
+                    DATE,
+                    "--as",
+                    "independent-controller",
+                    "--yes",
+                ],
+                None,
+            );
+            assert_eq!(text(&promoted, "event"), "draft_promoted");
+            let entries = field(field(&promoted, "data"), "entries").as_arr().unwrap();
+            assert_eq!(entries.len(), reviewed.len());
+            for (id, expected) in entries.iter().zip(reviewed) {
+                let vid = VId(u128::from_str_radix(id.as_str().unwrap(), 16).unwrap());
+                let (posted, _) = self.book.read_entry(vid).unwrap().unwrap();
+                assert_eq!(posted.proposal, expected.proposal);
+                assert_eq!(posted.entry_digest, expected.entry_digest);
+                assert_eq!(posted.proposal.principal_ref, cap.holder());
+                assert_eq!(posted.proposal.branch_id, Id128::TRUNK);
+            }
+        }
+    }
+
+    #[test]
+    fn post_only_draft_capability_plans_an_fx_purchase_from_its_named_rate() {
+        let mut f = Fixture::new();
+        let name = "fx-purchases";
+        let (cap, authority) = f.agent("purchase-agent", Some(name));
+        f.open(&authority, name);
+        let before = f.owner(&["tb", "--period", "FY2026-P03"], None);
+        let intent = f.fx_intent("confined-purchase");
+        let (exit, result) = f.bound(
+            &authority,
+            &["post", "--intent", "-", "--draft", name],
+            Some(&intent),
+        );
+        assert_eq!(exit, 0, "{result:?}");
+        assert_eq!(text(&result, "event"), "draft_planned");
+        let planned = text(field(&result, "data"), "entry");
+        let vid = VId(u128::from_str_radix(planned, 16).unwrap());
+        assert!(
+            f.book.read_entry(vid).unwrap().is_none(),
+            "draft planning never posts its entry"
+        );
+        let reviewed = f.book.draft_entries(&cap, name).unwrap().unwrap();
+        assert_eq!(reviewed.len(), 1);
+        assert!(
+            reviewed[0]
+                .proposal
+                .legs
+                .iter()
+                .all(|leg| leg.base_amount.is_some())
+        );
+
+        // This second append resolves a named entry retained only in this
+        // draft. It must use the admitted draft's prefix, not a trunk read or
+        // another draft's private members.
+        let reversal = format!(
+            r#"{{"class":"Reversal","effective_date":"{DATE}","idempotency_key":"confined-reversal","reverses":"E:{planned}","reason":"WrongAmount"}}"#
+        );
+        let (exit, reversed) = f.bound(
+            &authority,
+            &["post", "--intent", "-", "--draft", name],
+            Some(&reversal),
+        );
+        assert_eq!(exit, 0, "{reversed:?}");
+        assert_eq!(text(&reversed, "event"), "draft_planned");
+        let after = f.owner(&["tb", "--period", "FY2026-P03"], None);
+        assert_eq!(
+            field(field(&before, "data"), "rows"),
+            field(field(&after, "data"), "rows")
+        );
+        f.promote_exact(&cap, name, 2);
+    }
+
+    #[test]
+    fn post_only_draft_capability_prepares_an_external_subledger_summary() {
+        let mut f = Fixture::new();
+        let source = f.external_source();
+        let name = "external-summary";
+        let (cap, authority) = f.agent("summary-agent", Some(name));
+        f.open(&authority, name);
+        let intent = format!(
+            r#"{{"effective_date":"{DATE}","idempotency_key":"confined-summary","external_subledger":"D:{source}"}}"#
+        );
+        let before = f.book.head().unwrap();
+        let (exit, refused) = f.bound(
+            &authority,
+            &["draft", "plan", name, "--intent", "-"],
+            Some(&intent),
+        );
+        assert_eq!(exit, 3, "unreviewed detail: {refused:?}");
+        assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-192");
+        assert_eq!(f.book.head().unwrap(), before);
+        f.owner(
+            &["attest", "review", &source, "--as", "independent-reviewer"],
+            None,
+        );
+        let (exit, planned) = f.bound(
+            &authority,
+            &["draft", "plan", name, "--intent", "-"],
+            Some(&intent),
+        );
+        assert_eq!(exit, 0, "{planned:?}");
+        assert_eq!(text(&planned, "event"), "draft_planned");
+        let vid = VId(u128::from_str_radix(text(field(&planned, "data"), "entry"), 16).unwrap());
+        assert!(f.book.read_entry(vid).unwrap().is_none());
+        let reviewed = f.book.draft_entries(&cap, name).unwrap().unwrap();
+        assert_eq!(reviewed[0].proposal.legs.len(), 2);
+        assert!(
+            reviewed[0]
+                .proposal
+                .legs
+                .iter()
+                .all(|leg| leg.amount.mantissa == 10_000)
+        );
+        f.promote_exact(&cap, name, 1);
+    }
+
+    #[test]
+    fn post_only_draft_capability_still_refuses_balance_entry_and_document_reads() {
+        let mut f = Fixture::new();
+        let name = "bounded-source";
+        let (cap, authority) = f.agent("bounded-agent", Some(name));
+        f.open(&authority, name);
+        let first = f.fx_intent("batch-purchase-1");
+        let second = f.fx_intent("batch-purchase-2");
+        let batch =
+            format!(r#"{{"idempotency_key":"confined-batch","intents":[{first},{second}]}}"#);
+        let (exit, planned) = f.bound_events(
+            &authority,
+            &["batch", "--intent", "-", "--draft", name],
+            Some(&batch),
+        );
+        assert_eq!(exit, 0, "{planned:?}");
+        assert_eq!(planned.len(), 2);
+        for member in &planned {
+            assert_eq!(text(member, "event"), "draft_planned");
+            let vid = VId(u128::from_str_radix(text(field(member, "data"), "entry"), 16).unwrap());
+            assert!(f.book.read_entry(vid).unwrap().is_none());
+        }
+        assert_eq!(f.book.draft_entries(&cap, name).unwrap().unwrap().len(), 2);
+        let (_, other_authority) = f.agent("other-draft-owner", Some("another-draft"));
+        f.open(&other_authority, "another-draft");
+        let evidence = f.evidence.clone();
+        let rate = f.rate.clone();
+        for argv in [
+            vec!["tb", "--period", "FY2026-P03"],
+            vec!["entry", "show", "E:00000000000000000000000000000001"],
+            vec!["document", "read", &evidence],
+            vec!["document", "read", &rate],
+        ] {
+            let before = f.book.head().unwrap();
+            let (exit, refused) = f.bound(&authority, &argv, None);
+            assert_eq!(exit, 7, "argv={argv:?}: {refused:?}");
+            assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-011");
+            assert_eq!(field(&refused, "book"), &Json::Null);
+            assert_eq!(field(&refused, "coordinate"), &Json::Null);
+            assert_eq!(f.book.head().unwrap(), before);
+        }
+        let reversal = format!(
+            r#"{{"class":"Reversal","effective_date":"{DATE}","idempotency_key":"wrong-draft-reversal","reverses":"E:{}","reason":"WrongAmount"}}"#,
+            text(field(&planned[0], "data"), "entry")
+        );
+        for other in ["another-draft", "not-created"] {
+            for intent in [&first, &reversal] {
+                let before = f.book.head().unwrap();
+                let (exit, refused) = f.bound(
+                    &authority,
+                    &["post", "--intent", "-", "--draft", other],
+                    Some(intent),
+                );
+                assert_eq!(exit, 7, "{refused:?}");
+                assert!(text(field(&refused, "data"), "message").contains("branch"));
+                assert_eq!(field(&refused, "coordinate"), &Json::Null);
+                assert_eq!(f.book.head().unwrap(), before);
+            }
+        }
+        let (_, unconfined) = f.agent("unconfined-agent", None);
+        let before = f.book.head().unwrap();
+        let (exit, refused) = f.bound(
+            &unconfined,
+            &["post", "--intent", "-", "--draft", name],
+            Some(&first),
+        );
+        assert_eq!(
+            exit, 7,
+            "an absent branch grants no source read: {refused:?}"
+        );
+        assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-011");
+        assert_eq!(field(&refused, "coordinate"), &Json::Null);
+        assert_eq!(f.book.head().unwrap(), before);
+        let (exit, refused) = f.bound(&authority, &["post", "--intent", "-"], Some(&first));
+        assert_eq!(exit, 7, "direct Agent trunk post: {refused:?}");
+        assert_eq!(f.book.head().unwrap(), before);
+    }
+}

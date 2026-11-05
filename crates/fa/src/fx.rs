@@ -298,8 +298,80 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         rate_oids: &[Oid],
         budget: &mut ArithmeticBudget<'_, impl Sized>,
     ) -> Outcome<EntryPayload> {
+        self.value_fx_proposal_with_admission(
+            cx, capability, None, proposal, law, rate_oids, budget,
+        )
+        .await
+    }
+
+    /// Derive an FX proposal for an open draft owned by this capability's
+    /// holder. The capability must be confined to that exact draft. Source
+    /// evidence remains subject to its governing redaction contract; only
+    /// the derived proposal is returned, after admitting all generated effects.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn value_fx_proposal_in_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        name: &str,
+        proposal: EntryPayload,
+        law: FxLawId,
+        rate_oids: &[Oid],
+        budget: &mut ArithmeticBudget<'_, impl Sized>,
+    ) -> Outcome<EntryPayload> {
+        let admission = match self.query(cx, |db, book| {
+            Ok(fa_journal::draft::admit_sources(
+                db, book, capability, name,
+            )?)
+        })? {
+            Ok(admission) => admission,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        self.value_fx_proposal_with_admission(
+            cx,
+            capability,
+            Some(&admission),
+            proposal,
+            law,
+            rate_oids,
+            budget,
+        )
+        .await
+    }
+
+    fn authorize_fx_valuation(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        principal: VId,
+        draft: Option<&fa_journal::draft::DraftSourceAdmission>,
+    ) -> Outcome<CommitSeq> {
+        match draft {
+            Some(admission) => self.query(cx, |db, book| Ok(admission.recheck(db, book)?)),
+            None => self.authorize_fx_read(cx, capability, principal, true, None),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn value_fx_proposal_with_admission(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        draft: Option<&fa_journal::draft::DraftSourceAdmission>,
+        proposal: EntryPayload,
+        law: FxLawId,
+        rate_oids: &[Oid],
+        budget: &mut ArithmeticBudget<'_, impl Sized>,
+    ) -> Outcome<EntryPayload> {
         if let Err(refusal) =
-            self.authorize_fx_read(cx, capability, proposal.principal_ref, true, None)?
+            self.authorize_fx_valuation(cx, capability, proposal.principal_ref, draft)?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Some(admission) = draft
+            && let Err(refusal) = self.query(cx, |db, book| {
+                Ok(admission.admit_proposal(db, book, &proposal)?)
+            })?
         {
             return Ok(Err(refusal));
         }
@@ -348,14 +420,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
 
         // Context compatibility can require the retained Book creation when
         // a book predates additive registry rows. The loader publishes nothing.
-        if let Err(refusal) = self
-            .prepare_report_history(cx, capability.holder(), capability, None)
-            .await?
-        {
+        let history = match draft {
+            Some(_) => fa_journal::scratch::ensure_history(&mut self.db, cx).await?,
+            None => {
+                self.prepare_report_history(cx, capability.holder(), capability, None)
+                    .await?
+            }
+        };
+        if let Err(refusal) = history {
             return Ok(Err(refusal));
         }
         let selected =
-            match self.authorize_fx_read(cx, capability, proposal.principal_ref, true, None)? {
+            match self.authorize_fx_valuation(cx, capability, proposal.principal_ref, draft)? {
                 Ok(selected) => selected,
                 Err(refusal) => return Ok(Err(refusal)),
             };
@@ -373,7 +449,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         };
         let mut rates = Vec::with_capacity(unique.len());
         for oid in unique {
-            let document = match self.read_document_for(cx, capability, &oid).await? {
+            let source = match draft {
+                Some(admission) => {
+                    let query = cx.query();
+                    query.checkpoint().map_err(BookError::Context)?;
+                    query
+                        .with_restriction_async(
+                            fa_journal::redaction::read_document_for_draft_source(
+                                &mut self.db,
+                                cx,
+                                &self.context,
+                                admission,
+                                &self.blobs,
+                                oid,
+                            ),
+                        )
+                        .await?
+                }
+                None => self.read_document_for(cx, capability, &oid).await?,
+            };
+            let document = match source {
                 Ok(DocumentRead::Full(document)) => document,
                 Ok(DocumentRead::Redacted(_)) => {
                     return Ok(Err(Refusal::new(
@@ -431,7 +526,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             rates.push(rate);
         }
         if let Err(refusal) =
-            self.authorize_fx_read(cx, capability, proposal.principal_ref, true, None)?
+            self.authorize_fx_valuation(cx, capability, proposal.principal_ref, draft)?
         {
             return Ok(Err(refusal));
         }
@@ -449,7 +544,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         });
         evaluation.checkpoint().map_err(BookError::Context)?;
         if let Err(refusal) =
-            self.authorize_fx_read(cx, capability, capability.holder(), true, None)?
+            self.authorize_fx_valuation(cx, capability, capability.holder(), draft)?
+        {
+            return Ok(Err(refusal));
+        }
+        if let (Some(admission), Ok(proposal)) = (draft, &result)
+            && let Err(refusal) = self.query(cx, |db, book| {
+                Ok(admission.admit_proposal(db, book, proposal)?)
+            })?
         {
             return Ok(Err(refusal));
         }

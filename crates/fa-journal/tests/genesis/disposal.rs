@@ -11,6 +11,8 @@ use fa_reference::lots::{RefLot, RefRounding, relieve_lots_oracle};
 
 #[path = "disposal/batches.rs"]
 mod batches;
+#[path = "disposal/draft_sources.rs"]
+mod draft_sources;
 
 struct Fixture {
     h: Harness,

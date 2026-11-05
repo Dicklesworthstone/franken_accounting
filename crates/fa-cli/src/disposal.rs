@@ -586,9 +586,15 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let capability = ctx.capability(args, &["read", "post"])?;
     let principal = ctx.principal(args);
     let bound = ctx.authority().is_some();
-    let mut book = ctx
-        .books
-        .open_admitted(args, |book| admit(book, &capability, Op::Post))?;
+    let mut draft = None;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        if review_only && capability.branch().is_some() {
+            draft = Some(book.draft_source_name(&capability)??);
+            Ok(())
+        } else {
+            admit(book, &capability, Op::Post)
+        }
+    })?;
     let intent = if args.flag("--review").is_some() {
         if review_only
             || [
@@ -651,7 +657,12 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             specific_ids,
         };
         let template = template(&mut book, args, principal)?;
-        let prepared = book.prepare_lot_disposal(&capability, &request, template)??;
+        let prepared = match draft.as_deref() {
+            Some(name) => {
+                book.prepare_lot_disposal_in_draft(&capability, name, &request, template)??
+            }
+            None => book.prepare_lot_disposal(&capability, &request, template)??,
+        };
         PostIntent::new(prepared.into_proposal(), Vec::new())
             .map_err(|error| usage(format!("disposal proposal: {error}"), DISPOSE_USAGE))?
     };

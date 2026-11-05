@@ -627,3 +627,266 @@ fn typed_rate_upload_preserves_the_original_uploader_evidence_grade() {
     assert_eq!(denied.code, code::CAPABILITY);
     assert_eq!(f.book.head().unwrap(), head);
 }
+
+fn draft_source_capability(f: &Fixture, name: &str, ceiling: i128) -> Capability {
+    Capability::new(VId(41), Profile::Agent, &[Op::Post], PRINCIPAL)
+        .unwrap()
+        .on_branch(fa_model::draft_branch(f.book.context().book_id, name))
+        .unwrap()
+        .with_ceiling(f.eur, ceiling)
+        .unwrap()
+}
+
+#[test]
+fn draft_source_fx_retains_exact_effects_without_granting_read_or_trunk_authority() {
+    let mut f = Fixture::new();
+    let rate = f.rate(11, "Named draft purchase rate");
+    let oid = f.upload_rate(&rate);
+    let name = "private-fx-import";
+    let planner = draft_source_capability(&f, name, 10_000);
+    f.book
+        .open_draft(planner.clone(), name, day(5), "Draft FX import")
+        .unwrap()
+        .unwrap();
+    let mut proposal = f.proposal(b"draft-source-purchase");
+    proposal.principal_ref = planner.holder();
+    let literal = f
+        .book
+        .value_fx_proposal(
+            &Capability::embedded(planner.holder(), &["read", "post"]).unwrap(),
+            proposal.clone(),
+            FxLawId::SpotClose,
+            &[oid],
+        )
+        .unwrap()
+        .unwrap();
+    let head = f.book.head().unwrap();
+    let valued = f
+        .book
+        .value_fx_proposal_in_draft(&planner, name, proposal.clone(), FxLawId::SpotClose, &[oid])
+        .unwrap()
+        .unwrap();
+    assert_eq!(valued, literal);
+    assert_eq!(valued.base_totals.as_ref().unwrap().debits, 11_000);
+    assert_eq!(f.book.head().unwrap(), head, "derivation never publishes");
+    assert_eq!(
+        f.book
+            .read_document_for(&planner, &oid)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::CAPABILITY
+    );
+    assert!(
+        f.book
+            .read_scope(planner.holder(), &planner)
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(
+        f.book
+            .functional_period_activity(&planner, PERIOD, None)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::CAPABILITY
+    );
+
+    for (capability, selected_name) in [
+        (planner.clone(), "somebody-elses-draft"),
+        (
+            Capability::new(planner.holder(), Profile::Agent, &[Op::Post], PRINCIPAL).unwrap(),
+            name,
+        ),
+        (planner.clone().expiring_at(head), name),
+        (draft_source_capability(&f, name, 9_999), name),
+    ] {
+        let denied = f
+            .book
+            .value_fx_proposal_in_draft(
+                &capability,
+                selected_name,
+                proposal.clone(),
+                FxLawId::SpotClose,
+                &[Oid([0xee; 32])],
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(denied.exit, 7, "{denied}");
+        assert_eq!(f.book.head().unwrap(), head);
+    }
+    let mut direct = post_request(valued.clone());
+    direct.capability = planner.clone();
+    assert!(f.book.post(direct).unwrap().is_err());
+    let planned = f
+        .book
+        .plan_into_draft(
+            planner.clone(),
+            name,
+            fa_intents::PostIntent::new(valued.clone(), Vec::new()).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    let reviewed = &planned.plan.as_ref().unwrap().members()[0].entry;
+    assert_eq!(reviewed.proposal, valued);
+    assert_eq!(f.activity(None).entries, 0);
+    let promoted = f
+        .book
+        .promote_draft(
+            cap(&["read", "approve"]),
+            name,
+            day(5),
+            "Promote the reviewed FX purchase",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(promoted.entries.len(), 1);
+    assert_eq!(promoted.entries[0].entry_digest, reviewed.entry_digest);
+    assert_eq!(f.activity(None).entries, 1);
+    let after = f.book.head().unwrap();
+    let denied = f
+        .book
+        .value_fx_proposal_in_draft(
+            &planner,
+            name,
+            proposal,
+            FxLawId::SpotClose,
+            &[Oid([0xee; 32])],
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(denied.code, code::DRAFT_NOT_OPEN);
+    assert_eq!(f.book.head().unwrap(), after);
+}
+
+#[test]
+fn draft_source_subledger_admits_generated_amounts_and_rechecks_revocation() {
+    let mut f = Fixture::new();
+    let name = "private-subledger-import";
+    let planner = draft_source_capability(&f, name, 10_000);
+    f.book
+        .open_draft(planner.clone(), name, day(5), "Draft summary import")
+        .unwrap()
+        .unwrap();
+    let book_id = f.book.context().book_id;
+    let detail = fa::ExternalSubledgerBatch {
+        book_id,
+        feed: "synthetic-import".into(),
+        batch_key: "two-rows-plus-offset".into(),
+        effective_date: day(5),
+        rows: [
+            (1, "1200", Side::Debit, 6_000),
+            (2, "1200", Side::Debit, 6_000),
+            (3, "4000", Side::Credit, 12_000),
+        ]
+        .into_iter()
+        .map(
+            |(source, account, side, amount)| fa::ExternalSubledgerDetail {
+                source_digest: [source; 32],
+                account: account_vid(book_id, account),
+                side,
+                amount: Amount::new(f.eur, amount),
+                dimensions: Vec::new(),
+            },
+        )
+        .collect(),
+    };
+    let source = f
+        .book
+        .upload_document(
+            &cap(&["post"]),
+            UploadRequest {
+                kind: fa::EXTERNAL_SUBLEDGER_DOCUMENT_KIND,
+                mime: fa::EXTERNAL_SUBLEDGER_MIME.into(),
+                bytes: detail.canonical_bytes().unwrap(),
+                asserted_grade: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let mut template = f.proposal(b"draft-source-summary");
+    template.principal_ref = planner.holder();
+    template.legs.clear();
+    template.unit_totals.clear();
+    template.evidence.clear();
+    let head = f.book.head().unwrap();
+    let denied = f
+        .book
+        .prepare_external_subledger_in_draft(&planner, name, source.oid, template.clone())
+        .unwrap()
+        .unwrap_err();
+    assert!(denied.message.contains("ceiling"), "{denied}");
+    assert_eq!(
+        f.book.head().unwrap(),
+        head,
+        "a generated excess never returns effects or writes"
+    );
+
+    let allowed = draft_source_capability(&f, name, 12_000);
+    let literal = f
+        .book
+        .prepare_external_subledger(
+            source.oid,
+            template.clone(),
+            &Capability::embedded(planner.holder(), &["read", "post"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    let generated = f
+        .book
+        .prepare_external_subledger_in_draft(&allowed, name, source.oid, template.clone())
+        .unwrap()
+        .unwrap();
+    assert_eq!(generated, literal);
+    assert_eq!(generated.legs.len(), 2);
+    assert!(
+        generated
+            .legs
+            .iter()
+            .all(|leg| leg.amount.mantissa == 12_000)
+    );
+    assert_eq!(f.book.head().unwrap(), head);
+    assert_eq!(
+        f.book
+            .read_document_for(&allowed, &source.oid)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::CAPABILITY
+    );
+
+    f.book
+        .revoke_capability(
+            cap(&["issue_capability"]),
+            allowed.commitment().unwrap(),
+            day(5),
+            b"revoke-summary-planner",
+            "Revoke the draft source planner",
+        )
+        .unwrap()
+        .unwrap();
+    let revoked_at = f.book.head().unwrap();
+    let denied = f
+        .book
+        .prepare_external_subledger_in_draft(&allowed, name, Oid([0xee; 32]), template)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        denied.code, "FA-REF-023",
+        "authority precedes an unknown source lookup"
+    );
+    let denied = f
+        .book
+        .plan_into_draft(
+            allowed,
+            name,
+            fa_intents::PostIntent::new(generated, Vec::new()).unwrap(),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        denied.code, "FA-REF-023",
+        "a prepared proposal retains no posting authority"
+    );
+    assert_eq!(f.book.head().unwrap(), revoked_at);
+}

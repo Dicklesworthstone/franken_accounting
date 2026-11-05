@@ -238,6 +238,7 @@ pub(crate) fn value_intent(
     capability: &Capability,
     input: &Json,
     template: EntryPayload,
+    draft: Option<&str>,
 ) -> Result<EntryPayload, Fail> {
     let Some(source) = input.get("external_subledger") else {
         return Ok(template);
@@ -255,7 +256,11 @@ pub(crate) fn value_intent(
         source.strip_prefix("D:").unwrap_or(source),
         "external_subledger",
     )?);
-    Ok(book.prepare_external_subledger(document, template, capability)??)
+    if let Some(name) = draft.filter(|_| capability.branch().is_some()) {
+        Ok(book.prepare_external_subledger_in_draft(capability, name, document, template)??)
+    } else {
+        Ok(book.prepare_external_subledger(document, template, capability)??)
+    }
 }
 
 fn verify(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

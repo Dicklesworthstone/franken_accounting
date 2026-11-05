@@ -609,6 +609,64 @@ where
     if let Err(r) = capability_admitted(db, book, capability)? {
         return Ok(Err(r));
     }
+    read_document_after_admission(db, ctx, book, capability, store, oid, before_fetch).await
+}
+
+/// Resolve a source for a typed owned-draft derivation, under the original
+/// planner's document disclosure restrictions. This is a database-level
+/// operation: facades may expose only the resulting monetary proposal, never
+/// a general document read through the draft admission.
+///
+/// Ownership, open state and current authority are checked before source
+/// metadata and again after potentially suspended blob I/O. The shared body
+/// selects the governing redaction contract before reading any source bytes.
+pub async fn read_document_for_draft_source<V, B>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    admission: &crate::draft::DraftSourceAdmission,
+    store: &BlobStore<B>,
+    oid: Oid,
+) -> Outcome<DocumentRead>
+where
+    V: asupersync::fs::Vfs + Clone,
+    B: asupersync::fs::Vfs + Clone,
+{
+    if let Err(refusal) = admission.recheck(db, book)? {
+        return Ok(Err(refusal));
+    }
+    let result = read_document_after_admission(
+        db,
+        ctx,
+        book,
+        admission.capability(),
+        store,
+        oid,
+        |_| Ok(()),
+    )
+    .await?;
+    if let Err(refusal) = admission.recheck(db, book)? {
+        return Ok(Err(refusal));
+    }
+    Ok(result)
+}
+
+/// Shared document disclosure law after the caller has established either
+/// ordinary Read authority or an owned-draft source derivation admission.
+async fn read_document_after_admission<V, B, F>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    store: &BlobStore<B>,
+    oid: Oid,
+    before_fetch: F,
+) -> Outcome<DocumentRead>
+where
+    V: asupersync::fs::Vfs + Clone,
+    B: asupersync::fs::Vfs + Clone,
+    F: FnOnce(&crate::DocumentRecord) -> Result<(), Refusal>,
+{
     let full = |r: Result<Option<Document>, Refusal>| match r {
         Ok(Some(doc)) => Ok(DocumentRead::Full(doc)),
         Ok(None) => Err(unknown_document(&oid)),
@@ -803,6 +861,171 @@ mod tests {
                 .for_books(&[self.book.book_id])
                 .unwrap()
         }
+
+        fn draft_request(&self, capability: &Capability) -> crate::draft::DraftRequest {
+            crate::draft::DraftRequest {
+                capability: capability.clone(),
+                effective_date: DateDay::from_ymd(2026, 3, 1).unwrap(),
+                description: Erasable::seal(
+                    &"source disclosure review".to_string(),
+                    None,
+                    &self.book.seal_key,
+                    [0x14; 32],
+                    [0x15; 24],
+                ),
+            }
+        }
+
+        fn draft_source(
+            &mut self,
+            admission: &crate::draft::DraftSourceAdmission,
+            oid: Oid,
+        ) -> Result<DocumentRead, Refusal> {
+            self.runtime
+                .block_on(self.contexts.query().with_restriction_async(
+                    read_document_for_draft_source(
+                        &mut self.db,
+                        &self.contexts,
+                        &self.book,
+                        admission,
+                        &self.store,
+                        oid,
+                    ),
+                ))
+                .unwrap()
+        }
+    }
+
+    #[test]
+    fn draft_source_admission_preserves_redaction_and_expires_when_the_draft_closes() {
+        let mut f = ReadFixture::new();
+        let name = "source-review";
+        let planner = Capability::new(VId(31), Profile::Agent, &[Op::Post], VId(1))
+            .unwrap()
+            .for_books(&[f.book.book_id])
+            .unwrap()
+            .on_branch(fa_model::draft_branch(f.book.book_id, name))
+            .unwrap();
+        let request = f.draft_request(&planner);
+        f.runtime
+            .block_on(crate::draft::open_draft(
+                &mut f.db,
+                &f.contexts,
+                &f.book,
+                name,
+                request,
+            ))
+            .unwrap()
+            .unwrap();
+        let admission = crate::draft::admit_sources(&f.db, &f.book, &planner, name)
+            .unwrap()
+            .unwrap();
+        let invoice = Document { kind: 1, ..doc(19) };
+        let statement = doc(CHUNK_BYTES + 19);
+        f.add(&invoice);
+        f.add(&statement);
+        let head = f.db.frontier().unwrap();
+        assert_eq!(
+            f.draft_source(&admission, invoice.oid()).unwrap(),
+            DocumentRead::Full(invoice.clone())
+        );
+        assert_eq!(
+            f.read(&planner, invoice.oid()).unwrap_err().code,
+            code::CAPABILITY,
+            "source admission adds no general Read operation"
+        );
+        assert_eq!(
+            f.draft_source(&admission, statement.oid())
+                .unwrap_err()
+                .code,
+            code::REDACTED_VIEW_ABSENT
+        );
+        assert_eq!(f.db.frontier().unwrap(), head);
+
+        let privileged = Capability::embedded(planner.holder(), &["post", "privileged"])
+            .unwrap()
+            .for_books(&[f.book.book_id])
+            .unwrap()
+            .on_branch(fa_model::draft_branch(f.book.book_id, name))
+            .unwrap();
+        let privileged_source = crate::draft::admit_sources(&f.db, &f.book, &privileged, name)
+            .unwrap()
+            .unwrap();
+        let caveated = privileged.with_redaction(1).unwrap();
+        let caveated_source = crate::draft::admit_sources(&f.db, &f.book, &caveated, name)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            f.draft_source(&privileged_source, statement.oid()).unwrap(),
+            DocumentRead::Full(statement.clone())
+        );
+        assert_eq!(
+            f.draft_source(&caveated_source, statement.oid())
+                .unwrap_err()
+                .code,
+            code::REDACTED_VIEW_ABSENT,
+            "Privileged does not override a governing redaction caveat"
+        );
+
+        let revealer = Capability::embedded(VId(7), &["privileged"]).unwrap();
+        f.runtime
+            .block_on(derive_redacted_view(
+                &mut f.db,
+                &f.contexts,
+                &f.book,
+                &revealer,
+                &f.store,
+                statement.oid(),
+            ))
+            .unwrap()
+            .unwrap();
+        let mut poison = WriteBatch::new(relation::CUSTODY_OF);
+        poison.set_vertex_property(
+            document_vid(&statement.oid()),
+            property::FA_PAYLOAD,
+            Some(scalar_bytes("_fa_payload", vec![0xff]).unwrap()),
+        );
+        f.runtime
+            .block_on(f.db.write(&f.contexts.commit(), poison))
+            .unwrap();
+        let head = f.db.frontier().unwrap();
+        for source in [&admission, &caveated_source] {
+            let DocumentRead::Redacted(view) = f.draft_source(source, statement.oid()).unwrap()
+            else {
+                panic!("governed draft sources must preserve their redacted view");
+            };
+            assert_eq!(view.verify(), Ok(()));
+            assert_eq!(view.doc_commit, statement.doc_commit());
+        }
+        assert_eq!(
+            f.draft_source(&privileged_source, statement.oid())
+                .unwrap_err()
+                .code,
+            code::DOCUMENT_DRIFT,
+            "only unconfined Privileged source admission inspects the poisoned payload"
+        );
+        assert_eq!(f.db.frontier().unwrap(), head);
+
+        let request = f.draft_request(&planner);
+        f.runtime
+            .block_on(crate::draft::discard_draft(
+                &mut f.db,
+                &f.contexts,
+                &f.book,
+                name,
+                request,
+            ))
+            .unwrap()
+            .unwrap();
+        let head = f.db.frontier().unwrap();
+        assert_eq!(
+            f.draft_source(&privileged_source, statement.oid())
+                .unwrap_err()
+                .code,
+            code::DRAFT_NOT_OPEN,
+            "a stale source token refuses before the poisoned source payload"
+        );
+        assert_eq!(f.db.frontier().unwrap(), head);
     }
 
     #[test]

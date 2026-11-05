@@ -102,6 +102,21 @@ pub(super) fn draft_entries(
     if targets.is_empty() {
         return Ok(PriorEntries::new());
     }
+    if capability.branch().is_some() {
+        // The native retained-entry reader admits this exact draft and owner
+        // before observing its members, including unchanged retries after
+        // closure. It grants no general read or another draft's history.
+        let mut earlier = PriorEntries::new();
+        for entry in book.draft_entries(capability, name)?? {
+            let vid = entry_vid(&entry)?;
+            if earlier.insert(vid, entry).is_some() {
+                return Err(Fail::Internal(
+                    "a retained draft repeats an entry identity".into(),
+                ));
+            }
+        }
+        return Ok(earlier);
+    }
     fa_policy::require(
         capability,
         fa_policy::Op::Post,

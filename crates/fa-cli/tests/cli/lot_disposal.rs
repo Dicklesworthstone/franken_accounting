@@ -697,6 +697,147 @@ fn lot_agent_review(book: &Path, token: &str, evidence: &str, account: &str, key
 }
 
 #[test]
+fn post_only_confined_agent_prepares_and_appends_a_lot_review_without_read() -> std::io::Result<()>
+{
+    use fa::{Book, BookKeys, Entropy};
+
+    let (dir, book, evidence) = setup("FIFO")?;
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let open = || Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+    let name = "post-only-inventory-review";
+    let branch = fa_model::draft_branch(open().context().book_id, name);
+    let branch_hex = branch.to_hex();
+    let token = dir.join("post-only-lot-agent.token").display().to_string();
+    ok(
+        &book,
+        "issue post-only inventory agent confined to its draft",
+        &[
+            "capability",
+            "issue",
+            "--holder",
+            "inventory-agent",
+            "--profile",
+            "agent",
+            "--op",
+            "post",
+            "--branch",
+            &branch_hex,
+            "--out",
+            &token,
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "post",
+            "--json",
+        ],
+    );
+    let issued = fa_policy::CapabilityToken::decode(&std::fs::read(&token)?).unwrap();
+    assert!(issued.capability().holds(fa_policy::Op::Post));
+    assert!(!issued.capability().holds(fa_policy::Op::Read));
+    assert_eq!(issued.capability().branch(), Some(branch));
+    ok(
+        &book,
+        "open the confined inventory draft",
+        &["--token", &token, "draft", "new", name, "--json"],
+    );
+
+    let before = frontier(&book);
+    for (step, args) in [
+        (
+            "general balance read remains forbidden",
+            vec!["--token", &token, "tb", "--period", "FY2026-P03", "--json"],
+        ),
+        (
+            "direct disposal remains forbidden",
+            vec![
+                "--token",
+                &token,
+                "dispose",
+                "--account",
+                "1400",
+                "--quantity",
+                "5.000000 SHARE",
+                "--quantity-offset",
+                "1499",
+                "--cost-offset",
+                "5100",
+                "--date",
+                "2026-03-15",
+                "--key",
+                "direct-confined-disposal",
+                "--evidence",
+                &evidence,
+                "--json",
+            ],
+        ),
+    ] {
+        let (code, out, err) = run(&book, step, &args);
+        assert_eq!(code, 7, "{step}: {out}\n{err}");
+        assert_eq!(
+            field(&out, "refusal_id"),
+            Some(fa_journal::refusal::code::CAPABILITY)
+        );
+        assert_eq!(frontier(&book), before, "refused access publishes nothing");
+    }
+
+    // This helper deliberately supplies --review-only without --draft. The
+    // source admission must resolve the owned draft from the issued branch.
+    let review = lot_agent_review(&book, &token, &evidence, "1400", "confined-fifo-review");
+    let original = retained_disposal(&review);
+    assert_eq!(text(&review, "law"), "FIFO");
+    assert_eq!(
+        arr(&review, "legs")
+            .iter()
+            .filter(|leg| text(leg, "amount") == "50.00 USD")
+            .count(),
+        2
+    );
+    let batch = batch_file(&dir, "confined-fifo-batch", vec![review_member(&review)]);
+    let planned = ok_bound_batch(
+        &book,
+        "append the exact post-only lot review",
+        &token,
+        &batch,
+        name,
+    );
+    assert_eq!(field(&planned, "event"), Some("draft_planned"));
+    let view = open().draft(name).unwrap().unwrap();
+    assert_eq!(view.intents.len(), 1);
+    assert_eq!(view.intents[0].intent, original);
+    let reviewed_entry = view.intents[0].resolved_entry.as_ref().unwrap();
+
+    let promoted = doc(&ok(
+        &book,
+        "independent controller promotes the exact confined review",
+        &[
+            "draft",
+            "promote",
+            name,
+            "--as",
+            "controller",
+            "--yes",
+            "--json",
+        ],
+    ));
+    assert_eq!(arr(&promoted, "entries").len(), 1);
+    let vid = fgdb_types::VId(
+        u128::from_str_radix(arr(&promoted, "entries")[0].as_str().unwrap(), 16).unwrap(),
+    );
+    let (posted, at) = open().read_entry(vid).unwrap().unwrap();
+    assert_eq!(posted, *reviewed_entry);
+    assert_eq!(posted.proposal, *original.proposal());
+    assert_eq!(Some(i128::from(at.0)), int(&promoted, "recorded_at"));
+    assert_eq!(
+        remaining_lots(&book, "1400"),
+        vec![
+            ("10.000000 SHARE".into(), "20.00 USD".into()),
+            ("5.000000 SHARE".into(), "50.00 USD".into()),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn agent_lot_reviews_rehearse_in_a_draft_and_promote_with_original_bytes() -> std::io::Result<()> {
     use fa::{Book, BookKeys, Entropy};
 

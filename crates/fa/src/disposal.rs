@@ -167,4 +167,46 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             template,
         )?)
     }
+
+    /// Prepare only the declared lot relief for the holder's own open draft.
+    /// Its explicit branch confinement, current Post authority and requested
+    /// quantity ceiling precede history hydration. Source reconstruction and
+    /// the generated cost effects are checked by the same native disposal law.
+    pub async fn prepare_lot_disposal_in_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        name: &str,
+        request: &LotDisposalPostRequest,
+        template: EntryPayload,
+    ) -> Outcome<PreparedLotDisposal> {
+        let admission = match self.query(cx, |db, book| {
+            let admission = match fa_journal::draft::admit_sources(db, book, capability, name)? {
+                Ok(admission) => admission,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if let Err(refusal) =
+                fa_journal::disposal::admit_draft_request(db, book, &admission, request, &template)?
+            {
+                return Ok(Err(refusal));
+            }
+            Ok(Ok(admission))
+        })? {
+            Ok(admission) => admission,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        // Hydration can suspend. The native factory repeats current draft
+        // admission before observing retained policies or acquisition rows.
+        Ok(fa_journal::disposal::prepare_lot_disposal_in_draft(
+            &self.db,
+            cx,
+            &self.context,
+            &admission,
+            request,
+            template,
+        )?)
+    }
 }
