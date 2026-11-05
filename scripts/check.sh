@@ -864,7 +864,7 @@ fi
 # Forbidden dependencies (plan §1 constraint 1): every first-party crate may
 # depend DIRECTLY only on first-party crates and the admitted foundations. The
 # foundations' own transitive dependencies (serde, tokio, … inside asupersync,
-# frankengraphdb, franken_networkx, fastmcp-rust, frankensympy) are confined to their pinned
+# frankengraphdb, franken_networkx, fastmcp-rust, frankensympy, franken_markdown) are confined to their pinned
 # closures and are deny.toml's business (cargo deny), not this tripwire's.
 # What this admits that a lockfile grep would not: foundation-transitive paths.
 # What it still catches: any new direct dependency of fa-* on anything else.
@@ -884,7 +884,7 @@ else
     DEP_FAIL=0
     while read -r pkg dep; do
       case "$dep" in
-        fa|fa-*|asupersync|fgdb|fgdb-*|fnx-*|fastmcp-rust|fastmcp-*|fsym-bigint|fsym-rational|fsym-budget) ;;
+        fa|fa-*|asupersync|fgdb|fgdb-*|fnx-*|fastmcp-rust|fastmcp-*|fsym-bigint|fsym-rational|fsym-budget|fmd-font|franken_markdown) ;;
         *)
           gate_fail "forbidden-deps — $pkg depends directly on \`$dep\`, which is neither first-party nor a foundation"
           DEP_FAIL=1

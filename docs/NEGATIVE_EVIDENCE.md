@@ -3568,3 +3568,32 @@ the same population, exact expected parity, once-per-link work assertions,
 backward enumeration and live literal-walker negative control remain. This
 is a mechanical standard-library expression repair, with no lint allowance
 or test weakening. The new source still requires strict/native validation.
+
+### 2026-11-05 — Complete exact-name admission for the adopted owner foundation
+
+The two new direct `fa-statements` dependencies were correctly pinned and
+registered, but the older `check.sh` name tripwire still rejected both
+`fmd-font` and `franken_markdown`. A read-only reproduction of the exact
+case patterns over all 268 real direct edges returned 1 for those two edges.
+This was not a complete `check.sh` invocation or verdict. Owner doctrine
+explicitly admits suitable owner projects and requires their allowlists to
+be registered; the tripwire now admits only those two additional exact names.
+
+The admitted/rejected split is explicit: both actual pinned owner edges now
+pass the name tripwire; `serde`, `tokio`, `chrono` and the unregistered
+`fmd-unregistered` name remain rejected before and after. The existing
+resolved checker still independently checks source, exact version/revision,
+posture and feature ceilings. Its real four-posture gate returned 0 (27
+foundation IDs in each of `fa`, `fa-cli` and `fad`, 36 in `fa-mcp`), and all
+17 existing negative controls returned 0. Additional read-only probes drifted
+the actual `fmd-font`, `franken_markdown` and transitive `fmd-math` commit
+identities; all three were refused for source-pin drift. No foreign namespace
+wildcard, version tolerance, checker bypass or negative-control change is
+introduced. Full repository qualification remains required for the new
+check-script blob.
+
+An initial bare ShellCheck invocation returned 1 for the existing sourced
+library annotation (SC1091 informational diagnostic). The source-following
+invocation `shellcheck -x -P scripts scripts/check.sh` then returned 0, without
+a source suppression or gate-policy edit. Both outcomes are recorded; the
+first was not treated as a pass.
