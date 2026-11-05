@@ -587,3 +587,104 @@ fn rounded_statements_render_all_formats_and_preserve_clock_and_output_guards() 
         );
     }
 }
+
+#[test]
+fn large_comparative_pdfa_keeps_exact_values_on_a_wide_page() {
+    let dir = temporary();
+    let book = book(&dir);
+    ok(&book, &["period", "open", "FY2026-P02"]);
+    let source = dir.join("wide-source.txt");
+    std::fs::write(
+        &source,
+        b"Synthetic wide-comparative capital evidence; test fixture",
+    )
+    .unwrap();
+    let document = ok(
+        &book,
+        &[
+            "document",
+            "add",
+            source.to_str().unwrap(),
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let evidence = text(data(&document[0]), "oid").to_string();
+    let capital = 1_000_000_000_000_000_000_000_000_000_000_i128;
+    let intent = dir.join("wide-capital.json");
+    std::fs::write(
+        &intent,
+        format!(r#"{{"idempotency_key":"wide-capital","effective_date":"2026-03-10","legs":[{{"side":"debit","account":"1000","amount":"{capital}.00 USD"}},{{"side":"credit","account":"3000","amount":"{capital}.00 USD"}}]}}"#),
+    ).unwrap();
+    ok(
+        &book,
+        &[
+            "post",
+            "--intent",
+            intent.to_str().unwrap(),
+            "--evidence",
+            &evidence,
+        ],
+    );
+    record_ticks(&book);
+    let before = head(&book);
+    let at = before.to_string();
+    let cash = format!("{}.50", capital.checked_add(125).unwrap());
+    let mut previous = None;
+    for repeat in 0..2 {
+        let path = dir.join(format!("wide-comparative-pdfa-{repeat}"));
+        let request = [
+            "statement",
+            "balance-sheet",
+            "--for",
+            "FY2026-P03",
+            "--compare",
+            "FY2026-P02",
+            "--as-known-at",
+            &at,
+            "--render",
+            "pdfa",
+            "--out",
+            path.to_str().unwrap(),
+        ];
+        let events = ok(&book, &request);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| text(event, "event"))
+                .collect::<Vec<_>>(),
+            ["statement", "rendered"]
+        );
+        let bytes = std::fs::read(&path).unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        let width: u32 = body
+            .split_once("/MediaBox [0 0 ")
+            .unwrap()
+            .1
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(width > 612 && width <= 14_400);
+        assert!(body.contains(&format!("({cash}) Tj")));
+        assert!(body.contains("(FY2026-P03) Tj"));
+        assert!(body.contains("(FY2026-P02) Tj"));
+        fa::validate_pdfa2b(&bytes).unwrap();
+        refused(&book, &request, 2);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            bytes,
+            "existing wide output is never overwritten"
+        );
+        let ir_digest = text(rendered(&events), "ir_digest").to_string();
+        if let Some((prior_bytes, prior_ir)) = previous {
+            assert_eq!(bytes, prior_bytes);
+            assert_eq!(ir_digest, prior_ir);
+        }
+        previous = Some((bytes, ir_digest));
+        assert_eq!(head(&book), before, "rendering does not write the journal");
+    }
+}
