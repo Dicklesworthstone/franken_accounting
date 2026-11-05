@@ -3,6 +3,8 @@
 
 use super::*;
 use fa_canon::{CompiledRule, Inputs};
+use fa_intents::{PostIntent, PostPlan};
+use fa_journal::plan::{commit_plan, plan_post};
 use fa_journal::rule::{
     RuleDerivation, activate_rule_version, plan_rule_activation, propose_rule_version,
     rule_derived_proposal,
@@ -153,6 +155,14 @@ fn declared_rule_authority_is_enforced_during_preparation_and_commit() {
     let head = h.db.frontier().unwrap();
     let rows = h.db.vertices().unwrap();
     let ctx = h.ctx();
+    // Encoding a Rule-derived intent does not grant its candidate effects
+    // authority: ordinary native planning must reproduce the same refusal.
+    let intent = PostIntent::rule_derived(forged.clone(), Vec::new()).unwrap();
+    let refused = plan_post(&mut h.db, &ctx, &h.book, controller(), intent, None)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, "FA-REF-196", "{refused:?}");
+    assert!(refused.fix.contains("authority"), "{refused:?}");
     let request = |proposal| PostRequest {
         proposal,
         capability: controller(),
@@ -299,4 +309,120 @@ fn the_proposal_factory_rejects_a_forged_public_derivation_outside_the_grant() {
     )
     .unwrap_err();
     assert_eq!(refused.code, "FA-REF-196", "{refused:?}");
+}
+
+#[test]
+fn rule_derived_portable_plan_binds_authority_and_retries_its_exact_outcome() {
+    let mut h = harness();
+    let rule = propose(&mut h, "40.00", b"portable-rule-authority");
+    activate(&mut h, &rule);
+    let event = event(&mut h, "PORTABLE-RULE", 4_000);
+    let candidate = proposal(&h, &rule, &event, b"portable-rule-post");
+    let intent = PostIntent::rule_derived(candidate, Vec::new()).unwrap();
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    let ctx = h.ctx();
+    let refused = fa_journal::scenario::admit_scenario_intent(
+        &h.db,
+        &h.book,
+        "rule-profile-must-refuse",
+        &intent,
+        &controller(),
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(refused.code, fa_journal::refusal::code::STRUCTURE);
+    assert_eq!(refused.exit, exit::USAGE);
+    assert!(
+        refused.message.contains("single native PostPlan"),
+        "{refused:?}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+
+    let plan = plan_post(&mut h.db, &ctx, &h.book, controller(), intent, None)
+        .unwrap()
+        .unwrap();
+    let bytes = plan.canonical_bytes().unwrap();
+    let decoded = PostPlan::decode(&bytes).unwrap();
+    assert_eq!(decoded, plan);
+    assert!(matches!(
+        &decoded.intent().proposal().origin,
+        EntryOrigin::Rule { rule_version_oid, .. } if rule_version_oid.0 == rule.ir_digest()
+    ));
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+
+    // This capability may post the exact effects, but it is not the capability
+    // whose commitment the saved plan binds. The artifact supplies no authority.
+    let different_capability = human(PREPARER, &["post", "rule_change", "read"]);
+    assert_ne!(
+        different_capability.commitment().unwrap(),
+        plan.certificate().capability_commitment
+    );
+    let refused = h
+        .runtime
+        .block_on(commit_plan(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            different_capability,
+            decoded.clone(),
+            None,
+        ))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        refused.code,
+        fa_journal::refusal::code::PLAN_INVALIDATED,
+        "{refused:?}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+
+    let posted = h
+        .runtime
+        .block_on(commit_plan(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            controller(),
+            decoded,
+            None,
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(matches!(&posted, Posted::Committed { .. }));
+    let reference = posted.entry_ref();
+    let (recorded, recorded_at) = read_entry(&h.db, reference.vid).unwrap().unwrap();
+    assert_eq!(&recorded.proposal, plan.proposal());
+    assert_eq!(recorded.proposal_digest, plan.certificate().proposal_digest);
+    assert_eq!(recorded.entry_ref(reference.vid), reference);
+    assert_eq!(recorded_at, posted.recorded_at());
+
+    // Reopen the same portable bytes after publication. Its exact retained
+    // certificate and entry must be recognized without a second journal write.
+    let committed_head = h.db.frontier().unwrap();
+    let committed_rows = h.db.vertices().unwrap();
+    let retry = h
+        .runtime
+        .block_on(commit_plan(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            controller(),
+            PostPlan::decode(&bytes).unwrap(),
+            None,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retry,
+        Posted::AlreadyRecorded {
+            entry_ref: reference,
+            recorded_at,
+        }
+    );
+    assert_eq!(h.db.frontier().unwrap(), committed_head);
+    assert_eq!(h.db.vertices().unwrap(), committed_rows);
 }

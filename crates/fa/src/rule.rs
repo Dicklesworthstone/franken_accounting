@@ -6,12 +6,12 @@
 //! A version is not activated by being proposed: `fa rule activate` plans
 //! an activation from a date, two independent Human approvers approve its
 //! proposal, and its commit binds the rule's name to the version from that
-//! date ([`fa_journal::rule::activate_rule_version`]). No entry derives
-//! from a version except through `fa rule derive`
-//! ([`AsyncBook::derive_rule_entry`]): the kernel re-runs the version in
-//! force on the entry's date over the event and its recorded inputs inside
-//! the commit, and posts only what it derives (FA-INV-05
-//! `rule-reproduction`).
+//! date ([`fa_journal::rule::activate_rule_version`]). A derivation can be
+//! prepared for ordinary posting review ([`AsyncBook::prepare_rule_entry`])
+//! or posted immediately ([`AsyncBook::derive_rule_entry`]). The kernel
+//! re-runs the version in force on the entry's date over the event and its
+//! recorded inputs inside the commit, and posts only what it derives
+//! (FA-INV-05 `rule-reproduction`).
 
 use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
@@ -136,21 +136,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
-    /// Derive and post the entry the version `ir_digest` gives the recorded
-    /// event `event` with `inputs`, under `capability` (whole-book read, then
-    /// post): an `Original` whose origin names the version, event and inputs,
-    /// carrying the event's evidence. The kernel re-runs the derivation in
-    /// the commit and refuses anything it does not reproduce, including a
-    /// version not in force on the entry's date.
-    pub async fn derive_rule_entry(
-        &mut self,
+    /// Prepare the exact entry the version `ir_digest` derives from the
+    /// recorded `event` and `inputs`, under whole-book read authority.
+    /// The sealed intent retains the rule's class, event evidence and inputs;
+    /// nothing is journaled. Ordinary planning and commit independently check
+    /// current posting authority, activation and reproduction of the rule.
+    pub fn prepare_rule_entry(
+        &self,
         cx: &PurposeContexts,
         capability: &Capability,
         ir_digest: &[u8; 32],
         event: VId,
         inputs: &Inputs,
         key: &[u8],
-    ) -> Outcome<fa_journal::Posted> {
+    ) -> Outcome<fa_intents::PostIntent> {
         let built = self.query(cx, |db, book| {
             let at = match crate::subledger::admitted_at(db, book, capability, None)? {
                 Ok(at) => at,
@@ -208,11 +207,35 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(proposal) => proposal,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        let intent =
+            fa_intents::PostIntent::rule_derived(proposal, Vec::new()).map_err(|error| {
+                fa_journal::KernelError::Corrupt(format!("rule-derived posting intent: {error}"))
+            })?;
+        Ok(Ok(intent))
+    }
+
+    /// Derive and post the rule's entry over a recorded event, under
+    /// `capability` (whole-book read, then post). Preparation is shared with
+    /// the review path; the kernel re-runs the derivation in the commit and
+    /// refuses a version not in force on the entry's date.
+    pub async fn derive_rule_entry(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &Inputs,
+        key: &[u8],
+    ) -> Outcome<fa_journal::Posted> {
+        let intent = match self.prepare_rule_entry(cx, capability, ir_digest, event, inputs, key)? {
+            Ok(intent) => intent,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         self.post(
             cx,
             fa_journal::PostRequest {
-                proposal,
-                approvals: Vec::new(),
+                proposal: intent.proposal().clone(),
+                approvals: intent.approvals().to_vec(),
                 capability: capability.clone(),
                 plan_certificate: None,
             },

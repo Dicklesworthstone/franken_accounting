@@ -1,7 +1,7 @@
-//! Typed PostEntry requests and portable, bounded planning transcripts.
+//! Typed posting requests and portable, bounded planning transcripts.
 //!
-//! This is the first admitted slice of plan §10.4 and Appendix B: one exact
-//! sealed PostEntry, including its already supplied approvals. The bytes
+//! This slice of plan §10.4 and Appendix B admits exact sealed PostEntry and
+//! rule-derived single-entry requests, including supplied approvals. The bytes
 //! retain randomized erasable fields, so a second process never has to seal
 //! the same plaintext again. The intent digest binds the entire typed
 //! request; it is not an unkeyed digest of its private plaintext.
@@ -112,11 +112,38 @@ fn version(reader: &mut Reader<'_>) -> Result<(), IntentError> {
     Ok(())
 }
 
-/// The exact sealed request for the admitted PostEntry verb. The envelope
-/// has no caller-supplied plan reference. Keeping it private makes every
-/// construction pass the canonical Entry checks and the origin boundary.
+/// A distinct wire verb and digest domain keep rule derivation from being
+/// reinterpreted as the original PostEntry contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PostIntentKind {
+    PostEntry,
+    RuleDerived,
+}
+
+impl PostIntentKind {
+    const fn verb(self) -> u8 {
+        match self {
+            Self::PostEntry => 0,
+            Self::RuleDerived => 1,
+        }
+    }
+
+    const fn digest_domain(self) -> &'static [u8] {
+        match self {
+            Self::PostEntry => b"fa:intent:post-entry:v1",
+            Self::RuleDerived => b"fa:intent:rule-derived:v1",
+        }
+    }
+}
+
+/// The exact sealed request for PostEntry or a single rule derivation. The
+/// envelope has no caller-supplied plan reference. Private construction keeps
+/// each wire verb bound to its own origin and the canonical Entry checks.
+/// Decoding confers no authority or proof that the named rule reproduces the
+/// proposal; native planning and commit independently enforce those laws.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PostIntent {
+    kind: PostIntentKind,
     entry: Entry,
 }
 
@@ -128,6 +155,26 @@ impl PostIntent {
             ));
         }
         Ok(Self {
+            kind: PostIntentKind::PostEntry,
+            entry: proposal.seal(approvals, None)?,
+        })
+    }
+
+    /// Retain an exact rule-derived request for a single native PostPlan.
+    /// The kernel must witness the rule version, activation, event and inputs,
+    /// reproduce the derivation, and enforce both caller and rule authority.
+    /// This constructor only checks the origin and canonical Entry structure.
+    pub fn rule_derived(
+        proposal: EntryPayload,
+        approvals: Vec<ApprovalRef>,
+    ) -> Result<Self, IntentError> {
+        if !matches!(proposal.origin, EntryOrigin::Rule { .. }) {
+            return Err(IntentError::Invalid(
+                "rule-derived planning requires a Rule-origin proposal",
+            ));
+        }
+        Ok(Self {
+            kind: PostIntentKind::RuleDerived,
             entry: proposal.seal(approvals, None)?,
         })
     }
@@ -150,7 +197,7 @@ impl PostIntent {
         w.fixed(INTENT_MAGIC)
             .u16(SCHEMA_MAJOR)
             .u16(SCHEMA_MINOR)
-            .u8(0) // PostEntry; other verbs require their own admitted codec.
+            .u8(self.kind.verb())
             .bytes(&self.entry.encode()?);
         let bytes = w.finish()?;
         bounded(&bytes, MAX_INTENT_BYTES)?;
@@ -164,9 +211,11 @@ impl PostIntent {
             return Err(IntentError::Invalid("wrong intent magic"));
         }
         version(&mut r)?;
-        if r.u8("intent.verb")? != 0 {
-            return Err(IntentError::Invalid("unsupported intent verb"));
-        }
+        let kind = match r.u8("intent.verb")? {
+            0 => PostIntentKind::PostEntry,
+            1 => PostIntentKind::RuleDerived,
+            _ => return Err(IntentError::Invalid("unsupported intent verb")),
+        };
         let entry = Entry::decode(r.bytes(MAX_ENTRY_BYTES, "intent.entry")?)?;
         r.finish()?;
         if entry.plan_certificate.is_some() {
@@ -174,12 +223,15 @@ impl PostIntent {
                 "a caller cannot supply a plan certificate in an intent",
             ));
         }
-        Self::new(entry.proposal, entry.approvals)
+        match kind {
+            PostIntentKind::PostEntry => Self::new(entry.proposal, entry.approvals),
+            PostIntentKind::RuleDerived => Self::rule_derived(entry.proposal, entry.approvals),
+        }
     }
 
     pub fn digest(&self) -> Result<[u8; 32], IntentError> {
         Ok(domain_digest(
-            b"fa:intent:post-entry:v1",
+            self.kind.digest_domain(),
             &[&self.canonical_bytes()?],
         ))
     }
@@ -429,6 +481,13 @@ impl ReplacementPlan {
     pub fn validate(&self) -> Result<(), IntentError> {
         self.reversal.validate()?;
         self.replacement.validate()?;
+        if self.reversal.intent().kind != PostIntentKind::PostEntry
+            || self.replacement.intent().kind != PostIntentKind::PostEntry
+        {
+            return Err(IntentError::Invalid(
+                "rule-derived intents require a single-entry PostPlan",
+            ));
+        }
         let a = self.reversal.certificate();
         let b = self.replacement.certificate();
         if a.book_id != b.book_id
@@ -585,6 +644,11 @@ impl PostBatch {
         let head = first.proposal();
         let mut keys = std::collections::BTreeSet::new();
         for member in &members {
+            if member.kind != PostIntentKind::PostEntry {
+                return Err(IntentError::Invalid(
+                    "rule-derived intents require a single-entry PostPlan",
+                ));
+            }
             let p = member.proposal();
             if p.book_id != head.book_id || p.branch_id != head.branch_id {
                 return Err(IntentError::Invalid(
@@ -975,6 +1039,354 @@ impl BatchPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A fixed canonical minor-0 Entry: balanced native legs, deterministic
+    // sealed description, Intent origin and no approvals. Keeping the model
+    // fixture as bytes avoids extra dependencies just to construct dates and
+    // amounts, and pins the legacy wrapper independently of its encoder.
+    const LEGACY_ENTRY_HEX: &str = concat!(
+        "0100000009090909090909090909090909090909000000000000000000000000",
+        "000000000100204e000000b633e6b3da10a53ce11f85afbc878cc37840a26e69",
+        "062343bf3abc912b456a40000202020202020202020202020202020202020202",
+        "0202020248000000dbb001fd899c36864736648030b516f247b41a0b0b429124",
+        "ba907e6ddd3c7bd292622ecb110fb7b0f2700e352d87dbe348c0fb7b91ad127b",
+        "0861e11418830c59c06f90e56976f18700020000000001000000000000000000",
+        "00000000000001000000c0d40100000000000000000000000000000000000000",
+        "00000000010200000000000000000000000000000001000000c0d40100000000",
+        "00000000000000000000000000000000000000000100000001000000c0d40100",
+        "000000000000000000000000c0d40100000000000000000000000000000d0000",
+        "00706f727461626c652d72756c65000101010101010101010101010101010101",
+        "01010101010101010101010101010101004d0000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000092e3d13084318e4b",
+        "54891c43173e73924a534f5d4db232bca597ed563e8e1608b3592ac165e256a6",
+        "6e5042947d1addd6599bfca3a970a557affe4fdf47fdb102",
+    );
+    const LEGACY_INTENT_DIGEST: &str =
+        "24ea604d3cf5c81b1d9d6d2d8513c06205862e754d4a3f142e490b0cb1334754";
+
+    fn legacy_entry() -> Entry {
+        let bytes = LEGACY_ENTRY_HEX
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        Entry::decode(&bytes).unwrap()
+    }
+
+    fn rule_proposal() -> EntryPayload {
+        let mut proposal = legacy_entry().proposal;
+        let inputs = vec![0; 4];
+        proposal.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
+        proposal.origin = EntryOrigin::Rule {
+            rule_version_oid: fa_model::Oid([12; 32]),
+            event_ref: VId(13),
+            inputs_digest: domain_digest(b"fa:canon-inputs:v1", &[&inputs]),
+        };
+        proposal.idempotency_key = b"rule-plan".to_vec();
+        proposal.extensions = vec![(fa_model::entry::RULE_INPUTS_EXTENSION, inputs)];
+        proposal
+    }
+
+    /// Construct the wrapper without PostIntent's writer or private kind.
+    fn intent_wire(verb: u8, entry: &Entry) -> Vec<u8> {
+        let entry = entry.encode().unwrap();
+        let mut bytes = b"FA-INTENT\0".to_vec();
+        bytes.extend_from_slice(&[1, 0, 0, 0, verb]);
+        bytes.extend_from_slice(&u32::try_from(entry.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(&entry);
+        bytes
+    }
+
+    /// Pure codec fixture, not a kernel-issued or authenticated certificate.
+    fn plan_for(intent: PostIntent) -> PostPlan {
+        let mut certificate = certificate();
+        certificate.book_id = intent.proposal().book_id;
+        certificate.branch_id = intent.proposal().branch_id;
+        certificate.principal = intent.proposal().principal_ref;
+        certificate.intent_digest = intent.digest().unwrap();
+        certificate.proposal_digest = intent.entry.proposal_digest;
+        PostPlan::new(intent.clone(), intent.entry, certificate).unwrap()
+    }
+
+    fn correction_plan(rule_derived: bool, replacement: bool) -> PostPlan {
+        let mut proposal = if rule_derived {
+            rule_proposal()
+        } else {
+            legacy_entry().proposal
+        };
+        proposal.class = if replacement {
+            fa_model::EntryClass::REPLACEMENT
+        } else {
+            fa_model::EntryClass::REVERSAL
+        };
+        proposal.idempotency_key = if replacement {
+            b"replacement".to_vec()
+        } else {
+            b"reversal".to_vec()
+        };
+        proposal.supersession = vec![fa_model::Supersession {
+            target: fa_model::EntryRef {
+                vid: VId(90),
+                entry_digest: [91; 32],
+            },
+            kind: if replacement {
+                fa_model::SupersessionKind::Replaces
+            } else {
+                fa_model::SupersessionKind::Reverses
+            },
+            reason_code: 1,
+        }];
+        let intent = if rule_derived {
+            PostIntent::rule_derived(proposal, Vec::new())
+        } else {
+            PostIntent::new(proposal, Vec::new())
+        };
+        plan_for(intent.unwrap())
+    }
+
+    #[test]
+    fn legacy_post_entry_keeps_its_exact_wire_and_digest() {
+        let entry = legacy_entry();
+        let intent = PostIntent::new(entry.proposal.clone(), entry.approvals.clone()).unwrap();
+        let expected = intent_wire(0, &entry);
+        assert_eq!(intent.canonical_bytes().unwrap(), expected);
+        assert_eq!(PostIntent::decode(&expected).unwrap(), intent);
+        let digest = intent.digest().unwrap();
+        let hex = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(hex, LEGACY_INTENT_DIGEST);
+        assert_eq!(
+            digest,
+            domain_digest(b"fa:intent:post-entry:v1", &[&expected])
+        );
+    }
+
+    #[test]
+    fn rule_derived_intent_has_its_own_verb_domain_and_exact_approval_bytes() {
+        let proposal = rule_proposal();
+        let approvals = vec![ApprovalRef {
+            approval_vid: VId(44),
+            approved_digest: proposal.proposal_digest().unwrap(),
+        }];
+        let expected_entry = proposal.clone().seal(approvals.clone(), None).unwrap();
+        let intent = PostIntent::rule_derived(proposal, approvals.clone()).unwrap();
+        let expected = intent_wire(1, &expected_entry);
+        assert_eq!(intent.canonical_bytes().unwrap(), expected);
+        assert_eq!(PostIntent::decode(&expected).unwrap(), intent);
+        assert_eq!(intent.approvals(), approvals.as_slice());
+        assert_eq!(
+            intent.digest().unwrap(),
+            domain_digest(b"fa:intent:rule-derived:v1", &[&expected])
+        );
+        assert_ne!(
+            intent.digest().unwrap(),
+            domain_digest(b"fa:intent:post-entry:v1", &[&expected])
+        );
+        let unapproved = PostIntent::rule_derived(intent.proposal().clone(), Vec::new()).unwrap();
+        assert_ne!(intent.digest().unwrap(), unapproved.digest().unwrap());
+    }
+
+    #[test]
+    fn intent_verbs_cannot_be_swapped_or_carry_an_existing_plan_certificate() {
+        let legacy = legacy_entry();
+        let rule = rule_proposal().seal(Vec::new(), None).unwrap();
+        assert!(PostIntent::new(rule.proposal.clone(), Vec::new()).is_err());
+        assert!(PostIntent::rule_derived(legacy.proposal.clone(), Vec::new()).is_err());
+        assert!(matches!(
+            PostIntent::decode(&intent_wire(0, &rule)),
+            Err(IntentError::Invalid(
+                "PostEntry planning requires an Intent-origin proposal"
+            ))
+        ));
+        assert!(matches!(
+            PostIntent::decode(&intent_wire(1, &legacy)),
+            Err(IntentError::Invalid(
+                "rule-derived planning requires a Rule-origin proposal"
+            ))
+        ));
+        for (verb, entry) in [(0, legacy), (1, rule)] {
+            for unknown in [2, u8::MAX] {
+                assert!(matches!(
+                    PostIntent::decode(&intent_wire(unknown, &entry)),
+                    Err(IntentError::Invalid("unsupported intent verb"))
+                ));
+            }
+            let certified = entry
+                .proposal
+                .seal(entry.approvals, Some(fa_model::Oid([9; 32])))
+                .unwrap();
+            assert!(matches!(
+                PostIntent::decode(&intent_wire(verb, &certified)),
+                Err(IntentError::Invalid(
+                    "a caller cannot supply a plan certificate in an intent"
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn rule_intent_and_single_entry_plan_reject_malformed_transcripts() {
+        let intent = PostIntent::rule_derived(rule_proposal(), Vec::new()).unwrap();
+        let bytes = intent.canonical_bytes().unwrap();
+        for end in 0..bytes.len() {
+            assert!(PostIntent::decode(&bytes[..end]).is_err(), "prefix {end}");
+        }
+        // Magic, major, minor, verb, embedded Entry digest.
+        for offset in [0, 10, 12, 14, bytes.len() - 1] {
+            let mut changed = bytes.clone();
+            changed[offset] ^= 0xff;
+            assert!(PostIntent::decode(&changed).is_err(), "offset {offset}");
+        }
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(PostIntent::decode(&trailing).is_err());
+        let mut hostile = b"FA-INTENT\0".to_vec();
+        hostile.extend_from_slice(&[1, 0, 0, 0, 1]);
+        hostile.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(
+            PostIntent::decode(&hostile),
+            Err(IntentError::Decode(_))
+        ));
+
+        let plan = plan_for(intent);
+        let bytes = plan.canonical_bytes().unwrap();
+        assert_eq!(PostPlan::decode(&bytes).unwrap(), plan);
+        let mut wrong_domain = plan.certificate().clone();
+        wrong_domain.intent_digest = domain_digest(
+            b"fa:intent:post-entry:v1",
+            &[&plan.intent().canonical_bytes().unwrap()],
+        );
+        assert!(matches!(
+            PostPlan::new(
+                plan.intent().clone(),
+                plan.prepared_entry().clone(),
+                wrong_domain
+            ),
+            Err(IntentError::Invalid("intent or proposal digest differs"))
+        ));
+        let mut changed = bytes;
+        // Cross-kind substitution inside a valid plan must fail in its intent decoder.
+        changed[PLAN_MAGIC.len() + 4 + 4 + INTENT_MAGIC.len() + 4] = 0;
+        assert!(PostPlan::decode(&changed).is_err());
+    }
+
+    #[test]
+    fn batches_keep_post_entry_compatibility_and_refuse_rule_members() {
+        let entry = legacy_entry();
+        let ordinary = PostIntent::new(entry.proposal, entry.approvals).unwrap();
+        let batch = PostBatch::new(b"batch".to_vec(), vec![ordinary.clone()]).unwrap();
+        let mut legacy = Writer::new();
+        legacy
+            .fixed(BATCH_MAGIC)
+            .u16(1)
+            .u16(0)
+            .bytes(b"batch")
+            .u32(1)
+            .bytes(&ordinary.canonical_bytes().unwrap());
+        let legacy = legacy.finish().unwrap();
+        assert_eq!(batch.canonical_bytes().unwrap(), legacy);
+        assert_eq!(PostBatch::decode(&legacy).unwrap(), batch);
+
+        let rule = PostIntent::rule_derived(rule_proposal(), Vec::new()).unwrap();
+        for members in [
+            vec![rule.clone()],
+            vec![ordinary.clone(), rule.clone()],
+            vec![rule.clone(), ordinary],
+        ] {
+            assert!(matches!(
+                PostBatch::new(b"batch".to_vec(), members),
+                Err(IntentError::Invalid(
+                    "rule-derived intents require a single-entry PostPlan"
+                ))
+            ));
+        }
+        let mut embedded = Writer::new();
+        embedded
+            .fixed(BATCH_MAGIC)
+            .u16(1)
+            .u16(0)
+            .bytes(b"batch")
+            .u32(1)
+            .bytes(&rule.canonical_bytes().unwrap());
+        assert!(matches!(
+            PostBatch::decode(&embedded.finish().unwrap()),
+            Err(IntentError::Invalid(
+                "rule-derived intents require a single-entry PostPlan"
+            ))
+        ));
+    }
+
+    #[test]
+    fn replacement_plans_keep_legacy_pairs_and_refuse_rule_members() {
+        let reversal = correction_plan(false, false);
+        let replacement = correction_plan(false, true);
+        let legacy = ReplacementPlan::new(reversal.clone(), replacement.clone()).unwrap();
+        assert_eq!(
+            ReplacementPlan::decode(&legacy.canonical_bytes().unwrap()).unwrap(),
+            legacy
+        );
+        for (reversal, replacement) in [
+            (correction_plan(true, false), replacement),
+            (reversal, correction_plan(true, true)),
+        ] {
+            assert!(matches!(
+                ReplacementPlan::new(reversal.clone(), replacement.clone()),
+                Err(IntentError::Invalid(
+                    "rule-derived intents require a single-entry PostPlan"
+                ))
+            ));
+            let mut embedded = Writer::new();
+            embedded
+                .fixed(ReplacementPlan::MAGIC)
+                .u16(1)
+                .u16(0)
+                .bytes(&reversal.canonical_bytes().unwrap())
+                .bytes(&replacement.canonical_bytes().unwrap());
+            assert!(matches!(
+                ReplacementPlan::decode(&embedded.finish().unwrap()),
+                Err(IntentError::Invalid(
+                    "rule-derived intents require a single-entry PostPlan"
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn replacement_reviews_keep_legacy_pairs_and_refuse_rule_members() {
+        let reversal = correction_plan(false, false).intent().clone();
+        let replacement = correction_plan(false, true).intent().clone();
+        let legacy = ReplacementReview::new(reversal.clone(), replacement.clone()).unwrap();
+        assert_eq!(
+            ReplacementReview::decode(&legacy.canonical_bytes().unwrap()).unwrap(),
+            legacy
+        );
+        for (reversal, replacement) in [
+            (correction_plan(true, false).intent().clone(), replacement),
+            (reversal, correction_plan(true, true).intent().clone()),
+        ] {
+            assert!(matches!(
+                ReplacementReview::new(reversal.clone(), replacement.clone()),
+                Err(IntentError::Invalid(
+                    "rule-derived intents require a single-entry PostPlan"
+                ))
+            ));
+            let mut embedded = Writer::new();
+            embedded
+                .fixed(ReplacementReview::MAGIC)
+                .u16(1)
+                .u16(0)
+                .bytes(&reversal.canonical_bytes().unwrap())
+                .bytes(&replacement.canonical_bytes().unwrap());
+            assert!(matches!(
+                ReplacementReview::decode(&embedded.finish().unwrap()),
+                Err(IntentError::Invalid(
+                    "rule-derived intents require a single-entry PostPlan"
+                ))
+            ));
+        }
+    }
 
     fn certificate() -> PlanCertificate {
         PlanCertificate {

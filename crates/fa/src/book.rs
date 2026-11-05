@@ -1074,6 +1074,22 @@ impl Book {
         )))
     }
 
+    /// Prepare a rule-derived posting intent under whole-book read authority.
+    /// Nothing is journaled. Pass the sealed intent to `plan` for the ordinary
+    /// native rehearsal and review its effects before committing the plan.
+    pub fn prepare_rule_entry(
+        &self,
+        capability: &fa_journal::Capability,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &crate::rule::Inputs,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_intents::PostIntent> {
+        with_store!(&self.store, core => core.prepare_rule_entry(
+            &self.purposes(), capability, ir_digest, event, inputs, idempotency_key,
+        ))
+    }
+
     /// Derive and post a rule version's entry over a recorded event (bead
     /// fa-c34); the kernel re-runs the derivation in the commit.
     pub fn derive_rule_entry(

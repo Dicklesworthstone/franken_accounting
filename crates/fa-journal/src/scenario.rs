@@ -193,6 +193,11 @@ fn decode_intent(bytes: &[u8]) -> Result<(PostIntent, Capability), KernelError> 
             .map_err(decode)?,
     )
     .map_err(intent_error)?;
+    if !matches!(&intent.proposal().origin, EntryOrigin::Intent { .. }) {
+        return Err(KernelError::Corrupt(
+            "scenario intent version 1 requires an Intent-origin PostEntry".into(),
+        ));
+    }
     let capability = Capability::decode(
         r.bytes(64 * 1024, "scenario_intent.capability")
             .map_err(decode)?,
@@ -818,6 +823,12 @@ fn check_plan<V: asupersync::fs::Vfs + Clone>(
 ) -> Outcome<Checked> {
     if let Err(r) = check_name(name) {
         return Ok(Err(r));
+    }
+    if !matches!(&intent.proposal().origin, EntryOrigin::Intent { .. }) {
+        return Ok(Err(usage(
+            "a scenario accepts only Intent-origin PostEntry requests; rule-derived intents require a single native PostPlan",
+            "plan the rule with fa rule derive --rule <digest> --event <code> --dry-run and commit its reviewed plan",
+        )));
     }
     if let Err(r) = admit(db, book, capability, Kind::Plan)? {
         return Ok(Err(r));
@@ -1569,6 +1580,98 @@ pub async fn fork_receivership<V: asupersync::fs::Vfs + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scenario_intent(rule_derived: bool) -> PostIntent {
+        let legs = vec![
+            fa_model::LegPayload::simple(
+                fa_money::Side::Debit,
+                VId(1),
+                fa_money::Amount::new(fa_money::UnitId(1), 100),
+            ),
+            fa_model::LegPayload::simple(
+                fa_money::Side::Credit,
+                VId(2),
+                fa_money::Amount::new(fa_money::UnitId(1), 100),
+            ),
+        ];
+        let inputs = vec![0; 4];
+        let proposal = EntryPayload {
+            schema_minor: fa_model::entry::EXTENSIONS_MINOR,
+            book_id: body().book_id,
+            branch_id: Id128::TRUNK,
+            class: EntryClass::ORIGINAL,
+            effective_date: DateDay(20_513),
+            document_date: None,
+            description: Erasable::seal(
+                &"scenario intent profile".to_string(),
+                None,
+                &fa_model::SealKey([1; 32]),
+                [2; 32],
+                [3; 24],
+            ),
+            effective_period: None,
+            unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+            legs,
+            control: None,
+            base_totals: None,
+            idempotency_key: b"scenario-profile".to_vec(),
+            origin: if rule_derived {
+                EntryOrigin::Rule {
+                    rule_version_oid: Oid([4; 32]),
+                    event_ref: VId(5),
+                    inputs_digest: domain_digest(b"fa:canon-inputs:v1", &[&inputs]),
+                }
+            } else {
+                EntryOrigin::Intent {
+                    intent_oid: Oid([6; 32]),
+                    intent_kind: 1,
+                }
+            },
+            principal_ref: body().owner,
+            session_ref: None,
+            evidence: Vec::new(),
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            tags: Vec::new(),
+            extensions: if rule_derived {
+                vec![(fa_model::entry::RULE_INPUTS_EXTENSION, inputs)]
+            } else {
+                Vec::new()
+            },
+        };
+        if rule_derived {
+            PostIntent::rule_derived(proposal, Vec::new()).unwrap()
+        } else {
+            PostIntent::new(proposal, Vec::new()).unwrap()
+        }
+    }
+
+    #[test]
+    fn retained_scenario_intents_keep_the_post_entry_profile() {
+        let capability = Capability::embedded(body().owner, &["post"]).unwrap();
+        let legacy = scenario_intent(false);
+        let retained = intent_bytes(&legacy, &capability).unwrap();
+        let (decoded, decoded_capability) = decode_intent(&retained).unwrap();
+        assert_eq!(decoded, legacy);
+        assert_eq!(decoded_capability, capability);
+
+        let rule = scenario_intent(true);
+        let wire = rule.canonical_bytes().unwrap();
+        assert_eq!(PostIntent::decode(&wire).unwrap(), rule);
+        // A new globally valid intent verb does not widen this existing
+        // version-1 retained scenario profile.
+        let mut hostile = Writer::new();
+        hostile
+            .u16(SCENARIO_INTENT_VERSION)
+            .bytes(&wire)
+            .bytes(&capability.canonical_bytes().unwrap());
+        assert!(matches!(
+            decode_intent(&hostile.finish().unwrap()),
+            Err(KernelError::Corrupt(message))
+                if message == "scenario intent version 1 requires an Intent-origin PostEntry"
+        ));
+    }
 
     fn body() -> ScenarioBody {
         ScenarioBody {
