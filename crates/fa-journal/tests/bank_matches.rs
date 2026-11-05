@@ -1005,8 +1005,7 @@ fn prepared_bank_confirmation_rechecks_expiry_at_publication() {
         let source = h.head();
         let expires_at = CommitSeq(source.0 + remaining_frontiers);
         let capability = cap(CONFIRMER).expiring_at(expires_at);
-        let match_vid =
-            bank_match_vid(h.book.book_id, request.import.manifest().statement_oid, 1);
+        let match_vid = bank_match_vid(h.book.book_id, request.import.manifest().statement_oid, 1);
         let claim_vid = bank_matched_leg_vid(h.book.book_id, entry.vid, 0);
         let cx = h.cx();
         let BankMatchPreparation::Ready(prepared) =
@@ -1027,10 +1026,7 @@ fn prepared_bank_confirmation_rechecks_expiry_at_publication() {
             .unwrap();
         let before = h.head();
         assert_eq!(before, CommitSeq(source.0 + 1));
-        let result = h
-            .runtime
-            .block_on(prepared.commit(&mut h.db, &cx))
-            .unwrap();
+        let result = h.runtime.block_on(prepared.commit(&mut h.db, &cx)).unwrap();
         if remaining_frontiers == 1 {
             assert_eq!(before, expires_at);
             let refused = result.unwrap_err();

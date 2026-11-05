@@ -92,10 +92,14 @@ fa-verify — the dependency-free verifier (FrankenAccounting plan §13.3)
 usage: fa-verify <command> <file> [options] [--json] [--hex]
 
 commands:
-  access-log   <prefix> --state S --checkpoint C --key K...
+  access-log   <proof> --book HEX32 --branch HEX32 --key K...
+               --after-seq N --through-seq N [--reader HEX32] [--expect-checkpoint HEX64]
+                                                one portable complete access-attempt proof;
+                                                book, branch, interval and reader are your selection
+               <prefix> --state S --checkpoint C --key K...
                --after-seq N --through-seq N [--reader HEX32]
-                                                complete recorded pre-disclosure access attempts;
-                                                C must sign S's identity, and prefix must be v2
+                                                raw three-component compatibility form; optional
+                                                --book/--branch bind the expected signed identity
   state        <state>                          an AccumulatorState's bytes on their own
   checkpoint   <checkpoint> --key K...          a TransparencyCheckpoint signed by a trusted key
                [--witness W... [--quorum N]]    and cosigned by N of the named witnesses (default
@@ -150,7 +154,11 @@ ANCHOR — how you trust the checkpoint (exactly one; a proof never supplies its
 options:
   --proof P      the proof file (instead of naming it positionally)
   --key K        a trusted Ed25519 public key, 64 hex characters (repeatable)
-  --state S      access-log: canonical AccumulatorState exported for C's signed state_oid
+  --state S      access-log raw form: canonical AccumulatorState exported for C's signed state_oid
+  --book HEX32 --branch HEX32  access-log: independently selected identities, required for
+                 portable proofs; use 32 zeroes for trunk. Neither flag opens a source book.
+  --expect-checkpoint HEX64  access-log: optional exact signed checkpoint OID pin;
+                 requires --book/--branch and does not replace a trusted --key
   --after-seq N --through-seq N  access-log: recipient-selected recording interval (N, N];
                  the lower bound cannot precede S's authenticated access_after boundary
   --reader HEX32 access-log: optional principal ID, exactly 32 hex digits (optional 0x);
@@ -212,8 +220,11 @@ const COMMANDS: [&str; 13] = [
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 27] = [
+const VALUE_FLAGS: [&str; 30] = [
     "--state",
+    "--book",
+    "--branch",
+    "--expect-checkpoint",
     "--after-seq",
     "--through-seq",
     "--reader",
@@ -252,6 +263,9 @@ fn admitted(command: &str) -> &'static [&'static str] {
             "--proof",
             "--state",
             "--checkpoint",
+            "--book",
+            "--branch",
+            "--expect-checkpoint",
             "--key",
             "--after-seq",
             "--through-seq",

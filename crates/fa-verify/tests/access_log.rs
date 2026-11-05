@@ -2,8 +2,9 @@
 //! The fixtures use the existing canonical wires and real Ed25519 signatures.
 
 use fa_verify::access_log::{
-    AccessLogRequest, MAX_ACCESS_CHECKPOINT_BYTES, MAX_ACCESS_STATE_BYTES, MAX_ACCESS_TRUSTED_KEYS,
-    SCOPE_ACCESS_LOG, VerifiedAccessLog, verify_access_log,
+    ACCESS_LOG_PROOF_FORMAT, AccessLogExpectation, AccessLogRequest, MAX_ACCESS_CHECKPOINT_BYTES,
+    MAX_ACCESS_PROOF_BYTES, MAX_ACCESS_STATE_BYTES, MAX_ACCESS_TRUSTED_KEYS, SCOPE_ACCESS_LOG,
+    VerifiedAccessLog, verify_access_log, verify_access_log_expected, verify_access_log_proof,
 };
 use fa_verify::codec::Writer;
 use fa_verify::envelope::{LeafEnvelope, MAX_RECORD_BYTES};
@@ -732,4 +733,377 @@ fn executable_routes_proof_alias_and_hex_inputs_to_the_signed_access_verifier() 
     assert_eq!(raw.stdout, hex.stdout);
     // Retain these small fixtures for inspection under the repository's
     // explicit no-file-deletion rule.
+}
+
+// These expectations belong to the pinned fixture. They are never derived
+// from an adversarial proof supplied to the function under test.
+fn expected_source() -> AccessLogExpectation {
+    let signed = verify_checkpoint(&vector("checkpoint"), &[trusted_key()]).unwrap();
+    AccessLogExpectation {
+        book_id: signed.checkpoint.book_id,
+        branch_id: signed.checkpoint.branch_id,
+        checkpoint_oid: Some(signed.oid),
+    }
+}
+
+fn portable(state: &[u8], checkpoint: &[u8], prefix: &[u8]) -> Vec<u8> {
+    let mut w = Writer::default();
+    w.bytes(ACCESS_LOG_PROOF_FORMAT)
+        .bytes(state)
+        .bytes(checkpoint)
+        .bytes(prefix);
+    w.buf
+}
+
+fn portable_fixture() -> Vec<u8> {
+    portable(&vector("state"), &vector("checkpoint"), &vector("prefix"))
+}
+
+#[test]
+fn portable_proof_and_strict_raw_api_reproduce_the_complete_recipient_selection() {
+    let expected = expected_source();
+    for selected in [
+        request(),
+        AccessLogRequest {
+            after_seq: 11,
+            through_seq: 12,
+            principal: Some(7),
+        },
+        AccessLogRequest {
+            principal: Some(999),
+            ..request()
+        },
+        AccessLogRequest {
+            after_seq: 12,
+            through_seq: 12,
+            principal: None,
+        },
+    ] {
+        let raw = verify(selected).unwrap();
+        assert_eq!(
+            verify_access_log_expected(
+                &vector("prefix"),
+                &vector("state"),
+                &vector("checkpoint"),
+                &[trusted_key()],
+                &selected,
+                &expected,
+            )
+            .unwrap(),
+            raw
+        );
+        for checkpoint_oid in [expected.checkpoint_oid, None] {
+            assert_eq!(
+                verify_access_log_proof(
+                    &portable_fixture(),
+                    &[trusted_key()],
+                    &selected,
+                    &AccessLogExpectation {
+                        checkpoint_oid,
+                        ..expected
+                    },
+                )
+                .unwrap(),
+                raw,
+            );
+        }
+    }
+}
+
+#[test]
+fn portable_proof_rejects_wrong_recipient_identity_and_exact_checkpoint_pin() {
+    let expected = expected_source();
+    for (changed, predicate) in [
+        (
+            AccessLogExpectation {
+                book_id: [0xff; 16],
+                ..expected
+            },
+            "access.identity",
+        ),
+        (
+            AccessLogExpectation {
+                branch_id: [0xff; 16],
+                ..expected
+            },
+            "access.identity",
+        ),
+        (
+            AccessLogExpectation {
+                checkpoint_oid: Some([0xff; 32]),
+                ..expected
+            },
+            "access.checkpoint_pin",
+        ),
+    ] {
+        // All supplied components are internally consistent and signed by a
+        // trusted key. That does not make them the recipient's selected source.
+        assert_eq!(
+            verify_access_log_proof(
+                &portable_fixture(),
+                &[trusted_key()],
+                &request(),
+                &changed,
+            )
+            .unwrap_err()
+            .predicate,
+            predicate,
+        );
+        // Identity is established before state or record payload decoding.
+        assert_eq!(
+            verify_access_log_proof(
+                &portable(&[], &vector("checkpoint"), &vector("prefix")),
+                &[trusted_key()],
+                &request(),
+                &changed,
+            )
+            .unwrap_err()
+            .predicate,
+            predicate,
+        );
+    }
+    let mut unsigned = vector("checkpoint");
+    *unsigned.last_mut().unwrap() ^= 1;
+    assert_eq!(
+        verify_access_log_proof(
+            &portable(&vector("state"), &unsigned, &vector("prefix")),
+            &[trusted_key()],
+            &request(),
+            &AccessLogExpectation {
+                book_id: [0xff; 16],
+                ..expected
+            },
+        )
+        .unwrap_err()
+        .predicate,
+        "access.checkpoint",
+        "signature validation precedes source selection",
+    );
+}
+
+#[test]
+fn portable_proof_keeps_signed_coverage_and_all_payload_checks_before_filtering() {
+    let expected = AccessLogExpectation {
+        checkpoint_oid: None,
+        ..expected_source()
+    };
+    let selected = AccessLogRequest {
+        principal: Some(999),
+        ..request()
+    };
+    for (state, checkpoint, predicate) in [
+        ("late_boundary_state", "checkpoint", "access.state_binding"),
+        ("state", "late_boundary_checkpoint", "access.state_binding"),
+        ("legacy_state", "legacy_checkpoint", "access.coverage"),
+    ] {
+        assert_eq!(
+            verify_access_log_proof(
+                &portable(&vector(state), &vector(checkpoint), &vector("prefix")),
+                &[trusted_key()],
+                &selected,
+                &expected,
+            )
+            .unwrap_err()
+            .predicate,
+            predicate,
+        );
+    }
+    for excluded in [0, 2] {
+        let mut damaged = parts();
+        damaged.records[excluded].2[0] ^= 1;
+        assert_eq!(
+            verify_access_log_proof(
+                &portable(&vector("state"), &vector("checkpoint"), &damaged.encode()),
+                &[trusted_key()],
+                &selected,
+                &expected,
+            )
+            .unwrap_err()
+            .predicate,
+            "access.prefix",
+            "an empty selected result never bypasses another record's authentication",
+        );
+    }
+    assert_eq!(
+        verify_access_log_proof(&portable_fixture(), &[], &selected, &expected)
+            .unwrap_err()
+            .predicate,
+        "access.trust",
+        "the artifact cannot supply its own trusted key",
+    );
+}
+
+#[test]
+fn portable_proof_framing_and_aggregate_limits_are_checked_before_decoding() {
+    let expected = expected_source();
+    let proof = portable_fixture();
+    for end in [0, 1, 3, 4, 4 + ACCESS_LOG_PROOF_FORMAT.len(), proof.len() - 1] {
+        assert_eq!(
+            verify_access_log_proof(&proof[..end], &[trusted_key()], &request(), &expected)
+                .unwrap_err()
+                .predicate,
+            "access.proof",
+            "truncated at {end}",
+        );
+    }
+    let mut trailing = proof.clone();
+    trailing.push(0);
+    let mut unknown = proof;
+    unknown[4] ^= 1;
+    for damaged in [trailing, unknown] {
+        assert_eq!(
+            verify_access_log_proof(&damaged, &[trusted_key()], &request(), &expected)
+                .unwrap_err()
+                .predicate,
+            "access.proof",
+        );
+    }
+    // Claimed oversized components are refused from their lengths, without
+    // allocating those fields or attempting to decode their contents.
+    for (field, max) in [
+        (0, MAX_ACCESS_STATE_BYTES),
+        (1, MAX_ACCESS_CHECKPOINT_BYTES),
+        (2, MAX_PREFIX_PROOF_BYTES),
+    ] {
+        let mut w = Writer::default();
+        w.bytes(ACCESS_LOG_PROOF_FORMAT);
+        for _ in 0..field {
+            w.bytes(&[]);
+        }
+        w.u32(u32::try_from(max + 1).unwrap());
+        assert_eq!(
+            verify_access_log_proof(&w.buf, &[trusted_key()], &request(), &expected)
+                .unwrap_err()
+                .predicate,
+            "access.proof",
+        );
+    }
+    let mut w = Writer::default();
+    w.bytes(ACCESS_LOG_PROOF_FORMAT)
+        .bytes(&[])
+        .bytes(&[])
+        .u32(u32::try_from(MAX_PREFIX_PROOF_BYTES).unwrap());
+    // Every declared component fits its individual bound; their framing
+    // makes the complete file exceed the aggregate transport limit.
+    w.buf.resize(w.buf.len() + MAX_PREFIX_PROOF_BYTES, 0);
+    assert!(w.buf.len() > MAX_ACCESS_PROOF_BYTES);
+    assert_eq!(
+        verify_access_log_proof(&w.buf, &[trusted_key()], &request(), &expected)
+            .unwrap_err()
+            .predicate,
+        "access.bounds",
+    );
+}
+
+fn portable_argv() -> Vec<String> {
+    let expected = expected_source();
+    [
+        "access-log",
+        "portable",
+        "--book",
+        &fa_verify::blake3::hex(&expected.book_id),
+        "--branch",
+        &fa_verify::blake3::hex(&expected.branch_id),
+        "--key",
+        &fa_verify::blake3::hex(&trusted_key()),
+        "--after-seq",
+        "11",
+        "--through-seq",
+        "12",
+        "--reader",
+        "00000000000000000000000000000007",
+        "--json",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+#[test]
+fn portable_cli_requires_source_expectations_and_reads_only_one_artifact() {
+    let no_read = |path: &str| -> std::io::Result<Vec<u8>> { panic!("usage error read {path}") };
+    for missing in ["--book", "--branch", "--key", "--after-seq", "--through-seq"] {
+        let mut args = portable_argv();
+        let index = args.iter().position(|arg| arg == missing).unwrap();
+        args.drain(index..index + 2);
+        assert_eq!(fa_verify::cli::run(&args, &no_read).exit, 2, "{missing}");
+    }
+    for extra in [
+        vec!["--book", "00000000000000000000000000000000"],
+        vec!["--expect-checkpoint", "bad"],
+        vec!["--state", "unexpected-state"],
+        vec!["--checkpoint", "unexpected-checkpoint"],
+    ] {
+        let mut args = portable_argv();
+        args.extend(extra.into_iter().map(str::to_string));
+        assert_eq!(fa_verify::cli::run(&args, &no_read).exit, 2);
+    }
+    for flag in ["--book", "--branch"] {
+        for invalid in ["trunk", "0x7", "0000000000000000000000000000000g"] {
+            let mut args = portable_argv();
+            let index = args.iter().position(|arg| arg == flag).unwrap() + 1;
+            args[index] = invalid.to_string();
+            assert_eq!(fa_verify::cli::run(&args, &no_read).exit, 2);
+        }
+    }
+    let read = |path: &str| {
+        assert_eq!(path, "portable", "the source book and external components are never read");
+        Ok(portable_fixture())
+    };
+    let mut args = portable_argv();
+    let pin = fa_verify::blake3::hex(&expected_source().checkpoint_oid.unwrap());
+    args.extend(["--expect-checkpoint".to_string(), pin]);
+    let checked = fa_verify::cli::run(&args, &read);
+    assert_eq!(checked.exit, 0, "{}", checked.stdout);
+    assert!(checked.stdout.contains("\"source_selection\":\"recipient_bound\""));
+    assert!(checked.stdout.contains("\"count\":1"));
+    assert!(checked.stdout.contains("\"checked_records\":5"));
+    let pin_index = args.iter().position(|arg| arg == "--expect-checkpoint").unwrap() + 1;
+    args[pin_index] = "ff".repeat(32);
+    let refused = fa_verify::cli::run(&args, &read);
+    assert_eq!(refused.exit, 8, "{}", refused.stdout);
+    assert!(refused.stdout.contains("access.checkpoint_pin"));
+    let mut mixed = portable_argv();
+    mixed.extend(
+        ["--state", "unopened-state", "--checkpoint", "unopened-checkpoint"]
+            .map(str::to_string),
+    );
+    assert_eq!(fa_verify::cli::run(&mixed, &read).exit, 2);
+}
+
+#[test]
+fn executable_verifies_portable_raw_and_hex_proofs_with_independent_source_pins() {
+    use std::fs;
+    use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "fa-portable-access-log-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&dir).unwrap();
+    let path = dir.join("access.proof");
+    let proof = portable_fixture();
+    fs::write(&path, &proof).unwrap();
+    let mut args = portable_argv();
+    args[1] = path.to_str().unwrap().to_string();
+    args.extend([
+        "--expect-checkpoint".to_string(),
+        fa_verify::blake3::hex(&expected_source().checkpoint_oid.unwrap()),
+    ]);
+    let raw = Command::new(env!("CARGO_BIN_EXE_fa-verify"))
+        .args(&args)
+        .output()
+        .unwrap();
+    assert!(raw.status.success(), "{}", String::from_utf8_lossy(&raw.stderr));
+    assert!(String::from_utf8_lossy(&raw.stdout).contains("\"count\":1"));
+    fs::write(&path, fa_verify::blake3::hex(&proof)).unwrap();
+    let hex = Command::new(env!("CARGO_BIN_EXE_fa-verify"))
+        .args(&args)
+        .arg("--hex")
+        .output()
+        .unwrap();
+    assert!(hex.status.success(), "{}", String::from_utf8_lossy(&hex.stderr));
+    assert_eq!(raw.stdout, hex.stdout);
 }

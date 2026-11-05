@@ -1396,26 +1396,27 @@ fn served_reports_do_not_mistake_a_missing_entry_period_edge_for_an_empty_period
         };
         assert_eq!(totals.get(&h.usd.0), Some(&(12_345, 12_345)));
         assert!(
-            h.db
-                .vertex(fa_registers::maintainer::state_vid(h.book.book_id, &h.march))
-                .unwrap()
-                .is_none(),
+            h.db.vertex(fa_registers::maintainer::state_vid(
+                h.book.book_id,
+                &h.march
+            ))
+            .unwrap()
+            .is_none(),
             "the first posting has no maintained cells that could mask the defect"
         );
         assert_served_reports_match_payloads(&h, &selection, uncached_at, false);
 
         let pvid = period_vid(&h.book.calendar.id, &h.march);
-        let edge = h
-            .db
-            .edges()
-            .unwrap()
-            .into_iter()
-            .find(|edge| {
-                edge.entry.src == evid
-                    && edge.entry.dst == pvid
-                    && edge.entry.relation == relation::IN_PERIOD
-            })
-            .expect("the posted entry has its derived period edge");
+        let edge =
+            h.db.edges()
+                .unwrap()
+                .into_iter()
+                .find(|edge| {
+                    edge.entry.src == evid
+                        && edge.entry.dst == pvid
+                        && edge.entry.relation == relation::IN_PERIOD
+                })
+                .expect("the posted entry has its derived period edge");
         let mut damage = WriteBatch::new(relation::IN_PERIOD);
         damage.delete_edge(edge.entry.eid);
         h.write_derived(damage);
@@ -1460,17 +1461,16 @@ fn served_stock_includes_an_earlier_period_without_its_book_membership_edge() {
     let pvid = period_vid(&h.book.calendar.id, &h.march);
     let period_before = h.db.vertex(pvid).unwrap().unwrap();
     let root = fa_journal::rows::book_root();
-    let edge = h
-        .db
-        .edges()
-        .unwrap()
-        .into_iter()
-        .find(|edge| {
-            edge.entry.src == pvid
-                && edge.entry.dst == root
-                && edge.entry.relation == relation::IN_BOOK
-        })
-        .expect("March has a derived book membership edge");
+    let edge =
+        h.db.edges()
+            .unwrap()
+            .into_iter()
+            .find(|edge| {
+                edge.entry.src == pvid
+                    && edge.entry.dst == root
+                    && edge.entry.relation == relation::IN_BOOK
+            })
+            .expect("March has a derived book membership edge");
     let mut damage = WriteBatch::new(relation::IN_BOOK);
     damage.delete_edge(edge.entry.eid);
     h.write_derived(damage);
