@@ -13598,12 +13598,10 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         ));
     }
     if presentation.is_some()
-        && (from_certificates
-            || render.is_some()
-            || matches!(args.positional[1].as_str(), "diff" | "trace"))
+        && (from_certificates || matches!(args.positional[1].as_str(), "diff" | "trace"))
     {
         return Err(usage(
-            "--present-in presents one statement report; a diff, trace, certificate comparison or --render is not presented",
+            "--present-in presents one statement report; a diff, trace or certificate comparison is not presented",
             PRESENT_EXAMPLE,
         ));
     }
@@ -13931,6 +13929,11 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
             )?;
             let mut ir = fa::render_statement_ir(&statement, definition, &specs)
                 .map_err(|e| Fail::Internal(format!("statement IR: {e}")))?;
+            if let Some(presented) = &presented {
+                ir = ir
+                    .with_presentation(&presented.units)
+                    .map_err(|e| Fail::Internal(format!("presented statement IR: {e}")))?;
+            }
             if functional {
                 let unit = functional_statement_unit(&statement, &book.context().units)?;
                 ir.definition_name
@@ -13953,7 +13956,8 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         .as_ref()
         .map(|certificate| hex(&certificate.digest));
     emit_statement(&ctx.out, &statement, rendered, digest.as_deref());
-    if let Some((fields, human)) = presented {
+    if let Some(presented) = presented {
+        let (fields, human) = presented.display;
         ctx.out.event("statement_presented", fields, &human);
     }
     if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
@@ -14848,6 +14852,11 @@ struct PresentationRequest {
     law: fa_money::RoundingLaw,
 }
 
+struct PresentedStatementOutput {
+    display: StatementPresentation,
+    units: Vec<fa::PresentedStatement>,
+}
+
 /// `--present-in units|thousands|millions [--rounding <law>]`, checked
 /// before the book is read. `--rounding` alone is refused.
 fn presentation_request(args: &Args) -> Result<Option<PresentationRequest>, Fail> {
@@ -14897,7 +14906,7 @@ fn present_statement(
     statement: &Statement,
     units: &fa_money::UnitRegistry,
     request: PresentationRequest,
-) -> Result<StatementPresentation, Fail> {
+) -> Result<PresentedStatementOutput, Fail> {
     let definition = fa::CustomStatementDefinition::from_builtin(
         &StatementDefinition::embedded(&statement.definition_name)
             .map_err(|e| Fail::Internal(format!("statement definition: {e}")))?,
@@ -14906,6 +14915,7 @@ fn present_statement(
     unit_ids.sort_unstable();
     unit_ids.dedup();
     let mut blocks = Vec::new();
+    let mut unit_presentations = Vec::new();
     let mut human = format!(
         "{} presented in {} ({:?})",
         statement.definition_name, request.name, request.law
@@ -14977,6 +14987,7 @@ fn present_statement(
             ("digest", s(hex(&digest.0))),
             ("lines", Json::Arr(lines)),
         ]));
+        unit_presentations.push(presented);
     }
     let fields = vec![
         ("definition", s(&statement.definition_name)),
@@ -14988,7 +14999,10 @@ fn present_statement(
         ),
         ("units", Json::Arr(blocks)),
     ];
-    Ok((fields, human))
+    Ok(PresentedStatementOutput {
+        display: (fields, human),
+        units: unit_presentations,
+    })
 }
 
 fn emit_statement(

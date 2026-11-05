@@ -520,7 +520,7 @@ fn build_pdf_content_streams(
     let mut y: i64 = 750;
     s.push_str("BT /F1 11 Tf 36 766 Td (");
     s.push_str(&escape_pdf_string(&format!(
-        "FrankenAccounting Certified Statement: {} (v{})",
+        "FrankenAccounting Statement: {} (v{})",
         ir.definition_name, ir.definition_version
     )));
     s.push_str(") Tj ET\n");
@@ -1577,18 +1577,30 @@ mod tests {
             ("md", ir.markdown.as_bytes().to_vec()),
         ]
         .into_iter()
-        .map(|(format, bytes)| (format, digest(&bytes), bytes.len()))
+        .map(|(format, bytes)| {
+            if matches!(format, "pdf" | "pdfa") {
+                let text = String::from_utf8_lossy(&bytes);
+                assert!(text.contains("FrankenAccounting Statement:"));
+                assert!(
+                    !text.contains("FrankenAccounting Certified Statement"),
+                    "rendering alone does not issue an accounting certificate"
+                );
+            }
+            (format, digest(&bytes), bytes.len())
+        })
         .collect();
+        // Deliberate title-only correction: removing the unsupported `Certified `
+        // claim shortens PDF/PDF-A by ten bytes. Other format pins stay unchanged.
         let pinned: Vec<(&str, String, usize)> = [
             (
                 "pdf",
-                "2124c05b8c3972d01004c12ad99d9b7786af854b0effd4643fb4d18cf58d11ed",
-                4351,
+                "d8aa60c433a3d51a2346c294d7ab82ba9de376e3a21ab65e886d2402750cd202",
+                4341,
             ),
             (
                 "pdfa",
-                "1610132d06d4e1fc5781285f1f618f1c852ac2ae595c3e3c541dfa07e8bd0838",
-                4388,
+                "a24fa6a8b6c38a0cf250672953b92eb13af85cdc7106e760d77e056d34d4f16d",
+                4378,
             ),
             (
                 "html",

@@ -1928,6 +1928,100 @@ fn statement_presented_in_units_foots_with_an_explicit_residual_line() {
     assert_eq!(plain.len(), 1, "no presentation unless asked: {plain:?}");
     assert_eq!(data(&plain[0]), data(&exact));
 
+    // The document consumes the same typed rounded rows as the JSON event.
+    // Neither native unit is rescaled into the other, and the residual still
+    // immediately precedes its rounded total.
+    let render = || {
+        ok(
+            &f.book,
+            &[
+                "statement",
+                "balance-sheet",
+                "--for",
+                "FY2026-P03",
+                "--present-in",
+                "units",
+                "--render",
+                "md",
+            ],
+        )
+    };
+    let documents = render();
+    assert_eq!(
+        documents
+            .iter()
+            .map(|e| text(e, "event"))
+            .collect::<Vec<_>>(),
+        ["statement", "statement_presented", "rendered"]
+    );
+    assert_eq!(data(&documents[0]), data(&exact));
+    assert_eq!(data(&documents[1]), &presented);
+    let md = text(data(&documents[2]), "markdown");
+    assert!(
+        md.contains("USD units; HalfEven") && md.contains("JPY units; HalfEven"),
+        "{md}"
+    );
+    let rows = md
+        .lines()
+        .filter(|row| row.starts_with('|'))
+        .collect::<Vec<_>>();
+    let residual_at = rows
+        .iter()
+        .position(|row| row.contains("unclosed_earnings_presentation_rounding"))
+        .unwrap();
+    assert!(rows[residual_at].contains("-1"));
+    assert!(rows[residual_at + 1].contains("unclosed_earnings"));
+    assert!(rows[residual_at + 1].contains("155"));
+    assert!(md.contains("accounting certificates bind the exact statement amounts"));
+    assert_eq!(
+        data(&documents[2]),
+        data(&render()[2]),
+        "repeat render is byte deterministic"
+    );
+
+    let certified = ok(
+        &f.book,
+        &[
+            "statement",
+            "balance-sheet",
+            "--for",
+            "FY2026-P03",
+            "--certify",
+        ],
+    );
+    let prefix = data(&certified[0]).get("known_at").unwrap().render();
+    let rendered_certificate = ok(
+        &f.book,
+        &[
+            "statement",
+            "balance-sheet",
+            "--for",
+            "FY2026-P03",
+            "--certify",
+            "--as-known-at",
+            &prefix,
+            "--present-in",
+            "units",
+            "--render",
+            "md",
+        ],
+    );
+    assert_eq!(data(&certified[0]), data(&rendered_certificate[0]));
+    let certificate = |events: &[Json]| {
+        events
+            .iter()
+            .find(|event| text(event, "event") == "report_certificate")
+            .unwrap()
+            .get("data")
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        certificate(&certified),
+        certificate(&rendered_certificate),
+        "presentation does not change the exact accounting certificate"
+    );
+
     // Floor presents 190 and 35, whose difference is the presented 155.
     let (_, floor) = present(&["--present-in", "units", "--rounding", "Floor"]);
     assert_eq!(text(&floor, "rounding_law"), "Floor");
@@ -1936,13 +2030,34 @@ fn statement_presented_in_units_foots_with_an_explicit_residual_line() {
             .iter()
             .all(|l| l.get("residual") == Some(&Json::Bool(false)))
     );
+    let floor_document = ok(
+        &f.book,
+        &[
+            "statement",
+            "balance-sheet",
+            "--for",
+            "FY2026-P03",
+            "--present-in",
+            "units",
+            "--rounding",
+            "Floor",
+            "--render",
+            "md",
+        ],
+    );
+    assert_eq!(data(&floor_document[1]), &floor);
+    let floor_md = text(data(&floor_document[2]), "markdown");
+    assert!(floor_md.contains("USD units; Floor"));
+    assert!(
+        !floor_md.contains("Presentation rounding"),
+        "the selected law needs no residual: {floor_md}"
+    );
 
     // Planted refusals publish nothing: usage, exit 2.
     for planted in [
         vec!["--rounding", "Floor"],
         vec!["--present-in", "dozens"],
         vec!["--present-in", "units", "--rounding", "Sideways"],
-        vec!["--present-in", "units", "--render", "md"],
     ] {
         let mut argv = vec!["statement", "balance-sheet", "--for", "FY2026-P03"];
         argv.extend_from_slice(&planted);

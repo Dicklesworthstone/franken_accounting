@@ -879,7 +879,13 @@ mod tests {
                 let list: Vec<_> = order
                     .iter()
                     .enumerate()
-                    .map(|(i, &vid)| (i as i32, i as u64, VId(vid)))
+                    .map(|(i, &vid)| {
+                        (
+                            i32::try_from(i).expect("bounded fixture ordinal"),
+                            u64::try_from(i).expect("bounded fixture ordinal"),
+                            VId(vid),
+                        )
+                    })
                     .collect();
                 let search = LineageSearch::new(&list, &index, &mut work).unwrap();
                 for a in 0..20 {
@@ -907,7 +913,13 @@ mod tests {
         let mut work = Meter::new(SameSameDifferent::ID, Some(1_000_000), None);
         let index = lineage_index(&edges, &mut work);
         let list: Vec<_> = (1..=N)
-            .map(|vid| (vid as i32, vid as u64, VId(vid)))
+            .map(|vid| {
+                (
+                    i32::try_from(vid).expect("bounded fixture vertex"),
+                    u64::try_from(vid).expect("bounded fixture vertex"),
+                    VId(vid),
+                )
+            })
             .collect();
         let search = LineageSearch::new(&list, &index, &mut work).unwrap();
         let mut selected = SelectedLineages::default();
@@ -920,7 +932,11 @@ mod tests {
             );
             assert_eq!(index.select(vid, &mut selected, &mut work).unwrap(), i == 0);
         }
-        assert!(work.work().comparisons < 10 * N as u64, "{:?}", work.work());
+        assert!(
+            work.work().comparisons < 10 * u64::try_from(N).expect("bounded test population"),
+            "{:?}",
+            work.work()
+        );
     }
 
     #[test]

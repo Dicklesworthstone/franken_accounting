@@ -3142,3 +3142,37 @@ These are source-bounded diagnostics over the correction batch, not a
 complete repository verdict, authenticated crate-cache reuse, a measured
 performance win or authority to close a bead. Canonical changes integrated
 after these runs require a fresh exact-tree full repository proof.
+
+## 2026-11-05 — Document presentation must not overstate certificate scope (fa-qh60, fa-cet)
+
+Canonical `28f7d018` allowed PDF rendering without `--certify`, while the
+PDF content always called itself `FrankenAccounting Certified Statement`.
+During rounded-document integration, review also found that the first
+unpublished draft put its display-only/exact-certificate notice solely in
+`ir.markdown`; HTML, SVG and PDF consume the common table rows instead.
+These are source-observed scope defects, not evidence of an issued rounded
+accounting proof or a conclusion about any underlying transaction.
+
+The repair uses a neutral statement title and collision-safe common rows
+declaring the display units, registered rounding law and `Display only;
+cert exact` scope. Exact statement amounts and accounting certificates are
+unchanged. Regressions require the scope notice in actual content in all
+five formats, including PDF text operators, plus unchanged exact certificate
+bytes, explicit residuals, no-overwrite and clock/selector refusals.
+
+The title-only change deliberately updates two byte-exact pins: PDF becomes
+4,341 rather than 4,351 bytes and PDF/A becomes 4,378 rather than 4,388.
+The first native run correctly failed the old two pins; HTML, SVG and
+Markdown pins were identical. Only the two reviewed title-dependent hashes
+and lengths change, with explicit assertions rejecting the unsupported
+certification title. No fixture-wide regeneration or relaxed comparison is
+used. Corrected final native execution remains pending at this record's
+creation; the earlier source-bound 63-test pass and 31-pass/1-failure CLI
+diagnostic are retained separately and supply no full repository verdict.
+
+The later fixed-source runs on `fb0acc362` plus this implementation pass all
+63 `fa-statements` library tests and all 32 CLI tests across `statements`,
+`rendered_reports`, `migration_proofs` and `robot_schema`, with no ignored or
+filtered tests. The PDF/PDF-A pins and actual rendered scope/numeric content
+pass. These are scoped native results; full exact-tree repository
+qualification and the broad `fa-qh60`/`fa-cet` acceptance remain pending.

@@ -304,6 +304,11 @@ fn dated_documents_are_dated_by_the_tick_known_at_their_frontier_and_render_iden
     // the same report renders to the same bytes twice.
     let (pdf, first) = render("pdf", "a.pdf", &[]);
     assert!(first.starts_with(b"%PDF-"));
+    assert!(String::from_utf8_lossy(&first).contains("FrankenAccounting Statement"));
+    assert!(
+        !String::from_utf8_lossy(&first).contains("Certified Statement"),
+        "ordinary rendering does not itself issue an accounting certificate"
+    );
     assert_eq!(text(&pdf, "created"), "2026-03-15T12:00:10Z");
     assert_eq!(text(&pdf, "tick").len(), 32);
     assert_eq!(pdf.get("pdfa_valid"), Some(&Json::Null));
@@ -374,4 +379,211 @@ fn dated_documents_are_dated_by_the_tick_known_at_their_frontier_and_render_iden
         ],
     );
     assert!(text(rendered(&md), "markdown").contains("25.50"));
+}
+
+#[test]
+fn rounded_statements_render_all_formats_and_preserve_clock_and_output_guards() {
+    let dir = temporary();
+    let book = book(&dir);
+    let args = [
+        "statement",
+        "balance-sheet",
+        "--for",
+        "FY2026-P03",
+        "--present-in",
+        "units",
+    ];
+    let before = head(&book);
+    let untimed = dir.join("untimed.pdf");
+    let mut missing_tick = args.to_vec();
+    missing_tick.extend([
+        "--certify",
+        "--render",
+        "pdf",
+        "--out",
+        untimed.to_str().unwrap(),
+    ]);
+    let error = refused(&book, &missing_tick, 4);
+    assert!(text(data(&error), "message").contains("corroborated clock tick"));
+    assert!(!untimed.exists());
+    assert_eq!(
+        head(&book),
+        before,
+        "failed rendering retains no accounting certificate"
+    );
+
+    record_ticks(&book);
+    let at = head(&book).to_string();
+    let mut digest = None;
+    for format in ["md", "html", "svg", "pdf", "pdfa"] {
+        let mut previous = None;
+        for repeat in 0..2 {
+            let path = dir.join(format!("rounded-{format}-{repeat}"));
+            let mut request = args.to_vec();
+            request.extend([
+                "--as-known-at",
+                &at,
+                "--render",
+                format,
+                "--out",
+                path.to_str().unwrap(),
+            ]);
+            let events = ok(&book, &request);
+            assert_eq!(
+                events.iter().map(|e| text(e, "event")).collect::<Vec<_>>(),
+                ["statement", "statement_presented", "rendered"]
+            );
+            let document = rendered(&events);
+            let bytes = std::fs::read(&path).unwrap();
+            let ir = text(document, "ir_digest").to_string();
+            if let Some(expected) = &digest {
+                assert_eq!(&ir, expected);
+            } else {
+                digest = Some(ir);
+            }
+            if let Some(previous) = previous {
+                assert_eq!(bytes, previous, "{format}");
+            }
+            previous = Some(bytes.clone());
+            assert_eq!(
+                head(&book).to_string(),
+                at,
+                "document-only rendering never writes the journal"
+            );
+            let body = String::from_utf8_lossy(&bytes);
+            assert!(
+                body.contains("Display only; cert exact"),
+                "{format}: the scope notice must be in actual document content"
+            );
+            assert!(
+                !body.contains("Certified Statement"),
+                "{format}: rounded display does not certify rounded amounts"
+            );
+            assert!(
+                body.contains("USD units; HalfEven"),
+                "{format}: missing display basis"
+            );
+            if format == "md" {
+                let assets = body
+                    .lines()
+                    .find(|row| {
+                        row.starts_with('|')
+                            && row
+                                .split('|')
+                                .nth(1)
+                                .is_some_and(|code| code.trim() == "assets")
+                    })
+                    .unwrap();
+                assert_eq!(
+                    assets
+                        .split('|')
+                        .nth(3)
+                        .unwrap()
+                        .trim()
+                        .trim_matches(['_', '=']),
+                    "126"
+                );
+            } else {
+                let amount = match format {
+                    "html" => ">126</td>",
+                    "svg" => ">126</text>",
+                    "pdf" | "pdfa" => "(126) Tj",
+                    _ => unreachable!(),
+                };
+                assert!(
+                    body.contains(amount),
+                    "{format}: rounded amount is absent from document content"
+                );
+            }
+            assert!(
+                !body.contains("125.50"),
+                "{format}: exact amounts must not masquerade as the rounded document"
+            );
+            if format == "pdfa" {
+                fa::validate_pdfa2b(&bytes).unwrap();
+            }
+            refused(&book, &request, 2);
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                bytes,
+                "existing output is never overwritten"
+            );
+        }
+    }
+    for scale in ["thousands", "millions"] {
+        let mut scaled = args.to_vec();
+        scaled[5] = scale;
+        scaled.extend(["--render", "md"]);
+        let events = ok(&book, &scaled);
+        assert!(text(rendered(&events), "markdown").contains(&format!("USD {scale}; HalfEven")));
+        let scaled_digest = text(rendered(&events), "ir_digest").to_string();
+        assert_ne!(Some(&scaled_digest), digest.as_ref());
+        digest = Some(scaled_digest);
+    }
+
+    let functional = ok(
+        &book,
+        &[
+            "statement",
+            "balance-sheet",
+            "--for",
+            "FY2026-P03",
+            "--functional",
+            "--as-known-at",
+            &at,
+            "--present-in",
+            "units",
+            "--render",
+            "md",
+        ],
+    );
+    assert_eq!(
+        data(&functional[0]).get("functional"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(text(data(&functional[0]), "base_unit"), "USD");
+    let functional_md = text(rendered(&functional), "markdown");
+    assert!(functional_md.contains("USD units; HalfEven"));
+    assert!(functional_md.contains("Valuation basis: functional currency USD"));
+    assert!(functional_md.contains("Display only; cert exact"));
+    let assets = functional_md
+        .lines()
+        .find(|row| {
+            row.starts_with('|')
+                && row
+                    .split('|')
+                    .nth(1)
+                    .is_some_and(|code| code.trim() == "assets")
+        })
+        .unwrap();
+    assert_eq!(
+        assets
+            .split('|')
+            .nth(3)
+            .unwrap()
+            .trim()
+            .trim_matches(['_', '=']),
+        "126"
+    );
+
+    for mode in ["diff", "trace"] {
+        refused(
+            &book,
+            &[
+                "statement",
+                mode,
+                "--definition",
+                "balance-sheet",
+                "--for",
+                "FY2026-P03",
+                "--before",
+                &at,
+                "--present-in",
+                "units",
+                "--render",
+                "md",
+            ],
+            2,
+        );
+    }
 }

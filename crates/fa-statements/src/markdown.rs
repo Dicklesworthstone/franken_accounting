@@ -116,6 +116,187 @@ pub struct StatementMarkdownIr {
 }
 
 impl StatementMarkdownIr {
+    /// Present the already rounded values, including their explicit residuals,
+    /// through the same document renderers as the exact statement. Unit scales
+    /// remain the registered native scales; each table declares the display
+    /// units and law. This display adapter does not certify rounded amounts.
+    pub fn with_presentation(
+        mut self,
+        presentations: &[crate::custom::PresentedStatement],
+    ) -> Result<Self, StatementError> {
+        if self.compared_known_at.is_some() || presentations.len() != self.tables.len() {
+            return Err(StatementError::Input(
+                "presentation requires one rounded block per exact statement unit".into(),
+            ));
+        }
+        for (table, presented) in self.tables.iter_mut().zip(presentations) {
+            if presented.book_id != self.book_id
+                || presented.branch_id != self.branch_id
+                || presented.known_at != self.known_at
+                || presented.definition_name != self.definition_name
+                || presented.definition_version != self.definition_version
+                || presented.definition_digest != self.definition_digest
+                || presented.columns.len().checked_add(2) != Some(table.headers.len())
+                || !presented
+                    .columns
+                    .iter()
+                    .map(|column| column.label.as_str())
+                    .eq(table.headers.iter().skip(2).map(String::as_str))
+                || presented
+                    .lines
+                    .iter()
+                    .any(|line| line.unit_id != table.unit_id)
+                || presented.divisor
+                    != 10_i128
+                        .checked_pow(u32::from(presented.scale_reduction_digits))
+                        .ok_or_else(|| {
+                            StatementError::Input("presentation divisor overflow".into())
+                        })?
+            {
+                return Err(StatementError::Input(
+                    "rounded presentation does not match the exact statement IR".into(),
+                ));
+            }
+            let source_rows: BTreeMap<_, _> = table
+                .rows
+                .iter()
+                .map(|row| (row.line_code.as_str(), row))
+                .collect();
+            if source_rows.len() != table.rows.len() {
+                return Err(StatementError::Input(
+                    "exact statement IR repeats a row code".into(),
+                ));
+            }
+            let mut rows = Vec::with_capacity(presented.lines.len());
+            let mut codes = std::collections::BTreeSet::new();
+            for line in &presented.lines {
+                if line.presented_amounts.len() != presented.columns.len()
+                    || line.exact_amounts.len() != presented.columns.len()
+                    || line.rounding_errors.len() != presented.columns.len()
+                {
+                    return Err(StatementError::Input(
+                        "rounded presentation line disagrees with column count".into(),
+                    ));
+                }
+                if !codes.insert(line.code.as_str())
+                    || (line.is_residual_line && source_rows.contains_key(line.code.as_str()))
+                {
+                    return Err(StatementError::Input(
+                        "presentation row codes collide".into(),
+                    ));
+                }
+                let footing = if line.is_residual_line {
+                    FootingRule::None
+                } else {
+                    let source = source_rows.get(line.code.as_str()).ok_or_else(|| {
+                        StatementError::Input(
+                            "rounded line is absent from the exact statement".into(),
+                        )
+                    })?;
+                    let exact = line
+                        .exact_amounts
+                        .iter()
+                        .map(|amount| format_scaled_i128(*amount, table.unit_scale))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if source.cells.get(2..) != Some(exact.as_slice()) {
+                        return Err(StatementError::Input(
+                            "rounded presentation changes or repeats an exact statement line"
+                                .into(),
+                        ));
+                    }
+                    source.footing
+                };
+                let mut cells = vec![line.code.clone(), line.label.clone()];
+                cells.extend(line.presented_amounts.iter().map(i128::to_string));
+                rows.push(MarkdownRow {
+                    line_code: line.code.clone(),
+                    footing,
+                    cells,
+                });
+            }
+            if presented
+                .lines
+                .iter()
+                .filter(|line| !line.is_residual_line)
+                .count()
+                != source_rows.len()
+            {
+                return Err(StatementError::Input(
+                    "rounded presentation omits an exact statement line".into(),
+                ));
+            }
+            let extra_digits = presented
+                .scale_reduction_digits
+                .checked_sub(table.unit_scale)
+                .ok_or_else(|| {
+                    StatementError::Input(
+                        "document presentation must use whole native units or a larger scale"
+                            .into(),
+                    )
+                })?;
+            let scale = match extra_digits {
+                0 => "units".to_string(),
+                3 => "thousands".to_string(),
+                6 => "millions".to_string(),
+                digits => format!("10^{digits} units"),
+            };
+            let metadata_code = |prefix: &str| -> Result<String, StatementError> {
+                if !codes.contains(prefix) {
+                    Ok(prefix.to_string())
+                } else {
+                    (0..=codes.len())
+                        .map(|index| format!("{prefix}_{index}"))
+                        .find(|code| !codes.contains(code.as_str()))
+                        .ok_or_else(|| {
+                            StatementError::Input("no distinct presentation row code".into())
+                        })
+                }
+            };
+            for (index, (code, label)) in [
+                (
+                    metadata_code("presentation")?,
+                    format!(
+                        "{} {}; {:?}",
+                        table.unit_code, scale, presented.rounding_law
+                    ),
+                ),
+                (
+                    metadata_code("presentation_scope")?,
+                    "Display only; cert exact".to_string(),
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut cells = vec![code.clone(), label];
+                cells.extend(std::iter::repeat_n(String::new(), presented.columns.len()));
+                rows.insert(
+                    index,
+                    MarkdownRow {
+                        line_code: code,
+                        footing: FootingRule::None,
+                        cells,
+                    },
+                );
+            }
+            table.rows = rows;
+        }
+        self.markdown = format!(
+            "# Statement: {} (v{})\n\n- Book: `{}`\n- Branch: `{}`\n- Known-At Sequence: `{}`\n- Definition Digest: `{}`\n- Presentation: rounded display values; accounting certificates bind the exact statement amounts. Each table names the display units and registered rounding law.\n\n",
+            self.definition_name,
+            self.definition_version,
+            self.book_id.to_hex(),
+            self.branch_id.to_hex(),
+            self.known_at,
+            hex_bytes(&self.definition_digest.0),
+        );
+        for table in &self.tables {
+            self.markdown.push_str(&render_table_markdown(table));
+            self.markdown.push('\n');
+        }
+        Ok(self)
+    }
+
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
         let mut w = Writer::new();
         w.fixed(MARKDOWN_IR_FORMAT)
@@ -1247,6 +1428,127 @@ mod tests {
         };
         let stmt = evaluate(&def, &input).unwrap();
         (def, stmt)
+    }
+
+    #[test]
+    fn rounded_document_ir_preserves_residuals_units_and_exact_source() {
+        use crate::custom::{
+            CustomStatementDefinition, PresentationRoundingSpec, apply_presentation_rounding,
+        };
+        use fa_money::RoundingLaw;
+
+        let (definition, statement) = sample_statement(10, 19_060, 3_540);
+        let units = [UnitFormatSpec {
+            unit_id: 1,
+            code: "USD".into(),
+            scale: 2,
+        }];
+        let exact = render_statement_ir(&statement, &definition, &units).unwrap();
+        let exact_bytes = exact.canonical_bytes().unwrap();
+        let presented = apply_presentation_rounding(
+            &statement,
+            &CustomStatementDefinition::from_builtin(&definition),
+            &PresentationRoundingSpec {
+                rounding_law: RoundingLaw::HalfEven,
+                scale_reduction_digits: 2,
+                residual_line_code: "presentation_rounding".into(),
+                residual_line_label: "Presentation rounding".into(),
+            },
+        )
+        .unwrap();
+        let ir = exact
+            .clone()
+            .with_presentation(std::slice::from_ref(&presented))
+            .unwrap();
+        let table = &ir.tables[0];
+        assert_eq!((table.unit_code.as_str(), table.unit_scale), ("USD", 2));
+        assert_eq!(table.rows[0].cells[1], "USD units; HalfEven");
+        assert_eq!(table.rows[1].cells[1], "Display only; cert exact");
+        let at = |code| {
+            table
+                .rows
+                .iter()
+                .position(|row| row.line_code == code)
+                .unwrap()
+        };
+        let residual = at("unclosed_earnings_presentation_rounding");
+        assert_eq!(residual + 1, at("unclosed_earnings"));
+        assert_eq!(table.rows[residual].cells[2], "-1");
+        assert_eq!(table.rows[residual].footing, FootingRule::None);
+        assert_eq!(table.rows[at("unclosed_revenue")].cells[2], "191");
+        assert_eq!(table.rows[at("unclosed_expense")].cells[2], "35");
+        assert_eq!(table.rows[at("unclosed_earnings")].cells[2], "155");
+        assert!(
+            ir.markdown
+                .contains("accounting certificates bind the exact statement amounts")
+        );
+        assert!(ir.markdown.contains("Presentation rounding"));
+        assert_eq!(
+            StatementMarkdownIr::decode(&ir.canonical_bytes().unwrap()).unwrap(),
+            ir
+        );
+        assert_eq!(exact.canonical_bytes().unwrap(), exact_bytes);
+        assert_ne!(ir.digest().unwrap(), exact.digest().unwrap());
+
+        let mut renamed = exact.clone();
+        let original_second_code = renamed.tables[0].rows[1].line_code.clone();
+        renamed.tables[0].rows[0].line_code = "presentation".into();
+        renamed.tables[0].rows[0].cells[0] = "presentation".into();
+        renamed.tables[0].rows[1].line_code = "presentation_scope".into();
+        renamed.tables[0].rows[1].cells[0] = "presentation_scope".into();
+        let mut named = presented.clone();
+        named.lines[0].code = "presentation".into();
+        named
+            .lines
+            .iter_mut()
+            .find(|line| line.code == original_second_code)
+            .unwrap()
+            .code = "presentation_scope".into();
+        let collision = renamed.with_presentation(&[named]).unwrap();
+        assert_ne!(collision.tables[0].rows[0].line_code, "presentation");
+        assert_ne!(collision.tables[0].rows[1].line_code, "presentation_scope");
+        assert_eq!(
+            collision.tables[0]
+                .rows
+                .iter()
+                .filter(|row| row.line_code == "presentation_scope")
+                .count(),
+            1
+        );
+        assert_eq!(
+            collision.tables[0]
+                .rows
+                .iter()
+                .filter(|row| row.line_code == "presentation")
+                .count(),
+            1,
+            "a valid source code survives without colliding with display metadata"
+        );
+
+        let mut wrong = presented.clone();
+        wrong.columns[0].label.push_str(" changed");
+        assert!(exact.clone().with_presentation(&[wrong]).is_err());
+        let mut wrong = presented.clone();
+        let source_code = wrong.lines[0].code.clone();
+        wrong
+            .lines
+            .iter_mut()
+            .find(|line| line.is_residual_line)
+            .unwrap()
+            .code = source_code;
+        assert!(exact.clone().with_presentation(&[wrong]).is_err());
+        let mut wrong = presented.clone();
+        wrong.known_at += 1;
+        assert!(exact.clone().with_presentation(&[wrong]).is_err());
+        let mut wrong = presented.clone();
+        wrong.lines[0].exact_amounts[0] += 1;
+        assert!(exact.clone().with_presentation(&[wrong]).is_err());
+        let mut wrong = presented.clone();
+        wrong.lines[0].unit_id = 2;
+        assert!(exact.clone().with_presentation(&[wrong]).is_err());
+        let mut wrong = presented;
+        wrong.lines.pop();
+        assert!(exact.with_presentation(&[wrong]).is_err());
     }
 
     #[test]
