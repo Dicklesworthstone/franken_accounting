@@ -197,7 +197,7 @@ fn detail(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ("kind", s("Workpaper")), ("mime", s(fa::EXTERNAL_SUBLEDGER_MIME)),
         ("detail_rows", Json::Int(batch.rows.len() as i128)), ("summary_legs", Json::Int(legs.len() as i128)),
         ("bytes", s(hex(&bytes))), ("file", args.flag("--out").map_or(Json::Null, s)),
-    ], &format!("Canonical detail {}/{}: {} source rows, {} gross summary legs. Retain these exact bytes as a Workpaper and have an independent principal attest Reviewed before posting.", batch.feed, batch.batch_key, batch.rows.len(), legs.len()));
+    ], &format!("Canonical detail {}/{}: {} source rows, {} gross summary legs. Retain these exact bytes with `fa document add <detail-file> --kind Workpaper --mime {}` and have an independent principal attest Reviewed before posting.", batch.feed, batch.batch_key, batch.rows.len(), legs.len(), fa::EXTERNAL_SUBLEDGER_MIME));
     Ok(())
 }
 

@@ -3244,3 +3244,24 @@ judge conjunctive named-draft Post reach and current issuance before that
 lookup; native lifecycle and transaction checks remain. Wrong-name lifecycle
 requests with an invalid date are added as negatives: branch refusal must
 precede date parsing, reveal no coordinate and leave the head unchanged.
+
+On repaired `8177cafa`, the unchanged complete authority target ran again:
+12 passed and three failed, with no ignored or filtered cases. All three
+writing-authority matrix tests passed in the same native command, whose
+remote/outer exit remains 101. The new conjunctive-scope and no-read controls
+pass; the positive workflows now reach their factories. Later failures expose
+three invalid test prerequisites: reversal JSON supplies `E:<vid>` instead of
+the documented raw 32-hex field, canonical external detail is retained without
+its declared MIME, and nonposting review incorrectly expects no journal-head
+advance despite the required bound-command AccessEvent.
+
+The correction supplies contract-valid reversal and MIME inputs. It does not
+change the source-purpose guard or expected unreviewed-evidence refusal.
+The incorrect head equality is replaced by an exact one-receipt check of
+command, principal, capability, argument digest, observed/recorded sequence
+and final head, together with byte-exact equality of all native Entry/payload
+rows and an empty draft before append. This admits only the mandated audit
+receipt, never an accounting write. A new wrong-MIME test retains the source
+refusal and verifies that a planted private balance is not disclosed. Detail
+guidance now names the required document-add MIME. Corrected full native
+execution remains pending; these source/test edits do not erase either loss.

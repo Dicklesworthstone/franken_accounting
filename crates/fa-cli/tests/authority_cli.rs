@@ -1102,6 +1102,10 @@ mod source_draft_tests {
         }
 
         fn external_source(&mut self) -> String {
+            self.external_source_with_mime(fa::EXTERNAL_SUBLEDGER_MIME)
+        }
+
+        fn external_source_with_mime(&mut self, mime: &str) -> String {
             let input = format!(
                 r#"{{"feed":"vendor-ap","batch_key":"march-confined","effective_date":"{DATE}","rows":[{{"source_digest":"{}","account":"6000","side":"debit","amount":"100.00 USD"}},{{"source_digest":"{}","account":"2000","side":"credit","amount":"100.00 USD"}}]}}"#,
                 "01".repeat(32),
@@ -1130,12 +1134,61 @@ mod source_draft_tests {
                     path.to_str().unwrap(),
                     "--kind",
                     "Workpaper",
+                    "--mime",
+                    mime,
                     "--grade",
                     "HumanUpload",
                 ],
                 None,
             );
             text(field(&retained, "data"), "oid").into()
+        }
+
+        fn journal(&self) -> fa::QueryRows {
+            let fa::QuerySelection::Native(query) =
+                fa::compile_query("MATCH (e:Entry) RETURN e,e._fa_payload AS payload ORDER BY e")
+                    .unwrap()
+                    .selection
+            else {
+                panic!("journal population must use a native query");
+            };
+            self.book
+                .query_native(&query, self.book.head().unwrap(), None)
+                .unwrap()
+                .unwrap()
+        }
+
+        fn assert_access_only(
+            &self,
+            before: fgdb_types::CommitSeq,
+            journal: &fa::QueryRows,
+            authority: &LaunchAuthority,
+            argv: &[&str],
+            command: &str,
+        ) {
+            let records = self.book.access_log(before).unwrap();
+            assert_eq!(records.len(), 1, "exactly one bound-command audit receipt");
+            let access = &records[0];
+            assert_eq!(access.record.command, command);
+            assert_eq!(access.record.principal, authority.capability().holder());
+            assert_eq!(
+                access.record.capability_commitment,
+                authority.capability().commitment().unwrap()
+            );
+            let mut requested: Vec<String> = argv.iter().map(|arg| (*arg).to_string()).collect();
+            requested.push("--json".into());
+            assert_eq!(
+                access.record.request_digest,
+                fa::access_log::request_digest(&requested)
+            );
+            assert_eq!(access.observed_at, before);
+            assert_eq!(access.recorded_at.0, before.0 + 1);
+            assert_eq!(self.book.head().unwrap(), access.recorded_at);
+            assert_eq!(
+                self.journal().rows,
+                journal.rows,
+                "no accounting journal payload changed"
+            );
         }
 
         fn promote_exact(&mut self, cap: &Capability, name: &str, expected_count: usize) {
@@ -1203,7 +1256,7 @@ mod source_draft_tests {
         // draft. It must use the admitted draft's prefix, not a trunk read or
         // another draft's private members.
         let reversal = format!(
-            r#"{{"class":"Reversal","effective_date":"{DATE}","idempotency_key":"confined-reversal","reverses":"E:{planned}","reason":"WrongAmount"}}"#
+            r#"{{"class":"Reversal","effective_date":"{DATE}","idempotency_key":"confined-reversal","reverses":"{planned}","reason":"WrongAmount"}}"#
         );
         let (exit, reversed) = f.bound(
             &authority,
@@ -1307,10 +1360,18 @@ mod source_draft_tests {
                 &[Op::Post]
             );
             let before = f.book.head().unwrap();
+            let journal = f.journal();
             let (exit, reviewed) = f.bound(&authority, &args, None);
             assert_eq!(exit, 0, "{law}: {reviewed:?}");
             assert_eq!(text(&reviewed, "event"), "lot_disposal_review");
-            assert_eq!(f.book.head().unwrap(), before, "review does not publish");
+            f.assert_access_only(before, &journal, &authority, &args, "dispose");
+            assert!(
+                f.book
+                    .draft_entries(&cap, name)
+                    .unwrap()
+                    .unwrap()
+                    .is_empty()
+            );
             let data = field(&reviewed, "data");
             let batch = format!(
                 r#"{{"idempotency_key":"selected-review-batch","intents":[{{"review":"{}","review_digest":"{}"}}]}}"#,
@@ -1355,14 +1416,19 @@ mod source_draft_tests {
             r#"{{"effective_date":"{DATE}","idempotency_key":"confined-summary","external_subledger":"D:{source}"}}"#
         );
         let before = f.book.head().unwrap();
-        let (exit, refused) = f.bound(
-            &authority,
-            &["draft", "plan", name, "--intent", "-"],
-            Some(&intent),
-        );
+        let journal = f.journal();
+        let argv = ["draft", "plan", name, "--intent", "-"];
+        let (exit, refused) = f.bound(&authority, &argv, Some(&intent));
         assert_eq!(exit, 3, "unreviewed detail: {refused:?}");
         assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-192");
-        assert_eq!(f.book.head().unwrap(), before);
+        f.assert_access_only(before, &journal, &authority, &argv, "draft plan");
+        assert!(
+            f.book
+                .draft_entries(&cap, name)
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
         f.owner(
             &["attest", "review", &source, "--as", "independent-reviewer"],
             None,
@@ -1386,6 +1452,37 @@ mod source_draft_tests {
                 .all(|leg| leg.amount.mantissa == 10_000)
         );
         f.promote_exact(&cap, name, 1);
+    }
+
+    #[test]
+    fn source_derived_refusal_discloses_no_other_account_balance() {
+        let mut f = Fixture::new();
+        let private = format!(
+            r#"{{"effective_date":"{DATE}","idempotency_key":"private-opening","legs":[{{"side":"debit","account":"6000","amount":"987654.32 USD"}},{{"side":"credit","account":"2000","amount":"987654.32 USD"}}]}}"#
+        );
+        let evidence = f.evidence.clone();
+        f.owner(
+            &["post", "--intent", "-", "--evidence", &evidence],
+            Some(&private),
+        );
+        // The bytes are canonical detail, but this generic document has not
+        // been retained under the declared external-subledger media contract.
+        let source = f.external_source_with_mime("application/octet-stream");
+        let name = "wrong-purpose-detail";
+        let (_, authority) = f.agent("wrong-purpose-agent", Some(name));
+        f.open(&authority, name);
+        let intent = format!(
+            r#"{{"effective_date":"{DATE}","idempotency_key":"wrong-purpose-summary","external_subledger":"D:{source}"}}"#
+        );
+        let argv = ["draft", "plan", name, "--intent", "-"];
+        let before = f.book.head().unwrap();
+        let journal = f.journal();
+        let (exit, refused) = f.bound(&authority, &argv, Some(&intent));
+        assert_eq!(exit, 7, "{refused:?}");
+        assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-011");
+        assert!(!format!("{refused:?}").contains("987654.32"));
+        assert!(!format!("{refused:?}").contains("98765432"));
+        f.assert_access_only(before, &journal, &authority, &argv, "draft plan");
     }
 
     #[test]
@@ -1473,7 +1570,7 @@ mod source_draft_tests {
             assert_eq!(f.book.head().unwrap(), before);
         }
         let reversal = format!(
-            r#"{{"class":"Reversal","effective_date":"{DATE}","idempotency_key":"wrong-draft-reversal","reverses":"E:{}","reason":"WrongAmount"}}"#,
+            r#"{{"class":"Reversal","effective_date":"{DATE}","idempotency_key":"wrong-draft-reversal","reverses":"{}","reason":"WrongAmount"}}"#,
             text(field(&planned[0], "data"), "entry")
         );
         for other in ["another-draft", "not-created"] {
