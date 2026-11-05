@@ -3176,3 +3176,37 @@ The later fixed-source runs on `fb0acc362` plus this implementation pass all
 filtered tests. The PDF/PDF-A pins and actual rendered scope/numeric content
 pass. These are scoped native results; full exact-tree repository
 qualification and the broad `fa-qh60`/`fa-cet` acceptance remain pending.
+
+### 2026-11-05 — native PDF/A output fails an external conformance check (`fa-cet`)
+
+The retained native CLI fixture `rounded-pdfa-0` from the completed 05:07
+rendered-reports run is 30,650 bytes, SHA-256
+`e88fcbef044631f1febe026b7e6658959e6b3f52c25efd0da3c3590bbb9a8da1`.
+An independent `pdffonts` invocation exits 0 and finds only Type 1 Courier,
+with embedding, subsetting and Unicode mapping all absent. The existing
+renderer emits that unembedded font and an undeclared `fa:irDigest` XMP
+property; its local metadata/OutputIntent checks do not establish PDF/A
+conformance.
+
+The same unchanged native PDF was checked offline with the official veraPDF
+CLI image pinned to
+`ghcr.io/verapdf/cli@sha256:de5843855864e20b2ffffe8aab9336810725468eecf06dccdc15df7a43527ef2`.
+This is the development-series apps 1.31.212, core 1.31.53 and validation-model
+1.31.213. The explicit command is `--format xml --flavour 2b /data/input.pdf`,
+with the fixture mounted read-only and container networking disabled. The
+command exits 1; parsing finishes normally, and the PDF/A-2b report states
+`isCompliant="false"`: 141 rules and 5,258 checks pass, while three rules and
+three checks fail. ISO 19005-2:2011 rule 6.2.11.4.1 test 1 rejects the missing
+font program. Rule 6.6.2.3.1 tests 1 and 2 reject `fa:irDigest` because its XMP
+extension schema and value type are not declared. No parse, encryption,
+out-of-memory or validator-exception failure is reported.
+
+The report is retained at
+`/home/ubuntu/.codex/artifacts/fa-gap-work-20261031.lM8xfA/native-rounded-pdfa-verapdf-20261105.xml`,
+SHA-256 `747545cbc625a453004feb143736c141415dc5793671fd3cecaf397803dc2c3a`,
+alongside the original stderr and exit code. The container and input remain
+retained. This is an executed negative result on that historical native
+fixture, not qualification of the later combined tree. `fa-cet` remains in
+progress under its original first-party-renderer, external-validation and
+cross-machine acceptance. No validator, output pin, font requirement or
+acceptance condition was weakened to admit this PDF.
