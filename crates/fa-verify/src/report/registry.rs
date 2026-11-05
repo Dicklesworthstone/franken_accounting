@@ -496,6 +496,7 @@ pub(super) fn verify_procedure(
     inputs: &[(&str, &[u8])],
     native_digest: &[u8; 32],
     procedure_digest: &[u8; 32],
+    profile: super::procedure::VerifiedProcedureParameters,
 ) -> Result<super::procedure::Registry, ReportError> {
     const NAMES: [&str; 6] = [
         "account_types",
@@ -507,7 +508,7 @@ pub(super) fn verify_procedure(
     ];
     if inputs.iter().map(|(name, _)| *name).ne(NAMES) {
         return Err(invalid(
-            "round-amount bundles require the six registry documents in exact closure order",
+            "procedure bundles require the six registry documents in exact closure order",
         ));
     }
     verify(&inputs[..4], native_digest, false)?;
@@ -529,47 +530,45 @@ pub(super) fn verify_procedure(
     }
     let selected: Vec<_> = rows(&procedures, "procedure")?
         .iter()
-        .filter(|row| matches!(row.get("id"), Some(Value::Text(id)) if id == "jet.round_amounts"))
+        .filter(|row| matches!(row.get("id"), Some(Value::Text(id)) if id == profile.id()))
         .collect();
     let [row] = selected.as_slice() else {
         return Err(invalid(
-            "round-amount procedure must occur exactly once in its registry",
+            "selected procedure must occur exactly once in its registry",
         ));
     };
     if integer(row, "version")? != 1
         || string(row, "claim")? != "statistical"
-        || string(row, "evidence")? != "FA-EVID-L01"
+        || string(row, "evidence")? != profile.evidence()
         || string(row, "tie_break")? != "entry_vid"
-        || string(row, "complexity")? != "O(legs)"
+        || string(row, "complexity")? != profile.complexity()
         || string(row, "calibration")? != "corpus"
         || string(row, "artifact")? != "FA-ART-CAL-01"
     {
-        return Err(invalid(
-            "unsupported round-amount procedure registry semantics",
-        ));
+        return Err(invalid("unsupported procedure registry semantics"));
     }
     let parameters: Vec<_> = rows(&procedures, "parameter")?
         .iter()
-        .filter(|row| matches!(row.get("procedure"), Some(Value::Text(id)) if id == "jet.round_amounts"))
+        .filter(|row| matches!(row.get("procedure"), Some(Value::Text(id)) if id == profile.id()))
         .collect();
     let [parameter] = parameters.as_slice() else {
         return Err(invalid(
-            "round-amount registry must declare exactly one parameter",
+            "selected procedure must declare exactly one parameter",
         ));
     };
-    if string(parameter, "name")? != "round_power" || integer(parameter, "default")? != 3 {
-        return Err(invalid("unsupported round-amount parameter registry"));
+    if string(parameter, "name")? != profile.parameter().0 || integer(parameter, "default")? != 3 {
+        return Err(invalid("unsupported procedure parameter registry"));
     }
     // A future input declaration cannot be silently ignored under v1.
     if procedures.arrays.iter().any(|(name, rows)| {
         name != "procedure"
             && name != "parameter"
-            && rows.iter().any(|row| {
-                matches!(row.get("procedure"), Some(Value::Text(id)) if id == "jet.round_amounts")
-            })
+            && rows.iter().any(
+                |row| matches!(row.get("procedure"), Some(Value::Text(id)) if id == profile.id()),
+            )
     }) {
         return Err(invalid(
-            "round-amount procedure declares unsupported additional inputs",
+            "selected procedure declares unsupported additional inputs",
         ));
     }
     let units = document(inputs[2].1)?;

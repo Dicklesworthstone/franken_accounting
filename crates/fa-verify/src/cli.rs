@@ -2282,6 +2282,7 @@ fn explanation_checks(report: &crate::report::VerifiedBalanceExplanation) -> Vec
 }
 
 fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
+    let (parameter, value) = report.parameters.parameter();
     let mut checks = vec![Check::pass(
         "procedure_summary",
         "statistical_replay",
@@ -2291,8 +2292,8 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
             ("procedure", s(&report.procedure)),
             ("version", n(u64::from(report.version))),
             ("claim", s("statistical")),
-            ("evidence", s("FA-EVID-L01")),
-            ("round_power", n(u64::from(report.round_power))),
+            ("evidence", s(report.parameters.evidence())),
+            (parameter, n(u64::from(value))),
             ("population", n(report.population)),
             ("live_entries", n(report.live_entries)),
             ("live_legs", n(report.live_legs)),
@@ -2311,35 +2312,42 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
         ],
     )];
     for finding in &report.findings {
-        checks.push(Check::pass(
-            "procedure_finding",
-            "statistical_replay",
-            vec![
-                ("entry", s(format!("{:032x}", finding.entry))),
-                (
-                    "severity",
-                    s(match finding.severity {
-                        1 => "low",
-                        2 => "medium",
-                        _ => "unknown",
-                    }),
-                ),
-                ("statistic", s("round_legs")),
-                ("value", n(finding.round_legs.len() as u64)),
-                ("scale", n(0)),
-                ("population", n(report.live_legs)),
-                (
+        let mut details = vec![
+            ("entry", s(format!("{:032x}", finding.entry))),
+            (
+                "severity",
+                s(match finding.severity {
+                    1 => "low",
+                    2 => "medium",
+                    _ => "unknown",
+                }),
+            ),
+            ("statistic", s(finding.statistic.name())),
+            ("value", n(finding.statistic.value())),
+            ("scale", n(0)),
+            ("population", n(finding.population)),
+        ];
+        match &finding.statistic {
+            crate::report::VerifiedProcedureStatistic::RoundLegs { ordinals } => {
+                details.push((
                     "leg_ordinals",
                     Json::List(
-                        finding
-                            .round_legs
+                        ordinals
                             .iter()
                             .map(|ordinal| n(u64::from(*ordinal)))
                             .collect(),
                     ),
-                ),
-                ("narrative", s(&finding.narrative)),
-            ],
+                ));
+            }
+            crate::report::VerifiedProcedureStatistic::DaysToPeriodEnd { period, .. } => {
+                details.push(("period", s(period)));
+            }
+        }
+        details.push(("narrative", s(&finding.narrative)));
+        checks.push(Check::pass(
+            "procedure_finding",
+            "statistical_replay",
+            details,
         ));
     }
     checks
