@@ -503,80 +503,77 @@ pub(crate) fn open_item_carrying_observed<V: Vfs + Clone>(
                 })
                 .transpose()?,
         };
-        if let Some(basis) = adjustment {
-            if basis.source_account == leg.account_ref
-                && crate::revaluation::item_entity(&spec, leg)
-                    .map_err(|error| KernelError::Corrupt(error.message))?
-                    == basis.entity
-                && let Some(allocation) = &basis.item_allocation
-            {
-                let item = match history {
-                    Some(history) => history.allocation_item(index, (target.vid, ordinal)),
-                    None => allocation
-                        .items
-                        .iter()
-                        .find(|item| item.target.vid == target.vid && item.ordinal == ordinal),
-                };
-                if let Some(item) = item {
-                    if item.target != target
-                        || item.open_native != open_native
-                        || item.historical_base != historical_open_base
-                        || item.prior_valuation != valuation_open_base
-                        || basis.closing_date < latest_effective_date
-                    {
-                        return Ok(Err(invalid(
-                            "retained item allocation does not reproduce the item's preceding carrying components",
-                        )));
-                    }
-                    let route = match history {
-                        Some(history) => match history.route(db, book, index)? {
-                            Ok(route) => route,
-                            Err(refusal) => return Ok(Err(refusal)),
-                        },
-                        None => {
-                            let Some(routes) = crate::chart::fx_revaluation_routes_at(
-                                db,
-                                book,
-                                basis.closing_date,
-                                basis.observed_at,
-                            )?
-                            else {
-                                return Ok(Err(invalid(
-                                    "item allocation has no retained route map",
-                                )));
-                            };
-                            let Some(route) = routes.routes.get(&leg.account_ref).copied() else {
-                                return Ok(Err(invalid("item allocation has no source route")));
-                            };
-                            if routes.control_entry != basis.routes_entry
-                                || routes.digest != basis.routes_digest
-                            {
-                                return Ok(Err(invalid(
-                                    "item allocation route commitment differs from history",
-                                )));
-                            }
-                            route
-                        }
-                    };
-                    valuation_open_base = item
-                        .target_base
-                        .checked_sub(historical_open_base)
-                        .map_err(|error| KernelError::Corrupt(error.to_string()))?;
-                    open_base = item.target_base;
-                    valuation_route = Some(route);
-                    valuation_routes_entry = Some(basis.routes_entry);
-                    valuation_routes_digest = Some(basis.routes_digest);
-                    latest_effective_date = basis.closing_date;
-                    source_hash.update(&seq.0.to_le_bytes());
-                    source_hash.update(&vid.0.to_le_bytes());
-                    source_hash.update(&entry.entry_digest);
-                } else if open_native.mantissa > 0
-                    && original.proposal.effective_date <= basis.closing_date
+        if let Some(basis) = adjustment
+            && basis.source_account == leg.account_ref
+            && crate::revaluation::item_entity(&spec, leg)
+                .map_err(|error| KernelError::Corrupt(error.message))?
+                == basis.entity
+            && let Some(allocation) = &basis.item_allocation
+        {
+            let item = match history {
+                Some(history) => history.allocation_item(index, (target.vid, ordinal)),
+                None => allocation
+                    .items
+                    .iter()
+                    .find(|item| item.target.vid == target.vid && item.ordinal == ordinal),
+            };
+            if let Some(item) = item {
+                if item.target != target
+                    || item.open_native != open_native
+                    || item.historical_base != historical_open_base
+                    || item.prior_valuation != valuation_open_base
+                    || basis.closing_date < latest_effective_date
                 {
                     return Ok(Err(invalid(
-                        "the complete item allocation omits an open source item",
+                        "retained item allocation does not reproduce the item's preceding carrying components",
                     )));
                 }
+                let route = match history {
+                    Some(history) => match history.route(db, book, index)? {
+                        Ok(route) => route,
+                        Err(refusal) => return Ok(Err(refusal)),
+                    },
+                    None => {
+                        let Some(routes) = crate::chart::fx_revaluation_routes_at(
+                            db,
+                            book,
+                            basis.closing_date,
+                            basis.observed_at,
+                        )?
+                        else {
+                            return Ok(Err(invalid("item allocation has no retained route map")));
+                        };
+                        let Some(route) = routes.routes.get(&leg.account_ref).copied() else {
+                            return Ok(Err(invalid("item allocation has no source route")));
+                        };
+                        if routes.control_entry != basis.routes_entry
+                            || routes.digest != basis.routes_digest
+                        {
+                            return Ok(Err(invalid(
+                                "item allocation route commitment differs from history",
+                            )));
+                        }
+                        route
+                    }
+                };
+                valuation_open_base = item
+                    .target_base
+                    .checked_sub(historical_open_base)
+                    .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+                open_base = item.target_base;
+                valuation_route = Some(route);
+                valuation_routes_entry = Some(basis.routes_entry);
+                valuation_routes_digest = Some(basis.routes_digest);
+                latest_effective_date = basis.closing_date;
+                source_hash.update(&seq.0.to_le_bytes());
+                source_hash.update(&vid.0.to_le_bytes());
+                source_hash.update(&entry.entry_digest);
+            } else if open_native.mantissa > 0
+                && original.proposal.effective_date <= basis.closing_date
+            {
+                return Ok(Err(invalid(
+                    "the complete item allocation omits an open source item",
+                )));
             }
         }
         if entry.proposal.class == EntryClass::REVERSAL {
