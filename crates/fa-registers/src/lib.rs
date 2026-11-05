@@ -2075,7 +2075,7 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
                 // A period-local tail cannot diagnose the complete report's
                 // selected scope or its first overflowing source contribution.
                 return Ok(Err(
-                    "maintained tail requires a literal capacity diagnosis".into(),
+                    "maintained tail requires a literal capacity diagnosis".into()
                 ));
             }
             Err(error) => return Err(error),
@@ -2198,9 +2198,7 @@ fn period_activity_served_at_inner<V: asupersync::fs::Vfs + Clone>(
             Err(RegisterError::Overflow | RegisterError::Capacity(_)) => {
                 return Ok((
                     report_at(db, book, selected.clone(), seq, None, &[], None)?,
-                    Served::Literal(
-                        "maintained tail requires a literal capacity diagnosis".into(),
-                    ),
+                    Served::Literal("maintained tail requires a literal capacity diagnosis".into()),
                 ));
             }
             Err(error) => return Err(error),

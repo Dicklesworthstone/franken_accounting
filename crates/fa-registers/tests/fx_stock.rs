@@ -1300,8 +1300,7 @@ fn a_tail_overflow_is_served_with_the_literal_diagnosis() {
         .unwrap();
     let safe = f.db.frontier().unwrap();
     let january = ["FY2026-P01".to_string()];
-    let original =
-        fa_registers::trial_balance_at(&f.db, &f.book, &january, Some(safe)).unwrap();
+    let original = fa_registers::trial_balance_at(&f.db, &f.book, &january, Some(safe)).unwrap();
     let (source, recorded_at) =
         f.append_retained_fault(f.proposal("january-overflow", day(2026, 1, 6), f.usd, 1));
     let overflowing = f.db.frontier().unwrap();
@@ -1337,8 +1336,7 @@ fn a_tail_overflow_is_served_with_the_literal_diagnosis() {
             (
                 fa_registers::period_activity(&f.db, &f.book, &both, at).unwrap_err(),
                 [
-                    fa_registers::period_activity_served_at(&f.db, &f.book, &both, at)
-                        .unwrap_err(),
+                    fa_registers::period_activity_served_at(&f.db, &f.book, &both, at).unwrap_err(),
                     fa_registers::period_activity_served_at_with_context(
                         &f.db, &query, &f.book, &both, at,
                     )
