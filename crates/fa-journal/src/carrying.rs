@@ -104,6 +104,7 @@ pub struct FxSettlementItem {
 pub struct PreparedFxSettlementGroup {
     items: Vec<FxSettlementItem>,
     proposal: EntryPayload,
+    audit_work: CarryingAuditWork,
 }
 
 impl PreparedFxSettlementGroup {
@@ -115,6 +116,61 @@ impl PreparedFxSettlementGroup {
     }
     pub fn into_proposal(self) -> EntryPayload {
         self.proposal
+    }
+    /// Actual whole-source audit calls and successful same-prefix reuses.
+    /// Each item still executes its own literal carrying-value fold.
+    pub fn audit_work(&self) -> CarryingAuditWork {
+        self.audit_work
+    }
+}
+
+/// Work performed by the source-history verifier within one compound operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CarryingAuditWork {
+    pub source_history_audits: usize,
+    pub successful_reuses: usize,
+}
+
+/// A successful audit covers all allocated items on one source, independently
+/// of which item triggered it. Keep only successes, within one immutable read
+/// operation and one exact book/prefix. This is deliberately not a cached item
+/// result: each target must first pass its own original carrying checks.
+#[derive(Default)]
+struct SuccessfulHistoryAudits {
+    coordinate: Option<(Id128, CommitSeq)>,
+    sources: BTreeSet<VId>,
+    work: CarryingAuditWork,
+}
+
+impl SuccessfulHistoryAudits {
+    fn verify(
+        &mut self,
+        cx: &PurposeContexts,
+        book: Id128,
+        at: CommitSeq,
+        source: VId,
+        audit: impl FnOnce() -> Outcome<()>,
+    ) -> Outcome<()> {
+        if self.coordinate != Some((book, at)) {
+            // Preparation retries select the prefix before first publication,
+            // not necessarily the current head. A changed coordinate must run
+            // the literal audit and leave existing caller refusal order intact.
+            self.sources.clear();
+            self.coordinate = Some((book, at));
+        }
+        if self.sources.contains(&source) {
+            cx.query()
+                .checkpoint()
+                .map_err(fgdb::WriteTxnError::Interrupted)?;
+            self.work.successful_reuses += 1;
+            return Ok(Ok(()));
+        }
+        self.work.source_history_audits += 1;
+        let result = audit()?;
+        if result.is_ok() {
+            self.sources.insert(source);
+        }
+        Ok(result)
     }
 }
 
@@ -230,14 +286,31 @@ pub fn open_item_carrying_at<V: Vfs + Clone>(
     ordinal: u16,
     at: CommitSeq,
 ) -> Outcome<CarryingOpenItem> {
+    open_item_carrying_with_audits(db, cx, book, target, ordinal, at, None)
+}
+
+fn open_item_carrying_with_audits<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    target: EntryRef,
+    ordinal: u16,
+    at: CommitSeq,
+    audits: Option<&mut SuccessfulHistoryAudits>,
+) -> Outcome<CarryingOpenItem> {
     cx.query().with_restriction(|| {
         let result = open_item_carrying_inner(db, cx, book, target, ordinal, at)?;
         if let Ok(item) = &result
             && item.valuation_route.is_some()
-            && let Err(refusal) =
-                crate::revaluation::verify_item_history(db, cx, book, item.account, at)?
         {
-            return Ok(Err(refusal));
+            let audit = || crate::revaluation::verify_item_history(db, cx, book, item.account, at);
+            let verified = match audits {
+                Some(audits) => audits.verify(cx, book.book_id, at, item.account, audit)?,
+                None => audit()?,
+            };
+            if let Err(refusal) = verified {
+                return Ok(Err(refusal));
+            }
         }
         Ok(result)
     })
@@ -503,80 +576,77 @@ pub(crate) fn open_item_carrying_observed<V: Vfs + Clone>(
                 })
                 .transpose()?,
         };
-        if let Some(basis) = adjustment {
-            if basis.source_account == leg.account_ref
-                && crate::revaluation::item_entity(&spec, leg)
-                    .map_err(|error| KernelError::Corrupt(error.message))?
-                    == basis.entity
-                && let Some(allocation) = &basis.item_allocation
-            {
-                let item = match history {
-                    Some(history) => history.allocation_item(index, (target.vid, ordinal)),
-                    None => allocation
-                        .items
-                        .iter()
-                        .find(|item| item.target.vid == target.vid && item.ordinal == ordinal),
-                };
-                if let Some(item) = item {
-                    if item.target != target
-                        || item.open_native != open_native
-                        || item.historical_base != historical_open_base
-                        || item.prior_valuation != valuation_open_base
-                        || basis.closing_date < latest_effective_date
-                    {
-                        return Ok(Err(invalid(
-                            "retained item allocation does not reproduce the item's preceding carrying components",
-                        )));
-                    }
-                    let route = match history {
-                        Some(history) => match history.route(db, book, index)? {
-                            Ok(route) => route,
-                            Err(refusal) => return Ok(Err(refusal)),
-                        },
-                        None => {
-                            let Some(routes) = crate::chart::fx_revaluation_routes_at(
-                                db,
-                                book,
-                                basis.closing_date,
-                                basis.observed_at,
-                            )?
-                            else {
-                                return Ok(Err(invalid(
-                                    "item allocation has no retained route map",
-                                )));
-                            };
-                            let Some(route) = routes.routes.get(&leg.account_ref).copied() else {
-                                return Ok(Err(invalid("item allocation has no source route")));
-                            };
-                            if routes.control_entry != basis.routes_entry
-                                || routes.digest != basis.routes_digest
-                            {
-                                return Ok(Err(invalid(
-                                    "item allocation route commitment differs from history",
-                                )));
-                            }
-                            route
-                        }
-                    };
-                    valuation_open_base = item
-                        .target_base
-                        .checked_sub(historical_open_base)
-                        .map_err(|error| KernelError::Corrupt(error.to_string()))?;
-                    open_base = item.target_base;
-                    valuation_route = Some(route);
-                    valuation_routes_entry = Some(basis.routes_entry);
-                    valuation_routes_digest = Some(basis.routes_digest);
-                    latest_effective_date = basis.closing_date;
-                    source_hash.update(&seq.0.to_le_bytes());
-                    source_hash.update(&vid.0.to_le_bytes());
-                    source_hash.update(&entry.entry_digest);
-                } else if open_native.mantissa > 0
-                    && original.proposal.effective_date <= basis.closing_date
+        if let Some(basis) = adjustment
+            && basis.source_account == leg.account_ref
+            && crate::revaluation::item_entity(&spec, leg)
+                .map_err(|error| KernelError::Corrupt(error.message))?
+                == basis.entity
+            && let Some(allocation) = &basis.item_allocation
+        {
+            let item = match history {
+                Some(history) => history.allocation_item(index, (target.vid, ordinal)),
+                None => allocation
+                    .items
+                    .iter()
+                    .find(|item| item.target.vid == target.vid && item.ordinal == ordinal),
+            };
+            if let Some(item) = item {
+                if item.target != target
+                    || item.open_native != open_native
+                    || item.historical_base != historical_open_base
+                    || item.prior_valuation != valuation_open_base
+                    || basis.closing_date < latest_effective_date
                 {
                     return Ok(Err(invalid(
-                        "the complete item allocation omits an open source item",
+                        "retained item allocation does not reproduce the item's preceding carrying components",
                     )));
                 }
+                let route = match history {
+                    Some(history) => match history.route(db, book, index)? {
+                        Ok(route) => route,
+                        Err(refusal) => return Ok(Err(refusal)),
+                    },
+                    None => {
+                        let Some(routes) = crate::chart::fx_revaluation_routes_at(
+                            db,
+                            book,
+                            basis.closing_date,
+                            basis.observed_at,
+                        )?
+                        else {
+                            return Ok(Err(invalid("item allocation has no retained route map")));
+                        };
+                        let Some(route) = routes.routes.get(&leg.account_ref).copied() else {
+                            return Ok(Err(invalid("item allocation has no source route")));
+                        };
+                        if routes.control_entry != basis.routes_entry
+                            || routes.digest != basis.routes_digest
+                        {
+                            return Ok(Err(invalid(
+                                "item allocation route commitment differs from history",
+                            )));
+                        }
+                        route
+                    }
+                };
+                valuation_open_base = item
+                    .target_base
+                    .checked_sub(historical_open_base)
+                    .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+                open_base = item.target_base;
+                valuation_route = Some(route);
+                valuation_routes_entry = Some(basis.routes_entry);
+                valuation_routes_digest = Some(basis.routes_digest);
+                latest_effective_date = basis.closing_date;
+                source_hash.update(&seq.0.to_le_bytes());
+                source_hash.update(&vid.0.to_le_bytes());
+                source_hash.update(&entry.entry_digest);
+            } else if open_native.mantissa > 0
+                && original.proposal.effective_date <= basis.closing_date
+            {
+                return Ok(Err(invalid(
+                    "the complete item allocation omits an open source item",
+                )));
             }
         }
         if entry.proposal.class == EntryClass::REVERSAL {
@@ -820,7 +890,7 @@ pub fn prepare_fx_settlement<V: Vfs + Clone>(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
 ) -> Outcome<PreparedFxSettlement> {
     cx.query().with_restriction(|| {
-        prepare_fx_settlement_inner(db, cx, book, capability, request, template, budget)
+        prepare_fx_settlement_inner(db, cx, book, capability, request, template, budget, None)
     })
 }
 
@@ -860,16 +930,20 @@ pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
     let head = db.frontier()?;
     let mut proposal: Option<EntryPayload> = None;
     let mut items = Vec::with_capacity(requests.len());
+    let mut audits = SuccessfulHistoryAudits::default();
     for request in requests {
-        let prepared = match prepare_fx_settlement(
-            db,
-            cx,
-            book,
-            capability,
-            request,
-            template.clone(),
-            budget,
-        )? {
+        let prepared = match cx.query().with_restriction(|| {
+            prepare_fx_settlement_inner(
+                db,
+                cx,
+                book,
+                capability,
+                request,
+                template.clone(),
+                budget,
+                Some(&mut audits),
+            )
+        })? {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -967,7 +1041,11 @@ pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
     if let Err(error) = proposal.validate() {
         return Ok(Err(invalid(error)));
     }
-    Ok(Ok(PreparedFxSettlementGroup { items, proposal }))
+    Ok(Ok(PreparedFxSettlementGroup {
+        items,
+        proposal,
+        audit_work: audits.work,
+    }))
 }
 
 /// Ordered components consume every leg exactly once. Identity deliberately
@@ -1010,6 +1088,7 @@ fn settlement_ranges_counted(
     Ok(starts.windows(2).map(|pair| pair[0]..pair[1]).collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_fx_settlement_inner<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
@@ -1018,6 +1097,7 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
     request: &FxSettlementRequest,
     mut template: EntryPayload,
     budget: &mut ArithmeticBudget<'_, impl Sized>,
+    audits: Option<&mut SuccessfulHistoryAudits>,
 ) -> Outcome<PreparedFxSettlement> {
     if let Err(refusal) = crate::revaluation::authorize(db, book, capability)? {
         return Ok(Err(refusal));
@@ -1057,7 +1137,15 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
     };
     let query = cx.query();
     let carrying = match query.with_restriction(|| {
-        open_item_carrying_at(db, cx, book, request.target, request.target_ordinal, at)
+        open_item_carrying_with_audits(
+            db,
+            cx,
+            book,
+            request.target,
+            request.target_ordinal,
+            at,
+            audits,
+        )
     })? {
         Ok(value) => value,
         Err(refusal) => return Ok(Err(refusal)),
@@ -1248,6 +1336,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
         Ok(ranges) => ranges,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let mut audits = SuccessfulHistoryAudits::default();
     for range in ranges {
         if let Err(refusal) = validate_component(
             db,
@@ -1257,6 +1346,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
             at,
             range.start,
             &proposal.legs[range],
+            &mut audits,
         )? {
             return Ok(Err(refusal));
         }
@@ -1439,12 +1529,13 @@ pub(crate) fn validate_reversal<V: Vfs + Clone>(
     at: CommitSeq,
 ) -> Outcome<()> {
     cx.query().with_restriction(|| {
+        let mut audits = SuccessfulHistoryAudits::default();
         if has_allocated_basis(original) {
             let releases = match allocated::basis(original) { Ok(value) => value, Err(refusal) => return Ok(Err(refusal)) };
             for release in releases.items {
                 let Some(leg) = original.legs.get(usize::from(release.applying_ordinal)) else { return Ok(Err(invalid("allocated undo has no original applying leg"))); };
                 let [application] = leg.settles.as_slice() else { return Ok(Err(invalid("allocated undo has no unique recorded application"))); };
-                let item = match open_item_carrying_at(db, cx, book, application.target, application.ordinal, at)? { Ok(item) => item, Err(refusal) => return Ok(Err(refusal)) };
+                let item = match open_item_carrying_with_audits(db, cx, book, application.target, application.ordinal, at, Some(&mut audits))? { Ok(item) => item, Err(refusal) => return Ok(Err(refusal)) };
                 let native = item.open_native.checked_add(application.amount).map_err(|error| KernelError::Corrupt(error.to_string()))?;
                 let historical = item.historical_open_base.checked_add(release.historical_relief).map_err(|error| KernelError::Corrupt(error.to_string()))?;
                 let valuation = item.valuation_open_base.checked_add(release.valuation_relief).map_err(|error| KernelError::Corrupt(error.to_string()))?;
@@ -1472,7 +1563,7 @@ pub(crate) fn validate_reversal<V: Vfs + Clone>(
             }
         }
         for ordinal in allocated_ordinals {
-            let item = match open_item_carrying_at(db, cx, book, target, ordinal, at)? { Ok(item) => item, Err(refusal) => return Ok(Err(refusal)) };
+            let item = match open_item_carrying_with_audits(db, cx, book, target, ordinal, at, Some(&mut audits))? { Ok(item) => item, Err(refusal) => return Ok(Err(refusal)) };
             if item.valuation_open_base.mantissa != 0 || reversal.effective_date < item.latest_effective_date {
                 return Ok(Err(invalid("the original item retains allocated valuation or a later item effect; correct its valuation through a new allocated revaluation before reversing the original")));
             }
@@ -1481,6 +1572,7 @@ pub(crate) fn validate_reversal<V: Vfs + Clone>(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_component<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
@@ -1489,6 +1581,7 @@ fn validate_component<V: Vfs + Clone>(
     at: CommitSeq,
     applying_ordinal: usize,
     legs: &[fa_model::LegPayload],
+    audits: &mut SuccessfulHistoryAudits,
 ) -> Outcome<()> {
     let applying: Vec<_> = legs.iter().filter(|leg| !leg.settles.is_empty()).collect();
     let [leg] = applying.as_slice() else {
@@ -1507,8 +1600,8 @@ fn validate_component<V: Vfs + Clone>(
         )));
     }
     cx.query().with_restriction(|| {
-        let carrying = match open_item_carrying_at(
-            db, cx, book, application.target, application.ordinal, at,
+        let carrying = match open_item_carrying_with_audits(
+            db, cx, book, application.target, application.ordinal, at, Some(audits),
         )? {
             Ok(value) => value,
             Err(refusal) => return Ok(Err(refusal)),
@@ -1625,6 +1718,10 @@ fn validate_component<V: Vfs + Clone>(
         Ok(Ok(()))
     })
 }
+
+#[cfg(test)]
+#[path = "carrying/audit_tests.rs"]
+mod audit_tests;
 
 #[cfg(test)]
 mod tests {

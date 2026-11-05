@@ -128,8 +128,10 @@ fn grouped_release_validation_visits_group_legs_linearly_and_undo_is_exact() {
             &mut budget,
         )
         .unwrap()
-        .unwrap()
-        .into_proposal();
+        .unwrap();
+        assert_eq!(group.audit_work().source_history_audits, 1);
+        assert_eq!(group.audit_work().successful_reuses, count - 1);
+        let group = group.into_proposal();
         let legs = group.legs.len();
         let posted = f.f.h.post(request(group.clone())).unwrap();
         let prepared = f.revaluation(5, 1, 4, true).unwrap();

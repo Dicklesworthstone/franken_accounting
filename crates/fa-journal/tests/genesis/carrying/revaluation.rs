@@ -11,6 +11,8 @@ use fa_reference::fx::{
 };
 use fgdb_types::CommitSeq;
 
+#[path = "revaluation/audits.rs"]
+mod audits;
 #[path = "revaluation/scaling.rs"]
 mod scaling;
 

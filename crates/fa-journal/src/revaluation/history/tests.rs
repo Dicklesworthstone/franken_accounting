@@ -373,7 +373,7 @@ impl Fixture {
                 &mut budget,
                 Some(history),
             )
-            .map(|result| result.map(|(prepared, _)| prepared)),
+            .map(|result| result.map(|observed| observed.prepared)),
             None => {
                 super::super::observe(&self.db, &self.cx(), &self.book, request, at, &mut budget)
             }
@@ -402,6 +402,38 @@ fn semantic(
             prepared
         })
     })
+}
+
+#[test]
+fn first_revaluation_skips_shared_history_construction_and_matches_the_literal_observer() {
+    for allocated in [false, true] {
+        for unrelated in [8, 128] {
+            let mut f = Fixture::new(unrelated);
+            let request = f.request(13, allocated);
+            let at = f.db.frontier().unwrap();
+            let literal = f.observe(&request, at, None).unwrap().unwrap();
+            let stripped = Cx::detached_cancel_context();
+            let mut budget =
+                ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+            let verified =
+                super::super::observe_verified(&f.db, &f.cx(), &f.book, &request, at, &mut budget)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(
+                verified, literal,
+                "allocated={allocated}, unrelated={unrelated}"
+            );
+            assert_eq!(verified.history_work(), RevaluationHistoryWork::default());
+            // The original allocated-population observation is still
+            // required; only the redundant historical-audit index is absent.
+            assert_eq!(
+                verified.population_work().history_scans,
+                usize::from(allocated)
+            );
+            assert_eq!(verified.target_base_net().mantissa, 13);
+            assert_eq!(verified.delta().mantissa, 3);
+        }
+    }
 }
 
 #[test]

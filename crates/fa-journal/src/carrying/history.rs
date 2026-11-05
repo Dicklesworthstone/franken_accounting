@@ -15,6 +15,7 @@ use fa_model::{Entry, FxRevaluationItem};
 
 type ItemKey = (VId, u16);
 type ApplicationPositions = BTreeMap<usize, Vec<(usize, usize)>>;
+type RouteObservations = BTreeMap<(DateDay, CommitSeq), Option<Rc<FxRevaluationRoutes>>>;
 
 /// Counted work for the shared carrying observation within one revaluation.
 /// Historical verification may perform additional, separately pinned
@@ -113,7 +114,7 @@ pub(crate) struct CarryingIndex {
     // These proofs are pinned to their own exact historical coordinates,
     // independent of the carrying view's cutoff. Never cache a head route
     // as a substitute for a historical projection.
-    route_observations: RefCell<BTreeMap<(DateDay, CommitSeq), Option<Rc<FxRevaluationRoutes>>>>,
+    route_observations: RefCell<RouteObservations>,
     route_reads: Cell<usize>,
     route_reuses: Cell<usize>,
     work: CarryingPopulationWork,

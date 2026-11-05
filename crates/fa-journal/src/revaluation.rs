@@ -588,6 +588,15 @@ fn recognized_adjustment(
     Ok(basis)
 }
 
+/// The initial literal observation also discovers the exact population used
+/// by the historical adjustment collector. This private flag is not part of
+/// the monetary result, its source digest, or retained provenance.
+struct ObservedRevaluation {
+    prepared: PreparedFxRevaluation,
+    verified_prefix: history::VerifiedEntryPrefix,
+    has_retained_adjustments: bool,
+}
+
 fn observe<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
@@ -597,7 +606,7 @@ fn observe<V: Vfs + Clone>(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
 ) -> Outcome<PreparedFxRevaluation> {
     observe_using(db, cx, book, request, at, budget, None)
-        .map(|outcome| outcome.map(|(prepared, _)| prepared))
+        .map(|outcome| outcome.map(|observed| observed.prepared))
 }
 
 fn observe_using<V: Vfs + Clone>(
@@ -608,7 +617,7 @@ fn observe_using<V: Vfs + Clone>(
     at: CommitSeq,
     budget: &mut ArithmeticBudget<'_, impl Sized>,
     history: Option<&history::AuthenticatedHistory>,
-) -> Outcome<(PreparedFxRevaluation, history::VerifiedEntryPrefix)> {
+) -> Outcome<ObservedRevaluation> {
     if at.0 == 0 || at > db.frontier()? {
         return Ok(Err(changed(
             "the revaluation observation is outside this book's recorded history",
@@ -741,6 +750,7 @@ fn observe_using<V: Vfs + Clone>(
             )
         })),
     };
+    let mut has_retained_adjustments = false;
     for candidate in candidates {
         cx.query()
             .checkpoint()
@@ -751,18 +761,32 @@ fn observe_using<V: Vfs + Clone>(
                 "revaluation source belongs to another book or branch".into(),
             ));
         }
+        // Match adjustment discovery before visibility/effective-date
+        // filtering. A later-effective retained publication still requires
+        // its historical audit. Other entry classes only need this leg scan
+        // if they survive the existing visibility checks below.
+        let revaluation_touches_valuation =
+            (entry.proposal.class == EntryClass::REVALUATION).then(|| {
+                entry
+                    .proposal
+                    .legs
+                    .iter()
+                    .any(|leg| leg.account_ref == route.valuation_account)
+            });
+        has_retained_adjustments |= revaluation_touches_valuation == Some(true);
         if entry.proposal.class == EntryClass::PENDING
             || entry.proposal.class.is_control()
             || !crate::migration::visible_at(db, &entry, at, &mut runs)?
         {
             continue;
         }
-        if entry
-            .proposal
-            .legs
-            .iter()
-            .any(|leg| leg.account_ref == route.valuation_account)
-        {
+        if revaluation_touches_valuation.unwrap_or_else(|| {
+            entry
+                .proposal
+                .legs
+                .iter()
+                .any(|leg| leg.account_ref == route.valuation_account)
+        }) {
             if crate::carrying::has_allocated_basis(&entry.proposal) {
                 if let Err(refusal) = items::recognized_release(
                     db,
@@ -987,8 +1011,8 @@ fn observe_using<V: Vfs + Clone>(
     if let Some(history) = history {
         history.carrying_work(population_work);
     }
-    Ok(Ok((
-        PreparedFxRevaluation {
+    Ok(Ok(ObservedRevaluation {
+        prepared: PreparedFxRevaluation {
             request: FxRevaluationRequest {
                 entity,
                 ..request.clone()
@@ -1022,7 +1046,8 @@ fn observe_using<V: Vfs + Clone>(
             history_work: RevaluationHistoryWork::default(),
         },
         verified_prefix,
-    )))
+        has_retained_adjustments,
+    }))
 }
 
 fn reproduces(
@@ -1124,11 +1149,21 @@ fn observe_verified<V: Vfs + Clone>(
     at: CommitSeq,
     budget: &mut ArithmeticBudget<'_, impl Sized>,
 ) -> Outcome<PreparedFxRevaluation> {
-    let (mut prepared, proof) = match observe_using(db, cx, book, request, at, budget, None)? {
+    let ObservedRevaluation {
+        mut prepared,
+        verified_prefix,
+        has_retained_adjustments,
+    } = match observe_using(db, cx, book, request, at, budget, None)? {
         Ok(observed) => observed,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let history = history::AuthenticatedHistory::read_verified(db, cx, book, proof)?;
+    if !has_retained_adjustments {
+        cx.query()
+            .checkpoint()
+            .map_err(fgdb::WriteTxnError::Interrupted)?;
+        return Ok(Ok(prepared));
+    }
+    let history = history::AuthenticatedHistory::read_verified(db, cx, book, verified_prefix)?;
     let mut adjustments = Vec::new();
     for (recorded_at, vid, entry) in
         history.adjustments(cx, prepared.route.valuation_account, at)?
@@ -1179,7 +1214,7 @@ fn observe_verified<V: Vfs + Clone>(
                 budget,
                 Some(&history),
             )? {
-                Ok((reproduced, _)) => reproduced,
+                Ok(reproduced) => reproduced.prepared,
                 Err(refusal) => return Ok(Err(refusal)),
             };
             if !reproduces(&reproduced, &basis, proposal) {
