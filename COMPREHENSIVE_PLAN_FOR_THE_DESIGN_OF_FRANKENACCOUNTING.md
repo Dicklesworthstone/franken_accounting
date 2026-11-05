@@ -1282,6 +1282,313 @@ This section records an audit and remaining work; it neither changes the target
 contracts above nor closes implementation beads. The generated workflow scoreboard
 is a sample of commands, not a percentage of the complete product delivered.
 
+#### Current-cut refresh (2026-11-04, DustyIbis)
+
+**Assessment: substantial accounting software with independently checked public-data
+workflows; the complete six-bet product remains unqualified. The largest remaining
+gaps are a trustworthy full baseline, real-book operability, complete authority
+and approval contracts, and acceptance of the composed reader workflows.** The
+right next milestone is an evidence-backed integration gate. Another command,
+case study or selected-test pass does not establish it.
+
+All 364 lines of AGENTS.md and all 2,565 lines of README.md were read, including
+the distinction between the implemented surface and the 1.0 target. This review
+also inspected the suite instructions, normative gate/API/admissibility contracts,
+previous assessments, registries, posting/approval/register/close/query/MCP and
+independent-verifier source, test sources, work graph and retained execution
+records. It is a project-level assessment with selected source investigations,
+not a line-by-line audit of every implementation or companion document. The
+first observed HEAD was `a036aa86e`; the verification/source cut is
+`d46d06627c9f7aadf86cc1338d15101e71b4ae5c`, tree
+`59bc8346d3976fcf76d6baa9718c7d1d1b2cd549`. The canonical `/Users/jemanuel/projects/`
+path resolves to this `/data/projects/` checkout. No auxiliary branch or worktree
+was created. Receipts and the pre-review JSONL snapshot are retained at
+`/home/ubuntu/.codex/artifacts/fa-reality-20261104.zysJCz`.
+
+**Progress that changes the earlier assessment.**
+
+- **Real public records now exercise the system.** Committed execution records
+  cover complete published BLMIS account tables, Oklahoma agency activity,
+  HMRC expenditure and House disbursements. For example, the attributed HMRC
+  record retains 127 entries, 2,860 legs, 42 expense areas, 160 suppliers,
+  source-population binding, historical invisibility and independent report
+  verification. The House record retains 352 entries and 7,710 legs with actual
+  Beancount/hledger comparison. These records bind earlier executable/helper
+  identities; reading them does not rerun them on this cut. Published observations
+  and explicitly modeled counterpart accounts are not the publishers' original
+  complete double-entry ledgers, independent Human approvals or fraud labels.
+- **External plaintext checks are no longer wholly absent.**
+  `scripts/plaintext_oracle.py` and `docs/conformance/plaintext-external-oracle.md`
+  retain real tool commands, exits and exact gross/net/count comparisons for
+  selected public-data exports. Full-fixture, lot and valuation-divergence
+  acceptance remains with fa-sa4w; published ADS/SAF-T schemas and XBRL taxonomy
+  validation remain with fa-ipom. Self round trips retain their narrower class.
+- **Large real entries exposed and drove a storage repair.** The complete
+  university activity entry has 157 dimension-qualified legs. Its preserved
+  18,470-byte substrate-row refusal and subsequent authenticated fragment replays
+  are recorded in `evidence/public_ledger/validation-2026-11-03-entry-fragments.json`.
+  The portable example supplies a real report, checkpoint and receipt without a
+  private key or native book. This is stronger than a constructed format fixture;
+  it does not finish every large-object/capacity obligation in fa-nd7g/fa-7mhm.
+- **CloseRun is implemented.** `fa/src/close_run.rs`, `close_rehearsal.rs` and
+  `fa-journal/src/close_run.rs` implement reviewed draft tasks, durable completion
+  receipts, ordered resume, combined scratch rehearsal and optional selection of
+  the exact retained review. Automatic task generation, complete statement
+  packages, a durable run-level review attachment and the global execution gate
+  remain distinct unfinished requirements. The old blanket absence claim is stale.
+- **Principal signatures exist.** `fa-journal/src/policy.rs` requires the current
+  registered principal key's signature when that key exists and witnesses the
+  key chain during approval creation. Principals without a registered key still
+  have an unsigned route. `fa-policy/src/approval.rs` still states that separate
+  effects/target-coordinate fields are absent. Source-supported signature work
+  must not be described as nonexistent, nor equated with mandatory independently
+  authenticated dual control on every supported route.
+- **The query profile has a bounded per-row CALL.** `fa.open_amount` preserves
+  the historical open amount and native unit through a bounded continuation.
+  It requires an effective cutoff and refuses two-stage certification. Broader
+  pipeline placement, scoped queries and the full runtime graph remain fa-5c1.
+- **Native register reads have real incremental paths.** Checked native cells,
+  exact tails, historical selection, checkpoints and explicit literal fallbacks
+  exist. Daemon scheduling/commit wakes and shared batch reconciliation indexes
+  are source improvements. They do not establish an O(1) whole request, functional
+  register maintenance, all-family cached reads or the composed 100k-entry target.
+
+**Qualification evidence and a new uncovered defect.**
+
+The initial JSONL has **491 issues: 148 open, 101 in progress and 242 closed**.
+Its ID/title/status projection agrees with `br`'s database. Robot triage reports
+883 edges, 108 actionable and 141 dependency-blocked nonclosed records;
+`br --no-db dep cycles --json` and computed `bv --robot-insights` report no
+active cycles. Neither issue counts nor the forecast's low-confidence estimates
+measure product delivery.
+
+The registry still declares **16 invariants / 83 clauses, 72 live and 11
+dormant**, all **20 SLOs inactive**, and all **11 proof/model lanes dormant**.
+These declarations do not establish that a complete current execution passed.
+There are 70 registered procedures; the retained 210-case confusion table covers
+12 procedures on constructed populations. The background intentionally avoids
+the planted patterns, so perfect synthetic tallies are not field precision or
+fraud-detection assurance.
+
+All 23 locally retained `fa-verdict` notes were inspected structurally. The
+eight PASS notes record only 6–8 steps each. None records a full canonical PASS.
+The later RED attempt at `9bc4c99a27c1` records format, Python protocol checks,
+workspace check and Clippy PASS, followed by **5,397 passed tests and 11 named
+failures**; its outer exit is 143 and only five step records are present. Those
+failures include the generated-history differential, outcome recovery, robot
+schema/events/refusal fixes, register serving/capacity and forensic/conformance
+expectations. This is historical diagnostic evidence: later repairs must be
+re-executed, and the interrupted remainder is not a pass. The README's older
+RED badge therefore remains consistent with the absence of full qualification,
+although it is not the newest available diagnostic.
+
+**New reproducible transport failure:** the actual command
+`bash scripts/local_proof_verify.sh --repository /Users/jemanuel/projects/franken_accounting --note 9bc4c99a27c1`
+exits 1 at line 101 with `/usr/bin/python3: Argument list too long`. The retained
+note is 473,204 bytes. The verifier supplies the entire note as one Python argv
+element before checking its contents. A 4,736-byte historical note instead
+reaches a normal semantic refusal. The existing large note is RED, not an example
+of a valid PASS being rejected; the demonstrated defect is inability to inspect
+that genuine retained input. A sufficiently large successful inventory would use
+the same transport. `note-argv-reproduction.json` retains the exact command,
+exits, stderr, source/note hashes and small-input control. Additional direct
+subprocess size probes encountered permission errors and are not presented as
+a measured OS limit. A search of existing issue text found no focused owner.
+
+The required repair is to read the selected immutable note through a bounded
+stream/file descriptor or file, keeping Python program text and note bytes on
+separate channels. Preserve duplicate-key, checksum, source/tree/toolchain,
+step-completeness, inventory and closure checks. Never truncate inventories,
+replace them with unchecked summaries or make the verifier accept this RED note
+for closure. Ordinary regression tests must exercise a valid large synthetic
+v3 proof/note, wrong-tree and changed-log negatives, duplicate/truncated records,
+a large RED note rejected for closure, and a caller of `close_bead.sh`. Full-scope
+proof publication depends on this transport working at real inventory size.
+
+Local `core.hooksPath` now equals `scripts/hooks`; the old statement that no
+hooks are installed is stale. The pre-push script checks an exact-tree Tier-0
+note. In the inspected last 150 first-parent commits, 28 have a Tier-0 note;
+this is presence, not independent validity or proof that every intermediate
+local commit was pushed separately. Initial HEAD has neither a Tier-0 nor a
+Tier-1 note. GOV-03 remains absent. Enforcement coverage and trustworthy note
+admission stay open under fa-0hs4.3/fa-ygj2 rather than being inferred from a
+configured hook path.
+
+Fresh execution: `fa-verify --lib` passed **632 tests, zero failures/ignores**
+through strict RCH (remote exit 0). `docs_sync_check.sh` exited 0 with all 12
+selftest cases, 131 current-surface command resolutions and 37-step parity.
+The freshly built standalone verifier also executed the retained university
+source-bound example without its native book, private key or network: all **91
+checks passed**, exit 0. Flipping one byte in a separate bundle copy preserved
+checkpoint-signature success but failed record derivation on `proposal_digest`,
+exit 8. `university-offline-receipt.json` binds both executions to the new verifier
+SHA-256 `8a87abcc1e9292b3a9f2cc27b1e440fdd1628e3b8bf4a8bd8920316d908e5c48`
+and the original example's checked compressed/decompressed identities. This
+executes the current verifier over a historical producer artifact; it does not
+rerun the original agency import or authenticate the publisher as signer.
+The ordinary `local_proof_selftest.sh` exits 0 while the real large note still
+fails at process launch: its existing small fixtures do not cover this boundary.
+The doctrine gate exits 0 (six checks), workspace topology exits 0 (35 checks),
+and the resolved normal reference closure contains only fa-reference,
+fa-registry and fa-time. `close_bead.sh --closure-debt --json` reports all 242
+closed records in current evidence debt, with no verdict/process closure tokens;
+that is missing closure evidence, not a finding that all their code is absent.
+UBS exits 3 on the changed Markdown because it ran no applicable scanner; it
+is not a clean static-analysis result.
+
+The fresh repository diagnostic completes `check --workspace --all-targets`
+successfully, then Clippy diagnoses `too_many_arguments` at
+`crates/fa/src/proof.rs:220` (`migration_balance_requests`, nine arguments versus
+the enforced seven). The root gate obligation remains fa-ze0y/fa-0hs4.2; ordinary
+repair must preserve the lint and its accounting checks. Clippy completes with
+remote exit 101. The diagnostic driver was then stopped (outer exit 143) after
+the first split library-test job began; no completed workspace-test verdict was
+reached. Its manifest retains three PASS steps and Clippy FAIL; remaining steps
+are uncompleted, not passes. The driver also correctly voids exact-tree
+attribution because this assessment changed during the run. The initial Tier-0 run
+also completes format and remote workspace check, but exits 2/VOID because this
+assessment was edited while it ran. Its compile success is a scoped observation,
+not a Tier-0 PASS for the edited tree. A final settled-tree run is required
+before publication.
+The AST scan found no `todo!` or `unimplemented!` macro calls; this establishes
+neither architectural completeness nor behavioral correctness. Remaining
+diagnostic outcomes and final audit publication are recorded in the evidence
+directory; no pending job or incomplete run supplies a PASS.
+
+**Vision checklist refresh.** PARTIAL names a concrete implemented subset;
+UNPROVEN names missing acceptance. Historical public-data receipts and scoped
+passes are credited only for their exact predicates and executable identities.
+No whole 1.0 goal is promoted to WORKING from source existence alone.
+
+| Goal | Current reality and remaining completion condition | Existing active owners |
+|---|---|---|
+| V01 Immutable N-leg posting | PARTIAL real posting/plans/refusals; all capacity and activation paths need the complete current regression gate | fa-0hs4.2, fa-7mhm |
+| V02 Derived state equals journal | PARTIAL projection/register/replay verification and explicit cache lag; complete corruption/recovery campaign remains | fa-jmh, fa-0fl |
+| V03 Incremental reports | PARTIAL native head/historical cells plus tail/fallback; functional/all-family and total-request work remain | fa-715, fa-9xf9 |
+| V04 Period/calendar law | PARTIAL commit-time matrix/witnesses and bounded races; calendar/time-zone and full timing/crash qualification remain | fa-94qd, fa-7uhr, fa-0fl |
+| V05 Bitemporal and issuance reads | PARTIAL sequence, tick, first-issuance/audience/certificate views; complete upgrade/query composition remains | fa-5c1, fa-vdc |
+| V06 Corrections/restatement | PARTIAL lifecycle, exact lineage, issued/custom comparisons; all case disclosures and approval contracts remain | fa-75j4, fa-0hs4.7, fa-651f |
+| V07 Close orchestration | PARTIAL reviewed task DAG/resume/combined rehearsal now exists; automatic full close package and durable global review gate remain | fa-4o0 |
+| V08 Holds/availability | PARTIAL proportional resolution, full release, limits, timed sweeps and migration activation; complete race/capacity acceptance remains | fa-0hs4.10, fa-0fl, fa-7mhm |
+| V09 Scheduled effects | PARTIAL committed-tick reversal, recurrence and asset schedules; complete rule/time/authority campaign remains | fa-0bi, fa-c34, fa-0fl |
+| V10 Atomic intents/retries | PARTIAL batches and durable successes; complete effect manifest/outcome/approval protocol remains | fa-nl7, fa-we7 |
+| V11 Source-bound migration | PARTIAL real public-data staged/finalized runs and fragments; plan-scale loader/capacity/visibility closure remains | fa-zddh, fa-nd7g, fa-mv0f |
+| V12 Exact amounts/FX/units | PARTIAL budgeted exact arithmetic and carrying-value settlement; mixed workflows, unit evolution and structural amount encapsulation remain | fa-pvt7, fa-thp, fa-ryvp |
+| V13 Dimensions/subledgers | PARTIAL native attribution, historical hierarchy and control reconciliation; external/detail and clause/manifest acceptance remain | fa-ficc, fa-03s, fa-vz7e |
+| V14 Evidence closure | PARTIAL actual originals, custody, sources, rules and portable closures; every artifact/principal/approval contract remains | fa-ge0y, fa-81lu, fa-c34 |
+| V15 Bank/aging | PARTIAL declared formats, matching, contractual receivable/payable maturity and portable reconciliation; complete continuity/drift coverage remains | fa-0hs4.13, fa-nwgf, fa-5woj |
+| V16 Offline reports | PARTIAL broad native/custom/functional portable families and source witnesses; counterfactual/all-family closure remains | fa-70h4, fa-0m9r, fa-oimc |
+| V17 Witnessed history | PARTIAL signed checkpoints/cosigning/explicit anchors; incremental accumulation and journaled policy/key rotation remain | fa-qtfd, fa-u3zf |
+| V18 Privacy/retention | PARTIAL guarded disclosure and legal holds; subject-key lifecycle and crypto-erasure remain unavailable | fa-v74 |
+| V19 Authority/SoD | PARTIAL issued tokens, key signatures and prepared policy checks; unsigned owner routes and full effects/coordinate/RuleAuthority admission remain | fa-z46b, fa-kae, fa-651f, fa-0x0, fa-mg2j |
+| V20 Access audit | PARTIAL bound-session records and accumulator coverage; owner posture, complete observed-object edges and certified extracts remain | fa-7dw, fa-0hs4.12, fa-ohe |
+| V21 Canon | PARTIAL typed compiler, activation, reproduction and backtests; full intent families and effective-leg authority intersection remain | fa-c34, fa-651f |
+| V22 Plans/drafts/scenarios | PARTIAL real portable plans, intent replay and certified scratch diffs; confirmation exchange, lifecycle and offline scenarios remain | fa-we7, fa-s7x, fa-k07b, fa-0m9r |
+| V23 Three postures | PARTIAL library/CLI/daemon/MCP integrations; complete transport/authority/confirmation parity remains | fa-z5u, fa-2iu5, fa-ohe |
+| V24 Agent ergonomics | PARTIAL runnable walkthrough, guidance and refusal regressions; complete fix execution and fresh-agent campaign remain | fa-wgsj, fa-y6eu |
+| V25 Query profile | PARTIAL native certification and bounded open_amount continuation; scoped queries, broader pipelines and full runtime graph remain | fa-5c1, fa-2zf5 |
+| V26 Statements | PARTIAL approved layouts, functional/presentation, diffs/traces and many portable workpapers; every family/definition/surface contract remains | fa-qh60, fa-nzix, fa-y1vr, fa-oimc |
+| V27 Multi-book/consolidation | PARTIAL shared-functional-unit single-book consolidation; cross-book basis layers, paired posting, translation/CTA and branch eliminations remain | fa-259c, fa-22v5, fa-76hy, fa-q3cx |
+| V28 Forensic observations | PARTIAL deterministic registered procedures, real-source comparisons and tracing; complete methods, input semantics and bounded execution remain | fa-3afh, fa-b6xs, fa-m35p, fa-wwip |
+| V29 Calibration/sampling | PARTIAL seeded sampling and 12-procedure synthetic calibration; meaningful near misses and complete statistical coverage remain | fa-4psc, fa-m35p |
+| V30 Audit/litigation | PARTIAL engagements/SUD, productions and governed evidence; complete carry-forward/provenance/authority qualification remains | fa-zgn, fa-ge0y, fa-wwip |
+| V31 Standards/regulatory | PARTIAL real plaintext oracle subsets, own-format round trips and regulatory surfaces; published schema/taxonomy and all-fixture conformance remain | fa-sa4w, fa-ipom, fa-p370, fa-doa9 |
+| V32 Reference/simulation | PARTIAL independent arithmetic and fault/history tests; full system, 1,000-seed and all barrier/race campaign remain | fa-2ihd, fa-0fl |
+| V33 Formal/model/fuzz | UNPROVEN formal lanes and full fuzz campaign; source models/smoke are narrower evidence | fa-09q8, fa-dj6j, fa-apde, fa-yrhb |
+| V34 Performance | UNPROVEN stated-scale SLOs; all 20 remain inactive and self-speedups do not establish competitive wins | fa-ykbp, fa-7mhm |
+| V35 Qualification/governance | Current Clippy diagnostic is RED; full canonical PASS is UNPROVEN; large-note transport, closure debt, capability joins and scoreboard semantics remain | fa-0hs4.1, fa-0hs4.2, fa-0hs4.3, fa-0hs4.4, fa-8jcr, fa-ubl0 |
+| V36 Release/publications | UNPROVEN actual distinct-builder/linkage/offline-install and composed all-reader acceptance | fa-nfq2, fa-wwip, fa-q5kx, fa-rdid |
+| V37 Lots/assets | PARTIAL source-bound relief and schedules; full dimension/FX/method/batch/certificate acceptance remains | fa-0hs4.9, fa-c34, fa-y1vr |
+| V38 Real-book operability | UNPROVEN 100k-entry CLI/fad composition with counted total work and unchanged fold/proof results | fa-0hs4.6, fa-q7vt, fa-rcw1, fa-wo2n, fa-rbs3, fa-vr7q |
+| V39 Public-record cases | PARTIAL actual sourced executions now exist; each method's source/binary-bound acceptance and no-claim limits remain | fa-yugf, fa-wwip |
+| V40 Scope-aware controls/API | PARTIAL registered control contract and caller-context async core; undated-control closure and universal contextual/capability API remain | fa-0hs4.18, fa-zc5w |
+
+**Would all open beads finish the product?** Existing active owners cover all
+40 broad goals, including final integration and release; that is not a proof
+that all detailed obligations are captured or satisfied. The large-note defect
+was an uncovered concrete requirement inside V35. Several descriptions still
+say that now-present slices are absent. Preserve historical observations and
+acceptance, update current scope, and finish the residual contract rather than
+reimplementing a first slice. Do not close an umbrella issue because its easiest
+example works. The 101 in-progress records indicate claimed work, not 101
+independently qualified deliverables.
+
+The scoreboard's 33/33 sampled workflows are useful surface regressions. Its
+55 plan clauses still render G1–G4 UNMET. Genesis additionally classifies its
+two required successful negative tests as `refused`, while its renderer declares
+a gate met only when every row is `works`. This is a representation issue to
+adjudicate under fa-ubl0/fa-0hs4.4: distinguish satisfying a refusal requirement
+from an unavailable capability, retain the exact negative probes, and never
+convert that distinction into a full Genesis or release PASS without the rest
+of its required evidence. G0's rendered MET is likewise not a current full-gate
+verdict.
+
+**Bridge, ordered by delivered value and falsifiable completion.**
+
+1. **Transport and verify real-sized evidence (V35).** Repair the reproduced
+   note transport with its ordinary positive/negative tests together. Then run
+   the existing exact-tree verifier/closure selftests, including large real
+   inventories. Completion means inspection reaches the semantic result and
+   every tampered input still refuses; a RED note remains ineligible for closure.
+2. **Establish one complete baseline (fa-0hs4.2/fa-ze0y).** Settle a canonical
+   candidate, run every canonical step and named test target, retain failure and
+   UNRUN attribution, repair current failures under their existing owners, and
+   publish a verified stable full PASS. Preserve law gates and negative controls.
+   A checksum-valid union may reuse only evidence whose exact input closure and
+   toolchain match. Gate-enforcement and closure debt remain separate obligations.
+3. **Demonstrate total-request operability (fa-0hs4.6).** Compose cold CLI and
+   resident fad at the declared 100k-entry scale. Count open/admission/hash/index,
+   posting, maintenance/tail, report, verify and bundle work, not only the helper
+   that improved. Preserve exact results against literal folds. A deliberately
+   restored whole-history scan must fail the count bound. Report maintenance,
+   memory, durability and historical-read costs as well as the happy path.
+4. **Complete authority and plan review (fa-ohe/fa-z46b/fa-we7/fa-zc5w).** Run
+   one matrix through embedded, CLI, daemon and MCP: current/expired/revoked
+   tokens; asserted versus key-backed principals; changed effects/coordinate;
+   self/shared-lineage approval; denied observation; uncertain-ack retry. Show
+   no protected read or partial write on refusal. Optional signature support is
+   a component, not the acceptance result for universal authenticated SoD.
+5. **Finish the existing reader contracts.** Extend CloseRun/Canon, case
+   disclosures, report families, unit evolution and Concordat under their listed
+   owners. One book with a shared functional unit does not discharge multi-book
+   translation. A portable historical report does not discharge counterfactual
+   assumptions. Keep code and normal unit/real-binary tests together, with exact
+   boundary refusals for unsupported combinations.
+6. **Independently falsify the composition.** Extend actual plaintext tools to
+   the full fixture set; validate published schemas/taxonomies; execute registered
+   lab/formal/fuzz campaigns. Include offsetting omissions, dimension-only and
+   source-population substitutions, changed policy/assumption text, corrupted
+   caches and valid proofs for the wrong recipient question. Preserve gross,
+   count, scope and provenance checks even when net balances agree.
+7. **Qualify the actual delivery (fa-wwip/fa-nfq2).** All six reader workflows
+   must use the actual release-candidate binaries and intended authorities,
+   including standalone offline verification. Execute stated-scale measurements
+   against the live pinned incumbent in the same invocation, then distinct
+   builders, actual linkage, offline installation and the four scoped reports.
+   Missing evidence stays UNRUN. No target feature, test or proof obligation is
+   removed by this assessment.
+
+**Plan-space review.** The frozen generation/refinement prompts are retained in
+`review-prompts.txt`. Two ambition passes strengthened the bridge from isolated
+command success to complete reader questions, then from producer assertions to
+independent falsification of scope, source and authority. Refinement checks cover
+V01–V40 owner completeness, stale source/receipt claims, exact negative and
+resource-bound acceptance, minimal dependency edges and graph/export integrity.
+The fresh large-note counterexample is included in the bridge rather than hidden
+by adding another nominal PASS count. Final graph ownership and execution
+outcomes are recorded with the audit landing; no implementation bead closes from
+this planning work.
+
+**Tracker publication boundary.** `.beads/issues.jsonl` has an exclusive active
+reservation held by IvoryHorizon. The suite requires a single graph writer, so
+this audit requested a handoff rather than mutating or exporting that graph
+concurrently. The self-contained proposed child, ordinary regression names and
+dependency direction are retained in `large-note-bead.txt` in the evidence
+directory; the existing baseline owners remain fa-0hs4.1/fa-0hs4.2. The final
+read-only graph checks still show 491 records and no active cycles. A pending
+handoff is not a created Bead or a completed repair. Existing descriptions,
+comments, dependencies and statuses are preserved.
+
 #### Current-cut refresh (2026-10-30, IvoryHorizon)
 
 **Assessment: FrankenAccounting has substantial real accounting machinery, but
