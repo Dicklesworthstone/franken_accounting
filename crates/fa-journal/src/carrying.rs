@@ -105,6 +105,7 @@ pub struct PreparedFxSettlementGroup {
     items: Vec<FxSettlementItem>,
     proposal: EntryPayload,
     audit_work: CarryingAuditWork,
+    population_work: CarryingPopulationWork,
 }
 
 impl PreparedFxSettlementGroup {
@@ -118,9 +119,14 @@ impl PreparedFxSettlementGroup {
         self.proposal
     }
     /// Actual whole-source audit calls and successful same-prefix reuses.
-    /// Each item still executes its own literal carrying-value fold.
     pub fn audit_work(&self) -> CarryingAuditWork {
         self.audit_work
+    }
+    /// Work selecting the compound operation's carrying population. One
+    /// complete fixed-prefix index serves every item; historical source
+    /// audits remain separately counted by [`Self::audit_work`].
+    pub fn population_work(&self) -> CarryingPopulationWork {
+        self.population_work
     }
 }
 
@@ -135,14 +141,71 @@ pub struct CarryingAuditWork {
 /// of which item triggered it. Keep only successes, within one immutable read
 /// operation and one exact book/prefix. This is deliberately not a cached item
 /// result: each target must first pass its own original carrying checks.
+/// The accompanying observation belongs only to this compound operation and
+/// exact prefix; it never escapes to another database or a later invocation.
 #[derive(Default)]
 struct SuccessfulHistoryAudits {
     coordinate: Option<(Id128, CommitSeq)>,
     sources: BTreeSet<VId>,
     work: CarryingAuditWork,
+    history: Option<CarryingHistory>,
+    population_work: CarryingPopulationWork,
 }
 
 impl SuccessfulHistoryAudits {
+    fn select(&mut self, book: Id128, at: CommitSeq) {
+        if self.coordinate != Some((book, at)) {
+            // A retry can return to the prefix preceding first publication.
+            // Neither observations nor successful audits cross coordinates.
+            if let Some(history) = self.history.take() {
+                self.population_work.accumulate(history.work());
+            }
+            self.sources.clear();
+            self.coordinate = Some((book, at));
+        }
+    }
+
+    fn population_work(&self) -> CarryingPopulationWork {
+        let mut work = self.population_work;
+        if let Some(history) = &self.history {
+            work.accumulate(history.work());
+        }
+        work
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn read_item<V: Vfs + Clone>(
+        &mut self,
+        db: &Database<V>,
+        cx: &PurposeContexts,
+        book: &BookContext,
+        target: EntryRef,
+        ordinal: u16,
+        at: CommitSeq,
+    ) -> Outcome<CarryingOpenItem> {
+        self.select(book.book_id, at);
+        if self.history.is_none() {
+            // Preserve the literal reader's early target refusals before any
+            // whole-prefix observation. Later targets reuse the same payloads,
+            // but still repeat every digest, ordinal and valuation check.
+            if let Err(refusal) = carrying_target_at(db, cx, book, target, ordinal, at, None)? {
+                return Ok(Err(refusal));
+            }
+            self.population_work.entries_decoded += 1;
+            self.history = match CarryingHistory::read_at(db, cx, book, at) {
+                Ok(history) => Some(history),
+                Err(error @ KernelError::Txn(fgdb::WriteTxnError::Interrupted(_))) => {
+                    return Err(error);
+                }
+                // Index construction can discover several malformed rows in
+                // a different order. The original native scan remains the
+                // authority for the exact first error on a damaged prefix.
+                Err(_) => return open_item_carrying_inner(db, cx, book, target, ordinal, at),
+            };
+        }
+        open_item_carrying_observed(db, cx, book, target, ordinal, at, self.history.as_ref())
+    }
+
     fn verify(
         &mut self,
         cx: &PurposeContexts,
@@ -151,13 +214,7 @@ impl SuccessfulHistoryAudits {
         source: VId,
         audit: impl FnOnce() -> Outcome<()>,
     ) -> Outcome<()> {
-        if self.coordinate != Some((book, at)) {
-            // Preparation retries select the prefix before first publication,
-            // not necessarily the current head. A changed coordinate must run
-            // the literal audit and leave existing caller refusal order intact.
-            self.sources.clear();
-            self.coordinate = Some((book, at));
-        }
+        self.select(book, at);
         if self.sources.contains(&source) {
             cx.query()
                 .checkpoint()
@@ -296,10 +353,13 @@ fn open_item_carrying_with_audits<V: Vfs + Clone>(
     target: EntryRef,
     ordinal: u16,
     at: CommitSeq,
-    audits: Option<&mut SuccessfulHistoryAudits>,
+    mut audits: Option<&mut SuccessfulHistoryAudits>,
 ) -> Outcome<CarryingOpenItem> {
     cx.query().with_restriction(|| {
-        let result = open_item_carrying_inner(db, cx, book, target, ordinal, at)?;
+        let result = match audits.as_deref_mut() {
+            Some(audits) => audits.read_item(db, cx, book, target, ordinal, at)?,
+            None => open_item_carrying_inner(db, cx, book, target, ordinal, at)?,
+        };
         if let Ok(item) = &result
             && item.valuation_route.is_some()
         {
@@ -327,18 +387,25 @@ pub(crate) fn open_item_carrying_inner<V: Vfs + Clone>(
     open_item_carrying_observed(db, cx, book, target, ordinal, at, None)
 }
 
-/// The same monetary fold with an optional shared, fixed-prefix observation.
-/// The literal single-item reader remains the comparison path: only candidate
-/// selection and already authenticated metadata differ in the population path.
-pub(crate) fn open_item_carrying_observed<V: Vfs + Clone>(
+struct CarryingTarget<'a> {
+    original: Cow<'a, fa_model::Entry>,
+    recorded: CommitSeq,
+    spec: Cow<'a, crate::genesis::BookSpec>,
+    original_base: Amount,
+}
+
+/// Target identity and shape checks precede all complete-history work in both
+/// readers. A target outside the index is still point-read: another book or
+/// branch must retain the literal reader's handle refusal, not become absent.
+fn carrying_target_at<'a, V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
     book: &BookContext,
     target: EntryRef,
     ordinal: u16,
     at: CommitSeq,
-    history: Option<&CarryingHistory>,
-) -> Outcome<CarryingOpenItem> {
+    history: Option<&'a CarryingHistory>,
+) -> Outcome<CarryingTarget<'a>> {
     let query = cx.query();
     query
         .checkpoint()
@@ -348,20 +415,13 @@ pub(crate) fn open_item_carrying_observed<V: Vfs + Clone>(
             "carrying-value prefix is beyond the retained frontier",
         )));
     }
-    let (original, recorded) = match history {
-        Some(history) => {
-            if history.at != at || history.spec.book_id != book.book_id {
-                return Err(KernelError::Corrupt(
-                    "carrying observation belongs to another book or prefix".into(),
-                ));
-            }
-            let Some((original, recorded)) = history.original(target.vid) else {
-                return Ok(Err(invalid(
-                    "the foreign open item does not exist at this prefix",
-                )));
-            };
-            (Cow::Borrowed(original), recorded)
-        }
+    if history.is_some_and(|history| history.at != at || history.spec.book_id != book.book_id) {
+        return Err(KernelError::Corrupt(
+            "carrying observation belongs to another book or prefix".into(),
+        ));
+    }
+    let (original, recorded) = match history.and_then(|history| history.original(target.vid)) {
+        Some((original, recorded)) => (Cow::Borrowed(original), recorded),
         None => {
             let Some((original, recorded)) = crate::post::read_entry_at(db, target.vid, at)? else {
                 return Ok(Err(invalid(
@@ -408,6 +468,37 @@ pub(crate) fn open_item_carrying_observed<V: Vfs + Clone>(
             "carrying-value relief requires an original foreign item valued by SpotClose or PeriodAverage, with no outgoing applications",
         )));
     }
+    Ok(Ok(CarryingTarget {
+        original,
+        recorded,
+        spec,
+        original_base,
+    }))
+}
+
+/// The same monetary fold with an optional shared, fixed-prefix observation.
+/// The literal single-item reader remains the comparison path: only candidate
+/// selection and already authenticated metadata differ in the population path.
+pub(crate) fn open_item_carrying_observed<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    target: EntryRef,
+    ordinal: u16,
+    at: CommitSeq,
+    history: Option<&CarryingHistory>,
+) -> Outcome<CarryingOpenItem> {
+    let CarryingTarget {
+        original,
+        recorded,
+        spec,
+        original_base,
+    } = match carrying_target_at(db, cx, book, target, ordinal, at, history)? {
+        Ok(target) => target,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let leg = &original.proposal.legs[usize::from(ordinal)];
+    let query = cx.query();
     let mut entries = Vec::new();
     let mut reversals = BTreeMap::new();
     if history.is_none() {
@@ -1045,6 +1136,7 @@ pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
         items,
         proposal,
         audit_work: audits.work,
+        population_work: audits.population_work(),
     }))
 }
 
@@ -1446,6 +1538,7 @@ fn validate_spot_applications<V: Vfs + Clone>(
     let stripped = current.restrict::<asupersync::cx::cap::None>();
     let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
     let mut targets = BTreeSet::new();
+    let mut audits = SuccessfulHistoryAudits::default();
     for leg in &proposal.legs {
         if leg.amount.unit == spec.base_unit || leg.settles.is_empty() {
             continue;
@@ -1471,12 +1564,18 @@ fn validate_spot_applications<V: Vfs + Clone>(
                 "foreign spot applications require positive disjoint target allocations bounded by their complete legs",
             )));
         }
-        let item =
-            match open_item_carrying_at(db, cx, book, application.target, application.ordinal, at)?
-            {
-                Ok(item) => item,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
+        let item = match open_item_carrying_with_audits(
+            db,
+            cx,
+            book,
+            application.target,
+            application.ordinal,
+            at,
+            Some(&mut audits),
+        )? {
+            Ok(item) => item,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         if item.valuation_route.is_some()
             || item.account != leg.account_ref
             || item.side == leg.side

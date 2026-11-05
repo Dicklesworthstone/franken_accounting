@@ -6,6 +6,15 @@ fn prepare_group_at(
     date: DateDay,
     key: &[u8],
 ) -> Result<PreparedFxSettlementGroup, Refusal> {
+    prepare_group_outcome(f, inputs, date, key).unwrap()
+}
+
+fn prepare_group_outcome(
+    f: &RevaluedFixture,
+    inputs: &[FxSettlementRequest],
+    date: DateDay,
+    key: &[u8],
+) -> fa_journal::refusal::Outcome<PreparedFxSettlementGroup> {
     let mut template = f.f.h.proposal(vec![], key, EntryClass::ORIGINAL);
     template.effective_date = date;
     let stripped = Cx::detached_cancel_context();
@@ -19,7 +28,6 @@ fn prepare_group_at(
         template,
         &mut budget,
     )
-    .unwrap()
 }
 
 fn assert_literal_items(f: &RevaluedFixture, group: &PreparedFxSettlementGroup) {
@@ -51,6 +59,10 @@ fn grouped_audits_preserve_literal_results_and_actual_retry_prefix() {
         unallocated.audit_work(),
         fa_journal::carrying::CarryingAuditWork::default()
     );
+    let work = unallocated.population_work();
+    assert_eq!(work.history_scans, 1);
+    assert_eq!(work.source_guard_entries + 1, work.entries_decoded);
+    assert_eq!(work.item_effect_entries, 0);
     assert_literal_items(&f, &unallocated);
 
     let first = f.revaluation(13, 3, 3, true).unwrap();
@@ -59,6 +71,10 @@ fn grouped_audits_preserve_literal_results_and_actual_retry_prefix() {
     let prepared = prepare_group_at(&f, &inputs, day(4, 15), b"audited-group").unwrap();
     assert_eq!(prepared.audit_work().source_history_audits, 1);
     assert_eq!(prepared.audit_work().successful_reuses, inputs.len() - 1);
+    let work = prepared.population_work();
+    assert_eq!(work.history_scans, 1);
+    assert_eq!(work.source_guard_entries + 1, work.entries_decoded);
+    assert_eq!(work.item_effect_entries, inputs.len());
     assert_literal_items(&f, &prepared);
     for (input, item) in inputs.iter().zip(prepared.items()) {
         let single = f
@@ -96,6 +112,11 @@ fn grouped_audits_preserve_literal_results_and_actual_retry_prefix() {
     let fresh = prepare_group_at(&f, &inputs, day(5, 2), b"fresh-audited-group").unwrap();
     assert_eq!(fresh.audit_work().source_history_audits, 1);
     assert_eq!(fresh.audit_work().successful_reuses, inputs.len() - 1);
+    let work = fresh.population_work();
+    assert_eq!(work.history_scans, 1);
+    assert_eq!(work.source_guard_entries + 1, work.entries_decoded);
+    assert_eq!(work.applications_indexed, inputs.len());
+    assert_eq!(work.item_effect_entries, inputs.len() * 3);
     assert!(
         fresh
             .items()
@@ -155,6 +176,211 @@ fn successful_first_source_audit_does_not_skip_a_later_targets_checks() {
     assert_eq!(valid.audit_work().source_history_audits, 1);
     assert_eq!(valid.audit_work().successful_reuses, 1);
     assert_literal_items(&f, &valid);
+}
+
+#[test]
+fn compound_carrying_preserves_target_refusals_before_unrelated_history_errors() {
+    let mut f = RevaluedFixture::new(Side::Debit, &[(3, 10); 2]);
+    let inputs = f
+        .targets
+        .iter()
+        .map(|target| f.f.fx_request(*target, 1))
+        .collect::<Vec<_>>();
+    let (original, _) = read_entry(&f.f.h.db, f.f.target.vid).unwrap().unwrap();
+    let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+    // The literal native scan encounters the duplicate reversals before the
+    // malformed high-id payload. An index that decodes the complete population
+    // before indexing reversals discovers the payload error first instead.
+    for ordinal in 1..=2_u128 {
+        let vid = VId(ordinal);
+        assert!(f.f.h.db.vertex(vid).unwrap().is_none());
+        let reversed = undo(
+            &original.proposal,
+            f.f.target,
+            format!("duplicate-reversal-{ordinal}").as_bytes(),
+        )
+        .seal(vec![], None)
+        .unwrap();
+        damage.create_vertex(
+            vid,
+            vec![fa_model::symbols::label::ENTRY],
+            fa_model::entry_mirrors(&reversed).unwrap(),
+        );
+    }
+    let corrupt = VId(u128::MAX);
+    assert!(f.f.h.db.vertex(corrupt).unwrap().is_none());
+    let mut mirrors = fa_model::entry_mirrors(&original).unwrap();
+    mirrors
+        .iter_mut()
+        .find(|(key, _)| *key == property::FA_PAYLOAD)
+        .unwrap()
+        .1 = CanonicalScalar::bytes(Vec::new()).unwrap();
+    damage.create_vertex(corrupt, vec![fa_model::symbols::label::ENTRY], mirrors);
+    f.f.h.write_raw(damage);
+    let at = f.f.h.db.frontier().unwrap();
+    let rows = f.f.h.db.vertices().unwrap();
+
+    for bad_ordinal in [false, true] {
+        let mut invalid = inputs.clone();
+        if bad_ordinal {
+            invalid[0].target_ordinal = u16::MAX;
+        } else {
+            invalid[0].target.entry_digest[0] ^= 1;
+        }
+        let literal = open_item_carrying_at(
+            &f.f.h.db,
+            &f.f.h.ctx(),
+            &f.f.h.book,
+            invalid[0].target,
+            invalid[0].target_ordinal,
+            at,
+        )
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(
+            prepare_group_outcome(&f, &invalid, day(4, 15), b"early-target-refusal")
+                .unwrap()
+                .unwrap_err(),
+            literal
+        );
+    }
+    let literal = open_item_carrying_at(
+        &f.f.h.db,
+        &f.f.h.ctx(),
+        &f.f.h.book,
+        inputs[0].target,
+        inputs[0].target_ordinal,
+        at,
+    )
+    .unwrap_err();
+    assert!(
+        literal
+            .to_string()
+            .contains("duplicate reversal successors"),
+        "{literal}"
+    );
+    let grouped =
+        prepare_group_outcome(&f, &inputs, day(4, 15), b"native-first-error").unwrap_err();
+    assert_eq!(format!("{grouped:?}"), format!("{literal:?}"));
+    assert_eq!(f.f.h.db.frontier().unwrap(), at);
+    assert_eq!(f.f.h.db.vertices().unwrap(), rows);
+}
+
+#[test]
+fn compound_carrying_does_not_treat_another_books_target_as_absent() {
+    let mut f = RevaluedFixture::new(Side::Debit, &[(3, 10); 2]);
+    let (original, _) = read_entry(&f.f.h.db, f.targets[1].vid).unwrap().unwrap();
+    let mut foreign = original.proposal;
+    foreign.book_id = Id128([0x89; 16]);
+    let foreign = foreign.seal(vec![], None).unwrap();
+    let foreign_vid = VId(13);
+    assert!(f.f.h.db.vertex(foreign_vid).unwrap().is_none());
+    let mut birth = fgdb::WriteBatch::new(relation::IN_BOOK);
+    birth.create_vertex(
+        foreign_vid,
+        vec![fa_model::symbols::label::ENTRY],
+        fa_model::entry_mirrors(&foreign).unwrap(),
+    );
+    f.f.h.write_raw(birth);
+    let at = f.f.h.db.frontier().unwrap();
+    let inputs = [
+        f.f.fx_request(f.targets[0], 1),
+        f.f.fx_request(foreign.entry_ref(foreign_vid), 1),
+    ];
+    let literal = open_item_carrying_at(
+        &f.f.h.db,
+        &f.f.h.ctx(),
+        &f.f.h.book,
+        inputs[1].target,
+        inputs[1].target_ordinal,
+        at,
+    )
+    .unwrap()
+    .unwrap_err();
+    assert!(literal.message.contains("retained posted item"));
+    assert_eq!(
+        prepare_group_at(&f, &inputs, day(4, 15), b"foreign-item-handle").unwrap_err(),
+        literal
+    );
+    assert_eq!(f.f.h.db.frontier().unwrap(), at);
+}
+
+#[test]
+fn compound_carrying_keeps_full_history_tamper_refusals() {
+    for mode in ["delete", "relabel", "rewrite", "restore"] {
+        let mut f = RevaluedFixture::new(Side::Debit, &[(3, 10); 2]);
+        let allocation = f.revaluation(13, 3, 3, true).unwrap();
+        f.post_revaluation(allocation, b"compound-tamper-allocation");
+        let inputs = f
+            .targets
+            .iter()
+            .map(|target| f.f.fx_request(*target, 1))
+            .collect::<Vec<_>>();
+        let before = f.f.h.db.frontier().unwrap();
+        let original = prepare_group_at(&f, &inputs, day(4, 15), b"compound-tamper-group").unwrap();
+
+        // Damage an unrelated retained Entry, so neither direct target
+        // checks nor a source-account-only scan can detect every case. The
+        // complete historical audit must still run before returning a group.
+        let victim = f.f.target;
+        let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+        match mode {
+            "delete" => {
+                damage.delete_vertex(victim.vid);
+            }
+            "relabel" => {
+                damage.set_vertex_label(victim.vid, fa_model::symbols::label::ENTRY, false);
+            }
+            _ => {
+                damage.set_vertex_property(
+                    victim.vid,
+                    property::FA_DIGEST,
+                    Some(CanonicalScalar::bytes(vec![0; 32]).unwrap()),
+                );
+            }
+        }
+        f.f.h.write_raw(damage);
+        if mode == "restore" {
+            let mut restoration = fgdb::WriteBatch::new(relation::IN_BOOK);
+            restoration.set_vertex_property(
+                victim.vid,
+                property::FA_DIGEST,
+                Some(CanonicalScalar::bytes(victim.entry_digest.to_vec()).unwrap()),
+            );
+            f.f.h.write_raw(restoration);
+        }
+        let at = f.f.h.db.frontier().unwrap();
+        let rows = f.f.h.db.vertices().unwrap();
+        let literal = open_item_carrying_at(
+            &f.f.h.db,
+            &f.f.h.ctx(),
+            &f.f.h.book,
+            inputs[0].target,
+            inputs[0].target_ordinal,
+            at,
+        )
+        .unwrap_err();
+        for _ in 0..2 {
+            let compound = prepare_group_outcome(&f, &inputs, day(4, 15), b"compound-tamper-group")
+                .unwrap_err();
+            assert_eq!(format!("{compound:?}"), format!("{literal:?}"), "{mode}");
+        }
+        // A later raw-store alteration cannot corrupt the intact historical
+        // coordinate, nor can a cached head failure contaminate that read.
+        let historical = open_item_carrying_at(
+            &f.f.h.db,
+            &f.f.h.ctx(),
+            &f.f.h.book,
+            inputs[0].target,
+            inputs[0].target_ordinal,
+            before,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(historical, original.items()[0].carrying, "{mode}");
+        assert_eq!(f.f.h.db.frontier().unwrap(), at);
+        assert_eq!(f.f.h.db.vertices().unwrap(), rows);
+    }
 }
 
 #[test]
@@ -246,6 +472,9 @@ fn grouped_audits_verify_each_distinct_source_account() {
     let prepared = prepare_group_at(&f, &inputs, day(5, 2), b"audited-two-source-group").unwrap();
     assert_eq!(prepared.audit_work().source_history_audits, 2);
     assert_eq!(prepared.audit_work().successful_reuses, 2);
+    let work = prepared.population_work();
+    assert_eq!(work.history_scans, 1);
+    assert_eq!(work.source_guard_entries, (work.entries_decoded - 1) * 2);
     assert_literal_items(&f, &prepared);
     let proposal = prepared.into_proposal();
     let posted = f.f.h.post(request(proposal.clone())).unwrap();
