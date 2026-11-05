@@ -3515,8 +3515,10 @@ native `fa:rendering-file:v1` digest/size vectors:
 The semantic changes are an embedded pinned font/Unicode map, declared IR
 metadata schema, exact font-metric numeric placement and the complete,
 honestly named RGB profile. HTML, SVG and Markdown hashes and sizes remain
-identical. Accounting amounts, IR/certificates, TimeEvidence timestamps,
-scope text and footing assertions are unchanged. No assertion, negative
+identical. Accounting amounts, statement IR, TimeEvidence timestamps,
+scope text and footing assertions are unchanged. The foundation adoption
+separately changes report-certificate registry closures, as attributed below.
+No assertion, negative
 control or gate is weakened. All owned project parents had ended and observed
 source leases were released before the manual pin edit. Native rerun of the
 complete targets and exact Tier 0/full repository qualification remain
@@ -3597,3 +3599,69 @@ library annotation (SC1091 informational diagnostic). The source-following
 invocation `shellcheck -x -P scripts scripts/check.sh` then returned 0, without
 a source suppression or gate-policy edit. Both outcomes are recorded; the
 first was not treated as a pass.
+
+The checked-layout candidate `27667a5c` subsequently executed the complete
+381-case selected packet: CLI library 85/0, rendered-report integrations
+3/0, journal library 226/0 and statements library 67/0, all with zero
+ignored or filtered cases. The journal target took 770.97 seconds and its
+original capsule-boundary case finished naturally; no test, cap or source
+was changed during execution. The formerly failing five history observers
+and all unchanged PDF byte pins passed. Remote exit was 0 / 1557316 ms;
+RCH retirement returned outer 1. Official recovery returned 0, followed
+by a separate dead-wrapper/acknowledged/all-four-release-fields observation.
+These are complete target results on that exact candidate, not a full
+repository verdict or evidence for a different tree.
+
+### 2026-11-05 — GOLDEN-CHANGE: font/ICC foundation inputs change certificate closures
+
+Trial-balance certificates explicitly bind the canonical `franken-stack.lock`
+registry. The admitted font, core and math package rows therefore change that
+input even though their addition changes no accounting amount or journal
+query. Original pins were retained until an executed causal comparison.
+
+Current diagnostic `e8d7efc3` adds only the previously used outcome/seed-one
+printing to product `aab5557a`. It executed the complete facade library
+734/1 and both cross-target cases 1/1, zero ignored or filtered, remote/outer
+101 / 152691 ms. The failures are the original LAB-04 witness and the first
+report-certificate pin. Inverse `ea340046` changes only `franken-stack.lock`
+to its exact pre-font blob, retaining the adopted code and every original
+assertion and pin. It executed 735 facade plus 2 cross-target passes, no
+failures, ignored or filtered cases, remote 0 / 175116 ms. RCH retirement
+returned outer 1; official recovery returned 0 and a separate lease read
+confirmed dead wrapper, acknowledgment and all four release fields.
+
+Across all 36 runs, native heads, trial-balance byte digests and register
+folds agree. Every old witness hash is restored by the inverse. The seed-one
+certificates are both 3076 bytes; exactly 64 bytes differ, confined to the
+32-byte registry closure at offset 161 and trailing certificate digest at
+3044. Native query inputs, journal root, selection and output are otherwise
+byte-identical. Seed manifest, 36 schedules and one explored interleaving
+remain unchanged. Cross-target fold/TB/BS/IS byte pins and checkpoint bundle
+agree; only the three report-certificate digests change. This is input-change
+maintenance on x86_64, not a speedup or aarch64 qualification.
+
+Only both literal 36-hash vectors, their attributed producer, the corresponding
+manifest content binding and three certificate pins are updated. All financial
+pins, the bundle pin, planted target-encoding negative and campaign assertions
+remain. The prior manifest, ledger and cross fixture are Git blobs
+`ecce344ba372c221e55bc17bdf5fc5934888114f`,
+`859d08d20a266ef27f73997253d96321ab98bcdc` and
+`087b8ca0b23b44f14ed9744b86c622b576da61d6`. Both diagnostic tips and their
+full source are retained in verified recovery pack `6361b9ae8d315c3b82a8270c8678b383fe6e2014`;
+the incomplete inverse is never a product parent. The new literal fields
+were parsed and compared directly with the observed native vector before
+the unchanged native checker computes the manifest binding. Final product
+native tests, strict compilation and exact Tier 0/full repository gates
+remain required; neither diagnostic is a full repository verdict.
+
+The unchanged native registry checker on diagnostic `2ff6e8b8` returned
+actual remote/outer 1 / 17916 ms for the intentionally retained old manifest
+binding, computing the new exact content hash
+`9d24ba1565beea9d0ecc467bd4e4463e03769475b7a68658a91757741ca390bc`.
+Only that binding literal is corrected; the checker and its mismatch refusal
+are unchanged. This calculation is not a G0 pass. The earlier phrase
+"IR/certificates unchanged" in the PDF-pin entry was too broad: report data
+and render semantics remain, while foundation-input certificate bytes change.
+That phrase is corrected in place, with this explanation and its prior Git
+history retained. Formatting, targeted static UBS and docs-sync pass; final
+native execution and complete qualification of the corrected tree remain open.

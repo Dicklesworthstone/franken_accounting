@@ -762,6 +762,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // 079114cd721782303f1fed4b3c9d0f31ba527bb0a9ec157e93549a60f91159f9
     // 70ea79baf6cb13c4bbbafb69b46a288eb5bfe78a1da869a24ac8511108047950
     // 8dfb101e216931252cb70a389bead7bdef197f80d48ee2611a6d98f2f20fcd7c
+    // GOLDEN-CHANGE: pinned font/ICC foundation inputs change only the three
+    // report certificates. Native current e8d7efc3 / inverse ea340046 restore
+    // all original pins in the inverse; fold, report bytes and bundle agree.
+    // Prior certificate pins (Git blob 087b8ca0b23b44f14ed9744b86c622b576da61d6):
+    // b97693911b660e8cbdef3bba1f36e6ecda6287d7c8440846db5b696e97a20553
+    // dd2d560e1d8590020b02233e2a7af09c4c50baeb32dc50516c5dc4e0461925f2
+    // 829cd908132a4f8e82eda49d854a3983a0fdc516dbd8577961b24730f09541c4
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
@@ -788,7 +795,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "b97693911b660e8cbdef3bba1f36e6ecda6287d7c8440846db5b696e97a20553",
+        "f530b6003b5d2ae096ec87194903f6897afd607c32daa318a7f798525f8aa0fd",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -800,7 +807,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "dd2d560e1d8590020b02233e2a7af09c4c50baeb32dc50516c5dc4e0461925f2",
+        "55e1d9d6b76c1cde0affe85cf2359db92476b548f94c253dc3b3931c197e742e",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -812,7 +819,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "829cd908132a4f8e82eda49d854a3983a0fdc516dbd8577961b24730f09541c4",
+        "c4d210cba33e021803e065553e486d391a43c18171e5ea0b78c0b892e1efbb39",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );
