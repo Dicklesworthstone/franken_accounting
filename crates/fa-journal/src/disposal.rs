@@ -121,7 +121,15 @@ pub fn prepare_lot_disposal<V: Vfs + Clone>(
     request: &LotDisposalRequest,
     template: EntryPayload,
 ) -> Outcome<PreparedLotDisposal> {
-    prepare_lot_disposal_with_admission(db, cx, book, capability, None, request, template)
+    prepare_lot_disposal_with_admission(
+        db,
+        cx,
+        book,
+        DisposalAdmission::Read(capability),
+        request,
+        None,
+        template,
+    )
 }
 
 /// Admit the explicit disposal request before its source history is hydrated
@@ -165,22 +173,54 @@ pub fn prepare_lot_disposal_in_draft<V: Vfs + Clone>(
         db,
         cx,
         book,
-        admission.capability(),
-        Some(admission),
+        DisposalAdmission::Draft(admission),
         request,
+        None,
         template,
     )
+}
+
+/// Resolve explicit acquisition selectors inside the admitted draft factory.
+/// Only the completed, digest-bound disposal leaves this boundary; selecting
+/// a target never grants an entry read or exposes its other legs.
+pub fn prepare_lot_disposal_targets_in_draft<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    admission: &crate::draft::DraftSourceAdmission,
+    request: &LotDisposalRequest,
+    targets: &[(VId, u16)],
+    template: EntryPayload,
+) -> Outcome<PreparedLotDisposal> {
+    prepare_lot_disposal_with_admission(
+        db,
+        cx,
+        book,
+        DisposalAdmission::Draft(admission),
+        request,
+        Some(targets),
+        template,
+    )
+}
+
+enum DisposalAdmission<'a> {
+    Read(&'a Capability),
+    Draft(&'a crate::draft::DraftSourceAdmission),
 }
 
 fn prepare_lot_disposal_with_admission<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
     book: &BookContext,
-    capability: &Capability,
-    draft: Option<&crate::draft::DraftSourceAdmission>,
+    admission: DisposalAdmission<'_>,
     request: &LotDisposalRequest,
+    targets: Option<&[(VId, u16)]>,
     mut template: EntryPayload,
 ) -> Outcome<PreparedLotDisposal> {
+    let (capability, draft) = match admission {
+        DisposalAdmission::Read(capability) => (capability, None),
+        DisposalAdmission::Draft(admission) => (admission.capability(), Some(admission)),
+    };
     cx.query().with_restriction(|| {
         let authorized = match draft {
             Some(admission) => admit_draft_request(db, book, admission, request, &template)?,
@@ -232,7 +272,7 @@ fn prepare_lot_disposal_with_admission<V: Vfs + Clone>(
                 "the lot account has no journaled lot policy at this prefix",
             )));
         };
-        let basis = LotDisposalBasis {
+        let mut basis = LotDisposalBasis {
             account: request.account,
             quantity: request.quantity,
             quantity_offset_account: request.quantity_offset_account,
@@ -244,10 +284,21 @@ fn prepare_lot_disposal_with_admission<V: Vfs + Clone>(
             regime: policy.policy.regime,
             rounding_law: policy.policy.rounding_law,
         };
-        let derived = match derive(db, cx, book, &basis, &policy, template.effective_date)? {
+        let derived = match derive(
+            db,
+            cx,
+            book,
+            &basis,
+            &policy,
+            template.effective_date,
+            targets,
+        )? {
             Ok(value) => value,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        if let Some(specific_ids) = derived.resolved_targets {
+            basis.specific_ids = specific_ids;
+        }
         template.legs = derived.legs;
         template.unit_totals = EntryPayload::fold_unit_totals(&template.legs)
             .map_err(|error| KernelError::Corrupt(error.to_string()))?;
@@ -367,6 +418,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
             &basis,
             &retained_policy,
             proposal.effective_date,
+            None,
         )
     })? {
         Ok(value) => value,
@@ -388,6 +440,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
                 &current_basis,
                 &policy,
                 proposal.effective_date,
+                None,
             )
         })? {
             Ok(value) => value,
@@ -460,6 +513,7 @@ struct DerivedDisposal {
     outcome: LotReliefOutcome,
     legs: Vec<LegPayload>,
     source: LotSource,
+    resolved_targets: Option<Vec<(EntryRef, u16)>>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -476,6 +530,7 @@ fn derive<V: Vfs + Clone>(
     basis: &LotDisposalBasis,
     policy: &StoredLotPolicy,
     effective: DateDay,
+    targets: Option<&[(VId, u16)]>,
 ) -> Outcome<DerivedDisposal> {
     cx.query()
         .checkpoint()
@@ -534,7 +589,33 @@ fn derive<V: Vfs + Clone>(
         .iter()
         .map(|lot| (lot.entry_id, lot.qty_ordinal))
         .collect();
-    for (target, ordinal) in &basis.specific_ids {
+    // Resolve only from this account's canonical, usable lot population. An
+    // arbitrary selector is never decoded as an entry or used as a read grant.
+    let resolved_targets = if let Some(targets) = targets {
+        if !basis.specific_ids.is_empty()
+            || targets.len() > fa_model::lot_disposal::MAX_SPECIFIC_LOTS
+            || (basis.law != LotLaw::SpecificId && !targets.is_empty())
+        {
+            return Ok(Err(invalid(
+                "use bounded acquisition selectors only with SpecificId, without a second digest-bound selection",
+            )));
+        }
+        let mut resolved = Vec::with_capacity(targets.len());
+        for &(vid, ordinal) in targets {
+            if !selectable.contains(&(vid.0, ordinal)) {
+                return Ok(Err(invalid("SpecificId acquisition target is unavailable")));
+            }
+            let Some(&entry_digest) = history.digests.get(&vid) else {
+                return Err(KernelError::Corrupt("lot lost its source digest".into()));
+            };
+            resolved.push((EntryRef { vid, entry_digest }, ordinal));
+        }
+        Some(resolved)
+    } else {
+        None
+    };
+    let specific_ids = resolved_targets.as_deref().unwrap_or(&basis.specific_ids);
+    for (target, ordinal) in specific_ids {
         if history.digests.get(&target.vid) != Some(&target.entry_digest)
             || !selectable.contains(&(target.vid.0, *ordinal))
         {
@@ -543,13 +624,12 @@ fn derive<V: Vfs + Clone>(
             )));
         }
     }
-    if (basis.law == LotLaw::SpecificId) == basis.specific_ids.is_empty() {
+    if (basis.law == LotLaw::SpecificId) == specific_ids.is_empty() {
         return Ok(Err(invalid(
             "SpecificId requires explicit acquisition targets; other lot laws derive their selection",
         )));
     }
-    let ids: Vec<_> = basis
-        .specific_ids
+    let ids: Vec<_> = specific_ids
         .iter()
         .map(|(target, ordinal)| (target.vid.0, *ordinal))
         .collect();
@@ -617,6 +697,7 @@ fn derive<V: Vfs + Clone>(
     Ok(Ok(DerivedDisposal {
         outcome,
         legs,
+        resolved_targets,
         source: LotSource {
             book: spec,
             account: source,

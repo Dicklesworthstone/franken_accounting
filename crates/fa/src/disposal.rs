@@ -180,6 +180,34 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         request: &LotDisposalPostRequest,
         template: EntryPayload,
     ) -> Outcome<PreparedLotDisposal> {
+        self.prepare_draft_disposal(cx, capability, name, request, None, template)
+            .await
+    }
+
+    /// Resolve explicitly selected acquisition legs inside the owned draft's
+    /// source admission, without granting the planner general entry reads.
+    pub async fn prepare_lot_disposal_targets_in_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        name: &str,
+        request: &LotDisposalPostRequest,
+        targets: &[(VId, u16)],
+        template: EntryPayload,
+    ) -> Outcome<PreparedLotDisposal> {
+        self.prepare_draft_disposal(cx, capability, name, request, Some(targets), template)
+            .await
+    }
+
+    async fn prepare_draft_disposal(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        name: &str,
+        request: &LotDisposalPostRequest,
+        targets: Option<&[(VId, u16)]>,
+        template: EntryPayload,
+    ) -> Outcome<PreparedLotDisposal> {
         let admission = match self.query(cx, |db, book| {
             let admission = match fa_journal::draft::admit_sources(db, book, capability, name)? {
                 Ok(admission) => admission,
@@ -200,6 +228,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         // Hydration can suspend. The native factory repeats current draft
         // admission before observing retained policies or acquisition rows.
+        if let Some(targets) = targets {
+            return Ok(fa_journal::disposal::prepare_lot_disposal_targets_in_draft(
+                &self.db,
+                cx,
+                &self.context,
+                &admission,
+                request,
+                targets,
+                template,
+            )?);
+        }
         Ok(fa_journal::disposal::prepare_lot_disposal_in_draft(
             &self.db,
             cx,

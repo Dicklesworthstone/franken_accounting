@@ -1,7 +1,7 @@
 //! A draft-confined writer derives only its requested, fully admitted relief.
 
 use super::*;
-use fa_journal::disposal::prepare_lot_disposal_in_draft;
+use fa_journal::disposal::{prepare_lot_disposal_in_draft, prepare_lot_disposal_targets_in_draft};
 use fa_journal::draft::{DraftSourceAdmission, admit_sources};
 use fa_journal::refusal::code;
 
@@ -78,6 +78,26 @@ fn post_only_draft_disposal_matches_literal_relief_and_promotes_exact_effects() 
         let head = f.h.db.frontier().unwrap();
         let rows = f.h.db.vertices().unwrap();
         let prepared = f.prepare_confined_disposal(&source, &request, key).unwrap();
+        let targets: Vec<_> = request
+            .specific_ids
+            .iter()
+            .map(|(entry, ordinal)| (entry.vid, *ordinal))
+            .collect();
+        let selected = prepare_lot_disposal_targets_in_draft(
+            &f.h.db,
+            &f.h.ctx(),
+            &f.h.book,
+            &source,
+            &f.request(12),
+            &targets,
+            f.draft_disposal_template(key),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            selected, literal,
+            "resolving raw selectors preserves the exact digest-bound law result"
+        );
         assert_eq!(
             prepared, literal,
             "the source admission cannot change lot arithmetic"
@@ -141,6 +161,59 @@ fn post_only_draft_disposal_matches_literal_relief_and_promotes_exact_effects() 
         );
         assert_eq!(f.h.db.frontier().unwrap(), head);
     }
+}
+
+#[test]
+fn post_only_draft_disposal_resolves_only_usable_quantity_targets_after_authority() {
+    let mut f = Fixture::new(LotLaw::SpecificId);
+    let name = "selected-lots";
+    let planner = f.confined_disposal_planner(name, 12, 104);
+    f.h.open_draft(planner.clone(), name).unwrap();
+    let source = f.draft_disposal_source(&planner, name);
+    let head = f.h.db.frontier().unwrap();
+    let rows = f.h.db.vertices().unwrap();
+    for target in [
+        (VId(u128::MAX), 0),
+        (f.acquisitions[0].vid, 2),
+        (f.acquisitions[0].vid, 1),
+    ] {
+        let denied = prepare_lot_disposal_targets_in_draft(
+            &f.h.db,
+            &f.h.ctx(),
+            &f.h.book,
+            &source,
+            &f.request(1),
+            &[target],
+            f.draft_disposal_template(b"invalid-selector"),
+        )
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(denied.exit, 3);
+        assert_eq!(
+            denied.message,
+            "SpecificId acquisition target is unavailable"
+        );
+    }
+    let denied = prepare_lot_disposal_targets_in_draft(
+        &f.h.db,
+        &f.h.ctx(),
+        &f.h.book,
+        &source,
+        &f.request(13),
+        &[(VId(u128::MAX), 0)],
+        f.draft_disposal_template(b"quantity-before-selector"),
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(denied.exit, 7);
+    assert!(denied.message.contains("ceiling"));
+    assert_eq!(f.h.db.frontier().unwrap(), head);
+    assert_eq!(f.h.db.vertices().unwrap(), rows);
+    assert!(
+        fa_journal::policy::admit_reads(&f.h.db, &f.h.book, AGENT, &planner)
+            .unwrap()
+            .is_err()
+    );
 }
 
 #[test]

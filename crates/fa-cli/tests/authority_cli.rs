@@ -1211,6 +1211,101 @@ mod source_draft_tests {
     }
 
     #[test]
+    fn post_only_draft_capability_prepares_and_appends_a_disposal_review() {
+        for law in ["FIFO", "SpecificId"] {
+            let mut f = Fixture::new();
+            f.owner(&["chart", "import", "-"], Some(r#"{"accounts":[{"code":"1400","name":"Inventory","type":"Asset","unit":"any"},{"code":"1499","name":"Quantity offset","type":"Equity","unit":"SHARE"},{"code":"5100","name":"Cost of goods sold","type":"Expense","unit":"USD"}]}"#));
+            f.owner(
+                &[
+                    "chart",
+                    "lot-policy",
+                    "set",
+                    "--account",
+                    "1400",
+                    "--law",
+                    law,
+                    "--regime",
+                    "US-GAAP",
+                    "--date",
+                    DATE,
+                    "--key",
+                    "governed-lots",
+                ],
+                None,
+            );
+            let evidence = f.evidence.clone();
+            let acquisition = format!(
+                r#"{{"effective_date":"{DATE}","idempotency_key":"selected-acquisition","legs":[{{"side":"debit","account":"1400","amount":"10.000000 SHARE"}},{{"side":"credit","account":"1499","amount":"10.000000 SHARE"}},{{"side":"debit","account":"1400","amount":"100.00 USD"}},{{"side":"credit","account":"1000","amount":"100.00 USD"}}]}}"#
+            );
+            let acquired = f.owner(
+                &["post", "--intent", "-", "--evidence", &evidence],
+                Some(&acquisition),
+            );
+            let acquisition_id = text(field(&acquired, "data"), "vid").to_string();
+            let name = "selected-disposal";
+            let (cap, authority) = f.agent("lot-agent", Some(name));
+            f.open(&authority, name);
+            let target = format!("{acquisition_id}:0");
+            let mut args = vec![
+                "dispose",
+                "--account",
+                "1400",
+                "--quantity",
+                "3.000000 SHARE",
+                "--quantity-offset",
+                "1499",
+                "--cost-offset",
+                "5100",
+                "--date",
+                DATE,
+                "--key",
+                "selected-disposal",
+                "--evidence",
+                &evidence,
+                "--review-only",
+            ];
+            if law == "SpecificId" {
+                args.extend(["--target", &target]);
+            }
+            let before = f.book.head().unwrap();
+            let (exit, reviewed) = f.bound(&authority, &args, None);
+            assert_eq!(exit, 0, "{law}: {reviewed:?}");
+            assert_eq!(text(&reviewed, "event"), "lot_disposal_review");
+            assert_eq!(f.book.head().unwrap(), before, "review does not publish");
+            let data = field(&reviewed, "data");
+            let batch = format!(
+                r#"{{"idempotency_key":"selected-review-batch","intents":[{{"review":"{}","review_digest":"{}"}}]}}"#,
+                text(data, "bytes"),
+                text(data, "review_digest")
+            );
+            let (exit, planned) = f.bound(
+                &authority,
+                &["batch", "--intent", "-", "--draft", name],
+                Some(&batch),
+            );
+            assert_eq!(exit, 0, "{law}: {planned:?}");
+            assert_eq!(text(&planned, "event"), "draft_planned");
+            let entries = f.book.draft_entries(&cap, name).unwrap().unwrap();
+            assert_eq!(entries.len(), 1);
+            let proposal = &entries[0].proposal;
+            assert_eq!(proposal.legs.len(), 4);
+            assert_eq!(proposal.legs[0].amount.mantissa, 3_000_000);
+            assert_eq!(proposal.legs[2].amount.mantissa, 3_000);
+            let basis = proposal.lot_disposal_basis().unwrap().unwrap();
+            assert_eq!(basis.specific_ids.len(), usize::from(law == "SpecificId"));
+            let vid = VId(u128::from_str_radix(&acquisition_id, 16).unwrap());
+            if law == "SpecificId" {
+                let (entry, _) = f.book.read_entry(vid).unwrap().unwrap();
+                assert_eq!(basis.specific_ids, vec![(entry.entry_ref(vid), 0)]);
+            }
+            let (exit, denied) = f.bound(&authority, &["entry", "show", &acquisition_id], None);
+            assert_eq!(exit, 7, "{denied:?}");
+            assert_eq!(text(field(&denied, "data"), "refusal_id"), "FA-REF-011");
+            f.promote_exact(&cap, name, 1);
+        }
+    }
+
+    #[test]
     fn post_only_draft_capability_prepares_an_external_subledger_summary() {
         let mut f = Fixture::new();
         let source = f.external_source();

@@ -624,7 +624,7 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let units = &book.context().units;
         let quantity = fa_money::Amount::parse(required(args, "--quantity")?, units)
             .map_err(|error| usage(format!("--quantity: {error}"), DISPOSE_USAGE))?;
-        let mut specific_ids = Vec::new();
+        let mut targets = Vec::new();
         for raw in args.flag_all("--target") {
             let (id, ordinal) = raw.rsplit_once(':').ok_or_else(|| {
                 usage(
@@ -636,17 +636,23 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let ordinal = ordinal
                 .parse::<u16>()
                 .map_err(|_| usage("invalid quantity-leg ordinal", DISPOSE_USAGE))?;
-            let (entry, _) = book
-                .read_scope(principal, &capability)??
-                .read_entry(vid, None)??
-                .ok_or_else(|| usage("the selected lot entry does not exist", DISPOSE_USAGE))?;
-            specific_ids.push((
-                EntryRef {
-                    vid,
-                    entry_digest: entry.entry_digest,
-                },
-                ordinal,
-            ));
+            targets.push((vid, ordinal));
+        }
+        let mut specific_ids = Vec::new();
+        if draft.is_none() {
+            for &(vid, ordinal) in &targets {
+                let (entry, _) = book
+                    .read_scope(principal, &capability)??
+                    .read_entry(vid, None)??
+                    .ok_or_else(|| usage("the selected lot entry does not exist", DISPOSE_USAGE))?;
+                specific_ids.push((
+                    EntryRef {
+                        vid,
+                        entry_digest: entry.entry_digest,
+                    },
+                    ordinal,
+                ));
+            }
         }
         let book_id = book.context().book_id;
         let request = LotDisposalPostRequest {
@@ -658,9 +664,13 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         };
         let template = template(&mut book, args, principal)?;
         let prepared = match draft.as_deref() {
-            Some(name) => {
-                book.prepare_lot_disposal_in_draft(&capability, name, &request, template)??
-            }
+            Some(name) => book.prepare_lot_disposal_targets_in_draft(
+                &capability,
+                name,
+                &request,
+                &targets,
+                template,
+            )??,
             None => book.prepare_lot_disposal(&capability, &request, template)??,
         };
         PostIntent::new(prepared.into_proposal(), Vec::new())

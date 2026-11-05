@@ -3671,6 +3671,25 @@ impl Book {
         ))
     }
 
+    /// Prepare an owned-draft disposal from acquisition VID/ordinal selectors.
+    /// Target digests are resolved internally under current Post admission;
+    /// the caller receives only the ordinary derived, reviewed proposal.
+    pub fn prepare_lot_disposal_targets_in_draft(
+        &mut self,
+        capability: &fa_policy::Capability,
+        name: &str,
+        request: &crate::LotDisposalPostRequest,
+        targets: &[(VId, u16)],
+        template: fa_model::EntryPayload,
+    ) -> Outcome<crate::PreparedLotDisposal> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_lot_disposal_targets_in_draft(
+                &purposes, capability, name, request, targets, template
+            )
+        ))
+    }
+
     /// Register immutable source-bound straight-line asset cost terms.
     pub fn create_asset_schedule(
         &mut self,
