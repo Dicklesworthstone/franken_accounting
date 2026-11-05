@@ -3301,3 +3301,13 @@ the draft result's `entry` field and every economic/refusal assertion remain.
 The failed run (outer/remote 101, 8611 ms) is retained, with no passing credit
 for the two new cases. Its unfiltered genesis request separately did not run:
 source initialization returned 73 before a source/execution grant, outer 103.
+
+With those fixture IDs corrected, `2d57d69d` passed 17 authority cases,
+including current-trunk promotion refusal, and all 3 writing cases. The payable
+case passed planning and exact amount checks, then its read-denial probe used
+`fa entry <vid>` instead of the registered `fa entry show <vid>` and received
+usage exit 2. The probe was corrected to reach the permission check; its
+expected exit 7 / FA-REF-011 and exact promotion assertions were preserved.
+Raw outer/remote 101 (8601 ms) remains; this is another fixture error, not a
+product-law failure or a pass for the full suite. The second unfiltered genesis
+request again did not execute (initializer 73 / outer 103).

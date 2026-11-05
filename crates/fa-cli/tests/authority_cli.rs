@@ -1338,7 +1338,7 @@ mod source_draft_tests {
             field(field(&before, "data"), "rows"),
             field(field(&after, "data"), "rows")
         );
-        let (exit, refusal) = f.bound(&authority, &["entry", &target], None);
+        let (exit, refusal) = f.bound(&authority, &["entry", "show", &target], None);
         assert_eq!(exit, 7, "{refusal:?}");
         assert_eq!(text(field(&refusal, "data"), "refusal_id"), "FA-REF-011");
         f.promote_exact(&cap, name, 1);
