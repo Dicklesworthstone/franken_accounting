@@ -309,7 +309,7 @@ fn prepare_lot_disposal_with_admission<V: Vfs + Clone>(
             return Ok(Err(invalid(error)));
         }
         if let Some(admission) = draft
-            && let Err(refusal) = admission.admit_proposal(db, book, &template)?
+            && let Err(refusal) = admission.admit_derived_proposal(db, book, &template)?
         {
             return Ok(Err(refusal));
         }

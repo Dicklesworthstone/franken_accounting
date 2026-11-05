@@ -983,6 +983,23 @@ fn reviewed_close_execution_accepts_retention_and_an_independent_certificate_pro
     ));
     assert!(!execution.run.complete);
     assert_eq!(f.book.head().unwrap(), CommitSeq(retained_at.0 + 2));
+    assert_eq!(execution.run.reviews.len(), 1);
+    assert_eq!(
+        execution.run.reviews[0].certificate,
+        *certified.certificate.digest()
+    );
+    assert_eq!(
+        execution.run.reviews[0].recorded_at,
+        execution.completed[0].receipt.recorded_at
+    );
+    assert!(
+        execution
+            .run
+            .tasks
+            .iter()
+            .filter(|task| task.completion.is_some())
+            .all(|task| task.rehearsal == Some(*certified.certificate.digest()))
+    );
     let balance = f.book.trial_balance(&[PERIOD.into()]).unwrap();
     let cash = balance.rows.iter().find(|row| row.code == "1000").unwrap();
     assert_eq!((cash.debits, cash.credits), (0, 1_250));
@@ -1048,6 +1065,10 @@ fn reviewed_close_execution_rejects_offsetting_posted_and_pending_baseline_chang
             .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
             .unwrap()
             .unwrap();
+        f.book
+            .retain_close_run_rehearsal(REVIEWER, &producer(), &current.certificate)
+            .unwrap()
+            .unwrap();
         let execution = f
             .book
             .execute_reviewed_close_run(
@@ -1098,6 +1119,11 @@ fn reviewed_close_execution_requires_new_reviews_after_partial_and_complete_prog
         partial.report.tasks[0].outcome,
         CloseTaskRehearsalOutcome::AlreadyCompleted(_)
     ));
+    f.book
+        .retain_close_run_rehearsal(REVIEWER, &producer(), &partial.certificate)
+        .unwrap()
+        .unwrap();
+    let retained_at = f.book.head().unwrap();
     let execution = f
         .book
         .execute_reviewed_close_run(
@@ -1112,7 +1138,7 @@ fn reviewed_close_execution_requires_new_reviews_after_partial_and_complete_prog
     assert!(execution.run.complete);
     assert_eq!(execution.completed.len(), 1);
     assert_eq!(execution.completed[0].task, "a-second");
-    assert_eq!(f.book.head().unwrap(), CommitSeq(partial_at.0 + 1));
+    assert_eq!(f.book.head().unwrap(), CommitSeq(retained_at.0 + 1));
     let complete_at = f.book.head().unwrap();
     let refusal = f
         .book
@@ -1134,6 +1160,11 @@ fn reviewed_close_execution_requires_new_reviews_after_partial_and_complete_prog
         .unwrap()
         .unwrap();
     assert!(complete.report.complete_on_trunk);
+    f.book
+        .retain_close_run_rehearsal(REVIEWER, &producer(), &complete.certificate)
+        .unwrap()
+        .unwrap();
+    let complete_at = f.book.head().unwrap();
     let retry = f
         .book
         .execute_reviewed_close_run(
@@ -1224,6 +1255,10 @@ fn reviewed_close_execution_preserves_native_approvals_and_receipt_only_freshnes
         Some(fa::CloseRunStop::Refused { .. })
     ));
     assert!(missing.completed.is_empty());
+    assert!(
+        missing.run.reviews.is_empty(),
+        "a failed native task cannot attach a review"
+    );
     assert_eq!(f.book.head().unwrap(), before);
     let approval = f
         .book
@@ -1274,6 +1309,11 @@ fn reviewed_close_execution_preserves_native_approvals_and_receipt_only_freshnes
         .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
         .unwrap()
         .unwrap();
+    f.book
+        .retain_close_run_rehearsal(REVIEWER, &producer(), &current.certificate)
+        .unwrap()
+        .unwrap();
+    let completed_at = f.book.head().unwrap();
     let retry = f
         .book
         .execute_reviewed_close_run(

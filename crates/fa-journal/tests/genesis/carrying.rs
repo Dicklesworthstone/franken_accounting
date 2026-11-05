@@ -376,7 +376,7 @@ fn fx_group_overlap_bad_later_input_and_post_only_authority_publish_nothing() {
 }
 
 #[test]
-fn balanced_false_later_fx_component_and_group_in_batch_refuse_without_partial_effects() {
+fn false_later_fx_component_refuses_and_valid_group_posts_atomically() {
     let mut f = fixture(3, 10);
     let second = f.another_target();
     let inputs = [f.fx_request(f.target, 1), f.fx_request(second, 1)];
@@ -412,13 +412,27 @@ fn balanced_false_later_fx_component_and_group_in_batch_refuse_without_partial_e
     assert_eq!(f.h.db.frontier().unwrap(), head);
     assert_eq!(f.h.db.vertices().unwrap(), rows);
     let valid = f
-        .prepare_group(&inputs, b"group-not-batch-member")
+        .prepare_group(&inputs, b"group-as-batch-member")
         .unwrap()
         .into_proposal();
-    let batch = f.h.batch(b"unsupported-fx-group-batch", vec![valid]);
-    assert_eq!(f.post_fx_batch(batch).unwrap_err().code, "FA-REF-071");
+    let batch =
+        f.h.batch(b"independent-fx-group-batch", vec![valid.clone()]);
+    let posted = f.post_fx_batch(batch.clone()).unwrap();
+    assert_eq!(posted.recorded_at.0, head.0 + 1);
+    assert_eq!(posted.entries.len(), 1);
+    let (entry, _) = read_entry(&f.h.db, posted.entries[0].vid).unwrap().unwrap();
+    assert_eq!(entry.proposal, valid);
+    for target in [f.target, second] {
+        let carrying = f.carrying_for(target);
+        assert_eq!(carrying.open_native.mantissa, 2);
+        assert_eq!(carrying.open_base.mantissa, 7);
+    }
+    let head = f.h.db.frontier().unwrap();
+    let retry = f.post_fx_batch(batch).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.entries, posted.entries);
     assert_eq!(f.h.db.frontier().unwrap(), head);
-    assert_eq!(f.h.db.vertices().unwrap(), rows);
+    f.verify();
 }
 
 #[test]

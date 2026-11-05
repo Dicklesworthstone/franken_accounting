@@ -445,42 +445,36 @@ impl PreparedPost {
         let singleton_revaluation =
             proofs.revaluation.is_some() && self.request.proposal.class == EntryClass::REVALUATION;
         // The posting pipeline has already witnessed the exact side-swap
-        // and staged its recorded UNSETTLES effects. Legacy carrying undos
-        // therefore compose through those transactional application mirrors;
-        // they do not calculate a new relief from another batch member.
-        // stage_batch still retains and checks the complete prefix guard.
-        let recorded_carrying_undo = self.request.proposal.class == EntryClass::REVERSAL
+        // and staged its recorded UNSETTLES effects. Ordinary quoted FX and
+        // legacy carrying undos therefore compose through those transactional
+        // ancestry and application mirrors, including an earlier staged
+        // Original. They never derive a new valuation from another member.
+        // Other aggregate protocols still require their own proofs, and
+        // stage_batch retains and checks the complete prefix guard.
+        let recorded_fx_undo = self.request.proposal.class == EntryClass::REVERSAL
             && !crate::carrying::has_allocated_basis(&self.request.proposal)
+            && !crate::revaluation::is_source_bound(&self.request.proposal)
+            && !crate::disposal::has_basis(&self.request.proposal)
+            && !crate::asset_cost::has_basis(&self.request.proposal)
+            && !self.request.proposal.extensions.iter().any(|(tag, _)| {
+                *tag == fa_model::entry::PRIOR_PERIOD_ADJUSTMENT_EXTENSION
+                    || *tag == fa_model::entry::YEAR_END_CLOSE_EXTENSION
+            })
             && self
                 .request
                 .proposal
                 .base_totals
                 .as_ref()
                 .is_some_and(|total| {
-                    total.fx_law_oid == crate::fx::FxLawId::SettlementCarryingBasis.oid()
+                    matches!(
+                        crate::fx::FxLawId::from_oid(&total.fx_law_oid),
+                        Some(
+                            crate::fx::FxLawId::SpotClose
+                                | crate::fx::FxLawId::PeriodAverage
+                                | crate::fx::FxLawId::SettlementCarryingBasis
+                        )
+                    )
                 });
-        // An ordinary spot-valued reversal in an admitted draft has already
-        // passed the exact side-swap and witnessed valuation-ancestry checks.
-        // It introduces no new rate, application relief or fold-derived
-        // extension. Keep its aggregate classification: stage_batch retains
-        // the complete prefix guard and repeats it at publication.
-        let recorded_draft_spot_undo = matches!(
-            admission,
-            Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
-        ) && self.request.proposal.class == EntryClass::REVERSAL
-            && self.request.proposal.extensions.is_empty()
-            && self
-                .request
-                .proposal
-                .legs
-                .iter()
-                .all(|leg| leg.settles.is_empty())
-            && self
-                .request
-                .proposal
-                .base_totals
-                .as_ref()
-                .is_some_and(|total| total.fx_law_oid == crate::fx::FxLawId::SpotClose.oid());
         // A case's PPA members have already passed case membership and the
         // retained-earnings role fold in prepare_post_in. They share one
         // committed basis; stage_batch retains the aggregate dependency and
@@ -496,8 +490,7 @@ impl PreparedPost {
                 && !independent_asset_charge
                 && !singleton_closing
                 && !singleton_revaluation
-                && !recorded_carrying_undo
-                && !recorded_draft_spot_undo
+                && !recorded_fx_undo
                 && !case_adjustment)
         {
             self.txn.abort();
@@ -1232,6 +1225,41 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
         Ok(scope) => scope,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    // Complete carrying history can be hydrated before member preparation.
+    // Admit that source observation here too, for direct, plan and batch
+    // entrypoints. Only the private draft token permits named-source planning
+    // under its original branch-confined capability instead of general Read.
+    if crate::carrying::is_source_bound(proposal) {
+        if admission.admits_confined_draft_sources(&req.capability) {
+            // Do not assume a caller used a preparation factory: native
+            // drafts may contain hand-built proposals. All named Rates must
+            // pass the same typed disclosure gate before hydrating history.
+            if let Some(totals) = &proposal.base_totals {
+                if totals.rate_doc_oids.len() > fa_model::limits::MAX_RATE_DOCS {
+                    return Ok(Err(Refusal::new(
+                        code::SETTLE_SHAPE,
+                        exit::REFUSAL,
+                        "draft settlement exceeds the Rate document bound",
+                        "plan §5.7 / §15.2 (bounded typed source derivation)",
+                        "use at most max_rate_docs retained Rate documents",
+                    )));
+                }
+                for oid in &totals.rate_doc_oids {
+                    if let Err(refusal) = crate::redaction::admit_draft_source_record(
+                        db,
+                        book,
+                        &req.capability,
+                        *oid,
+                        crate::redaction::DraftSourceKind::FxRate,
+                    )? {
+                        return Ok(Err(refusal));
+                    }
+                }
+            }
+        } else if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
+            return Ok(Err(refusal));
+        }
+    }
     Ok(Ok(scope))
 }
 
@@ -2313,9 +2341,9 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
     }
     if crate::carrying::is_source_bound(proposal) {
-        // Named-draft owners were admitted before source hydration and every
-        // generated effect above. Their private draft token grants no general
-        // Read; ordinary planning/commit still requires whole-book FX authority.
+        // A private draft admission permits only the named-source derivation
+        // already admitted under its original confined planner. Ordinary
+        // plans and direct writes retain whole-book Read/Post admission.
         if !admission.admits_confined_draft_sources(&req.capability)
             && let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)?
         {
@@ -3142,6 +3170,20 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     }
     if let Err(refusal) = crate::carrying::validate_post(db, ctx, book, proposal, txn.basis())? {
         txn.abort();
+        if admission.admits_confined_draft_sources(&req.capability)
+            && crate::carrying::is_source_bound(proposal)
+        {
+            // A supplied proposal may intentionally understate its relief.
+            // Keep the validation law, but do not disclose its rejected
+            // source-derived amount through a diagnostic instead of an effect.
+            return Ok(Err(Refusal::new(
+                refusal.code,
+                refusal.exit,
+                "the proposed foreign settlement does not reproduce its admitted source effects",
+                "plan §15.2 (source-derived effects require admission before disclosure); fa-txgy.7",
+                "prepare the settlement from its named sources with a capability that admits every generated effect",
+            )));
+        }
         return Ok(Err(refusal));
     }
     if let Err(refusal) = crate::disposal::validate_post(&txn, db, ctx, book, proposal, admission)?
@@ -5389,7 +5431,7 @@ pub fn read_entry_at<V: asupersync::fs::Vfs + Clone>(
 /// its last leg — exactly what a scope admission reads. Any disagreement is
 /// corruption, raised before the payload drives an effect, for every
 /// caller: the mirrors are what scoped tokens are admitted by.
-fn checked_entry<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn checked_entry<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     row: &VertexRow,
 ) -> Result<(Entry, CommitSeq), KernelError> {

@@ -306,11 +306,75 @@ fn compound_carrying_does_not_treat_another_books_target_as_absent() {
 }
 
 #[test]
+fn singleton_and_grouped_preparation_keep_request_refusals_before_integrity_errors() {
+    let mut f = RevaluedFixture::new(Side::Debit, &[(3, 10)]);
+    let input = f.f.fx_request(f.targets[0], 1);
+    let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+    damage.delete_vertex(f.f.target.vid);
+    f.f.h.write_raw(damage);
+    let at = f.f.h.db.frontier().unwrap();
+    let rows = f.f.h.db.vertices().unwrap();
+    let key = b"singleton-group-refusal-order";
+    let prepare_single = |request: &FxSettlementRequest, date: DateDay| {
+        let mut template = f.f.h.proposal(vec![], key, EntryClass::ORIGINAL);
+        template.effective_date = date;
+        let stripped = Cx::detached_cancel_context();
+        let mut budget =
+            ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+        prepare_fx_settlement(
+            &f.f.h.db,
+            &f.f.h.ctx(),
+            &f.f.h.book,
+            &Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
+            request,
+            template,
+            &mut budget,
+        )
+    };
+    for mode in ["account", "amount", "date", "rate"] {
+        let mut request = input.clone();
+        let mut date = day(4, 15);
+        match mode {
+            "account" => request.settlement_account = f.source,
+            "amount" => request.amount.mantissa = 0,
+            "date" => date = day(3, 1),
+            "rate" => request.rate_document = Oid([0xff; 32]),
+            _ => unreachable!(),
+        }
+        let single = prepare_single(&request, date).expect(mode).unwrap_err();
+        let grouped = prepare_group_outcome(&f, &[request], date, key)
+            .expect(mode)
+            .unwrap_err();
+        assert_eq!(single, grouped, "{mode}");
+    }
+    let single = prepare_single(&input, day(4, 15))
+        .expect_err("a valid request cannot conceal a retired Entry");
+    let grouped = prepare_group_outcome(&f, &[input], day(4, 15), key)
+        .expect_err("a valid group cannot conceal a retired Entry");
+    assert_eq!(format!("{single:?}"), format!("{grouped:?}"));
+    assert_eq!(f.f.h.db.frontier().unwrap(), at);
+    assert_eq!(f.f.h.db.vertices().unwrap(), rows);
+}
+
+#[test]
 fn compound_carrying_keeps_full_history_tamper_refusals() {
-    for mode in ["delete", "relabel", "rewrite", "restore"] {
+    for (allocated, victim_kind, mode) in [
+        (false, "unrelated"),
+        (true, "unrelated"),
+        (true, "allocation"),
+    ]
+    .into_iter()
+    .flat_map(|(allocated, victim_kind)| {
+        ["delete", "relabel", "rewrite", "restore"]
+            .into_iter()
+            .map(move |mode| (allocated, victim_kind, mode))
+    }) {
         let mut f = RevaluedFixture::new(Side::Debit, &[(3, 10); 2]);
-        let allocation = f.revaluation(13, 3, 3, true).unwrap();
-        f.post_revaluation(allocation, b"compound-tamper-allocation");
+        let allocation = allocated.then(|| {
+            let prepared = f.revaluation(13, 3, 3, true).unwrap();
+            f.post_revaluation(prepared, b"compound-tamper-allocation")
+                .entry_ref()
+        });
         let inputs = f
             .targets
             .iter()
@@ -318,11 +382,19 @@ fn compound_carrying_keeps_full_history_tamper_refusals() {
             .collect::<Vec<_>>();
         let before = f.f.h.db.frontier().unwrap();
         let original = prepare_group_at(&f, &inputs, day(4, 15), b"compound-tamper-group").unwrap();
+        assert_eq!(
+            original.items()[0].carrying.valuation_route.is_some(),
+            allocated
+        );
 
-        // Damage an unrelated retained Entry, so neither direct target
-        // checks nor a source-account-only scan can detect every case. The
-        // complete historical audit must still run before returning a group.
-        let victim = f.f.target;
+        // Unrelated Entry damage cannot be found by target/source-only scans.
+        // Deleting the allocation also removes the apparent valuation route,
+        // so integrity cannot depend on that route remaining visible.
+        let victim = match victim_kind {
+            "allocation" => allocation.unwrap(),
+            _ => f.f.target,
+        };
+        let case = format!("allocated={allocated}, victim={victim_kind}, mode={mode}");
         let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
         match mode {
             "delete" => {
@@ -359,11 +431,32 @@ fn compound_carrying_keeps_full_history_tamper_refusals() {
             inputs[0].target_ordinal,
             at,
         )
-        .unwrap_err();
+        .map(|outcome| outcome.map(|_| ()));
+        if victim_kind == "unrelated" {
+            assert!(literal.is_err(), "{case}: {literal:?}");
+        } else {
+            // A damaged allocation can fail its existing source-reproduction
+            // law before the additional prefix proof runs. Preserve that
+            // refusal; neither failure form may return a carrying result.
+            match &literal {
+                Err(_) => {}
+                Ok(Err(refusal)) => {
+                    assert_eq!(refusal.code, fa_journal::refusal::code::STRUCTURE, "{case}");
+                    assert!(
+                        refusal.message.contains(
+                            "retained item allocation does not reproduce its complete original and publication source populations"
+                        ),
+                        "{case}: {refusal}"
+                    );
+                }
+                Ok(Ok(())) => panic!("{case}: damaged allocation returned a carrying result"),
+            }
+        }
         for _ in 0..2 {
             let compound = prepare_group_outcome(&f, &inputs, day(4, 15), b"compound-tamper-group")
-                .unwrap_err();
-            assert_eq!(format!("{compound:?}"), format!("{literal:?}"), "{mode}");
+                .map(|outcome| outcome.map(|_| ()));
+            assert!(!matches!(&compound, Ok(Ok(()))), "{case}: {compound:?}");
+            assert_eq!(format!("{compound:?}"), format!("{literal:?}"), "{case}");
         }
         // A later raw-store alteration cannot corrupt the intact historical
         // coordinate, nor can a cached head failure contaminate that read.
@@ -377,7 +470,7 @@ fn compound_carrying_keeps_full_history_tamper_refusals() {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(historical, original.items()[0].carrying, "{mode}");
+        assert_eq!(historical, original.items()[0].carrying, "{case}");
         assert_eq!(f.f.h.db.frontier().unwrap(), at);
         assert_eq!(f.f.h.db.vertices().unwrap(), rows);
     }

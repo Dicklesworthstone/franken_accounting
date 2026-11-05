@@ -35,7 +35,7 @@ use fgdb_crypto::Hasher;
 use fgdb_types::VId;
 
 use crate::code;
-use crate::journal::Journal;
+use crate::journal::{Journal, Leaf};
 use crate::tree::{Digest, Tree};
 
 pub const SCOPE_LEAF_DOMAIN: &[u8] = b"fa:scope-leaf:v1";
@@ -92,8 +92,14 @@ impl ScopeIndex {
     /// Derive the index of `journal`'s prefix.
     #[must_use]
     pub fn of(journal: &Journal) -> Self {
+        Self::of_leaves(journal.book_id, journal.branch_id, &journal.leaves)
+    }
+
+    /// Derive the same index for a borrowed prefix of an authenticated
+    /// journal without copying or decoding the prefix's record payloads.
+    pub(crate) fn of_leaves(book_id: Id128, branch_id: Id128, leaves: &[Leaf]) -> Self {
         let mut tuples = Vec::new();
-        for (i, leaf) in journal.leaves.iter().enumerate() {
+        for (i, leaf) in leaves.iter().enumerate() {
             let Some(day) = leaf.envelope.effective_day else {
                 continue;
             };
@@ -108,14 +114,11 @@ impl ScopeIndex {
         tuples.sort_unstable();
         let mut tree = Tree::with_node_domain(SCOPE_NODE_DOMAIN);
         for t in &tuples {
-            tree.push(hash(
-                SCOPE_LEAF_DOMAIN,
-                &[&t.bytes(journal.book_id, journal.branch_id)],
-            ));
+            tree.push(hash(SCOPE_LEAF_DOMAIN, &[&t.bytes(book_id, branch_id)]));
         }
         Self {
-            book_id: journal.book_id,
-            branch_id: journal.branch_id,
+            book_id,
+            branch_id,
             tuples,
             tree,
         }

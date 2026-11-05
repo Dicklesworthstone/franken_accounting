@@ -196,6 +196,12 @@ fn view_json(view: &CloseRunView) -> Json {
                     "completion",
                     task.completion.as_ref().map_or(Json::Null, receipt_json),
                 ),
+                (
+                    "rehearsal",
+                    task.rehearsal
+                        .as_ref()
+                        .map_or(Json::Null, |digest| s(hex(digest))),
+                ),
             ])
         })
         .collect();
@@ -207,6 +213,22 @@ fn view_json(view: &CloseRunView) -> Json {
         ("opened_at", Json::Int(i128::from(view.opened_at.0))),
         ("complete", Json::Bool(view.complete)),
         ("tasks", Json::Arr(tasks)),
+        (
+            "reviews",
+            Json::Arr(
+                view.reviews
+                    .iter()
+                    .map(|review| {
+                        obj(vec![
+                            ("record", s(format!("{:032x}", review.record.0))),
+                            ("certificate", s(hex(&review.certificate))),
+                            ("recorded_at", Json::Int(i128::from(review.recorded_at.0))),
+                            ("principal", s(format!("{:032x}", review.principal.0))),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
     ])
 }
 
@@ -223,6 +245,14 @@ fn summary(view: &CloseRunView) -> String {
         view.tasks.len(),
         if view.complete { " (complete)" } else { "" },
     )];
+    if let Some(review) = view.reviews.last() {
+        lines.push(format!(
+            "selected combined review C:{} ({} retained selection{})",
+            hex(&review.certificate),
+            view.reviews.len(),
+            if view.reviews.len() == 1 { "" } else { "s" },
+        ));
+    }
     for task in &view.tasks {
         let state = if task.completion.is_some() {
             "complete"
@@ -537,15 +567,20 @@ pub(super) fn step(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--plan",
             "--plan-out",
             "--approval",
+            "--rehearsal",
         ],
         &["--dry-run"],
     )?;
     let name = required(args, "--run")?;
     let task = required(args, "--task")?;
     let preview = args.switch("--dry-run") || args.flag("--plan-out").is_some();
-    if preview && (args.flag("--plan").is_some() || !args.flag_all("--approval").is_empty()) {
+    if preview
+        && (args.flag("--plan").is_some()
+            || !args.flag_all("--approval").is_empty()
+            || args.flag("--rehearsal").is_some())
+    {
         return Err(usage(
-            "a close task preview cannot consume a plan or approvals",
+            "a close task preview cannot consume a plan, approvals or combined review",
             "prepare the period task first, then execute its exact plan",
         ));
     }
@@ -677,8 +712,29 @@ pub(super) fn step(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         Vec::new()
     };
-    let recorded =
-        book.execute_close_task(name, task, capability, description, plan, approvals)??;
+    let rehearsal = args
+        .flag("--rehearsal")
+        .map(|value| {
+            let digits = value.strip_prefix("C:").unwrap_or(value);
+            let digest = parse_digest(digits, "--rehearsal")?;
+            let artifact = book.read_report_artifact(principal, &capability, &digest)??;
+            fa::CloseRunRehearsalCertificate::decode(&artifact.canonical_bytes()?)
+                .map_err(Fail::Refusal)
+        })
+        .transpose()?;
+    let recorded = if let Some(rehearsal) = &rehearsal {
+        book.execute_reviewed_close_task(
+            name,
+            task,
+            capability,
+            description,
+            rehearsal,
+            plan,
+            approvals,
+        )??
+    } else {
+        book.execute_close_task(name, task, capability, description, plan, approvals)??
+    };
     ctx.out.at_book(&book)?;
     ctx.out
         .effective(format!("period:{}", recorded.run.body.period));

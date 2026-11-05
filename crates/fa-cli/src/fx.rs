@@ -384,12 +384,18 @@ pub(crate) fn is_carrying_group(doc: &Json) -> bool {
     doc.get("payments")
         .or_else(|| doc.get("applications"))
         .is_some()
-        && matches!(
-            doc.get("fx")
-                .and_then(|fx| fx.get("law"))
-                .and_then(Json::as_str),
-            Some("SettlementCarryingBasis" | "SettlementAllocatedCarrying")
-        )
+        && is_carrying_settlement(doc)
+}
+
+/// Source-derived carrying settlements need only authenticated target handles
+/// while parsing a confined draft, never the source entry's private payload.
+pub(crate) fn is_carrying_settlement(doc: &Json) -> bool {
+    matches!(
+        doc.get("fx")
+            .and_then(|fx| fx.get("law"))
+            .and_then(Json::as_str),
+        Some("SettlementCarryingBasis" | "SettlementAllocatedCarrying")
+    )
 }
 
 /// Retain the original native allocation observations while deriving the full
@@ -548,6 +554,10 @@ fn settlement_intent(
     }
     proposal.legs.clear();
     proposal.unit_totals.clear();
+    // A confined draft derives only the declared effects. In particular, it
+    // must not obtain the prepared group's original/open item balances as a
+    // side effect of planning a payment. Ordinary callers keep their existing
+    // Read-based source preparation.
     let mut result = if let Some(name) = draft.filter(|_| capability.branch().is_some()) {
         book.prepare_fx_settlement_group_in_draft(capability, name, &requests, proposal)??
     } else {
@@ -564,6 +574,9 @@ fn settlement_intent(
             "use SettlementAllocatedCarrying for an item with a retained --allocate-open-items revaluation; otherwise use SettlementCarryingBasis",
         ));
     }
+    // Each component starts with its only applying leg. These ranges derive
+    // entirely from the reviewed proposal, so the draft path needs no source
+    // history or general item-read result to preserve declared memos.
     let mut starts: Vec<_> = result
         .legs
         .iter()
@@ -572,14 +585,15 @@ fn settlement_intent(
         .collect();
     if starts.len() != declared.len() || starts.first() != Some(&0) {
         return Err(Fail::Internal(
-            "FX settlement lost its ordered applying effects".into(),
+            "derived FX settlement lost its ordered application components".into(),
         ));
     }
     starts.push(result.legs.len());
-    for ((applying, cash), range) in declared.iter().zip(starts.windows(2)) {
-        let derived = &result.legs[range[0]];
+    for ((applying, cash), pair) in declared.iter().zip(starts.windows(2)) {
+        let derived = &result.legs[pair[0]];
         if applying.account_ref != derived.account_ref
             || applying.side != derived.side
+            || applying.amount != derived.amount
             || applying.dimension_set != derived.dimension_set
             || applying.settles != derived.settles
         {
@@ -588,7 +602,7 @@ fn settlement_intent(
                 FIX,
             ));
         }
-        for leg in &mut result.legs[range[0]..range[1]] {
+        for leg in &mut result.legs[pair[0]..pair[1]] {
             if !leg.settles.is_empty() {
                 leg.memo = applying.memo.clone();
             }

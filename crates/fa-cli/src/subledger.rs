@@ -57,6 +57,7 @@ pub(crate) fn subledger_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         "--description",
         "--plan-out",
         "--certificate-out",
+        "--draft",
     ] {
         let values = args.flag_all(flag);
         if !values.is_empty() && !allowed.contains(&flag) {

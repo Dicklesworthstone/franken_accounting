@@ -12,7 +12,7 @@ use crate::cli::{
 };
 use crate::json::{Json, obj, s};
 
-const HELP: &str = "fa subledger reconcile-feed <feed> --control <account> --as-of YYYY-MM-DD [--as-known-at <seq>] [--certify | --certificate-out <new-file>]; fa subledger detail --input <batch.json|-> [--out <new-file>]; retain the bytes as a Workpaper and obtain an independent Reviewed attestation; fa subledger feed --document D:<oid> --date YYYY-MM-DD --key K [--dry-run --plan-out <new-file>]; fa subledger verify-feed <entry> [--as-known-at <seq>]";
+const HELP: &str = "fa subledger reconcile-feed <feed> --control <account> --as-of YYYY-MM-DD [--as-known-at <seq>] [--certify | --certificate-out <new-file>]; fa subledger detail --input <batch.json|-> [--out <new-file>]; retain the bytes with fa document add <detail-file> --kind Workpaper --mime application/vnd.franken.subledger-detail.v1 and obtain an independent Reviewed attestation; fa subledger feed --document D:<oid> --date YYYY-MM-DD --key K [--draft <name> | --dry-run --plan-out <new-file>]; fa subledger verify-feed <entry> [--as-known-at <seq>]";
 const FLAGS: &[&str] = &[
     "--input",
     "--out",
@@ -27,6 +27,7 @@ const FLAGS: &[&str] = &[
     "--name",
     "--as-of",
     "--certificate-out",
+    "--draft",
 ];
 
 fn options(args: &Args, allowed: &[&str], dry_run: bool) -> Result<(), Fail> {
@@ -210,6 +211,7 @@ fn feed(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--key",
             "--description",
             "--plan-out",
+            "--draft",
         ],
         true,
     )?;

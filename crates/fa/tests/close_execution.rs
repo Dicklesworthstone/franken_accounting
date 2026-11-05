@@ -274,6 +274,267 @@ fn close_run_resumes_after_directory_reopen_without_duplicate_effects() {
 }
 
 #[test]
+fn selected_close_review_survives_reopen_and_requires_an_explicit_fresh_resume() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "fa-close-bound-review-{}-{nonce}",
+        std::process::id(),
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let seed = 207;
+    let producer = cap(CLOSER, &["read", "produce"]);
+    let mut f = Fixture::at(seed, Some(&directory));
+    let first = f.review("first-reviewed", PLANNER, 100);
+    let second = f.review("second-reviewed", PLANNER, 250);
+    f.start(
+        "reviewed",
+        vec![
+            task("first", &[], first),
+            task("second", &["first"], second),
+        ],
+    );
+    let original = f
+        .book
+        .certify_close_run_rehearsal(CLOSER, &producer, "reviewed")
+        .unwrap()
+        .unwrap();
+    let original_bytes = original.certificate.canonical_bytes().unwrap();
+    let before_retention = f.book.head().unwrap();
+    assert!(
+        f.book
+            .execute_reviewed_close_task(
+                "reviewed",
+                "first",
+                closer(),
+                "Not retained",
+                &original.certificate,
+                None,
+                Vec::new(),
+            )
+            .unwrap()
+            .is_err(),
+        "an in-memory certificate is not durable review evidence"
+    );
+    assert_eq!(f.book.head().unwrap(), before_retention);
+    assert!(
+        f.book
+            .close_run_status("reviewed", &closer())
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .reviews
+            .is_empty()
+    );
+    f.book
+        .retain_close_run_rehearsal(CLOSER, &producer, &original.certificate)
+        .unwrap()
+        .unwrap();
+    let retained_at = f.book.head().unwrap();
+    let first = f
+        .book
+        .execute_reviewed_close_task(
+            "reviewed",
+            "first",
+            closer(),
+            "Use selected review",
+            &original.certificate,
+            None,
+            Vec::new(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(!first.already_recorded);
+    assert_eq!(f.book.head().unwrap().0, retained_at.0 + 1);
+    assert_eq!(first.run.reviews.len(), 1);
+    let selection = &first.run.reviews[0];
+    assert_eq!(selection.certificate, *original.certificate.digest());
+    assert_eq!(
+        (selection.recorded_at, selection.principal),
+        (first.receipt.recorded_at, first.receipt.principal)
+    );
+    assert_eq!(
+        first.run.tasks[0].rehearsal,
+        Some(*original.certificate.digest())
+    );
+    drop(f);
+
+    let mut book = Book::open_dir(
+        &directory,
+        BookKeys::for_development(seed),
+        Entropy::deterministic(227),
+    )
+    .unwrap();
+    assert_eq!(
+        book.close_run_status("reviewed", &closer())
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+        first.run
+    );
+    let head = book.head().unwrap();
+    let run_refusal = book
+        .execute_close_run("reviewed", closer(), "Omit review after restart", None)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        run_refusal.code,
+        fa_journal::refusal::code::PLAN_INVALIDATED
+    );
+    let step_refusal = book
+        .execute_close_task(
+            "reviewed",
+            "second",
+            closer(),
+            "Omit review on one task",
+            None,
+            Vec::new(),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        step_refusal.code,
+        fa_journal::refusal::code::PLAN_INVALIDATED
+    );
+    let retry = book
+        .execute_reviewed_close_task(
+            "reviewed",
+            "first",
+            closer(),
+            "Authenticate original receipt",
+            &original.certificate,
+            None,
+            Vec::new(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.receipt, first.receipt);
+    assert_eq!(retry.run.reviews, first.run.reviews);
+    assert_eq!(book.head().unwrap(), head);
+
+    let fresh = book
+        .certify_close_run_rehearsal(CLOSER, &producer, "reviewed")
+        .unwrap()
+        .unwrap();
+    book.retain_close_run_rehearsal(CLOSER, &producer, &fresh.certificate)
+        .unwrap()
+        .unwrap();
+    let retained_at = book.head().unwrap();
+    let substitute = book
+        .execute_reviewed_close_task(
+            "reviewed",
+            "first",
+            closer(),
+            "Replace a past task's review",
+            &fresh.certificate,
+            None,
+            Vec::new(),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(substitute.code, fa_journal::refusal::code::PLAN_INVALIDATED);
+    let stale = book
+        .execute_reviewed_close_task(
+            "reviewed",
+            "second",
+            closer(),
+            "Old review misses progress",
+            &original.certificate,
+            None,
+            Vec::new(),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(stale.code, fa_journal::refusal::code::PLAN_INVALIDATED);
+    assert_eq!(book.head().unwrap(), retained_at);
+    let finished = book
+        .execute_reviewed_close_run(
+            "reviewed",
+            closer(),
+            "Explicitly resume with current review",
+            &fresh.certificate,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(finished.run.complete);
+    assert!(finished.stop.is_none());
+    assert_eq!(finished.completed.len(), 1);
+    assert_eq!(finished.completed[0].task, "second");
+    assert_eq!(book.head().unwrap().0, retained_at.0 + 1);
+    assert_eq!(
+        finished
+            .run
+            .reviews
+            .iter()
+            .map(|review| review.certificate)
+            .collect::<Vec<_>>(),
+        [*original.certificate.digest(), *fresh.certificate.digest()]
+    );
+    assert_eq!(finished.run.reviews[0], first.run.reviews[0]);
+    assert_eq!(
+        finished.run.reviews[1].recorded_at,
+        finished.completed[0].receipt.recorded_at
+    );
+    assert_eq!(
+        finished.run.tasks[0].completion.as_ref(),
+        Some(&first.receipt)
+    );
+    assert_eq!(
+        finished.run.tasks[0].rehearsal,
+        Some(*original.certificate.digest())
+    );
+    assert_eq!(
+        finished.run.tasks[1].rehearsal,
+        Some(*fresh.certificate.digest())
+    );
+    let final_head = book.head().unwrap();
+    drop(book);
+
+    let mut book = Book::open_dir(
+        &directory,
+        BookKeys::for_development(seed),
+        Entropy::deterministic(228),
+    )
+    .unwrap();
+    assert_eq!(
+        book.close_run_status("reviewed", &closer())
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+        finished.run
+    );
+    assert_eq!(
+        book.replay_close_run_rehearsal(CLOSER, &producer, &original.certificate)
+            .unwrap()
+            .unwrap(),
+        original.report
+    );
+    assert_eq!(
+        original.certificate.canonical_bytes().unwrap(),
+        original_bytes,
+        "durable selection must not rewrite the historical v1 review"
+    );
+    let original_retry = book
+        .execute_reviewed_close_task(
+            "reviewed",
+            "first",
+            closer(),
+            "Retry old receipt after replacement",
+            &original.certificate,
+            None,
+            Vec::new(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(original_retry.receipt, first.receipt);
+    assert_eq!(book.head().unwrap(), final_head);
+}
+
+#[test]
 fn close_run_stops_at_revoked_second_planner_and_retains_first_receipt() {
     let mut fixture = Fixture::new(202);
     let first = fixture.review("allowed-expense", PLANNER, 100);

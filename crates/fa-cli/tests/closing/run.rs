@@ -741,6 +741,60 @@ fn combined_close_rehearsal_retains_and_replays_after_real_execution() {
         get(task(&status(&f, "combined"), "finish"), "completion"),
         &Json::Null
     );
+    let partial = status(&f, "combined");
+    let selected_reviews = get(&partial, "reviews").as_arr().unwrap();
+    assert_eq!(selected_reviews.len(), 1);
+    assert_eq!(
+        text(&selected_reviews[0], "certificate"),
+        oid.strip_prefix("C:").unwrap()
+    );
+    assert_eq!(
+        get(&selected_reviews[0], "recorded_at"),
+        get(get(task(&partial, "first"), "completion"), "recorded_at")
+    );
+    for id in ["first", "second"] {
+        assert_eq!(
+            text(task(&partial, id), "rehearsal"),
+            oid.strip_prefix("C:").unwrap()
+        );
+    }
+    let before_resume = head(&f.book);
+    for command in ["run", "step"] {
+        let (code, refusal) = run(
+            &f.book,
+            &[
+                "close", command, "--run", "combined", "--task", "finish", "--plan", &plan_path,
+                "--as", CONTROLLER, "--yes",
+            ],
+        );
+        assert_eq!(
+            code, 6,
+            "a reopened bound run requires explicit review: {refusal:?}"
+        );
+        assert_eq!(head(&f.book), before_resume);
+    }
+    let retried = ok(
+        &f.book,
+        &[
+            "close",
+            "step",
+            "--run",
+            "combined",
+            "--task",
+            "first",
+            "--rehearsal",
+            &oid,
+            "--as",
+            CONTROLLER,
+            "--yes",
+        ],
+    );
+    assert_eq!(get(&retried, "already_recorded"), &Json::Bool(true));
+    assert_eq!(
+        get(&retried, "receipt"),
+        get(task(&partial, "first"), "completion")
+    );
+    assert_eq!(head(&f.book), before_resume);
     let remaining = combined_certificate(&f, "combined");
     let completed = ok(
         &f.book,
@@ -763,6 +817,29 @@ fn combined_close_rehearsal_retains_and_replays_after_real_execution() {
     assert_eq!(
         text(&completed, "rehearsal"),
         remaining.strip_prefix("C:").unwrap()
+    );
+    let completed_view = get(&completed, "run");
+    let reviews = get(completed_view, "reviews").as_arr().unwrap();
+    assert_eq!(reviews.len(), 2);
+    assert_eq!(reviews[0], selected_reviews[0]);
+    assert_eq!(
+        text(&reviews[1], "certificate"),
+        remaining.strip_prefix("C:").unwrap()
+    );
+    assert_eq!(
+        text(task(completed_view, "finish"), "rehearsal"),
+        remaining.strip_prefix("C:").unwrap()
+    );
+    assert_eq!(
+        text(task(completed_view, "first"), "rehearsal"),
+        oid.strip_prefix("C:").unwrap()
+    );
+    assert_eq!(
+        get(&reviews[1], "recorded_at"),
+        get(
+            get(task(completed_view, "finish"), "completion"),
+            "recorded_at"
+        )
     );
     let after = head(&f.book);
     let output_path = f.dir.join("combined-replayed.bin").display().to_string();

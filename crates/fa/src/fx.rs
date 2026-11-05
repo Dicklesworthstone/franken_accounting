@@ -13,7 +13,7 @@ use asupersync::fs::Vfs;
 use fa_journal::fx::RATE_DOCUMENT_KIND;
 use fa_journal::refusal::{Refusal, code, exit};
 use fa_journal::{DocumentAdded, DocumentRead, UploadRequest};
-use fa_model::{EntryPayload, Oid};
+use fa_model::{EntryPayload, EntryRef, Oid};
 use fa_money::rate::ArithmeticBudget;
 use fa_money::{UnitKind, UnitRegistry};
 use fa_policy::{Capability, Observes, Op, Reach};
@@ -551,7 +551,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         if let (Some(admission), Ok(proposal)) = (draft, &result)
             && let Err(refusal) = self.query(cx, |db, book| {
-                Ok(admission.admit_proposal(db, book, proposal)?)
+                Ok(admission.admit_derived_proposal(db, book, proposal)?)
             })?
         {
             return Ok(Err(refusal));
@@ -573,7 +573,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         budget: &mut ArithmeticBudget<'_, impl Sized>,
     ) -> Outcome<PreparedFxSettlement> {
         if let Err(refusal) = self
-            .prepare_fx_settlement_source(cx, capability, request.rate_document, &template, None)
+            .prepare_fx_settlement_source(cx, capability, None, request.rate_document, &template)
             .await?
         {
             return Ok(Err(refusal));
@@ -627,9 +627,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .prepare_fx_settlement_source(
                 cx,
                 capability,
+                None,
                 requests[0].rate_document,
                 &template,
-                None,
             )
             .await?
         {
@@ -652,8 +652,66 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(result)
     }
 
-    /// Derive a named draft's settlement effects without disclosing its
-    /// targets' remaining balances or granting document/report read authority.
+    /// Resolve a source handle for an explicitly confined open draft without
+    /// exposing the source entry. Complete target scope is admitted from its
+    /// public mirrors before any payload is decoded; missing and out-of-scope
+    /// sources return the same `None`.
+    pub fn draft_source_entry_ref(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        name: &str,
+        vid: VId,
+    ) -> Outcome<Option<EntryRef>> {
+        let admission = match self.query(cx, |db, book| {
+            Ok(fa_journal::draft::admit_sources(
+                db, book, capability, name,
+            )?)
+        })? {
+            Ok(admission) => admission,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        query.with_restriction(|| {
+            Ok(fa_journal::carrying::draft_source_entry_ref(
+                &mut self.db,
+                cx,
+                &self.context,
+                &admission,
+                vid,
+            )?)
+        })
+    }
+
+    /// Derive one foreign settlement for the capability holder's own open
+    /// draft. Only the admitted posting effects are returned; the remaining
+    /// native/base balances in an ordinary settlement explanation stay private.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn prepare_fx_settlement_in_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        name: &str,
+        request: &FxSettlementRequest,
+        template: EntryPayload,
+        budget: &mut ArithmeticBudget<'_, impl Sized>,
+    ) -> Outcome<EntryPayload> {
+        self.prepare_fx_settlement_group_in_draft(
+            cx,
+            capability,
+            name,
+            std::slice::from_ref(request),
+            template,
+            budget,
+        )
+        .await
+    }
+
+    /// Derive a complete group of explicitly named foreign items under one
+    /// confined draft admission. Declared amounts, routes and canonical target
+    /// legs are admitted before history hydration, and every generated effect
+    /// is readmitted after exact carrying and allocated-valuation replay.
     #[allow(clippy::too_many_arguments)]
     pub async fn prepare_fx_settlement_group_in_draft(
         &mut self,
@@ -672,48 +730,47 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(admission) => admission,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        if let Err(refusal) = self.query(cx, |db, book| {
-            Ok(admission.admit_proposal(db, book, &template)?)
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        if let Err(refusal) = query.with_restriction(|| {
+            fa_journal::carrying::admit_draft_settlement_requests(
+                &mut self.db,
+                cx,
+                &self.context,
+                &admission,
+                requests,
+                &template,
+            )
         })? {
             return Ok(Err(refusal));
-        }
-        if requests.is_empty() || requests.len() > MAX_FX_SETTLEMENT_ITEMS {
-            return Ok(Err(invalid(
-                "FX group is empty or exceeds the entry leg work bound",
-            )));
-        }
-        if requests
-            .iter()
-            .any(|request| request.rate_document != requests[0].rate_document)
-        {
-            return Ok(Err(invalid(
-                "FX group requires one shared Settlement Rate document",
-            )));
         }
         if let Err(refusal) = self
             .prepare_fx_settlement_source(
                 cx,
                 capability,
+                Some(&admission),
                 requests[0].rate_document,
                 &template,
-                Some(&admission),
             )
             .await?
         {
             return Ok(Err(refusal));
         }
-        let result = fa_journal::carrying::prepare_fx_settlement_group_in_draft(
-            &self.db,
-            cx,
-            &self.context,
-            &admission,
-            requests,
-            template,
-            budget,
-        )?;
-        if let Err(refusal) =
-            self.authorize_fx_valuation(cx, capability, capability.holder(), Some(&admission))?
-        {
+        // Both history and document reads may have suspended. The native
+        // factory repeats current owned-draft admission before observation.
+        let result = query.with_restriction(|| {
+            fa_journal::carrying::prepare_fx_settlement_group_in_draft(
+                &mut self.db,
+                cx,
+                &self.context,
+                &admission,
+                requests,
+                template,
+                budget,
+            )
+        })?;
+        query.checkpoint().map_err(BookError::Context)?;
+        if let Err(refusal) = self.query(cx, |db, book| Ok(admission.recheck(db, book)?))? {
             return Ok(Err(refusal));
         }
         Ok(result)
@@ -723,9 +780,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         &mut self,
         cx: &PurposeContexts,
         capability: &Capability,
+        draft: Option<&fa_journal::draft::DraftSourceAdmission>,
         rate_document: Oid,
         template: &EntryPayload,
-        draft: Option<&fa_journal::draft::DraftSourceAdmission>,
     ) -> Outcome<()> {
         if let Err(refusal) =
             self.authorize_fx_valuation(cx, capability, template.principal_ref, draft)?

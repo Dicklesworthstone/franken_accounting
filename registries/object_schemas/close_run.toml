@@ -38,9 +38,23 @@ period_fields = ["to:u8=2|3|4"]
 # status requires Read. The underlying native operation retains ordinary
 # posting/period laws and approval requirements. Completion records publish
 # atomically with their exact effects, and retries recheck current authority.
+# A selected combined review is a CloseRun 1->1 self-transition whose one
+# Object proof names the retained certificate digest. Its first task shares
+# that publication and principal. Reviewed task completions preserve the
+# original Vertex(effect) proof followed by Object(review_digest); historical
+# completions with only Vertex(effect) remain valid before the first selection.
+# A new selection appends history and cannot relabel completed tasks. Once a
+# selection exists, unfinished tasks cannot drop it or restore a superseded
+# selection. Selection is authorized inside the native CompleteTask path;
+# no separate attachment-only publication or new approval is permitted.
 #
 # The recorded draft certificate is actually retained and replayed by the
 # facade; the kernel binds its immutable digest and native reviewed effects.
+# The same division applies to the complete combined review: the facade reads
+# its original retained bytes, replays them, and compares current effects;
+# the kernel checks its bounded family/book/run/body identity and exact native
+# frontier, witnesses retention, and atomically binds the review to the effect.
+# The identity token alone does not establish the review's accounting result.
 # This schema does not attest that arbitrary Canon/procedure tasks executed,
 # that a draft certificate is a signature, or that portable monetary reports
 # independently establish the close workflow's admission predicates.

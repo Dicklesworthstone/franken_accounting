@@ -1768,6 +1768,25 @@ impl Book {
         )))
     }
 
+    /// Publish the selected close task only if its retained combined rehearsal
+    /// still matches the durable run state and current task selection.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_close_task_with_review(
+        &mut self,
+        name: &str,
+        task: &str,
+        capability: fa_journal::Capability,
+        description: &str,
+        transition_plan: Option<fa_journal::TransitionPlan>,
+        approvals: Vec<fa_model::ApprovalRef>,
+        review: Option<fa_journal::close_run::CloseTaskReview>,
+    ) -> Outcome<fa_journal::close_run::CloseTaskRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.execute_close_task_with_review(
+            &purposes, name, task, capability, description, transition_plan, approvals, review,
+        )))
+    }
+
     /// Open the draft `name` owned by the capability's holder (plan §15.2,
     /// fa-s7x). An Agent works on its draft; trunk changes only when a
     /// Human holding `approve` promotes it.
@@ -3831,8 +3850,29 @@ impl Book {
         )))
     }
 
-    /// Derive only settlement posting effects for the holder's own open draft.
-    /// Remaining carrying balances are not part of this source-only response.
+    /// Derive only the admitted effects of one foreign settlement for the
+    /// holder's own open draft, without disclosing the source's open balances.
+    pub fn prepare_fx_settlement_in_draft(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+        request: &crate::FxSettlementRequest,
+        template: fa_model::EntryPayload,
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_fx_settlement_in_draft(
+            &purposes, capability, name, request, template, &mut budget,
+        )))
+    }
+
+    /// Derive one complete foreign-settlement group under the explicitly
+    /// confined draft capability; ordinary Read authority is not widened.
     pub fn prepare_fx_settlement_group_in_draft(
         &mut self,
         capability: &fa_journal::Capability,
@@ -5348,6 +5388,21 @@ impl Book {
     /// witnesses or document-receipt claims.
     pub fn verify_accumulator(&self) -> Result<fa_notary::AccumulatorVerification, BookError> {
         with_store!(&self.store, core => core.verify_accumulator(&self.purposes()))
+    }
+
+    /// Verify the accumulator after loading only the retained delta interval
+    /// needed to share a journal observation across its checkpoints. Current
+    /// whole-book Read and Verify authority admit that loading. No journal
+    /// commit is published; unavailable history retains literal verification.
+    pub fn verify_accumulator_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_notary::AccumulatorVerification> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.verify_accumulator_with_history(&purposes, principal, capability)
+        ))
     }
 
     /// Every journaled accumulator state, newest first, following each
@@ -7813,6 +7868,21 @@ impl Book {
             Ok(fa_journal::draft::admit_sources_for_branch(db, book, capability)?
                 .map(|admission| admission.name().to_string()))
         }))
+    }
+
+    /// Resolve only the canonical handle of one explicitly named open-item
+    /// source under the owned draft's current capability. No source payload
+    /// is returned; an absent or out-of-scope target yields the same `None`.
+    pub fn draft_source_entry_ref(
+        &mut self,
+        capability: &fa_policy::Capability,
+        name: &str,
+        vid: fgdb_types::VId,
+    ) -> Outcome<Option<fa_model::EntryRef>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.draft_source_entry_ref(
+            &purposes, capability, name, vid,
+        ))
     }
 
     /// Install complete additive routes for period-end FX revaluation.

@@ -495,6 +495,20 @@ pub struct LeafKinds {
     pub access_events: u64,
 }
 
+impl LeafKinds {
+    pub(crate) fn observe(&mut self, envelope: &LeafEnvelope) {
+        let slot = match envelope.kind {
+            KIND_ATTESTATION => &mut self.attestations,
+            KIND_IMPORT_RECEIPT => &mut self.import_receipts,
+            KIND_CUSTODY_TRANSFER => &mut self.custody_transfers,
+            KIND_SUPPLEMENTAL_EVIDENCE => &mut self.supplemental_evidence,
+            KIND_ACCESS_EVENT => &mut self.access_events,
+            _ => &mut self.entries,
+        };
+        *slot += 1;
+    }
+}
+
 /// The journal prefix through `through_seq`, with its accumulator.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Journal {
@@ -509,6 +523,35 @@ pub struct Journal {
     pub access_after: Option<CommitSeq>,
     pub leaves: Vec<Leaf>,
     tree: Tree,
+}
+
+/// Work in native journal selection. Fragment authentication and substrate
+/// internals are deliberately outside these logical row/decode counts.
+#[derive(Default)]
+pub(crate) struct JournalReadWork {
+    pub full_reads: usize,
+    pub vertices_read: usize,
+    pub records_decoded: usize,
+}
+
+/// Roots and fragments whose changes can alter the accumulator population,
+/// canonical record bytes, birth coordinates or immutability checks.
+pub(crate) fn protected_record_row(row: &VertexRow) -> bool {
+    row.labels.contains(&label::ENTRY_FRAGMENT) || record_row(row)
+}
+
+fn record_row(row: &VertexRow) -> bool {
+    row.labels.iter().any(|candidate| {
+        [
+            label::ENTRY,
+            label::ATTESTATION,
+            label::IMPORT_RECEIPT,
+            label::CUSTODY_TRANSFER,
+            label::SUPPLEMENTAL_EVIDENCE,
+            label::ACCESS_EVENT,
+        ]
+        .contains(candidate)
+    })
 }
 
 fn corrupt(what: impl Into<String>) -> KernelError {
@@ -662,6 +705,24 @@ impl Journal {
         evidence_after: Option<CommitSeq>,
         access_after: Option<CommitSeq>,
     ) -> Outcome<Self> {
+        Self::read_with_boundaries_counted(
+            db,
+            book,
+            known_at,
+            evidence_after,
+            access_after,
+            &mut JournalReadWork::default(),
+        )
+    }
+
+    pub(crate) fn read_with_boundaries_counted<V: asupersync::fs::Vfs + Clone>(
+        db: &Database<V>,
+        book: &BookContext,
+        known_at: Option<CommitSeq>,
+        evidence_after: Option<CommitSeq>,
+        access_after: Option<CommitSeq>,
+        work: &mut JournalReadWork,
+    ) -> Outcome<Self> {
         let head = db.frontier()?;
         let seq = known_at.unwrap_or(head);
         if seq > head {
@@ -676,8 +737,33 @@ impl Journal {
                 format!("select a sequence at or before {}", head.0),
             )));
         }
+        work.full_reads = work.full_reads.saturating_add(1);
+        let rows = db.vertices_at(seq)?;
+        Ok(Ok(Self::from_native_rows(
+            db,
+            book,
+            seq,
+            evidence_after,
+            access_after,
+            rows,
+            work,
+        )?))
+    }
+
+    /// Decode one fixed snapshot, also used by a call-local observation that
+    /// inspects its protected identities before consuming these same rows.
+    pub(crate) fn from_native_rows<V: asupersync::fs::Vfs + Clone>(
+        db: &Database<V>,
+        book: &BookContext,
+        seq: CommitSeq,
+        evidence_after: Option<CommitSeq>,
+        access_after: Option<CommitSeq>,
+        rows: Vec<VertexRow>,
+        work: &mut JournalReadWork,
+    ) -> Result<Self, KernelError> {
+        work.vertices_read = work.vertices_read.saturating_add(rows.len());
         let mut records = Vec::new();
-        for row in db.vertices_at(seq)? {
+        for row in rows {
             let entry = row.labels.contains(&label::ENTRY);
             let boundary = if row.labels.contains(&label::ACCESS_EVENT) {
                 access_after
@@ -687,17 +773,14 @@ impl Journal {
             if !entry && boundary.is_none_or(|b| row.created_at <= b) {
                 continue;
             }
+            if record_row(&row) {
+                work.records_decoded = work.records_decoded.saturating_add(1);
+            }
             if let Some(record) = Record::of_row_at(db, &row, seq)? {
                 records.push((row.vid, record, row.created_at));
             }
         }
-        Ok(Ok(Self::from_records_with_boundaries(
-            book.book_id,
-            seq,
-            evidence_after,
-            access_after,
-            records,
-        )?))
+        Self::from_records_with_boundaries(book.book_id, seq, evidence_after, access_after, records)
     }
 
     /// Require every record in this historical prefix to remain unchanged
@@ -715,6 +798,15 @@ impl Journal {
         &self,
         db: &Database<V>,
         observed_at: CommitSeq,
+    ) -> Outcome<()> {
+        self.verify_unchanged_at_counted(db, observed_at, &mut 0)
+    }
+
+    pub(crate) fn verify_unchanged_at_counted<V: asupersync::fs::Vfs + Clone>(
+        &self,
+        db: &Database<V>,
+        observed_at: CommitSeq,
+        point_reads: &mut usize,
     ) -> Outcome<()> {
         let refusal = |message: String| {
             Refusal::new(
@@ -744,6 +836,7 @@ impl Journal {
                     leaf.vid.0, observed_at.0, self.through_seq.0
                 ))
             };
+            *point_reads = point_reads.saturating_add(1);
             let Some(row) = db.vertex_at(leaf.vid, observed_at)? else {
                 return Ok(Err(changed("was retired or is absent")));
             };
@@ -798,15 +891,7 @@ impl Journal {
     pub fn leaf_kinds(&self) -> LeafKinds {
         let mut kinds = LeafKinds::default();
         for leaf in &self.leaves {
-            let slot = match leaf.envelope.kind {
-                KIND_ATTESTATION => &mut kinds.attestations,
-                KIND_IMPORT_RECEIPT => &mut kinds.import_receipts,
-                KIND_CUSTODY_TRANSFER => &mut kinds.custody_transfers,
-                KIND_SUPPLEMENTAL_EVIDENCE => &mut kinds.supplemental_evidence,
-                KIND_ACCESS_EVENT => &mut kinds.access_events,
-                _ => &mut kinds.entries,
-            };
-            *slot += 1;
+            kinds.observe(&leaf.envelope);
         }
         kinds
     }
@@ -1084,6 +1169,19 @@ impl Journal {
             Ok(sums) => sums,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        self.encode_balance_proof(account, unit, through, debits, credits)
+    }
+
+    /// Serialize the unchanged v1 proof after an internal caller has derived
+    /// its complete checked fold from this same immutable journal.
+    pub(crate) fn encode_balance_proof(
+        &self,
+        account: VId,
+        unit: u32,
+        through: Option<i32>,
+        debits: i128,
+        credits: i128,
+    ) -> Outcome<Vec<u8>> {
         let contributing: Vec<(u64, &Leaf)> = self
             .leaves
             .iter()

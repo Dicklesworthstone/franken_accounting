@@ -187,7 +187,6 @@ impl Harness {
         time_evidence_oid: Option<Oid>,
     ) -> fa_notary::Checkpointed {
         assert!(latest(&self.db, None).unwrap().is_none());
-        let ctx = self.ctx();
         let journal = Journal::read(
             &self.db,
             &self.book,
@@ -196,7 +195,21 @@ impl Harness {
         )
         .unwrap()
         .unwrap();
-        let state = AccumulatorState::of_journal(&journal, None);
+        self.plant_checkpoint(journal, None, time_evidence_oid)
+    }
+
+    /// Deliberately bypass native checkpoint admission, retaining real
+    /// payloads, signatures and publication coordinates. This can construct
+    /// both historical coverage versions and an insider's invalid successor.
+    fn plant_checkpoint(
+        &mut self,
+        journal: Journal,
+        previous: Option<Oid>,
+        time_evidence_oid: Option<Oid>,
+    ) -> fa_notary::Checkpointed {
+        let ctx = self.ctx();
+        let through = journal.through_seq;
+        let state = AccumulatorState::of_journal(&journal, previous);
         let payload = state.canonical_bytes().unwrap();
         let oid = state_oid(&payload);
         let vid = state_vid(&oid);
@@ -241,7 +254,7 @@ impl Harness {
         states.compare_and_set_vertex_property(
             book_root(),
             property::ACCUMULATOR_HEAD,
-            None,
+            previous.map(|oid| scalar(oid.0.to_vec())),
             scalar(oid.0.to_vec()),
             WriteMismatchPolicy::AbortWrite,
         );
@@ -327,17 +340,34 @@ fn harness() -> Harness {
 /// The fixture book, optionally with an opening date (plan §7.2): periods
 /// created before it are born Historical.
 fn harness_with(opening_date: Option<DateDay>) -> Harness {
-    let runtime = RuntimeBuilder::new().build().expect("runtime");
-    let root = runtime.request_cx_with_budget(Budget::INFINITE);
-    let ctx = PurposeContexts::narrow_runtime_root(&root);
-    let keys = DatabaseKeys::new(
+    harness_with_vfs(opening_date, None)
+}
+
+fn harness_keys() -> DatabaseKeys {
+    DatabaseKeys::new(
         [0x6a; 32],
         DatabaseSecurityNamespaceId([0x6b; 32]),
         [0x6c; 32],
-    );
-    let mut db = runtime
-        .block_on(async { Database::open_memory(&ctx.commit(), keys).await })
-        .expect("open");
+    )
+}
+
+fn harness_with_vfs(opening_date: Option<DateDay>, vfs: Option<MemVfs>) -> Harness {
+    let runtime = RuntimeBuilder::new().build().expect("runtime");
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let ctx = PurposeContexts::narrow_runtime_root(&root);
+    let mut db = match vfs {
+        None => runtime
+            .block_on(Database::open_memory(&ctx.commit(), harness_keys()))
+            .expect("open"),
+        Some(vfs) => runtime
+            .block_on(Database::create_with_vfs(
+                &ctx.commit(),
+                vfs.clone(),
+                vfs.database_dir(),
+                harness_keys(),
+            ))
+            .expect("create reopenable book"),
+    };
     let units = UnitRegistry::with_defaults();
     let usd = units.lookup("USD").unwrap();
     let calendar = FiscalCalendar::monthly("cal", 1, 1).unwrap();
@@ -4931,6 +4961,290 @@ fn a_state_that_moves_its_evidence_boundary_is_found() {
         "{found:?}"
     );
     assert!(found.states[1..].iter().all(|s| s.finding.is_none()));
+}
+
+/// Literal snapshot oracle for chains whose state framing, coverage and
+/// signed checkpoints are valid. It deliberately selects every prefix anew,
+/// including records absent from the latest snapshot, and checks its current
+/// immutable bytes in the original journal order.
+fn literal_chain_records(h: &Harness) -> Vec<fa_notary::StateCheck> {
+    let at = h.db.frontier().unwrap();
+    chain(&h.db, None)
+        .unwrap()
+        .into_iter()
+        .map(|stored| {
+            let state = &stored.state;
+            let journal = Journal::read_with_boundaries(
+                &h.db,
+                &h.book,
+                Some(state.through_seq),
+                state.evidence_after,
+                state.access_after,
+            )
+            .unwrap()
+            .unwrap();
+            let recomputed = AccumulatorState::of_journal(&journal, state.prev_state_oid);
+            assert_eq!(recomputed, *state, "fixture state is its historical prefix");
+            let finding = journal
+                .verify_unchanged_at(&h.db, at)
+                .unwrap()
+                .err()
+                .map(|refusal| refusal.message);
+            if finding.is_none() {
+                fa_notary::stored_checkpoint(&h.db, &h.ctx(), &h.book, &stored, &h.signer)
+                    .unwrap()
+                    .expect("fixture checkpoint independently recomputes");
+            }
+            fa_notary::StateCheck {
+                oid: stored.oid,
+                through_seq: state.through_seq,
+                leaf_count: state.leaf_count,
+                recorded_at: stored.recorded_at,
+                evidence_after: state.evidence_after,
+                access_after: state.access_after,
+                leaf_kinds: Some(journal.leaf_kinds()),
+                finding,
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn accumulator_chain_shares_one_native_population_and_preserves_every_prefix() {
+    let mut h = harness();
+    let mut checkpoints = Vec::new();
+    for i in 0..12u8 {
+        let account = if i.is_multiple_of(2) {
+            h.rent
+        } else {
+            h.utilities
+        };
+        h.post_on(
+            account,
+            i128::from(i) + 100,
+            &[b's', i],
+            28 - i,
+            if i.is_multiple_of(3) {
+                EntryClass::PENDING
+            } else {
+                EntryClass::ORIGINAL
+            },
+        );
+        if i.is_multiple_of(4) {
+            h.tick(10_000 + u64::from(i), true);
+        }
+        checkpoints.push(h.checkpoint());
+    }
+    // A late-effective posting beyond the latest checkpoint must not leak
+    // into any older population or change its count/root/TimeEvidence.
+    h.post_on(h.rent, 1, b"not-checkpointed", 1, EntryClass::ORIGINAL);
+    let expected = literal_chain_records(&h);
+    let (verified, work) =
+        fa_notary::verify_accumulator_counted(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+    assert_eq!(verified.states, expected);
+    assert_eq!(work.shared_prefixes, checkpoints.len(), "{work:?}");
+    assert_eq!(work.literal_prefixes, 0, "{work:?}");
+    assert_eq!(work.journal_full_reads, 1, "{work:?}");
+    let newest = checkpoints.last().unwrap();
+    assert_eq!(work.journal_records_decoded as u64, newest.state.leaf_count);
+    assert_eq!(
+        work.immutability_point_reads as u64,
+        newest.state.leaf_count
+    );
+    assert!(work.delta_rows_examined > 0);
+    let (basis, stored_cp) = bundle_basis(&h.db, &h.ctx(), &h.book, newest, &h.signer)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        AccumulatorState::of_journal(&basis, newest.state.prev_state_oid),
+        newest.state
+    );
+    assert_eq!(
+        stored_cp,
+        fa_notary::stored_checkpoint(&h.db, &h.ctx(), &h.book, newest, &h.signer)
+            .unwrap()
+            .unwrap()
+    );
+}
+
+#[test]
+fn shared_accumulator_prefixes_preserve_both_legacy_coverage_upgrades() {
+    let mut h = harness();
+    let (uncovered_access, _) = access_events::record_access(&mut h, "before both upgrades");
+    let old = Journal::read(&h.db, &h.book, None, None).unwrap().unwrap();
+    let entries_only = h.plant_checkpoint(old, None, None).stored;
+    let evidence = record_evidence(&mut h);
+    let middle = Journal::read(&h.db, &h.book, None, Some(entries_only.state.through_seq))
+        .unwrap()
+        .unwrap();
+    assert!(middle.leaf_index(evidence.review).is_some());
+    let evidence_only = h
+        .plant_checkpoint(middle, Some(entries_only.oid), None)
+        .stored;
+    let (covered_access, _) = access_events::record_access(&mut h, "after access upgrade boundary");
+    let newest = h.checkpoint();
+    let selected = Journal::read_with_boundaries(
+        &h.db,
+        &h.book,
+        Some(newest.state.through_seq),
+        newest.state.evidence_after,
+        newest.state.access_after,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        newest.state.evidence_after,
+        Some(entries_only.state.through_seq)
+    );
+    assert_eq!(
+        newest.state.access_after,
+        Some(evidence_only.state.through_seq)
+    );
+    assert!(
+        selected
+            .leaf_index(uncovered_access.vid().unwrap())
+            .is_none()
+    );
+    assert!(selected.leaf_index(covered_access.vid().unwrap()).is_some());
+    let expected = literal_chain_records(&h);
+    let (verified, work) =
+        fa_notary::verify_accumulator_counted(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+    assert_eq!(verified.states, expected);
+    assert_eq!(work.shared_prefixes, 3, "{work:?}");
+    assert_eq!(work.journal_full_reads, 1, "{work:?}");
+    assert_eq!(work.journal_records_decoded as u64, newest.state.leaf_count);
+}
+
+#[test]
+fn accumulator_shared_observation_refolds_after_rewrite_and_restoration() {
+    for change in ["payload", "digest", "book", "label", "unrelated property"] {
+        let mut h = harness();
+        let target = h.post(h.rent, 400, b"restored-source");
+        h.checkpoint();
+        h.post(h.utilities, 50, b"later-source");
+        h.checkpoint();
+        let original = h.db.vertex(target).unwrap().unwrap();
+        let key = match change {
+            "payload" => property::FA_PAYLOAD,
+            "digest" => property::FA_DIGEST,
+            "book" => property::BOOK_ID,
+            _ => property::CODE,
+        };
+        let mut attack = WriteBatch::new(relation::DERIVED_FROM);
+        let mut restore = WriteBatch::new(relation::DERIVED_FROM);
+        if change == "label" {
+            attack.set_vertex_label(target, label::ENTRY, false);
+            restore.set_vertex_label(target, label::ENTRY, true);
+        } else {
+            attack.set_vertex_property(
+                target,
+                key,
+                Some(CanonicalScalar::bytes(b"raw-store mutation".to_vec()).unwrap()),
+            );
+            restore.set_vertex_property(
+                target,
+                key,
+                fa_journal::rows::prop(&original, key).cloned(),
+            );
+        }
+        h.write_raw(attack);
+        h.write_raw(restore);
+        let expected = literal_chain_records(&h);
+        let (verified, work) =
+            fa_notary::verify_accumulator_counted(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
+        assert_eq!(verified.states, expected, "{change}: {work:?}");
+        assert_eq!(work.shared_prefixes, 0, "{change}: {work:?}");
+        assert_eq!(work.literal_prefixes, 2, "{change}: {work:?}");
+        assert!(work.delta_rows_examined > 0, "{change}: {work:?}");
+    }
+}
+
+#[test]
+fn accumulator_shared_observation_cannot_hide_a_deleted_old_record() {
+    let mut h = harness();
+    let target = h.post(h.rent, 75, b"old-deleted-source");
+    let old = h.checkpoint();
+    h.post(h.utilities, 20, b"new-a");
+    h.post(h.rent, 30, b"new-b");
+    let mut attack = WriteBatch::new(relation::DERIVED_FROM);
+    attack.delete_vertex(target);
+    h.write_raw(attack);
+    let latest = Journal::read_with_boundaries(
+        &h.db,
+        &h.book,
+        None,
+        old.state.evidence_after,
+        old.state.access_after,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(latest.leaf_index(target).is_none());
+    assert!(latest.len() > old.state.leaf_count);
+    h.plant_checkpoint(latest, Some(old.oid), None);
+    let expected = literal_chain_records(&h);
+    let (verified, work) =
+        fa_notary::verify_accumulator_counted(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
+    assert_eq!(verified.states, expected);
+    assert!(!verified.is_green());
+    assert!(verified.states[0].finding.is_none());
+    assert!(
+        verified.states[1]
+            .finding
+            .as_ref()
+            .unwrap()
+            .contains("was retired or is absent")
+    );
+    assert_eq!(work.shared_prefixes, 0, "{work:?}");
+    assert_eq!(work.literal_prefixes, 2, "{work:?}");
+    assert!(work.delta_rows_examined > 0, "{work:?}");
+}
+
+#[test]
+fn accumulator_shared_observation_requires_a_complete_retained_delta_window() {
+    let vfs = MemVfs::new().unwrap();
+    let mut h = harness_with_vfs(None, Some(vfs.clone()));
+    h.post(h.rent, 10, b"before-reopen");
+    let first = h.checkpoint();
+    h.tick(50_000, true);
+    h.post(h.utilities, 11, b"after-first-checkpoint");
+    h.checkpoint();
+    let ctx = h.ctx();
+    let (before, work) =
+        fa_notary::verify_accumulator_counted(&h.db, &ctx, &h.book, &h.signer).unwrap();
+    assert_eq!(work.shared_prefixes, 2, "{work:?}");
+    let Harness {
+        runtime,
+        db,
+        book,
+        signer,
+        ..
+    } = h;
+    drop(db);
+    let mut reopened = runtime
+        .block_on(Database::open_with_vfs(
+            &ctx.commit(),
+            vfs.clone(),
+            vfs.database_dir(),
+            harness_keys(),
+        ))
+        .unwrap();
+    assert!(reopened.delta_since(first.state.through_seq).is_err());
+    let (literal, work) =
+        fa_notary::verify_accumulator_counted(&reopened, &ctx, &book, &signer).unwrap();
+    assert_eq!(literal, before);
+    assert_eq!(work.shared_prefixes, 0, "{work:?}");
+    assert_eq!(work.literal_prefixes, 2, "{work:?}");
+    assert_eq!(work.delta_rows_examined, 0, "{work:?}");
+    runtime
+        .block_on(reopened.ensure_delta_window(&ctx.commit(), first.state.through_seq))
+        .unwrap();
+    let (restored, work) =
+        fa_notary::verify_accumulator_counted(&reopened, &ctx, &book, &signer).unwrap();
+    assert_eq!(restored, before);
+    assert_eq!(work.shared_prefixes, 2, "{work:?}");
+    assert_eq!(work.journal_full_reads, 1, "{work:?}");
 }
 
 #[path = "notary/access_events.rs"]

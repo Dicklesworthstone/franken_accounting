@@ -17,6 +17,7 @@ fa-time = { path = "../fa-time", version = "=0.0.1" }
 fa-journal = { path = "../fa-journal", version = "=0.0.1" }
 asupersync = { workspace = true }
 fgdb = { workspace = true }
+fgdb-delta-types = { workspace = true }
 fgdb-types = { workspace = true }
 fgdb-crypto = { workspace = true }
 fgdb-gql = { workspace = true }

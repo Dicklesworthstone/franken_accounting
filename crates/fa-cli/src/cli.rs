@@ -2682,11 +2682,15 @@ pub fn bound_command_admissible(
     let agent_correction_review = (verb == "replace"
         || (verb == "reverse" && args.flag("--replace-with").is_some()))
         && (args.switch("--review-only") || args.flag("--review-out").is_some());
-    // Disposal review derives a proposal only. Its typed handler requires
-    // either ordinary Read/Post or the caller's explicitly confined owned
-    // draft admission; this never authorizes a monetary trunk write.
-    let agent_disposal_review =
-        verb == "dispose" && (args.switch("--review-only") || args.flag("--review-out").is_some());
+    // This mode derives a proposal only after the handler resolves the
+    // capability's own open draft. It cannot restore or publish a review.
+    let agent_disposal_review = verb == "dispose"
+        && authority.capability().branch().is_some()
+        && (args.switch("--review-only") || args.flag("--review-out").is_some())
+        && args.flag("--review").is_none()
+        && args.flag("--digest").is_none()
+        && !args.switch("--dry-run")
+        && args.flag("--plan-out").is_none();
     if authority.profile() == crate::authority::LaunchProfile::Agent
         && is_monetary_trunk_post
         && !agent_rehearsal
@@ -6680,6 +6684,29 @@ pub(crate) fn draft_intent_json(book: &Book, planned: &fa_journal::PlannedIntent
     ])
 }
 
+/// Admit the named logical branch before a lifecycle command discloses the
+/// book coordinate. The native lifecycle still checks ownership and state.
+fn admit_named_draft_write(book: &Book, capability: &Capability, name: &str) -> Result<(), Fail> {
+    fa_policy::admit_within(
+        capability,
+        &fa_policy::Intent {
+            principal: capability.holder(),
+            trunk: false,
+            op: fa_policy::Op::Post,
+            book: book.context().book_id,
+            legs: &[],
+        },
+        &fa_policy::Reach {
+            branch: Some(fa_model::draft_branch(book.context().book_id, name)),
+            ..fa_policy::Reach::whole_book(false)
+        },
+        None,
+    )
+    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    book.admit_current(capability)??;
+    Ok(())
+}
+
 /// `fa draft new|plan|list|show|promote|discard` (plan §15.2, bead fa-s7x):
 /// an intent log that reaches trunk only when a principal holding `approve`
 /// who is not its owner promotes it, replaying every intent in one batch.
@@ -6689,9 +6716,9 @@ fn draft_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("new") => {
             let name = draft_name(args, "new")?.to_string();
             let capability = ctx.capability(args, &["post"])?;
-            let mut book = ctx
-                .books
-                .open_admitted(args, |book| admit_draft_lifecycle(book, &capability, &name))?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                admit_named_draft_write(book, &capability, &name)
+            })?;
             let date = control_date(args, &book)?;
             let default_desc = format!("draft {name}");
             let description = args.flag("--description").unwrap_or(&default_desc);
@@ -6843,9 +6870,9 @@ fn draft_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("discard") => {
             let name = draft_name(args, "discard")?.to_string();
             let capability = ctx.capability(args, &["post"])?;
-            let mut book = ctx
-                .books
-                .open_admitted(args, |book| admit_draft_lifecycle(book, &capability, &name))?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                admit_named_draft_write(book, &capability, &name)
+            })?;
             let date = control_date(args, &book)?;
             let default_desc = format!("discard draft {name}");
             let description = args
@@ -7374,8 +7401,9 @@ fn parse_settles(
     leg_doc: &Json,
     what: &str,
     ctx: &BookContext,
-    book: &Book,
+    book: &mut Book,
     earlier: &batch_plan::PriorEntries,
+    carrying_draft: Option<(&Capability, &str)>,
 ) -> Result<Vec<fa_model::Settlement>, Fail> {
     let Some(list) = leg_doc.get("settles") else {
         return Ok(Vec::new());
@@ -7390,11 +7418,25 @@ fn parse_settles(
     for (j, item) in list.iter().enumerate() {
         let what = format!("{what}.settles[{j}]");
         let vid = parse_vid(req_str(item, "entry", &what)?, &format!("{what}.entry"))?;
-        let Some(target) = batch_plan::target_entry(book, earlier, vid)? else {
-            return Err(usage(
-                format!("{what}: no entry {:032x} in this book", vid.0),
-                "fa open-items --account <code> lists the open items to apply to",
-            ));
+        let target = match carrying_draft {
+            Some((capability, name)) => book.draft_source_entry_ref(capability, name, vid)??,
+            None => batch_plan::target_entry(book, earlier, vid)?.map(|entry| entry.entry_ref(vid)),
+        };
+        let Some(target) = target else {
+            return Err(if carrying_draft.is_some() {
+                usage(
+                    format!(
+                        "{what}: entry {:032x} is unavailable for this application",
+                        vid.0
+                    ),
+                    "supply an authorized retained open-item identity; an authorized reader can list open items",
+                )
+            } else {
+                usage(
+                    format!("{what}: no entry {:032x} in this book", vid.0),
+                    "fa open-items --account <code> lists the open items to apply to",
+                )
+            });
         };
         let ordinal = match item.get("ordinal") {
             Some(Json::Int(n)) => u16::try_from(*n).map_err(|_| {
@@ -7422,7 +7464,7 @@ fn parse_settles(
             )
         })?;
         out.push(fa_model::Settlement {
-            target: target.entry_ref(vid),
+            target,
             ordinal,
             amount,
         });
@@ -7433,8 +7475,9 @@ fn parse_settles(
 fn parse_legs(
     doc: &Json,
     ctx: &BookContext,
-    book: &Book,
+    book: &mut Book,
     earlier: &batch_plan::PriorEntries,
+    carrying_draft: Option<(&Capability, &str)>,
 ) -> Result<Vec<(LegPayload, Option<u16>)>, Fail> {
     let legs_doc = doc.get("legs").and_then(Json::as_arr).ok_or_else(|| {
         usage(
@@ -7500,7 +7543,7 @@ fn parse_legs(
         };
         let mut leg = LegPayload::simple(side, account_vid(ctx.book_id, account), amount);
         leg.memo = memo;
-        leg.settles = parse_settles(l, &what, ctx, book, earlier)?;
+        leg.settles = parse_settles(l, &what, ctx, book, earlier, carrying_draft)?;
         // A leg names its legal entity (required in a multi-entity book)
         // and its counterparty by code; the kernel checks both exist
         // (plan §4.1, §4.5). Dimension ids ascend: entity 1, the registered
@@ -8379,6 +8422,9 @@ fn build_post_request_with_prior(
         }
     }
     let ctx = book.context().clone();
+    let carrying_draft = draft
+        .filter(|_| capability.branch().is_some() && crate::fx::is_carrying_settlement(doc))
+        .map(|name| (&capability, name));
     let class_name = match doc.get("class") {
         None => match forced {
             Some(EntryClass::PENDING) => "Pending",
@@ -8605,7 +8651,7 @@ fn build_post_request_with_prior(
                 legs
             }
             (None, Some(_)) => {
-                let parsed = parse_legs(doc, &ctx, book, earlier)?;
+                let parsed = parse_legs(doc, &ctx, book, earlier, carrying_draft)?;
                 if let Some(i) = parsed.iter().position(|(_, o)| o.is_some()) {
                     return Err(usage(
                         format!("legs[{i}]: `source_ordinal` belongs to a Resolution(Posts) only"),
@@ -8681,7 +8727,7 @@ fn build_post_request_with_prior(
         target_date = Some(target.proposal.effective_date);
         target_period = target.proposal.effective_period.clone();
         target_evidence.clone_from(&target.proposal.evidence);
-        let parsed = parse_legs(doc, &ctx, book, earlier)?;
+        let parsed = parse_legs(doc, &ctx, book, earlier, carrying_draft)?;
         if let Some(i) = parsed.iter().position(|(_, o)| o.is_some()) {
             return Err(usage(
                 format!("legs[{i}]: `source_ordinal` belongs to a Resolution(Posts) only"),
@@ -8921,7 +8967,7 @@ fn build_post_request_with_prior(
                     }
                 }
                 let listed = if pairs.is_empty() {
-                    parse_legs(doc, &ctx, book, earlier)?
+                    parse_legs(doc, &ctx, book, earlier, carrying_draft)?
                 } else {
                     Vec::new()
                 };
@@ -9008,7 +9054,7 @@ fn build_post_request_with_prior(
                 disposition: None,
             });
         }
-        let parsed = parse_legs(doc, &ctx, book, earlier)?;
+        let parsed = parse_legs(doc, &ctx, book, earlier, carrying_draft)?;
         if let Some(i) = parsed.iter().position(|(_, o)| o.is_some()) {
             return Err(usage(
                 format!("legs[{i}]: `source_ordinal` belongs to a Resolution(Posts) only"),
