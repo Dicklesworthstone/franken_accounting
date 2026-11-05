@@ -23,7 +23,7 @@ use fa_journal::rows::{AccountRow, bytes, prop, scalar_bytes, scalar_text};
 use fa_model::symbols::{label, property};
 use fa_model::{ControlPayload, Entry, EntryClass, Id128, Reader, Writer};
 use fa_money::Side;
-use fgdb::{Database, VertexRow, WriteMismatchPolicy};
+use fgdb::{Database, WriteMismatchPolicy};
 use fgdb_crypto::Hasher;
 use fgdb_delta_types::{DeltaRow, ElementId, IndexError};
 use fgdb_types::context::PurposeContexts;
@@ -1181,7 +1181,7 @@ async fn publish_advance_in<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     prepared: PreparedAdvance,
     crash_at: Option<fgdb::CrashPoint>,
-    scans: Option<(&[VertexRow], &crate::Memberships)>,
+    scans: Option<(&crate::RegisterRows, &crate::Memberships)>,
 ) -> Result<Advance, RegisterError> {
     if prepared.book_id != book.book_id
         || prepared.basis != db.frontier()?
@@ -1372,7 +1372,7 @@ pub fn rebuild_reads_are_shared<V: asupersync::fs::Vfs + Clone>(
 pub(crate) struct SharedRebuild {
     at: CommitSeq,
     folds: crate::PeriodFolds,
-    rows: Vec<VertexRow>,
+    rows: crate::RegisterRows,
     memberships: crate::Memberships,
 }
 
@@ -1391,7 +1391,7 @@ impl SharedRebuild {
         }
         let at = db.frontier().ok()?;
         let folds = crate::folds_at(db, book, &distinct, at, None);
-        let rows = db.vertices().ok()?;
+        let rows = crate::RegisterRows::from_vertices(db.vertices().ok()?);
         let memberships = crate::period_memberships(&db.edges().ok()?);
         let mut owners: BTreeMap<VId, &str> = BTreeMap::new();
         for (period, fold) in &folds {
@@ -1444,7 +1444,7 @@ impl SharedRebuild {
         legs: u64,
     ) -> Result<Advance, RegisterError> {
         let prepared = prepare_fold_inner(db, book, fold, legs, true)?;
-        let scans = Some((self.rows.as_slice(), &self.memberships));
+        let scans = Some((&self.rows, &self.memberships));
         let advance = publish_advance_in(db, ctx, book, prepared, None, scans).await?;
         self.at = advance.published_at;
         Ok(advance)
@@ -1472,7 +1472,7 @@ impl SharedRebuild {
             return Ok((fold, db.frontier()?));
         }
         let prepared = prepare_fold(db, book, fold.clone(), legs)?;
-        let scans = Some((self.rows.as_slice(), &self.memberships));
+        let scans = Some((&self.rows, &self.memberships));
         let advance = publish_advance_in(db, ctx, book, prepared, None, scans).await?;
         self.at = advance.published_at;
         Ok((fold, advance.published_at))

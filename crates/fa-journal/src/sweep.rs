@@ -1446,7 +1446,7 @@ pub async fn sweep_batch_with_crash_and_witness<V: asupersync::fs::Vfs + Clone>(
         }
         let entry = proposal.seal(Vec::new(), None)?;
         let mirrors = crate::entry_storage::stored_mirrors(&entry)?;
-        let mut next_tracker = tracker.clone();
+        let mut next_tracker = tracker.checkpoint();
         next_tracker.create_vertex(relation::IN_PERIOD, rvid, 1, &mirrors);
         next_tracker.record_object_stage(relation::IN_PERIOD, &entry.encode()?);
         next_tracker.record_entry_outcome_claim(relation::IN_PERIOD, &entry.proposal);
@@ -1473,7 +1473,7 @@ pub async fn sweep_batch_with_crash_and_witness<V: asupersync::fs::Vfs + Clone>(
             hold_vid,
             vec![(property::DISPOSITION, CanonicalScalar::Int(2))],
         );
-        tracker = next_tracker;
+        next_tracker.commit();
         expired.push((d.hold, entry.entry_ref(rvid)));
     }
     remaining_due += due.len() - expired.len();

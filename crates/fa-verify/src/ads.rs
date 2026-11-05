@@ -26,7 +26,8 @@
 //! without that extension retain monetary verification but explicitly report
 //! `dimension_rows: None`; they cannot establish dimensional attribution.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::rc::Rc;
 
 use crate::balance::CLASS_MIGRATION;
 use crate::blake3::hash_parts;
@@ -186,6 +187,7 @@ const ADS_PARTS: Parts = Parts {
 };
 
 /// One proven entry the export selects.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Proven {
     class: u16,
     date: String,
@@ -466,6 +468,7 @@ impl Units {
 
 /// Whether `extract` is exactly `proven`: same class and date, and legs in
 /// order with each row's account, side, amount and (consistent) unit.
+#[cfg(test)]
 fn same(extract: &Extracted, proven: &Proven, book: &[u8; 16], units: &Units) -> bool {
     extract.class == proven.class
         && extract.date == proven.date
@@ -485,6 +488,424 @@ fn same(extract: &Extracted, proven: &Proven, book: &[u8; 16], units: &Units) ->
                         .as_ref()
                         .is_none_or(|dimensions| proven.dimensions.get(i) == Some(dimensions))
             })
+}
+
+/// Immutable matching fields. Units remain separate because their display
+/// codes are inferred from earlier matches, in extract order. Dimensions
+/// have a separate index so wildcard queries cannot disable exact lookups.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct MatchKey {
+    seq: u64,
+    class: u16,
+    date: String,
+    legs: Vec<MatchLeg>,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct MatchLeg {
+    account: u128,
+    debit: bool,
+    mantissa: i128,
+}
+
+/// The observer counts actual matching work in the scaling tests. The
+/// production caller supplies a no-op, with no retained counters or state.
+#[derive(Clone, Copy)]
+enum MatchVisit {
+    AccountHash,
+    UnitGroup,
+    Candidate,
+    DimensionIndexRow,
+    UnitIndexLeg,
+}
+
+// Inverted memberships use live head ordinals, not unit-vector ordering:
+// a very common known unit must still stop at its first compatible group.
+type UnitVectors = BTreeMap<usize, Rc<[u32]>>;
+type UnitIndex = BTreeMap<(usize, u32), UnitVectors>;
+
+/// One immutable signature's candidates, grouped by their ordered unit IDs.
+/// Queues retain original record ordinals; their heads are also ordered by
+/// ordinal so unresolved unit codes never change the earliest-match rule.
+#[derive(Default)]
+struct MatchCandidates {
+    by_units: BTreeMap<Rc<[u32]>, VecDeque<usize>>,
+    by_first: BTreeMap<usize, Rc<[u32]>>,
+    /// Built only when a query knows some, but not all, of its unit codes.
+    /// Shared vectors keep this linear in group legs, without copying a
+    /// whole L-leg vector into each of its L inverted-index memberships.
+    by_position: Option<UnitIndex>,
+}
+
+impl MatchCandidates {
+    fn push(&mut self, units: Rc<[u32]>, index: usize) {
+        let queue = match self.by_units.entry(Rc::clone(&units)) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                self.by_first.insert(index, Rc::clone(&units));
+                if let Some(by_position) = &mut self.by_position {
+                    for (position, &unit) in units.iter().enumerate() {
+                        by_position
+                            .entry((position, unit))
+                            .or_default()
+                            .insert(index, Rc::clone(&units));
+                    }
+                }
+                entry.insert(VecDeque::new())
+            }
+        };
+        queue.push_back(index);
+    }
+
+    fn first_in(
+        queue: &VecDeque<usize>,
+        records: &[Option<(u64, Proven)>],
+        extract: &Extracted,
+        check_dimensions: bool,
+        visit: &mut impl FnMut(MatchVisit),
+    ) -> Option<usize> {
+        for &index in queue {
+            visit(MatchVisit::Candidate);
+            let Some((_, proven)) = records.get(index).and_then(Option::as_ref) else {
+                continue;
+            };
+            if !check_dimensions
+                || extract.rows.iter().enumerate().all(|(i, row)| {
+                    row.dimensions
+                        .as_ref()
+                        .is_none_or(|dimensions| proven.dimensions.get(i) == Some(dimensions))
+                })
+            {
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    fn first_for(
+        &self,
+        ids: &Rc<[u32]>,
+        extract: &Extracted,
+        units: &Units,
+        records: &[Option<(u64, Proven)>],
+        check_dimensions: bool,
+        visit: &mut impl FnMut(MatchVisit),
+    ) -> Option<usize> {
+        visit(MatchVisit::UnitGroup);
+        if !extract
+            .rows
+            .iter()
+            .zip(ids.iter())
+            .all(|(row, id)| units.admits(&row.unit, *id))
+        {
+            return None;
+        }
+        Self::first_in(
+            self.by_units.get(ids.as_ref())?,
+            records,
+            extract,
+            check_dimensions,
+            visit,
+        )
+    }
+
+    fn select(
+        &mut self,
+        extract: &Extracted,
+        units: &Units,
+        records: &[Option<(u64, Proven)>],
+        check_dimensions: bool,
+        visit: &mut impl FnMut(MatchVisit),
+    ) -> Option<(usize, Rc<[u32]>)> {
+        let known: Option<Vec<_>> = extract
+            .rows
+            .iter()
+            .map(|row| units.by_code.get(&row.unit).copied())
+            .collect();
+        if let Some(ids) = known {
+            let (shared, _) = self.by_units.get_key_value(ids.as_slice())?;
+            return self
+                .first_for(shared, extract, units, records, check_dimensions, visit)
+                .map(|index| (index, Rc::clone(shared)));
+        }
+
+        let mut constraints = Vec::new();
+        for (position, row) in extract.rows.iter().enumerate() {
+            if let Some(&id) = units.by_code.get(&row.unit) {
+                if !units.admits(&row.unit, id) {
+                    return None;
+                }
+                constraints.push((position, id));
+            }
+        }
+        if !constraints.is_empty() && self.by_units.len() > 1 {
+            if self.by_position.is_none() {
+                let mut by_position: UnitIndex = BTreeMap::new();
+                for (ids, queue) in &self.by_units {
+                    let Some(&head) = queue.front() else {
+                        continue;
+                    };
+                    for (position, &id) in ids.iter().enumerate() {
+                        visit(MatchVisit::UnitIndexLeg);
+                        by_position
+                            .entry((position, id))
+                            .or_default()
+                            .insert(head, Rc::clone(ids));
+                    }
+                }
+                self.by_position = Some(by_position);
+            }
+            let by_position = self.by_position.as_ref()?;
+            let mut eligible: Option<&UnitVectors> = None;
+            for constraint in &constraints {
+                let matching = by_position.get(constraint)?;
+                if eligible.is_none_or(|previous| matching.len() < previous.len()) {
+                    eligible = Some(matching);
+                }
+            }
+            let mut first: Option<(usize, Rc<[u32]>)> = None;
+            for (&head, ids) in eligible? {
+                if first.as_ref().is_some_and(|(index, _)| *index <= head) {
+                    break;
+                }
+                if let Some(index) =
+                    self.first_for(ids, extract, units, records, check_dimensions, visit)
+                    && first.as_ref().is_none_or(|(earlier, _)| index < *earlier)
+                {
+                    first = Some((index, Rc::clone(ids)));
+                }
+            }
+            return first;
+        }
+
+        // Unbound codes can match several unit vectors. Search group heads
+        // in original order, stopping as soon as no earlier match remains.
+        // Ambiguous vectors can still require multiple group probes; this
+        // is deliberately not a universal logarithmic matching claim.
+        let mut first: Option<(usize, Rc<[u32]>)> = None;
+        for (&head, ids) in &self.by_first {
+            if first.as_ref().is_some_and(|(index, _)| *index <= head) {
+                break;
+            }
+            if let Some(index) =
+                self.first_for(ids, extract, units, records, check_dimensions, visit)
+                && first.as_ref().is_none_or(|(earlier, _)| index < *earlier)
+            {
+                first = Some((index, Rc::clone(ids)));
+            }
+        }
+        first
+    }
+
+    fn consumed(&mut self, ids: &Rc<[u32]>, records: &[Option<(u64, Proven)>]) {
+        let Some(queue) = self.by_units.get_mut(ids.as_ref()) else {
+            return;
+        };
+        let before = queue.front().copied();
+        // A mixed optional-dimension match can consume an interior record.
+        // Keep its tombstone until it reaches the front, avoiding all vector
+        // shifts. Each record is popped at most once during the whole match.
+        while queue
+            .front()
+            .is_some_and(|index| records.get(*index).and_then(Option::as_ref).is_none())
+        {
+            queue.pop_front();
+        }
+        let after = queue.front().copied();
+        if before != after {
+            if let Some(before) = before {
+                self.by_first.remove(&before);
+            }
+            if let Some(after) = after {
+                self.by_first.insert(after, Rc::clone(ids));
+            } else {
+                self.by_units.remove(ids.as_ref());
+            }
+            if let Some(by_position) = &mut self.by_position {
+                for (position, &id) in ids.iter().enumerate() {
+                    let key = (position, id);
+                    if let Some(groups) = by_position.get_mut(&key) {
+                        if let Some(before) = before {
+                            groups.remove(&before);
+                        }
+                        if let Some(after) = after {
+                            groups.insert(after, Rc::clone(ids));
+                        }
+                        if groups.is_empty() {
+                            by_position.remove(&key);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+type MatchDimensions = Vec<Option<Vec<(u32, u128)>>>;
+
+fn match_dimensions(proven: &Proven) -> MatchDimensions {
+    (0..proven.legs.len())
+        .map(|i| proven.dimensions.get(i).cloned())
+        .collect()
+}
+
+/// Monetary candidates plus a lazily built exact-dimension index. Historical
+/// rows use `all`; complete dimension rows use their own bucket even when
+/// other extract rows omit dimensions. Both indexes share stable record
+/// slots and retire consumed records together.
+#[derive(Default)]
+struct MatchBucket {
+    all: MatchCandidates,
+    by_dimensions: Option<BTreeMap<MatchDimensions, MatchCandidates>>,
+}
+
+impl MatchBucket {
+    fn select(
+        &mut self,
+        extract: &Extracted,
+        units: &Units,
+        records: &[Option<(u64, Proven)>],
+        visit: &mut impl FnMut(MatchVisit),
+    ) -> Option<(usize, Rc<[u32]>)> {
+        let check_dimensions = extract.rows.iter().any(|row| row.dimensions.is_some());
+        if check_dimensions && extract.rows.iter().all(|row| row.dimensions.is_some()) {
+            if self.by_dimensions.is_none() {
+                let mut indexed: BTreeMap<MatchDimensions, MatchCandidates> = BTreeMap::new();
+                for (ids, queue) in &self.all.by_units {
+                    for &index in queue {
+                        visit(MatchVisit::DimensionIndexRow);
+                        if let Some((_, proven)) = records.get(index).and_then(Option::as_ref) {
+                            indexed
+                                .entry(match_dimensions(proven))
+                                .or_default()
+                                .push(Rc::clone(ids), index);
+                        }
+                    }
+                }
+                self.by_dimensions = Some(indexed);
+            }
+            let dimensions: MatchDimensions = extract
+                .rows
+                .iter()
+                .map(|row| row.dimensions.clone())
+                .collect();
+            return self
+                .by_dimensions
+                .as_mut()?
+                .get_mut(&dimensions)?
+                .select(extract, units, records, false, visit);
+        }
+        // Truly partial per-row dimensions need the remaining predicates
+        // checked, without affecting full or wholly omitted queries.
+        self.all
+            .select(extract, units, records, check_dimensions, visit)
+    }
+
+    fn consumed(&mut self, ids: &Rc<[u32]>, matched: &Proven, records: &[Option<(u64, Proven)>]) {
+        self.all.consumed(ids, records);
+        if let Some(indexed) = &mut self.by_dimensions {
+            let key = match_dimensions(matched);
+            if let Some(candidates) = indexed.get_mut(&key) {
+                candidates.consumed(ids, records);
+                if candidates.by_units.is_empty() {
+                    indexed.remove(&key);
+                }
+            }
+        }
+    }
+}
+
+/// Indexed counterpart of the literal first-compatible-record scan. Stable
+/// slots preserve missing-record diagnostics in sequence and source order.
+struct ProvenMatcher {
+    book: [u8; 16],
+    accounts: BTreeMap<String, u128>,
+    records: Vec<Option<(u64, Proven)>>,
+    candidates: BTreeMap<MatchKey, MatchBucket>,
+}
+
+impl ProvenMatcher {
+    /// `proven` arrives in recorded-sequence and within-sequence order.
+    fn new(proven: impl IntoIterator<Item = (u64, Proven)>, book: [u8; 16]) -> Self {
+        let mut matcher = Self {
+            book,
+            accounts: BTreeMap::new(),
+            records: Vec::new(),
+            candidates: BTreeMap::new(),
+        };
+        for (seq, proven) in proven {
+            let key = MatchKey {
+                seq,
+                class: proven.class,
+                date: proven.date.clone(),
+                legs: proven
+                    .legs
+                    .iter()
+                    .map(|leg| MatchLeg {
+                        account: leg.account,
+                        debit: leg.debit,
+                        mantissa: leg.mantissa,
+                    })
+                    .collect(),
+            };
+            let units = proven.legs.iter().map(|leg| leg.unit).collect();
+            let index = matcher.records.len();
+            matcher.records.push(Some((seq, proven)));
+            matcher
+                .candidates
+                .entry(key)
+                .or_default()
+                .all
+                .push(units, index);
+        }
+        matcher
+    }
+
+    fn take(
+        &mut self,
+        extract: &Extracted,
+        units: &Units,
+        mut visit: impl FnMut(MatchVisit),
+    ) -> Option<Proven> {
+        let key = MatchKey {
+            seq: extract.seq,
+            class: extract.class,
+            date: extract.date.clone(),
+            legs: extract
+                .rows
+                .iter()
+                .map(|row| {
+                    let account = if let Some(account) = self.accounts.get(&row.account) {
+                        *account
+                    } else {
+                        visit(MatchVisit::AccountHash);
+                        let account = account_vid(&self.book, &row.account);
+                        self.accounts.insert(row.account.clone(), account);
+                        account
+                    };
+                    MatchLeg {
+                        account,
+                        debit: row.debit,
+                        mantissa: row.mantissa,
+                    }
+                })
+                .collect(),
+        };
+        let candidates = self.candidates.get_mut(&key)?;
+        let (index, ids) = candidates.select(extract, units, &self.records, &mut visit)?;
+        let (_, matched) = self.records.get_mut(index)?.take()?;
+        candidates.consumed(&ids, &matched, &self.records);
+        if candidates.all.by_units.is_empty() {
+            self.candidates.remove(&key);
+        }
+        Some(matched)
+    }
+
+    fn remaining(&self) -> impl Iterator<Item = (u64, &Proven)> {
+        self.records
+            .iter()
+            .filter_map(|record| record.as_ref().map(|(seq, proven)| (*seq, proven)))
+    }
 }
 
 /// The records a verified bundle authenticates: each record's leaf index,
@@ -703,6 +1124,7 @@ pub(crate) fn judge(
     };
     // The proven entries the export selects, by recorded sequence.
     let mut proven: BTreeMap<u64, Vec<Proven>> = BTreeMap::new();
+    let mut migration_visibility = None;
     for (leaf, envelope, legs, proposal) in records {
         let Some(day) = envelope.effective_day else {
             continue;
@@ -717,10 +1139,14 @@ pub(crate) fn judge(
             continue;
         }
         if envelope.class == CLASS_MIGRATION {
-            let read = balances
-                .iter()
-                .map(|balance| (&balance.claim, balance.contributing.as_slice()));
-            match chunk_visibility(leaf, day, &legs, read) {
+            let visibility = migration_visibility.get_or_insert_with(|| {
+                MigrationVisibility::new(
+                    balances
+                        .iter()
+                        .map(|balance| (&balance.claim, balance.contributing.as_slice())),
+                )
+            });
+            match visibility.chunk_visibility(leaf, day, &legs) {
                 Some(true) => {}
                 // Its run hides it: the export selects it no more than the
                 // fold does.
@@ -769,6 +1195,10 @@ pub(crate) fn judge(
                 .collect(),
         });
     }
+    // Visibility witnesses have served their purpose. Release them before
+    // building the entry matcher, which also has linear auxiliary storage.
+    drop(migration_visibility);
+    drop(balances);
     let extract = match stated.entries {
         Ok(extract) => extract,
         Err(why) => {
@@ -776,16 +1206,16 @@ pub(crate) fn judge(
             return out;
         }
     };
+    let mut proven = ProvenMatcher::new(
+        proven
+            .into_iter()
+            .flat_map(|(seq, entries)| entries.into_iter().map(move |entry| (seq, entry))),
+        manifest.book_id,
+    );
     let mut units = Units::default();
     for entry in &extract {
-        let candidates = proven.get_mut(&entry.seq);
-        let found = candidates.as_ref().and_then(|list| {
-            list.iter()
-                .position(|p| same(entry, p, &manifest.book_id, &units))
-        });
-        match (candidates, found) {
-            (Some(list), Some(i)) => {
-                let matched = list.remove(i);
+        match proven.take(entry, &units, |_| {}) {
+            Some(matched) => {
                 for (row, leg) in entry.rows.iter().zip(&matched.legs) {
                     units.by_code.insert(row.unit.clone(), leg.unit);
                     units.by_id.insert(leg.unit, row.unit.clone());
@@ -795,21 +1225,19 @@ pub(crate) fn judge(
                     .rows
                     .saturating_add(u64::try_from(entry.rows.len()).unwrap_or(u64::MAX));
             }
-            _ => out.failures.push(format!(
+            None => out.failures.push(format!(
                 "{} {} (recorded at {}) is no proven entry selected through {cutoff}",
                 parts.entry, entry.journal_id, entry.seq
             )),
         }
     }
-    for (seq, list) in &proven {
-        for p in list {
-            out.failures.push(format!(
-                "a proven entry recorded at {seq} (effective {}, {} legs) is missing from {}",
-                p.date,
-                p.legs.len(),
-                parts.entries
-            ));
-        }
+    for (seq, p) in proven.remaining() {
+        out.failures.push(format!(
+            "a proven entry recorded at {seq} (effective {}, {} legs) is missing from {}",
+            p.date,
+            p.legs.len(),
+            parts.entries
+        ));
     }
     if out.failures.is_empty() && stated.entry_count != Some(out.entries) {
         out.failures.push(format!(
@@ -848,34 +1276,83 @@ pub(crate) fn judge(
     out
 }
 
-/// Whether the migration chunk at `leaf`, effective on `day`, with `legs`
-/// counts (fa-mv0f). A verified balance over one of its cells, cut off on or
-/// after its day, decides that from the run bodies it carries, and only the
-/// migration-aware format verifies such a cell: its fold reads the chunk
-/// exactly when the chunk's run makes it visible. So the answer is
-/// `Some(true)` when such a balance read it, `Some(false)` when such
-/// balances exist and none read it (its run hides it), and `None` when none
-/// covers it, so that its visibility is not proven.
-fn chunk_visibility<'a>(
-    leaf: u64,
-    day: i32,
-    legs: &[Leg],
-    balances: impl IntoIterator<Item = (&'a crate::BalanceClaim, &'a [u64])>,
-) -> Option<bool> {
-    let mut covered = false;
-    for (claim, contributing) in balances {
-        let covers = legs
-            .iter()
-            .any(|leg| (leg.account, leg.unit) == (claim.account, claim.unit))
-            && claim.effective_through.is_none_or(|through| through >= day);
-        if covers {
-            if contributing.contains(&leaf) {
-                return Some(true);
+/// Visibility witnesses indexed once, on the first selected migration chunk.
+/// Building visits each verified balance and contributing leaf once; queries
+/// perform at most two logarithmic map lookups per leg, regardless of the
+/// number of balance claims or chunks in their histories.
+#[derive(Default)]
+struct MigrationVisibility {
+    cells: BTreeMap<(u128, u32), MigrationCoverage>,
+}
+
+struct MigrationCoverage {
+    /// Greatest cutoff among all balance claims over this cell.
+    through: i32,
+    /// Greatest cutoff among the claims that actually read each leaf. A
+    /// union of leaf IDs alone would incorrectly accept a leaf whose only
+    /// witness ends before its day, when a later claim covers but hides it.
+    read_through: BTreeMap<u64, i32>,
+}
+
+impl MigrationVisibility {
+    fn new<'a, I: IntoIterator<Item = &'a u64>>(
+        balances: impl IntoIterator<Item = (&'a crate::BalanceClaim, I)>,
+    ) -> Self {
+        let mut index = Self::default();
+        for (claim, contributing) in balances {
+            // Civil days are i32, so an unbounded claim covers exactly the
+            // same possible days as one ending at i32::MAX.
+            let through = claim.effective_through.unwrap_or(i32::MAX);
+            let coverage = index
+                .cells
+                .entry((claim.account, claim.unit))
+                .or_insert_with(|| MigrationCoverage {
+                    through,
+                    read_through: BTreeMap::new(),
+                });
+            coverage.through = coverage.through.max(through);
+            for &leaf in contributing {
+                coverage
+                    .read_through
+                    .entry(leaf)
+                    .and_modify(|cutoff| *cutoff = (*cutoff).max(through))
+                    .or_insert(through);
+            }
+        }
+        index
+    }
+
+    /// Whether the chunk counts (fa-mv0f). A verified balance over one of
+    /// its cells, cut off on or after its day, decides that from its run
+    /// bodies. `Some(true)` means such a balance read it; `Some(false)`
+    /// means covering balances exist but none read it; `None` means its
+    /// visibility is unproven. Only migration-aware proofs can verify a
+    /// balance over a cell containing a migration chunk.
+    fn chunk_visibility<'a>(
+        &self,
+        leaf: u64,
+        day: i32,
+        legs: impl IntoIterator<Item = &'a Leg>,
+    ) -> Option<bool> {
+        let mut covered = false;
+        for leg in legs {
+            let Some(coverage) = self.cells.get(&(leg.account, leg.unit)) else {
+                continue;
+            };
+            if coverage.through < day {
+                continue;
             }
             covered = true;
+            if coverage
+                .read_through
+                .get(&leaf)
+                .is_some_and(|through| *through >= day)
+            {
+                return Some(true);
+            }
         }
+        covered.then_some(false)
     }
-    covered.then_some(false)
 }
 
 /// The registered account type names (`account_types.toml`, tags 1..=8),
@@ -1289,6 +1766,607 @@ mod tests {
         assert!(same(&legacy[0], &proven, &book, &Units::default()));
     }
 
+    fn count_match_visit(work: &mut [u64; 5], visit: MatchVisit) {
+        let index = match visit {
+            MatchVisit::AccountHash => 0,
+            MatchVisit::UnitGroup => 1,
+            MatchVisit::Candidate => 2,
+            MatchVisit::DimensionIndexRow => 3,
+            MatchVisit::UnitIndexLeg => 4,
+        };
+        work[index] += 1;
+    }
+
+    fn matching_record(book: &[u8; 16], amount: i128, units: [u32; 2], tag: u128) -> Proven {
+        Proven {
+            class: 1,
+            date: "1970-01-01".into(),
+            legs: ["1000", "4000"]
+                .into_iter()
+                .enumerate()
+                .map(|(i, code)| Leg {
+                    debit: i == 0,
+                    account: account_vid(book, code),
+                    unit: units[i],
+                    mantissa: amount,
+                })
+                .collect(),
+            dimensions: vec![vec![(3, tag)], vec![]],
+        }
+    }
+
+    fn matching_extract(
+        record: &Proven,
+        seq: u64,
+        units: [&str; 2],
+        dimension_mask: u8,
+    ) -> Extracted {
+        Extracted {
+            journal_id: "batch-entry".into(),
+            seq,
+            date: record.date.clone(),
+            class: record.class,
+            rows: record
+                .legs
+                .iter()
+                .enumerate()
+                .map(|(i, leg)| Row {
+                    journal_id: "batch-entry".into(),
+                    line: u32::try_from(i + 1).unwrap(),
+                    date: record.date.clone(),
+                    seq,
+                    class: record.class,
+                    account: ["1000", "4000"][i].into(),
+                    debit: leg.debit,
+                    mantissa: leg.mantissa,
+                    unit: units[i].into(),
+                    scale: 2,
+                    dimensions: (dimension_mask & (1 << i) != 0)
+                        .then(|| record.dimensions[i].clone()),
+                })
+                .collect(),
+        }
+    }
+
+    fn pair_account(pair: usize, debit: bool) -> String {
+        format!("{}000", pair + if debit { 1 } else { 4 })
+    }
+
+    fn balanced_matching_record(book: &[u8; 16], units: &[u32]) -> Proven {
+        let legs: Vec<_> = units
+            .iter()
+            .enumerate()
+            .flat_map(|(pair, &unit)| {
+                [true, false].map(|debit| Leg {
+                    debit,
+                    account: account_vid(book, &pair_account(pair, debit)),
+                    unit,
+                    mantissa: 5,
+                })
+            })
+            .collect();
+        Proven {
+            class: 1,
+            date: "1970-01-01".into(),
+            dimensions: vec![vec![(3, 11)]; legs.len()],
+            legs,
+        }
+    }
+
+    fn balanced_matching_extract(
+        record: &Proven,
+        units: &[&str],
+        full_dimensions: bool,
+    ) -> Extracted {
+        Extracted {
+            journal_id: "currency-pairs".into(),
+            seq: 7,
+            date: record.date.clone(),
+            class: record.class,
+            rows: record
+                .legs
+                .iter()
+                .enumerate()
+                .map(|(i, leg)| Row {
+                    journal_id: "currency-pairs".into(),
+                    line: u32::try_from(i + 1).unwrap(),
+                    date: record.date.clone(),
+                    seq: 7,
+                    class: record.class,
+                    account: pair_account(i / 2, leg.debit),
+                    debit: leg.debit,
+                    mantissa: leg.mantissa,
+                    unit: units[i / 2].into(),
+                    scale: 2,
+                    dimensions: full_dimensions.then(|| record.dimensions[i].clone()),
+                })
+                .collect(),
+        }
+    }
+
+    fn assert_matching_agrees_with_literal_scan(
+        book: [u8; 16],
+        mut literal: BTreeMap<u64, Vec<Proven>>,
+        entries: &[Extracted],
+        initial: &Units,
+    ) {
+        let mut indexed = ProvenMatcher::new(
+            literal
+                .clone()
+                .into_iter()
+                .flat_map(|(seq, records)| records.into_iter().map(move |record| (seq, record))),
+            book,
+        );
+        let mut expected_units = Units {
+            by_code: initial.by_code.clone(),
+            by_id: initial.by_id.clone(),
+        };
+        let mut actual_units = Units {
+            by_code: initial.by_code.clone(),
+            by_id: initial.by_id.clone(),
+        };
+        for (query, entry) in entries.iter().enumerate() {
+            // Keep the original search and removal here: this oracle must
+            // not depend on the indexed key, unit grouping or queue logic.
+            let expected = literal.get_mut(&entry.seq).and_then(|list| {
+                list.iter()
+                    .position(|record| same(entry, record, &book, &expected_units))
+                    .map(|i| list.remove(i))
+            });
+            let actual = indexed.take(entry, &actual_units, |_| {});
+            assert_eq!(actual, expected, "query {query}: {entry:?}");
+            for (matched, units) in [
+                (expected.as_ref(), &mut expected_units),
+                (actual.as_ref(), &mut actual_units),
+            ] {
+                if let Some(matched) = matched {
+                    for (row, leg) in entry.rows.iter().zip(&matched.legs) {
+                        units.by_code.insert(row.unit.clone(), leg.unit);
+                        units.by_id.insert(leg.unit, row.unit.clone());
+                    }
+                }
+            }
+            assert_eq!(actual_units.by_code, expected_units.by_code);
+            assert_eq!(actual_units.by_id, expected_units.by_id);
+        }
+        let expected: Vec<_> = literal
+            .iter()
+            .flat_map(|(seq, records)| records.iter().map(move |record| (*seq, record)))
+            .collect();
+        assert_eq!(indexed.remaining().collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn indexed_batch_matching_preserves_order_units_wildcards_and_missing_records() {
+        let book = [0x72; 16];
+        let originals = vec![
+            matching_record(&book, 5, [9, 9], 11),
+            matching_record(&book, 5, [2, 2], 22),
+            matching_record(&book, 5, [9, 9], 22),
+            matching_record(&book, 5, [4, 5], 33),
+            matching_record(&book, 8, [2, 2], 11),
+            matching_record(&book, 5, [5, 4], 33),
+        ];
+        let initial = [
+            Units::default(),
+            Units {
+                by_code: [("USD".into(), 9)].into(),
+                by_id: [(9, "USD".into())].into(),
+            },
+            // A previously inferred contradictory code pair remains a
+            // refusal, even on the direct known-unit lookup path.
+            Units {
+                by_code: [("USD".into(), 9), ("EUR".into(), 9)].into(),
+                by_id: [(9, "EUR".into())].into(),
+            },
+        ];
+        for rotation in 0..originals.len() {
+            let mut batch = originals.clone();
+            batch.rotate_left(rotation);
+            for reversed in [false, true] {
+                if reversed {
+                    batch.reverse();
+                }
+                for dimension_mask in [0, 1, 2, 3] {
+                    let mut later = originals[0].clone();
+                    later.date = "1970-01-02".into();
+                    later.class = 3;
+                    let records: BTreeMap<_, _> =
+                        [(7, batch.clone()), (9, vec![later.clone()])].into();
+                    let mut entries: Vec<_> = originals
+                        .iter()
+                        .enumerate()
+                        .map(|(i, record)| {
+                            let units = match i % 4 {
+                                0 => ["USD", "USD"],
+                                1 => ["EUR", "EUR"],
+                                2 => ["USD", "EUR"],
+                                _ => ["X", "Y"],
+                            };
+                            matching_extract(record, 7, units, dimension_mask)
+                        })
+                        .collect();
+                    entries.rotate_left(rotation);
+                    if reversed {
+                        entries.reverse();
+                    }
+                    entries.push(matching_extract(&later, 9, ["X", "X"], dimension_mask));
+                    // Vary every matching field. When dimensions are
+                    // omitted, the last variant deliberately stays a
+                    // wildcard and can consume another duplicate.
+                    for field in 0..8 {
+                        let mut changed = entries[0].clone();
+                        match field {
+                            0 => changed.seq = 8,
+                            1 => changed.rows[0].account = "9999".into(),
+                            2 => changed.rows[0].debit = !changed.rows[0].debit,
+                            3 => changed.rows[0].mantissa += 1,
+                            4 => changed.class = 99,
+                            5 => changed.date = "1970-01-03".into(),
+                            6 => {
+                                changed.rows.pop();
+                            }
+                            _ => {
+                                if let Some(dimensions) = &mut changed.rows[0].dimensions {
+                                    dimensions.push((7, 99));
+                                }
+                            }
+                        }
+                        entries.push(changed);
+                    }
+                    entries.push(entries[0].clone()); // duplicate consumption
+                    for initial in &initial {
+                        assert_matching_agrees_with_literal_scan(
+                            book,
+                            records.clone(),
+                            &entries,
+                            initial,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_dimension_matching_skips_interior_records_without_changing_the_first_match() {
+        let book = [0x43; 16];
+        let first = matching_record(&book, 5, [9, 9], 11);
+        let second = matching_record(&book, 5, [2, 2], 22);
+        let third = matching_record(&book, 5, [9, 9], 22);
+        // The first unit group can match the third record, but the second
+        // group has an earlier match. Its unit ID must win the inference.
+        let entries = [
+            matching_extract(&second, 7, ["USD", "USD"], 3),
+            matching_extract(&third, 7, ["EUR", "EUR"], 1),
+            matching_extract(&first, 7, ["EUR", "EUR"], 0),
+            matching_extract(&third, 7, ["EUR", "EUR"], 0),
+        ];
+        assert_matching_agrees_with_literal_scan(
+            book,
+            [(7, vec![first, second, third])].into(),
+            &entries,
+            &Units::default(),
+        );
+    }
+
+    #[test]
+    fn full_partial_and_wildcard_queries_retire_both_dimension_indexes() {
+        let book = [0x44; 16];
+        let records: Vec<_> = (0..8)
+            .map(|tag| matching_record(&book, 5, [9, 9], tag))
+            .collect();
+        // The dimensional index is first built after an interior record
+        // and the original head were consumed through the other index.
+        // Later full/partial/wildcard queries must not resurrect either
+        // record, and advancing a head must skip all old tombstones.
+        let entries: Vec<_> = [
+            (5, 1),
+            (0, 0),
+            (7, 3),
+            (5, 3),
+            (7, 1),
+            (1, 0),
+            (0, 3),
+            (2, 3),
+            (3, 0),
+            (3, 3),
+            (4, 3),
+            (6, 0),
+            (6, 3),
+        ]
+        .into_iter()
+        .map(|(record, mask)| matching_extract(&records[record], 7, ["USD", "USD"], mask))
+        .collect();
+        assert_matching_agrees_with_literal_scan(
+            book,
+            [(7, records)].into(),
+            &entries,
+            &Units::default(),
+        );
+    }
+
+    #[test]
+    fn partially_known_unit_index_preserves_earliest_group_and_removes_empty_groups() {
+        let book = [0x45; 16];
+        let earlier = matching_record(&book, 5, [9, 7], 11);
+        let later = matching_record(&book, 5, [9, 2], 11);
+        let entries = [
+            matching_extract(&earlier, 7, ["USD", "NEW"], 0),
+            matching_extract(&later, 7, ["USD", "OTHER"], 0),
+            matching_extract(&earlier, 7, ["USD", "NEW"], 0),
+            matching_extract(&later, 7, ["USD", "FRESH"], 0),
+        ];
+        assert_matching_agrees_with_literal_scan(
+            book,
+            [(7, vec![earlier.clone(), later, earlier])].into(),
+            &entries,
+            &Units {
+                by_code: [("USD".into(), 9)].into(),
+                by_id: [(9, "USD".into())].into(),
+            },
+        );
+    }
+
+    #[test]
+    fn smallest_unit_posting_list_still_checks_other_known_units_in_both_indexes() {
+        let book = [0x48; 16];
+        // Each currency has a balanced debit/credit pair. The EUR=2 list
+        // is narrower than USD=9, but its earliest member has USD=8 and
+        // must be skipped. Both dimensional and wildcard indexes are used.
+        let records: Vec<_> = [
+            [8, 2, 7],
+            [9, 2, 7],
+            [9, 2, 6],
+            [9, 3, 7],
+            [9, 4, 7],
+            [9, 2, 6],
+        ]
+        .iter()
+        .map(|units| balanced_matching_record(&book, units))
+        .collect();
+        let entries = [
+            balanced_matching_extract(&records[1], &["USD", "EUR", "NEW"], false),
+            balanced_matching_extract(&records[2], &["USD", "EUR", "ALT"], true),
+            balanced_matching_extract(&records[1], &["USD", "EUR", "NEW"], true),
+            balanced_matching_extract(&records[2], &["USD", "EUR", "ALT"], false),
+            balanced_matching_extract(&records[2], &["USD", "EUR", "ALT"], true),
+        ];
+        assert_matching_agrees_with_literal_scan(
+            book,
+            [(7, records)].into(),
+            &entries,
+            &Units {
+                by_code: [("USD".into(), 9), ("EUR".into(), 2)].into(),
+                by_id: [(9, "USD".into()), (2, "EUR".into())].into(),
+            },
+        );
+    }
+
+    #[test]
+    fn identical_and_reversed_hundred_thousand_entry_batches_match_once_per_entry() {
+        let book = [0x28; 16];
+        let template = matching_record(&book, 5, [9, 9], 11);
+        for count in [1_000u64, 10_000, 100_000] {
+            for shape in 0..3 {
+                for full_dimensions in [false, true] {
+                    let record = |index: u64| {
+                        let mut native = template.clone();
+                        if shape == 1 {
+                            for leg in &mut native.legs {
+                                leg.mantissa += i128::from(index);
+                            }
+                        } else if shape == 2 {
+                            native.dimensions[0] = vec![(3, u128::from(index))];
+                        }
+                        native
+                    };
+                    let mut loaded = 0u64;
+                    let mut indexed = ProvenMatcher::new(
+                        (0..count).map(|i| (7, record(i))).inspect(|_| loaded += 1),
+                        book,
+                    );
+                    let mut units = Units::default();
+                    let mut work = [0u64; 5];
+                    for step in 0..count {
+                        let source = count - step - 1;
+                        let entry = matching_extract(
+                            &record(source),
+                            7,
+                            ["USD", "USD"],
+                            if full_dimensions { 3 } else { 0 },
+                        );
+                        let matched = indexed
+                            .take(&entry, &units, |visit| {
+                                count_match_visit(&mut work, visit);
+                            })
+                            .expect("a matching batch entry remains");
+                        // Legacy extracts cannot distinguish dimensions:
+                        // the original FIFO order wins even when the
+                        // originating rows were emitted in reverse order.
+                        let expected = if shape == 2 && !full_dimensions {
+                            step
+                        } else {
+                            source
+                        };
+                        assert_eq!(matched, record(expected));
+                        for (row, leg) in entry.rows.iter().zip(&matched.legs) {
+                            units.by_code.insert(row.unit.clone(), leg.unit);
+                            units.by_id.insert(leg.unit, row.unit.clone());
+                        }
+                    }
+                    assert_eq!(loaded, count);
+                    assert_eq!(
+                        work,
+                        [2, count, count, if full_dimensions { count } else { 0 }, 0],
+                        "size {count}, shape {shape}"
+                    );
+                    assert_eq!(indexed.remaining().count(), 0);
+                    let duplicate = matching_extract(
+                        &template,
+                        7,
+                        ["USD", "USD"],
+                        if full_dimensions { 3 } else { 0 },
+                    );
+                    assert!(indexed.take(&duplicate, &units, |_| {}).is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn one_wildcard_does_not_rescan_a_hundred_thousand_dimensioned_candidates() {
+        let book = [0x46; 16];
+        let template = matching_record(&book, 5, [9, 9], 11);
+        for count in [1_000u64, 10_000, 100_000] {
+            for wildcard_first in [false, true] {
+                let record = |tag: u64| {
+                    let mut native = template.clone();
+                    native.dimensions[0] = vec![(3, u128::from(tag))];
+                    native
+                };
+                let mut indexed = ProvenMatcher::new((0..count).map(|i| (7, record(i))), book);
+                let mut units = Units::default();
+                let mut work = [0; 5];
+                let mut take = |source: u64, mask: u8| {
+                    let expected = record(source);
+                    let entry = matching_extract(&expected, 7, ["USD", "USD"], mask);
+                    let matched = indexed
+                        .take(&entry, &units, |visit| count_match_visit(&mut work, visit))
+                        .unwrap();
+                    assert_eq!(matched, expected);
+                    for (row, leg) in entry.rows.iter().zip(&matched.legs) {
+                        units.by_code.insert(row.unit.clone(), leg.unit);
+                        units.by_id.insert(leg.unit, row.unit.clone());
+                    }
+                };
+                if wildcard_first {
+                    take(0, 0);
+                    for tag in (1..count).rev() {
+                        take(tag, 3);
+                    }
+                } else {
+                    take(count - 1, 3);
+                    take(0, 0);
+                    for tag in (1..count - 1).rev() {
+                        take(tag, 3);
+                    }
+                }
+                assert_eq!(
+                    work,
+                    [2, count, count, count - u64::from(wildcard_first), 0]
+                );
+                assert_eq!(indexed.remaining().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn partially_known_units_probe_one_group_in_a_hundred_thousand_entry_batch() {
+        let book = [0x47; 16];
+        let template = matching_record(&book, 5, [1, 2], 11);
+        for count in [1_000u32, 10_000, 100_000] {
+            let record = |index: u32| {
+                let mut native = template.clone();
+                native.legs[0].unit = index + 1;
+                native.legs[1].unit = count + index + 1;
+                native
+            };
+            let mut indexed = ProvenMatcher::new((0..count).map(|i| (7, record(i))), book);
+            let mut units = Units::default();
+            for i in 0..count {
+                let code = format!("known-{i}");
+                units.by_code.insert(code.clone(), i + 1);
+                units.by_id.insert(i + 1, code);
+            }
+            let mut work = [0; 5];
+            for i in (0..count).rev() {
+                let expected = record(i);
+                let known = format!("known-{i}");
+                let fresh = format!("new-{i}");
+                let entry = matching_extract(&expected, 7, [&known, &fresh], 0);
+                let matched = indexed
+                    .take(&entry, &units, |visit| count_match_visit(&mut work, visit))
+                    .unwrap();
+                assert_eq!(matched, expected);
+                for (row, leg) in entry.rows.iter().zip(&matched.legs) {
+                    units.by_code.insert(row.unit.clone(), leg.unit);
+                    units.by_id.insert(leg.unit, row.unit.clone());
+                }
+            }
+            let count = u64::from(count);
+            assert_eq!(work, [2, count, count, 0, 2 * count]);
+            assert_eq!(indexed.remaining().count(), 0);
+        }
+    }
+
+    #[test]
+    fn shared_known_unit_stops_at_the_first_of_a_hundred_thousand_partial_groups() {
+        let book = [0x49; 16];
+        let template = balanced_matching_record(&book, &[1, 2]);
+        for count in [1_000u32, 10_000, 100_000] {
+            for full_dimensions in [false, true] {
+                let record = |group: u32| {
+                    let mut native = template.clone();
+                    for leg in &mut native.legs[2..] {
+                        leg.unit = group + 2;
+                    }
+                    native
+                };
+                // Every group shares the known USD debit/credit pair;
+                // its second balanced currency pair starts with an
+                // unknown display code. Duplicates appended at the end
+                // keep every tenth group live after its first match, so
+                // inverted memberships must MOVE when heads advance.
+                let mut indexed = ProvenMatcher::new(
+                    (0..count)
+                        .chain((0..count).step_by(10))
+                        .map(|group| (7, record(group))),
+                    book,
+                );
+                let mut units = Units {
+                    by_code: [("USD".into(), 1)].into(),
+                    by_id: [(1, "USD".into())].into(),
+                };
+                let mut work = [0; 5];
+                let mut take = |group: u32, dimensions: bool| {
+                    let expected = record(group);
+                    let fresh = format!("currency-{group}");
+                    let entry = balanced_matching_extract(&expected, &["USD", &fresh], dimensions);
+                    let matched = indexed
+                        .take(&entry, &units, |visit| count_match_visit(&mut work, visit))
+                        .unwrap();
+                    assert_eq!(matched, expected);
+                    for (row, leg) in entry.rows.iter().zip(&matched.legs) {
+                        units.by_code.insert(row.unit.clone(), leg.unit);
+                        units.by_id.insert(leg.unit, row.unit.clone());
+                    }
+                };
+                for group in 0..count {
+                    // Start with a wildcard so the dimensional case
+                    // exercises both sets of inverted memberships.
+                    take(group, full_dimensions && group != 0);
+                }
+                for group in (0..count).rev().filter(|group| group % 10 == 0) {
+                    take(group, full_dimensions);
+                }
+                let entries = u64::from(count + count.div_ceil(10));
+                let indexed_legs = u64::from(count) * if full_dimensions { 8 } else { 4 };
+                assert_eq!(
+                    work,
+                    [
+                        4,
+                        entries,
+                        entries,
+                        if full_dimensions { entries - 1 } else { 0 },
+                        indexed_legs,
+                    ]
+                );
+                assert_eq!(indexed.remaining().count(), 0);
+            }
+        }
+    }
+
     #[test]
     fn v3_text_decodes_without_the_writer_and_rejects_noncanonical_escapes() {
         assert_eq!(
@@ -1451,6 +2529,38 @@ mod tests {
         }
     }
 
+    fn chunk_visibility<'a>(
+        leaf: u64,
+        day: i32,
+        legs: &[Leg],
+        balances: impl IntoIterator<Item = (&'a crate::BalanceClaim, &'a [u64])>,
+    ) -> Option<bool> {
+        MigrationVisibility::new(balances).chunk_visibility(leaf, day, legs)
+    }
+
+    // The original scan is deliberately retained as an independent oracle.
+    fn literal_chunk_visibility<'a>(
+        leaf: u64,
+        day: i32,
+        legs: &[Leg],
+        balances: impl IntoIterator<Item = (&'a crate::BalanceClaim, &'a [u64])>,
+    ) -> Option<bool> {
+        let mut covered = false;
+        for (claim, contributing) in balances {
+            let covers = legs
+                .iter()
+                .any(|leg| (leg.account, leg.unit) == (claim.account, claim.unit))
+                && claim.effective_through.is_none_or(|through| through >= day);
+            if covers {
+                if contributing.contains(&leaf) {
+                    return Some(true);
+                }
+                covered = true;
+            }
+        }
+        covered.then_some(false)
+    }
+
     #[test]
     fn migration_chunks_follow_their_runs_visibility() {
         let (cash, revenue, usd, day) = (7u128, 9u128, 1u32, 100);
@@ -1517,6 +2627,136 @@ mod tests {
             );
         }
         assert_eq!(chunk_visibility(3, day, &legs, std::iter::empty()), None);
+    }
+
+    #[test]
+    fn migration_visibility_index_matches_scan_for_overlapping_cutoffs() {
+        let claim = |account, unit, effective_through| crate::BalanceClaim {
+            account,
+            unit,
+            effective_through,
+            debits: 0,
+            credits: 0,
+        };
+        let leg = |account, unit| Leg {
+            debit: true,
+            account,
+            unit,
+            mantissa: 5,
+        };
+        // In particular, the early cash witness reads leaf 0, but the
+        // later cash witnesses do not: coverage and membership cutoffs
+        // must remain separate. Repeated and unordered leaves must not
+        // change this existential decision either.
+        let histories = [
+            (claim(7, 1, Some(99)), vec![2, 0, 2]),
+            (claim(7, 1, Some(100)), vec![1]),
+            (claim(7, 1, None), vec![3]),
+            (claim(9, 1, Some(101)), vec![0, 4]),
+            (claim(7, 2, Some(100)), vec![5]),
+            (claim(11, 1, Some(i32::MIN)), vec![6]),
+            (claim(11, 1, Some(i32::MAX)), vec![7]),
+        ];
+        let leg_sets = [
+            vec![],
+            vec![leg(7, 1)],
+            vec![leg(9, 1)],
+            vec![leg(7, 2)],
+            vec![leg(7, 3)],
+            vec![leg(11, 1)],
+            vec![leg(7, 1), leg(9, 1)],
+            vec![leg(9, 1), leg(7, 1)],
+            vec![leg(7, 1), leg(7, 1), leg(7, 2)],
+            vec![leg(99, 99)],
+        ];
+        for mask in 0..(1usize << histories.len()) {
+            let mut balances: Vec<_> = histories
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) != 0)
+                .map(|(_, (claim, contributing))| (claim, contributing.as_slice()))
+                .collect();
+            for reverse in [false, true] {
+                if reverse {
+                    balances.reverse();
+                }
+                let index = MigrationVisibility::new(balances.iter().copied());
+                for day in [i32::MIN, i32::MIN + 1, 98, 99, 100, 101, 102, i32::MAX] {
+                    for leaf in 0..9 {
+                        for legs in &leg_sets {
+                            assert_eq!(
+                                index.chunk_visibility(leaf, day, legs),
+                                literal_chunk_visibility(leaf, day, legs, balances.iter().copied(),),
+                                "claims {mask}, reversed {reverse}, leaf {leaf}, day {day}, legs {legs:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn migration_visibility_reads_witnesses_once_for_a_hundred_thousand_chunks_and_cells() {
+        use std::cell::Cell;
+
+        let claim = |account| crate::BalanceClaim {
+            account,
+            unit: 1,
+            effective_through: Some(100),
+            debits: 0,
+            credits: 0,
+        };
+        for count in [1_000u64, 10_000, 100_000] {
+            for many_cells in [false, true] {
+                // Exercise both original quadratic cases: one cell with
+                // a long contributing history, and many balance claims
+                // whose chunks would each rescan that claim list.
+                let histories: Vec<_> = if many_cells {
+                    (0..count)
+                        .map(|leaf| (claim(u128::from(leaf)), vec![leaf]))
+                        .collect()
+                } else {
+                    vec![(claim(0), (0..count).collect())]
+                };
+                let balance_visits = Cell::new(0u64);
+                let leaf_visits = Cell::new(0u64);
+                let balances = histories.iter().map(|(claim, contributing)| {
+                    balance_visits.set(balance_visits.get() + 1);
+                    (
+                        claim,
+                        contributing.iter().inspect(|_| {
+                            leaf_visits.set(leaf_visits.get() + 1);
+                        }),
+                    )
+                });
+                let index = MigrationVisibility::new(balances);
+                let probes = Cell::new(0u64);
+                let visibility = |leaf, day, leg: &Leg| {
+                    index.chunk_visibility(
+                        leaf,
+                        day,
+                        std::iter::once(leg).inspect(|_| probes.set(probes.get() + 1)),
+                    )
+                };
+                for leaf in (0..count).rev() {
+                    let leg = Leg {
+                        debit: true,
+                        account: if many_cells { u128::from(leaf) } else { 0 },
+                        unit: 1,
+                        mantissa: 5,
+                    };
+                    assert_eq!(visibility(leaf, 100, &leg), Some(true));
+                    assert_eq!(visibility(leaf + count, 100, &leg), Some(false));
+                    assert_eq!(visibility(leaf, 101, &leg), None);
+                    let other_unit = Leg { unit: 2, ..leg };
+                    assert_eq!(visibility(leaf, 100, &other_unit), None);
+                }
+                assert_eq!(balance_visits.get(), if many_cells { count } else { 1 });
+                assert_eq!(leaf_visits.get(), count);
+                assert_eq!(probes.get(), 4 * count);
+            }
+        }
     }
 
     #[test]

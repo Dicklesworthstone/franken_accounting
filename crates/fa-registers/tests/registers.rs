@@ -1734,6 +1734,7 @@ fn verifying_many_initialized_periods_scans_the_current_projection_once() {
     let expected_vertices = h.db.vertices().unwrap().len();
     let expected_edges = h.db.edges().unwrap().len();
     let mut independent = Vec::new();
+    let mut candidate_work = Vec::new();
     let mut independent_work = fa_registers::ProjectionReadWork::default();
     for period in &selected {
         let (results, work) =
@@ -1743,6 +1744,8 @@ fn verifying_many_initialized_periods_scans_the_current_projection_once() {
         independent_work.vertices_read += work.vertices_read;
         independent_work.edge_scans += work.edge_scans;
         independent_work.edges_read += work.edges_read;
+        independent_work.candidate_rows_examined += work.candidate_rows_examined;
+        candidate_work.push(work.candidate_rows_examined);
     }
     assert!(
         independent
@@ -1760,6 +1763,10 @@ fn verifying_many_initialized_periods_scans_the_current_projection_once() {
         assert_eq!(work.edge_scans, 1, "periods={count}: {work:?}");
         assert_eq!(work.vertices_read, expected_vertices);
         assert_eq!(work.edges_read, expected_edges);
+        assert_eq!(
+            work.candidate_rows_examined,
+            candidate_work[..count].iter().sum::<usize>()
+        );
         eprintln!("register verification periods={count}: {work:?}");
     }
     assert_eq!(
@@ -1767,6 +1774,7 @@ fn verifying_many_initialized_periods_scans_the_current_projection_once() {
         expected_vertices * selected.len()
     );
     assert_eq!(independent_work.edges_read, expected_edges * selected.len());
+    assert!(independent_work.candidate_rows_examined > 0);
     let (empty, work) = verify_periods_with_context_counted(&h.db, &query, &h.book, &[]);
     assert!(empty.is_empty());
     assert_eq!(work, fa_registers::ProjectionReadWork::default());
