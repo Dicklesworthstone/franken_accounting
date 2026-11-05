@@ -1,8 +1,9 @@
-//! Independent, exact replay of the original round-amount procedure.
+//! Independent, exact replay of round-amount and period-end timing procedures.
 //!
 //! The complete journal prefix supplies the population; native read witnesses
-//! and the producer's findings supply no arithmetic. This first profile accepts
-//! only `jet.round_amounts` v1 without an effective-date cutoff or input handles.
+//! and the producer's findings supply no arithmetic or period metadata. These
+//! profiles accept `jet.round_amounts` and `jet.period_end_timing` v1 without an
+//! effective-date cutoff or input handles.
 //! It proves the statistical computation and decision-card encoding, not fraud,
 //! approval admission, policy activation, or authenticity of source documents.
 
@@ -15,30 +16,92 @@ use crate::codec::{Reader, Writer};
 const FORMAT: &[u8] = b"fa:procedure-certificate:v1";
 const OUTPUT_FORMAT: &[u8] = b"fa:procedure-output:v1";
 const DIGEST_DOMAIN: &[u8] = b"fa:procedure-certificate-digest:v1";
-const ID: &str = "jet.round_amounts";
 const MAX_OUTPUT: usize = 32 * 1024 * 1024;
 const MAX_FINDINGS: usize = 100_000;
 const MAX_CITES: usize = 4096;
+
+/// The exact supported procedure and its independently checked parameter.
+/// This is a verifier result type, not a new certificate wire discriminant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerifiedProcedureParameters {
+    RoundAmounts { round_power: u32 },
+    PeriodEndTiming { window_days: u32 },
+}
+
+impl VerifiedProcedureParameters {
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Self::RoundAmounts { .. } => "jet.round_amounts",
+            Self::PeriodEndTiming { .. } => "jet.period_end_timing",
+        }
+    }
+
+    pub(crate) fn evidence(self) -> &'static str {
+        match self {
+            Self::RoundAmounts { .. } => "FA-EVID-L01",
+            Self::PeriodEndTiming { .. } => "FA-EVID-L02",
+        }
+    }
+
+    pub(crate) fn parameter(self) -> (&'static str, u32) {
+        match self {
+            Self::RoundAmounts { round_power } => ("round_power", round_power),
+            Self::PeriodEndTiming { window_days } => ("window_days", window_days),
+        }
+    }
+
+    pub(crate) fn complexity(self) -> &'static str {
+        match self {
+            Self::RoundAmounts { .. } => "O(legs)",
+            Self::PeriodEndTiming { .. } => "O(entries)",
+        }
+    }
+}
 
 pub(super) struct Certificate<'a> {
     pub source: &'a [u8],
     pub registry_digest: [u8; 32],
     pub output: &'a [u8],
     pub digest: [u8; 32],
+    pub parameters: VerifiedProcedureParameters,
     book: [u8; 16],
     known_at: u64,
-    round_power: u32,
 }
 
-/// One independently reproduced round-amount finding. The statistic counts
-/// these leg ordinals, with scale zero and `VerifiedProcedure.live_legs` as its
-/// population. The entry citation precedes the ordered leg citations.
+/// A supported statistic and the exact citations needed to reproduce it.
+/// Counts have scale zero. Timing distances use the authenticated exclusive
+/// period end; they are not inferred from the producer's narrative.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VerifiedRoundAmountFinding {
+pub enum VerifiedProcedureStatistic {
+    RoundLegs { ordinals: Vec<u16> },
+    DaysToPeriodEnd { period: String, days: u32 },
+}
+
+impl VerifiedProcedureStatistic {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::RoundLegs { .. } => "round_legs",
+            Self::DaysToPeriodEnd { .. } => "days_to_period_end",
+        }
+    }
+
+    pub(crate) fn value(&self) -> u64 {
+        match self {
+            Self::RoundLegs { ordinals } => ordinals.len() as u64,
+            Self::DaysToPeriodEnd { days, .. } => u64::from(*days),
+        }
+    }
+}
+
+/// One independently reproduced finding. The entry citation precedes the
+/// statistic's ordered leg citations or its authenticated period citation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedProcedureFinding {
     pub entry: u128,
     /// The registered severity tag: 1 (Low) or 2 (Medium).
     pub severity: u8,
-    pub round_legs: Vec<u16>,
+    pub statistic: VerifiedProcedureStatistic,
+    pub population: u64,
     pub narrative: String,
 }
 
@@ -48,13 +111,14 @@ pub struct VerifiedProcedure {
     pub version: u16,
     pub book_id: [u8; 16],
     pub known_at: u64,
-    pub round_power: u32,
+    pub parameters: VerifiedProcedureParameters,
     /// Every visible entry, including controls, reservations and reversals.
     pub population: u64,
-    /// Work and statistic populations are the net live posting stream.
+    /// Work over the net live posting stream. Period-end timing visits
+    /// entries without charging leg work.
     pub live_entries: u64,
     pub live_legs: u64,
-    pub findings: Vec<VerifiedRoundAmountFinding>,
+    pub findings: Vec<VerifiedProcedureFinding>,
     pub parameters_digest: [u8; 32],
     pub inputs_digest: [u8; 32],
     pub findings_digest: [u8; 32],
@@ -64,7 +128,17 @@ pub struct VerifiedProcedure {
     pub decision_card_digest: [u8; 32],
 }
 
+/// A posting's period resolved from authenticated declarations and its
+/// canonical period discriminator, never the mutable period projection.
+#[derive(Clone)]
+pub(super) struct EntryPeriod {
+    pub code: String,
+    pub effective: i32,
+    pub end: i32,
+}
+
 /// Authenticated entry facts, selected at the certificate's exact frontier.
+#[derive(Clone)]
 pub(super) struct Entry {
     pub identity: u128,
     pub digest: [u8; 32],
@@ -72,6 +146,7 @@ pub(super) struct Entry {
     pub class: u16,
     pub legs: Vec<(u32, i128)>,
     pub supersession: Vec<(u128, [u8; 32], u8)>,
+    pub period: Option<EntryPeriod>,
 }
 
 pub(super) struct Registry {
@@ -104,7 +179,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     }
     let source = r.bytes(MAX_REPORT_BUNDLE_BYTES, "procedure.source")?;
     // Retained for native replay only: this witness never establishes approval
-    // authority or contributes facts to the independent round-amount fold.
+    // authority or contributes facts to the independent statistical fold.
     r.bytes(1024 * 1024, "procedure.approval_witness")?;
     let registry_digest = r.fixed("procedure.registry")?;
     r.u128("procedure.producer")?;
@@ -119,15 +194,27 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         ));
     }
     let mut question = Reader::new(output);
-    if question.bytes(64, "procedure.output_format")? != OUTPUT_FORMAT
-        || text(&mut question, 128, "procedure.id")? != ID
-        || question.u16("procedure.version")? != 1
+    if question.bytes(64, "procedure.output_format")? != OUTPUT_FORMAT {
+        return Err(failed("procedure_profile", "unsupported procedure output"));
+    }
+    let id = text(&mut question, 128, "procedure.id")?;
+    let (evidence, parameter, bound) = match id {
+        "jet.round_amounts" => ("FA-EVID-L01", "round_power", 30),
+        "jet.period_end_timing" => ("FA-EVID-L02", "window_days", i32::MAX as u32),
+        _ => {
+            return Err(failed(
+                "procedure_profile",
+                "only statistical jet.round_amounts and jet.period_end_timing v1 are supported",
+            ));
+        }
+    };
+    if question.u16("procedure.version")? != 1
         || question.u8("procedure.claim")? != 0
-        || text(&mut question, 128, "procedure.evidence")? != "FA-EVID-L01"
+        || text(&mut question, 128, "procedure.evidence")? != evidence
     {
         return Err(failed(
             "procedure_profile",
-            "only statistical jet.round_amounts v1 is supported",
+            "procedure version, statistical claim or evidence row differs",
         ));
     }
     let book = question.fixed("procedure.book")?;
@@ -135,25 +222,35 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     if question.present("procedure.effective_through")? {
         return Err(failed(
             "procedure_profile",
-            "round-amount verification requires no effective-date cutoff",
+            "procedure verification requires no effective-date cutoff",
         ));
     }
     if question.count(1, 20, "procedure.parameters")? != 1
-        || text(&mut question, 64, "procedure.parameter")? != "round_power"
+        || text(&mut question, 64, "procedure.parameter")? != parameter
     {
         return Err(failed(
             "procedure_profile",
-            "round_power must be the only procedure parameter",
+            format!("{parameter} must be the only procedure parameter"),
         ));
     }
-    let round_power = u32::try_from(question.i128("procedure.round_power")?)
+    let value = u32::try_from(question.i128("procedure.parameter_value")?)
         .ok()
-        .filter(|power| *power <= 30)
-        .ok_or_else(|| failed("procedure_profile", "round_power must be in 0..=30"))?;
+        .filter(|value| *value <= bound)
+        .ok_or_else(|| {
+            failed(
+                "procedure_profile",
+                format!("{parameter} must be in 0..={bound}"),
+            )
+        })?;
+    let parameters = if id == "jet.round_amounts" {
+        VerifiedProcedureParameters::RoundAmounts { round_power: value }
+    } else {
+        VerifiedProcedureParameters::PeriodEndTiming { window_days: value }
+    };
     if question.count(0, 8, "procedure.inputs")? != 0 {
         return Err(failed(
             "procedure_profile",
-            "round-amount input handles are unsupported",
+            "procedure input handles are unsupported",
         ));
     }
     // All remaining output fields are reconstructed below and compared byte
@@ -163,33 +260,47 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         registry_digest,
         output,
         digest,
+        parameters,
         book,
         known_at,
-        round_power,
     })
 }
 
-fn parameters(w: &mut Writer, power: u32) {
-    w.count(1).bytes(b"round_power").i128(i128::from(power));
+fn parameters(w: &mut Writer, value: VerifiedProcedureParameters) {
+    let (name, amount) = value.parameter();
+    w.count(1).bytes(name.as_bytes()).i128(i128::from(amount));
 }
 
 fn coordinate(w: &mut Writer, book: &[u8; 16], known_at: u64) {
     w.fixed(book).u64(known_at).u8(0);
 }
 
-fn finding(w: &mut Writer, value: &VerifiedRoundAmountFinding, live_legs: u64) {
-    w.bytes(ID.as_bytes())
+fn finding(
+    w: &mut Writer,
+    value: &VerifiedProcedureFinding,
+    profile: VerifiedProcedureParameters,
+) {
+    w.bytes(profile.id().as_bytes())
         .u16(1)
         .u8(value.severity)
-        .bytes(b"round_legs")
-        .i128(value.round_legs.len() as i128)
+        .bytes(value.statistic.name().as_bytes())
+        .i128(i128::from(value.statistic.value()))
         .u8(0)
-        .u64(live_legs)
-        .count(value.round_legs.len() + 1)
-        .u8(1)
-        .u128(value.entry);
-    for ordinal in &value.round_legs {
-        w.u8(2).u128(value.entry).u16(*ordinal);
+        .u64(value.population);
+    match &value.statistic {
+        VerifiedProcedureStatistic::RoundLegs { ordinals } => {
+            w.count(ordinals.len() + 1).u8(1).u128(value.entry);
+            for ordinal in ordinals {
+                w.u8(2).u128(value.entry).u16(*ordinal);
+            }
+        }
+        VerifiedProcedureStatistic::DaysToPeriodEnd { period, .. } => {
+            w.count(2)
+                .u8(1)
+                .u128(value.entry)
+                .u8(4)
+                .bytes(period.as_bytes());
+        }
     }
     w.bytes(value.narrative.as_bytes());
 }
@@ -200,12 +311,17 @@ fn candidate(w: &mut Writer, action: &[u8], parameter: i128, score: i128) {
 
 /// Independent FADC v1 threshold law. The policy epoch is a disclosed
 /// identifier; nothing here claims that its approval rules admitted entries.
-fn decision_card(policy_oid: &[u8; 32], power: u32, population: u64) -> Vec<u8> {
+fn decision_card(
+    policy_oid: &[u8; 32],
+    profile: VerifiedProcedureParameters,
+    population: u64,
+) -> Vec<u8> {
     let mut state = Writer::default();
-    state.bytes(ID.as_bytes()).u16(1).u64(population);
-    parameters(&mut state, power);
+    state.bytes(profile.id().as_bytes()).u16(1).u64(population);
+    parameters(&mut state, profile);
     let calibrated = population >= 100;
-    let power = i128::from(power);
+    let (parameter, value) = profile.parameter();
+    let power = i128::from(value);
     let mut w = Writer::default();
     w.fixed(b"FADC")
         .u16(1)
@@ -222,7 +338,7 @@ fn decision_card(policy_oid: &[u8; 32], power: u32, population: u64) -> Vec<u8> 
         if calibrated { 250 } else { 0 },
     );
     w.count(2)
-        .bytes(b"param.round_power")
+        .bytes(format!("param.{parameter}").as_bytes())
         .i128(power)
         .u8(0)
         .bytes(b"population")
@@ -332,7 +448,7 @@ pub(super) fn replay(
             "procedure and native source coordinates differ",
         ));
     }
-    let (verified, output) = recompute(book, known_at, request.round_power, entries, registry)?;
+    let (verified, output) = recompute(book, known_at, request.parameters, entries, registry)?;
     if output != request.output {
         return Err(failed(
             "procedure_recomputation",
@@ -345,7 +461,7 @@ pub(super) fn replay(
 fn recompute(
     book: [u8; 16],
     known_at: u64,
-    round_power: u32,
+    profile: VerifiedProcedureParameters,
     mut entries: Vec<Entry>,
     registry: &Registry,
 ) -> Result<(VerifiedProcedure, Vec<u8>), ReportError> {
@@ -374,13 +490,16 @@ fn recompute(
     }
     let inputs_digest = hash_parts(b"fa:lantern-inputs:v1", &[&inputs.buf]);
     let mut params = Writer::default();
-    params.bytes(ID.as_bytes()).u16(1);
-    parameters(&mut params, round_power);
+    params.bytes(profile.id().as_bytes()).u16(1);
+    parameters(&mut params, profile);
     params.count(0);
     let parameters_digest = hash_parts(b"fa:lantern-parameters:v1", &[&params.buf]);
-    let factor = 10i128
-        .checked_pow(round_power)
-        .ok_or_else(|| failed("procedure_arithmetic", "round factor overflow"))?;
+    let factor = match profile {
+        VerifiedProcedureParameters::RoundAmounts { round_power } => 10i128
+            .checked_pow(round_power)
+            .ok_or_else(|| failed("procedure_arithmetic", "round factor overflow"))?,
+        VerifiedProcedureParameters::PeriodEndTiming { .. } => 1,
+    };
     let mut live_entries = 0u64;
     let mut live_legs = 0u64;
     let mut findings = Vec::new();
@@ -392,81 +511,126 @@ fn recompute(
             continue;
         }
         live_entries += 1;
-        let mut round_legs = Vec::new();
-        for (ordinal, (unit, mantissa)) in entry.legs.iter().enumerate() {
-            live_legs += 1;
-            let scale = registry
-                .unit_scales
-                .get(unit)
-                .ok_or_else(|| failed("procedure_units", "posting uses an unregistered unit"))?;
-            let base = 10i128
-                .checked_pow(u32::from(*scale))
-                .and_then(|one| one.checked_mul(factor))
-                .ok_or_else(|| {
+        let finding = match profile {
+            VerifiedProcedureParameters::RoundAmounts { round_power } => {
+                let mut round_legs = Vec::new();
+                for (ordinal, (unit, mantissa)) in entry.legs.iter().enumerate() {
+                    live_legs += 1;
+                    let scale = registry.unit_scales.get(unit).ok_or_else(|| {
+                        failed("procedure_units", "posting uses an unregistered unit")
+                    })?;
+                    let base = 10i128
+                        .checked_pow(u32::from(*scale))
+                        .and_then(|one| one.checked_mul(factor))
+                        .ok_or_else(|| {
+                            failed(
+                                "procedure_arithmetic",
+                                "round base exceeds exact i128 arithmetic",
+                            )
+                        })?;
+                    if *mantissa != 0 && mantissa.checked_rem(base) == Some(0) {
+                        round_legs.push(u16::try_from(ordinal).map_err(|_| {
+                            failed("bounded_input", "procedure leg ordinal exceeds u16")
+                        })?);
+                    }
+                }
+                if round_legs.len() >= MAX_CITES {
+                    return Err(failed(
+                        "bounded_input",
+                        "procedure entry and leg citations exceed 4096",
+                    ));
+                }
+                if round_legs.is_empty() {
+                    None
+                } else {
+                    Some(VerifiedProcedureFinding {
+                        entry: entry.identity,
+                        severity: if round_legs.len() == entry.legs.len() {
+                            2
+                        } else {
+                            1
+                        },
+                        narrative: format!(
+                            "{} of {} legs are whole multiples of 10^{} units",
+                            round_legs.len(),
+                            entry.legs.len(),
+                            round_power
+                        ),
+                        statistic: VerifiedProcedureStatistic::RoundLegs {
+                            ordinals: round_legs,
+                        },
+                        population: 0,
+                    })
+                }
+            }
+            VerifiedProcedureParameters::PeriodEndTiming { window_days } => {
+                let period = entry.period.as_ref().ok_or_else(|| {
                     failed(
-                        "procedure_arithmetic",
-                        "round base exceeds exact i128 arithmetic",
+                        "procedure_period",
+                        "a live posting has no authenticated period",
                     )
                 })?;
-            if *mantissa != 0 && mantissa.checked_rem(base) == Some(0) {
-                round_legs.push(
-                    u16::try_from(ordinal).map_err(|_| {
-                        failed("bounded_input", "procedure leg ordinal exceeds u16")
-                    })?,
-                );
+                // Widen before subtraction: every civil-day value is exact,
+                // including periods near either end of the i32 day range.
+                let days = i64::from(period.end) - 1 - i64::from(period.effective);
+                if days < 0 || days >= i64::from(window_days) {
+                    None
+                } else {
+                    let days = u32::try_from(days).map_err(|_| {
+                        failed("procedure_arithmetic", "period-end distance exceeds u32")
+                    })?;
+                    Some(VerifiedProcedureFinding {
+                        entry: entry.identity,
+                        severity: 1,
+                        statistic: VerifiedProcedureStatistic::DaysToPeriodEnd {
+                            period: period.code.clone(),
+                            days,
+                        },
+                        population: 0,
+                        narrative: format!(
+                            "effective {days} day(s) before the period's last day (window {window_days})"
+                        ),
+                    })
+                }
             }
-        }
-        if !round_legs.is_empty() {
-            if round_legs.len() >= MAX_CITES {
-                return Err(failed(
-                    "bounded_input",
-                    "procedure entry and leg citations exceed 4096",
-                ));
-            }
+        };
+        if let Some(finding) = finding {
             if findings.len() >= MAX_FINDINGS {
                 return Err(failed(
                     "bounded_input",
                     "procedure findings exceed the certificate bound",
                 ));
             }
-            let narrative = format!(
-                "{} of {} legs are whole multiples of 10^{} units",
-                round_legs.len(),
-                entry.legs.len(),
-                round_power
-            );
-            findings.push(VerifiedRoundAmountFinding {
-                entry: entry.identity,
-                severity: if round_legs.len() == entry.legs.len() {
-                    2
-                } else {
-                    1
-                },
-                round_legs,
-                narrative,
-            });
+            findings.push(finding);
         }
+    }
+    let statistic_population = match profile {
+        VerifiedProcedureParameters::RoundAmounts { .. } => live_legs,
+        VerifiedProcedureParameters::PeriodEndTiming { .. } => live_entries,
+    };
+    for finding in &mut findings {
+        finding.population = statistic_population;
     }
     // The first citation is always the unique entry identity. Canonical
     // little-endian citation bytes, rather than numeric VId order, break ties.
     findings.sort_by(|a, b| {
         b.severity
             .cmp(&a.severity)
-            .then_with(|| b.round_legs.len().cmp(&a.round_legs.len()))
+            .then_with(|| b.statistic.value().cmp(&a.statistic.value()))
             .then_with(|| a.entry.to_le_bytes().cmp(&b.entry.to_le_bytes()))
             .then_with(|| a.narrative.cmp(&b.narrative))
     });
     let mut encoded_findings = Writer::default();
     encoded_findings.count(findings.len());
     for value in &findings {
-        finding(&mut encoded_findings, value, live_legs);
+        finding(&mut encoded_findings, value, profile);
         if encoded_findings.buf.len() > MAX_OUTPUT {
             return Err(failed("bounded_input", "procedure findings exceed 32 MiB"));
         }
     }
     let mut finding_inputs = Writer::default();
     finding_inputs
-        .bytes(ID.as_bytes())
+        .bytes(profile.id().as_bytes())
         .u16(1)
         .fixed(&parameters_digest)
         .fixed(&inputs_digest);
@@ -475,17 +639,17 @@ fn recompute(
         b"fa:lantern-findings:v1",
         &[&finding_inputs.buf, &encoded_findings.buf],
     );
-    let decision_card = decision_card(&registry.policy_oid, round_power, population);
+    let decision_card = decision_card(&registry.policy_oid, profile, population);
     let decision_card_digest = framed_hash(b"fa:decision-card:v1", &decision_card);
     let mut output = Writer::default();
     output
         .bytes(OUTPUT_FORMAT)
-        .bytes(ID.as_bytes())
+        .bytes(profile.id().as_bytes())
         .u16(1)
         .u8(0)
-        .bytes(b"FA-EVID-L01");
+        .bytes(profile.evidence().as_bytes());
     coordinate(&mut output, &book, known_at);
-    parameters(&mut output, round_power);
+    parameters(&mut output, profile);
     output
         .count(0)
         .fixed(&parameters_digest)
@@ -500,11 +664,11 @@ fn recompute(
         .fixed(&decision_card_digest);
     Ok((
         VerifiedProcedure {
-            procedure: ID.into(),
+            procedure: profile.id().into(),
             version: 1,
             book_id: book,
             known_at,
-            round_power,
+            parameters: profile,
             population,
             live_entries,
             live_legs,
@@ -524,6 +688,11 @@ fn recompute(
 mod tests {
     use super::*;
 
+    const ROUND_THREE: VerifiedProcedureParameters =
+        VerifiedProcedureParameters::RoundAmounts { round_power: 3 };
+    const ROUND_TWO: VerifiedProcedureParameters =
+        VerifiedProcedureParameters::RoundAmounts { round_power: 2 };
+
     fn registry() -> Registry {
         Registry {
             unit_scales: BTreeMap::from([(1, 2), (2, 0)]),
@@ -539,6 +708,7 @@ mod tests {
             class,
             legs,
             supersession: Vec::new(),
+            period: None,
         }
     }
 
@@ -559,7 +729,8 @@ mod tests {
 
     #[test]
     fn exact_scale_zero_and_large_amounts_use_live_legs_and_canonical_cite_order() {
-        let (verified, output) = recompute([1; 16], 9, 3, population(), &registry()).unwrap();
+        let (verified, output) =
+            recompute([1; 16], 9, ROUND_THREE, population(), &registry()).unwrap();
         assert_eq!(
             (
                 verified.population,
@@ -572,7 +743,12 @@ mod tests {
             verified
                 .findings
                 .iter()
-                .map(|f| (f.entry, f.severity, f.round_legs.clone()))
+                .map(|f| {
+                    let VerifiedProcedureStatistic::RoundLegs { ordinals } = &f.statistic else {
+                        panic!("round-amount finding")
+                    };
+                    (f.entry, f.severity, ordinals.clone())
+                })
                 .collect::<Vec<_>>(),
             vec![(256, 2, vec![0, 1]), (1, 2, vec![0, 1]), (2, 1, vec![0])]
         );
@@ -583,7 +759,9 @@ mod tests {
         let mut reordered = population();
         reordered.reverse();
         assert_eq!(
-            recompute([1; 16], 9, 3, reordered, &registry()).unwrap().1,
+            recompute([1; 16], 9, ROUND_THREE, reordered, &registry())
+                .unwrap()
+                .1,
             output
         );
         let request = Certificate {
@@ -593,7 +771,7 @@ mod tests {
             digest: [0; 32],
             book: [1; 16],
             known_at: 9,
-            round_power: 3,
+            parameters: ROUND_THREE,
         };
         assert_eq!(
             replay(&request, [1; 16], 9, population(), &registry())
@@ -633,7 +811,7 @@ mod tests {
                     .push((previous.identity, previous.digest, 1));
                 entries.push(reversal);
             }
-            let (verified, _) = recompute([1; 16], 9, 3, entries, &registry()).unwrap();
+            let (verified, _) = recompute([1; 16], 9, ROUND_THREE, entries, &registry()).unwrap();
             assert_eq!(verified.population, length as u64 + 1);
             assert_eq!(verified.live_entries, u64::from(length % 2 == 0));
             assert_eq!(verified.live_legs, 2 * u64::from(length % 2 == 0));
@@ -670,14 +848,14 @@ mod tests {
         let mut replacement = entry(1, 1, vec![(1, 100_000)]);
         replacement.supersession.push((2, [0; 32], 2));
         assert_eq!(
-            recompute([1; 16], 9, 3, vec![replacement], &registry())
+            recompute([1; 16], 9, ROUND_THREE, vec![replacement], &registry())
                 .unwrap_err()
                 .predicate,
             "procedure_profile"
         );
         let unknown = entry(1, 1, vec![(99, 100_000)]);
         assert_eq!(
-            recompute([1; 16], 9, 3, vec![unknown], &registry())
+            recompute([1; 16], 9, ROUND_THREE, vec![unknown], &registry())
                 .unwrap_err()
                 .predicate,
             "procedure_units"
@@ -685,14 +863,14 @@ mod tests {
         let mut large_scale = registry();
         large_scale.unit_scales.insert(1, 38);
         assert_eq!(
-            recompute([1; 16], 9, 3, population(), &large_scale)
+            recompute([1; 16], 9, ROUND_THREE, population(), &large_scale)
                 .unwrap_err()
                 .predicate,
             "procedure_arithmetic"
         );
         let too_many_cites = entry(1, 1, vec![(1, 100_000); MAX_CITES]);
         assert_eq!(
-            recompute([1; 16], 9, 3, vec![too_many_cites], &registry())
+            recompute([1; 16], 9, ROUND_THREE, vec![too_many_cites], &registry())
                 .unwrap_err()
                 .predicate,
             "bounded_input"
@@ -704,8 +882,8 @@ mod tests {
         // Controls affect the decision population without creating monetary
         // work or findings. This distinguishes it from the live-leg population.
         let controls = |n| (0..n).map(|id| entry(id, 17, Vec::new())).collect();
-        let (small, _) = recompute([1; 16], 9, 2, controls(99), &registry()).unwrap();
-        let (large, _) = recompute([1; 16], 9, 2, controls(100), &registry()).unwrap();
+        let (small, _) = recompute([1; 16], 9, ROUND_TWO, controls(99), &registry()).unwrap();
+        let (large, _) = recompute([1; 16], 9, ROUND_TWO, controls(100), &registry()).unwrap();
         assert_eq!(
             (small.live_entries, large.live_legs, large.findings.len()),
             (0, 0, 0)
@@ -724,5 +902,121 @@ mod tests {
         assert_eq!(large.decision_card[suffix], 6);
         assert_eq!(&large.decision_card[suffix + 5..], action);
         assert_ne!(small.decision_card_digest, large.decision_card_digest);
+    }
+
+    fn timing_entry(identity: u128, effective: i32, end: i32) -> Entry {
+        let mut value = entry(identity, 1, vec![(1, 100_000), (1, 100_000)]);
+        value.period = Some(EntryPeriod {
+            code: "FY2026-P01".into(),
+            effective,
+            end,
+        });
+        value
+    }
+
+    #[test]
+    fn period_end_uses_the_exclusive_end_and_live_posting_population() {
+        let mut pending = timing_entry(5, 30, 31);
+        pending.class = 2;
+        let entries = vec![
+            timing_entry(1, 27, 31),
+            timing_entry(2, 28, 31),
+            timing_entry(3, 29, 31),
+            timing_entry(4, 30, 31),
+            pending,
+            entry(6, 17, Vec::new()),
+        ];
+        for (window_days, expected) in [
+            (0, vec![]),
+            (1, vec![(4, 0)]),
+            (3, vec![(2, 2), (3, 1), (4, 0)]),
+        ] {
+            let (verified, _) = recompute(
+                [1; 16],
+                9,
+                VerifiedProcedureParameters::PeriodEndTiming { window_days },
+                entries.clone(),
+                &registry(),
+            )
+            .unwrap();
+            assert_eq!(verified.procedure, "jet.period_end_timing");
+            assert_eq!(
+                (verified.population, verified.live_entries, verified.live_legs),
+                (6, 4, 0)
+            );
+            let observed: Vec<_> = verified
+                .findings
+                .iter()
+                .map(|finding| {
+                    let VerifiedProcedureStatistic::DaysToPeriodEnd { period, days } =
+                        &finding.statistic
+                    else {
+                        panic!("period-end finding")
+                    };
+                    assert_eq!(period, "FY2026-P01");
+                    assert_eq!(finding.severity, 1);
+                    assert_eq!(finding.population, 4);
+                    (finding.entry, *days)
+                })
+                .collect();
+            assert_eq!(observed, expected);
+        }
+    }
+
+    #[test]
+    fn period_end_requires_authenticated_periods_and_widens_day_arithmetic() {
+        let profile = VerifiedProcedureParameters::PeriodEndTiming { window_days: 3 };
+        assert_eq!(
+            recompute(
+                [1; 16],
+                9,
+                profile,
+                vec![entry(1, 1, vec![(1, 100_000)])],
+                &registry(),
+            )
+            .unwrap_err()
+            .predicate,
+            "procedure_period"
+        );
+        let (verified, _) = recompute(
+            [1; 16],
+            9,
+            profile,
+            vec![
+                timing_entry(1, i32::MIN, i32::MAX),
+                timing_entry(2, i32::MIN, i32::MIN + 1),
+                timing_entry(3, i32::MAX, i32::MAX),
+            ],
+            &registry(),
+        )
+        .unwrap();
+        assert_eq!(verified.findings.len(), 1);
+        assert_eq!(verified.findings[0].entry, 2);
+        assert_eq!(verified.findings[0].statistic.value(), 0);
+    }
+
+    #[test]
+    fn period_end_reversal_chains_restore_the_original_period_observation() {
+        let original = timing_entry(1000, 30, 31);
+        let mut entries = vec![original];
+        for length in 0..16 {
+            let (verified, _) = recompute(
+                [1; 16],
+                9,
+                VerifiedProcedureParameters::PeriodEndTiming { window_days: 3 },
+                entries.clone(),
+                &registry(),
+            )
+            .unwrap();
+            assert_eq!(verified.live_entries, u64::from(length % 2 == 0));
+            assert_eq!(verified.live_legs, 0);
+            assert_eq!(verified.findings.len(), usize::from(length % 2 == 0));
+            let previous = entries.last().unwrap();
+            let mut reversal = entry(999 - length, 4, previous.legs.clone());
+            reversal
+                .supersession
+                .push((previous.identity, previous.digest, 1));
+            entries.push(reversal);
+        }
     }
 }
