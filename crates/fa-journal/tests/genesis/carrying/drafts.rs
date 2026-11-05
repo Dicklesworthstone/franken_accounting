@@ -405,7 +405,8 @@ fn draft_settlement_refuses_poisoned_unrelated_documents_before_rate_payload_dec
         .block_on(f.h.db.write(&cx.commit(), poison))
         .unwrap();
     let head = f.h.db.frontier().unwrap();
-    let refused = prepare_confined(&mut f, &admission, &[input.clone()], template).unwrap_err();
+    let refused =
+        prepare_confined(&mut f, &admission, std::slice::from_ref(&input), template).unwrap_err();
     assert_eq!(refused.code, fa_journal::refusal::code::CAPABILITY);
     let stripped = Cx::detached_cancel_context();
     let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
@@ -436,7 +437,8 @@ fn draft_settlement_keeps_same_target_partials_outside_the_independent_source_ba
         .unwrap();
     let input = f.fx_request(f.target, 33);
     let first = source_template(&f, b"first-confined-partial");
-    let proposal = prepare_confined(&mut f, &admission, &[input.clone()], first).unwrap();
+    let proposal =
+        prepare_confined(&mut f, &admission, std::slice::from_ref(&input), first).unwrap();
     assert_eq!(proposal.legs[0].base_amount.unwrap().mantissa, 17);
     f.h.plan_draft(capability.clone(), name, proposal).unwrap();
     let later = source_template(&f, b"second-confined-partial");
