@@ -11,8 +11,8 @@ use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ApprovalRef, CloseRunBody, CloseTaskBody, CloseTaskBodyAction, ControlKind, ControlPayload,
-    EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128, TypedRef, Writer,
-    close_run_vid, close_task_vid, domain_digest, entry_mirrors, entry_vid, period_vid,
+    EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128, Oid, Reader, TypedRef,
+    Writer, close_run_vid, close_task_vid, domain_digest, entry_mirrors, entry_vid, period_vid,
     report_certificate_vid,
 };
 use fa_policy::{Capability, Intent, Op};
@@ -63,6 +63,115 @@ pub struct CloseTaskRequest {
     pub description: Erasable<String>,
     pub transition_plan: Option<TransitionPlan>,
     pub approvals: Vec<ApprovalRef>,
+    /// Selected combined review, checked at the current native frontier.
+    /// Its container identity is not a semantic replay verdict: the facade
+    /// replays the complete retained certificate before supplying this value.
+    pub review: Option<CloseTaskReview>,
+}
+
+/// Bounded identity binding of the existing combined-rehearsal certificate.
+/// The fields cannot be replaced independently of its canonical content digest.
+/// This checks its family and graph identity, not its accounting computation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloseTaskReview {
+    certificate: [u8; 32],
+    book: Id128,
+    run: VId,
+    body_digest: [u8; 32],
+    opened_at: CommitSeq,
+    checked_at: CommitSeq,
+}
+
+impl CloseTaskReview {
+    pub fn from_certificate(bytes: &[u8], checked_at: CommitSeq) -> Result<Self, Refusal> {
+        const MAX_BYTES: usize = 64 * 1024 * 1024;
+        let malformed = |error: fa_model::DecodeError| {
+            invalid(format!("malformed combined close review: {error}"))
+        };
+        if !(32..=MAX_BYTES).contains(&bytes.len()) {
+            return Err(invalid("the combined close review exceeds its byte bound"));
+        }
+        let mut r = Reader::new(bytes);
+        if r.bytes(64, "close review format").map_err(malformed)?
+            != b"fa:close-run-rehearsal-certificate:v1"
+        {
+            return Err(invalid(
+                "the selected artifact is not a combined close review",
+            ));
+        }
+        // The facade checks the native baseline and each original draft
+        // certificate. Borrow their bounded frames here; do not reimplement
+        // report semantics or allocate copies inside the posting kernel.
+        r.bytes(MAX_BYTES, "close review baseline")
+            .map_err(malformed)?;
+        let body = CloseRunBody::decode(
+            r.bytes(fa_model::limits::MAX_CLOSE_RUN_BYTES, "close review graph")
+                .map_err(malformed)?,
+        )
+        .map_err(malformed)?;
+        let opened_at = CommitSeq(r.u64("close review opened at").map_err(malformed)?);
+        let count = r.u32("close review drafts").map_err(malformed)? as usize;
+        let expected = body
+            .tasks
+            .iter()
+            .filter(|task| matches!(task.action, CloseTaskBodyAction::PromoteDraft { .. }))
+            .count();
+        if count != expected {
+            return Err(invalid(
+                "the combined review omits or adds original draft reviews",
+            ));
+        }
+        for _ in 0..count {
+            r.bytes(MAX_BYTES, "close review draft")
+                .map_err(malformed)?;
+        }
+        r.u128("close review producer").map_err(malformed)?;
+        r.fixed::<32>("close review capability")
+            .map_err(malformed)?;
+        r.bytes(MAX_BYTES, "close review output")
+            .map_err(malformed)?;
+        let certificate = r.fixed("close review digest").map_err(malformed)?;
+        r.finish().map_err(malformed)?;
+        if opened_at.0 == 0
+            || opened_at > checked_at
+            || domain_digest(
+                b"fa:close-run-rehearsal-certificate-digest:v1",
+                &[&bytes[..bytes.len() - 32]],
+            ) != certificate
+        {
+            return Err(invalid(
+                "the combined close review has an invalid identity or digest",
+            ));
+        }
+        Ok(Self {
+            certificate,
+            book: body.book_id,
+            run: close_run_vid(body.book_id, &body.name),
+            body_digest: body.digest().map_err(|error| invalid(error.to_string()))?,
+            opened_at,
+            checked_at,
+        })
+    }
+
+    /// Rebind only the execution frontier while one owned facade invocation
+    /// advances its already-rehearsed tasks. This grants no authority and does
+    /// not stand in for the facade's full replay/current-result comparison.
+    pub fn at_frontier(&self, checked_at: CommitSeq) -> Self {
+        Self {
+            checked_at,
+            ..self.clone()
+        }
+    }
+}
+
+/// The original selection of one complete combined review. It is published
+/// atomically with its first native task, never merely on an attempted run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloseRunReviewReceipt {
+    pub record: VId,
+    pub certificate: [u8; 32],
+    pub recorded_at: CommitSeq,
+    pub principal: VId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,6 +188,8 @@ pub struct CloseTaskView {
     pub id: String,
     pub ready: bool,
     pub completion: Option<CloseTaskReceipt>,
+    /// The combined review named by this completion; None for legacy tasks.
+    pub rehearsal: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +199,9 @@ pub struct CloseRunView {
     pub opened_at: CommitSeq,
     pub complete: bool,
     pub tasks: Vec<CloseTaskView>,
+    /// Append-only selections in native publication order. The last is the
+    /// current binding; replacing it never rewrites earlier task evidence.
+    pub reviews: Vec<CloseRunReviewReceipt>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,6 +229,16 @@ fn conflict(message: impl Into<String>) -> Refusal {
         message,
         "plan §7.5 (one immutable close run per name)",
         "resume the existing run, or choose a new name for different reviewed work",
+    )
+}
+
+fn review_invalidated(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::PLAN_INVALIDATED,
+        exit::CONFLICT,
+        message,
+        "plan §7.5 (a selected combined close review cannot be silently dropped or substituted)",
+        "retain a fresh `fa close dry-run --run <name> --certify` result and select its full digest with `close run|step --rehearsal C:<digest>`",
     )
 }
 
@@ -433,6 +557,7 @@ enum RecordKind {
     Open,
     Task,
     Complete,
+    Review,
 }
 
 impl RecordKind {
@@ -441,14 +566,24 @@ impl RecordKind {
             Self::Open => 0,
             Self::Task => 1,
             Self::Complete => 2,
+            Self::Review => 3,
         }
     }
     fn states(self) -> (u8, u8) {
         match self {
             Self::Open | Self::Task => (0, 1),
             Self::Complete => (1, 2),
+            Self::Review => (1, 1),
         }
     }
+}
+
+fn review_key(run: VId, certificate: &[u8; 32]) -> Vec<u8> {
+    domain_digest(
+        b"fa:close-review-key:v1",
+        &[&run.0.to_le_bytes(), certificate],
+    )
+    .to_vec()
 }
 
 fn record_key(kind: RecordKind, object: VId) -> Vec<u8> {
@@ -762,6 +897,8 @@ fn read_view<V: Vfs + Clone>(
     let mut opened_at = None;
     let mut completed_at = None;
     let mut completions = BTreeMap::<VId, CloseTaskReceipt>::new();
+    let mut task_reviews = BTreeMap::<VId, Option<[u8; 32]>>::new();
+    let mut reviews = Vec::<CloseRunReviewReceipt>::new();
     let mut expected_edges = BTreeSet::new();
     for (seq, vid, entry) in &records {
         let p = &entry.proposal;
@@ -812,9 +949,37 @@ fn read_view<V: Vfs + Clone>(
                     completed_at = Some((*seq, proof_refs[0], p.principal_ref));
                     RecordKind::Complete
                 }
+                (1, 1) if p.extensions.is_empty() => {
+                    let [TypedRef::Object(certificate)] = proof_refs.as_slice() else {
+                        return Err(corrupt("a combined review names exactly one certificate"));
+                    };
+                    if reviews.len() >= MAX_TASKS
+                        || reviews.iter().any(|review| {
+                            review.certificate == certificate.0 || review.recorded_at == *seq
+                        })
+                    {
+                        return Err(corrupt("a combined review is duplicated or out of bounds"));
+                    }
+                    let retained =
+                        db.vertex(report_certificate_vid(book.book_id, &certificate.0))?;
+                    if retained.as_ref().is_none_or(|row| {
+                        row.created_at >= *seq || !certificate_row(row, book, &certificate.0)
+                    }) {
+                        return Err(corrupt(
+                            "a selected combined review has no original retained artifact",
+                        ));
+                    }
+                    reviews.push(CloseRunReviewReceipt {
+                        record: *vid,
+                        certificate: certificate.0,
+                        recorded_at: *seq,
+                        principal: p.principal_ref,
+                    });
+                    RecordKind::Review
+                }
                 _ => {
                     return Err(corrupt(
-                        "run lifecycle does not have one Open and at most one Complete",
+                        "run lifecycle must contain one Open, bounded review selections and at most one Complete",
                     ));
                 }
             }
@@ -822,10 +987,14 @@ fn read_view<V: Vfs + Clone>(
             if (*from, *to) != (0, 1) || !p.extensions.is_empty() {
                 return Err(corrupt("invalid task completion transition"));
             }
-            let [TypedRef::Vertex(effect)] = proof_refs.as_slice() else {
-                return Err(corrupt(
-                    "task completion must name exactly one native effect",
-                ));
+            let (effect, review) = match proof_refs.as_slice() {
+                [TypedRef::Vertex(effect)] => (*effect, None),
+                [TypedRef::Vertex(effect), TypedRef::Object(review)] => (*effect, Some(review.0)),
+                _ => {
+                    return Err(corrupt(
+                        "task completion names one native effect and optionally its selected combined review",
+                    ));
+                }
             };
             let task = tasks
                 .get(object_ref)
@@ -836,7 +1005,7 @@ fn read_view<V: Vfs + Clone>(
                 book,
                 &body.period,
                 task,
-                *effect,
+                effect,
                 *seq,
                 p.principal_ref,
             )?;
@@ -845,7 +1014,7 @@ fn read_view<V: Vfs + Clone>(
                     *object_ref,
                     CloseTaskReceipt {
                         record: *vid,
-                        effect: *effect,
+                        effect,
                         recorded_at: *seq,
                         principal: p.principal_ref,
                     },
@@ -854,9 +1023,18 @@ fn read_view<V: Vfs + Clone>(
             {
                 return Err(corrupt("task completed more than once"));
             }
+            task_reviews.insert(*object_ref, review);
             RecordKind::Task
         };
-        if p.idempotency_key != record_key(kind, *object_ref)
+        let expected_key = if matches!(kind, RecordKind::Review) {
+            let [TypedRef::Object(certificate)] = proof_refs.as_slice() else {
+                return Err(corrupt("combined review identity lacks its certificate"));
+            };
+            review_key(*object_ref, &certificate.0)
+        } else {
+            record_key(kind, *object_ref)
+        };
+        if p.idempotency_key != expected_key
             || *vid
                 != entry_vid(
                     book.book_id,
@@ -869,6 +1047,33 @@ fn read_view<V: Vfs + Clone>(
         expected_edges.insert((relation::IN_CASE, *vid, *object_ref));
     }
     let opened_at = opened_at.ok_or_else(|| corrupt("run has no original Open record"))?;
+    // First use is evidence of an actual native publication, not a separately
+    // mutable promise. No review may exist without its same-commit task, and a
+    // later task cannot silently fall back to a prior or absent selection.
+    for review in &reviews {
+        if review.recorded_at <= opened_at
+            || !completions.iter().any(|(task, receipt)| {
+                receipt.recorded_at == review.recorded_at
+                    && receipt.principal == review.principal
+                    && task_reviews.get(task) == Some(&Some(review.certificate))
+            })
+        {
+            return Err(corrupt(
+                "combined review selection has no same-commit first task",
+            ));
+        }
+    }
+    for (task, receipt) in &completions {
+        let selected = reviews
+            .iter()
+            .rev()
+            .find(|review| review.recorded_at <= receipt.recorded_at);
+        if task_reviews.get(task).copied().flatten() != selected.map(|review| review.certificate) {
+            return Err(corrupt(
+                "task completion dropped or substituted its current combined review",
+            ));
+        }
+    }
     let complete = completions.len() == body.tasks.len();
     match (&completed_at, complete) {
         (Some((seq, TypedRef::Vertex(last), principal)), true) => {
@@ -958,6 +1163,7 @@ fn read_view<V: Vfs + Clone>(
             id: task.id.clone(),
             ready: completion.is_none() && prerequisites_complete,
             completion,
+            rehearsal: task_reviews.get(&vid).copied().flatten(),
         });
     }
     let selected: BTreeSet<_> = state_changes.keys().copied().collect();
@@ -1029,6 +1235,7 @@ fn read_view<V: Vfs + Clone>(
         opened_at,
         complete,
         tasks: views,
+        reviews,
     }))
 }
 
@@ -1157,6 +1364,67 @@ fn ready_task<'a>(
     Ok((task, body))
 }
 
+fn validate_task_review<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    view: &CloseRunView,
+    task: &CloseTaskView,
+    review: Option<&CloseTaskReview>,
+) -> Outcome<()> {
+    let Some(review) = review else {
+        return Ok(if task.completion.is_none() && !view.reviews.is_empty() {
+            Err(review_invalidated(
+                "this close run has a durable combined review; execution cannot omit it",
+            ))
+        } else {
+            Ok(())
+        });
+    };
+    if review.book != book.book_id
+        || review.run != view.vid
+        || review.body_digest != view.body.digest().map_err(encode)?
+        || review.opened_at != view.opened_at
+    {
+        return Ok(Err(review_invalidated(
+            "the selected combined review names a different book or close graph",
+        )));
+    }
+    if review.checked_at != db.frontier()? {
+        return Ok(Err(review_invalidated(
+            "the source frontier changed after the combined close was checked",
+        )));
+    }
+    if task.completion.is_some() && task.rehearsal != Some(review.certificate) {
+        return Ok(Err(conflict(
+            "a completed task cannot substitute its original combined review",
+        )));
+    }
+    if task.completion.is_none()
+        && view
+            .reviews
+            .last()
+            .is_some_and(|current| current.certificate != review.certificate)
+        && view
+            .reviews
+            .iter()
+            .any(|prior| prior.certificate == review.certificate)
+    {
+        return Ok(Err(review_invalidated(
+            "a superseded combined review cannot become current again",
+        )));
+    }
+    let retained = db.vertex(report_certificate_vid(book.book_id, &review.certificate))?;
+    if retained
+        .as_ref()
+        .is_none_or(|row| !certificate_row(row, book, &review.certificate))
+    {
+        return Ok(Err(review_invalidated(
+            "the selected combined close review is not retained in this book",
+        )));
+    }
+    Ok(Ok(()))
+}
+
 /// Review the native final transition, including its exact sealed proposal.
 /// Execution still requires the ordinary independently recorded approvals.
 #[allow(clippy::too_many_arguments)]
@@ -1208,6 +1476,7 @@ pub(crate) struct TaskCompletion {
     task: String,
     capability: Capability,
     description: Erasable<String>,
+    review: Option<CloseTaskReview>,
 }
 
 impl TaskCompletion {
@@ -1227,6 +1496,11 @@ impl TaskCompletion {
             Ok(task) => task,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        if let Err(refusal) =
+            validate_task_review(db, book, &self.view, selected, self.review.as_ref())?
+        {
+            return Ok(Err(refusal));
+        }
         for (vid, expected_state) in std::iter::once((self.view.vid, 1)).chain(
             self.view
                 .tasks
@@ -1271,20 +1545,75 @@ impl TaskCompletion {
             ));
         }
         let mut batch = WriteBatch::new(relation::IN_CASE);
-        let receipt = add_record(
-            &mut batch,
-            tracker,
-            proposal(
-                book,
-                &self.view.body,
-                RecordKind::Task,
-                selected.vid,
-                self.capability.holder(),
-                self.description.clone(),
-                Some(effect),
-            )?,
+        let review_digest = self.review.as_ref().map(|review| review.certificate);
+        if let Some(review) = &self.review {
+            let retained = txn.vertex(
+                db,
+                report_certificate_vid(book.book_id, &review.certificate),
+            )?;
+            if retained
+                .as_ref()
+                .is_none_or(|row| !certificate_row(row, book, &review.certificate))
+            {
+                return Ok(Err(review_invalidated(
+                    "the selected combined close review changed before publication",
+                )));
+            }
+            if self
+                .view
+                .reviews
+                .last()
+                .is_none_or(|current| current.certificate != review.certificate)
+            {
+                let mut selection = proposal(
+                    book,
+                    &self.view.body,
+                    RecordKind::Review,
+                    self.view.vid,
+                    self.capability.holder(),
+                    self.description.clone(),
+                    None,
+                )?;
+                selection.idempotency_key = review_key(self.view.vid, &review.certificate);
+                let Some(ControlPayload::LifecycleTransition { proof_refs, .. }) =
+                    &mut selection.control
+                else {
+                    return Err(corrupt(
+                        "combined review selection has no lifecycle payload",
+                    ));
+                };
+                proof_refs.push(TypedRef::Object(Oid(review.certificate)));
+                let selection_vid = entry_vid(
+                    book.book_id,
+                    &self.capability.holder().0.to_le_bytes(),
+                    &selection.idempotency_key,
+                );
+                if txn.vertex(db, selection_vid)?.is_some() {
+                    return Ok(Err(conflict(
+                        "the combined review selection appeared during execution",
+                    )));
+                }
+                add_record(&mut batch, tracker, selection, self.view.vid)?;
+            }
+        }
+        let mut task_record = proposal(
+            book,
+            &self.view.body,
+            RecordKind::Task,
             selected.vid,
+            self.capability.holder(),
+            self.description.clone(),
+            Some(effect),
         )?;
+        if let Some(digest) = review_digest {
+            let Some(ControlPayload::LifecycleTransition { proof_refs, .. }) =
+                &mut task_record.control
+            else {
+                return Err(corrupt("task completion has no lifecycle payload"));
+            };
+            proof_refs.push(TypedRef::Object(Oid(digest)));
+        }
+        let receipt = add_record(&mut batch, tracker, task_record, selected.vid)?;
         tracker.set_vertex_property(
             relation::IN_CASE,
             selected.vid,
@@ -1374,6 +1703,9 @@ pub async fn execute_close_task<V: Vfs + Clone>(
         Ok(task) => task,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    if let Err(refusal) = validate_task_review(db, book, &view, task, request.review.as_ref())? {
+        return Ok(Err(refusal));
+    }
     if let CloseTaskBodyAction::PromoteDraft { owner, .. } = &body.action {
         if request.transition_plan.is_some() || !request.approvals.is_empty() {
             return Ok(Err(invalid(
@@ -1441,6 +1773,7 @@ pub async fn execute_close_task<V: Vfs + Clone>(
         task: task_id.into(),
         capability: request.capability.clone(),
         description: request.description.clone(),
+        review: request.review.clone(),
     };
     match &body.action {
         CloseTaskBodyAction::PromoteDraft {

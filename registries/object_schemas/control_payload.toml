@@ -16,7 +16,7 @@ variant_tags = ["0:PeriodTransition", "1:SchemaChange", "2:PolicyActivation", "3
 field = "LifecycleTransition.CloseControl"
 appendix_a = "CloseRun and CloseTask lifecycle (plan §7.5)"
 code_type = "EntryClass::CLOSE_CONTROL=31; ControlKind::CLOSE_TRANSITION=21; LifecycleTransition tag 3"
-rationale = "OpenRun is CloseRun state 0->1 with immutable CloseRunBody in extension 40. A completed CloseTask is state 0->1 with proof refs to its native effects; the final task also publishes CloseRun state 1->2. The origin's spec_body_digest always binds the same run definition. No new ControlPayload discriminant is invented. Every record has no legs, no effective period and no posting-date mirror; native task effects retain their own typed controls and approvals."
+rationale = "OpenRun is CloseRun state 0->1 with immutable CloseRunBody in extension 40. A completed CloseTask is state 0->1 with Vertex(native_effect), optionally followed by Object(combined_review_digest); the final task also publishes CloseRun state 1->2. Selecting a retained combined review appends CloseRun state 1->1 with exactly Object(combined_review_digest), atomically with that review's first successful task under the same principal. Later tasks must preserve the current selection; a fresh selection cannot rewrite earlier task proofs. Historical single-effect receipts remain valid before a selection. The origin's spec_body_digest always binds the same run definition. No new ControlPayload discriminant is invented. Every record has no legs, no effective period and no posting-date mirror; native task effects retain their own typed controls and approvals."
 tracking_bead = "fa-4o0"
 
 [[decision]]

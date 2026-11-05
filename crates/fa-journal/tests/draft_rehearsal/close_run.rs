@@ -23,6 +23,7 @@ fn request(h: &Harness, capability: Capability) -> CloseTaskRequest {
         description: description(h),
         transition_plan: None,
         approvals: Vec::new(),
+        review: None,
     }
 }
 
@@ -202,6 +203,212 @@ fn plan(h: &Harness, run: &str, task: &str, key: &[u8]) -> Result<TransitionPlan
         description(h),
     )
     .unwrap()
+}
+
+// This is deliberately an identity-only kernel fixture. Real complete report
+// frames and their mathematical replay are exercised by fa's close_execution
+// and close_rehearsal tests; the kernel does not claim to verify those frames.
+fn combined_review_bytes(view: &CloseRunView, marker: u8) -> Vec<u8> {
+    let mut w = fa_model::Writer::new();
+    w.bytes(b"fa:close-run-rehearsal-certificate:v1")
+        .bytes(b"native baseline checked by facade")
+        .bytes(&view.body.canonical_bytes().unwrap())
+        .u64(view.opened_at.0);
+    let count = view
+        .body
+        .tasks
+        .iter()
+        .filter(|task| {
+            matches!(
+                task.action,
+                fa_model::CloseTaskBodyAction::PromoteDraft { .. },
+            )
+        })
+        .count();
+    w.u32(count as u32);
+    for _ in 0..count {
+        w.bytes(b"draft review checked by facade");
+    }
+    w.u128(APPROVER.0).fixed(&[0; 32]).bytes(&[marker]);
+    let mut bytes = w.finish().unwrap();
+    let digest =
+        fa_model::domain_digest(b"fa:close-run-rehearsal-certificate-digest:v1", &[&bytes]);
+    bytes.extend_from_slice(&digest);
+    bytes
+}
+
+fn retain_combined_review(
+    h: &mut Harness,
+    bytes: Vec<u8>,
+) -> (fa_journal::close_run::CloseTaskReview, [u8; 32]) {
+    let digest: [u8; 32] = bytes[bytes.len() - 32..].try_into().unwrap();
+    let mut props = vec![
+        (
+            property::BOOK_ID,
+            CanonicalScalar::bytes(h.book.book_id.0.to_vec()).unwrap(),
+        ),
+        (
+            property::FA_DIGEST,
+            CanonicalScalar::bytes(digest.to_vec()).unwrap(),
+        ),
+        (
+            property::FA_PAYLOAD,
+            CanonicalScalar::bytes(bytes.clone()).unwrap(),
+        ),
+    ];
+    props.sort_by_key(|(key, _)| key.0);
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    batch.create_vertex(
+        fa_model::report_certificate_vid(h.book.book_id, &digest),
+        vec![label::CERTIFICATE],
+        props,
+    );
+    h.write(batch);
+    (
+        fa_journal::close_run::CloseTaskReview::from_certificate(&bytes, h.head()).unwrap(),
+        digest,
+    )
+}
+
+#[test]
+fn close_review_identity_frontier_and_atomic_history_are_enforced_by_the_kernel() {
+    use fa_journal::close_run::CloseTaskReview;
+    let mut h = Harness::new(None);
+    let first = review(&mut h, "first-bound", 100, 201);
+    let second = review(&mut h, "second-bound", 40, 202);
+    let declaration = definition(
+        &h,
+        "bound",
+        vec![
+            task("first", &[], first),
+            task("second", &["first"], second),
+        ],
+    );
+    let initial = start(&mut h, &declaration).unwrap();
+    let bytes = combined_review_bytes(&initial, 1);
+    let stale = CloseTaskReview::from_certificate(&bytes, h.head()).unwrap();
+    let mut req = request(&h, closer());
+    req.review = Some(stale.clone());
+    let before = h.head();
+    assert_eq!(
+        step(&mut h, "bound", "first", req).unwrap_err().code,
+        code::PLAN_INVALIDATED
+    );
+    assert_eq!(h.head(), before, "a review must already be retained");
+    let (selected, digest) = retain_combined_review(&mut h, bytes.clone());
+    let mut req = request(&h, closer());
+    req.review = Some(stale);
+    let before = h.head();
+    assert_eq!(
+        step(&mut h, "bound", "first", req).unwrap_err().code,
+        code::PLAN_INVALIDATED
+    );
+    assert_eq!(
+        h.head(),
+        before,
+        "the checked native frontier must be exact"
+    );
+
+    let mut req = request(
+        &h,
+        Capability::embedded(AGENT, &["read", "close", "approve"]).unwrap(),
+    );
+    req.review = Some(selected.clone());
+    assert!(step(&mut h, "bound", "first", req).is_err());
+    assert_eq!(h.head(), before);
+    assert!(
+        status(&h, "bound").reviews.is_empty(),
+        "failed native approval cannot attach a review"
+    );
+    let mut req = request(&h, closer());
+    req.review = Some(selected.clone());
+    let first = step(&mut h, "bound", "first", req).unwrap();
+    assert_eq!(h.head().0, before.0 + 1);
+    assert_eq!(first.run.reviews.len(), 1);
+    assert_eq!(first.run.reviews[0].certificate, digest);
+    assert_eq!(first.run.reviews[0].recorded_at, first.receipt.recorded_at);
+    assert_eq!(first.run.tasks[0].rehearsal, Some(digest));
+    let before = h.head();
+    let req = request(&h, closer());
+    assert_eq!(
+        step(&mut h, "bound", "second", req).unwrap_err().code,
+        code::PLAN_INVALIDATED
+    );
+    let mut req = request(&h, closer());
+    req.review = Some(selected.at_frontier(h.head()));
+    let retry = step(&mut h, "bound", "first", req).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.receipt, first.receipt);
+    assert_eq!(h.head(), before);
+
+    let fresh_bytes = combined_review_bytes(&first.run, 2);
+    let (fresh, fresh_digest) = retain_combined_review(&mut h, fresh_bytes);
+    let mut req = request(&h, closer());
+    req.review = Some(fresh.clone());
+    let before = h.head();
+    assert_eq!(
+        step(&mut h, "bound", "first", req).unwrap_err().code,
+        code::IDEMPOTENCY_CONFLICT
+    );
+    assert_eq!(h.head(), before);
+    let mut req = request(&h, closer());
+    req.review = Some(fresh);
+    let completed = step(&mut h, "bound", "second", req).unwrap();
+    assert!(completed.run.complete);
+    assert_eq!(
+        completed
+            .run
+            .reviews
+            .iter()
+            .map(|review| review.certificate)
+            .collect::<Vec<_>>(),
+        [digest, fresh_digest]
+    );
+    assert_eq!(completed.run.reviews[0], first.run.reviews[0]);
+    assert_eq!(
+        completed.run.tasks[0].completion.as_ref(),
+        Some(&first.receipt)
+    );
+    assert_eq!(completed.run.tasks[1].rehearsal, Some(fresh_digest));
+    assert_eq!(
+        completed.run.reviews[1].recorded_at,
+        completed.receipt.recorded_at
+    );
+    assert_eq!(status(&h, "bound"), completed.run);
+
+    let mut malformed = bytes;
+    malformed[4] ^= 1;
+    assert!(CloseTaskReview::from_certificate(&malformed, h.head()).is_err());
+    malformed = combined_review_bytes(&initial, 3);
+    let last = malformed.len() - 1;
+    malformed[last] ^= 1;
+    assert!(CloseTaskReview::from_certificate(&malformed, h.head()).is_err());
+}
+
+#[test]
+fn close_review_cannot_bind_a_different_book_run_body_or_creation_sequence() {
+    let mut h = Harness::new(None);
+    let action = review(&mut h, "identity", 100, 203);
+    let declaration = definition(&h, "identity", vec![task("post", &[], action)]);
+    let initial = start(&mut h, &declaration).unwrap();
+    for change in 0..4 {
+        let mut other = initial.clone();
+        match change {
+            0 => other.body.book_id = Id128([252; 16]),
+            1 => other.body.name = "another-run".into(),
+            2 => other.body.owner = VId(999),
+            _ => other.opened_at = CommitSeq(initial.opened_at.0 - 1),
+        }
+        let bytes = combined_review_bytes(&other, 4 + change);
+        let (selected, _) = retain_combined_review(&mut h, bytes);
+        let mut req = request(&h, closer());
+        req.review = Some(selected);
+        let before = h.head();
+        let refusal = step(&mut h, "identity", "post", req).unwrap_err();
+        assert_eq!(refusal.code, code::PLAN_INVALIDATED);
+        assert_eq!(h.head(), before);
+        assert_eq!(status(&h, "identity"), initial);
+    }
 }
 
 #[test]

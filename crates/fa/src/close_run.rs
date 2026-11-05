@@ -5,7 +5,7 @@
 //! The review is evidence of the selected effects; execution still requires
 //! current authority, original planner authority and the native posting laws.
 
-use fa_journal::close_run::{CloseRunView, CloseTaskRecorded};
+use fa_journal::close_run::{CloseRunView, CloseTaskRecorded, CloseTaskReview};
 use fa_journal::{Refusal, TransitionPlan};
 use fa_model::{ApprovalRef, CloseTaskBodyAction};
 use fa_policy::{Capability, Intent, Op, Reach};
@@ -147,6 +147,27 @@ fn corrupt(message: &str) -> BookError {
     fa_journal::KernelError::Corrupt(message.into()).into()
 }
 
+fn admit_execution(book: &Book, capability: &Capability) -> Outcome<()> {
+    let admission = fa_policy::admit_read(capability, capability.holder(), book.context().book_id)
+        .and_then(|()| fa_policy::reach(capability, &Reach::whole_book(true), None))
+        .and_then(|()| {
+            fa_policy::admit(
+                capability,
+                &Intent {
+                    principal: capability.holder(),
+                    trunk: true,
+                    op: Op::Close,
+                    book: book.context().book_id,
+                    legs: &[],
+                },
+            )
+        });
+    if let Err(denial) = admission {
+        return Ok(Err(fa_journal::policy::refusal(&denial)));
+    }
+    book.admit_current(capability)
+}
+
 fn transition(to: u8) -> Result<PeriodTransition, BookError> {
     match to {
         2 => Ok(PeriodTransition::SoftClose),
@@ -246,6 +267,128 @@ fn validate_transition(
 }
 
 impl Book {
+    /// Read the original retained bytes and reproduce their complete historical
+    /// result. For new effects, also compare against the current native result.
+    /// A container digest or certificate producer never grants execution rights.
+    fn checked_close_review(
+        &mut self,
+        name: &str,
+        capability: &Capability,
+        rehearsal: &CloseRunRehearsalCertificate,
+        require_current: bool,
+    ) -> Outcome<CloseTaskReview> {
+        if rehearsal.name() != name {
+            return Ok(Err(Refusal::new(
+                fa_journal::refusal::code::STRUCTURE,
+                fa_journal::exit::USAGE,
+                "the selected combined close rehearsal names a different run",
+                "plan §7.5 (the selected certificate binds this close run)",
+                REVIEW_FIX,
+            )
+            .at("run", name)));
+        }
+        let reviewed =
+            match self.replay_close_run_rehearsal(capability.holder(), capability, rehearsal)? {
+                Ok(reviewed) => reviewed,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        if require_current {
+            match self.certificate_status(rehearsal.trunk())? {
+                Ok(CertificateStatus::Current { .. }) => {}
+                Ok(CertificateStatus::SupersededBy { .. }) => {
+                    return Ok(Err(review_invalidated(
+                        name,
+                        "the selected close rehearsal's monetary baseline has later relevant entries",
+                    )));
+                }
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+            let current = match self.close_run_rehearsal(capability.holder(), capability, name)? {
+                Ok(current) => current,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if !same_reviewed_rehearsal(&reviewed, current) {
+                return Ok(Err(review_invalidated(
+                    name,
+                    "the current close tasks, completion receipts or exact monetary result differ from the selected combined rehearsal",
+                )));
+            }
+        }
+        let bytes = match rehearsal.canonical_bytes() {
+            Ok(bytes) => bytes,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let retained =
+            match self.read_report_artifact(capability.holder(), capability, rehearsal.digest())? {
+                Ok(retained) => retained,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        let retained_bytes = match retained.canonical_bytes() {
+            Ok(bytes) => bytes,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if retained.family() != crate::ReportArtifactFamily::CloseRunRehearsal
+            || retained_bytes != bytes
+        {
+            return Ok(Err(review_invalidated(
+                name,
+                "the retained artifact differs from the selected complete close review",
+            )));
+        }
+        Ok(CloseTaskReview::from_certificate(&bytes, self.head()?))
+    }
+
+    /// Execute one task under an explicitly selected retained combined review.
+    /// New effects require a current complete rehearsal. A completed-task retry
+    /// authenticates its original review and receipt without republishing them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_reviewed_close_task(
+        &mut self,
+        name: &str,
+        task: &str,
+        capability: Capability,
+        description: &str,
+        rehearsal: &CloseRunRehearsalCertificate,
+        transition_plan: Option<TransitionPlan>,
+        approvals: Vec<ApprovalRef>,
+    ) -> Outcome<CloseTaskRecorded> {
+        if let Err(refusal) = admit_execution(self, &capability)? {
+            return Ok(Err(refusal));
+        }
+        let view = match self.close_run_status(name, &capability)? {
+            Ok(Some(view)) => view,
+            Ok(None) => return Ok(Err(invalid("the close run does not exist"))),
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let Some(selected) = view.tasks.iter().find(|selected| selected.id == task) else {
+            return Ok(Err(invalid("the close task does not exist")));
+        };
+        if selected.completion.is_some() && selected.rehearsal != Some(*rehearsal.digest()) {
+            return Ok(Err(review_invalidated(
+                name,
+                "a completed task retry must retain its original combined review",
+            )));
+        }
+        let review = match self.checked_close_review(
+            name,
+            &capability,
+            rehearsal,
+            selected.completion.is_none(),
+        )? {
+            Ok(review) => review,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        self.execute_close_task_with_review(
+            name,
+            task,
+            capability,
+            description,
+            transition_plan,
+            approvals,
+            Some(review),
+        )
+    }
+
     /// Resolve and replay each retained draft certificate before journaling
     /// an immutable run. This does not promote any draft or change a period.
     /// Dependencies are part of the definition and are validated by the
@@ -297,7 +440,10 @@ impl Book {
     /// and independent approvals. Certificate producer metadata grants none.
     ///
     /// This call holds the same owned book writer lease through verification
-    /// and execution. It does not journal a run-level certificate attachment.
+    /// and execution. Its first successful task atomically journals the selected
+    /// combined review; each later task binds that digest in its native receipt.
+    /// A failed first task publishes no review attachment. Bound runs cannot
+    /// resume new work through an unreviewed run or single-task route.
     pub fn execute_reviewed_close_run(
         &mut self,
         name: &str,
@@ -323,25 +469,7 @@ impl Book {
         transition_input: Option<CloseRunTransition>,
         rehearsal: Option<&CloseRunRehearsalCertificate>,
     ) -> Outcome<CloseRunExecution> {
-        let admission =
-            fa_policy::admit_read(&capability, capability.holder(), self.context().book_id)
-                .and_then(|()| fa_policy::reach(&capability, &Reach::whole_book(true), None))
-                .and_then(|()| {
-                    fa_policy::admit(
-                        &capability,
-                        &Intent {
-                            principal: capability.holder(),
-                            trunk: true,
-                            op: Op::Close,
-                            book: self.context().book_id,
-                            legs: &[],
-                        },
-                    )
-                });
-        if let Err(denial) = admission {
-            return Ok(Err(fa_journal::policy::refusal(&denial)));
-        }
-        if let Err(refusal) = self.admit_current(&capability)? {
+        if let Err(refusal) = admit_execution(self, &capability)? {
             return Ok(Err(refusal));
         }
         let mut run = match self.close_run_status(name, &capability)? {
@@ -354,46 +482,21 @@ impl Book {
                 "the close execution description exceeds its byte bound",
             )));
         }
-        if let Some(rehearsal) = rehearsal {
-            if rehearsal.name() != name {
-                return Ok(Err(Refusal::new(
-                    fa_journal::refusal::code::STRUCTURE,
-                    fa_journal::exit::USAGE,
-                    "the selected combined close rehearsal names a different run",
-                    "plan §7.5 (the selected certificate binds this close run)",
-                    REVIEW_FIX,
-                )
-                .at("run", name)));
-            }
-            let reviewed = match self.replay_close_run_rehearsal(
-                capability.holder(),
-                &capability,
-                rehearsal,
-            )? {
-                Ok(reviewed) => reviewed,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
-            match self.certificate_status(rehearsal.trunk())? {
-                Ok(CertificateStatus::Current { .. }) => {}
-                Ok(CertificateStatus::SupersededBy { .. }) => {
-                    return Ok(Err(review_invalidated(
-                        name,
-                        "the selected close rehearsal's monetary baseline has later relevant entries",
-                    )));
+        let checked_review = match rehearsal {
+            Some(rehearsal) => {
+                match self.checked_close_review(name, &capability, rehearsal, true)? {
+                    Ok(review) => Some(review),
+                    Err(refusal) => return Ok(Err(refusal)),
                 }
-                Err(refusal) => return Ok(Err(refusal)),
             }
-            let current = match self.close_run_rehearsal(capability.holder(), &capability, name)? {
-                Ok(current) => current,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
-            if !same_reviewed_rehearsal(&reviewed, current) {
+            None if !run.complete && !run.reviews.is_empty() => {
                 return Ok(Err(review_invalidated(
                     name,
-                    "the current close tasks, completion receipts or exact monetary result differ from the selected combined rehearsal",
+                    "this close run has a durable combined review; execution cannot omit it",
                 )));
             }
-        }
+            None => None,
+        };
         if let Some(input) = &transition_input {
             if let Err(refusal) = validate_transition(self, &run, &capability, input)? {
                 return Ok(Err(refusal));
@@ -542,13 +645,18 @@ impl Book {
                     }
                 },
             };
-            match self.execute_close_task(
+            let review = match &checked_review {
+                Some(review) => Some(review.at_frontier(self.head()?)),
+                None => None,
+            };
+            match self.execute_close_task_with_review(
                 name,
                 &task,
                 capability.clone(),
                 description,
                 plan,
                 approvals,
+                review,
             )? {
                 Ok(recorded) => {
                     run = recorded.run.clone();

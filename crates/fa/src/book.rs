@@ -1768,6 +1768,25 @@ impl Book {
         )))
     }
 
+    /// Publish the selected close task only if its retained combined rehearsal
+    /// still matches the durable run state and current task selection.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_close_task_with_review(
+        &mut self,
+        name: &str,
+        task: &str,
+        capability: fa_journal::Capability,
+        description: &str,
+        transition_plan: Option<fa_journal::TransitionPlan>,
+        approvals: Vec<fa_model::ApprovalRef>,
+        review: Option<fa_journal::close_run::CloseTaskReview>,
+    ) -> Outcome<fa_journal::close_run::CloseTaskRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.execute_close_task_with_review(
+            &purposes, name, task, capability, description, transition_plan, approvals, review,
+        )))
+    }
+
     /// Open the draft `name` owned by the capability's holder (plan §15.2,
     /// fa-s7x). An Agent works on its draft; trunk changes only when a
     /// Human holding `approve` promotes it.

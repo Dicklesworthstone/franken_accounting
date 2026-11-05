@@ -1780,6 +1780,33 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         transition_plan: Option<fa_journal::TransitionPlan>,
         approvals: Vec<fa_model::ApprovalRef>,
     ) -> Outcome<fa_journal::close_run::CloseTaskRecorded> {
+        self.execute_close_task_with_review(
+            cx,
+            name,
+            task,
+            capability,
+            description,
+            transition_plan,
+            approvals,
+            None,
+        )
+        .await
+    }
+
+    /// The sync facade has replayed this selected combined review. The native
+    /// boundary rechecks its identity/frontier and binds it to the task effect.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn execute_close_task_with_review(
+        &mut self,
+        cx: &PurposeContexts,
+        name: &str,
+        task: &str,
+        capability: fa_journal::Capability,
+        description: &str,
+        transition_plan: Option<fa_journal::TransitionPlan>,
+        approvals: Vec<fa_model::ApprovalRef>,
+        review: Option<fa_journal::close_run::CloseTaskReview>,
+    ) -> Outcome<fa_journal::close_run::CloseTaskRecorded> {
         if let Err(refusal) = self.prepare_close_history(cx, &capability, true).await? {
             return Ok(Err(refusal));
         }
@@ -1795,6 +1822,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 description,
                 transition_plan,
                 approvals,
+                review,
             },
         )
         .await?)
