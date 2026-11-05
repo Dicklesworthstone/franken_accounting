@@ -1163,7 +1163,7 @@ mod source_draft_tests {
             before: fgdb_types::CommitSeq,
             journal: &fa::QueryRows,
             authority: &LaunchAuthority,
-            argv: &[&str],
+            canonical_argv: &[&str],
             command: &str,
         ) {
             let records = self.book.access_log(before).unwrap();
@@ -1175,8 +1175,10 @@ mod source_draft_tests {
                 access.record.capability_commitment,
                 authority.capability().commitment().unwrap()
             );
-            let mut requested: Vec<String> = argv.iter().map(|arg| (*arg).to_string()).collect();
-            requested.push("--json".into());
+            let requested: Vec<String> = canonical_argv
+                .iter()
+                .map(|arg| (*arg).to_string())
+                .collect();
             assert_eq!(
                 access.record.request_digest,
                 fa::access_log::request_digest(&requested)
@@ -1364,7 +1366,30 @@ mod source_draft_tests {
             let (exit, reviewed) = f.bound(&authority, &args, None);
             assert_eq!(exit, 0, "{law}: {reviewed:?}");
             assert_eq!(text(&reviewed, "event"), "lot_disposal_review");
-            f.assert_access_only(before, &journal, &authority, &args, "dispose");
+            // The receipt contract orders positionals, sorted value flags,
+            // then sorted switches; it does not hash the caller's flag order.
+            let mut canonical = vec![
+                "dispose",
+                "--account",
+                "1400",
+                "--cost-offset",
+                "5100",
+                "--date",
+                DATE,
+                "--evidence",
+                &evidence,
+                "--key",
+                "selected-disposal",
+                "--quantity",
+                "3.000000 SHARE",
+                "--quantity-offset",
+                "1499",
+            ];
+            if law == "SpecificId" {
+                canonical.extend(["--target", &target]);
+            }
+            canonical.extend(["--json", "--review-only"]);
+            f.assert_access_only(before, &journal, &authority, &canonical, "dispose");
             assert!(
                 f.book
                     .draft_entries(&cap, name)
@@ -1421,7 +1446,9 @@ mod source_draft_tests {
         let (exit, refused) = f.bound(&authority, &argv, Some(&intent));
         assert_eq!(exit, 3, "unreviewed detail: {refused:?}");
         assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-192");
-        f.assert_access_only(before, &journal, &authority, &argv, "draft plan");
+        assert_eq!(f.book.head().unwrap(), before);
+        assert!(f.book.access_log(before).unwrap().is_empty());
+        assert_eq!(f.journal().rows, journal.rows);
         assert!(
             f.book
                 .draft_entries(&cap, name)
@@ -1482,7 +1509,9 @@ mod source_draft_tests {
         assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-011");
         assert!(!format!("{refused:?}").contains("987654.32"));
         assert!(!format!("{refused:?}").contains("98765432"));
-        f.assert_access_only(before, &journal, &authority, &argv, "draft plan");
+        assert_eq!(f.book.head().unwrap(), before);
+        assert!(f.book.access_log(before).unwrap().is_empty());
+        assert_eq!(f.journal().rows, journal.rows);
     }
 
     #[test]

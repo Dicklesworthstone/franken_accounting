@@ -3252,12 +3252,12 @@ remote/outer exit remains 101. The new conjunctive-scope and no-read controls
 pass; the positive workflows now reach their factories. Later failures expose
 three invalid test prerequisites: reversal JSON supplies `E:<vid>` instead of
 the documented raw 32-hex field, canonical external detail is retained without
-its declared MIME, and nonposting review incorrectly expects no journal-head
+its declared MIME, and disposal review incorrectly expects no journal-head
 advance despite the required bound-command AccessEvent.
 
 The correction supplies contract-valid reversal and MIME inputs. It does not
 change the source-purpose guard or expected unreviewed-evidence refusal.
-The incorrect head equality is replaced by an exact one-receipt check of
+For disposal review, incorrect head equality is replaced by an exact one-receipt check of
 command, principal, capability, argument digest, observed/recorded sequence
 and final head, together with byte-exact equality of all native Entry/payload
 rows and an empty draft before append. This admits only the mandated audit
@@ -3265,3 +3265,11 @@ receipt, never an accounting write. A new wrong-MIME test retains the source
 refusal and verifies that a planted private balance is not disclosed. Detail
 guidance now names the required document-add MIME. Corrected full native
 execution remains pending; these source/test edits do not erase either loss.
+
+Review caught two mistakes in the first unexecuted correction: request digests
+use canonical positional/sorted-flag/sorted-switch order, and current draft-plan
+refusals do not select the disposal review-delivery AccessEvent. The receipt
+check now uses an explicit independent canonical argument vector; unreviewed
+and wrong-MIME draft-plan refusals retain unchanged head, no access records
+and unchanged full accounting payloads. Production audit selection is unchanged.
+This correction was made before another native run, not presented as a test pass.
