@@ -83,8 +83,32 @@ rev = "7d0472b240372922384b9e19765f5c785d78ae3a"
 version = "0.4.0"
 crates = ["fmd-font"]
 transitive_suite_crates = []
-role = "Bundled OFL TrueType font programs and integer metrics for fa-statements PDF embedding; the Markdown engine is not linked"
+role = "Bundled OFL TrueType font programs and integer metrics for fa-statements PDF embedding"
 verification = "Font descriptors, Unicode mapping, exact PDF text positions, native statement/CLI tests, external PDF/A validation and deterministic bytes on pin changes"
+
+[[foundation]]
+name = "franken_markdown-icc"
+package_patterns = ["franken_markdown"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = []
+source = "git+https://github.com/Dicklesworthstone/franken_markdown"
+rev = "7d0472b240372922384b9e19765f5c785d78ae3a"
+version = "0.7.0"
+crates = ["franken_markdown"]
+role = "Pure compact RGB ICC profile builder only; no Markdown/PDF renderer, CLI, networking or runtime API is called"
+verification = "Complete ICC tags and bounds, honest compact-profile identity, native rendering, external PDF/A and warning-free client profile parsing"
+
+[[foundation]]
+name = "franken_markdown-math"
+package_patterns = ["fmd-math"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = ["default", "bundled-faces"]
+source = "git+https://github.com/Dicklesworthstone/franken_markdown"
+rev = "7d0472b240372922384b9e19765f5c785d78ae3a"
+version = "0.3.0"
+crates = ["fmd-math"]
+role = "First-party transitive implementation dependency of franken_markdown; no accounting math delegates to it"
+verification = "Resolved production closure and feature ceilings; no unrelated third-party dependency"
 
 # Resolved-production gate (fa-lbh / fa-c23). Each posture is resolved alone
 # with its default features, normal + build edges, on the current host.

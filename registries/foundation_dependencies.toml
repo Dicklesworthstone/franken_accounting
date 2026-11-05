@@ -25,6 +25,18 @@
 schema_version = 1
 
 [[capability]]
+row = "R-ICC"
+capability = "FrankenMarkdown `pdfa::compact_srgb_icc` at the exact `franken-stack.lock` revision"
+status = "Complete compact RGB output profile integrated; native and external client qualification required at landing"
+posture = "Fixed color-profile data only, with gamma-2.2 approximation named explicitly; no accounting or layout inputs enter the builder and full Markdown rendering remains open in `fa-cet`"
+switch_over = "Re-pin only with profile identity, tag bounds, dependency closure, PDF/A and independent client checks"
+foundation = "franken_markdown-icc"
+upstream = "live"
+fa_status = "live"
+tracking = "fa-cet"
+consumed_apis = ["franken_markdown::pdfa::compact_srgb_icc"]
+
+[[capability]]
 row = "R-FONT"
 capability = "FrankenMarkdown `fmd-font` at the exact `franken-stack.lock` revision"
 status = "Bundled TrueType font programs and integer metrics integrated in statement PDFs; native and external qualification required at landing"

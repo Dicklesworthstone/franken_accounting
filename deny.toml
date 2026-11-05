@@ -56,6 +56,8 @@ exceptions = [
   { crate = "xtask@0.0.1", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-bigint@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fmd-font@0.4.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "fmd-math@0.3.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
+  { crate = "franken_markdown@0.7.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-budget@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-modular@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fsym-rational@0.1.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },

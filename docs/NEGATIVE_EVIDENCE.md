@@ -3401,3 +3401,71 @@ type refusals. Existing PDF pins remain unchanged pending native bytes,
 semantic inspection and external validation; no native or ISO-conformance
 PASS is claimed yet. Full Markdown-engine adoption and cross-machine
 acceptance remain open under `fa-cet`.
+
+On `ea89687e` / tree `54eeab59`, the seven-target native run executed 852
+tests with none ignored or filtered: CLI library 85/0, authority 19/0,
+rendered reports 3/0, writing 3/0, journal library 221/5, genesis 450/0,
+and statements library 65/1. Remote and outer exit were 101 (980972 ms).
+Both carrying-settlement variants, including allocated relief and exact
+promotion, passed. The original large capsule-boundary test passed naturally;
+the journal library completed in 748.47 seconds without a cap change or signal.
+
+All five failed history-fixture tests called private synchronous observers
+without installing the production caller context. Separate diagnostic
+invocations of the same already compiled test binary reproduced the panic
+`carrying-value arithmetic requires the caller context`; the complete module
+had 1 pass / 5 failures, with 220 other library cases filtered. These are
+diagnostic observations, not additional full-suite passing credit. The fixture
+repair installs its real `PurposeContexts.query().with_restriction` around
+the observers and two direct verified observations. Every parity, tamper,
+restoration, historical-prefix and exact work-count assertion remains.
+No production fallback, arithmetic budget or acceptance bound changed.
+Native execution of this fixture repair remains pending.
+
+The statements failure is the retained byte pin: HTML, SVG and Markdown
+hashes and sizes stayed unchanged, while PDF became 222172 bytes with digest
+`44611fc934cfa885ddb54803c52474cb78581f835b722564a6eade33d2baabfd`
+and PDF/A became 222209 bytes with digest
+`f650e020397509f9f9441a8183ea46f82c79378707db7df307d1cb480c759301`.
+All three new font/schema/position tests passed. No old pin was changed.
+
+The completed CLI rendering child produced the actual rounded PDF/A
+`94e57988cd9f203c7d11091759bdb12d57f3cd24d549e2a10dccbedb3dd56d27`
+(SHA-256, 252476 bytes). Read-only retrieval verified identical source stats
+and hashes before and after copying, with the producing child gone. The same
+pinned veraPDF PDF/A-2b validator returned 0: 144 rules and 5991 checks passed,
+none failed; normal job end, no parse/encryption/OOM/exception cases. Its
+retained XML has SHA-256
+`01c7707e403e66da7415ab6eb63f87f083ede216764c5fb2182148bcc64354d5`.
+Font inspection confirms embedding and Unicode mapping; extracted rounded
+126/100/26 amounts and the display-only notice remain. This resolves the
+three original validator failures for this actual fixture, not the full bead.
+
+Poppler still warned that the existing 128-byte ICC placeholder could not be
+read. Validator success does not erase that client defect. A bounded repair
+is being prepared using the pinned first-party public compact ICC builder,
+with an honest D50/gamma-2.2 label rather than an exact IEC/color.org claim.
+Its fixed color constants are separate from integer accounting/layout paths.
+Final byte pins, native/client/external results and full qualification remain
+pending; the original ICC warning and all earlier failed runs are retained.
+
+The ICC repair now calls only the existing pinned public
+`franken_markdown::pdfa::compact_srgb_icc` builder, rather than copying a
+profile or fabricating another header. Locked FrankenAccounting metadata
+resolves the same source revision for `franken_markdown` 0.7.0 (no features),
+`fmd-font` 0.4.0 (`bundled-faces`) and `fmd-math` 0.3.0
+(`default`, `bundled-faces`), with no external package reachable from the
+engine. The two added first-party packages have explicit version/source and
+feature ceilings. An earlier peer report misstated the math feature list;
+the actual metadata was inspected and corrected before adoption.
+
+The output intent names the compact D50 RGB profile and its gamma-2.2
+approximation, and drops the false color.org registry identity. The builder
+quantizes fixed color constants; no accounting or layout value enters it.
+The internal documentation now states that precise boundary. A new control
+checks the emitted profile's declared length, header, nine tags, aligned
+bounded payloads and honest label. The plain Rust structural receipt field
+is renamed to `has_rgb_output_intent`; its hook predicate and positive
+assertion remain identical, with no durable-format change or compatibility
+shim. Actual new client/external validation and final byte pins remain
+pending. Full Markdown renderer adoption is still open.

@@ -16,6 +16,7 @@ fa-money = { path = "../fa-money", version = "=0.0.1" }
 fa-registry = { path = "../fa-registry", version = "=0.0.1" }
 fa-time = { path = "../fa-time", version = "=0.0.1" }
 fmd-font.workspace = true
+franken_markdown.workspace = true
 
 [dev-dependencies]
 fa-reference = { path = "../fa-reference", version = "=0.0.1" }

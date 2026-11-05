@@ -95,8 +95,10 @@ fnx-algorithms = { git = "https://github.com/Dicklesworthstone/franken_networkx.
 fnx-cgse = { git = "https://github.com/Dicklesworthstone/franken_networkx.git", rev = "9d710b1c33e99412c94de7fa4de2f7ce4954110f", version = "=0.2.0", default-features = false }
 
 # First-party font programs and integer metrics for self-contained statement
-# PDFs. The Markdown engine and its optional runtime/CLI are not linked.
+# PDFs, plus the engine's pure fixed-color ICC builder. Its optional runtime
+# and CLI are disabled; no Markdown/PDF renderer is called.
 fmd-font = { git = "https://github.com/Dicklesworthstone/franken_markdown", rev = "7d0472b240372922384b9e19765f5c785d78ae3a", version = "=0.4.0", default-features = false, features = ["bundled-faces"] }
+franken_markdown = { git = "https://github.com/Dicklesworthstone/franken_markdown", rev = "7d0472b240372922384b9e19765f5c785d78ae3a", version = "=0.7.0", default-features = false }
 
 # Disk-frugal profiles (the substrate's precedent: full DWARF on its test
 # build filled a 300G worker). Backtraces keep file:line.

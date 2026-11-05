@@ -3,7 +3,8 @@
 //! flowcharts (plan §12.1, §12.5, beads `fa-cet` and `fa-949`).
 //!
 //! Constitutional guarantees:
-//! - Zero floating-point arithmetic (`i64`/`u64`/`i128` integer layout and math only).
+//! - Accounting and layout arithmetic use integers. Fixed color calibration is
+//!   quantized inside the foundation ICC builder, with no accounting inputs.
 //! - Creation timestamps are derived exclusively from the caller-supplied
 //!   `creation_epoch_secs` (from the certificate's `TimeEvidence`), never the wall clock.
 //! - Right-aligned numeric columns and single/double accounting footing rules are
@@ -761,15 +762,10 @@ fn render_pdf_internal(
         escape_html(&ir.definition_name)
     );
 
-    // Deterministic minimal 128-byte ICC profile header for /DestOutputProfile (/N 3 sRGB)
-    let mut icc_bytes = vec![0u8; 128];
-    icc_bytes[0..4].copy_from_slice(&128u32.to_be_bytes());
-    icc_bytes[4..8].copy_from_slice(b"ADBE");
-    icc_bytes[8..12].copy_from_slice(&0x0210_0000u32.to_be_bytes());
-    icc_bytes[12..16].copy_from_slice(b"mntr");
-    icc_bytes[16..20].copy_from_slice(b"RGB ");
-    icc_bytes[20..24].copy_from_slice(b"XYZ ");
-    icc_bytes[36..40].copy_from_slice(b"acsp");
+    // The first-party builder supplies a complete tag directory and payloads.
+    // Its fixed D50 RGB matrix uses a gamma-2.2 approximation, not the complete
+    // IEC piecewise transfer function; the output intent names that distinction.
+    let icc_bytes = franken_markdown::pdfa::compact_srgb_icc();
 
     let catalog_obj = if pdfa_2b {
         "<< /Type /Catalog /Pages 2 0 R /Metadata 5 0 R /OutputIntents [6 0 R] /Lang (en-US) >>"
@@ -802,7 +798,7 @@ fn render_pdf_internal(
             xmp_packet
         )
         .into_bytes(),
-        b"<< /Type /OutputIntent /S /GTS_PDFA1 /OutputConditionIdentifier (sRGB IEC61966-2.1) /RegistryName (http://www.color.org) /Info (sRGB IEC61966-2.1) /DestOutputProfile 7 0 R >>".to_vec(),
+        b"<< /Type /OutputIntent /S /GTS_PDFA1 /OutputConditionIdentifier (FrankenMarkdown compact D50 RGB) /Info (First-party compact RGB profile; gamma-2.2 approximation) /DestOutputProfile 7 0 R >>".to_vec(),
         {
             let mut v = format!("<< /N 3 /Length {} >>\nstream\n", icc_bytes.len()).into_bytes();
             v.extend_from_slice(&icc_bytes);
@@ -918,7 +914,9 @@ pub struct PdfaValidationReceipt {
     pub pdf_version: String,
     pub pdfa_part: u8,
     pub pdfa_conformance: String,
-    pub has_output_intent_srgb: bool,
+    /// Expected RGB output-intent hooks are present. This structural receipt
+    /// does not establish color-calibration accuracy or full ISO conformance.
+    pub has_rgb_output_intent: bool,
     pub has_binary_comment_marker: bool,
     pub has_trailer_id: bool,
     pub embedded_ir_digest_hex: String,
@@ -973,10 +971,10 @@ pub fn validate_pdfa2b(pdf_bytes: &[u8]) -> Result<PdfaValidationReceipt, Statem
             "PDF/A-2b validation failed: XMP metadata missing <pdfaid:conformance>B</pdfaid:conformance>".into(),
         ));
     }
-    let has_output_intent_srgb = text.contains("/OutputIntents")
+    let has_rgb_output_intent = text.contains("/OutputIntents")
         && text.contains("/S /GTS_PDFA1")
         && text.contains("/DestOutputProfile");
-    if !has_output_intent_srgb {
+    if !has_rgb_output_intent {
         return Err(StatementError::Input(
             "PDF/A-2b validation failed: missing /OutputIntents /GTS_PDFA1 with /DestOutputProfile"
                 .into(),
@@ -1007,7 +1005,7 @@ pub fn validate_pdfa2b(pdf_bytes: &[u8]) -> Result<PdfaValidationReceipt, Statem
         pdf_version: "1.7".to_string(),
         pdfa_part: 2,
         pdfa_conformance: "B".to_string(),
-        has_output_intent_srgb,
+        has_rgb_output_intent,
         has_binary_comment_marker,
         has_trailer_id,
         embedded_ir_digest_hex,
@@ -1618,6 +1616,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pdf_output_profile_has_complete_tags_and_an_honest_identity() {
+        let (definition, statement) = sample_bs(10, 50_025, 12_005);
+        let ir = render_statement_ir(&statement, &definition, &sample_units()).unwrap();
+        let bytes = render_pdfa(&ir, 1_792_454_400).unwrap();
+        let marker = b"/N 3 /Length ";
+        let at = bytes
+            .windows(marker.len())
+            .position(|part| part == marker)
+            .unwrap()
+            + marker.len();
+        let length_end = bytes[at..].iter().position(|&byte| byte == b' ').unwrap() + at;
+        let length: usize = std::str::from_utf8(&bytes[at..length_end])
+            .unwrap()
+            .parse()
+            .unwrap();
+        let stream = b"\nstream\n";
+        let start = bytes[length_end..]
+            .windows(stream.len())
+            .position(|part| part == stream)
+            .unwrap()
+            + length_end
+            + stream.len();
+        let profile = &bytes[start..start + length];
+        let u32_at =
+            |offset| u32::from_be_bytes(profile[offset..offset + 4].try_into().unwrap()) as usize;
+        assert!(length > 132, "a header alone is not an ICC profile");
+        assert_eq!(u32_at(0), length);
+        assert_eq!(&profile[16..20], b"RGB ");
+        assert_eq!(&profile[20..24], b"XYZ ");
+        assert_eq!(&profile[36..40], b"acsp");
+        let count = u32_at(128);
+        assert_eq!(count, 9);
+        let mut tags = std::collections::BTreeSet::new();
+        for index in 0..count {
+            let row = 132 + index * 12;
+            tags.insert(<[u8; 4]>::try_from(&profile[row..row + 4]).unwrap());
+            let offset = u32_at(row + 4);
+            let size = u32_at(row + 8);
+            assert!(offset.is_multiple_of(4));
+            assert!(offset >= 132 + count * 12);
+            assert!(size >= 8 && offset + size <= length);
+        }
+        assert_eq!(
+            tags,
+            [
+                *b"desc", *b"cprt", *b"wtpt", *b"rXYZ", *b"gXYZ", *b"bXYZ", *b"rTRC", *b"gTRC",
+                *b"bTRC"
+            ]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+        );
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("/OutputConditionIdentifier (FrankenMarkdown compact D50 RGB)"));
+        assert!(text.contains("gamma-2.2 approximation"));
+        assert!(!text.contains("/RegistryName (http://www.color.org)"));
+    }
+
     fn sample_bs(
         known_at: u64,
         revenue_cents: i128,
@@ -1743,7 +1799,7 @@ mod tests {
         let receipt = validate_pdfa2b(&pdfa_1).unwrap();
         assert_eq!(receipt.pdfa_part, 2);
         assert_eq!(receipt.pdfa_conformance, "B");
-        assert!(receipt.has_output_intent_srgb);
+        assert!(receipt.has_rgb_output_intent);
         assert!(receipt.has_binary_comment_marker);
         assert!(receipt.has_trailer_id);
         assert_eq!(receipt.creation_date_iso, "2026-10-20T00:00:00Z");
