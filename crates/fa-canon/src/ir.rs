@@ -10,14 +10,14 @@
 //! that are not exactly what the IR encodes to, so a stored rule is never
 //! trusted for what it claims to be.
 
-use core::fmt;
+use core::{cmp::Ordering, fmt};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::proof::{self, Unproven};
 use fa_model::{
     DecodeError, EncodeError, EntryClass, EventKind, Reader, Writer, dimension_kind, domain_digest,
 };
-use fa_money::{RoundingLaw, Side, UnitId, UnitRegistry};
+use fa_money::{Amount, RoundingLaw, Side, UnitId, UnitRegistry};
 
 /// `rule_version_oid = BLAKE3("fa:canon-ir:v1" ‖ len(ir) ‖ ir)`.
 pub const CANON_IR_DOMAIN: &[u8] = b"fa:canon-ir:v1";
@@ -29,10 +29,17 @@ pub const CANON_INPUTS_DOMAIN: &[u8] = b"fa:canon-inputs:v1";
 /// [`MAX_TEXT`], so every IR a rule compiles to decodes.
 const MAX_NODE_DEPTH: u32 = 256;
 const MAX_SLOTS: usize = 512;
-const MAX_LEGS: usize = 512;
+pub(crate) const MAX_LEGS: usize = 512;
+pub(crate) const MAX_AUTHORITY_GRANTS: usize = MAX_LEGS;
 const MAX_INPUTS: usize = 64;
 const MAX_DIMS: usize = 16;
 const MAX_TEXT: usize = 1024;
+
+// Additive IR extension: the legacy body is byte-for-byte unchanged. An old
+// reader rejects its trailing bytes; a new one accepts only this version and
+// complete canonical grants, never an unknown extension as unbounded authority.
+const AUTHORITY_EXTENSION_MAGIC: [u8; 8] = *b"FARAUTH\0";
+const AUTHORITY_EXTENSION_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputType {
@@ -90,6 +97,32 @@ pub struct LegTemplate {
     pub amount: Node,
     /// `(dimension code, value code)`, ascending by the dimension's id.
     pub dims: Vec<(String, String)>,
+}
+
+/// An exact directional output cell and its maximum gross amount per rule
+/// evaluation. The ceiling is shared by every generated leg in this cell,
+/// including repeated legs: splitting a posting does not multiply its grant.
+/// Dimensions are the complete set, ascending by registered dimension id;
+/// an empty set grants only an untagged cell, never every dimension value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthorityGrant {
+    pub side: Side,
+    pub account: String,
+    pub ceiling: Amount,
+    pub dims: Vec<(String, String)>,
+}
+
+/// The rule's own output authority (plan §5.1), independently of its caller.
+/// A declared grant is bound into the IR digest and therefore the journaled
+/// rule version and its activation. It never confers a capability on a caller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuleAuthority {
+    /// Historical rule sources and IR without a declaration. This is an
+    /// explicit absence of a rule-specific ceiling, not an authenticated
+    /// scope grant; the caller's current capability must still admit the legs.
+    LegacyUnbounded,
+    /// Unique grants sorted by side, account, canonical unit and dimensions.
+    Declared(Vec<AuthorityGrant>),
 }
 
 /// What a rule may reference: the static dependency set (plan §10.3) a chart
@@ -202,6 +235,7 @@ pub(crate) struct Parts {
     pub version: u32,
     pub event: EventKind,
     pub produces: Produces,
+    pub authority: RuleAuthority,
     pub inputs: Vec<InputDecl>,
     pub slots: Vec<Node>,
     pub legs: Vec<LegTemplate>,
@@ -220,6 +254,7 @@ pub struct CompiledRule {
     version: u32,
     event: EventKind,
     produces: Produces,
+    authority: RuleAuthority,
     inputs: Vec<InputDecl>,
     slots: Vec<Node>,
     legs: Vec<LegTemplate>,
@@ -339,6 +374,105 @@ fn bounded(what: &str, text: &str) -> Result<(), IrError> {
     Ok(())
 }
 
+/// Sort grants without depending on the unit ids assigned by one book.
+pub(crate) fn compare_grants(
+    left: &AuthorityGrant,
+    right: &AuthorityGrant,
+    units: &BTreeMap<UnitId, UnitRef>,
+) -> Ordering {
+    let l = &units[&left.ceiling.unit];
+    let r = &units[&right.ceiling.unit];
+    (
+        side_tag(left.side),
+        left.account.as_str(),
+        l.code.as_str(),
+        l.version,
+        l.scale,
+        &left.dims,
+    )
+        .cmp(&(
+            side_tag(right.side),
+            right.account.as_str(),
+            r.code.as_str(),
+            r.version,
+            r.scale,
+            &right.dims,
+        ))
+}
+
+fn validate_grants(parts: &Parts) -> Result<(), IrError> {
+    let RuleAuthority::Declared(grants) = &parts.authority else {
+        return Ok(());
+    };
+    if grants.is_empty() || grants.len() > MAX_AUTHORITY_GRANTS {
+        return Err(IrError(format!(
+            "a declared rule authority has 1..={MAX_AUTHORITY_GRANTS} grants"
+        )));
+    }
+    for grant in grants {
+        if !well_formed_code(&grant.account) {
+            return Err(IrError(
+                "an authority grant names its account code without spaces around it".into(),
+            ));
+        }
+        bounded("an authority account code", &grant.account)?;
+        if grant.ceiling.mantissa <= 0 || !parts.units.contains_key(&grant.ceiling.unit) {
+            return Err(IrError(
+                "an authority ceiling is a positive exact amount in a registered unit".into(),
+            ));
+        }
+        if grant.dims.len() > MAX_DIMS {
+            return Err(IrError(format!(
+                "an authority grant has at most {MAX_DIMS} dimensions"
+            )));
+        }
+        let mut last = None;
+        for (dimension, code) in &grant.dims {
+            let Some(kind) = dimension_kind(dimension) else {
+                return Err(IrError(format!(
+                    "`{dimension}` is not a registered authority dimension"
+                )));
+            };
+            if !well_formed_code(code) {
+                return Err(IrError(format!(
+                    "the authority {dimension} tag names no value code"
+                )));
+            }
+            bounded("an authority dimension code", code)?;
+            if last.is_some_and(|id| id >= kind.id) {
+                return Err(IrError(
+                    "an authority grant's dimensions are not unique and ascending by dimension"
+                        .into(),
+                ));
+            }
+            last = Some(kind.id);
+        }
+    }
+    if !grants
+        .windows(2)
+        .all(|pair| compare_grants(&pair[0], &pair[1], &parts.units) == Ordering::Less)
+    {
+        return Err(IrError(
+            "authority grants must be unique and ascending by side, account, canonical unit and dimensions"
+                .into(),
+        ));
+    }
+    for leg in &parts.legs {
+        if !grants.iter().any(|grant| {
+            grant.side == leg.side
+                && grant.account == leg.account
+                && grant.ceiling.unit == leg.unit
+                && grant.dims == leg.dims
+        }) {
+            return Err(IrError(format!(
+                "the {:?} leg on {} has no authority grant for its exact unit and dimension set",
+                leg.side, leg.account
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The structural law every IR obeys, compiled or decoded.
 fn validate(parts: &Parts) -> Result<(), IrError> {
     if parts.name.is_empty() || parts.version == 0 {
@@ -408,6 +542,7 @@ fn validate(parts: &Parts) -> Result<(), IrError> {
             last = Some(kind.id);
         }
     }
+    validate_grants(parts)?;
     for date in std::iter::once(parts.effective).chain(parts.reverses) {
         if let DateSource::Input(index) = date
             && parts.inputs.get(index as usize).map(|i| &i.ty) != Some(&InputType::Date)
@@ -459,6 +594,12 @@ fn dependencies(parts: &Parts) -> Dependencies {
         deps.dimensions.extend(leg.dims.iter().cloned());
         collect(&leg.amount, parts, &mut deps);
     }
+    if let RuleAuthority::Declared(grants) = &parts.authority {
+        for grant in grants {
+            deps.accounts.insert(grant.account.clone());
+            deps.dimensions.extend(grant.dims.iter().cloned());
+        }
+    }
     deps
 }
 
@@ -487,6 +628,7 @@ impl CompiledRule {
             version,
             event,
             produces,
+            authority,
             inputs,
             slots,
             legs,
@@ -499,6 +641,7 @@ impl CompiledRule {
             version,
             event,
             produces,
+            authority,
             inputs,
             slots,
             legs,
@@ -525,6 +668,51 @@ impl CompiledRule {
         Ok(rule)
     }
 
+    /// Check that retained source describes this exact executable IR,
+    /// including its rule authority. Interpret unversioned unit names under
+    /// the IR's historical bindings: adding a newer version to the book must
+    /// not reinterpret a previously compiled rule's source.
+    ///
+    /// Every retained unit must still exist at its exact version and scale in
+    /// `units`. The temporary registry contains only those bound versions;
+    /// compilation still performs all syntax, type, authority and balance
+    /// checks. Source formatting and local let names may differ because they
+    /// do not change canonical IR. Missing or changed authority is a mismatch,
+    /// including removal of the entire optional authority extension.
+    pub fn check_source(&self, source: &str, units: &UnitRegistry) -> Result<(), IrError> {
+        let mut historical = UnitRegistry::empty();
+        for reference in self.units.values() {
+            let spelling = format!("{}@v{}", reference.code, reference.version);
+            let unit = units
+                .lookup(&spelling)
+                .and_then(|id| units.get(id))
+                .ok_or_else(|| {
+                    IrError(format!(
+                        "the rule's historical unit {spelling} is not registered in this book"
+                    ))
+                })?;
+            if unit.scale != reference.scale {
+                return Err(IrError(format!(
+                    "the rule's historical unit {spelling} has another scale in this book"
+                )));
+            }
+            historical.register(unit.clone()).map_err(|error| {
+                IrError(format!("the rule's historical units are invalid: {error}"))
+            })?;
+        }
+        let compiled = crate::check::compile(source, &historical).map_err(|error| {
+            IrError(format!(
+                "the retained rule source does not compile: {error}"
+            ))
+        })?;
+        if compiled.ir() != self.ir() {
+            return Err(IrError(
+                "the retained rule source does not reproduce its canonical IR and authority".into(),
+            ));
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
@@ -544,6 +732,12 @@ impl CompiledRule {
     #[must_use]
     pub fn produces(&self) -> Produces {
         self.produces
+    }
+
+    /// The declared output grant or the explicit legacy unbounded posture.
+    #[must_use]
+    pub fn authority(&self) -> &RuleAuthority {
+        &self.authority
     }
 
     #[must_use]
@@ -595,7 +789,7 @@ impl CompiledRule {
     }
 }
 
-fn side_tag(side: Side) -> u8 {
+pub(crate) fn side_tag(side: Side) -> u8 {
     match side {
         Side::Debit => 1,
         Side::Credit => 2,
@@ -685,6 +879,18 @@ fn encode(parts: &Parts) -> Result<Vec<u8>, EncodeError> {
         Some(DateSource::Input(index)) => {
             w.u8(2).u32(index);
         }
+    }
+    if let RuleAuthority::Declared(grants) = &parts.authority {
+        w.fixed(&AUTHORITY_EXTENSION_MAGIC)
+            .u16(AUTHORITY_EXTENSION_VERSION);
+        w.list(grants, |w, grant| {
+            w.u8(side_tag(grant.side)).str(&grant.account);
+            write_unit(w, &parts.units[&grant.ceiling.unit]);
+            w.i128(grant.ceiling.mantissa);
+            w.list(&grant.dims, |w, (dimension, code)| {
+                w.str(dimension).str(code);
+            });
+        });
     }
     w.finish()
 }
@@ -830,12 +1036,51 @@ fn read(ir: &[u8], registry: &UnitRegistry) -> Result<Parts, IrError> {
         2 => Some(DateSource::Input(r.u32("rule.reverses.input")?)),
         tag => return Err(r.bad_tag("rule.reverses", tag).into()),
     };
+    let authority = if r.remaining() == 0 {
+        RuleAuthority::LegacyUnbounded
+    } else {
+        if r.fixed::<8>("rule.authority.magic")? != AUTHORITY_EXTENSION_MAGIC {
+            return Err(IrError("unknown Canon IR extension".into()));
+        }
+        if r.u16("rule.authority.version")? != AUTHORITY_EXTENSION_VERSION {
+            return Err(IrError(
+                "unsupported RuleAuthority extension version".into(),
+            ));
+        }
+        let mut grants = Vec::new();
+        for _ in 0..r.count(MAX_AUTHORITY_GRANTS, "rule.authority.grants")? {
+            let side = match r.u8("rule.authority.side")? {
+                1 => Side::Debit,
+                2 => Side::Credit,
+                tag => return Err(r.bad_tag("rule.authority.side", tag).into()),
+            };
+            let account = r.str(MAX_TEXT, "rule.authority.account")?.to_string();
+            let unit = read_unit(&mut r, registry, &mut units)?;
+            let ceiling = Amount::new(unit, r.i128("rule.authority.ceiling")?);
+            let mut dims = Vec::new();
+            for _ in 0..r.count(MAX_DIMS, "rule.authority.dimensions")? {
+                let dimension = r.str(MAX_TEXT, "rule.authority.dimension")?.to_string();
+                let code = r
+                    .str(MAX_TEXT, "rule.authority.dimension_code")?
+                    .to_string();
+                dims.push((dimension, code));
+            }
+            grants.push(AuthorityGrant {
+                side,
+                account,
+                ceiling,
+                dims,
+            });
+        }
+        RuleAuthority::Declared(grants)
+    };
     r.finish()?;
     let mut parts = Parts {
         name,
         version,
         event,
         produces,
+        authority,
         inputs,
         slots,
         legs: Vec::new(),

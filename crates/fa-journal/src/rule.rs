@@ -88,6 +88,10 @@ pub fn evaluation_refusal(rule: &CompiledRule, event: &str, error: &EvalError) -
             "revise the rule so every leg is a non-negative amount within range for this event"
                 .to_string()
         }
+        EvalError::Authority(_) => {
+            "review the rule's declared authority and the event amounts; changing an authority grant creates a new rule version that requires activation under dual control"
+                .to_string()
+        }
     };
     Refusal::new(
         code::CANON_RULE,
@@ -160,6 +164,8 @@ impl RuleVersionRow {
             RuleVersionSpec::decode(&bytes(row, property::FA_PAYLOAD, "rule version payload")?)?;
         let rule = CompiledRule::decode(&spec.ir, &book.units)
             .map_err(|e| corrupt(format!("{:032x}: {e}", row.vid.0)))?;
+        rule.check_source(&spec.source, &book.units)
+            .map_err(|e| corrupt(format!("{:032x}: stored source: {e}", row.vid.0)))?;
         if rule_version_vid(book.book_id, &rule.ir_digest()) != row.vid {
             return Err(corrupt(format!(
                 "{:032x}: its IR digests to another version",
@@ -1072,6 +1078,13 @@ pub fn rule_derived_proposal(
     idempotency_key: &[u8],
     description: Erasable<String>,
 ) -> Result<EntryPayload, Refusal> {
+    // Derivation is a public value and may have been assembled by an embedded
+    // caller. Enforce the immutable grant here as well as in evaluation and
+    // commit-time reproduction; constructing a proposal is not a way around
+    // the rule's account, dimension, unit or aggregate-cell ceiling.
+    fa_canon::validate_authority(derived.rule, derived.derivation).map_err(|error| {
+        evaluation_refusal(derived.rule, &format!("{:032x}", derived.event.0), &error)
+    })?;
     let legs = derived_legs(book, derived.derivation)?;
     let unit_totals = EntryPayload::fold_unit_totals(&legs).map_err(|e| {
         derivation_refusal(

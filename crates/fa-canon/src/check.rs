@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 use crate::CanonError;
 use crate::ir::{
-    CompiledRule, DateSource, InputDecl, InputType, LegTemplate, Node, Parts, Produces, UnitRef,
-    reduce,
+    AuthorityGrant, CompiledRule, DateSource, InputDecl, InputType, LegTemplate, Node, Parts,
+    Produces, RuleAuthority, UnitRef, compare_grants, reduce,
 };
 use crate::parse::{self, DateRef, Expr, Pos, SourceType, Stmt};
 use fa_model::{EventKind, dimension_kind};
@@ -65,6 +65,36 @@ pub fn compile(source: &str, units: &UnitRegistry) -> Result<CompiledRule, Canon
             ty,
         });
     }
+    let authority = match &rule.authority {
+        None => RuleAuthority::LegacyUnbounded,
+        Some((grants, pos)) => {
+            if grants.is_empty() {
+                return Err(pos.error("a declared rule authority has at least one grant"));
+            }
+            let mut declared = Vec::with_capacity(grants.len());
+            for grant in grants {
+                if grant.account.trim().is_empty() || grant.account.trim() != grant.account {
+                    return Err(grant.pos.error(
+                        "an authority grant names its account code without spaces around it",
+                    ));
+                }
+                let ceiling = checker.literal(&grant.ceiling.0, grant.ceiling.1)?;
+                if ceiling.mantissa <= 0 {
+                    return Err(grant.ceiling.1.error(
+                        "an authority ceiling is a positive exact amount; zero and negative grants are refused",
+                    ));
+                }
+                declared.push(AuthorityGrant {
+                    side: grant.side,
+                    account: grant.account.clone(),
+                    ceiling,
+                    dims: dimensions(&grant.dims)?,
+                });
+            }
+            declared.sort_by(|left, right| compare_grants(left, right, &checker.unit_refs));
+            RuleAuthority::Declared(declared)
+        }
+    };
     let mut legs = Vec::new();
     let mut effective: Option<DateSource> = None;
     let mut reverses: Option<DateSource> = None;
@@ -88,37 +118,12 @@ pub fn compile(source: &str, units: &UnitRegistry) -> Result<CompiledRule, Canon
                     return Err(pos.error("a leg names its account code without spaces around it"));
                 }
                 let typed = checker.amount(amount)?;
-                let mut tagged: Vec<(u32, String, String)> = Vec::new();
-                for (dimension, code, dim_pos) in dims {
-                    let kind = dimension_kind(dimension).ok_or_else(|| {
-                        dim_pos.error(format!(
-                            "`{dimension}` is not a registered dimension; one of {}",
-                            fa_model::DIMENSION_KINDS
-                                .iter()
-                                .map(|k| k.code)
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ))
-                    })?;
-                    if code.trim().is_empty() || code.trim() != code {
-                        return Err(dim_pos
-                            .error("a dimension tag names a value code without spaces around it"));
-                    }
-                    if tagged.iter().any(|(id, ..)| *id == kind.id) {
-                        return Err(dim_pos.error(format!("`{dimension}` is tagged twice")));
-                    }
-                    tagged.push((kind.id, dimension.clone(), code.clone()));
-                }
-                tagged.sort();
                 legs.push(LegTemplate {
                     side: *side,
                     account: account.clone(),
                     unit: typed.unit,
                     amount: typed.node,
-                    dims: tagged
-                        .into_iter()
-                        .map(|(_, dimension, code)| (dimension, code))
-                        .collect(),
+                    dims: dimensions(dims)?,
                 });
             }
             Stmt::Effective { date, pos } => {
@@ -151,6 +156,7 @@ pub fn compile(source: &str, units: &UnitRegistry) -> Result<CompiledRule, Canon
         version: rule.version,
         event,
         produces,
+        authority,
         inputs,
         slots: slots.into_iter().map(|t| t.node).collect(),
         legs,
@@ -238,27 +244,32 @@ impl Checker<'_> {
             .map_or_else(|| format!("#{}", unit.0), UnitRef::spelling)
     }
 
+    fn literal(&mut self, text: &str, pos: Pos) -> Result<Amount, CanonError> {
+        let amount = Amount::parse(text, self.units).map_err(|e| {
+            pos.error(match e {
+                AmountError::UnknownUnit(unit) => {
+                    format!("unit `{unit}` is not registered in this book")
+                }
+                AmountError::ExceedsScale { digits, scale } => {
+                    format!("`{text}` has {digits} fractional digits; its unit carries {scale}")
+                }
+                _ => format!("`{text}` is not an amount such as \"12.50 USD\""),
+            })
+        })?;
+        self.note_unit(amount.unit, pos)?;
+        Ok(amount)
+    }
+
     fn amount(&mut self, expr: &Expr) -> Result<Typed, CanonError> {
         match expr {
             Expr::Literal(text, pos) => {
-                let amount = Amount::parse(text, self.units).map_err(|e| {
-                    pos.error(match e {
-                        AmountError::UnknownUnit(unit) => {
-                            format!("unit `{unit}` is not registered in this book")
-                        }
-                        AmountError::ExceedsScale { digits, scale } => format!(
-                            "`{text}` has {digits} fractional digits; its unit carries {scale}"
-                        ),
-                        _ => format!("`{text}` is not an amount such as \"12.50 USD\""),
-                    })
-                })?;
-                let unit = self.note_unit(amount.unit, *pos)?;
+                let amount = self.literal(text, *pos)?;
                 Ok(Typed {
                     node: Node::Literal {
-                        unit,
+                        unit: amount.unit,
                         mantissa: amount.mantissa,
                     },
-                    unit,
+                    unit: amount.unit,
                 })
             }
             Expr::Name(name, pos) => match self.names.get(name).copied() {
@@ -382,6 +393,34 @@ impl Checker<'_> {
             }
         }
     }
+}
+
+fn dimensions(dims: &[(String, String, Pos)]) -> Result<Vec<(String, String)>, CanonError> {
+    let mut tagged: Vec<(u32, String, String)> = Vec::new();
+    for (dimension, code, pos) in dims {
+        let kind = dimension_kind(dimension).ok_or_else(|| {
+            pos.error(format!(
+                "`{dimension}` is not a registered dimension; one of {}",
+                fa_model::DIMENSION_KINDS
+                    .iter()
+                    .map(|kind| kind.code)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
+        if code.trim().is_empty() || code.trim() != code {
+            return Err(pos.error("a dimension tag names a value code without spaces around it"));
+        }
+        if tagged.iter().any(|(id, ..)| *id == kind.id) {
+            return Err(pos.error(format!("`{dimension}` is tagged twice")));
+        }
+        tagged.push((kind.id, dimension.clone(), code.clone()));
+    }
+    tagged.sort();
+    Ok(tagged
+        .into_iter()
+        .map(|(_, dimension, code)| (dimension, code))
+        .collect())
 }
 
 fn expr_pos(expr: &Expr) -> Pos {

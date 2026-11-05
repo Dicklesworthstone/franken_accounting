@@ -24,9 +24,10 @@ use fgdb_types::{CommitSeq, VId};
 use crate::{AsyncBook, Outcome};
 
 pub use fa_canon::{
-    CANON_INPUTS_DOMAIN, CanonError, CompiledRule, Dependencies, Derivation, DerivedLeg, EvalError,
-    InputDecl, InputType, InputValue, Inputs, IrError, MAX_SOURCE_BYTES, Produces, decode_inputs,
-    encode_inputs, evaluate,
+    AuthorityError, AuthorityGrant, CANON_INPUTS_DOMAIN, CanonError, CompiledRule, Dependencies,
+    Derivation, DerivedLeg, EvalError, InputDecl, InputType, InputValue, Inputs, IrError,
+    MAX_SOURCE_BYTES, Produces, RuleAuthority, decode_inputs, encode_inputs, evaluate,
+    validate_authority,
 };
 pub use fa_journal::refusal::code::CANON_RULE;
 pub use fa_journal::rule::{

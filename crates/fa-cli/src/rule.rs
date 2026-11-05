@@ -13,8 +13,8 @@
 
 use fa::rule::{
     CompiledRule, Derivation, EvalError, InputType, InputValue, Inputs,
-    RULE_ACTIVATION_PLAN_DOMAIN, RuleActivationPlan, RuleNameRow, RuleVersionRow, compile_rule,
-    evaluation_refusal,
+    RULE_ACTIVATION_PLAN_DOMAIN, RuleActivationPlan, RuleAuthority, RuleNameRow, RuleVersionRow,
+    compile_rule, evaluation_refusal,
 };
 use fa_money::{Amount, Side};
 use fa_time::DateDay;
@@ -96,7 +96,15 @@ fn rule_fields(rule: &CompiledRule) -> Vec<(&'static str, Json)> {
         ("event_kind", s(rule.event().name())),
         ("produces", s(rule.produces().name())),
         ("ir_digest", s(hex(&rule.ir_digest()))),
+        ("authority", s(authority_posture(rule))),
     ]
+}
+
+fn authority_posture(rule: &CompiledRule) -> &'static str {
+    match rule.authority() {
+        RuleAuthority::LegacyUnbounded => "legacy_unbounded",
+        RuleAuthority::Declared(_) => "declared",
+    }
 }
 
 /// The inputs and dependency set `check` and `show` report.
@@ -129,6 +137,33 @@ fn dependency_fields(
         .iter()
         .map(|(dimension, code)| format!("{dimension}={code}"))
         .collect();
+    let grants = match rule.authority() {
+        RuleAuthority::LegacyUnbounded => Json::Null,
+        RuleAuthority::Declared(grants) => Json::Arr(
+            grants
+                .iter()
+                .map(|grant| {
+                    let dimensions: Vec<String> = grant
+                        .dims
+                        .iter()
+                        .map(|(dimension, code)| format!("{dimension}={code}"))
+                        .collect();
+                    obj(vec![
+                        (
+                            "side",
+                            s(match grant.side {
+                                Side::Debit => "debit",
+                                Side::Credit => "credit",
+                            }),
+                        ),
+                        ("account", s(&grant.account)),
+                        ("ceiling", s(grant.ceiling.render(units))),
+                        ("dimensions", strings(&dimensions)),
+                    ])
+                })
+                .collect(),
+        ),
+    };
     vec![
         ("inputs", strings(&inputs)),
         ("accounts", strings(&deps.accounts)),
@@ -136,6 +171,7 @@ fn dependency_fields(
         ("laws", strings(&deps.laws)),
         ("resources", strings(&resources)),
         ("dimensions", strings(&tags)),
+        ("authority_grants", grants),
     ]
 }
 
@@ -244,6 +280,7 @@ fn version_json(version: &RuleVersionRow) -> Json {
         ("ir_digest", s(hex(&rule.ir_digest()))),
         ("proposed_at", Json::Int(i128::from(version.created_at.0))),
         ("accounts", strings(&rule.dependencies().accounts)),
+        ("authority", s(authority_posture(rule))),
     ])
 }
 
