@@ -6892,30 +6892,6 @@ fn draft_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
 }
 
-/// A lifecycle command may derive a default control date only after current
-/// authority admits its named logical branch. The native transition repeats
-/// admission and still owns draft-state, owner and transaction checks.
-fn admit_draft_lifecycle(book: &Book, capability: &Capability, name: &str) -> Result<(), Fail> {
-    fa_policy::admit_within(
-        capability,
-        &fa_policy::Intent {
-            principal: capability.holder(),
-            trunk: false,
-            op: fa_policy::Op::Post,
-            book: book.context().book_id,
-            legs: &[],
-        },
-        &fa_policy::Reach {
-            branch: Some(fa_model::draft_branch(book.context().book_id, name)),
-            ..fa_policy::Reach::whole_book(false)
-        },
-        None,
-    )
-    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
-    book.admit_current(capability)??;
-    Ok(())
-}
-
 fn draft_record_fields(
     name: &str,
     recorded: &fa_journal::DraftRecorded,
