@@ -3363,3 +3363,41 @@ coverage requires a retained 100 EUR / 110 USD payable to draft a 120 USD
 settlement with an explicit 10 USD loss and exact independent promotion;
 wrong-branch and ordinary entry/document reads must still refuse. Native
 execution and complete qualification of this additional slice are pending.
+
+The first settlement candidate `34af73dd` compiled every workspace target
+successfully (native check 0, 613250 ms), then Tier 0 returned 1 during the
+same RCH retirement failure. Its unfiltered CLI targets executed: authority
+18 passed / 1 failed and writing 3 passed, no ignored or filtered cases;
+remote and outer exit 101, 684936 ms. The new historical-cost carrying test
+reached source derivation but the draft batch's posting preparation still
+required whole-book Read. This is a remaining product admission gap, not an
+invalid fixture or an offloader assertion failure. The repair uses the
+existing private confined-draft admission only for source-bound carrying
+members; ordinary plan/commit, revaluation and allocated-undo Read gates,
+independent-source proofs and complete-prefix publication guards remain.
+The original positive, literal amount, no-read, wrong-branch and exact
+promotion assertions are retained. A second allocated-revaluation variant
+was prepared in Root after the candidate froze and was not executed by
+`34af73dd`; it still needs native execution.
+
+### 2026-11-05 — pinned font and declared IR metadata address observed PDF/A failures
+
+The retained rounded PDF/A with SHA-256
+`e88fcbef044631f1febe026b7e6658959e6b3f52c25efd0da3c3590bbb9a8da1`
+failed the pinned external veraPDF validator on font-program rule
+6.2.11.4.1 test 1 and XMP schema/type rule 6.6.2.3.1 tests 1 and 2. The
+original report and its three failed checks remain retained.
+
+The new renderer source embeds the pinned first-party `fmd-font` CMU
+Typewriter program, descriptor and Unicode map, and declares the retained
+`fa:irDigest` as a Text-valued PDF/A extension. Numeric placement uses the
+font's integer advances; accounting amounts, IR and certificate production
+remain in their existing paths. Actual locked Cargo metadata resolved one
+`fmd-font` 0.4.0 at revision `7d0472b240372922384b9e19765f5c785d78ae3a`,
+with `bundled-faces`, no package dependencies and no full Markdown engine.
+The distribution retains the font's OFL notice. New tests check embedded
+program bytes, independent literal coordinates, and missing-font/wrong-XMP
+type refusals. Existing PDF pins remain unchanged pending native bytes,
+semantic inspection and external validation; no native or ISO-conformance
+PASS is claimed yet. Full Markdown-engine adoption and cross-machine
+acceptance remain open under `fa-cet`.

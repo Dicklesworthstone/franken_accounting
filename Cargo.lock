@@ -1184,6 +1184,7 @@ dependencies = [
  "fa-reference",
  "fa-registry",
  "fa-time",
+ "fmd-font",
 ]
 
 [[package]]
@@ -1591,6 +1592,11 @@ name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
+
+[[package]]
+name = "fmd-font"
+version = "0.4.0"
+source = "git+https://github.com/Dicklesworthstone/franken_markdown?rev=7d0472b240372922384b9e19765f5c785d78ae3a#7d0472b240372922384b9e19765f5c785d78ae3a"
 
 [[package]]
 name = "fnx-algorithms"

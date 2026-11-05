@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use fa_model::{Id128, Oid, domain_digest};
+use fmd_font::Font;
 
 use crate::StatementError;
 use crate::markdown::{
@@ -507,6 +508,47 @@ const PDF_BOTTOM: i64 = 48;
 /// What every page dictionary holds besides its parent and contents.
 const PAGE_DICT_TAIL: &str = "/MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >>";
 
+/// PDF coordinates and font metrics use fixed decimal presentation units;
+/// accounting amounts have already been formatted by the exact Markdown IR.
+fn pdf_number(hundred_millionths: i128) -> String {
+    let magnitude = hundred_millionths.unsigned_abs();
+    format!(
+        "{}{}.{:08}",
+        if hundred_millionths < 0 { "-" } else { "" },
+        magnitude / 100_000_000,
+        magnitude % 100_000_000
+    )
+}
+
+fn pdf_font_metric(font: &Font, value: i64) -> String {
+    pdf_number(i128::from(value) * 100_000_000_000 / i128::from(font.units_per_em))
+}
+
+fn pdf_cell_x(table: &MarkdownTable, index: usize, text: &str, font: &Font) -> String {
+    let width = 540 / table.headers.len().max(1) as i128;
+    let left = (36 + index as i128 * width) * 100_000_000;
+    let x = match table.alignments.get(index) {
+        Some(ColumnAlignment::Right) => {
+            let advance: i128 = text
+                .chars()
+                .map(|ch| {
+                    let displayed = if ch.is_ascii_graphic() || ch == ' ' {
+                        ch
+                    } else {
+                        '?'
+                    };
+                    i128::from(font.advance_width(font.glyph_index(displayed)))
+                })
+                .sum();
+            let text_width = advance * 800_000_000 / i128::from(font.units_per_em);
+            let right = (36 + (index as i128 + 1) * width - 6) * 100_000_000;
+            left.max(right - text_width)
+        }
+        _ => left,
+    };
+    pdf_number(x)
+}
+
 /// One content stream per page. A table that does not fit continues on the
 /// next page with its unit line and column headers repeated: no row is ever
 /// dropped, and a statement that fits one page renders exactly as before.
@@ -514,6 +556,7 @@ fn build_pdf_content_streams(
     ir: &StatementMarkdownIr,
     created_iso: &str,
     ir_digest_hex: &str,
+    font: &Font,
 ) -> Vec<String> {
     let mut pages = Vec::new();
     let mut s = String::new();
@@ -537,7 +580,7 @@ fn build_pdf_content_streams(
     y -= 20;
 
     for table in &ir.tables {
-        y = render_pdf_table(&mut pages, &mut s, ir, table, y);
+        y = render_pdf_table(&mut pages, &mut s, ir, table, y, font);
         y -= 12;
     }
     pages.push(s);
@@ -565,6 +608,7 @@ fn render_pdf_table(
     ir: &StatementMarkdownIr,
     table: &MarkdownTable,
     mut y: i64,
+    font: &Font,
 ) -> i64 {
     // The unit line and the column headers take 28 points above the first
     // row; a table whose first row would fall below the margin starts on a
@@ -572,13 +616,13 @@ fn render_pdf_table(
     if !table.rows.is_empty() && y - 28 < PDF_BOTTOM {
         y = next_pdf_page(pages, s, ir);
     }
-    y = render_pdf_table_heading(s, table, y, false);
+    y = render_pdf_table_heading(s, table, y, false, font);
     for row in &table.rows {
         if y < PDF_BOTTOM {
             y = next_pdf_page(pages, s, ir);
-            y = render_pdf_table_heading(s, table, y, true);
+            y = render_pdf_table_heading(s, table, y, true, font);
         }
-        render_pdf_row(s, table, row, y);
+        render_pdf_row(s, table, row, y, font);
         y -= 14;
     }
     y
@@ -589,6 +633,7 @@ fn render_pdf_table_heading(
     table: &MarkdownTable,
     mut y: i64,
     continued: bool,
+    font: &Font,
 ) -> i64 {
     s.push_str(&format!("BT /F1 9 Tf 36 {y} Td ("));
     s.push_str(&escape_pdf_string(&format!(
@@ -601,23 +646,8 @@ fn render_pdf_table_heading(
     s.push_str(") Tj ET\n");
     y -= 14;
 
-    let col_count = table.headers.len().max(1) as i64;
-    let col_width = 540 / col_count;
-
     for (idx, header) in table.headers.iter().enumerate() {
-        let align = table
-            .alignments
-            .get(idx)
-            .copied()
-            .unwrap_or(ColumnAlignment::Left);
-        let x = match align {
-            ColumnAlignment::Left => 36 + (idx as i64) * col_width,
-            ColumnAlignment::Right => {
-                let right_edge = 36 + ((idx as i64) + 1) * col_width - 6;
-                let text_w = (header.chars().count() as i64) * 5;
-                (right_edge - text_w).max(36 + (idx as i64) * col_width)
-            }
-        };
+        let x = pdf_cell_x(table, idx, header, font);
         s.push_str(&format!(
             "BT /F1 8 Tf {x} {y} Td ({}) Tj ET\n",
             escape_pdf_string(header)
@@ -630,27 +660,13 @@ fn render_pdf_table_heading(
     y - 14
 }
 
-fn render_pdf_row(s: &mut String, table: &MarkdownTable, row: &MarkdownRow, y: i64) {
-    let col_count = table.headers.len().max(1) as i64;
-    let col_width = 540 / col_count;
+fn render_pdf_row(s: &mut String, table: &MarkdownTable, row: &MarkdownRow, y: i64, font: &Font) {
     if matches!(row.footing, FootingRule::Single | FootingRule::Double) {
         let top_y = y + 9;
         s.push_str(&format!("1 w 36 {top_y} m 576 {top_y} l S\n"));
     }
     for (idx, cell) in row.cells.iter().enumerate() {
-        let align = table
-            .alignments
-            .get(idx)
-            .copied()
-            .unwrap_or(ColumnAlignment::Left);
-        let x = match align {
-            ColumnAlignment::Left => 36 + (idx as i64) * col_width,
-            ColumnAlignment::Right => {
-                let right_edge = 36 + ((idx as i64) + 1) * col_width - 6;
-                let text_w = (cell.chars().count() as i64) * 5;
-                (right_edge - text_w).max(36 + (idx as i64) * col_width)
-            }
-        };
+        let x = pdf_cell_x(table, idx, cell, font);
         s.push_str(&format!(
             "BT /F1 8 Tf {x} {y} Td ({}) Tj ET\n",
             escape_pdf_string(cell)
@@ -681,11 +697,22 @@ fn render_pdf_internal(
     creation_epoch_secs: u64,
     pdfa_2b: bool,
 ) -> Result<Vec<u8>, StatementError> {
+    let font = Font::parse_static(fmd_font::bundled::CM_TYPEWRITER)
+        .map_err(|error| StatementError::Input(format!("bundled PDF font: {error}")))?;
+    if font.units_per_em == 0
+        || !font.has_glyf_outlines()
+        || (' '..='~').any(|ch| font.glyph_index(ch) == 0)
+    {
+        return Err(StatementError::Input(
+            "bundled PDF font must contain TrueType outlines and every printable ASCII glyph"
+                .into(),
+        ));
+    }
     let ir_digest = ir.digest()?;
     let ir_digest_hex = hex_bytes(&ir_digest.0);
     let created_iso = format_utc_epoch_iso8601(creation_epoch_secs);
     let created_pdf = format_utc_epoch_pdf_date(creation_epoch_secs);
-    let content_streams = build_pdf_content_streams(ir, &created_iso, &ir_digest_hex);
+    let content_streams = build_pdf_content_streams(ir, &created_iso, &ir_digest_hex, &font);
     let content_stream = &content_streams[0];
     // Page 1 keeps objects 3 (page) and 8 (contents); every later page is a
     // (page, contents) pair numbered from 10, after the Info object.
@@ -712,6 +739,22 @@ fn render_pdf_internal(
                <dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:title>\n\
                <fa:irDigest>{ir_digest_hex}</fa:irDigest>\n\
              </rdf:Description>\n\
+             <rdf:Description rdf:about=\"\"\n\
+                 xmlns:pdfaExtension=\"http://www.aiim.org/pdfa/ns/extension/\"\n\
+                 xmlns:pdfaSchema=\"http://www.aiim.org/pdfa/ns/schema#\"\n\
+                 xmlns:pdfaProperty=\"http://www.aiim.org/pdfa/ns/property#\">\n\
+               <pdfaExtension:schemas><rdf:Bag><rdf:li rdf:parseType=\"Resource\">\n\
+                 <pdfaSchema:schema>FrankenAccounting statement provenance</pdfaSchema:schema>\n\
+                 <pdfaSchema:namespaceURI>https://frankenaccounting.dev/ns/1.0/</pdfaSchema:namespaceURI>\n\
+                 <pdfaSchema:prefix>fa</pdfaSchema:prefix>\n\
+                 <pdfaSchema:property><rdf:Seq><rdf:li rdf:parseType=\"Resource\">\n\
+                   <pdfaProperty:name>irDigest</pdfaProperty:name>\n\
+                   <pdfaProperty:valueType>Text</pdfaProperty:valueType>\n\
+                   <pdfaProperty:category>external</pdfaProperty:category>\n\
+                   <pdfaProperty:description>Domain-separated digest of the canonical statement Markdown IR</pdfaProperty:description>\n\
+                 </rdf:li></rdf:Seq></pdfaSchema:property>\n\
+               </rdf:li></rdf:Bag></pdfaExtension:schemas>\n\
+             </rdf:Description>\n\
            </rdf:RDF>\n\
          </x:xmpmeta>\n\
          <?xpacket end=\"w\"?>",
@@ -735,6 +778,15 @@ fn render_pdf_internal(
         "<< /Type /Catalog /Pages 2 0 R /Metadata 5 0 R >>".to_string()
     };
 
+    // Keep page/content identities stable; append the font's descriptor,
+    // immutable program and Unicode map after every page.
+    let descriptor_id = 10 + 2 * more_pages.len();
+    let program_id = descriptor_id + 1;
+    let unicode_id = descriptor_id + 2;
+    let widths = (' '..='~')
+        .map(|ch| pdf_font_metric(&font, i64::from(font.advance_width(font.glyph_index(ch)))))
+        .collect::<Vec<_>>()
+        .join(" ");
     let mut objects: Vec<Vec<u8>> = vec![
         catalog_obj.into_bytes(),
         format!(
@@ -743,7 +795,7 @@ fn render_pdf_internal(
         )
         .into_bytes(),
         format!("<< /Type /Page /Parent 2 0 R {PAGE_DICT_TAIL} /Contents 8 0 R >>").into_bytes(),
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>".to_vec(),
+        format!("<< /Type /Font /Subtype /TrueType /BaseFont /CMUTypewriter-Regular /Encoding /WinAnsiEncoding /FirstChar 32 /LastChar 126 /Widths [{widths}] /FontDescriptor {descriptor_id} 0 R /ToUnicode {unicode_id} 0 R >>").into_bytes(),
         format!(
             "<< /Type /Metadata /Subtype /XML /Length {} >>\nstream\n{}\nendstream",
             xmp_packet.len(),
@@ -784,6 +836,35 @@ fn render_pdf_internal(
             .into_bytes(),
         );
     }
+    let bbox = font
+        .font_bbox()
+        .ok_or_else(|| StatementError::Input("bundled PDF font has no bounding box".into()))?;
+    let bbox = bbox
+        .iter()
+        .map(|&value| pdf_font_metric(&font, i64::from(value)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    objects.push(format!(
+        "<< /Type /FontDescriptor /FontName /CMUTypewriter-Regular /Flags 33 /FontBBox [{bbox}] /ItalicAngle 0 /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 {program_id} 0 R >>",
+        pdf_font_metric(&font, i64::from(font.ascent)),
+        pdf_font_metric(&font, i64::from(font.descent)),
+        pdf_font_metric(&font, i64::from(font.ascent)),
+    ).into_bytes());
+    let program = fmd_font::bundled::CM_TYPEWRITER;
+    let mut embedded = format!(
+        "<< /Length {} /Length1 {} >>\nstream\n",
+        program.len(),
+        program.len()
+    )
+    .into_bytes();
+    embedded.extend_from_slice(program);
+    embedded.extend_from_slice(b"\nendstream");
+    objects.push(embedded);
+    let unicode = b"/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /FAAscii def\n/CMapType 2 def\n1 begincodespacerange\n<00> <FF>\nendcodespacerange\n1 beginbfrange\n<20> <7E> <0020>\nendbfrange\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n";
+    let mut mapping = format!("<< /Length {} >>\nstream\n", unicode.len()).into_bytes();
+    mapping.extend_from_slice(unicode);
+    mapping.extend_from_slice(b"\nendstream");
+    objects.push(mapping);
 
     let mut out = Vec::with_capacity(4096 + content_streams.iter().map(String::len).sum::<usize>());
     out.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
@@ -846,7 +927,9 @@ pub struct PdfaValidationReceipt {
     pub double_footing_count: usize,
 }
 
-/// Validate that a rendered PDF satisfies PDF/A-2b structural and metadata invariants (`fa-cet`).
+/// Inspect this renderer's PDF/A structure and provenance metadata (`fa-cet`).
+/// This is not an ISO conformance validator; external PDF/A validation remains
+/// required. In particular, token presence does not authenticate a font program.
 pub fn validate_pdfa2b(pdf_bytes: &[u8]) -> Result<PdfaValidationReceipt, StatementError> {
     if !pdf_bytes.starts_with(b"%PDF-1.7\n") {
         return Err(StatementError::Input(
@@ -862,6 +945,24 @@ pub fn validate_pdfa2b(pdf_bytes: &[u8]) -> Result<PdfaValidationReceipt, Statem
         ));
     }
     let text = String::from_utf8_lossy(pdf_bytes);
+    if !text.contains("/Subtype /TrueType")
+        || !text.contains("/FontFile2 ")
+        || !text.contains("/ToUnicode ")
+    {
+        return Err(StatementError::Input(
+            "PDF/A structure requires an embedded TrueType font and Unicode mapping".into(),
+        ));
+    }
+    if !text.contains(
+        "<pdfaSchema:namespaceURI>https://frankenaccounting.dev/ns/1.0/</pdfaSchema:namespaceURI>",
+    ) || !text.contains("<pdfaSchema:prefix>fa</pdfaSchema:prefix>")
+        || !text.contains("<pdfaProperty:name>irDigest</pdfaProperty:name>")
+        || !text.contains("<pdfaProperty:valueType>Text</pdfaProperty:valueType>")
+    {
+        return Err(StatementError::Input(
+            "PDF/A structure requires the declared Text-valued fa:irDigest extension".into(),
+        ));
+    }
     if !text.contains("<pdfaid:part>2</pdfaid:part>") {
         return Err(StatementError::Input(
             "PDF/A-2b validation failed: XMP metadata missing <pdfaid:part>2</pdfaid:part>".into(),
@@ -1419,6 +1520,102 @@ mod tests {
             code: "USD".into(),
             scale: 2,
         }]
+    }
+
+    #[test]
+    fn pdf_numeric_columns_use_the_embedded_font_metrics() {
+        let font = Font::parse_static(fmd_font::bundled::CM_TYPEWRITER).unwrap();
+        // Independent literal coordinates: this pinned face uses 2048 units
+        // per em and 1075-unit digit/dot advances. Four and five glyphs at
+        // 8 points finish at the same 570-point right edge.
+        assert_eq!(font.units_per_em, 2048);
+        assert_eq!(font.advance_width(font.glyph_index('0')), 1075);
+        let table = MarkdownTable {
+            unit_id: 1,
+            unit_code: "USD".into(),
+            unit_scale: 2,
+            headers: vec!["Amount".into()],
+            alignments: vec![ColumnAlignment::Right],
+            rows: Vec::new(),
+        };
+        let mut drawn = String::new();
+        for (value, y) in [("1.00", 100), ("12.00", 86)] {
+            render_pdf_row(
+                &mut drawn,
+                &table,
+                &MarkdownRow {
+                    line_code: value.into(),
+                    footing: FootingRule::None,
+                    cells: vec![value.into()],
+                },
+                y,
+                &font,
+            );
+        }
+        assert!(drawn.contains("553.20312500 100 Td (1.00) Tj"), "{drawn}");
+        assert!(drawn.contains("549.00390625 86 Td (12.00) Tj"), "{drawn}");
+    }
+
+    #[test]
+    fn pdfa_embeds_the_pinned_font_and_declares_its_ir_digest() {
+        let (definition, statement) = sample_bs(10, 50_025, 12_005);
+        let ir = render_statement_ir(&statement, &definition, &sample_units()).unwrap();
+        let bytes = render_pdfa(&ir, 1_792_454_400).unwrap();
+        let font = fmd_font::bundled::CM_TYPEWRITER;
+        let header = format!(
+            "<< /Length {} /Length1 {} >>\nstream\n",
+            font.len(),
+            font.len()
+        );
+        let start = bytes
+            .windows(header.len())
+            .position(|window| window == header.as_bytes())
+            .expect("the PDF carries an explicit embedded font stream")
+            + header.len();
+        assert_eq!(&bytes[start..start + font.len()], font);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("/BaseFont /Courier"));
+        assert!(text.contains("/Subtype /TrueType /BaseFont /CMUTypewriter-Regular"));
+        assert!(text.contains("/FontFile2 "));
+        assert!(text.contains("/ToUnicode "));
+        assert!(text.contains("<20> <7E> <0020>"));
+        assert!(text.contains("<pdfaProperty:category>external</pdfaProperty:category>"));
+        assert_eq!(
+            validate_pdfa2b(&bytes).unwrap().embedded_ir_digest_hex,
+            hex_bytes(&ir.digest().unwrap().0)
+        );
+    }
+
+    #[test]
+    fn pdfa_structure_refuses_missing_font_or_digest_schema() {
+        let (definition, statement) = sample_bs(10, 50_025, 12_005);
+        let ir = render_statement_ir(&statement, &definition, &sample_units()).unwrap();
+        let bytes = render_pdfa(&ir, 1_792_454_400).unwrap();
+        let mut without_font = bytes.clone();
+        let at = without_font
+            .windows(b"/FontFile2 ".len())
+            .position(|window| window == b"/FontFile2 ")
+            .unwrap();
+        without_font[at..at + b"/FontFile2 ".len()].copy_from_slice(b"/XXXXXXXXX ");
+        assert!(
+            validate_pdfa2b(&without_font)
+                .unwrap_err()
+                .to_string()
+                .contains("embedded TrueType")
+        );
+        let mut wrong_schema = bytes;
+        let at = wrong_schema
+            .windows(b"<pdfaProperty:valueType>Text".len())
+            .position(|window| window == b"<pdfaProperty:valueType>Text")
+            .unwrap();
+        let start = at + b"<pdfaProperty:valueType>".len();
+        wrong_schema[start..start + 4].copy_from_slice(b"Date");
+        assert!(
+            validate_pdfa2b(&wrong_schema)
+                .unwrap_err()
+                .to_string()
+                .contains("declared Text-valued")
+        );
     }
 
     fn sample_bs(

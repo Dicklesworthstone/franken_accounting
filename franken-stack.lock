@@ -73,6 +73,19 @@ transitive_arithmetic = ["num-bigint 0.4.8", "num-integer 0.1.47", "num-rational
 role = "fa-money arbitrary-size nonnegative Rate, exact conversion intermediates, cancellation-first work metering; no CAS runtime"
 verification = "independent fgdb-bigint rounding differential, canonical rate bytes, resource and cancellation refusals; rerun all on pin changes"
 
+[[foundation]]
+name = "franken_markdown"
+package_patterns = ["fmd-font"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = ["bundled-faces"]
+source = "git+https://github.com/Dicklesworthstone/franken_markdown"
+rev = "7d0472b240372922384b9e19765f5c785d78ae3a"
+version = "0.4.0"
+crates = ["fmd-font"]
+transitive_suite_crates = []
+role = "Bundled OFL TrueType font programs and integer metrics for fa-statements PDF embedding; the Markdown engine is not linked"
+verification = "Font descriptors, Unicode mapping, exact PDF text positions, native statement/CLI tests, external PDF/A validation and deterministic bytes on pin changes"
+
 # Resolved-production gate (fa-lbh / fa-c23). Each posture is resolved alone
 # with its default features, normal + build edges, on the current host.
 # These are intentional feature ceilings, not workspace metadata's feature

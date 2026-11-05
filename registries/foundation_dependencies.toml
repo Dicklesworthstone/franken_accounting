@@ -25,6 +25,18 @@
 schema_version = 1
 
 [[capability]]
+row = "R-FONT"
+capability = "FrankenMarkdown `fmd-font` at the exact `franken-stack.lock` revision"
+status = "Bundled TrueType font programs and integer metrics integrated in statement PDFs; native and external qualification required at landing"
+posture = "Accounting IR, amounts, timestamps and footings remain owned here; full Markdown-engine adoption remains open in `fa-cet`"
+switch_over = "Re-pin only with font, dependency-closure, external PDF/A and deterministic-render checks"
+foundation = "franken_markdown"
+upstream = "live"
+fa_status = "live"
+tracking = "fa-cet"
+consumed_apis = ["Font::parse_static", "advance_width", "glyph_index", "font_bbox", "has_glyf_outlines", "fmd_font::bundled::CM_TYPEWRITER"]
+
+[[capability]]
 row = "R-RATIONAL"
 capability = "FrankenSymPy `fsym-bigint`, `fsym-rational`, `fsym-budget` at the exact `franken-stack.lock` revision"
 status = "Integrated in `fa-money`: metered arbitrary-size rates and exact conversion intermediates; native verification required at landing"
