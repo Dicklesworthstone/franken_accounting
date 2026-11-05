@@ -1090,6 +1090,19 @@ impl Book {
         ))
     }
 
+    /// Prepare every active matching rule as one complete atomic batch.
+    /// A required input or empty matching set refuses before publication.
+    /// Native plan/post rechecks selection, authority and every derivation.
+    pub fn prepare_rule_batch(
+        &self,
+        capability: &fa_journal::Capability,
+        event: VId,
+    ) -> Outcome<crate::rule::PreparedRuleBatch> {
+        with_store!(&self.store, core => core.prepare_rule_batch(
+            &self.purposes(), capability, event,
+        ))
+    }
+
     /// Derive and post a rule version's entry over a recorded event (bead
     /// fa-c34); the kernel re-runs the derivation in the commit.
     pub fn derive_rule_entry(

@@ -41,6 +41,40 @@ pub fn compile_rule(context: &BookContext, source: &str) -> Result<CompiledRule,
     fa_canon::compile(source, &context.units).map_err(|error| rule_refusal(&error))
 }
 
+/// Display metadata for one member of a prepared automatic derivation.
+/// The native batch carries and independently verifies the rule identities.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuleBatchMember {
+    pub name: String,
+    pub ir_digest: [u8; 32],
+}
+
+/// Every applicable input-free rule over one recorded event, prepared at
+/// one admitted book prefix. No entry has been published. Pass `batch` to
+/// native batch planning or posting; the kernel rechecks complete selection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedRuleBatch {
+    pub event_code: String,
+    pub rules: Vec<RuleBatchMember>,
+    pub batch: fa_intents::PostBatch,
+}
+
+/// Stable member identity shared by explicit and automatic derivation.
+/// Preserve the existing CLI v1 domain and 64-byte hex keys so adopting
+/// atomic derivation cannot duplicate earlier separately recorded entries.
+pub fn default_derivation_key(
+    rule: &CompiledRule,
+    event: VId,
+    inputs: &Inputs,
+) -> Result<String, EvalError> {
+    let encoded = encode_inputs(rule, inputs)?;
+    let inputs_digest = fa_model::domain_digest(CANON_INPUTS_DOMAIN, &[&encoded]);
+    Ok(fa_journal::evidence::hex(&fa_model::domain_digest(
+        b"fa-cli:rule-derive-key:v1",
+        &[&rule.ir_digest(), &event.0.to_le_bytes(), &inputs_digest],
+    )))
+}
+
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Admit `capability` to change rules before anything is observed.
     pub fn admit_rule_change(
@@ -173,7 +207,95 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "fa event list names the recorded events",
             )));
         };
-        let rule = &version.rule;
+        self.prepare_selected_rule_entry(cx, capability, &version.rule, &event_row, inputs, key)
+    }
+
+    /// Prepare all matching active rules as one atomic request. Matching
+    /// rules that require explicit inputs refuse the whole request; nothing
+    /// is skipped or published. The native selector is shared with batch
+    /// verification, so a later activation cannot silently omit a member.
+    pub fn prepare_rule_batch(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        event: VId,
+    ) -> Outcome<PreparedRuleBatch> {
+        let selected = self.query(cx, |db, book| {
+            let at = match crate::subledger::admitted_at(db, book, capability, None)? {
+                Ok(at) => at,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            Ok(fa_journal::rule::automatic_rules_at(
+                db, book, capability, event, at,
+            )?)
+        })?;
+        let selected = match selected {
+            Ok(selected) => selected,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let inputs = Inputs::new();
+        let mut members = Vec::with_capacity(selected.versions.len());
+        let mut rules = Vec::with_capacity(selected.versions.len());
+        let mut key_material = Vec::new();
+        for version in &selected.versions {
+            let rule = &version.rule;
+            let key = match default_derivation_key(rule, selected.event.vid, &inputs) {
+                Ok(key) => key,
+                Err(error) => {
+                    return Ok(Err(evaluation_refusal(
+                        rule,
+                        &selected.event.spec.code,
+                        &error,
+                    )));
+                }
+            };
+            let intent = match self.prepare_selected_rule_entry(
+                cx,
+                capability,
+                rule,
+                &selected.event,
+                &inputs,
+                key.as_bytes(),
+            )? {
+                Ok(intent) => intent,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            // Each component has a fixed width: a 32-byte IR digest and
+            // the preserved 64-byte member key. Sealing salts and the
+            // observation sequence never change the logical request key.
+            key_material.extend_from_slice(&rule.ir_digest());
+            key_material.extend_from_slice(key.as_bytes());
+            rules.push(RuleBatchMember {
+                name: rule.name().to_string(),
+                ir_digest: rule.ir_digest(),
+            });
+            members.push(intent);
+        }
+        let key = fa_journal::evidence::hex(&fa_model::domain_digest(
+            b"fa:automatic-rule-batch-key:v1",
+            &[&selected.event.vid.0.to_le_bytes(), &key_material],
+        ));
+        let batch =
+            fa_intents::PostBatch::automatic_rules(selected.event.vid, key.into_bytes(), members)
+                .map_err(|error| {
+                fa_journal::KernelError::Corrupt(format!("automatic rule batch: {error}"))
+            })?;
+        Ok(Ok(PreparedRuleBatch {
+            event_code: selected.event.spec.code,
+            rules,
+            batch,
+        }))
+    }
+
+    fn prepare_selected_rule_entry(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        rule: &CompiledRule,
+        event_row: &fa_journal::rea::EventRow,
+        inputs: &Inputs,
+        key: &[u8],
+    ) -> Outcome<fa_intents::PostIntent> {
         let derived = fa_canon::encode_inputs(rule, inputs)
             .and_then(|bytes| Ok((bytes, fa_canon::evaluate(rule, &event_row.spec, inputs)?)));
         let (inputs_bytes, derivation) = match derived {

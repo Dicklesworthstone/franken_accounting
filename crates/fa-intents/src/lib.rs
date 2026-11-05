@@ -1,7 +1,8 @@
 //! Typed posting requests and portable, bounded planning transcripts.
 //!
 //! This slice of plan §10.4 and Appendix B admits exact sealed PostEntry and
-//! rule-derived single-entry requests, including supplied approvals. The bytes
+//! rule-derived requests, including supplied approvals and automatic event
+//! batches with their own protocol. The bytes
 //! retain randomized erasable fields, so a second process never has to seal
 //! the same plaintext again. The intent digest binds the entire typed
 //! request; it is not an unkeyed digest of its private plaintext.
@@ -160,7 +161,8 @@ impl PostIntent {
         })
     }
 
-    /// Retain an exact rule-derived request for a single native PostPlan.
+    /// Retain an exact rule-derived request for a native PostPlan or a
+    /// member of [`PostBatch::automatic_rules`].
     /// The kernel must witness the rule version, activation, event and inputs,
     /// reproduce the derivation, and enforce both caller and rule authority.
     /// This constructor only checks the origin and canonical Entry structure.
@@ -600,32 +602,92 @@ impl ReplacementPlan {
 }
 
 const BATCH_MAGIC: &[u8; 9] = b"FA-BATCH\0";
+const RULE_BATCH_MAGIC: &[u8; 14] = b"FA-RULE-BATCH\0";
 
 /// Hard decode bound for a whole batch transcript. Each member keeps its
 /// own registered Entry bound; this caps what one request can allocate.
 pub const MAX_BATCH_BYTES: usize = 4 * MAX_ENTRY_BYTES;
 
-/// An ordered list of PostEntry intents committed atomically in one
-/// substrate transaction (plan §5.8): all or none, in order, each member
-/// seeing every earlier member's staged effects. A member names an earlier
-/// member by its identity-derived entry vid (an invoice and its application
-/// in one batch). A forward or absent name finds no entry and is refused by
-/// the kernel like any other missing target. The batch's own key derives
-/// its IntentOutcome identity under the members' common principal
-/// (plan §5.9): an identical retry returns the recorded outcome. Retry
-/// identity is the key and the members' identities, never these bytes:
-/// re-sealing a member's erasable fields draws fresh salts.
+/// Automatic event derivation is a separate protocol from an explicit
+/// PostEntry batch. Its event and entire ordered membership are retained in
+/// the request, so native admission can require the complete active rule set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BatchKind {
+    PostEntry,
+    AutomaticRules { event_ref: VId },
+}
+
+impl BatchKind {
+    const fn magic(self) -> &'static [u8] {
+        match self {
+            Self::PostEntry => BATCH_MAGIC,
+            Self::AutomaticRules { .. } => RULE_BATCH_MAGIC,
+        }
+    }
+
+    const fn digest_domain(self) -> &'static [u8] {
+        match self {
+            Self::PostEntry => b"fa:intent:post-batch:v1",
+            Self::AutomaticRules { .. } => b"fa:intent:rule-batch:v1",
+        }
+    }
+}
+
+/// An ordered list of posting intents committed atomically in one substrate
+/// transaction (plan §5.8): all or none, in order, each member seeing every
+/// earlier member's staged effects. The ordinary profile admits PostEntry
+/// intents; automatic event derivation has its own checked constructor,
+/// framing and digest domain.
+///
+/// An ordinary member names an earlier member by its identity-derived entry
+/// vid (an invoice and its application in one batch). A forward or absent
+/// name finds no entry and is refused by the kernel like any other missing
+/// target. The batch's own key derives its IntentOutcome identity under the
+/// members' common principal (plan §5.9): an identical retry returns the
+/// recorded outcome. Retry identity is the key and the members' identities,
+/// never these bytes: re-sealing a member's erasable fields draws fresh salts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PostBatch {
+    kind: BatchKind,
     idempotency_key: Vec<u8>,
     members: Vec<PostIntent>,
 }
 
 impl PostBatch {
-    /// Check the batch's own shape: a bounded key, 1..=`max_batch_entries`
-    /// members on one book, branch and principal, and distinct member keys
-    /// (two members with one key would derive one entry identity).
+    /// Check an ordinary PostEntry batch: a bounded key,
+    /// 1..=max_batch_entries Intent-origin members on one book, branch and
+    /// principal, and distinct member keys. This constructor and its durable
+    /// encoding retain the original PostEntry-only protocol.
     pub fn new(idempotency_key: Vec<u8>, members: Vec<PostIntent>) -> Result<Self, IntentError> {
+        Self::checked(BatchKind::PostEntry, idempotency_key, members)
+    }
+
+    /// Retain the complete automatic derivation of one recorded event.
+    /// Members must be distinct Rule-origin Original or Adjusting requests
+    /// for that event, on one book's trunk and under one principal.
+    ///
+    /// The native kernel independently selects every matching active rule
+    /// in name order, refuses rules requiring explicit inputs, and checks
+    /// exact membership, reproduction, caller authority and RuleAuthority.
+    /// These bytes assert a selection; constructing or decoding them does
+    /// not authenticate its completeness or authorize publication.
+    pub fn automatic_rules(
+        event_ref: VId,
+        idempotency_key: Vec<u8>,
+        members: Vec<PostIntent>,
+    ) -> Result<Self, IntentError> {
+        Self::checked(
+            BatchKind::AutomaticRules { event_ref },
+            idempotency_key,
+            members,
+        )
+    }
+
+    fn checked(
+        kind: BatchKind,
+        idempotency_key: Vec<u8>,
+        members: Vec<PostIntent>,
+    ) -> Result<Self, IntentError> {
         if idempotency_key.is_empty()
             || idempotency_key.len() > fa_model::limits::MAX_IDEMPOTENCY_KEY_BYTES
         {
@@ -643,13 +705,58 @@ impl PostBatch {
         }
         let head = first.proposal();
         let mut keys = std::collections::BTreeSet::new();
+        let mut versions = std::collections::BTreeSet::new();
         for member in &members {
-            if member.kind != PostIntentKind::PostEntry {
-                return Err(IntentError::Invalid(
-                    "rule-derived intents require a single-entry PostPlan",
-                ));
-            }
             let p = member.proposal();
+            match kind {
+                BatchKind::PostEntry => {
+                    if member.kind != PostIntentKind::PostEntry {
+                        return Err(IntentError::Invalid(
+                            "PostEntry batches require Intent-origin members",
+                        ));
+                    }
+                }
+                BatchKind::AutomaticRules { event_ref } => {
+                    if member.kind != PostIntentKind::RuleDerived {
+                        return Err(IntentError::Invalid(
+                            "automatic rule batches require Rule-origin members",
+                        ));
+                    }
+                    let EntryOrigin::Rule {
+                        rule_version_oid,
+                        event_ref: member_event,
+                        ..
+                    } = &p.origin
+                    else {
+                        return Err(IntentError::Invalid(
+                            "automatic rule batches require Rule-origin members",
+                        ));
+                    };
+                    if *member_event != event_ref {
+                        return Err(IntentError::Invalid(
+                            "every automatic rule batch member derives from the named event",
+                        ));
+                    }
+                    if p.branch_id != Id128::TRUNK {
+                        return Err(IntentError::Invalid(
+                            "automatic rule batches target the trunk",
+                        ));
+                    }
+                    if !matches!(
+                        p.class,
+                        fa_model::EntryClass::ORIGINAL | fa_model::EntryClass::ADJUSTING
+                    ) {
+                        return Err(IntentError::Invalid(
+                            "automatic rule batches admit only Original or Adjusting members",
+                        ));
+                    }
+                    if !versions.insert(rule_version_oid.0) {
+                        return Err(IntentError::Invalid(
+                            "two automatic rule batch members share one rule version",
+                        ));
+                    }
+                }
+            }
             if p.book_id != head.book_id || p.branch_id != head.branch_id {
                 return Err(IntentError::Invalid(
                     "every batch member targets the same book and branch",
@@ -667,11 +774,22 @@ impl PostBatch {
             }
         }
         let batch = Self {
+            kind,
             idempotency_key,
             members,
         };
         batch.canonical_bytes()?;
         Ok(batch)
+    }
+
+    /// The event whose complete active rule selection this request asserts,
+    /// or None for an ordinary explicit PostEntry batch.
+    #[must_use]
+    pub fn automatic_event(&self) -> Option<VId> {
+        match self.kind {
+            BatchKind::PostEntry => None,
+            BatchKind::AutomaticRules { event_ref } => Some(event_ref),
+        }
     }
 
     #[must_use]
@@ -702,13 +820,18 @@ impl PostBatch {
         self.members[0].proposal().branch_id
     }
 
-    /// The batch key, then each member's canonical intent bytes in order.
+    /// Profile-specific magic and version, the automatic event when present,
+    /// then the batch key and each member's canonical intent bytes in order.
+    /// Ordinary PostEntry bytes retain their original layout exactly.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, IntentError> {
         let mut w = Writer::new();
-        w.fixed(BATCH_MAGIC)
+        w.fixed(self.kind.magic())
             .u16(SCHEMA_MAJOR)
-            .u16(SCHEMA_MINOR)
-            .bytes(&self.idempotency_key);
+            .u16(SCHEMA_MINOR);
+        if let Some(event) = self.automatic_event() {
+            w.u128(event.0);
+        }
+        w.bytes(&self.idempotency_key);
         let members = self
             .members
             .iter()
@@ -722,12 +845,12 @@ impl PostBatch {
         Ok(bytes)
     }
 
-    /// Full ordered request, including every member's sealed proposal and
-    /// approval references. Portable plans bind this transcript, not merely
-    /// the identities used by the ordinary batch retry namespace.
+    /// Full ordered request, including its profile, automatic event, every
+    /// sealed proposal and approval reference. Portable plans bind this
+    /// transcript, not merely the ordinary batch retry identities.
     pub fn digest(&self) -> Result<[u8; 32], IntentError> {
         Ok(domain_digest(
-            b"fa:intent:post-batch:v1",
+            self.kind.digest_domain(),
             &[&self.canonical_bytes()?],
         ))
     }
@@ -735,10 +858,19 @@ impl PostBatch {
     pub fn decode(bytes: &[u8]) -> Result<Self, IntentError> {
         bounded(bytes, MAX_BATCH_BYTES)?;
         let mut r = Reader::new(bytes);
-        if r.fixed::<9>("batch.magic")? != *BATCH_MAGIC {
-            return Err(IntentError::Invalid("wrong batch magic"));
-        }
-        version(&mut r)?;
+        let kind = if bytes.starts_with(RULE_BATCH_MAGIC) {
+            r.fixed::<14>("batch.magic")?;
+            version(&mut r)?;
+            BatchKind::AutomaticRules {
+                event_ref: VId(r.u128("batch.event")?),
+            }
+        } else {
+            if r.fixed::<9>("batch.magic")? != *BATCH_MAGIC {
+                return Err(IntentError::Invalid("wrong batch magic"));
+            }
+            version(&mut r)?;
+            BatchKind::PostEntry
+        };
         let key = r
             .bytes(fa_model::limits::MAX_IDEMPOTENCY_KEY_BYTES, "batch.key")?
             .to_vec();
@@ -750,7 +882,7 @@ impl PostBatch {
             .iter()
             .map(|m| PostIntent::decode(m))
             .collect::<Result<Vec<_>, _>>()?;
-        Self::new(key, members)
+        Self::checked(kind, key, members)
     }
 }
 
@@ -1063,6 +1195,8 @@ mod tests {
     );
     const LEGACY_INTENT_DIGEST: &str =
         "24ea604d3cf5c81b1d9d6d2d8513c06205862e754d4a3f142e490b0cb1334754";
+    const LEGACY_BATCH_DIGEST: &str =
+        "ac9ceaa1011b6d49f71ebe68918a4d1f4ca39fa99f71f44d4ba54e24ff8dcef5";
 
     fn legacy_entry() -> Entry {
         let bytes = LEGACY_ENTRY_HEX
@@ -1142,6 +1276,90 @@ mod tests {
             PostIntent::new(proposal, Vec::new())
         };
         plan_for(intent.unwrap())
+    }
+
+    fn automatic_member(version: u8, key: &[u8]) -> PostIntent {
+        let mut proposal = rule_proposal();
+        let EntryOrigin::Rule {
+            rule_version_oid, ..
+        } = &mut proposal.origin
+        else {
+            panic!("the rule fixture must retain Rule origin");
+        };
+        *rule_version_oid = fa_model::Oid([version; 32]);
+        proposal.idempotency_key = key.to_vec();
+        PostIntent::rule_derived(proposal, Vec::new()).unwrap()
+    }
+
+    // Independent framing for both batch profiles. Deliberately accepts
+    // hostile members so decode must enforce the constructor's contract.
+    fn batch_wire(event: Option<VId>, key: &[u8], members: &[PostIntent]) -> Vec<u8> {
+        let mut bytes = match event {
+            Some(_) => b"FA-RULE-BATCH\0".to_vec(),
+            None => b"FA-BATCH\0".to_vec(),
+        };
+        bytes.extend_from_slice(&[1, 0, 0, 0]);
+        if let Some(event) = event {
+            bytes.extend_from_slice(&event.0.to_le_bytes());
+        }
+        bytes.extend_from_slice(&u32::try_from(key.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(key);
+        bytes.extend_from_slice(&u32::try_from(members.len()).unwrap().to_le_bytes());
+        for member in members {
+            let member = member.canonical_bytes().unwrap();
+            bytes.extend_from_slice(&u32::try_from(member.len()).unwrap().to_le_bytes());
+            bytes.extend_from_slice(&member);
+        }
+        bytes
+    }
+
+    fn automatic_refusal(event: VId, key: &[u8], members: Vec<PostIntent>, expected: &str) {
+        let encoded = batch_wire(Some(event), key, &members);
+        for result in [
+            PostBatch::automatic_rules(event, key.to_vec(), members),
+            PostBatch::decode(&encoded),
+        ] {
+            assert!(
+                matches!(result, Err(IntentError::Invalid(actual)) if actual == expected),
+                "constructor and decoder must enforce {expected}"
+            );
+        }
+    }
+
+    fn automatic_batch() -> PostBatch {
+        PostBatch::automatic_rules(
+            VId(13),
+            b"automatic".to_vec(),
+            vec![
+                automatic_member(12, b"rule-a"),
+                automatic_member(14, b"rule-b"),
+            ],
+        )
+        .unwrap()
+    }
+
+    // A structural fixture, never evidence that a kernel authenticated this plan.
+    fn batch_plan_for(batch: PostBatch) -> BatchPlan {
+        let prepared = batch
+            .members()
+            .iter()
+            .map(|member| member.entry.clone())
+            .collect::<Vec<_>>();
+        let periods = vec!["FY2026-P03".to_string(); prepared.len()];
+        let certificate = BatchPlanCertificate {
+            book_id: batch.book_id(),
+            branch_id: batch.branch_id(),
+            principal: batch.principal(),
+            capability_commitment: [4; 32],
+            intent_digest: batch.digest().unwrap(),
+            prepared_digest: BatchPlan::prepared_digest(&prepared, &periods).unwrap(),
+            effects_digest: [7; 32],
+            snapshot_seq: CommitSeq(8),
+            security_policy_epoch: 9,
+            expires_at: Some(CommitSeq(10)),
+            authentication: [11; 32],
+        };
+        BatchPlan::new(batch, prepared, periods, certificate).unwrap()
     }
 
     #[test]
@@ -1277,17 +1495,28 @@ mod tests {
         let entry = legacy_entry();
         let ordinary = PostIntent::new(entry.proposal, entry.approvals).unwrap();
         let batch = PostBatch::new(b"batch".to_vec(), vec![ordinary.clone()]).unwrap();
-        let mut legacy = Writer::new();
-        legacy
-            .fixed(BATCH_MAGIC)
-            .u16(1)
-            .u16(0)
-            .bytes(b"batch")
-            .u32(1)
-            .bytes(&ordinary.canonical_bytes().unwrap());
-        let legacy = legacy.finish().unwrap();
+        // Literal v1.0 framing around the independently frozen Entry fixture.
+        let mut legacy = b"FA-BATCH\0".to_vec();
+        legacy.extend_from_slice(&[1, 0, 0, 0]);
+        legacy.extend_from_slice(&5_u32.to_le_bytes());
+        legacy.extend_from_slice(b"batch");
+        legacy.extend_from_slice(&1_u32.to_le_bytes());
+        legacy.extend_from_slice(&491_u32.to_le_bytes());
+        legacy.extend_from_slice(&intent_wire(0, &legacy_entry()));
+        assert_eq!(legacy.len(), 521);
         assert_eq!(batch.canonical_bytes().unwrap(), legacy);
         assert_eq!(PostBatch::decode(&legacy).unwrap(), batch);
+        assert_eq!(batch.automatic_event(), None);
+        let digest = batch.digest().unwrap();
+        assert_eq!(
+            digest,
+            domain_digest(b"fa:intent:post-batch:v1", &[&legacy])
+        );
+        let hex = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(hex, LEGACY_BATCH_DIGEST);
 
         let rule = PostIntent::rule_derived(rule_proposal(), Vec::new()).unwrap();
         for members in [
@@ -1298,7 +1527,7 @@ mod tests {
             assert!(matches!(
                 PostBatch::new(b"batch".to_vec(), members),
                 Err(IntentError::Invalid(
-                    "rule-derived intents require a single-entry PostPlan"
+                    "PostEntry batches require Intent-origin members"
                 ))
             ));
         }
@@ -1313,9 +1542,303 @@ mod tests {
         assert!(matches!(
             PostBatch::decode(&embedded.finish().unwrap()),
             Err(IntentError::Invalid(
-                "rule-derived intents require a single-entry PostPlan"
+                "PostEntry batches require Intent-origin members"
             ))
         ));
+    }
+
+    #[test]
+    fn automatic_rule_batches_bind_distinct_framing_event_order_and_approvals() {
+        let first = automatic_member(12, b"rule-a");
+        let mut proposal = automatic_member(14, b"rule-b").proposal().clone();
+        proposal.class = fa_model::EntryClass::ADJUSTING;
+        let approvals = vec![ApprovalRef {
+            approval_vid: VId(44),
+            approved_digest: proposal.proposal_digest().unwrap(),
+        }];
+        let second = PostIntent::rule_derived(proposal, approvals.clone()).unwrap();
+        let members = vec![first.clone(), second.clone()];
+        let expected = batch_wire(Some(VId(13)), b"automatic", &members);
+        let batch = PostBatch::automatic_rules(VId(13), b"automatic".to_vec(), members).unwrap();
+        assert_eq!(batch.automatic_event(), Some(VId(13)));
+        assert_eq!(batch.branch_id(), Id128::TRUNK);
+        assert_eq!(batch.members()[1].approvals(), approvals.as_slice());
+        assert_eq!(batch.canonical_bytes().unwrap(), expected);
+        assert_eq!(PostBatch::decode(&expected).unwrap(), batch);
+        assert_eq!(
+            batch.digest().unwrap(),
+            domain_digest(b"fa:intent:rule-batch:v1", &[&expected])
+        );
+        assert_ne!(
+            batch.digest().unwrap(),
+            domain_digest(b"fa:intent:post-batch:v1", &[&expected])
+        );
+
+        // The codec preserves explicit execution order. Only native selection
+        // knows rule names and can decide whether that order is complete.
+        let reversed = PostBatch::automatic_rules(
+            VId(13),
+            b"automatic".to_vec(),
+            vec![second.clone(), first.clone()],
+        )
+        .unwrap();
+        assert_ne!(batch.digest().unwrap(), reversed.digest().unwrap());
+        let unapproved = PostBatch::automatic_rules(
+            VId(13),
+            b"automatic".to_vec(),
+            vec![
+                first,
+                PostIntent::rule_derived(second.proposal().clone(), Vec::new()).unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_ne!(batch.digest().unwrap(), unapproved.digest().unwrap());
+    }
+
+    #[test]
+    fn automatic_rule_batches_refuse_cross_profile_and_unrelated_members() {
+        let entry = legacy_entry();
+        let ordinary = PostIntent::new(entry.proposal, entry.approvals).unwrap();
+        let first = automatic_member(12, b"rule-a");
+        for members in [
+            vec![ordinary.clone()],
+            vec![ordinary.clone(), first.clone()],
+            vec![first.clone(), ordinary],
+        ] {
+            automatic_refusal(
+                VId(13),
+                b"automatic",
+                members,
+                "automatic rule batches require Rule-origin members",
+            );
+        }
+        for replacement in [false, true] {
+            automatic_refusal(
+                VId(13),
+                b"automatic",
+                vec![correction_plan(true, replacement).intent().clone()],
+                "automatic rule batches admit only Original or Adjusting members",
+            );
+        }
+
+        let other = automatic_member(14, b"rule-b");
+        let mut proposal = other.proposal().clone();
+        let EntryOrigin::Rule { event_ref, .. } = &mut proposal.origin else {
+            panic!("the rule fixture must retain Rule origin");
+        };
+        *event_ref = VId(99);
+        automatic_refusal(
+            VId(13),
+            b"automatic",
+            vec![PostIntent::rule_derived(proposal, Vec::new()).unwrap()],
+            "every automatic rule batch member derives from the named event",
+        );
+        let mut proposal = other.proposal().clone();
+        proposal.branch_id = Id128([18; 16]);
+        automatic_refusal(
+            VId(13),
+            b"automatic",
+            vec![PostIntent::rule_derived(proposal, Vec::new()).unwrap()],
+            "automatic rule batches target the trunk",
+        );
+        let mut proposal = other.proposal().clone();
+        proposal.book_id = Id128([19; 16]);
+        automatic_refusal(
+            VId(13),
+            b"automatic",
+            vec![
+                first.clone(),
+                PostIntent::rule_derived(proposal, Vec::new()).unwrap(),
+            ],
+            "every batch member targets the same book and branch",
+        );
+        let mut proposal = other.proposal().clone();
+        proposal.principal_ref = VId(78);
+        automatic_refusal(
+            VId(13),
+            b"automatic",
+            vec![
+                first,
+                PostIntent::rule_derived(proposal, Vec::new()).unwrap(),
+            ],
+            "every batch member names the same principal",
+        );
+
+        // The trunk restriction belongs only to the automatic profile.
+        let mut proposal = legacy_entry().proposal;
+        proposal.branch_id = Id128([18; 16]);
+        let ordinary = PostBatch::new(
+            b"draft".to_vec(),
+            vec![PostIntent::new(proposal, Vec::new()).unwrap()],
+        )
+        .unwrap();
+        assert_eq!(ordinary.automatic_event(), None);
+        assert_eq!(
+            PostBatch::decode(&ordinary.canonical_bytes().unwrap()).unwrap(),
+            ordinary
+        );
+    }
+
+    #[test]
+    fn automatic_rule_batches_refuse_duplicate_versions_and_keys() {
+        automatic_refusal(
+            VId(13),
+            b"automatic",
+            vec![
+                automatic_member(12, b"rule-a"),
+                automatic_member(12, b"rule-b"),
+            ],
+            "two automatic rule batch members share one rule version",
+        );
+        automatic_refusal(
+            VId(13),
+            b"automatic",
+            vec![
+                automatic_member(12, b"rule-a"),
+                automatic_member(14, b"rule-a"),
+            ],
+            "two batch members share one idempotency key",
+        );
+    }
+
+    #[test]
+    fn automatic_rule_batch_requests_enforce_key_and_membership_bounds() {
+        automatic_refusal(
+            VId(13),
+            b"automatic",
+            Vec::new(),
+            "a batch has at least one member",
+        );
+        for key in [
+            Vec::new(),
+            vec![b'x'; fa_model::limits::MAX_IDEMPOTENCY_KEY_BYTES + 1],
+        ] {
+            assert!(matches!(
+                PostBatch::automatic_rules(
+                    VId(13),
+                    key.clone(),
+                    vec![automatic_member(12, b"rule-a")]
+                ),
+                Err(IntentError::Invalid(
+                    "a batch key is 1..=max_idempotency_key_bytes bytes"
+                ))
+            ));
+            assert!(
+                PostBatch::decode(&batch_wire(
+                    Some(VId(13)),
+                    &key,
+                    &[automatic_member(12, b"rule-a")],
+                ))
+                .is_err()
+            );
+        }
+        let maximum_key = vec![b'x'; fa_model::limits::MAX_IDEMPOTENCY_KEY_BYTES];
+        let batch =
+            PostBatch::automatic_rules(VId(13), maximum_key, vec![automatic_member(12, b"rule-a")])
+                .unwrap();
+        assert_eq!(
+            PostBatch::decode(&batch.canonical_bytes().unwrap()).unwrap(),
+            batch
+        );
+    }
+
+    #[test]
+    fn automatic_rule_batch_decoder_refuses_malformed_transcripts() {
+        let bytes = automatic_batch().canonical_bytes().unwrap();
+        for end in 0..bytes.len() {
+            assert!(PostBatch::decode(&bytes[..end]).is_err(), "prefix {end}");
+        }
+        // Independent offsets: magic, major, minor, event and final Entry digest.
+        for offset in [0, 14, 16, 18, bytes.len() - 1] {
+            let mut changed = bytes.clone();
+            changed[offset] ^= 0xff;
+            assert!(PostBatch::decode(&changed).is_err(), "offset {offset}");
+        }
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(PostBatch::decode(&trailing).is_err());
+
+        let mut prefix = b"FA-RULE-BATCH\0".to_vec();
+        prefix.extend_from_slice(&[1, 0, 0, 0]);
+        prefix.extend_from_slice(&13_u128.to_le_bytes());
+        let mut key_length = prefix.clone();
+        key_length.extend_from_slice(&u32::MAX.to_le_bytes());
+        prefix.extend_from_slice(&1_u32.to_le_bytes());
+        prefix.push(b'k');
+        let mut member_count = prefix.clone();
+        member_count.extend_from_slice(&u32::MAX.to_le_bytes());
+        let mut member_length = prefix;
+        member_length.extend_from_slice(&1_u32.to_le_bytes());
+        member_length.extend_from_slice(&u32::MAX.to_le_bytes());
+        for hostile in [key_length, member_count, member_length] {
+            assert!(matches!(
+                PostBatch::decode(&hostile),
+                Err(IntentError::Decode(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn automatic_rule_batch_plans_retain_profile_and_reject_request_substitution() {
+        let plan = batch_plan_for(automatic_batch());
+        let bytes = plan.canonical_bytes().unwrap();
+        assert_eq!(BatchPlan::decode(&bytes).unwrap(), plan);
+        assert_eq!(plan.batch().automatic_event(), Some(VId(13)));
+
+        let mut wrong_domain = plan.certificate().clone();
+        wrong_domain.intent_digest = domain_digest(
+            b"fa:intent:post-batch:v1",
+            &[&plan.batch().canonical_bytes().unwrap()],
+        );
+        assert!(matches!(
+            BatchPlan::new(
+                plan.batch().clone(),
+                plan.prepared_entries().to_vec(),
+                plan.periods().to_vec(),
+                wrong_domain,
+            ),
+            Err(IntentError::Invalid(
+                "batch request or preview digest differs"
+            ))
+        ));
+        let mut reversed = plan.batch().members().to_vec();
+        reversed.reverse();
+        let mut entries = plan.prepared_entries().to_vec();
+        entries.reverse();
+        let changed = PostBatch::automatic_rules(VId(13), b"automatic".to_vec(), reversed).unwrap();
+        assert!(matches!(
+            BatchPlan::new(
+                changed,
+                entries,
+                plan.periods().to_vec(),
+                plan.certificate().clone(),
+            ),
+            Err(IntentError::Invalid(
+                "batch request or preview digest differs"
+            ))
+        ));
+        let omitted = PostBatch::automatic_rules(
+            VId(13),
+            b"automatic".to_vec(),
+            vec![plan.batch().members()[0].clone()],
+        )
+        .unwrap();
+        assert!(matches!(
+            BatchPlan::new(
+                omitted,
+                vec![plan.prepared_entries()[0].clone()],
+                vec![plan.periods()[0].clone()],
+                plan.certificate().clone(),
+            ),
+            Err(IntentError::Invalid(
+                "batch request or preview digest differs"
+            ))
+        ));
+        let mut changed = bytes;
+        // Plan header 14 + version 4 + request length 4; batch header 14 +
+        // version 4 precede the explicitly bound event.
+        changed[40] ^= 0xff;
+        assert!(BatchPlan::decode(&changed).is_err());
     }
 
     #[test]

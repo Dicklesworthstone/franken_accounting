@@ -1384,6 +1384,71 @@ pub(crate) fn batchable(class: fa_model::EntryClass) -> bool {
     .contains(&class)
 }
 
+/// Automatic selection is a complete native posting request. It does not
+/// confer a draft, case, replacement, or scenario execution protocol.
+fn automatic_batch_mode(batch: &PostBatch, admission: Admission) -> Result<(), Refusal> {
+    if batch.automatic_event().is_some()
+        && !matches!(
+            admission,
+            Admission::Commit | Admission::Plan | Admission::VerifiedBatch(_)
+        )
+    {
+        return Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            "automatic rule batches require the native batch posting or planning protocol",
+            "plan §5.8 / §10.2 (complete automatic rule derivation)",
+            "prepare the automatic derivation with fa rule derive --event <event> --dry-run and commit its native batch plan",
+        ));
+    }
+    Ok(())
+}
+
+/// Check completeness at the transaction's committed basis. Each member has
+/// already passed ordinary Canon reproduction and authority checks. This
+/// comparison additionally prevents omitted, substituted, or reordered rules.
+/// It is deliberately reached only for fresh effects, after recorded retries.
+fn verify_automatic_selection<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    batch: &PostBatch,
+    at: CommitSeq,
+) -> Outcome<()> {
+    let Some(event) = batch.automatic_event() else {
+        return Ok(Ok(()));
+    };
+    let selected = match crate::rule::automatic_rules_at(db, book, capability, event, at)? {
+        Ok(selected) => selected,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let complete = selected.versions.len() == batch.members().len()
+        && selected
+            .versions
+            .iter()
+            .zip(batch.members())
+            .all(|(version, member)| {
+                matches!(
+                    &member.proposal().origin,
+                    fa_model::EntryOrigin::Rule { rule_version_oid, event_ref, .. }
+                        if rule_version_oid.0 == version.rule.ir_digest() && *event_ref == event
+                )
+            });
+    if !complete {
+        return Ok(Err(Refusal::new(
+            code::CANON_RULE,
+            exit::REFUSAL,
+            format!(
+                "automatic rule batch for event {} does not contain the complete activated selection in rule-name order",
+                selected.event.spec.code,
+            ),
+            "plan §5.8 / §10.2 / §10.4 (one atomic event derivation over the complete selected rule population)",
+            "prepare the complete current selection with fa rule derive --event <event> --dry-run; do not omit, reorder, or substitute its rule-derived members",
+        )));
+    }
+    Ok(Ok(()))
+}
+
 /// Authorize every member's request under `admission` before any
 /// observation (doctrine 8).
 pub(crate) fn authorize_members<V: Vfs + Clone>(
@@ -1393,6 +1458,14 @@ pub(crate) fn authorize_members<V: Vfs + Clone>(
     batch: &PostBatch,
     admission: Admission,
 ) -> Outcome<()> {
+    if let Err(refusal) = automatic_batch_mode(batch, admission) {
+        return Ok(Err(refusal));
+    }
+    if batch.automatic_event().is_some()
+        && let Err(refusal) = crate::rule::authorize_automatic_rules(db, book, capability, None)?
+    {
+        return Ok(Err(refusal));
+    }
     for (index, intent) in batch.members().iter().enumerate() {
         if let Err(refusal) = crate::post::authorize_request(
             db,
@@ -1581,6 +1654,18 @@ fn stage_batch_with<V: Vfs + Clone>(
             "a batch is staged with one capability per member".into(),
         ));
     }
+    if let Err(refusal) = automatic_batch_mode(batch, admission) {
+        return Ok(Err(refusal));
+    }
+    if batch.automatic_event().is_some() {
+        for capability in capabilities {
+            if let Err(refusal) =
+                crate::rule::authorize_automatic_rules(db, book, capability, None)?
+            {
+                return Ok(Err(refusal));
+            }
+        }
+    }
     let closing = match singleton_closing_draft(batch, admission) {
         Ok(closing) => closing,
         Err(refusal) => return Ok(Err(refusal)),
@@ -1755,6 +1840,12 @@ fn stage_batch_with<V: Vfs + Clone>(
             "a validated batch has no member".into(),
         ));
     };
+    if let Err(refusal) =
+        verify_automatic_selection(db, book, &capabilities[0], batch, txn.basis())?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if carrying.is_some()
         && let Err(refusal) = admit_carrying_batch_accounts(db, ctx, book, &resolved, txn.basis())?
     {
@@ -1809,7 +1900,7 @@ fn stage_batch_with<V: Vfs + Clone>(
         return Ok(Err(refusal));
     }
     let aggregate = resolved.iter().try_fold(
-        carrying.is_some() || disposal.is_some(),
+        carrying.is_some() || disposal.is_some() || batch.automatic_event().is_some(),
         |aggregate, entry| {
             crate::post::requires_aggregate_basis(&entry.proposal)
                 .map(|required| aggregate || required)
