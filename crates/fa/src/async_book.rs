@@ -3135,6 +3135,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &self.context,
             reversal,
             replacement,
+            Some(&mut self.carried),
         )
         .await?)
     }
@@ -3157,6 +3158,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             capability.clone(),
             reversal,
             replacement,
+            Some(&mut self.carried),
         )?)
     }
 
@@ -3177,6 +3179,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             capability.clone(),
             reversal,
             replacement,
+            Some(&mut self.carried),
         )
         .await?)
     }
@@ -3195,6 +3198,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &self.context,
             capability.clone(),
             plan,
+            Some(&mut self.carried),
         )
         .await?)
     }

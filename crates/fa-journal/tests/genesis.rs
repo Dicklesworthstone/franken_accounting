@@ -345,6 +345,7 @@ impl Harness {
                 &self.book,
                 reversal,
                 replacement,
+                None,
             ))
             .expect("kernel")
     }
@@ -6331,6 +6332,7 @@ impl Harness {
             reversal.capability,
             first,
             second,
+            None,
         )
         .expect("replacement planning kernel")
     }
@@ -6348,6 +6350,7 @@ impl Harness {
                 &self.book,
                 capability.clone(),
                 plan,
+                None,
             ))
             .expect("replacement plan commit kernel")
     }
@@ -8554,7 +8557,7 @@ fn replacement_pair_commits_reversal_and_replacement_in_one_batch_and_explains_n
     let (rev_posted, rep_posted) = h
         .runtime
         .block_on(fa_journal::post::post_replacement_pair(
-            &mut h.db, &ctx, &h.book, rev_req, rep_req,
+            &mut h.db, &ctx, &h.book, rev_req, rep_req, None,
         ))
         .expect("kernel")
         .expect("paired replacement committed");
@@ -9160,7 +9163,7 @@ fn unpaired_or_mismatched_replacement_is_refused_without_mutating_book() {
     let r = h
         .runtime
         .block_on(fa_journal::post::post_replacement_pair(
-            &mut h.db, &ctx, &h.book, rev_req, rep_req,
+            &mut h.db, &ctx, &h.book, rev_req, rep_req, None,
         ))
         .expect("kernel")
         .expect_err("identical replacement legs must be refused");

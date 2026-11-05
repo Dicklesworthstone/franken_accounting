@@ -862,6 +862,259 @@ fn resident_batch_plans_match_cold_history_and_preserve_atomic_capacity() {
     });
 }
 
+#[test]
+fn resident_replacement_history_matches_cold_plans_and_preserves_atomic_capacity() {
+    under_lab(0x6c33, move |root| async move {
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut fixture = prepared_fixture(&root, 0x6c33).await;
+        let capability = fixture.request.capability.clone();
+        let context = fixture.book.context.clone();
+        let amount = fa_model::limits::MAX_REGISTER_MANTISSA
+            .checked_div(32)
+            .unwrap();
+        let make_pair = |target, original: &EntryPayload, key: &str, corrected| {
+            let mut reversal = original.clone();
+            reversal.class = EntryClass::REVERSAL;
+            reversal.idempotency_key = format!("{key}-reversal").into_bytes();
+            reversal.supersession = vec![fa_model::Supersession {
+                target,
+                kind: fa_model::SupersessionKind::Reverses,
+                reason_code: 1,
+            }];
+            for leg in &mut reversal.legs {
+                leg.side = match leg.side {
+                    Side::Debit => Side::Credit,
+                    Side::Credit => Side::Debit,
+                };
+            }
+            reversal.unit_totals = EntryPayload::fold_unit_totals(&reversal.legs).unwrap();
+            let mut replacement = original.clone();
+            replacement.class = EntryClass::REPLACEMENT;
+            replacement.idempotency_key = format!("{key}-replacement").into_bytes();
+            replacement.supersession = vec![fa_model::Supersession {
+                target,
+                kind: fa_model::SupersessionKind::Replaces,
+                reason_code: 1,
+            }];
+            for leg in &mut replacement.legs {
+                leg.amount = Amount::new(fixture.usd, corrected);
+            }
+            replacement.unit_totals = EntryPayload::fold_unit_totals(&replacement.legs).unwrap();
+            (
+                fa_intents::PostIntent::new(reversal, Vec::new()).unwrap(),
+                fa_intents::PostIntent::new(replacement, Vec::new()).unwrap(),
+            )
+        };
+        let request = |intent: &fa_intents::PostIntent| PostRequest {
+            proposal: intent.proposal().clone(),
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: capability.clone(),
+        };
+        let mut suffix_rows = Vec::new();
+        let mut last = None;
+        for index in 0..16u32 {
+            let mut original = fixture.request.clone();
+            original.proposal.idempotency_key =
+                format!("resident-correction-{index:02}-original").into_bytes();
+            for leg in &mut original.proposal.legs {
+                leg.amount = Amount::new(fixture.usd, amount);
+            }
+            original.proposal.unit_totals =
+                EntryPayload::fold_unit_totals(&original.proposal.legs).unwrap();
+            let target = fixture
+                .book
+                .post(&cx, original.clone())
+                .await
+                .unwrap()
+                .unwrap()
+                .entry_ref();
+            let (reversal, replacement) = make_pair(
+                target,
+                &original.proposal,
+                &format!("resident-correction-{index:02}"),
+                amount.checked_add(1).unwrap(),
+            );
+            let before = fixture.book.db.frontier().unwrap();
+            // The independent literal admission runs against this exact live
+            // book and prefix; rehearsal cannot publish either member.
+            let cold = fa_journal::plan_replacement_with_history(
+                &mut fixture.book.db,
+                &cx,
+                &context,
+                capability.clone(),
+                reversal.clone(),
+                replacement.clone(),
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(fixture.book.db.frontier().unwrap(), before);
+            let posted = if index < 4 {
+                // No resident rehearsal prewarms these direct corrections.
+                let posted = fixture
+                    .book
+                    .post_replacement_pair(&cx, request(&reversal), request(&replacement))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if index == 3 {
+                    let after = fixture.book.db.frontier().unwrap();
+                    let retry = fixture
+                        .book
+                        .post_replacement_pair(&cx, request(&reversal), request(&replacement))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(retry.0.entry_ref(), posted.0.entry_ref());
+                    assert_eq!(retry.1.entry_ref(), posted.1.entry_ref());
+                    assert_eq!(fixture.book.db.frontier().unwrap(), after);
+                }
+                posted
+            } else {
+                let warm = if index.is_multiple_of(2) {
+                    fixture
+                        .book
+                        .plan_replacement(&cx, reversal, replacement.clone(), &capability)
+                        .unwrap()
+                        .unwrap()
+                } else {
+                    fixture
+                        .book
+                        .plan_replacement_with_history(
+                            &cx,
+                            reversal,
+                            replacement.clone(),
+                            &capability,
+                        )
+                        .await
+                        .unwrap()
+                        .unwrap()
+                };
+                assert_eq!(
+                    warm.canonical_bytes().unwrap(),
+                    cold.canonical_bytes().unwrap()
+                );
+                assert_eq!(fixture.book.db.frontier().unwrap(), before);
+                let rows = fixture
+                    .book
+                    .carried
+                    .capacity()
+                    .unwrap()
+                    .carried_rows()
+                    .unwrap();
+                assert!(rows > 0);
+                suffix_rows.push(rows);
+                if index == 7 {
+                    let reader = Capability::embedded(capability.holder(), &["read"]).unwrap();
+                    let rows = fixture.book.db.vertices().unwrap();
+                    let refusal = fixture
+                        .book
+                        .commit_replacement_plan(&cx, warm.clone(), &reader)
+                        .await
+                        .unwrap()
+                        .unwrap_err();
+                    assert_eq!(refusal.code, "FA-REF-011");
+                    assert_eq!(fixture.book.db.frontier().unwrap(), before);
+                    assert_eq!(fixture.book.db.vertices().unwrap(), rows);
+                }
+                let posted = fixture
+                    .book
+                    .commit_replacement_plan(&cx, warm.clone(), &capability)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if index == 15 {
+                    let after = fixture.book.db.frontier().unwrap();
+                    let retry = fixture
+                        .book
+                        .commit_replacement_plan(&cx, warm, &capability)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(retry.0.entry_ref(), posted.0.entry_ref());
+                    assert_eq!(retry.1.entry_ref(), posted.1.entry_ref());
+                    assert_eq!(fixture.book.db.frontier().unwrap(), after);
+                }
+                posted
+            };
+            assert_eq!(posted.0.recorded_at(), posted.1.recorded_at());
+            assert_eq!(
+                posted.0.entry_ref().entry_digest,
+                cold.reversal().prepared_entry().entry_digest
+            );
+            assert_eq!(
+                posted.1.entry_ref().entry_digest,
+                cold.replacement().prepared_entry().entry_digest
+            );
+            let reconciliation = fixture.book.carried.reconciliation().unwrap();
+            let capacity = fixture.book.carried.capacity().unwrap();
+            assert_eq!(reconciliation.verified_at(), before);
+            assert_eq!(capacity.verified_at(), before);
+            assert_eq!(reconciliation.carried_rows(), Some(0));
+            assert_eq!(capacity.carried_rows(), Some(0));
+            assert!(capacity.admitted_from_summary());
+            last = Some((posted.1.entry_ref(), replacement.proposal().clone()));
+        }
+        assert_eq!(suffix_rows.len(), 12);
+        assert!(suffix_rows.windows(2).all(|pair| pair[0] == pair[1]));
+        // Sixteen original/replacement debits leave exactly 15 minor units.
+        // The reversal fits, but its replacement of 16 must publish neither.
+        let (target, original) = last.unwrap();
+        let (reversal, replacement) =
+            make_pair(target, &original, "resident-correction-overflow", 16);
+        let before = fixture.book.db.frontier().unwrap();
+        let rows = fixture.book.db.vertices().unwrap();
+        let cold = fa_journal::plan_replacement_with_history(
+            &mut fixture.book.db,
+            &cx,
+            &context,
+            capability.clone(),
+            reversal.clone(),
+            replacement.clone(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        let warm = fixture
+            .book
+            .plan_replacement_with_history(&cx, reversal.clone(), replacement.clone(), &capability)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(cold.code, "FA-REF-198");
+        assert_eq!(warm, cold);
+        let direct = fixture
+            .book
+            .post_replacement_pair(&cx, request(&reversal), request(&replacement))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(direct, cold);
+        assert_eq!(fixture.book.db.frontier().unwrap(), before);
+        assert_eq!(fixture.book.db.vertices().unwrap(), rows);
+        // The refused keys remain free: the exact fitting correction succeeds.
+        let (reversal, replacement) =
+            make_pair(target, &original, "resident-correction-overflow", 15);
+        let plan = fixture
+            .book
+            .plan_replacement_with_history(&cx, reversal, replacement, &capability)
+            .await
+            .unwrap()
+            .unwrap();
+        let posted = fixture
+            .book
+            .commit_replacement_plan(&cx, plan, &capability)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(posted.0.recorded_at(), posted.1.recorded_at());
+        assert_eq!(fixture.book.db.frontier().unwrap().0, before.0 + 1);
+    });
+}
+
 fn prepare_fixture_post(
     book: &mut LabBook,
     cx: &PurposeContexts,

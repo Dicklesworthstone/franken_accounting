@@ -803,6 +803,8 @@ fn replacement_retention_batch(
 /// one authenticated artifact. An Agent may rehearse but cannot publish it.
 /// A checkpoint-opened daily quota uses [`plan_replacement_with_history`]
 /// to hydrate its native creation history before this synchronous pipeline.
+/// `carried`, when supplied, belongs to this database's resident owner and
+/// summarizes only committed history; neither rehearsed member enters it.
 pub fn plan_replacement<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -810,6 +812,7 @@ pub fn plan_replacement<V: Vfs + Clone>(
     capability: Capability,
     reversal: PostIntent,
     replacement: PostIntent,
+    carried: Option<&mut crate::CarriedHistory>,
 ) -> Outcome<ReplacementPlan> {
     for intent in [&reversal, &replacement] {
         if let Err(d) = fa_policy::reach_class(
@@ -831,6 +834,7 @@ pub fn plan_replacement<V: Vfs + Clone>(
         request(&reversal, capability.clone()),
         request(&replacement, capability.clone()),
         true,
+        carried,
     )? {
         Ok(prepared) => prepared,
         Err(refusal) => return Ok(Err(refusal)),
@@ -905,6 +909,7 @@ pub async fn plan_replacement_with_history<V: Vfs + Clone>(
     capability: Capability,
     reversal: PostIntent,
     replacement: PostIntent,
+    carried: Option<&mut crate::CarriedHistory>,
 ) -> Outcome<ReplacementPlan> {
     for intent in [&reversal, &replacement] {
         if let Err(denial) = fa_policy::reach_class(
@@ -932,7 +937,7 @@ pub async fn plan_replacement_with_history<V: Vfs + Clone>(
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
-    plan_replacement(db, ctx, book, capability, reversal, replacement)
+    plan_replacement(db, ctx, book, capability, reversal, replacement, carried)
 }
 
 /// Lost acknowledgements return both original outcomes only when both
@@ -1054,6 +1059,7 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
     book: &BookContext,
     capability: Capability,
     plan: ReplacementPlan,
+    mut carried: Option<&mut crate::CarriedHistory>,
 ) -> Outcome<(Posted, Posted)> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     if let Err(error) = plan.validate() {
@@ -1144,6 +1150,7 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
         request(plan.reversal().intent(), capability.clone()),
         request(plan.replacement().intent(), capability),
         admission,
+        carried.as_deref_mut(),
     )?;
     let mut prepared = match preparation {
         Ok((None, PostPreparation::Ready(prepared))) => prepared,
@@ -1181,7 +1188,10 @@ pub async fn commit_replacement_plan<V: Vfs + Clone>(
         )));
     }
     prepared.retain_plan(db, replacement_retention_batch(ctx, book, &plan)?)?;
-    match prepared.commit(db, ctx).await? {
+    match prepared
+        .commit_in(db, ctx, None, carried.map(|history| &mut history.capacity))
+        .await?
+    {
         Ok(replacement @ Posted::Committed { .. }) => {
             let (vid, first) = replacement_members(&plan)[0];
             Ok(Ok((

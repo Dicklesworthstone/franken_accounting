@@ -278,6 +278,7 @@ pub(super) fn stage<V: asupersync::fs::Vfs + Clone>(
         request(&batch.members()[0], &capabilities[0]),
         request(&batch.members()[1], &capabilities[1]),
         admission,
+        None,
     )? {
         Ok(prepared) => prepared,
         Err(refusal) => return Ok(Err(refusal)),

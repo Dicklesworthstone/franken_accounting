@@ -5687,12 +5687,15 @@ pub(crate) fn entry_of(row: &VertexRow) -> Result<(Entry, CommitSeq), KernelErro
 /// pass `fa_palimpsest::validate_replacement_pair`, and pass all capability,
 /// period-law, leaf-only, unit-policy, balance-law, and evidence-minimum gates.
 /// Either both entries commit at the same `CommitSeq`, or neither commits.
+/// A resident owner may carry its verified committed history across calls;
+/// `None` starts from the literal history and retains no state for the caller.
 pub async fn post_replacement_pair<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     reversal_req: PostRequest,
     replacement_req: PostRequest,
+    mut carried: Option<&mut CarriedHistory>,
 ) -> Outcome<(Posted, Posted)> {
     for request in [&reversal_req, &replacement_req] {
         if let Err(refusal) = authorize_request(db, book, request, Admission::Commit)? {
@@ -5705,11 +5708,18 @@ pub async fn post_replacement_pair<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
-    let (prior, prepared) =
-        match prepare_replacement_pair(db, ctx, book, reversal_req, replacement_req, false)? {
-            Ok(pair) => pair,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
+    let (prior, prepared) = match prepare_replacement_pair(
+        db,
+        ctx,
+        book,
+        reversal_req,
+        replacement_req,
+        false,
+        carried.as_deref_mut(),
+    )? {
+        Ok(pair) => pair,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     match prepared {
         PostPreparation::AlreadyRecorded(replacement) => {
             let reversal = prior.ok_or_else(|| {
@@ -5723,7 +5733,10 @@ pub async fn post_replacement_pair<V: asupersync::fs::Vfs + Clone>(
             let member = prepared.paired_reversal.clone().ok_or_else(|| {
                 KernelError::Corrupt("replacement has no staged paired reversal".into())
             })?;
-            match prepared.commit(db, ctx).await? {
+            match prepared
+                .commit_in(db, ctx, None, carried.map(|history| &mut history.capacity))
+                .await?
+            {
                 Err(refusal) => Ok(Err(refusal)),
                 Ok(replacement @ Posted::Committed { .. }) => Ok(Ok((
                     Posted::Committed {
@@ -5972,13 +5985,22 @@ pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
     reversal_req: PostRequest,
     replacement_req: PostRequest,
     planning: bool,
+    carried: Option<&mut CarriedHistory>,
 ) -> Outcome<(Option<Posted>, PostPreparation)> {
     let admission = if planning {
         Admission::Plan
     } else {
         Admission::Commit
     };
-    prepare_replacement_pair_admitted(db, ctx, book, reversal_req, replacement_req, admission)
+    prepare_replacement_pair_admitted(
+        db,
+        ctx,
+        book,
+        reversal_req,
+        replacement_req,
+        admission,
+        carried,
+    )
 }
 
 /// Private admission tokens authorize draft rehearsal, independent promotion,
@@ -5990,6 +6012,7 @@ pub(crate) fn prepare_replacement_pair_admitted<V: asupersync::fs::Vfs + Clone>(
     reversal_req: PostRequest,
     replacement_req: PostRequest,
     admission: Admission,
+    carried: Option<&mut CarriedHistory>,
 ) -> Outcome<(Option<Posted>, PostPreparation)> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     let reversal = &reversal_req.proposal;
@@ -6030,6 +6053,11 @@ pub(crate) fn prepare_replacement_pair_admitted<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(refusal));
         }
     }
+    let mut fresh = None;
+    let (reconciliation, capacity) = match carried {
+        Some(carried) => (&mut carried.reconciliation, Some(&mut carried.capacity)),
+        None => (&mut fresh, None),
+    };
     let retry_request = reversal_req.clone();
     let (prior, basis) = match prepare_post_in(
         db,
@@ -6040,7 +6068,7 @@ pub(crate) fn prepare_replacement_pair_admitted<V: asupersync::fs::Vfs + Clone>(
         admission,
         None,
         None,
-        &mut None,
+        reconciliation,
     )? {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(PostPreparation::AlreadyRecorded(posted)) => {
@@ -6078,7 +6106,7 @@ pub(crate) fn prepare_replacement_pair_admitted<V: asupersync::fs::Vfs + Clone>(
         admission,
         None,
         None,
-        &mut None,
+        reconciliation,
     )?;
     if let Ok(PostPreparation::Ready(p)) = &prepared {
         let accounts = crate::register_capacity::accounts(
@@ -6090,9 +6118,21 @@ pub(crate) fn prepare_replacement_pair_admitted<V: asupersync::fs::Vfs + Clone>(
             .iter()
             .map(|m| m.entry_ref.vid)
             .chain(std::iter::once(p.entry_ref.vid));
-        if let Err(refusal) =
-            crate::register_capacity::admit(&p.txn, db, ctx, book.book_id, &accounts, staged)?
-        {
+        let admitted = match capacity {
+            Some(history) => crate::register_capacity::admit_carried(
+                &p.txn,
+                db,
+                ctx,
+                book.book_id,
+                &accounts,
+                staged,
+                history,
+            )?,
+            None => {
+                crate::register_capacity::admit(&p.txn, db, ctx, book.book_id, &accounts, staged)?
+            }
+        };
+        if let Err(refusal) = admitted {
             if let Ok(PostPreparation::Ready(p)) = prepared {
                 p.abort();
             }

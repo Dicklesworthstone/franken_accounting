@@ -731,6 +731,7 @@ fn both_members_of_a_replacement_pair_need_reconciliation_authority() {
                 replacement.clone(),
                 Capability::embedded(OWNER, &["post"]).unwrap(),
             ),
+            None,
         ))
         .unwrap()
         .unwrap_err();
@@ -753,6 +754,7 @@ fn both_members_of_a_replacement_pair_need_reconciliation_authority() {
             &h.book,
             request(reversal.clone(), cap(OWNER)),
             request(replacement.clone(), cap(OWNER)),
+            None,
         ))
         .unwrap()
         .unwrap();
@@ -768,6 +770,7 @@ fn both_members_of_a_replacement_pair_need_reconciliation_authority() {
             &h.book,
             request(reversal, Capability::embedded(OWNER, &["post"]).unwrap()),
             request(replacement, Capability::embedded(OWNER, &["post"]).unwrap()),
+            None,
         ))
         .unwrap()
         .unwrap();

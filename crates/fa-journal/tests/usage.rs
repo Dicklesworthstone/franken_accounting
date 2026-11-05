@@ -723,6 +723,7 @@ fn replacement_plans_charge_both_members_atomically_and_never_charge_an_exact_re
             cap.clone(),
             reversal,
             replacement,
+            None,
         ))
         .unwrap()
         .unwrap_err();
@@ -741,6 +742,7 @@ fn replacement_plans_charge_both_members_atomically_and_never_charge_an_exact_re
             cap.clone(),
             reversal,
             replacement,
+            None,
         ))
         .unwrap()
         .unwrap();
@@ -754,6 +756,7 @@ fn replacement_plans_charge_both_members_atomically_and_never_charge_an_exact_re
             &h.book,
             cap.clone(),
             plan.clone(),
+            None,
         ))
         .unwrap()
         .unwrap();
@@ -785,6 +788,7 @@ fn replacement_plans_charge_both_members_atomically_and_never_charge_an_exact_re
             &h.book,
             cap.clone(),
             plan.clone(),
+            None,
         ))
         .unwrap()
         .unwrap();
@@ -809,7 +813,9 @@ fn replacement_plans_charge_both_members_atomically_and_never_charge_an_exact_re
     let at = h.head();
     let refusal = h
         .runtime
-        .block_on(commit_replacement_plan(&mut h.db, &cx, &h.book, cap, plan))
+        .block_on(commit_replacement_plan(
+            &mut h.db, &cx, &h.book, cap, plan, None,
+        ))
         .unwrap()
         .unwrap_err();
     assert_eq!(
