@@ -624,7 +624,7 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let units = &book.context().units;
         let quantity = fa_money::Amount::parse(required(args, "--quantity")?, units)
             .map_err(|error| usage(format!("--quantity: {error}"), DISPOSE_USAGE))?;
-        let mut targets = Vec::new();
+        let mut specific_ids = Vec::new();
         for raw in args.flag_all("--target") {
             let (id, ordinal) = raw.rsplit_once(':').ok_or_else(|| {
                 usage(
@@ -670,13 +670,9 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         };
         let template = template(&mut book, args, principal)?;
         let prepared = match draft.as_deref() {
-            Some(name) => book.prepare_lot_disposal_targets_in_draft(
-                &capability,
-                name,
-                &request,
-                &targets,
-                template,
-            )??,
+            Some(name) => {
+                book.prepare_lot_disposal_in_draft(&capability, name, &request, template)??
+            }
             None => book.prepare_lot_disposal(&capability, &request, template)??,
         };
         PostIntent::new(prepared.into_proposal(), Vec::new())
