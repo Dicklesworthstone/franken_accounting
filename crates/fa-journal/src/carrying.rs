@@ -30,16 +30,16 @@ use asupersync::fs::Vfs;
 use fa_model::entry::FX_REVALUATION_EXTENSION;
 use fa_model::symbols::{label, property};
 use fa_model::{
-    EntryClass, EntryPayload, EntryRef, FxRevaluationBasis, Id128, Oid, Settlement,
+    EntryClass, EntryPayload, EntryRef, FxRevaluationBasis, Id128, LegPayload, Oid, Settlement,
     SupersessionKind, entry_vid,
 };
 use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 use fa_money::{Amount, Rate, RoundingLaw, Side};
-use fa_policy::{Capability, Op, Reach};
+use fa_policy::Capability;
 use fa_time::DateDay;
 use fgdb::Database;
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CommitSeq, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::evidence::{DocumentRecord, Storage, document_vid};
 use crate::fx::{FxLawId, FxRateDocument, FxRatePurpose, RATE_DOCUMENT_KIND};
@@ -971,23 +971,6 @@ pub(crate) fn open_item_carrying_observed<V: Vfs + Clone>(
     }))
 }
 
-/// Prepare from the journal and retained Rate evidence, never caller balances.
-pub fn prepare_fx_settlement<V: Vfs + Clone>(
-    db: &Database<V>,
-    cx: &PurposeContexts,
-    book: &BookContext,
-    capability: &Capability,
-    request: &FxSettlementRequest,
-    template: EntryPayload,
-    budget: &mut ArithmeticBudget<'_, impl Sized>,
-) -> Outcome<PreparedFxSettlement> {
-    cx.query().with_restriction(|| {
-        prepare_fx_settlement_inner(
-            db, cx, book, capability, None, request, template, budget, None,
-        )
-    })
-}
-
 /// Resolve only a named open-item source for an owned draft. The current
 /// branch-confined Post capability admits metadata before the entry payload
 /// is decoded. Missing and out-of-scope entries have the same result, and
@@ -999,6 +982,20 @@ pub fn draft_source_entry_ref<V: Vfs + Clone>(
     admission: &crate::draft::DraftSourceAdmission,
     vid: VId,
 ) -> Outcome<Option<EntryRef>> {
+    draft_source_entry(db, cx, book, admission, vid)
+        .map(|result| result.map(|entry| entry.map(|entry| entry.entry_ref(vid))))
+}
+
+/// Decode only one completely admitted source at a time. Keeping the entry
+/// private lets the settlement preflight validate all selected ordinals with
+/// one decode, while the public handle resolver reveals no monetary facts.
+fn draft_source_entry<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    admission: &crate::draft::DraftSourceAdmission,
+    vid: VId,
+) -> Outcome<Option<fa_model::Entry>> {
     cx.query()
         .checkpoint()
         .map_err(fgdb::WriteTxnError::Interrupted)?;
@@ -1016,11 +1013,11 @@ pub fn draft_source_entry_ref<V: Vfs + Clone>(
         if txn.vertex_has_label(db, vid, label::ENTRY)? != Some(true)
             || !matches!(
                 txn.vertex_property(db, vid, property::BOOK_ID)?,
-                Some(fgdb_types::CanonicalScalar::Bytes(value)) if value.as_slice() == book.book_id.0
+                Some(CanonicalScalar::Bytes(value)) if value.as_slice() == book.book_id.0
             )
             || !matches!(
                 txn.vertex_property(db, vid, property::CLASS)?,
-                Some(fgdb_types::CanonicalScalar::Int(tag))
+                Some(CanonicalScalar::Int(tag))
                     if u16::try_from(tag).ok().is_some_and(|tag| EntryClass(tag).carries_open_items())
             )
             || !crate::policy::entry_in_scope_by_metadata(
@@ -1057,7 +1054,7 @@ pub fn draft_source_entry_ref<V: Vfs + Clone>(
         {
             return Ok(Ok(None));
         }
-        Ok(Ok(Some(entry.entry_ref(vid))))
+        Ok(Ok(Some(entry)))
     })();
     // This is a read-only snapshot pin, not a publication or a reservation.
     // Release it on errors as well as on success.
@@ -1065,10 +1062,56 @@ pub fn draft_source_entry_ref<V: Vfs + Clone>(
     result
 }
 
-/// Admit all declared amounts and route accounts before source hydration.
-/// Target selection then uses the ordinary posting kernel's complete-entry
-/// scope rule. The later derivation repeats source arithmetic and checks all
-/// generated effects, including carrying relief and valuation-release routes.
+fn settlement_template(
+    book: &BookContext,
+    capability: &Capability,
+    template: &EntryPayload,
+) -> Result<(), Refusal> {
+    if template.book_id != book.book_id
+        || template.branch_id != Id128::TRUNK
+        || template.principal_ref != capability.holder()
+        || !matches!(template.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING)
+        || !template.legs.is_empty()
+        || !template.unit_totals.is_empty()
+        || template.base_totals.is_some()
+        || template.control.is_some()
+        || template.pending.is_some()
+        || !template.supersession.is_empty()
+        || !template.extensions.is_empty()
+    {
+        return Err(invalid(
+            "foreign settlement requires an empty Original or Adjusting template for the authorized principal",
+        ));
+    }
+    Ok(())
+}
+
+fn settlement_requests(requests: &[FxSettlementRequest]) -> Result<(), Refusal> {
+    if requests.is_empty() || requests.len() > MAX_FX_SETTLEMENT_ITEMS {
+        return Err(invalid(
+            "FX group is empty or exceeds the entry leg work bound",
+        ));
+    }
+    let mut targets = BTreeSet::new();
+    for request in requests {
+        if !targets.insert((request.target.vid, request.target_ordinal)) {
+            return Err(invalid(
+                "FX group targets must be pairwise distinct existing legs",
+            ));
+        }
+        if request.rate_document != requests[0].rate_document {
+            return Err(invalid(
+                "FX group requires one explicitly shared Settlement Rate document",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Admit named settlement sources and declared effects before hydrating the
+/// carrying history. Only the selected immutable target entries are point
+/// read here; their balances are neither folded nor returned. The complete
+/// generated proposal is admitted separately after exact relief derivation.
 pub fn admit_draft_settlement_requests<V: Vfs + Clone>(
     db: &mut Database<V>,
     cx: &PurposeContexts,
@@ -1077,98 +1120,139 @@ pub fn admit_draft_settlement_requests<V: Vfs + Clone>(
     requests: &[FxSettlementRequest],
     template: &EntryPayload,
 ) -> Outcome<()> {
-    if let Err(refusal) = admission.admit_proposal(db, book, template)? {
-        return Ok(Err(refusal));
-    }
-    if let Err(refusal) = validate_settlement_template(book, admission.capability(), template)
-        .and_then(|()| validate_settlement_requests(requests))
-    {
-        return Ok(Err(refusal));
-    }
-    let explicit = requests
-        .iter()
-        .flat_map(|request| [request.amount, request.settlement_amount])
-        .map(|amount| (amount.unit, amount.mantissa))
-        .collect::<Vec<_>>();
-    if let Err(denial) = fa_policy::admit_base_for_plan(
-        admission.capability(),
-        &fa_policy::Intent {
-            principal: template.principal_ref,
-            trunk: true,
-            op: Op::Post,
-            book: book.book_id,
-            legs: &explicit,
-        },
-    ) {
-        return Ok(Err(crate::policy::refusal(&denial)));
-    }
-    let current = match crate::policy::current_at(db, book, admission.capability())? {
-        Ok(current) => current,
-        Err(refusal) => return Ok(Err(refusal)),
-    };
-    let scope = crate::policy::account_scope(db, book, &current)?;
-    let accounts = requests
-        .iter()
-        .flat_map(|request| {
-            [
-                request.settlement_account,
-                request.conversion_account,
-                request.realized_fx_account,
-            ]
-        })
-        .collect::<Vec<_>>();
-    let period = crate::policy::resolved_period(
-        book,
-        template.effective_date,
-        template
-            .effective_period
-            .as_ref()
-            .map(|period| period.code.as_str()),
-    );
-    let periods = period.iter().map(String::as_str).collect::<Vec<_>>();
-    if let Err(denial) = fa_policy::reach_class(
-        admission.capability(),
-        &Reach {
-            branch: Some(fa_model::draft_branch(book.book_id, admission.name())),
-            observes: fa_policy::Observes::Head,
-            periods: Some(&periods),
-            through: Some(template.effective_date),
-            accounts: Some(&accounts),
-        },
-        scope.as_ref(),
-        template.class,
-    ) {
-        return Ok(Err(crate::policy::refusal(&denial)));
-    }
-    let mut resolved = BTreeMap::new();
-    for request in requests {
-        let target = match resolved.get(&request.target.vid) {
-            Some(target) => *target,
-            None => match draft_source_entry_ref(db, cx, book, admission, request.target.vid)? {
-                Ok(target) => {
-                    resolved.insert(request.target.vid, target);
-                    target
-                }
-                Err(refusal) => return Ok(Err(refusal)),
-            },
-        };
-        match target {
-            Some(target) if target == request.target => {}
-            _ => {
+    cx.query().with_restriction(|| {
+        if let Err(refusal) = admission.admit_proposal(db, book, template)? {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = settlement_template(book, admission.capability(), template)
+            .and_then(|()| settlement_requests(requests))
+        {
+            return Ok(Err(refusal));
+        }
+        let mut declared = template.clone();
+        for request in requests {
+            if request.amount.mantissa <= 0 || request.settlement_amount.mantissa <= 0 {
                 return Ok(Err(invalid(
-                    "the foreign open item is unavailable within this draft's source scope",
+                    "FX settlement requires positive declared native and cash amounts",
                 )));
             }
+            // These are admission inputs, not a proposed posting vector.
+            // Admit every declared route using only the caller's amounts;
+            // the as-yet unknown realized amount is checked after derivation.
+            declared.legs.extend([
+                LegPayload::simple(
+                    Side::Debit,
+                    request.settlement_account,
+                    request.settlement_amount,
+                ),
+                LegPayload::simple(
+                    Side::Credit,
+                    request.conversion_account,
+                    request.settlement_amount,
+                ),
+                LegPayload::simple(Side::Debit, request.conversion_account, request.amount),
+                LegPayload::simple(
+                    Side::Credit,
+                    request.realized_fx_account,
+                    request.settlement_amount,
+                ),
+            ]);
         }
-    }
-    Ok(Ok(()))
+        if let Err(refusal) = admission.admit_proposal(db, book, &declared)? {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = crate::redaction::admit_draft_source_record(
+            db,
+            book,
+            admission.capability(),
+            requests[0].rate_document,
+            crate::redaction::DraftSourceKind::FxRate,
+        )? {
+            return Ok(Err(refusal));
+        }
+        let mut targets: BTreeMap<VId, Vec<&FxSettlementRequest>> = BTreeMap::new();
+        for request in requests {
+            targets.entry(request.target.vid).or_default().push(request);
+        }
+        for request in requests {
+            cx.query()
+                .checkpoint()
+                .map_err(fgdb::WriteTxnError::Interrupted)?;
+            let Some(selected) = targets.remove(&request.target.vid) else {
+                continue;
+            };
+            // One bounded entry is decoded at a time, even when every request
+            // names a different maximal-size source. Its selected ordinals share
+            // its decode without retaining the complete source population.
+            let original = match draft_source_entry(db, cx, book, admission, request.target.vid)? {
+                Ok(Some(entry)) => entry,
+                Ok(None) => {
+                    return Ok(Err(invalid(
+                        "the foreign open item is unavailable within this draft's source scope",
+                    )));
+                }
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            for request in selected {
+                if original.entry_ref(request.target.vid) != request.target {
+                    return Ok(Err(invalid(
+                        "the target handle does not name this book's retained posted item",
+                    )));
+                }
+                let Some(source) = original
+                    .proposal
+                    .legs
+                    .get(usize::from(request.target_ordinal))
+                else {
+                    return Ok(Err(invalid("target ordinal is outside the original entry")));
+                };
+                if source.amount.unit != request.amount.unit
+                    || source
+                        .base_amount
+                        .is_none_or(|amount| amount.unit != request.settlement_amount.unit)
+                    || !source.settles.is_empty()
+                {
+                    return Ok(Err(invalid(
+                        "the selected target is not a matching foreign carrying source",
+                    )));
+                }
+                let mut applying =
+                    LegPayload::simple(source.side.flipped(), source.account_ref, request.amount);
+                applying.dimension_set = source.dimension_set.clone();
+                declared.legs.push(applying);
+            }
+        }
+        admission.admit_proposal(db, book, &declared)
+    })
 }
 
-/// Derive the exact reviewed foreign relief for the capability's own draft.
-/// This returns only generated posting effects: original, applied and remaining
-/// source balances never cross this source-only boundary. Facades admit the
-/// shared Rate document's governing disclosure contract before calling this
-/// native factory. Publication still independently rederives every source.
+/// Derive one source-bound settlement for an owned, explicitly confined draft.
+/// Only admitted posting effects escape; the source's original, applied and
+/// remaining balances in `PreparedFxSettlement` are not disclosed.
+pub fn prepare_fx_settlement_in_draft<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    admission: &crate::draft::DraftSourceAdmission,
+    request: &FxSettlementRequest,
+    template: EntryPayload,
+    budget: &mut ArithmeticBudget<'_, impl Sized>,
+) -> Outcome<EntryPayload> {
+    prepare_fx_settlement_group_in_draft(
+        db,
+        cx,
+        book,
+        admission,
+        std::slice::from_ref(request),
+        template,
+        budget,
+    )
+}
+
+/// Derive a complete disjoint group under the draft's original authority.
+/// Source explanations remain internal; only the admitted proposal is returned.
+/// Targets are existing trunk items. Draft append and promotion retain the
+/// independent carrying-batch rule: one target leg cannot occur in two members.
 pub fn prepare_fx_settlement_group_in_draft<V: Vfs + Clone>(
     db: &mut Database<V>,
     cx: &PurposeContexts,
@@ -1202,6 +1286,23 @@ pub fn prepare_fx_settlement_group_in_draft<V: Vfs + Clone>(
         .map(|()| proposal))
 }
 
+/// Prepare from the journal and retained Rate evidence, never caller balances.
+pub fn prepare_fx_settlement<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    request: &FxSettlementRequest,
+    template: EntryPayload,
+    budget: &mut ArithmeticBudget<'_, impl Sized>,
+) -> Outcome<PreparedFxSettlement> {
+    cx.query().with_restriction(|| {
+        prepare_fx_settlement_inner(
+            db, cx, book, capability, None, request, template, budget, None,
+        )
+    })
+}
+
 /// Compose complete single-item effects at one prefix. One retained rate and
 /// disjoint targets make every relief independent; no within-entry order can
 /// spend another item's remaining native or functional balance.
@@ -1217,28 +1318,6 @@ pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
     prepare_fx_settlement_group_with_admission(
         db, cx, book, capability, None, requests, template, budget,
     )
-}
-
-fn validate_settlement_requests(requests: &[FxSettlementRequest]) -> Result<(), Refusal> {
-    if requests.is_empty() || requests.len() > MAX_FX_SETTLEMENT_ITEMS {
-        return Err(invalid(
-            "FX group is empty or exceeds the entry leg work bound",
-        ));
-    }
-    let mut targets = BTreeSet::new();
-    for request in requests {
-        if !targets.insert((request.target.vid, request.target_ordinal)) {
-            return Err(invalid(
-                "FX group targets must be pairwise distinct existing legs",
-            ));
-        }
-        if request.rate_document != requests[0].rate_document {
-            return Err(invalid(
-                "FX group requires one explicitly shared Settlement Rate document",
-            ));
-        }
-    }
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1259,7 +1338,7 @@ fn prepare_fx_settlement_group_with_admission<V: Vfs + Clone>(
     if let Err(refusal) = authorized {
         return Ok(Err(refusal));
     }
-    if let Err(refusal) = validate_settlement_requests(requests) {
+    if let Err(refusal) = settlement_requests(requests) {
         return Ok(Err(refusal));
     }
     let head = db.frontier()?;
@@ -1425,30 +1504,6 @@ fn settlement_ranges_counted(
     Ok(starts.windows(2).map(|pair| pair[0]..pair[1]).collect())
 }
 
-fn validate_settlement_template(
-    book: &BookContext,
-    capability: &Capability,
-    template: &EntryPayload,
-) -> Result<(), Refusal> {
-    if template.book_id != book.book_id
-        || template.branch_id != Id128::TRUNK
-        || template.principal_ref != capability.holder()
-        || !matches!(template.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING)
-        || !template.legs.is_empty()
-        || !template.unit_totals.is_empty()
-        || template.base_totals.is_some()
-        || template.control.is_some()
-        || template.pending.is_some()
-        || !template.supersession.is_empty()
-        || !template.extensions.is_empty()
-    {
-        return Err(invalid(
-            "foreign settlement requires an empty Original or Adjusting template for the authorized principal",
-        ));
-    }
-    Ok(())
-}
-
 #[allow(clippy::too_many_arguments)]
 fn prepare_fx_settlement_inner<V: Vfs + Clone>(
     db: &Database<V>,
@@ -1468,7 +1523,7 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
     if let Err(refusal) = authorized {
         return Ok(Err(refusal));
     }
-    if let Err(refusal) = validate_settlement_template(book, capability, &template) {
+    if let Err(refusal) = settlement_template(book, capability, &template) {
         return Ok(Err(refusal));
     }
     let head = db.frontier()?;
@@ -1554,6 +1609,21 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
         property::FA_PAYLOAD,
         "settlement Rate document",
     )?)?;
+    if draft.is_some() {
+        let commit = crate::rows::bytes(&row, property::FA_DIGEST, "settlement Rate commitment")?
+            .try_into()
+            .map_err(|_| {
+                KernelError::Corrupt("settlement Rate commitment has the wrong length".into())
+            })?;
+        if let Err(refusal) = crate::redaction::DraftSourceKind::FxRate.admit_record(
+            &record,
+            book.book_id,
+            request.rate_document,
+            commit,
+        ) {
+            return Ok(Err(refusal));
+        }
+    }
     let Storage::Inline(raw) = record.storage else {
         return Ok(Err(invalid(
             "settlement requires complete retained inline Rate bytes",

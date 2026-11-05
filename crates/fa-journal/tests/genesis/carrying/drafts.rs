@@ -2,6 +2,312 @@
 //! existing items through the same guarded atomic carrying-value batch law.
 
 use super::*;
+use fgdb::WriteBatch;
+
+fn confined_source_capability(f: &Fixture, name: &str) -> Capability {
+    Capability::new(
+        AGENT,
+        fa_policy::Profile::Agent,
+        &[fa_policy::Op::Post],
+        PRINCIPAL,
+    )
+    .unwrap()
+    .on_branch(fa_model::draft_branch(f.h.book.book_id, name))
+    .unwrap()
+}
+
+fn source_template(f: &Fixture, key: &[u8]) -> EntryPayload {
+    let mut template = f.h.proposal(vec![], key, EntryClass::ORIGINAL);
+    template.principal_ref = AGENT;
+    template
+}
+
+fn prepare_confined(
+    f: &mut Fixture,
+    admission: &fa_journal::draft::DraftSourceAdmission,
+    requests: &[FxSettlementRequest],
+    template: EntryPayload,
+) -> Result<EntryPayload, Refusal> {
+    let stripped = Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+    let cx = f.h.ctx();
+    fa_journal::carrying::prepare_fx_settlement_group_in_draft(
+        &mut f.h.db,
+        &cx,
+        &f.h.book,
+        admission,
+        requests,
+        template,
+        &mut budget,
+    )
+    .unwrap()
+}
+
+#[test]
+fn post_only_draft_settlement_factories_preserve_single_group_and_exact_promotion() {
+    for group in [false, true] {
+        let mut f = fixture(3, 10);
+        let second = f.another_target();
+        let name = "confined-carrying";
+        let capability = confined_source_capability(&f, name);
+        f.h.open_draft(capability.clone(), name).unwrap();
+        let admission = fa_journal::draft::admit_sources(&f.h.db, &f.h.book, &capability, name)
+            .unwrap()
+            .unwrap();
+        let mut inputs = vec![f.fx_request(f.target, 1)];
+        if group {
+            inputs.push(f.fx_request(second, 3));
+        }
+        let key = b"source-only-fx";
+        let mut expected = f.prepare_group(&inputs, key).unwrap().into_proposal();
+        expected.principal_ref = AGENT;
+        let template = source_template(&f, key);
+        let head = f.h.db.frontier().unwrap();
+        let proposal = if group {
+            prepare_confined(&mut f, &admission, &inputs, template).unwrap()
+        } else {
+            let stripped = Cx::detached_cancel_context();
+            let mut budget =
+                ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+            let cx = f.h.ctx();
+            fa_journal::carrying::prepare_fx_settlement_in_draft(
+                &mut f.h.db,
+                &cx,
+                &f.h.book,
+                &admission,
+                &inputs[0],
+                template,
+                &mut budget,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(proposal, expected);
+        assert_eq!(proposal.legs[0].base_amount.unwrap().mantissa, 3);
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+        assert!(fa_policy::admit_read(&capability, AGENT, f.h.book.book_id).is_err());
+        let planned = f.h.plan_draft(capability, name, proposal.clone()).unwrap();
+        assert_eq!(planned.plan.unwrap().members()[0].entry.proposal, proposal);
+        assert_eq!(f.carrying().open_native.mantissa, 3);
+        let promoted = f.h.promote(f.h.approver_capability(), name).unwrap();
+        assert_eq!(promoted.entries.len(), 1);
+        assert_eq!(f.carrying().open_native.mantissa, 2);
+        assert_eq!(f.carrying().open_base.mantissa, 7);
+        assert_eq!(
+            f.carrying_for(second).open_native.mantissa,
+            if group { 0 } else { 3 }
+        );
+        f.verify();
+        let before = f.h.db.frontier().unwrap();
+        let mut unknown_source = inputs;
+        unknown_source[0].rate_document = Oid([0xee; 32]);
+        let template = source_template(&f, b"closed-source-token");
+        let refused = prepare_confined(&mut f, &admission, &unknown_source, template).unwrap_err();
+        assert_eq!(refused.code, fa_journal::refusal::code::DRAFT_NOT_OPEN);
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+    }
+}
+
+#[test]
+fn draft_settlement_rechecks_declared_and_generated_ceilings_and_revocation() {
+    let mut f = fixture(3, 10);
+    let name = "confined-carrying-ceilings";
+    let capability = confined_source_capability(&f, name)
+        .with_ceiling(f.foreign, 1)
+        .unwrap()
+        .with_ceiling(f.h.usd, 2)
+        .unwrap();
+    f.h.open_draft(capability.clone(), name).unwrap();
+    let admission = fa_journal::draft::admit_sources(&f.h.db, &f.h.book, &capability, name)
+        .unwrap()
+        .unwrap();
+    let inputs = [f.fx_request(f.target, 1)];
+    let template = source_template(&f, b"generated-carrying-ceiling");
+    let cx = f.h.ctx();
+    assert!(
+        fa_journal::carrying::admit_draft_settlement_requests(
+            &mut f.h.db,
+            &cx,
+            &f.h.book,
+            &admission,
+            &inputs,
+            &template,
+        )
+        .unwrap()
+        .is_ok(),
+        "the declared 1 EUR / 2 USD effects are within their ceilings"
+    );
+    let head = f.h.db.frontier().unwrap();
+    let refused = prepare_confined(&mut f, &admission, &inputs, template.clone()).unwrap_err();
+    assert_eq!(refused.exit, exit::SAFETY);
+    assert!(refused.message.contains("ceiling"), "{refused}");
+    assert_eq!(f.h.db.frontier().unwrap(), head);
+    assert!(f.h.draft(name).intents.is_empty());
+
+    let mut invalid = inputs;
+    invalid[0].amount.mantissa = 2;
+    invalid[0].rate_document = Oid([0xee; 32]);
+    let refused = prepare_confined(&mut f, &admission, &invalid, template.clone()).unwrap_err();
+    assert!(
+        refused.message.contains("ceiling"),
+        "declared excess precedes source lookup: {refused}"
+    );
+    let unconfined = Capability::new(
+        AGENT,
+        fa_policy::Profile::Agent,
+        &[fa_policy::Op::Post],
+        PRINCIPAL,
+    )
+    .unwrap();
+    let wrong_owner = Capability::new(
+        VId(0xbad),
+        fa_policy::Profile::Agent,
+        &[fa_policy::Op::Post],
+        PRINCIPAL,
+    )
+    .unwrap()
+    .on_branch(fa_model::draft_branch(f.h.book.book_id, name))
+    .unwrap();
+    for denied in [
+        unconfined,
+        wrong_owner,
+        capability.clone().expiring_at(head),
+    ] {
+        assert!(
+            fa_journal::draft::admit_sources(&f.h.db, &f.h.book, &denied, name)
+                .unwrap()
+                .is_err()
+        );
+    }
+    f.h.revoke(&capability, 192);
+    let revoked_at = f.h.db.frontier().unwrap();
+    let refused = prepare_confined(&mut f, &admission, &invalid, template).unwrap_err();
+    assert_eq!(refused.code, "FA-REF-023");
+    assert_eq!(f.h.db.frontier().unwrap(), revoked_at);
+}
+
+#[test]
+fn draft_settlement_refuses_poisoned_unrelated_documents_before_rate_payload_decode() {
+    let mut f = fixture(3, 10);
+    let name = "typed-carrying-source";
+    let capability = confined_source_capability(&f, name);
+    f.h.open_draft(capability.clone(), name).unwrap();
+    let admission = fa_journal::draft::admit_sources(&f.h.db, &f.h.book, &capability, name)
+        .unwrap()
+        .unwrap();
+    let input = f.fx_request(f.target, 1);
+    let template = source_template(&f, b"poisoned-rate-kind");
+    let mut poison = WriteBatch::new(fa_model::symbols::relation::CUSTODY_OF);
+    let vid = fa_journal::evidence::document_vid(&input.rate_document);
+    poison.set_vertex_property(
+        vid,
+        fa_model::symbols::property::CODE,
+        Some(fa_journal::rows::scalar_text("kind", "Invoice").unwrap()),
+    );
+    poison.set_vertex_property(
+        vid,
+        fa_model::symbols::property::FA_PAYLOAD,
+        Some(fa_journal::rows::scalar_bytes("payload", vec![0xff]).unwrap()),
+    );
+    let cx = f.h.ctx();
+    f.h.runtime
+        .block_on(f.h.db.write(&cx.commit(), poison))
+        .unwrap();
+    let head = f.h.db.frontier().unwrap();
+    let refused = prepare_confined(&mut f, &admission, &[input.clone()], template).unwrap_err();
+    assert_eq!(refused.code, fa_journal::refusal::code::CAPABILITY);
+    let stripped = Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+    assert!(
+        prepare_fx_settlement(
+            &f.h.db,
+            &cx,
+            &f.h.book,
+            &Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
+            &input,
+            f.h.proposal(vec![], b"ordinary-poisoned-source", EntryClass::ORIGINAL),
+            &mut budget,
+        )
+        .is_err(),
+        "the ordinary reader proves that the payload trap is live"
+    );
+    assert_eq!(f.h.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn draft_settlement_keeps_same_target_partials_outside_the_independent_source_batch_law() {
+    let mut f = fixture(99, 50);
+    let name = "confined-repeated-carrying";
+    let capability = confined_source_capability(&f, name);
+    f.h.open_draft(capability.clone(), name).unwrap();
+    let admission = fa_journal::draft::admit_sources(&f.h.db, &f.h.book, &capability, name)
+        .unwrap()
+        .unwrap();
+    let input = f.fx_request(f.target, 33);
+    let first = source_template(&f, b"first-confined-partial");
+    let proposal = prepare_confined(&mut f, &admission, &[input.clone()], first).unwrap();
+    assert_eq!(proposal.legs[0].base_amount.unwrap().mantissa, 17);
+    f.h.plan_draft(capability.clone(), name, proposal).unwrap();
+    let later = source_template(&f, b"second-confined-partial");
+    let proposal = prepare_confined(&mut f, &admission, &[input], later).unwrap();
+    let before = f.h.db.frontier().unwrap();
+    let refused = f.h.plan_draft(capability, name, proposal).unwrap_err();
+    assert_eq!(refused.exit, exit::REFUSAL);
+    assert_eq!(f.h.db.frontier().unwrap(), before);
+    assert_eq!(f.h.draft(name).intents.len(), 1);
+    assert_eq!(
+        (
+            f.carrying().open_native.mantissa,
+            f.carrying().open_base.mantissa
+        ),
+        (99, 50)
+    );
+}
+
+#[test]
+fn hand_built_draft_settlements_admit_rate_kind_before_hydrating_sources() {
+    for law in [
+        FxLawId::SettlementCarryingBasis,
+        FxLawId::SettlementAllocatedCarrying,
+        FxLawId::SettlementSpotCarrying,
+    ] {
+        let mut f = fixture(3, 10);
+        let name = "native-carrying-source";
+        let capability = confined_source_capability(&f, name);
+        f.h.open_draft(capability.clone(), name).unwrap();
+        // Submit retained native proposal bytes directly, without invoking
+        // the draft preparation factory that separately admits its sources.
+        let mut proposal = f.prepare(1, b"native-untrusted-rate").into_proposal();
+        proposal.principal_ref = AGENT;
+        proposal.base_totals.as_mut().unwrap().fx_law_oid = law.oid();
+        let oid = proposal.base_totals.as_ref().unwrap().rate_doc_oids[0];
+        let vid = fa_journal::evidence::document_vid(&oid);
+        let mut poison = WriteBatch::new(fa_model::symbols::relation::CUSTODY_OF);
+        poison.set_vertex_property(
+            vid,
+            fa_model::symbols::property::CODE,
+            Some(fa_journal::rows::scalar_text("kind", "Invoice").unwrap()),
+        );
+        poison.set_vertex_property(
+            vid,
+            fa_model::symbols::property::FA_PAYLOAD,
+            Some(fa_journal::rows::scalar_bytes("payload", vec![0xff]).unwrap()),
+        );
+        let cx = f.h.ctx();
+        f.h.runtime
+            .block_on(f.h.db.write(&cx.commit(), poison))
+            .unwrap();
+        let before = f.h.db.frontier().unwrap();
+        let refusal = f.h.plan_draft(capability, name, proposal).unwrap_err();
+        assert_eq!(
+            refusal.code,
+            fa_journal::refusal::code::CAPABILITY,
+            "{law:?} must not decode the poisoned unrelated payload: {refusal}"
+        );
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+        assert!(f.h.draft(name).intents.is_empty());
+    }
+}
 
 fn confined_planner(f: &Fixture, name: &str, native: i128, base: i128) -> Capability {
     Capability::new(
@@ -17,6 +323,59 @@ fn confined_planner(f: &Fixture, name: &str, native: i128, base: i128) -> Capabi
     .unwrap()
     .with_ceiling(f.h.usd, base)
     .unwrap()
+}
+
+#[test]
+fn draft_settlement_validates_selected_leg_before_carrying_history() {
+    let mut f = fixture(3, 10);
+    let unrelated = f.another_target();
+    let name = "selected-foreign-source";
+    let capability = confined_source_capability(&f, name);
+    f.h.open_draft(capability.clone(), name).unwrap();
+    let admission = fa_journal::draft::admit_sources(&f.h.db, &f.h.book, &capability, name)
+        .unwrap()
+        .unwrap();
+    let valid = f.fx_request(f.target, 1);
+    let mut poison = WriteBatch::new(fa_model::symbols::relation::CUSTODY_OF);
+    poison.set_vertex_property(
+        unrelated.vid,
+        fa_model::symbols::property::FA_PAYLOAD,
+        Some(fa_journal::rows::scalar_bytes("payload", vec![0xff]).unwrap()),
+    );
+    f.h.write_raw(poison);
+    let before = f.h.db.frontier().unwrap();
+    for variant in ["ordinal", "native unit", "base unit"] {
+        let mut input = valid.clone();
+        match variant {
+            "ordinal" => input.target_ordinal = u16::MAX,
+            "native unit" => input.amount.unit = f.h.usd,
+            "base unit" => input.settlement_amount.unit = f.foreign,
+            _ => unreachable!(),
+        }
+        let template = source_template(&f, b"selected-leg-before-history");
+        let refusal = prepare_confined(&mut f, &admission, &[input], template).unwrap_err();
+        assert_eq!(
+            refusal.code,
+            fa_journal::refusal::code::SETTLE_SHAPE,
+            "{variant}: {refusal}"
+        );
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+    }
+    let stripped = Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+    assert!(
+        prepare_fx_settlement(
+            &f.h.db,
+            &f.h.ctx(),
+            &f.h.book,
+            &Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
+            &valid,
+            f.h.proposal(vec![], b"live-history-trap", EntryClass::ORIGINAL),
+            &mut budget,
+        )
+        .is_err(),
+        "an admitted valid target reaches the poisoned history trap"
+    );
 }
 
 fn prepare_confined_group(

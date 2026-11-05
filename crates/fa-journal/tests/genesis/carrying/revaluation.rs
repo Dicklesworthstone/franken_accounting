@@ -17,6 +17,121 @@ mod audits;
 mod scaling;
 
 #[test]
+fn post_only_draft_allocated_group_admits_generated_valuation_releases() {
+    let mut f = RevaluedFixture::new(Side::Debit, &[(3, 3), (3, 3)]);
+    let allocation = f.revaluation(13, 3, 3, true).unwrap();
+    f.post_revaluation(allocation, b"draft-allocated-source");
+    let name = "draft-allocated-settlement";
+    let base_capability = Capability::new(
+        AGENT,
+        fa_policy::Profile::Agent,
+        &[fa_policy::Op::Post],
+        PRINCIPAL,
+    )
+    .unwrap()
+    .on_branch(fa_model::draft_branch(f.f.h.book.book_id, name))
+    .unwrap()
+    .with_ceiling(f.f.foreign, 1)
+    .unwrap();
+    let limited = base_capability.clone().with_ceiling(f.f.h.usd, 2).unwrap();
+    let permitted = base_capability.with_ceiling(f.f.h.usd, 3).unwrap();
+    f.f.h.open_draft(limited.clone(), name).unwrap();
+    let inputs = f
+        .targets
+        .iter()
+        .map(|target| f.f.fx_request(*target, 1))
+        .collect::<Vec<_>>();
+    let mut template =
+        f.f.h
+            .proposal(vec![], b"draft-allocated-group", EntryClass::ORIGINAL);
+    template.effective_date = day(4, 15);
+    let stripped = Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+    let mut expected = fa_journal::carrying::prepare_fx_settlement_group(
+        &f.f.h.db,
+        &f.f.h.ctx(),
+        &f.f.h.book,
+        &Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
+        &inputs,
+        template.clone(),
+        &mut budget,
+    )
+    .unwrap()
+    .unwrap()
+    .into_proposal();
+    template.principal_ref = AGENT;
+    expected.principal_ref = AGENT;
+    assert_eq!(
+        expected.base_totals.as_ref().unwrap().fx_law_oid,
+        FxLawId::SettlementAllocatedCarrying.oid()
+    );
+    assert!(
+        expected
+            .legs
+            .iter()
+            .any(|leg| leg.account_ref == f.valuation && leg.amount.mantissa == 3)
+    );
+    let admission = fa_journal::draft::admit_sources(&f.f.h.db, &f.f.h.book, &limited, name)
+        .unwrap()
+        .unwrap();
+    let cx = f.f.h.ctx();
+    fa_journal::carrying::admit_draft_settlement_requests(
+        &mut f.f.h.db,
+        &cx,
+        &f.f.h.book,
+        &admission,
+        &inputs,
+        &template,
+    )
+    .unwrap()
+    .expect("the declared 1 EUR / 2 USD effects fit before generated valuation releases");
+    let prepare = |f: &mut RevaluedFixture, admission: &fa_journal::draft::DraftSourceAdmission| {
+        let stripped = Cx::detached_cancel_context();
+        let mut budget =
+            ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+        let cx = f.f.h.ctx();
+        fa_journal::carrying::prepare_fx_settlement_group_in_draft(
+            &mut f.f.h.db,
+            &cx,
+            &f.f.h.book,
+            admission,
+            &inputs,
+            template.clone(),
+            &mut budget,
+        )
+        .unwrap()
+    };
+    let before = f.f.h.db.frontier().unwrap();
+    let refused = prepare(&mut f, &admission).unwrap_err();
+    assert_eq!(refused.exit, exit::SAFETY);
+    assert!(refused.message.contains("ceiling"), "{refused}");
+    assert_eq!(f.f.h.db.frontier().unwrap(), before);
+    assert!(f.f.h.draft(name).intents.is_empty());
+    let admission = fa_journal::draft::admit_sources(&f.f.h.db, &f.f.h.book, &permitted, name)
+        .unwrap()
+        .unwrap();
+    let proposal = prepare(&mut f, &admission).unwrap();
+    assert_eq!(proposal, expected);
+    assert_eq!(f.functional_net(f.valuation), 20);
+    assert_eq!(f.f.h.db.frontier().unwrap(), before);
+    f.f.h.plan_draft(permitted, name, proposal).unwrap();
+    assert_eq!(f.functional_net(f.valuation), 20);
+    f.f.h.promote(f.f.h.approver_capability(), name).unwrap();
+    assert_eq!(f.functional_net(f.valuation), 14);
+    for target in &f.targets {
+        assert_eq!(
+            f.position(*target, None),
+            OracleRevaluedCarrying {
+                native: 2,
+                historical_base: 2,
+                carrying_base: 9
+            }
+        );
+    }
+    f.f.verify();
+}
+
+#[test]
 fn post_only_draft_carrying_preserves_allocated_valuation_relief_and_revalidation() {
     for change_source in [false, true] {
         let mut f = RevaluedFixture::new(Side::Debit, &[(3, 10), (3, 10)]);

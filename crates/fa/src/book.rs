@@ -3831,8 +3831,29 @@ impl Book {
         )))
     }
 
-    /// Derive only admitted foreign settlement effects into the holder's own
-    /// explicitly confined draft, without granting general entry or balance reads.
+    /// Derive only the admitted effects of one foreign settlement for the
+    /// holder's own open draft, without disclosing the source's open balances.
+    pub fn prepare_fx_settlement_in_draft(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+        request: &crate::FxSettlementRequest,
+        template: fa_model::EntryPayload,
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_fx_settlement_in_draft(
+            &purposes, capability, name, request, template, &mut budget,
+        )))
+    }
+
+    /// Derive one complete foreign-settlement group under the explicitly
+    /// confined draft capability; ordinary Read authority is not widened.
     pub fn prepare_fx_settlement_group_in_draft(
         &mut self,
         capability: &fa_journal::Capability,

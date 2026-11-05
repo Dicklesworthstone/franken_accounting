@@ -684,11 +684,34 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
-    /// Derive only the requested carrying-value settlement effects for the
-    /// holder's own open draft. Explicit native/cash amounts, route accounts,
-    /// template scope and named sources are admitted before history or rate
-    /// hydration. All generated effects are re-admitted before disclosure.
-    /// Original and remaining source balances never leave this factory.
+    /// Derive one foreign settlement for the capability holder's own open
+    /// draft. Only the admitted posting effects are returned; the remaining
+    /// native/base balances in an ordinary settlement explanation stay private.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn prepare_fx_settlement_in_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        name: &str,
+        request: &FxSettlementRequest,
+        template: EntryPayload,
+        budget: &mut ArithmeticBudget<'_, impl Sized>,
+    ) -> Outcome<EntryPayload> {
+        self.prepare_fx_settlement_group_in_draft(
+            cx,
+            capability,
+            name,
+            std::slice::from_ref(request),
+            template,
+            budget,
+        )
+        .await
+    }
+
+    /// Derive a complete group of explicitly named foreign items under one
+    /// confined draft admission. Declared amounts, routes and canonical target
+    /// legs are admitted before history hydration, and every generated effect
+    /// is readmitted after exact carrying and allocated-valuation replay.
     #[allow(clippy::too_many_arguments)]
     pub async fn prepare_fx_settlement_group_in_draft(
         &mut self,

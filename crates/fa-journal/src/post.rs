@@ -1209,6 +1209,41 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
         Ok(scope) => scope,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    // Complete carrying history can be hydrated before member preparation.
+    // Admit that source observation here too, for direct, plan and batch
+    // entrypoints. Only the private draft token permits named-source planning
+    // under its original branch-confined capability instead of general Read.
+    if crate::carrying::is_source_bound(proposal) {
+        if admission.admits_confined_draft_sources(&req.capability) {
+            // Do not assume a caller used a preparation factory: native
+            // drafts may contain hand-built proposals. All named Rates must
+            // pass the same typed disclosure gate before hydrating history.
+            if let Some(totals) = &proposal.base_totals {
+                if totals.rate_doc_oids.len() > fa_model::limits::MAX_RATE_DOCS {
+                    return Ok(Err(Refusal::new(
+                        code::SETTLE_SHAPE,
+                        exit::REFUSAL,
+                        "draft settlement exceeds the Rate document bound",
+                        "plan §5.7 / §15.2 (bounded typed source derivation)",
+                        "use at most max_rate_docs retained Rate documents",
+                    )));
+                }
+                for oid in &totals.rate_doc_oids {
+                    if let Err(refusal) = crate::redaction::admit_draft_source_record(
+                        db,
+                        book,
+                        &req.capability,
+                        *oid,
+                        crate::redaction::DraftSourceKind::FxRate,
+                    )? {
+                        return Ok(Err(refusal));
+                    }
+                }
+            }
+        } else if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
+            return Ok(Err(refusal));
+        }
+    }
     Ok(Ok(scope))
 }
 
@@ -2271,7 +2306,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
     }
     if crate::carrying::is_source_bound(proposal) {
-        if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
+        // A private draft admission permits only the named-source derivation
+        // already admitted under its original confined planner. Ordinary
+        // plans and direct writes retain whole-book Read/Post admission.
+        if !admission.admits_confined_draft_sources(&req.capability)
+            && let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)?
+        {
             return Ok(Err(refusal));
         }
         // Even the first promoted or rehearsed member, before a transaction

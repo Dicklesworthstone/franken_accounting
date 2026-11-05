@@ -638,6 +638,75 @@ impl DraftSourceKind {
         }
     }
 
+    /// A synchronous derivation of inline source bytes still obeys the same
+    /// governing contract as the asynchronous document reader. Such a factory
+    /// cannot compute from a redacted view, so it refuses before payload access.
+    pub(crate) fn admit_full(self, capability: &Capability) -> Outcome<()> {
+        if let Some(contract) = contracts()?.for_kind(self.kind())
+            && !capability.reveals_contract(contract.id)
+        {
+            return Ok(Err(Refusal::new(
+                code::CAPABILITY,
+                exit::SAFETY,
+                "source-derived planning requires the complete source under its governing redaction contract",
+                "plan §9.6 / §15.2 (draft authority never widens a document disclosure)",
+                "use a capability permitted to read the complete source under its governing redaction contract",
+            )));
+        }
+        Ok(Ok(()))
+    }
+
+    pub(crate) fn admit_record(
+        self,
+        record: &crate::DocumentRecord,
+        book: Id128,
+        oid: Oid,
+        commit: [u8; 32],
+    ) -> Result<(), Refusal> {
+        if record.book_id != book
+            || record.kind != self.kind()
+            || record.mime != self.mime()
+            || record.doc_commit != commit
+            || record.oid() != oid
+        {
+            return Err(self.refusal());
+        }
+        Ok(())
+    }
+
+    fn admit_mirrors(
+        self,
+        book: Id128,
+        oid: Oid,
+        is_document: bool,
+        kind: Option<&CanonicalScalar>,
+        identity: Option<&CanonicalScalar>,
+        digest: Option<&CanonicalScalar>,
+    ) -> Outcome<[u8; 32]> {
+        let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+        let expected = policy.kind_by_tag(self.kind()).ok_or_else(|| {
+            KernelError::Corrupt("a typed draft source has no registered document kind".into())
+        })?;
+        if !is_document
+            || !matches!(kind, Some(CanonicalScalar::Text(value))
+                if value.as_bytes() == expected.name.as_bytes())
+            || !matches!(identity, Some(CanonicalScalar::Bytes(value))
+                if value.as_slice() == book.0)
+        {
+            return Ok(Err(self.refusal()));
+        }
+        let Some(CanonicalScalar::Bytes(bytes)) = digest else {
+            return Ok(Err(self.refusal()));
+        };
+        let Ok(commit) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+            return Ok(Err(self.refusal()));
+        };
+        if document_oid(book, &commit) != oid {
+            return Ok(Err(self.refusal()));
+        }
+        Ok(Ok(commit))
+    }
+
     fn refusal(self) -> Refusal {
         Refusal::new(
             code::CAPABILITY,
@@ -657,17 +726,13 @@ impl DraftSourceKind {
 /// Validate public identity and kind before the document payload is decoded.
 /// Wrong-purpose sources get the same refusal even when their private payload
 /// is corrupt, unavailable or governed by a redaction contract.
-fn admit_draft_source_document<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn admit_draft_source_document<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     oid: Oid,
     source: DraftSourceKind,
 ) -> Outcome<[u8; 32]> {
-    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let expected = policy.kind_by_tag(source.kind()).ok_or_else(|| {
-        KernelError::Corrupt("a typed draft source has no registered document kind".into())
-    })?;
     let txn_cx = ctx.txn();
     let txn = db.begin(&txn_cx)?;
     let vid = document_vid(&oid);
@@ -676,24 +741,49 @@ fn admit_draft_source_document<V: asupersync::fs::Vfs + Clone>(
     let identity = txn.vertex_property(db, vid, property::BOOK_ID)?;
     let digest = txn.vertex_property(db, vid, property::FA_DIGEST)?;
     txn.abort();
-    if is_document != Some(true)
-        || !matches!(kind, Some(CanonicalScalar::Text(value))
-            if value.as_bytes() == expected.name.as_bytes())
-        || !matches!(identity, Some(CanonicalScalar::Bytes(value))
-            if value.as_slice() == book.book_id.0)
-    {
-        return Ok(Err(source.refusal()));
+    source.admit_mirrors(
+        book.book_id,
+        oid,
+        is_document == Some(true),
+        kind.as_ref(),
+        identity.as_ref(),
+        digest.as_ref(),
+    )
+}
+
+/// The synchronous native posting path accepts caller-built proposals too.
+/// Admit their named sources under the same closed kind and governing
+/// contract before history hydration or any source payload interpretation.
+pub(crate) fn admit_draft_source_record<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    oid: Oid,
+    source: DraftSourceKind,
+) -> Outcome<()> {
+    if let Err(refusal) = source.admit_full(capability)? {
+        return Ok(Err(refusal));
     }
-    let Some(CanonicalScalar::Bytes(bytes)) = digest else {
+    let Some(row) = db.vertex(document_vid(&oid))? else {
         return Ok(Err(source.refusal()));
     };
-    let Ok(commit) = <[u8; 32]>::try_from(bytes.as_slice()) else {
-        return Ok(Err(source.refusal()));
+    let commit = match source.admit_mirrors(
+        book.book_id,
+        oid,
+        row.labels.contains(&label::DOCUMENT),
+        prop(&row, property::CODE),
+        prop(&row, property::BOOK_ID),
+        prop(&row, property::FA_DIGEST),
+    )? {
+        Ok(commit) => commit,
+        Err(refusal) => return Ok(Err(refusal)),
     };
-    if document_oid(book.book_id, &commit) != oid {
-        return Ok(Err(source.refusal()));
-    }
-    Ok(Ok(commit))
+    let record = crate::DocumentRecord::decode(&crate::rows::bytes(
+        &row,
+        property::FA_PAYLOAD,
+        "draft source document",
+    )?)?;
+    Ok(source.admit_record(&record, book.book_id, oid, commit))
 }
 
 /// Resolve a source for a typed owned-draft derivation, under the original
@@ -737,17 +827,7 @@ where
         admission.capability(),
         store,
         oid,
-        |record| {
-            if record.book_id != book.book_id
-                || record.kind != source.kind()
-                || record.mime != source.mime()
-                || record.doc_commit != commit
-                || record.oid() != oid
-            {
-                return Err(source.refusal());
-            }
-            Ok(())
-        },
+        |record| source.admit_record(record, book.book_id, oid, commit),
     )
     .await?;
     ctx.query()

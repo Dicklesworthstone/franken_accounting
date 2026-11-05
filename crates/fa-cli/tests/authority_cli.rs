@@ -1129,6 +1129,47 @@ mod source_draft_tests {
             )
         }
 
+        fn carrying_sources(&mut self, count: usize) -> (Vec<String>, String) {
+            self.owner(
+                &["chart", "import", "-"],
+                Some(r#"{"accounts":[{"code":"3900","name":"FX conversion","type":"Equity","unit":"any-currency"},{"code":"4900","name":"Realized FX","type":"Revenue","unit":"USD"}]}"#),
+            );
+            self.owner(
+                &["party", "add", "-"],
+                Some(r#"{"code":"VENDOR","kind":"Vendor","name":"Foreign supplier"}"#),
+            );
+            let mut targets = Vec::new();
+            for index in 0..count {
+                let input = format!(
+                    r#"{{"effective_date":"{DATE}","idempotency_key":"source-bill-{index}","evidence":["{}"],"legs":[{{"side":"debit","account":"6100","amount":"100.00 EUR"}},{{"side":"credit","account":"2100","party":"VENDOR","amount":"100.00 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{}"]}}}}"#,
+                    self.evidence, self.rate,
+                );
+                let posted = self.owner(&["post", "--intent", "-", "--yes"], Some(&input));
+                targets.push(text(field(&posted, "data"), "vid").to_string());
+            }
+            let rate = self.owner(
+                &["fx", "rate", "add", "--from-json", "-"],
+                Some(r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"6","rate_den":"5","rounding":"HalfEven","as_of":"2026-03-15","retrieved_at_ns":1772712000000000000,"purpose":"settlement","source":"independently retained settlement quote"}"#),
+            );
+            (targets, text(field(&rate, "data"), "oid").to_string())
+        }
+
+        fn carrying_intent(&self, key: &str, targets: &[String], rate: &str) -> String {
+            let legs = targets
+                .iter()
+                .map(|target| {
+                    format!(
+                        r#"{{"side":"credit","account":"1000","amount":"120.00 USD"}},{{"side":"debit","account":"2100","party":"VENDOR","amount":"100.00 EUR","settles":[{{"entry":"{target}","ordinal":1,"amount":"100.00 EUR"}}]}}"#,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                r#"{{"effective_date":"{DATE}","idempotency_key":"{key}","evidence":["{}"],"legs":[{legs}],"fx":{{"law":"SettlementCarryingBasis","rates":["D:{rate}"],"conversion_account":"3900","realized_fx_account":"4900"}}}}"#,
+                self.evidence,
+            )
+        }
+
         fn external_source(&mut self) -> String {
             let input = format!(
                 r#"{{"feed":"vendor-ap","batch_key":"march-confined","effective_date":"{DATE}","rows":[{{"source_digest":"{}","account":"6000","side":"debit","amount":"100.00 USD"}},{{"source_digest":"{}","account":"2000","side":"credit","amount":"100.00 USD"}}]}}"#,
@@ -1549,6 +1590,183 @@ mod source_draft_tests {
         assert_eq!(field(&refused, "coordinate"), &Json::Null);
         assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-011");
         assert_eq!(f.book.head().unwrap(), head);
+    }
+
+    #[test]
+    fn post_only_draft_capability_plans_a_carrying_value_payment() {
+        let mut f = Fixture::new();
+        let (targets, rate) = f.carrying_sources(1);
+        let name = "foreign-payments";
+        let (cap, authority) = f.agent("payment-agent", Some(name));
+        f.open(&authority, name);
+        let before = f.owner(&["tb", "--period", "FY2026-P03"], None);
+        let applies = format!("{}:1=100.00 EUR", targets[0]);
+        let evidence = f.evidence.clone();
+        let (exit, result) = f.bound(
+            &authority,
+            &[
+                "payment",
+                "--party",
+                "VENDOR",
+                "--number",
+                "confined-payment",
+                "--date",
+                DATE,
+                "--cash",
+                "1000",
+                "--payable",
+                "2100",
+                "--amount",
+                "120.00 USD",
+                "--applies",
+                &applies,
+                "--fx-rate",
+                &rate,
+                "--fx-law",
+                "SettlementCarryingBasis",
+                "--conversion",
+                "3900",
+                "--realized-fx",
+                "4900",
+                "--evidence",
+                &evidence,
+                "--draft",
+                name,
+            ],
+            None,
+        );
+        assert_eq!(exit, 0, "{result:?}");
+        assert_eq!(text(&result, "event"), "draft_planned");
+        let reviewed = f.book.draft_entries(&cap, name).unwrap().unwrap();
+        assert_eq!(reviewed.len(), 1);
+        let proposal = &reviewed[0].proposal;
+        assert_eq!(proposal.legs.len(), 5);
+        let applying = proposal
+            .legs
+            .iter()
+            .find(|leg| !leg.settles.is_empty())
+            .unwrap();
+        assert_eq!(applying.amount.mantissa, 10_000);
+        assert_eq!(applying.base_amount.unwrap().mantissa, 11_000);
+        assert_eq!(
+            applying.settles[0].target.vid,
+            VId(u128::from_str_radix(&targets[0], 16).unwrap()),
+        );
+        let realized = proposal
+            .legs
+            .iter()
+            .find(|leg| leg.account_ref == fa_model::account_vid(f.book.context().book_id, "4900"))
+            .unwrap();
+        assert_eq!(realized.amount.mantissa, 1_000);
+        assert_eq!(realized.side, fa_money::Side::Debit);
+        let planned = VId(u128::from_str_radix(text(field(&result, "data"), "entry"), 16).unwrap());
+        assert!(f.book.read_entry(planned).unwrap().is_none());
+        let after = f.owner(&["tb", "--period", "FY2026-P03"], None);
+        assert_eq!(
+            field(field(&before, "data"), "rows"),
+            field(field(&after, "data"), "rows")
+        );
+        for args in [
+            vec!["entry", "show", targets[0].as_str()],
+            vec!["document", "read", rate.as_str()],
+        ] {
+            let (exit, refused) = f.bound(&authority, &args, None);
+            assert_eq!(exit, 7, "{refused:?}");
+            assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-011");
+            assert_eq!(field(&refused, "coordinate"), &Json::Null);
+        }
+        f.promote_exact(&cap, name, 1);
+    }
+
+    #[test]
+    fn post_only_draft_capability_plans_a_group_of_carrying_value_payments() {
+        let mut f = Fixture::new();
+        let (targets, rate) = f.carrying_sources(2);
+        let name = "foreign-payment-group";
+        let (cap, authority) = f.agent("group-payment-agent", Some(name));
+        f.open(&authority, name);
+        let input = f.carrying_intent("confined-payment-group", &targets, &rate);
+        let (exit, result) = f.bound(
+            &authority,
+            &["post", "--intent", "-", "--draft", name],
+            Some(&input),
+        );
+        assert_eq!(exit, 0, "{result:?}");
+        assert_eq!(text(&result, "event"), "draft_planned");
+        let reviewed = f.book.draft_entries(&cap, name).unwrap().unwrap();
+        assert_eq!(reviewed.len(), 1);
+        let applications = reviewed[0]
+            .proposal
+            .legs
+            .iter()
+            .filter(|leg| !leg.settles.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(applications.len(), 2);
+        for (leg, target) in applications.iter().zip(&targets) {
+            assert_eq!(
+                leg.settles[0].target.vid,
+                VId(u128::from_str_radix(target, 16).unwrap())
+            );
+            assert_eq!(leg.amount.mantissa, 10_000);
+            assert_eq!(leg.base_amount.unwrap().mantissa, 11_000);
+        }
+        f.promote_exact(&cap, name, 1);
+    }
+
+    #[test]
+    fn promotion_readmits_draft_carrying_settlement_after_trunk_consumes_its_source() {
+        let mut f = Fixture::new();
+        let (targets, rate) = f.carrying_sources(1);
+        let name = "stale-foreign-payment";
+        let (_, authority) = f.agent("stale-payment-agent", Some(name));
+        f.open(&authority, name);
+        let proposed = f.carrying_intent("reviewed-payment", &targets, &rate);
+        let (exit, planned) = f.bound(
+            &authority,
+            &["post", "--intent", "-", "--draft", name],
+            Some(&proposed),
+        );
+        assert_eq!(exit, 0, "{planned:?}");
+        let consumed = f.carrying_intent("separate-trunk-payment", &targets, &rate);
+        f.owner(&["post", "--intent", "-", "--yes"], Some(&consumed));
+        let before = f.book.head().unwrap();
+        let mut argv = vec!["--book".to_string(), f.dir.to_string_lossy().into_owned()];
+        argv.extend(
+            [
+                "draft",
+                "promote",
+                name,
+                "--date",
+                DATE,
+                "--as",
+                "independent-controller",
+                "--yes",
+                "--json",
+            ]
+            .map(str::to_string),
+        );
+        let (exit, out) = fa_cli::cli::run(
+            &argv,
+            Books::Held {
+                book: &mut f.book,
+                dir: f.dir.clone(),
+            },
+            Files {
+                cwd: None,
+                stdin: Stdin::Missing,
+            },
+            true,
+        );
+        assert!(matches!(exit, 3 | 6), "{out:?}");
+        let refused = result_event(&out);
+        assert_eq!(text(&refused, "event"), "refusal");
+        assert_eq!(
+            f.book.head().unwrap(),
+            before,
+            "rejected promotion commits no partial effects"
+        );
+        let vid = VId(u128::from_str_radix(text(field(&planned, "data"), "entry"), 16).unwrap());
+        assert!(f.book.read_entry(vid).unwrap().is_none());
     }
 
     #[test]
