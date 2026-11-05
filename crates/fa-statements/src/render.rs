@@ -763,10 +763,9 @@ fn render_pdf_table(
     font: &Font,
     layout: &PdfTableLayout,
 ) -> Result<i64, StatementError> {
-    // The unit line and the column headers take 28 points above the first
-    // row; a table whose first row would fall below the margin starts on a
-    // new page.
-    if !table.rows.is_empty() && y - 28 < PDF_BOTTOM {
+    // Reserve the unit line and column headers even for an empty table;
+    // any first data row also stays above the bottom margin.
+    if y - 28 < PDF_BOTTOM {
         y = next_pdf_page(pages, s, ir);
     }
     y = render_pdf_table_heading(s, table, y, false, font, layout)?;
@@ -2465,6 +2464,39 @@ mod tests {
             render_flow_of_funds_diagram(Id128([0x44; 16]), 15, "USD", 2, &nodes, &bad_edge,)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn empty_pdf_tables_keep_every_heading_inside_the_page() {
+        let (definition, statement) = sample_bs(10, 50_025, 12_005);
+        let mut ir = render_statement_ir(&statement, &definition, &sample_units()).unwrap();
+        let mut empty = ir.tables[0].clone();
+        empty.rows.clear();
+        ir.tables = vec![empty; 64];
+        let ir = StatementMarkdownIr::decode(&ir.canonical_bytes().unwrap()).unwrap();
+        let before = ir.canonical_bytes().unwrap();
+        for render in [render_pdf, render_pdfa] {
+            let bytes = render(&ir, 1_792_454_400).unwrap();
+            let text = String::from_utf8_lossy(&bytes);
+            let headings: Vec<_> = text
+                .lines()
+                .filter(|line| line.starts_with("BT /F1 9 Tf "))
+                .collect();
+            assert_eq!(
+                headings.len(),
+                64,
+                "every empty table has a visible heading"
+            );
+            for heading in headings {
+                assert!(heading.contains("(Unit: USD "));
+                let y: i64 = heading.split_whitespace().nth(5).unwrap().parse().unwrap();
+                // The column baseline is fourteen points below the unit
+                // caption and must remain above the 48-point margin.
+                assert!((62..=750).contains(&y), "off-page heading: {heading}");
+            }
+            assert!(text.matches("/Type /Page /Parent").count() > 1);
+        }
+        assert_eq!(ir.canonical_bytes().unwrap(), before);
     }
 
     /// A trial balance longer than one page continues on later pages with
