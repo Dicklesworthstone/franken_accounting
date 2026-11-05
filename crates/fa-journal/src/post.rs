@@ -2294,7 +2294,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
     }
     if crate::carrying::is_source_bound(proposal) {
-        if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
+        // Named-draft owners were admitted before source hydration and every
+        // generated effect above. Their private draft token grants no general
+        // Read; ordinary planning/commit still requires whole-book FX authority.
+        if !admission.admits_confined_draft_sources(&req.capability)
+            && let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)?
+        {
             return Ok(Err(refusal));
         }
         // Even the first promoted or rehearsed member, before a transaction

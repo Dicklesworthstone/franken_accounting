@@ -1346,83 +1346,151 @@ mod source_draft_tests {
 
     #[test]
     fn post_only_draft_capability_plans_a_carrying_fx_settlement() {
-        let mut f = Fixture::new();
-        f.owner(&["chart", "import", "-"], Some(r#"{"accounts":[{"code":"3900","name":"FX Conversion","type":"Equity","unit":"any-currency"},{"code":"4900","name":"Realized FX","type":"Revenue","unit":"USD"}]}"#));
-        let purchase = f.fx_intent("retained-foreign-payable");
-        let posted = f.owner(&["post", "--intent", "-"], Some(&purchase));
-        let target = text(field(&posted, "data"), "vid").to_string();
-        let target_vid = VId(u128::from_str_radix(&target, 16).unwrap());
-        let (source, _) = f.book.read_entry(target_vid).unwrap().unwrap();
-        let settlement = f.owner(&["fx", "rate", "add", "--from-json", "-"], Some(r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"12","rate_den":"10","rounding":"HalfEven","as_of":"2026-03-15","retrieved_at_ns":1772712000000000000,"purpose":"settlement","source":"independently retained settlement quote"}"#));
-        let rate = text(field(&settlement, "data"), "oid").to_string();
-        let payment = format!(
-            r#"{{"effective_date":"{DATE}","idempotency_key":"confined-fx-payment","evidence":["{}"],"legs":[{{"side":"debit","account":"2100","amount":"100.00 EUR","settles":[{{"entry":"{target}","ordinal":1,"amount":"100.00 EUR"}}]}},{{"side":"credit","account":"1000","amount":"120.00 USD"}}],"fx":{{"law":"SettlementCarryingBasis","rates":["D:{rate}"],"conversion_account":"3900","realized_fx_account":"4900"}}}}"#,
-            f.evidence
-        );
-        let name = "foreign-payments";
-        let (cap, authority) = f.agent("foreign-payment-agent", Some(name));
-        f.open(&authority, name);
-        let before = f.owner(&["tb", "--period", "FY2026-P03"], None);
-        let head = f.book.head().unwrap();
-        let (exit, refused) = f.bound(
-            &authority,
-            &["post", "--intent", "-", "--draft", "another-draft"],
-            Some(&payment),
-        );
-        assert_eq!(exit, 7, "{refused:?}");
-        assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-011");
-        assert_eq!(f.book.head().unwrap(), head);
-        let (exit, result) = f.bound(
-            &authority,
-            &["post", "--intent", "-", "--draft", name],
-            Some(&payment),
-        );
-        assert_eq!(exit, 0, "{result:?}");
-        assert_eq!(text(&result, "event"), "draft_planned");
-        let reviewed = f.book.draft_entries(&cap, name).unwrap().unwrap();
-        assert_eq!(reviewed.len(), 1);
-        let proposal = &reviewed[0].proposal;
-        assert_eq!(proposal.legs.len(), 5);
-        assert_eq!(
-            proposal.base_totals.as_ref().unwrap().fx_law_oid,
-            fa::FxLawId::SettlementCarryingBasis.oid()
-        );
-        let control = &proposal.legs[0];
-        assert_eq!(control.amount.mantissa, 10_000);
-        assert_eq!(control.base_amount.unwrap().mantissa, 11_000);
-        assert_eq!(control.settles.len(), 1);
-        assert_eq!(control.settles[0].target.vid, target_vid);
-        assert_eq!(control.settles[0].target.entry_digest, source.entry_digest);
-        assert_eq!(control.settles[0].ordinal, 1);
-        assert_eq!(control.settles[0].amount, control.amount);
-        let cash = &proposal.legs[3];
-        assert_eq!(
-            cash.account_ref,
-            fa_model::account_vid(f.book.context().book_id, "1000")
-        );
-        assert_eq!(cash.side, fa_money::Side::Credit);
-        assert_eq!(cash.amount.mantissa, 12_000);
-        let loss = &proposal.legs[4];
-        assert_eq!(
-            loss.account_ref,
-            fa_model::account_vid(f.book.context().book_id, "4900")
-        );
-        assert_eq!(loss.side, fa_money::Side::Debit);
-        assert_eq!(loss.amount.mantissa, 1_000);
-        let after = f.owner(&["tb", "--period", "FY2026-P03"], None);
-        assert_eq!(
-            field(field(&before, "data"), "rows"),
-            field(field(&after, "data"), "rows")
-        );
-        for args in [
-            vec!["entry", "show", target.as_str()],
-            vec!["document", "read", rate.as_str()],
-        ] {
-            let (exit, refusal) = f.bound(&authority, &args, None);
-            assert_eq!(exit, 7, "{refusal:?}");
-            assert_eq!(text(field(&refusal, "data"), "refusal_id"), "FA-REF-011");
+        for allocated in [false, true] {
+            let mut f = Fixture::new();
+            f.owner(&["chart", "import", "-"], Some(r#"{"accounts":[{"code":"3900","name":"FX Conversion","type":"Equity","unit":"any-currency"},{"code":"4900","name":"Realized FX","type":"Revenue","unit":"USD"}]}"#));
+            let purchase = f.fx_intent("retained-foreign-payable");
+            let posted = f.owner(&["post", "--intent", "-"], Some(&purchase));
+            let target = text(field(&posted, "data"), "vid").to_string();
+            let target_vid = VId(u128::from_str_radix(&target, 16).unwrap());
+            let (source, _) = f.book.read_entry(target_vid).unwrap().unwrap();
+            if allocated {
+                f.owner(&["chart", "import", "-"], Some(r#"{"accounts":[{"code":"2190","name":"Payable Valuation","type":"Liability","unit":"USD"},{"code":"6700","name":"Unrealized Loss","type":"Expense","unit":"USD"}]}"#));
+                f.owner(&["period", "open", "FY2026-P04"], None);
+                f.owner(
+                    &[
+                        "fx",
+                        "routes",
+                        "set",
+                        "--route",
+                        "2100:2190:6700",
+                        "--effective-from",
+                        DATE,
+                        "--key",
+                        "confined-valuation-route",
+                        "--yes",
+                    ],
+                    None,
+                );
+                let closing = f.owner(&["fx", "rate", "add", "--from-json", "-"], Some(r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"12","rate_den":"10","rounding":"HalfEven","as_of":"2026-03-31","retrieved_at_ns":1772712000000000000,"purpose":"period_close","source":"retained period-end quote"}"#));
+                let closing_rate = format!("D:{}", text(field(&closing, "data"), "oid"));
+                f.owner(
+                    &[
+                        "fx",
+                        "revalue",
+                        "--period",
+                        "FY2026-P03",
+                        "--account",
+                        "2100",
+                        "--rate",
+                        &closing_rate,
+                        "--key",
+                        "confined-item-revaluation",
+                        "--allocate-open-items",
+                        "--yes",
+                    ],
+                    None,
+                );
+            }
+            let payment_date = if allocated { "2026-04-05" } else { DATE };
+            let law = if allocated {
+                fa::FxLawId::SettlementAllocatedCarrying
+            } else {
+                fa::FxLawId::SettlementCarryingBasis
+            };
+            let quote = format!(
+                r#"{{"base_unit":"USD","quote_unit":"EUR","rate_num":"12","rate_den":"10","rounding":"HalfEven","as_of":"{payment_date}","retrieved_at_ns":1772712000000000000,"purpose":"settlement","source":"independently retained settlement quote"}}"#
+            );
+            let settlement = f.owner(&["fx", "rate", "add", "--from-json", "-"], Some(&quote));
+            let rate = text(field(&settlement, "data"), "oid").to_string();
+            let payment = format!(
+                r#"{{"effective_date":"{payment_date}","idempotency_key":"confined-fx-payment","evidence":["{}"],"legs":[{{"side":"debit","account":"2100","amount":"100.00 EUR","settles":[{{"entry":"{target}","ordinal":1,"amount":"100.00 EUR"}}]}},{{"side":"credit","account":"1000","amount":"120.00 USD"}}],"fx":{{"law":"{}","rates":["D:{rate}"],"conversion_account":"3900","realized_fx_account":"4900"}}}}"#,
+                f.evidence,
+                law.name()
+            );
+            let name = "foreign-payments";
+            let (cap, authority) = f.agent("foreign-payment-agent", Some(name));
+            f.open(&authority, name);
+            let before = f.owner(&["tb", "--period", "FY2026-P03"], None);
+            let head = f.book.head().unwrap();
+            let (exit, refused) = f.bound(
+                &authority,
+                &["post", "--intent", "-", "--draft", "another-draft"],
+                Some(&payment),
+            );
+            assert_eq!(exit, 7, "{refused:?}");
+            assert_eq!(text(field(&refused, "data"), "refusal_id"), "FA-REF-011");
+            assert_eq!(f.book.head().unwrap(), head);
+            let (exit, result) = f.bound(
+                &authority,
+                &["post", "--intent", "-", "--draft", name],
+                Some(&payment),
+            );
+            assert_eq!(exit, 0, "{result:?}");
+            assert_eq!(text(&result, "event"), "draft_planned");
+            let reviewed = f.book.draft_entries(&cap, name).unwrap().unwrap();
+            assert_eq!(reviewed.len(), 1);
+            let proposal = &reviewed[0].proposal;
+            assert_eq!(proposal.legs.len(), if allocated { 7 } else { 5 });
+            assert_eq!(proposal.base_totals.as_ref().unwrap().fx_law_oid, law.oid());
+            if allocated {
+                let (_, bytes) = proposal
+                    .extensions
+                    .iter()
+                    .find(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION)
+                    .unwrap();
+                let basis = fa_model::FxSettlementValuationBasis::decode(bytes).unwrap();
+                assert_eq!(basis.items.len(), 1);
+                let release = &basis.items[0];
+                assert_eq!(release.historical_relief.mantissa, 11_000);
+                assert_eq!(release.total_relief.mantissa, 12_000);
+                assert_eq!(release.valuation_relief.mantissa, 1_000);
+                assert_eq!(
+                    release.valuation_account,
+                    fa_model::account_vid(f.book.context().book_id, "2190")
+                );
+                assert_eq!(
+                    release.unrealized_account,
+                    fa_model::account_vid(f.book.context().book_id, "6700")
+                );
+            }
+            let control = &proposal.legs[0];
+            assert_eq!(control.amount.mantissa, 10_000);
+            assert_eq!(control.base_amount.unwrap().mantissa, 11_000);
+            assert_eq!(control.settles.len(), 1);
+            assert_eq!(control.settles[0].target.vid, target_vid);
+            assert_eq!(control.settles[0].target.entry_digest, source.entry_digest);
+            assert_eq!(control.settles[0].ordinal, 1);
+            assert_eq!(control.settles[0].amount, control.amount);
+            let cash = &proposal.legs[3];
+            assert_eq!(
+                cash.account_ref,
+                fa_model::account_vid(f.book.context().book_id, "1000")
+            );
+            assert_eq!(cash.side, fa_money::Side::Credit);
+            assert_eq!(cash.amount.mantissa, 12_000);
+            let loss = &proposal.legs[4];
+            assert_eq!(
+                loss.account_ref,
+                fa_model::account_vid(f.book.context().book_id, "4900")
+            );
+            assert_eq!(loss.side, fa_money::Side::Debit);
+            assert_eq!(loss.amount.mantissa, 1_000);
+            let after = f.owner(&["tb", "--period", "FY2026-P03"], None);
+            assert_eq!(
+                field(field(&before, "data"), "rows"),
+                field(field(&after, "data"), "rows")
+            );
+            for args in [
+                vec!["entry", "show", target.as_str()],
+                vec!["document", "read", rate.as_str()],
+            ] {
+                let (exit, refusal) = f.bound(&authority, &args, None);
+                assert_eq!(exit, 7, "{refusal:?}");
+                assert_eq!(text(field(&refusal, "data"), "refusal_id"), "FA-REF-011");
+            }
+            f.promote_exact(&cap, name, 1);
         }
-        f.promote_exact(&cap, name, 1);
     }
 
     #[test]
