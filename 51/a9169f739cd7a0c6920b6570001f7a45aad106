@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=51a9169f739cd7a0c6920b6570001f7a45aad106
+tree=55a63649cc2d8bfb43cc1fa32fbf96833379d65e
+lane=remote
+host=hetzner1:Linux-x86_64
+worker=hz3
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=8
+check_status=PASS
+check_seconds=93
+log_dir=/home/ubuntu/.codex/artifacts/fa-reality-20261104.zysJCz/tier0-final
+recorded_utc=2026-11-05T02:41:38Z
