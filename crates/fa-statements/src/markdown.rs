@@ -137,11 +137,13 @@ impl StatementMarkdownIr {
                 || presented.definition_version != self.definition_version
                 || presented.definition_digest != self.definition_digest
                 || presented.columns.len().checked_add(2) != Some(table.headers.len())
-                || !presented
+                || presented
                     .columns
                     .iter()
-                    .map(|column| column.label.as_str())
-                    .eq(table.headers.iter().skip(2).map(String::as_str))
+                    .zip(table.headers.iter().skip(2))
+                    .any(|(column, header)| {
+                        column_header(&column.label, &column.periods) != *header
+                    })
                 || presented
                     .lines
                     .iter()
@@ -580,6 +582,17 @@ fn hex_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Generic labels such as `current` must not hide a report's named periods.
+/// A caller already using the exact period list as its label keeps its bytes.
+fn column_header(label: &str, periods: &[String]) -> String {
+    let scope = periods.join(", ");
+    if scope.is_empty() || scope == label {
+        label.to_string()
+    } else {
+        format!("{label} ({scope})")
+    }
+}
+
 /// Build the deterministic Markdown IR for a `Statement` (`fa-9ae`, `fa-cet`).
 pub fn render_statement_ir(
     statement: &Statement,
@@ -602,7 +615,7 @@ pub fn render_statement_ir(
     headers.push("Code".to_string());
     headers.push("Line".to_string());
     for col in &statement.columns {
-        headers.push(col.label.clone());
+        headers.push(column_header(&col.label, &col.periods));
     }
     let mut alignments = vec![ColumnAlignment::Left, ColumnAlignment::Left];
     alignments.extend(std::iter::repeat_n(
@@ -726,6 +739,14 @@ pub fn render_restatement_diff_ir(
             "restatement diff primary columns must cover the same period set".into(),
         ));
     }
+    if originally_reported.columns[0].effective_from != currently_stated.columns[0].effective_from
+        || originally_reported.columns[0].effective_through
+            != currently_stated.columns[0].effective_through
+    {
+        return Err(StatementError::Input(
+            "restatement diff primary columns must cover the same effective bounds".into(),
+        ));
+    }
 
     let unit_map = validate_unit_specs(units)?;
     let mut distinct_units: Vec<u32> = currently_stated.lines.iter().map(|l| l.unit_id).collect();
@@ -735,11 +756,17 @@ pub fn render_restatement_diff_ir(
     let headers = vec![
         "Code".to_string(),
         "Line".to_string(),
-        format!(
-            "As Originally Reported (seq {})",
-            originally_reported.known_at
+        column_header(
+            &format!(
+                "As Originally Reported (seq {})",
+                originally_reported.known_at
+            ),
+            &originally_reported.columns[0].periods,
         ),
-        format!("As Currently Stated (seq {})", currently_stated.known_at),
+        column_header(
+            &format!("As Currently Stated (seq {})", currently_stated.known_at),
+            &currently_stated.columns[0].periods,
+        ),
         "Restatement Delta".to_string(),
     ];
     let alignments = vec![
@@ -763,10 +790,10 @@ pub fn render_restatement_diff_ir(
                 .lines
                 .iter()
                 .find(|l| l.code == def_line.code && l.unit_id == unit_id)
-                .map(|l| l.amounts[0])
+                .and_then(|line| line.amounts.first().copied())
                 .ok_or_else(|| {
                     StatementError::Input(format!(
-                        "originally_reported missing line `{}` in unit {unit_id}",
+                        "originally_reported missing primary amount for line `{}` in unit {unit_id}",
                         def_line.code
                     ))
                 })?;
@@ -774,10 +801,10 @@ pub fn render_restatement_diff_ir(
                 .lines
                 .iter()
                 .find(|l| l.code == def_line.code && l.unit_id == unit_id)
-                .map(|l| l.amounts[0])
+                .and_then(|line| line.amounts.first().copied())
                 .ok_or_else(|| {
                     StatementError::Input(format!(
-                        "currently_stated missing line `{}` in unit {unit_id}",
+                        "currently_stated missing primary amount for line `{}` in unit {unit_id}",
                         def_line.code
                     ))
                 })?;
@@ -1431,6 +1458,105 @@ mod tests {
     }
 
     #[test]
+    fn generic_column_headers_disclose_periods_and_keep_rounded_scope() {
+        use crate::custom::{
+            CustomStatementDefinition, PresentationRoundingSpec, apply_presentation_rounding,
+        };
+        use fa_money::RoundingLaw;
+
+        let (definition, mut statement) = sample_statement(10, 19_060, 3_540);
+        statement.columns[0].label = "current".into();
+        let source_bytes = statement.canonical_bytes().unwrap();
+        let units = [UnitFormatSpec {
+            unit_id: 1,
+            code: "USD".into(),
+            scale: 2,
+        }];
+        let exact = render_statement_ir(&statement, &definition, &units).unwrap();
+        assert_eq!(exact.tables[0].headers[2], "current (FY2026-P03)");
+        assert!(exact.markdown.contains("current (FY2026-P03)"));
+        let mut other = statement.clone();
+        other.columns[0].periods = vec!["FY2026-P02".into()];
+        let other_ir = render_statement_ir(&other, &definition, &units).unwrap();
+        assert_eq!(other_ir.tables[0].headers[2], "current (FY2026-P02)");
+        assert_ne!(exact.digest().unwrap(), other_ir.digest().unwrap());
+        assert_eq!(exact.tables[0].rows, other_ir.tables[0].rows);
+
+        let presented = apply_presentation_rounding(
+            &statement,
+            &CustomStatementDefinition::from_builtin(&definition),
+            &PresentationRoundingSpec {
+                rounding_law: RoundingLaw::HalfEven,
+                scale_reduction_digits: 2,
+                residual_line_code: "presentation_rounding".into(),
+                residual_line_label: "Presentation rounding".into(),
+            },
+        )
+        .unwrap();
+        let rounded = exact
+            .clone()
+            .with_presentation(std::slice::from_ref(&presented))
+            .unwrap();
+        assert_eq!(rounded.tables[0].headers, exact.tables[0].headers);
+        let mut wrong = presented;
+        wrong.columns[0].periods = vec!["FY2026-P02".into()];
+        assert!(exact.with_presentation(&[wrong]).is_err());
+        assert_eq!(statement.canonical_bytes().unwrap(), source_bytes);
+    }
+
+    #[test]
+    fn restatement_diff_refuses_different_effective_bounds() {
+        let (definition, original) = sample_statement(10, 19_060, 3_540);
+        let (_, restated) = sample_statement(25, 19_060, 4_000);
+        let units = [UnitFormatSpec {
+            unit_id: 1,
+            code: "USD".into(),
+            scale: 2,
+        }];
+        render_restatement_diff_ir(&original, &restated, &definition, &units).unwrap();
+        for change_start in [false, true] {
+            let mut changed = restated.clone();
+            if change_start {
+                changed.columns[0].effective_from = Some(DateDay(1));
+            } else {
+                changed.columns[0].effective_through = DateDay(91);
+            }
+            let error =
+                render_restatement_diff_ir(&original, &changed, &definition, &units).unwrap_err();
+            assert!(
+                error.to_string().contains("same effective bounds"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn restatement_diff_refuses_missing_primary_amounts_without_panicking() {
+        let (definition, original) = sample_statement(10, 19_060, 3_540);
+        let (_, restated) = sample_statement(25, 19_060, 4_000);
+        let units = [UnitFormatSpec {
+            unit_id: 1,
+            code: "USD".into(),
+            scale: 2,
+        }];
+        for clear_original in [false, true] {
+            let mut before = original.clone();
+            let mut after = restated.clone();
+            if clear_original {
+                before.lines[0].amounts.clear();
+            } else {
+                after.lines[0].amounts.clear();
+            }
+            let error =
+                render_restatement_diff_ir(&before, &after, &definition, &units).unwrap_err();
+            assert!(
+                error.to_string().contains("missing primary amount"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
     fn rounded_document_ir_preserves_residuals_units_and_exact_source() {
         use crate::custom::{
             CustomStatementDefinition, PresentationRoundingSpec, apply_presentation_rounding,
@@ -1573,6 +1699,26 @@ mod tests {
         let diff_ir = render_restatement_diff_ir(&orig, &restated, &def, &units).unwrap();
         assert_eq!(diff_ir.compared_known_at, Some(10));
         assert_eq!(diff_ir.known_at, 25);
+        assert_eq!(
+            diff_ir.tables[0].headers[2],
+            "As Originally Reported (seq 10) (FY2026-P03)"
+        );
+        assert_eq!(
+            diff_ir.tables[0].headers[3],
+            "As Currently Stated (seq 25) (FY2026-P03)"
+        );
+        let mut other_original = orig.clone();
+        let mut other_restated = restated.clone();
+        other_original.columns[0].periods = vec!["FY2026-P02".into()];
+        other_restated.columns[0].periods = vec!["FY2026-P02".into()];
+        let other_diff =
+            render_restatement_diff_ir(&other_original, &other_restated, &def, &units).unwrap();
+        assert_eq!(
+            other_diff.tables[0].headers[2],
+            "As Originally Reported (seq 10) (FY2026-P02)"
+        );
+        assert_eq!(other_diff.tables[0].rows, diff_ir.tables[0].rows);
+        assert_ne!(other_diff.digest().unwrap(), diff_ir.digest().unwrap());
         // Unclosed earnings changed from 380.20 to 315.20 -> delta = -65.00
         let earnings_row = diff_ir.tables[0]
             .rows

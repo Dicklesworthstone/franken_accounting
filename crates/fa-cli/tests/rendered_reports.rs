@@ -670,8 +670,12 @@ fn large_comparative_pdfa_keeps_exact_values_on_a_wide_page() {
             .unwrap();
         assert!(width > 612 && width <= 14_400);
         assert!(body.contains(&format!("({cash}) Tj")));
-        assert!(body.contains("(FY2026-P03) Tj"));
-        assert!(body.contains("(FY2026-P02) Tj"));
+        assert!(body.contains(r"(current \(FY2026-P03\)) Tj"));
+        assert!(body.contains(r"(comparative \(FY2026-P02\)) Tj"));
+        assert_eq!(
+            text(events[0].get("coordinate").unwrap(), "effective"),
+            "periods:FY2026-P03,FY2026-P02"
+        );
         fa::validate_pdfa2b(&bytes).unwrap();
         refused(&book, &request, 2);
         assert_eq!(
