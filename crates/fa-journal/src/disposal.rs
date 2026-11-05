@@ -614,6 +614,12 @@ fn derive<V: Vfs + Clone>(
             Amount::new(spec.base_unit, outcome.total_relieved_cost),
         ));
     }
+    // A selected live-label population cannot prove that an acquisition or
+    // another immutable Entry was not retired, relabeled or rewritten. Keep
+    // ordered request/law refusals above, but authenticate the complete exact
+    // prefix before any derived cost or source witness can escape. Recorded
+    // retries retain their original prefix, independently of later damage.
+    crate::entry_history::verify_entry_history(db, cx, book, Some(basis.known_at))?;
     Ok(Ok(DerivedDisposal {
         outcome,
         legs,
@@ -672,8 +678,9 @@ fn liveness(
     Ok(live)
 }
 
-/// One authenticated selection, followed by a literal application fold. The
-/// full-prefix guard protects arrivals and migration activation as well as
+/// One fixed-prefix selection, followed by a literal application fold. The
+/// complete Entry creation history is authenticated by `derive` before success.
+/// The full-prefix guard protects arrivals and migration activation as well as
 /// the point-witnessed layers chosen for relief.
 fn read_lots<V: Vfs + Clone>(
     db: &Database<V>,
