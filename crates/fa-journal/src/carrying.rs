@@ -147,6 +147,7 @@ pub struct CarryingAuditWork {
 struct SuccessfulHistoryAudits {
     coordinate: Option<(Id128, CommitSeq)>,
     sources: BTreeSet<VId>,
+    entry_prefix_verified: bool,
     work: CarryingAuditWork,
     history: Option<CarryingHistory>,
     population_work: CarryingPopulationWork,
@@ -161,6 +162,7 @@ impl SuccessfulHistoryAudits {
                 self.population_work.accumulate(history.work());
             }
             self.sources.clear();
+            self.entry_prefix_verified = false;
             self.coordinate = Some((book, at));
         }
     }
@@ -228,6 +230,40 @@ impl SuccessfulHistoryAudits {
             self.sources.insert(source);
         }
         Ok(result)
+    }
+
+    /// Authenticate the selected native Entry history before the complete
+    /// operation succeeds. A group finishes its ordered target checks first,
+    /// so this additional integrity check cannot obscure an earlier refusal.
+    /// Only a successful proof is reused, at this exact immutable coordinate.
+    fn verify_prefix(
+        &mut self,
+        cx: &PurposeContexts,
+        book: Id128,
+        at: CommitSeq,
+        verify: impl FnOnce() -> Result<(), KernelError>,
+    ) -> Result<(), KernelError> {
+        self.select(book, at);
+        cx.query()
+            .checkpoint()
+            .map_err(fgdb::WriteTxnError::Interrupted)?;
+        if !self.entry_prefix_verified {
+            verify()?;
+            self.entry_prefix_verified = true;
+        }
+        Ok(())
+    }
+
+    fn verify_entry_prefix<V: Vfs + Clone>(
+        &mut self,
+        db: &Database<V>,
+        cx: &PurposeContexts,
+        book: &BookContext,
+        at: CommitSeq,
+    ) -> Result<(), KernelError> {
+        self.verify_prefix(cx, book.book_id, at, || {
+            crate::entry_history::verify_entry_history(db, cx, book, Some(at)).map(|_| ())
+        })
     }
 }
 
@@ -336,6 +372,8 @@ pub(crate) fn live(vid: VId, reversals: &BTreeMap<VId, VId>) -> Result<bool, Ker
 /// after current read/post admission or typed owned-draft source admission,
 /// and protects the fold with the complete-prefix publication guard. Draft
 /// source facades return only derived effects, never this source observation.
+/// Every successful result authenticates native Entry creation and immutable
+/// rows through the selected prefix, including unrelated or retired entries.
 pub fn open_item_carrying_at<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
@@ -357,6 +395,10 @@ fn open_item_carrying_with_audits<V: Vfs + Clone>(
     mut audits: Option<&mut SuccessfulHistoryAudits>,
 ) -> Outcome<CarryingOpenItem> {
     cx.query().with_restriction(|| {
+        // Shared callers authenticate the complete selected Entry prefix at
+        // their successful operation boundary, after all ordered target and
+        // source checks. A singleton has no later boundary to perform it.
+        let shared = audits.is_some();
         let result = match audits.as_deref_mut() {
             Some(audits) => audits.read_item(db, cx, book, target, ordinal, at)?,
             None => open_item_carrying_inner(db, cx, book, target, ordinal, at)?,
@@ -372,6 +414,9 @@ fn open_item_carrying_with_audits<V: Vfs + Clone>(
             if let Err(refusal) = verified {
                 return Ok(Err(refusal));
             }
+        }
+        if result.is_ok() && !shared {
+            crate::entry_history::verify_entry_history(db, cx, book, Some(at))?;
         }
         Ok(result)
     })
@@ -1297,9 +1342,26 @@ pub fn prepare_fx_settlement<V: Vfs + Clone>(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
 ) -> Outcome<PreparedFxSettlement> {
     cx.query().with_restriction(|| {
-        prepare_fx_settlement_inner(
-            db, cx, book, capability, None, request, template, budget, None,
-        )
+        let mut audits = SuccessfulHistoryAudits::default();
+        let prepared = match prepare_fx_settlement_inner(
+            db,
+            cx,
+            book,
+            capability,
+            None,
+            request,
+            template,
+            budget,
+            Some(&mut audits),
+        )? {
+            Ok(prepared) => prepared,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        // A one-item preparation retains the group's refusal order: finish
+        // the caller's route, amount, chronology and Rate checks before the
+        // additional whole-prefix integrity proof permits a successful result.
+        audits.verify_entry_prefix(db, cx, book, prepared.carrying.known_at)?;
+        Ok(Ok(prepared))
     })
 }
 
@@ -1456,6 +1518,12 @@ fn prepare_fx_settlement_group_with_admission<V: Vfs + Clone>(
     if let Err(error) = proposal.validate() {
         return Ok(Err(invalid(error)));
     }
+    let at = items
+        .first()
+        .ok_or_else(|| KernelError::Corrupt("nonempty FX group has no carrying item".into()))?
+        .carrying
+        .known_at;
+    audits.verify_entry_prefix(db, cx, book, at)?;
     Ok(Ok(PreparedFxSettlementGroup {
         items,
         proposal,
@@ -1774,6 +1842,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
             return Ok(Err(refusal));
         }
     }
+    audits.verify_entry_prefix(db, cx, book, at)?;
     Ok(Ok(()))
 }
 
@@ -1943,6 +2012,7 @@ fn validate_spot_applications<V: Vfs + Clone>(
             "SettlementSpotCarrying requires at least one foreign application",
         )));
     }
+    audits.verify_entry_prefix(db, cx, book, at)?;
     Ok(Ok(()))
 }
 
@@ -1976,6 +2046,7 @@ pub(crate) fn validate_reversal<V: Vfs + Clone>(
                     return Ok(Err(invalid("exact allocated-settlement undo would exceed original capacity, produce negative carrying, or precede a later item effect")));
                 }
             }
+            audits.verify_entry_prefix(db, cx, book, at)?;
             return Ok(Ok(()));
         }
         if original.class == EntryClass::REVERSAL || original.base_totals.as_ref().is_none_or(|total| {
@@ -1998,6 +2069,7 @@ pub(crate) fn validate_reversal<V: Vfs + Clone>(
                 return Ok(Err(invalid("the original item retains allocated valuation or a later item effect; correct its valuation through a new allocated revaluation before reversing the original")));
             }
         }
+        audits.verify_entry_prefix(db, cx, book, at)?;
         Ok(Ok(()))
     })
 }
@@ -2157,6 +2229,59 @@ mod audit_tests;
 mod tests {
     use super::*;
     use fa_money::UnitId;
+
+    #[test]
+    fn entry_prefix_memo_requires_success_exact_coordinate_and_live_context() {
+        let runtime = asupersync::runtime::RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut audits = SuccessfulHistoryAudits::default();
+        let book = Id128([1; 16]);
+        let other_book = Id128([2; 16]);
+        let at = CommitSeq(17);
+        let later = CommitSeq(18);
+        let mut calls = 0;
+
+        for expected_calls in 1..=2 {
+            assert!(
+                audits
+                    .verify_prefix(&cx, book, at, || {
+                        calls += 1;
+                        Err(KernelError::Corrupt("damaged Entry history".into()))
+                    })
+                    .is_err()
+            );
+            assert_eq!(calls, expected_calls);
+            assert!(!audits.entry_prefix_verified);
+        }
+        for (book, at, expected_calls) in [
+            (book, at, 3),
+            (book, at, 3),
+            (book, later, 4),
+            (book, later, 4),
+            (other_book, later, 5),
+            (book, at, 6),
+            (book, at, 6),
+        ] {
+            audits
+                .verify_prefix(&cx, book, at, || {
+                    calls += 1;
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(calls, expected_calls);
+            assert!(audits.entry_prefix_verified);
+        }
+        root.cancel_fast(asupersync::types::CancelKind::User);
+        let cancelled = audits.verify_prefix(&cx, book, at, || {
+            panic!("a retained successful proof must not be recomputed")
+        });
+        assert!(matches!(
+            cancelled,
+            Err(KernelError::Txn(fgdb::WriteTxnError::Interrupted(_)))
+        ));
+        assert_eq!(calls, 6);
+    }
 
     #[test]
     fn partial_final_and_zero_relief_are_exact_at_i128_boundaries() {
