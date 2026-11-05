@@ -343,3 +343,171 @@ fn a_retained_adjustment_can_reverse_later_using_its_original_translation_quote(
         assert_eq!(h.db.frontier().unwrap(), head);
     }
 }
+
+fn install_foreign_reclassification_accounts(h: &mut Harness, accounts: &[(&str, u8, u8)]) {
+    let foreign = h.book.units.lookup("EUR").unwrap();
+    let accounts = accounts
+        .iter()
+        .map(|&(code, account_type, normal_balance)| AccountSpec {
+            code: code.into(),
+            name: code.into(),
+            account_type,
+            normal_balance,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(foreign),
+            parent_code: None,
+            limit: None,
+        })
+        .collect::<Vec<_>>();
+    let cx = h.ctx();
+    let date = h.day();
+    let description = h
+        .proposal(vec![], b"reclass-chart", EntryClass::ORIGINAL)
+        .description;
+    h.runtime
+        .block_on(install_chart(
+            &mut h.db,
+            &cx,
+            &h.book,
+            &accounts,
+            PRINCIPAL,
+            date,
+            b"foreign-reclassification-chart",
+            description,
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+}
+
+fn native_foreign_reclassification(h: &Harness, target: EntryRef, key: &[u8]) -> EntryPayload {
+    let amount = Amount::new(h.book.units.lookup("EUR").unwrap(), 50);
+    let mut proposal = h.proposal(
+        vec![
+            LegPayload::simple(Side::Credit, account_vid(h.book.book_id, "1288"), amount),
+            LegPayload::simple(Side::Debit, account_vid(h.book.book_id, "1388"), amount),
+        ],
+        key,
+        EntryClass::RECLASSIFICATION,
+    );
+    proposal.supersession = vec![Supersession {
+        target,
+        kind: SupersessionKind::Reclassifies,
+        reason_code: 1,
+    }];
+    proposal
+}
+
+#[test]
+fn a_foreign_reclassification_cannot_omit_its_functional_carrying_value() {
+    // No registered FX law supplies a reclassification's carrying-value
+    // transfer. An absent valuation cannot make that unsupported law vanish.
+    let classes = fa_registry::EntryClasses::embedded().unwrap();
+    let laws = fa_registry::FxLaws::embedded(&classes).unwrap();
+    assert!(laws.laws.iter().all(|law| {
+        !law.admitted_classes
+            .iter()
+            .any(|class| class == "Reclassification")
+    }));
+    for valued in [true, false] {
+        let (mut h, _, mut target) = valued_source();
+        install_foreign_reclassification_accounts(&mut h, &[("1388", 1, 0)]);
+        let (source, _) = read_entry(&h.db, target.vid).unwrap().unwrap();
+        assert_eq!(source.proposal.legs[0].amount.mantissa, 100);
+        assert_eq!(
+            source.proposal.legs[0].base_amount,
+            Some(Amount::new(h.usd, 110))
+        );
+        if !valued {
+            // The historical native-only posting subset still exists; it
+            // does not authorize an unregistered foreign reclassification.
+            let mut unvalued = source.proposal.clone();
+            unvalued.idempotency_key = b"native-only-source".to_vec();
+            unvalued.base_totals = None;
+            for leg in &mut unvalued.legs {
+                leg.base_amount = None;
+            }
+            target = h.post(h.request(unvalued, &["post"])).unwrap().entry_ref();
+        }
+        let proposal = native_foreign_reclassification(&h, target, b"unvalued-reclass");
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let edges = h.db.edges().unwrap();
+        let refusal = h
+            .post(h.request(proposal.clone(), &["post"]))
+            .expect_err("a native move must not leave its functional value on the source");
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (code::CLASS_NOT_IMPLEMENTED, 3)
+        );
+        assert!(refusal.message.contains("Reclassification"), "{refusal}");
+        assert!(refusal.message.contains("carrying"), "{refusal}");
+        assert!(refusal.fix.contains("fa explain lineage"), "{refusal}");
+        let planned = h
+            .post_plan(h.request(proposal, &["read", "post"]))
+            .unwrap_err();
+        assert_eq!(planned.code, code::CLASS_NOT_IMPLEMENTED, "{planned}");
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        assert_eq!(h.db.edges().unwrap(), edges);
+    }
+}
+
+#[test]
+fn base_currency_reclassification_and_retained_foreign_outcomes_keep_their_semantics() {
+    let mut h = harness();
+    let target = h
+        .post(h.request(
+            h.proposal(h.rent_legs(100), b"base-source", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .unwrap()
+        .entry_ref();
+    let mut proposal = h.proposal(
+        vec![
+            LegPayload::simple(Side::Credit, h.rent, Amount::new(h.usd, 50)),
+            LegPayload::simple(Side::Debit, h.receivable, Amount::new(h.usd, 50)),
+        ],
+        b"base-reclass",
+        EntryClass::RECLASSIFICATION,
+    );
+    proposal.supersession = vec![Supersession {
+        target,
+        kind: SupersessionKind::Reclassifies,
+        reason_code: 1,
+    }];
+    assert!(matches!(
+        h.post(h.request(proposal, &["post"])).unwrap(),
+        Posted::Committed { .. }
+    ));
+
+    // Retain the actual earlier native writer's entries, rather than
+    // weakening fresh admission or editing an immutable modern outcome.
+    let mut h = harness_legacy();
+    install_foreign_reclassification_accounts(
+        &mut h,
+        &[("1288", 1, 0), ("1388", 1, 0), ("4088", 4, 1)],
+    );
+    let amount = Amount::new(h.book.units.lookup("EUR").unwrap(), 100);
+    let original = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, account_vid(h.book.book_id, "1288"), amount),
+            LegPayload::simple(Side::Credit, account_vid(h.book.book_id, "4088"), amount),
+        ],
+        b"legacy-foreign-source",
+        EntryClass::ORIGINAL,
+    );
+    let target = outcome_recovery_tests::write_legacy(&mut h, original);
+    let proposal = native_foreign_reclassification(&h, target, b"legacy-foreign-reclass");
+    let entry = outcome_recovery_tests::write_legacy(&mut h, proposal.clone());
+    let head = h.db.frontier().unwrap();
+    assert_eq!(
+        read_entry(&h.db, entry.vid).unwrap().unwrap().0.proposal,
+        proposal
+    );
+    assert!(verify(&h, head).is_green());
+    let repeated = h.post(h.request(proposal, &["post"])).unwrap();
+    assert!(matches!(repeated, Posted::AlreadyRecorded { .. }));
+    assert_eq!(repeated.entry_ref(), entry);
+    assert_eq!(h.db.frontier().unwrap(), head);
+}

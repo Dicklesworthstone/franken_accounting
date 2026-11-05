@@ -774,6 +774,44 @@ pub(crate) fn admit_fresh_claim(proposal: &EntryPayload, claim: &FxClaim) -> Res
     Ok(())
 }
 
+/// A native-only foreign reclassification cannot bypass the absence of a
+/// carrying-transfer law by omitting its functional valuation. The native
+/// shape law does not derive a partial transfer of the source's base amounts
+/// or its retained revaluation adjustments. No registered FX law currently
+/// admits this class, so neither a quoted valuation nor no valuation admits
+/// a fresh foreign-currency move.
+///
+/// Called only after exact recorded-outcome recognition. Historical payloads
+/// and their retries keep their original meaning; base-currency amounts need
+/// no FX law, and nonmonetary quantities are outside this currency constraint.
+pub(crate) fn admit_fresh_reclassification(
+    proposal: &EntryPayload,
+    base_unit: UnitId,
+    units: &UnitRegistry,
+) -> Result<(), Refusal> {
+    let foreign = proposal.legs.iter().find_map(|leg| {
+        if leg.amount.unit == base_unit {
+            return None;
+        }
+        units
+            .get(leg.amount.unit)
+            .filter(|unit| matches!(unit.kind, fa_money::UnitKind::Currency { .. }))
+    });
+    if let Some(unit) = foreign {
+        return Err(Refusal::new(
+            code::CLASS_NOT_IMPLEMENTED,
+            exit::REFUSAL,
+            format!(
+                "Reclassification has no source-bound carrying-value law for {}; native amounts alone cannot transfer its functional carrying value",
+                unit.spelling(),
+            ),
+            "plan §5.2, §6.4, §8.2 (foreign reclassification transfers functional carrying value under a registered law)",
+            "inspect the source with fa explain lineage <entry>; a foreign-currency Reclassification requires a registered source-bound carrying-value law before it can be posted",
+        ));
+    }
+    Ok(())
+}
+
 /// Step 1d of `prepare_post`: structural and entity-level balance checks on
 /// `proposal.base_totals` and `leg.base_amount` before beginning a transaction.
 pub(crate) fn admit_structure(

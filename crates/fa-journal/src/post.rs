@@ -3272,7 +3272,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     //      in-edges (an adjacency witness, so a concurrent one conflicts at
     //      commit), and it moves no more out of any target leg than they left.
     if let Some(target) = reclass_target
-        && let Err(refusal) = reclassification_admissible(&txn, db, book, target, proposal)?
+        && let Err(refusal) =
+            reclassification_admissible(&txn, db, book, spec.base_unit, target, proposal)?
     {
         txn.abort();
         return Ok(Err(refusal));
@@ -5849,9 +5850,14 @@ fn reclassification_admissible<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     book: &BookContext,
+    base_unit: fa_money::UnitId,
     target: EntryRef,
     proposal: &EntryPayload,
 ) -> Outcome<()> {
+    if let Err(refusal) = crate::fx::admit_fresh_reclassification(proposal, base_unit, &book.units)
+    {
+        return Ok(Err(refusal));
+    }
     let Some(row) = txn.vertex(db, target.vid)? else {
         return Ok(Err(reclassification_shape(format!(
             "the Reclassification's target {:032x} is not a committed entry of this book",
