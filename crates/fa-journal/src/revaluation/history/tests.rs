@@ -363,7 +363,11 @@ impl Fixture {
         let stripped = Cx::detached_cancel_context();
         let mut budget =
             ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
-        match history {
+        // These private synchronous observers run beneath a query caller in
+        // production. Install that same purpose-bound context for their
+        // carrying arithmetic rather than calling them from an ambient-free
+        // unit-test thread.
+        self.cx().query().with_restriction(|| match history {
             Some(history) => super::super::observe_using(
                 &self.db,
                 &self.cx(),
@@ -377,7 +381,7 @@ impl Fixture {
             None => {
                 super::super::observe(&self.db, &self.cx(), &self.book, request, at, &mut budget)
             }
-        }
+        })
     }
 
     fn history(&self) -> AuthenticatedHistory {
@@ -415,10 +419,21 @@ fn first_revaluation_skips_shared_history_construction_and_matches_the_literal_o
             let stripped = Cx::detached_cancel_context();
             let mut budget =
                 ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
-            let verified =
-                super::super::observe_verified(&f.db, &f.cx(), &f.book, &request, at, &mut budget)
-                    .unwrap()
-                    .unwrap();
+            let verified = f
+                .cx()
+                .query()
+                .with_restriction(|| {
+                    super::super::observe_verified(
+                        &f.db,
+                        &f.cx(),
+                        &f.book,
+                        &request,
+                        at,
+                        &mut budget,
+                    )
+                })
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 verified, literal,
                 "allocated={allocated}, unrelated={unrelated}"
@@ -525,16 +540,21 @@ fn shared_history_matches_literal_observations_at_distinct_original_and_publicat
             let stripped = Cx::detached_cancel_context();
             let mut budget =
                 ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
-            let verified = super::super::observe_verified(
-                &f.db,
-                &f.cx(),
-                &f.book,
-                &latest.unwrap(),
-                f.db.frontier().unwrap(),
-                &mut budget,
-            )
-            .unwrap()
-            .unwrap();
+            let verified = f
+                .cx()
+                .query()
+                .with_restriction(|| {
+                    super::super::observe_verified(
+                        &f.db,
+                        &f.cx(),
+                        &f.book,
+                        &latest.unwrap(),
+                        f.db.frontier().unwrap(),
+                        &mut budget,
+                    )
+                })
+                .unwrap()
+                .unwrap();
             assert_eq!(verified.history_work(), work);
         }
     }
