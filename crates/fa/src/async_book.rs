@@ -3369,7 +3369,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         leg: u16,
     ) -> Outcome<fa_journal::Balanced> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        Ok(fa_journal::post_balancing(&mut self.db, cx, &self.context, req, leg).await?)
+        Ok(fa_journal::post_balancing(
+            &mut self.db,
+            cx,
+            &self.context,
+            req,
+            leg,
+            Some(&mut self.carried),
+        )
+        .await?)
     }
 
     /// Holds due at the latest committed tick, still reserved until a

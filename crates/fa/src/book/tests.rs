@@ -1115,6 +1115,225 @@ fn resident_replacement_history_matches_cold_plans_and_preserves_atomic_capacity
     });
 }
 
+#[test]
+fn resident_balancing_history_matches_cold_plans_and_current_limit_cells() {
+    under_lab(0x6c34, move |root| async move {
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut fixture = prepared_fixture(&root, 0x6c34).await;
+        let capability = fixture.request.capability.clone();
+        let context = fixture.book.context.clone();
+        let capped = account_vid(context.book_id, "1100");
+        fixture
+            .book
+            .install_chart(
+                &cx,
+                &[AccountSpec {
+                    code: "1100".into(),
+                    name: "Capped cash".into(),
+                    account_type: 1,
+                    normal_balance: 0,
+                    is_leaf: true,
+                    unit_policy: UnitPolicy::Single(fixture.usd),
+                    parent_code: None,
+                    limit: Some(fa_journal::BalanceLimit {
+                        lower: Some(0),
+                        upper: Some(325),
+                        scope: fa_journal::LimitScope::Lifetime,
+                    }),
+                }],
+                capability.holder(),
+                fixture.request.proposal.effective_date,
+                b"resident-balancing-chart",
+                &Capability::embedded(capability.holder(), &["schema_change"]).unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let mut template = fixture.request.clone();
+        template.proposal.legs[0].account_ref = capped;
+        template.proposal.legs[1].account_ref = account_vid(context.book_id, "6000");
+        let request = |key: &str, amount| {
+            let mut request = template.clone();
+            request.proposal.idempotency_key = key.as_bytes().to_vec();
+            for leg in &mut request.proposal.legs {
+                leg.amount = Amount::new(fixture.usd, amount);
+            }
+            request.proposal.unit_totals =
+                EntryPayload::fold_unit_totals(&request.proposal.legs).unwrap();
+            request
+        };
+        let mut suffix_rows = Vec::new();
+        for index in 0..32u32 {
+            let requested = if index == 31 { 100 } else { 10 };
+            let expected = if index == 31 { 15 } else { 10 };
+            let request = request(&format!("resident-balancing-{index:02}"), requested);
+            let proposal = fa_journal::balancing_proposal(request.proposal.clone(), 0).unwrap();
+            let intent = fa_intents::PostIntent::new(proposal, Vec::new()).unwrap();
+            let before = fixture.book.db.frontier().unwrap();
+            let cold = fa_journal::plan_post_with_history(
+                &mut fixture.book.db,
+                &cx,
+                &context,
+                capability.clone(),
+                intent,
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(fixture.book.db.frontier().unwrap(), before);
+            if index == 15 {
+                let mut denied = request.clone();
+                denied.capability = Capability::embedded(capability.holder(), &["read"]).unwrap();
+                let rows = fixture.book.db.vertices().unwrap();
+                let old_prefix = (
+                    fixture.book.carried.reconciliation().unwrap().verified_at(),
+                    fixture.book.carried.capacity().unwrap().verified_at(),
+                );
+                let refusal = fixture
+                    .book
+                    .post_balancing(&cx, denied, 0)
+                    .await
+                    .unwrap()
+                    .unwrap_err();
+                assert_eq!(refusal.code, "FA-REF-011");
+                assert_eq!(fixture.book.db.frontier().unwrap(), before);
+                assert_eq!(fixture.book.db.vertices().unwrap(), rows);
+                assert_eq!(
+                    (
+                        fixture.book.carried.reconciliation().unwrap().verified_at(),
+                        fixture.book.carried.capacity().unwrap().verified_at(),
+                    ),
+                    old_prefix
+                );
+            }
+            let balanced = fixture
+                .book
+                .post_balancing(&cx, request.clone(), 0)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(balanced.requested, requested);
+            assert_eq!(balanced.moved, expected);
+            assert_eq!(
+                balanced.posted.entry_ref().entry_digest,
+                cold.prepared_entry().entry_digest
+            );
+            let (entry, _) = fixture
+                .book
+                .read_entry(&cx, balanced.posted.entry_ref().vid)
+                .unwrap()
+                .unwrap();
+            assert!(
+                entry
+                    .proposal
+                    .legs
+                    .iter()
+                    .all(|leg| leg.amount.mantissa == expected)
+            );
+            let original_request = fa_journal::limit::request_form(&entry.proposal)
+                .unwrap()
+                .unwrap();
+            assert!(
+                original_request
+                    .legs
+                    .iter()
+                    .all(|leg| leg.amount.mantissa == requested)
+            );
+            let reconciliation = fixture.book.carried.reconciliation().unwrap();
+            let capacity = fixture.book.carried.capacity().unwrap();
+            assert_eq!(reconciliation.verified_at(), before);
+            assert_eq!(capacity.verified_at(), before);
+            assert!(capacity.admitted_from_summary());
+            if index > 0 {
+                let rows = (
+                    reconciliation.carried_rows().unwrap(),
+                    capacity.carried_rows().unwrap(),
+                );
+                assert!(rows.0 > 0 && rows.1 > 0);
+                suffix_rows.push(rows);
+            }
+            if index == 31 {
+                // The full limit cannot change the recorded request's outcome.
+                let after = fixture.book.db.frontier().unwrap();
+                let retry = fixture
+                    .book
+                    .post_balancing(&cx, request.clone(), 0)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(retry.requested, 100);
+                assert_eq!(retry.moved, 15);
+                assert_eq!(retry.posted.entry_ref(), balanced.posted.entry_ref());
+                assert_eq!(fixture.book.db.frontier().unwrap(), after);
+                let mut changed = request;
+                for leg in &mut changed.proposal.legs {
+                    leg.amount = Amount::new(fixture.usd, 101);
+                }
+                changed.proposal.unit_totals =
+                    EntryPayload::fold_unit_totals(&changed.proposal.legs).unwrap();
+                let refusal = fixture
+                    .book
+                    .post_balancing(&cx, changed, 0)
+                    .await
+                    .unwrap()
+                    .unwrap_err();
+                assert_eq!(
+                    refusal.code,
+                    fa_journal::refusal::code::IDEMPOTENCY_CONFLICT
+                );
+                assert_eq!(fixture.book.db.frontier().unwrap(), after);
+            }
+        }
+        assert_eq!(suffix_rows.len(), 31);
+        assert!(suffix_rows.windows(2).all(|pair| pair[0] == pair[1]));
+        let refused = request("resident-balancing-full", 1);
+        let before = fixture.book.db.frontier().unwrap();
+        let rows = fixture.book.db.vertices().unwrap();
+        let proposal = fa_journal::balancing_proposal(refused.proposal.clone(), 0).unwrap();
+        let cold = fa_journal::plan_post_with_history(
+            &mut fixture.book.db,
+            &cx,
+            &context,
+            capability.clone(),
+            fa_intents::PostIntent::new(proposal, Vec::new()).unwrap(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        let warm = fixture
+            .book
+            .post_balancing(&cx, refused.clone(), 0)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(cold.code, fa_journal::refusal::code::AVAILABILITY_UPPER);
+        assert_eq!(warm, cold);
+        assert_eq!(fixture.book.db.frontier().unwrap(), before);
+        assert_eq!(fixture.book.db.vertices().unwrap(), rows);
+        // Another admitted write changes the real limit cell. A previous
+        // refusal must not consume the key or poison the carried summary.
+        let mut release = request("resident-balancing-release", 1);
+        for leg in &mut release.proposal.legs {
+            leg.side = match leg.side {
+                Side::Debit => Side::Credit,
+                Side::Credit => Side::Debit,
+            };
+        }
+        release.proposal.unit_totals =
+            EntryPayload::fold_unit_totals(&release.proposal.legs).unwrap();
+        fixture.book.post(&cx, release).await.unwrap().unwrap();
+        let admitted = fixture
+            .book
+            .post_balancing(&cx, refused, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((admitted.requested, admitted.moved), (1, 1));
+    });
+}
+
 fn prepare_fixture_post(
     book: &mut LabBook,
     cx: &PurposeContexts,

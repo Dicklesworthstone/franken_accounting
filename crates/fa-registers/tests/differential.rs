@@ -2221,7 +2221,7 @@ fn kernel_post_balancing(
     let db = &mut k.db;
     let book = &k.book;
     k.runtime
-        .block_on(async move { post_balancing(db, &ctx, book, req, leg).await })
+        .block_on(async move { post_balancing(db, &ctx, book, req, leg, None).await })
         .expect("kernel")
 }
 

@@ -64,7 +64,7 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, VId};
 
 use crate::genesis::{BookContext, UnitPolicy};
-use crate::post::{PostRequest, Posted, post, read_entry};
+use crate::post::{Admission, CarriedHistory, PostRequest, Posted, post_admitted, read_entry};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{AccountRow, mantissa_scalar, prop, scalar_bytes, scalar_text};
 use fa_escrow::{inflow_room, outflow_room};
@@ -1142,19 +1142,22 @@ pub fn review_balancing<V: asupersync::fs::Vfs + Clone>(
 /// Approvals bind the resolved proposal: its actual leg amounts and the
 /// original `fa:balancing:v1` request extension. A different resolved amount
 /// requires a new approval before it can be committed.
+/// A resident owner may retain its verified committed history in `carried`;
+/// the balancing amount still comes from the current transaction's limit cell.
 pub async fn post_balancing<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     mut req: PostRequest,
     leg: u16,
+    carried: Option<&mut CarriedHistory>,
 ) -> Outcome<Balanced> {
     req.proposal = match balancing_proposal(req.proposal, leg) {
         Ok(proposal) => proposal,
         Err(refusal) => return Ok(Err(refusal)),
     };
     let requested = req.proposal.legs[0].amount.mantissa;
-    let posted = match post(db, ctx, book, req).await? {
+    let posted = match post_admitted(db, ctx, book, req, Admission::Commit, carried).await? {
         Ok(posted) => posted,
         Err(refusal) => return Ok(Err(refusal)),
     };
