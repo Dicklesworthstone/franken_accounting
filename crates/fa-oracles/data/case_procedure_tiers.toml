@@ -340,10 +340,12 @@ second_reader_reads_evidence = false
 
 # root-2026-11-03: gross posted account/unit/declared-entity/period/as-of cell versus its RegisterEquals attestation; implicit sole-entity and exact None semantics match the native register. Population count is excluded by case plan section 5.4. Static code review, not runtime evidence.
 # native-replay-validation-2026-11-03: verdict, severity, drift and cited postings depend on that exact cell and its attestation. Historical BookSpec entities exclude informational REA entities; the original evaluated prefix is not re-executed. Independent static code review, not runtime evidence.
+# 2026-11-05: digest refreshed only for the registered one-time index cost;
+# version-2 predicates, classifications and the two recorded reviews are unchanged.
 [[tier]]
 procedure = "recon.assertion_drift"
 version = 2
-row_digest = "98208cf128ca41e42c49d4a9ea148a2367da4fd06cceb3371f334a9634187bdf"
+row_digest = "2a3675bc8418c9fa47ce8996b84000dc4f63d45ba5f8568d3b58ab758aa153be"
 tier = "S-acct"
 code_location = "crates/fa-lantern/src/assertion_drift.rs:44"
 reader = "root-2026-11-03"
