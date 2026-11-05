@@ -6,7 +6,7 @@ use fa_model::{AccessEvent, AccessRecord};
 // The facade integration test records through Book::record_access. This
 // fixture writes the same canonical native object so it can plant deliberate
 // raw-store corruption without adding a facade dependency to the Notary.
-fn record_access(h: &mut Harness, command: &str) -> (AccessEvent, CommitSeq) {
+pub(super) fn record_access(h: &mut Harness, command: &str) -> (AccessEvent, CommitSeq) {
     let event = AccessEvent {
         book_id: h.book.book_id,
         record: AccessRecord {

@@ -59,6 +59,7 @@ use fa_model::{
 };
 use fgdb::{Database, QueryError, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxnError};
 use fgdb_crypto::Hasher;
+use fgdb_delta_types::{DeltaRow, ElementId};
 use fgdb_gql::{GqlParameters, GqlQueryPolicy};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
@@ -66,7 +67,7 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 use crate::checkpoint::{
     CheckpointBody, SignError, TransparencyCheckpoint, checkpoint_oid, checkpoint_vid,
 };
-use crate::journal::{Journal, LeafKinds, Record};
+use crate::journal::{Journal, JournalReadWork, Leaf, LeafKinds, Record, protected_record_row};
 use crate::scope::{ScopeIndex, ScopeRequest};
 use crate::sign::CheckpointSigner;
 use crate::tree::Digest;
@@ -362,54 +363,59 @@ fn prefix_time_evidence(journal: &Journal) -> Result<Option<Oid>, KernelError> {
         .iter()
         .filter(|leaf| leaf.envelope.is_entry())
     {
-        let Some(Record::Entry(entry)) = leaf.authenticated_record()? else {
-            return Err(KernelError::Corrupt(
-                "checkpoint TimeEvidence is not its authenticated journal leaf".into(),
-            ));
-        };
-        let proposal = &entry.proposal;
-        let is_tick = matches!(proposal.control, Some(ControlPayload::TimeTick { .. }));
-        if proposal.class != EntryClass::TIME_CONTROL && !is_tick {
-            continue;
+        if let Some(oid) = leaf_time_evidence(journal, leaf)? {
+            latest = Some(oid);
         }
-        if proposal.class != EntryClass::TIME_CONTROL {
-            return Err(KernelError::Corrupt(
-                "checkpoint TimeEvidence class differs from its TimeTick payload".into(),
-            ));
-        }
-        let Some(ControlPayload::TimeTick {
-            observed_utc_ns,
-            source: fa_journal::sweep::SOURCE_DAEMON_CLOCK,
-            ..
-        }) = proposal.control
-        else {
-            return Err(KernelError::Corrupt(
-                "checkpoint TimeEvidence is not an admitted TimeTick".into(),
-            ));
-        };
-        if proposal.book_id != journal.book_id
-            || proposal.branch_id != journal.branch_id
-            || leaf.envelope.commit_seq > journal.through_seq
-            || leaf.vid
-                != entry_vid(
-                    journal.book_id,
-                    &proposal.principal_ref.0.to_le_bytes(),
-                    &proposal.idempotency_key,
-                )
-            || !matches!(
-                proposal.origin,
-                EntryOrigin::Control { control_kind: ControlKind::TIME_TICK, spec_body_digest }
-                    if spec_body_digest == fgdb_crypto::hash(&observed_utc_ns.to_le_bytes()).0
-            )
-        {
-            return Err(KernelError::Corrupt(
-                "checkpoint TimeEvidence identity, coordinate or origin differs from its tick"
-                    .into(),
-            ));
-        }
-        latest = Some(Oid(entry.entry_digest));
     }
     Ok(latest)
+}
+
+fn leaf_time_evidence(journal: &Journal, leaf: &Leaf) -> Result<Option<Oid>, KernelError> {
+    let Some(Record::Entry(entry)) = leaf.authenticated_record()? else {
+        return Err(KernelError::Corrupt(
+            "checkpoint TimeEvidence is not its authenticated journal leaf".into(),
+        ));
+    };
+    let proposal = &entry.proposal;
+    let is_tick = matches!(proposal.control, Some(ControlPayload::TimeTick { .. }));
+    if proposal.class != EntryClass::TIME_CONTROL && !is_tick {
+        return Ok(None);
+    }
+    if proposal.class != EntryClass::TIME_CONTROL {
+        return Err(KernelError::Corrupt(
+            "checkpoint TimeEvidence class differs from its TimeTick payload".into(),
+        ));
+    }
+    let Some(ControlPayload::TimeTick {
+        observed_utc_ns,
+        source: fa_journal::sweep::SOURCE_DAEMON_CLOCK,
+        ..
+    }) = proposal.control
+    else {
+        return Err(KernelError::Corrupt(
+            "checkpoint TimeEvidence is not an admitted TimeTick".into(),
+        ));
+    };
+    if proposal.book_id != journal.book_id
+        || proposal.branch_id != journal.branch_id
+        || leaf.envelope.commit_seq > journal.through_seq
+        || leaf.vid
+            != entry_vid(
+                journal.book_id,
+                &proposal.principal_ref.0.to_le_bytes(),
+                &proposal.idempotency_key,
+            )
+        || !matches!(
+            proposal.origin,
+            EntryOrigin::Control { control_kind: ControlKind::TIME_TICK, spec_body_digest }
+                if spec_body_digest == fgdb_crypto::hash(&observed_utc_ns.to_le_bytes()).0
+        )
+    {
+        return Err(KernelError::Corrupt(
+            "checkpoint TimeEvidence identity, coordinate or origin differs from its tick".into(),
+        ));
+    }
+    Ok(Some(Oid(entry.entry_digest)))
 }
 
 /// The checkpoint the journal prefix of `state` (journaled as `state_oid`)
@@ -437,6 +443,13 @@ fn expected_checkpoint<V: asupersync::fs::Vfs + Clone>(
             None
         },
     };
+    sign_checkpoint(body, signer)
+}
+
+fn sign_checkpoint(
+    body: CheckpointBody,
+    signer: &dyn CheckpointSigner,
+) -> Result<TransparencyCheckpoint, KernelError> {
     TransparencyCheckpoint::sign(body, &[signer]).map_err(|e| match e {
         SignError::Encode(e) => KernelError::Model(fa_model::EntryError::Encode(e)),
         // Unreachable for a key derived from BookKeys (a clamped scalar
@@ -545,6 +558,20 @@ pub fn stored_checkpoint<V: asupersync::fs::Vfs + Clone>(
         Ok(j) => j,
         Err(r) => return Ok(Err(r)),
     };
+    checkpoint_for_journal(db, ctx, book, state, signer, &journal)
+}
+
+/// Reuse only a journal already supported for this exact state inside the
+/// current call. This helper is private so an arbitrary caller-built Journal
+/// cannot stand in for native support and immutability checks.
+fn checkpoint_for_journal<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    state: &StoredState,
+    signer: &dyn CheckpointSigner,
+    journal: &Journal,
+) -> Outcome<StoredCheckpoint> {
     let stored = match load_unchanged_checkpoint(db, state, db.frontier()?)? {
         Ok(s) => s,
         Err(finding) => return Ok(Err(checkpoint_invalid(finding))),
@@ -553,7 +580,7 @@ pub fn stored_checkpoint<V: asupersync::fs::Vfs + Clone>(
         db,
         ctx,
         book,
-        &journal,
+        journal,
         &state.oid,
         stored.checkpoint.body.time_evidence_oid.is_some(),
         signer,
@@ -963,6 +990,34 @@ pub struct AccumulatorVerification {
     pub unchained: Vec<VId>,
 }
 
+/// Logical native-read work in [`verify_accumulator_counted`], including
+/// unsuccessful shared observations before a literal fallback. This is not a
+/// total-operation complexity bound: scope-index hashing, certified chain
+/// commitments, TimeEvidence authentication, fragment reads, state/checkpoint
+/// point reads and the final orphan inventory are separate work.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AccumulatorReadWork {
+    pub journal_full_reads: usize,
+    pub journal_rows_read: usize,
+    pub journal_records_decoded: usize,
+    pub immutability_point_reads: usize,
+    pub delta_rows_examined: usize,
+    /// States successfully recomputed over borrowed slices of one journal.
+    pub shared_prefixes: usize,
+    /// States processed by the original per-prefix verifier.
+    pub literal_prefixes: usize,
+}
+
+impl AccumulatorReadWork {
+    fn accumulate(&mut self, work: JournalReadWork) {
+        self.journal_full_reads = self.journal_full_reads.saturating_add(work.full_reads);
+        self.journal_rows_read = self.journal_rows_read.saturating_add(work.vertices_read);
+        self.journal_records_decoded = self
+            .journal_records_decoded
+            .saturating_add(work.records_decoded);
+    }
+}
+
 impl AccumulatorVerification {
     #[must_use]
     pub fn is_green(&self) -> bool {
@@ -1084,18 +1139,296 @@ fn admit_boundary_chain<V: asupersync::fs::Vfs + Clone>(
 /// and checkpoint vertex in the store is on the chain. Every checkpointed
 /// record must also retain its label, creating sequence, payload and digest
 /// at the observed head: historical MVCC versions alone cannot show a later
-/// rewrite or retirement. The additional work is one point read per leaf
-/// of each checked state.
+/// rewrite or retirement. On a clean append-only chain one complete native
+/// journal observation supplies every prefix, after a gap-free delta audit
+/// proves that none of its record roots or storage fragments changed between
+/// those prefixes and the observed head. Every leaf is still checked at that
+/// head. A mutation, unavailable delta window, invalid chain, or unsuccessful
+/// recomputation uses the original per-prefix verifier and its diagnostics.
 pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     signer: &dyn CheckpointSigner,
 ) -> Result<AccumulatorVerification, KernelError> {
+    verify_accumulator_counted(db, ctx, book, signer).map(|(verification, _)| verification)
+}
+
+/// The same verification and findings, with counters for the native journal
+/// observation. No persisted cache, prior verdict or caller-supplied summary
+/// is an authority for this computation.
+pub fn verify_accumulator_counted<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    signer: &dyn CheckpointSigner,
+) -> Result<(AccumulatorVerification, AccumulatorReadWork), KernelError> {
     let at = db.frontier()?;
     let (chain, broken) = walk(db, at)?;
+    let mut work = AccumulatorReadWork::default();
+    let shared = if broken.is_none() {
+        match shared_state_checks(db, ctx, book, signer, &chain, at, &mut work) {
+            Ok(shared) => shared,
+            Err(error @ KernelError::Txn(WriteTxnError::Interrupted(_))) => return Err(error),
+            // The shortcut never decides a content error, refusal or I/O
+            // diagnostic. The literal sequence decides the first error.
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    let states = match shared {
+        Some(states) => {
+            work.shared_prefixes = states.len();
+            states
+        }
+        None => literal_state_checks(db, ctx, book, signer, &chain, at, &mut work)?,
+    };
+    let on_chain: BTreeSet<VId> = chain
+        .iter()
+        .flat_map(|s| [s.vid, checkpoint_vid(&s.oid)])
+        .collect();
+    let unchained = db
+        .vertices_at(at)?
+        .into_iter()
+        .filter(|row| {
+            (row.labels.contains(&label::ACCUMULATOR_STATE)
+                || row.labels.contains(&label::TRANSPARENCY_CHECKPOINT))
+                && !on_chain.contains(&row.vid)
+        })
+        .map(|row| row.vid)
+        .collect();
+    Ok((
+        AccumulatorVerification {
+            states,
+            broken,
+            unchained,
+        },
+        work,
+    ))
+}
+
+/// Prove that the latest retained population is also the complete population
+/// of every earlier selected prefix. No deletion or label change is modeled:
+/// either could hide a historical record not present in the latest snapshot.
+/// Changes to any protected root or Entry fragment, including an unrelated
+/// property or a write followed by restoration, likewise force literal reads.
+fn unchanged_record_history<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    from: CommitSeq,
+    at: CommitSeq,
+    protected: &BTreeSet<VId>,
+    work: &mut AccumulatorReadWork,
+) -> Result<bool, KernelError> {
+    let Ok(batches) = db.delta_since(from) else {
+        return Ok(false);
+    };
+    let mut through = from;
+    for batch in batches {
+        let seq = batch.commit_seq();
+        if seq > at {
+            break;
+        }
+        if through.0.checked_add(1) != Some(seq.0) {
+            return Ok(false);
+        }
+        for coordinate in batch.coordinate_entries() {
+            for row in &coordinate.rows {
+                ctx.query()
+                    .checkpoint()
+                    .map_err(WriteTxnError::Interrupted)?;
+                work.delta_rows_examined = work.delta_rows_examined.saturating_add(1);
+                let unchanged = match row {
+                    DeltaRow::CreateVertex { valid_time, .. } => valid_time.is_none(),
+                    DeltaRow::Property {
+                        elem: ElementId::Vertex(vid),
+                        ..
+                    } => !protected.contains(vid),
+                    // Edges do not define the authoritative record population
+                    // or the authenticated Entry fragment bodies.
+                    DeltaRow::CreateEdge { .. }
+                    | DeltaRow::DeleteEdge { .. }
+                    | DeltaRow::Property {
+                        elem: ElementId::Edge(_),
+                        ..
+                    } => true,
+                    _ => false,
+                };
+                if !unchanged {
+                    return Ok(false);
+                }
+            }
+        }
+        through = seq;
+    }
+    Ok(through == at)
+}
+
+/// A successful shared observation is used only for a completely reproduced
+/// chain. Any unsuccessful attempt is discarded, so error/refusal precedence
+/// and each StateCheck still come from the original verifier below.
+fn shared_state_checks<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    signer: &dyn CheckpointSigner,
+    chain: &[StoredState],
+    at: CommitSeq,
+    work: &mut AccumulatorReadWork,
+) -> Result<Option<Vec<StateCheck>>, KernelError> {
+    let (Some(newest), Some(oldest)) = (chain.first(), chain.last()) else {
+        return Ok(None);
+    };
+    if chain.len() < 2 || newest.state.through_seq > at {
+        return Ok(None);
+    }
+    for (index, stored) in chain.iter().enumerate() {
+        let state = &stored.state;
+        let previous = chain.get(index + 1);
+        if state.book_id != book.book_id
+            || state.branch_id != Id128::TRUNK
+            || stored.recorded_at <= state.through_seq
+            || !boundary_admitted(state, previous.map(|p| &p.state))
+            || previous.is_some_and(|p| {
+                p.state.through_seq >= state.through_seq
+                    || p.state.leaf_count > state.leaf_count
+                    || p.recorded_at > state.through_seq
+            })
+        {
+            return Ok(None);
+        }
+    }
+
+    let mut counted = JournalReadWork {
+        full_reads: 1,
+        ..JournalReadWork::default()
+    };
+    let rows = match db.vertices_at(newest.state.through_seq) {
+        Ok(rows) => rows,
+        Err(error) => {
+            work.accumulate(counted);
+            return Err(error.into());
+        }
+    };
+    let protected: BTreeSet<_> = rows
+        .iter()
+        .filter(|row| protected_record_row(row))
+        .map(|row| row.vid)
+        .collect();
+    let read = Journal::from_native_rows(
+        db,
+        book,
+        newest.state.through_seq,
+        newest.state.evidence_after,
+        newest.state.access_after,
+        rows,
+        &mut counted,
+    );
+    work.accumulate(counted);
+    let journal = read?;
+    if !unchanged_record_history(db, ctx, oldest.state.through_seq, at, &protected, work)?
+        || journal
+            .verify_unchanged_at_counted(db, at, &mut work.immutability_point_reads)?
+            .is_err()
+    {
+        return Ok(None);
+    }
+
+    let mut checks = Vec::with_capacity(chain.len());
+    let mut cursor = 0;
+    let mut kinds = LeafKinds::default();
+    let mut latest_time = None;
+    // Coverage upgrades activate evidence only after their predecessor's
+    // prefix, so a valid chain's old populations are exact borrowed prefixes
+    // of this newest journal. The MMR already stores their roots and peaks.
+    for stored in chain.iter().rev() {
+        ctx.query()
+            .checkpoint()
+            .map_err(WriteTxnError::Interrupted)?;
+        let state = &stored.state;
+        let count = journal
+            .leaves
+            .partition_point(|leaf| leaf.envelope.commit_seq <= state.through_seq);
+        let Some(root) = journal.root_at(count as u64) else {
+            return Ok(None);
+        };
+        let Some(peaks) = journal.peaks_at(count as u64) else {
+            return Ok(None);
+        };
+        let expected = AccumulatorState {
+            book_id: journal.book_id,
+            branch_id: journal.branch_id,
+            through_seq: state.through_seq,
+            leaf_count: count as u64,
+            root,
+            peaks,
+            prev_state_oid: state.prev_state_oid,
+            evidence_after: state.evidence_after,
+            access_after: state.access_after,
+        };
+        if expected != *state {
+            return Ok(None);
+        }
+        for leaf in &journal.leaves[cursor..count] {
+            ctx.query()
+                .checkpoint()
+                .map_err(WriteTxnError::Interrupted)?;
+            kinds.observe(&leaf.envelope);
+            if leaf.envelope.is_entry()
+                && let Some(oid) = leaf_time_evidence(&journal, leaf)?
+            {
+                latest_time = Some(oid);
+            }
+        }
+        cursor = count;
+        let stored_cp = match load_unchanged_checkpoint(db, stored, at)? {
+            Ok(checkpoint) => checkpoint,
+            Err(_) => return Ok(None),
+        };
+        let body = CheckpointBody {
+            statement: expected.statement(),
+            state_oid: stored.oid,
+            scope_index_root: ScopeIndex::of_leaves(
+                journal.book_id,
+                journal.branch_id,
+                &journal.leaves[..count],
+            )
+            .root(),
+            substrate_chain_commitment: chain_commitment(db, ctx, book, state.through_seq)?,
+            witness_policy_oid: None,
+            time_evidence_oid: stored_cp.checkpoint.body.time_evidence_oid.and(latest_time),
+        };
+        if sign_checkpoint(body, signer)? != stored_cp.checkpoint {
+            return Ok(None);
+        }
+        checks.push(StateCheck {
+            oid: stored.oid,
+            through_seq: state.through_seq,
+            leaf_count: state.leaf_count,
+            recorded_at: stored.recorded_at,
+            evidence_after: state.evidence_after,
+            access_after: state.access_after,
+            leaf_kinds: Some(kinds),
+            finding: None,
+        });
+    }
+    checks.reverse();
+    Ok(Some(checks))
+}
+
+fn literal_state_checks<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    signer: &dyn CheckpointSigner,
+    chain: &[StoredState],
+    at: CommitSeq,
+    work: &mut AccumulatorReadWork,
+) -> Result<Vec<StateCheck>, KernelError> {
     let mut states = Vec::with_capacity(chain.len());
     for (i, s) in chain.iter().enumerate() {
+        work.literal_prefixes = work.literal_prefixes.saturating_add(1);
         let st = &s.state;
         let prev = chain.get(i + 1).map(|p| &p.state);
         let mut leaf_kinds = None;
@@ -1109,19 +1442,27 @@ pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
         } else if !boundary_admitted(st, prev) {
             Some(boundary_finding(st, prev))
         } else {
-            match Journal::read_with_boundaries(
+            let mut counted = JournalReadWork::default();
+            let read = Journal::read_with_boundaries_counted(
                 db,
                 book,
                 Some(st.through_seq),
                 st.evidence_after,
                 st.access_after,
-            )? {
+                &mut counted,
+            );
+            work.accumulate(counted);
+            match read? {
                 Err(r) => Some(r.message),
                 Ok(journal) => {
                     leaf_kinds = Some(journal.leaf_kinds());
                     let expected = AccumulatorState::of_journal(&journal, st.prev_state_oid);
                     if expected == *st {
-                        if let Err(refusal) = journal.verify_unchanged_at(db, at)? {
+                        if let Err(refusal) = journal.verify_unchanged_at_counted(
+                            db,
+                            at,
+                            &mut work.immutability_point_reads,
+                        )? {
                             Some(refusal.message)
                         } else {
                             match load_unchanged_checkpoint(db, s, at)? {
@@ -1177,25 +1518,7 @@ pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
             finding,
         });
     }
-    let on_chain: BTreeSet<VId> = chain
-        .iter()
-        .flat_map(|s| [s.vid, checkpoint_vid(&s.oid)])
-        .collect();
-    let unchained = db
-        .vertices_at(at)?
-        .into_iter()
-        .filter(|row| {
-            (row.labels.contains(&label::ACCUMULATOR_STATE)
-                || row.labels.contains(&label::TRANSPARENCY_CHECKPOINT))
-                && !on_chain.contains(&row.vid)
-        })
-        .map(|row| row.vid)
-        .collect();
-    Ok(AccumulatorVerification {
-        states,
-        broken,
-        unchained,
-    })
+    Ok(states)
 }
 
 fn hex(d: &[u8]) -> String {
@@ -1359,14 +1682,15 @@ pub fn bundle_basis<V: asupersync::fs::Vfs + Clone>(
     state: &StoredState,
     signer: &dyn CheckpointSigner,
 ) -> Outcome<(Journal, StoredCheckpoint)> {
-    let checkpoint = match stored_checkpoint(db, ctx, book, state, signer)? {
+    let journal = match supported(db, book, &state.state)? {
+        Ok(journal) => journal,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let checkpoint = match checkpoint_for_journal(db, ctx, book, state, signer, &journal)? {
         Ok(c) => c,
         Err(r) => return Ok(Err(r)),
     };
-    match supported(db, book, &state.state)? {
-        Ok(journal) => Ok(Ok((journal, checkpoint))),
-        Err(r) => Ok(Err(r)),
-    }
+    Ok(Ok((journal, checkpoint)))
 }
 
 #[cfg(test)]
