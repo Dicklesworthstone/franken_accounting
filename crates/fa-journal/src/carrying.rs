@@ -19,9 +19,9 @@ pub(crate) use allocated::ReleaseIndex as AllocatedReleaseIndex;
 pub(crate) use allocated::basis as allocated_basis;
 pub(crate) use allocated::covers_valuation_account;
 pub(crate) use allocated::{has_allocated_basis, verify_allocated_fx_structure};
-pub(crate) use history::CarryingHistory;
 pub use history::CarryingPopulationWork;
 pub(crate) use history::cached_liveness as reversal_liveness;
+pub(crate) use history::{CarryingHistory, CarryingIndex};
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -104,6 +104,8 @@ pub struct FxSettlementItem {
 pub struct PreparedFxSettlementGroup {
     items: Vec<FxSettlementItem>,
     proposal: EntryPayload,
+    audit_work: CarryingAuditWork,
+    population_work: CarryingPopulationWork,
 }
 
 impl PreparedFxSettlementGroup {
@@ -115,6 +117,117 @@ impl PreparedFxSettlementGroup {
     }
     pub fn into_proposal(self) -> EntryPayload {
         self.proposal
+    }
+    /// Actual whole-source audit calls and successful same-prefix reuses.
+    pub fn audit_work(&self) -> CarryingAuditWork {
+        self.audit_work
+    }
+    /// Work selecting the compound operation's carrying population. One
+    /// complete fixed-prefix index serves every item; historical source
+    /// audits remain separately counted by [`Self::audit_work`].
+    pub fn population_work(&self) -> CarryingPopulationWork {
+        self.population_work
+    }
+}
+
+/// Work performed by the source-history verifier within one compound operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CarryingAuditWork {
+    pub source_history_audits: usize,
+    pub successful_reuses: usize,
+}
+
+/// A successful audit covers all allocated items on one source, independently
+/// of which item triggered it. Keep only successes, within one immutable read
+/// operation and one exact book/prefix. This is deliberately not a cached item
+/// result: each target must first pass its own original carrying checks.
+/// The accompanying observation belongs only to this compound operation and
+/// exact prefix; it never escapes to another database or a later invocation.
+#[derive(Default)]
+struct SuccessfulHistoryAudits {
+    coordinate: Option<(Id128, CommitSeq)>,
+    sources: BTreeSet<VId>,
+    work: CarryingAuditWork,
+    history: Option<CarryingHistory>,
+    population_work: CarryingPopulationWork,
+}
+
+impl SuccessfulHistoryAudits {
+    fn select(&mut self, book: Id128, at: CommitSeq) {
+        if self.coordinate != Some((book, at)) {
+            // A retry can return to the prefix preceding first publication.
+            // Neither observations nor successful audits cross coordinates.
+            if let Some(history) = self.history.take() {
+                self.population_work.accumulate(history.work());
+            }
+            self.sources.clear();
+            self.coordinate = Some((book, at));
+        }
+    }
+
+    fn population_work(&self) -> CarryingPopulationWork {
+        let mut work = self.population_work;
+        if let Some(history) = &self.history {
+            work.accumulate(history.work());
+        }
+        work
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn read_item<V: Vfs + Clone>(
+        &mut self,
+        db: &Database<V>,
+        cx: &PurposeContexts,
+        book: &BookContext,
+        target: EntryRef,
+        ordinal: u16,
+        at: CommitSeq,
+    ) -> Outcome<CarryingOpenItem> {
+        self.select(book.book_id, at);
+        if self.history.is_none() {
+            // Preserve the literal reader's early target refusals before any
+            // whole-prefix observation. Later targets reuse the same payloads,
+            // but still repeat every digest, ordinal and valuation check.
+            if let Err(refusal) = carrying_target_at(db, cx, book, target, ordinal, at, None)? {
+                return Ok(Err(refusal));
+            }
+            self.population_work.entries_decoded += 1;
+            self.history = match CarryingHistory::read_at(db, cx, book, at) {
+                Ok(history) => Some(history),
+                Err(error @ KernelError::Txn(fgdb::WriteTxnError::Interrupted(_))) => {
+                    return Err(error);
+                }
+                // Index construction can discover several malformed rows in
+                // a different order. The original native scan remains the
+                // authority for the exact first error on a damaged prefix.
+                Err(_) => return open_item_carrying_inner(db, cx, book, target, ordinal, at),
+            };
+        }
+        open_item_carrying_observed(db, cx, book, target, ordinal, at, self.history.as_ref())
+    }
+
+    fn verify(
+        &mut self,
+        cx: &PurposeContexts,
+        book: Id128,
+        at: CommitSeq,
+        source: VId,
+        audit: impl FnOnce() -> Outcome<()>,
+    ) -> Outcome<()> {
+        self.select(book, at);
+        if self.sources.contains(&source) {
+            cx.query()
+                .checkpoint()
+                .map_err(fgdb::WriteTxnError::Interrupted)?;
+            self.work.successful_reuses += 1;
+            return Ok(Ok(()));
+        }
+        self.work.source_history_audits += 1;
+        let result = audit()?;
+        if result.is_ok() {
+            self.sources.insert(source);
+        }
+        Ok(result)
     }
 }
 
@@ -230,14 +343,34 @@ pub fn open_item_carrying_at<V: Vfs + Clone>(
     ordinal: u16,
     at: CommitSeq,
 ) -> Outcome<CarryingOpenItem> {
+    open_item_carrying_with_audits(db, cx, book, target, ordinal, at, None)
+}
+
+fn open_item_carrying_with_audits<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    target: EntryRef,
+    ordinal: u16,
+    at: CommitSeq,
+    mut audits: Option<&mut SuccessfulHistoryAudits>,
+) -> Outcome<CarryingOpenItem> {
     cx.query().with_restriction(|| {
-        let result = open_item_carrying_inner(db, cx, book, target, ordinal, at)?;
+        let result = match audits.as_deref_mut() {
+            Some(audits) => audits.read_item(db, cx, book, target, ordinal, at)?,
+            None => open_item_carrying_inner(db, cx, book, target, ordinal, at)?,
+        };
         if let Ok(item) = &result
             && item.valuation_route.is_some()
-            && let Err(refusal) =
-                crate::revaluation::verify_item_history(db, cx, book, item.account, at)?
         {
-            return Ok(Err(refusal));
+            let audit = || crate::revaluation::verify_item_history(db, cx, book, item.account, at);
+            let verified = match audits {
+                Some(audits) => audits.verify(cx, book.book_id, at, item.account, audit)?,
+                None => audit()?,
+            };
+            if let Err(refusal) = verified {
+                return Ok(Err(refusal));
+            }
         }
         Ok(result)
     })
@@ -254,18 +387,25 @@ pub(crate) fn open_item_carrying_inner<V: Vfs + Clone>(
     open_item_carrying_observed(db, cx, book, target, ordinal, at, None)
 }
 
-/// The same monetary fold with an optional shared, fixed-prefix observation.
-/// The literal single-item reader remains the comparison path: only candidate
-/// selection and already authenticated metadata differ in the population path.
-pub(crate) fn open_item_carrying_observed<V: Vfs + Clone>(
+struct CarryingTarget<'a> {
+    original: Cow<'a, fa_model::Entry>,
+    recorded: CommitSeq,
+    spec: Cow<'a, crate::genesis::BookSpec>,
+    original_base: Amount,
+}
+
+/// Target identity and shape checks precede all complete-history work in both
+/// readers. A target outside the index is still point-read: another book or
+/// branch must retain the literal reader's handle refusal, not become absent.
+fn carrying_target_at<'a, V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
     book: &BookContext,
     target: EntryRef,
     ordinal: u16,
     at: CommitSeq,
-    history: Option<&CarryingHistory>,
-) -> Outcome<CarryingOpenItem> {
+    history: Option<&'a CarryingHistory>,
+) -> Outcome<CarryingTarget<'a>> {
     let query = cx.query();
     query
         .checkpoint()
@@ -275,20 +415,13 @@ pub(crate) fn open_item_carrying_observed<V: Vfs + Clone>(
             "carrying-value prefix is beyond the retained frontier",
         )));
     }
-    let (original, recorded) = match history {
-        Some(history) => {
-            if history.at != at || history.spec.book_id != book.book_id {
-                return Err(KernelError::Corrupt(
-                    "carrying observation belongs to another book or prefix".into(),
-                ));
-            }
-            let Some((original, recorded)) = history.original(target.vid) else {
-                return Ok(Err(invalid(
-                    "the foreign open item does not exist at this prefix",
-                )));
-            };
-            (Cow::Borrowed(original), recorded)
-        }
+    if history.is_some_and(|history| history.at != at || history.spec.book_id != book.book_id) {
+        return Err(KernelError::Corrupt(
+            "carrying observation belongs to another book or prefix".into(),
+        ));
+    }
+    let (original, recorded) = match history.and_then(|history| history.original(target.vid)) {
+        Some((original, recorded)) => (Cow::Borrowed(original), recorded),
         None => {
             let Some((original, recorded)) = crate::post::read_entry_at(db, target.vid, at)? else {
                 return Ok(Err(invalid(
@@ -335,6 +468,37 @@ pub(crate) fn open_item_carrying_observed<V: Vfs + Clone>(
             "carrying-value relief requires an original foreign item valued by SpotClose or PeriodAverage, with no outgoing applications",
         )));
     }
+    Ok(Ok(CarryingTarget {
+        original,
+        recorded,
+        spec,
+        original_base,
+    }))
+}
+
+/// The same monetary fold with an optional shared, fixed-prefix observation.
+/// The literal single-item reader remains the comparison path: only candidate
+/// selection and already authenticated metadata differ in the population path.
+pub(crate) fn open_item_carrying_observed<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    target: EntryRef,
+    ordinal: u16,
+    at: CommitSeq,
+    history: Option<&CarryingHistory>,
+) -> Outcome<CarryingOpenItem> {
+    let CarryingTarget {
+        original,
+        recorded,
+        spec,
+        original_base,
+    } = match carrying_target_at(db, cx, book, target, ordinal, at, history)? {
+        Ok(target) => target,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let leg = &original.proposal.legs[usize::from(ordinal)];
+    let query = cx.query();
     let mut entries = Vec::new();
     let mut reversals = BTreeMap::new();
     if history.is_none() {
@@ -817,7 +981,7 @@ pub fn prepare_fx_settlement<V: Vfs + Clone>(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
 ) -> Outcome<PreparedFxSettlement> {
     cx.query().with_restriction(|| {
-        prepare_fx_settlement_inner(db, cx, book, capability, request, template, budget)
+        prepare_fx_settlement_inner(db, cx, book, capability, request, template, budget, None)
     })
 }
 
@@ -857,16 +1021,20 @@ pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
     let head = db.frontier()?;
     let mut proposal: Option<EntryPayload> = None;
     let mut items = Vec::with_capacity(requests.len());
+    let mut audits = SuccessfulHistoryAudits::default();
     for request in requests {
-        let prepared = match prepare_fx_settlement(
-            db,
-            cx,
-            book,
-            capability,
-            request,
-            template.clone(),
-            budget,
-        )? {
+        let prepared = match cx.query().with_restriction(|| {
+            prepare_fx_settlement_inner(
+                db,
+                cx,
+                book,
+                capability,
+                request,
+                template.clone(),
+                budget,
+                Some(&mut audits),
+            )
+        })? {
             Ok(prepared) => prepared,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -964,7 +1132,12 @@ pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
     if let Err(error) = proposal.validate() {
         return Ok(Err(invalid(error)));
     }
-    Ok(Ok(PreparedFxSettlementGroup { items, proposal }))
+    Ok(Ok(PreparedFxSettlementGroup {
+        items,
+        proposal,
+        audit_work: audits.work,
+        population_work: audits.population_work(),
+    }))
 }
 
 /// Ordered components consume every leg exactly once. Identity deliberately
@@ -1007,6 +1180,7 @@ fn settlement_ranges_counted(
     Ok(starts.windows(2).map(|pair| pair[0]..pair[1]).collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_fx_settlement_inner<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
@@ -1015,6 +1189,7 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
     request: &FxSettlementRequest,
     mut template: EntryPayload,
     budget: &mut ArithmeticBudget<'_, impl Sized>,
+    audits: Option<&mut SuccessfulHistoryAudits>,
 ) -> Outcome<PreparedFxSettlement> {
     if let Err(refusal) = crate::revaluation::authorize(db, book, capability)? {
         return Ok(Err(refusal));
@@ -1054,7 +1229,15 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
     };
     let query = cx.query();
     let carrying = match query.with_restriction(|| {
-        open_item_carrying_at(db, cx, book, request.target, request.target_ordinal, at)
+        open_item_carrying_with_audits(
+            db,
+            cx,
+            book,
+            request.target,
+            request.target_ordinal,
+            at,
+            audits,
+        )
     })? {
         Ok(value) => value,
         Err(refusal) => return Ok(Err(refusal)),
@@ -1245,6 +1428,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
         Ok(ranges) => ranges,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let mut audits = SuccessfulHistoryAudits::default();
     for range in ranges {
         if let Err(refusal) = validate_component(
             db,
@@ -1254,6 +1438,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
             at,
             range.start,
             &proposal.legs[range],
+            &mut audits,
         )? {
             return Ok(Err(refusal));
         }
@@ -1353,6 +1538,7 @@ fn validate_spot_applications<V: Vfs + Clone>(
     let stripped = current.restrict::<asupersync::cx::cap::None>();
     let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
     let mut targets = BTreeSet::new();
+    let mut audits = SuccessfulHistoryAudits::default();
     for leg in &proposal.legs {
         if leg.amount.unit == spec.base_unit || leg.settles.is_empty() {
             continue;
@@ -1378,12 +1564,18 @@ fn validate_spot_applications<V: Vfs + Clone>(
                 "foreign spot applications require positive disjoint target allocations bounded by their complete legs",
             )));
         }
-        let item =
-            match open_item_carrying_at(db, cx, book, application.target, application.ordinal, at)?
-            {
-                Ok(item) => item,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
+        let item = match open_item_carrying_with_audits(
+            db,
+            cx,
+            book,
+            application.target,
+            application.ordinal,
+            at,
+            Some(&mut audits),
+        )? {
+            Ok(item) => item,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         if item.valuation_route.is_some()
             || item.account != leg.account_ref
             || item.side == leg.side
@@ -1436,12 +1628,13 @@ pub(crate) fn validate_reversal<V: Vfs + Clone>(
     at: CommitSeq,
 ) -> Outcome<()> {
     cx.query().with_restriction(|| {
+        let mut audits = SuccessfulHistoryAudits::default();
         if has_allocated_basis(original) {
             let releases = match allocated::basis(original) { Ok(value) => value, Err(refusal) => return Ok(Err(refusal)) };
             for release in releases.items {
                 let Some(leg) = original.legs.get(usize::from(release.applying_ordinal)) else { return Ok(Err(invalid("allocated undo has no original applying leg"))); };
                 let [application] = leg.settles.as_slice() else { return Ok(Err(invalid("allocated undo has no unique recorded application"))); };
-                let item = match open_item_carrying_at(db, cx, book, application.target, application.ordinal, at)? { Ok(item) => item, Err(refusal) => return Ok(Err(refusal)) };
+                let item = match open_item_carrying_with_audits(db, cx, book, application.target, application.ordinal, at, Some(&mut audits))? { Ok(item) => item, Err(refusal) => return Ok(Err(refusal)) };
                 let native = item.open_native.checked_add(application.amount).map_err(|error| KernelError::Corrupt(error.to_string()))?;
                 let historical = item.historical_open_base.checked_add(release.historical_relief).map_err(|error| KernelError::Corrupt(error.to_string()))?;
                 let valuation = item.valuation_open_base.checked_add(release.valuation_relief).map_err(|error| KernelError::Corrupt(error.to_string()))?;
@@ -1469,7 +1662,7 @@ pub(crate) fn validate_reversal<V: Vfs + Clone>(
             }
         }
         for ordinal in allocated_ordinals {
-            let item = match open_item_carrying_at(db, cx, book, target, ordinal, at)? { Ok(item) => item, Err(refusal) => return Ok(Err(refusal)) };
+            let item = match open_item_carrying_with_audits(db, cx, book, target, ordinal, at, Some(&mut audits))? { Ok(item) => item, Err(refusal) => return Ok(Err(refusal)) };
             if item.valuation_open_base.mantissa != 0 || reversal.effective_date < item.latest_effective_date {
                 return Ok(Err(invalid("the original item retains allocated valuation or a later item effect; correct its valuation through a new allocated revaluation before reversing the original")));
             }
@@ -1478,6 +1671,7 @@ pub(crate) fn validate_reversal<V: Vfs + Clone>(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_component<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
@@ -1486,6 +1680,7 @@ fn validate_component<V: Vfs + Clone>(
     at: CommitSeq,
     applying_ordinal: usize,
     legs: &[fa_model::LegPayload],
+    audits: &mut SuccessfulHistoryAudits,
 ) -> Outcome<()> {
     let applying: Vec<_> = legs.iter().filter(|leg| !leg.settles.is_empty()).collect();
     let [leg] = applying.as_slice() else {
@@ -1504,8 +1699,8 @@ fn validate_component<V: Vfs + Clone>(
         )));
     }
     cx.query().with_restriction(|| {
-        let carrying = match open_item_carrying_at(
-            db, cx, book, application.target, application.ordinal, at,
+        let carrying = match open_item_carrying_with_audits(
+            db, cx, book, application.target, application.ordinal, at, Some(audits),
         )? {
             Ok(value) => value,
             Err(refusal) => return Ok(Err(refusal)),
@@ -1622,6 +1817,10 @@ fn validate_component<V: Vfs + Clone>(
         Ok(Ok(()))
     })
 }
+
+#[cfg(test)]
+#[path = "carrying/audit_tests.rs"]
+mod audit_tests;
 
 #[cfg(test)]
 mod tests {

@@ -6,7 +6,7 @@
 //! one identity per (book, cash account, statement) prevents conflicting links.
 //! This records continuity only; it neither confirms matches nor soft-locks cash.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
@@ -1114,6 +1114,99 @@ pub(super) fn bind_statement<V: Vfs + Clone>(
     Ok(Ok(None))
 }
 
+/// Authenticate each receipt once, then join a manifest's complete document
+/// closure by its count and Merkle root. The first valid receipt in native
+/// row order wins, exactly as the exhaustive `verify_receipt` search did.
+/// Invalid receipts never occupy a key, including invalid receipts that claim
+/// the same closure as a later authentic one.
+struct BankReceiptIndex<'a> {
+    by_closure: BTreeMap<(u32, [u8; 32]), &'a RunReceipt>,
+    #[cfg(test)]
+    receipts_checked: usize,
+}
+
+impl<'a> BankReceiptIndex<'a> {
+    fn new(book: Id128, receipts: &'a [RunReceipt]) -> Self {
+        let mut result = Self {
+            by_closure: BTreeMap::new(),
+            #[cfg(test)]
+            receipts_checked: 0,
+        };
+        for receipt in receipts {
+            #[cfg(test)]
+            {
+                result.receipts_checked += 1;
+            }
+            if super::receipt_hash(
+                book,
+                receipt.run,
+                &receipt.source,
+                receipt.document_count,
+                receipt.byte_count,
+                &receipt.oids_root,
+            )
+            .is_ok_and(|hash| hash == receipt.receipt_hash)
+            {
+                result
+                    .by_closure
+                    .entry((receipt.document_count, receipt.oids_root))
+                    .or_insert(receipt);
+            }
+        }
+        result
+    }
+
+    fn find(&self, oids: &[Oid]) -> Option<&'a RunReceipt> {
+        // A manifest closure must still be strictly canonical. Sorting or
+        // deduplicating here would admit a closure the literal verifier refused.
+        if !oids.windows(2).all(|pair| pair[0] < pair[1]) {
+            return None;
+        }
+        let count = u32::try_from(oids.len()).ok()?;
+        self.by_closure
+            .get(&(count, super::oids_root(oids)))
+            .copied()
+    }
+}
+
+type BankConfirmationKey = (Oid, Oid, VId);
+
+/// Retain only the statement coordinates and distinct active line ordinals.
+/// Full decision cards are unnecessary for counting unmatched lines, and each
+/// confirmation is visited once rather than once per retained manifest.
+struct BankConfirmationIndex {
+    by_statement: BTreeMap<BankConfirmationKey, BTreeSet<u32>>,
+    #[cfg(test)]
+    confirmations_visited: usize,
+}
+
+impl BankConfirmationIndex {
+    fn new(
+        confirmations: impl IntoIterator<Item = (VId, BankConfirmationKey, u32)>,
+        unmatched: &BTreeSet<VId>,
+    ) -> Self {
+        let mut result = Self {
+            by_statement: BTreeMap::new(),
+            #[cfg(test)]
+            confirmations_visited: 0,
+        };
+        for (vid, key, ordinal) in confirmations {
+            #[cfg(test)]
+            {
+                result.confirmations_visited += 1;
+            }
+            if !unmatched.contains(&vid) {
+                result.by_statement.entry(key).or_default().insert(ordinal);
+            }
+        }
+        result
+    }
+
+    fn count(&self, key: BankConfirmationKey) -> usize {
+        self.by_statement.get(&key).map_or(0, BTreeSet::len)
+    }
+}
+
 /// Verify bank import manifest, bank-line document, and `BankStatementLink`
 /// `DERIVED_FROM` projections at `at` (`fa-d22b`).
 pub(crate) fn verify_all_at<V: Vfs + Clone>(
@@ -1148,6 +1241,7 @@ pub(crate) fn verify_all_at<V: Vfs + Clone>(
             receipts.push(receipt);
         }
     }
+    let receipts = BankReceiptIndex::new(book.book_id, &receipts);
     let mut drift = Vec::new();
     let mut expected_links = BTreeSet::new();
     for row in rows
@@ -1185,10 +1279,7 @@ pub(crate) fn verify_all_at<V: Vfs + Clone>(
             continue;
         }
         let closure = manifest.closure(manifest_oid);
-        let Some(receipt) = receipts
-            .iter()
-            .find(|receipt| super::verify_receipt(receipt, book.book_id, &closure).is_ok())
-        else {
+        let Some(receipt) = receipts.find(&closure) else {
             continue;
         };
         let statement_vid = document_vid(&manifest.statement_oid);
@@ -1322,6 +1413,7 @@ pub fn unmatched_bank_lines_at<V: Vfs + Clone>(
             receipts.push(receipt);
         }
     }
+    let receipts = BankReceiptIndex::new(book, &receipts);
     let mut manifests = Vec::new();
     let mut confirmations = Vec::new();
     let mut unmatched_vids = BTreeSet::new();
@@ -1347,10 +1439,7 @@ pub fn unmatched_bank_lines_at<V: Vfs + Clone>(
                 continue;
             }
             let closure = manifest.closure(manifest_oid);
-            if receipts
-                .iter()
-                .any(|receipt| super::verify_receipt(receipt, book, &closure).is_ok())
-            {
+            if receipts.find(&closure).is_some() {
                 manifests.push((row.created_at, manifest_oid, manifest));
             }
         } else if row.labels.as_slice() == [label::BANK_MATCH] {
@@ -1358,7 +1447,15 @@ pub fn unmatched_bank_lines_at<V: Vfs + Clone>(
                 && let Ok(confirmation) = crate::bank::BankMatchConfirmation::decode(bytes)
                 && confirmation.book_id == book
             {
-                confirmations.push((row.vid, confirmation));
+                confirmations.push((
+                    row.vid,
+                    (
+                        confirmation.manifest_oid,
+                        confirmation.statement_oid,
+                        confirmation.account,
+                    ),
+                    confirmation.line_ordinal,
+                ));
             }
         } else if row.labels.as_slice() == [label::BANK_UNMATCH]
             && let Ok(bytes) = payload(row)
@@ -1368,21 +1465,14 @@ pub fn unmatched_bank_lines_at<V: Vfs + Clone>(
             unmatched_vids.insert(unmatch.target.vid);
         }
     }
+    let confirmations = BankConfirmationIndex::new(confirmations, &unmatched_vids);
     manifests.sort_by_key(|(created_at, oid, _)| (*created_at, *oid));
     let mut total_unmatched = 0_usize;
     let mut first_unmatched_manifest = None;
     for (_, manifest_oid, manifest) in manifests {
-        let confirmed: BTreeSet<u32> = confirmations
-            .iter()
-            .filter(|(vid, c)| {
-                !unmatched_vids.contains(vid)
-                    && c.manifest_oid == manifest_oid
-                    && c.statement_oid == manifest.statement_oid
-                    && c.account == manifest.account
-            })
-            .map(|(_, c)| c.line_ordinal)
-            .collect();
-        let unmatched = manifest.line_oids.len().saturating_sub(confirmed.len());
+        let confirmed =
+            confirmations.count((manifest_oid, manifest.statement_oid, manifest.account));
+        let unmatched = manifest.line_oids.len().saturating_sub(confirmed);
         total_unmatched += unmatched;
         if unmatched > 0 && first_unmatched_manifest.is_none() {
             first_unmatched_manifest = Some(manifest_oid);
@@ -1396,6 +1486,189 @@ mod tests {
     use super::*;
     use fa_model::IntakeSource;
     use fa_model::bank_csv::{BankCsvAmounts, BankCsvDateFormat, BankCsvLayout};
+
+    fn indexed_oid(value: u64) -> Oid {
+        let mut bytes = [0; 32];
+        bytes[..8].copy_from_slice(&value.to_be_bytes());
+        Oid(bytes)
+    }
+
+    fn indexed_receipt(book: Id128, run: u128, closure: &[Oid]) -> RunReceipt {
+        let mut receipt = RunReceipt {
+            run: VId(run),
+            source: IntakeSource::Upload { principal: VId(7) },
+            document_count: u32::try_from(closure.len()).unwrap(),
+            byte_count: 19,
+            oids_root: super::super::oids_root(closure),
+            receipt_hash: [0; 32],
+            recorded_at: CommitSeq(3),
+        };
+        receipt.receipt_hash = super::super::receipt_hash(
+            book,
+            receipt.run,
+            &receipt.source,
+            receipt.document_count,
+            receipt.byte_count,
+            &receipt.oids_root,
+        )
+        .unwrap();
+        receipt
+    }
+
+    #[test]
+    fn bank_receipt_index_matches_literal_authentication_and_first_valid_order() {
+        let book = Id128([41; 16]);
+        let foreign = Id128([42; 16]);
+        let mut receipts = Vec::new();
+        let mut closures = Vec::new();
+        for group in 0..64_u64 {
+            let closure = vec![indexed_oid(group * 3), indexed_oid(group * 3 + 1)];
+            let valid = indexed_receipt(book, u128::from(group) * 4 + 1, &closure);
+            let mut invalid = valid.clone();
+            match group % 6 {
+                0 => invalid.receipt_hash[0] ^= 1,
+                1 => invalid.run = VId(10_000 + u128::from(group)),
+                2 => invalid.byte_count += 1,
+                3 => invalid.document_count += 1,
+                4 => invalid.oids_root[0] ^= 1,
+                _ => invalid.source = IntakeSource::Upload { principal: VId(8) },
+            }
+            receipts.push(invalid);
+            receipts.push(indexed_receipt(
+                foreign,
+                u128::from(group) * 4 + 2,
+                &closure,
+            ));
+            if group % 7 != 0 {
+                receipts.push(valid);
+                let mut later = indexed_receipt(book, u128::from(group) * 4 + 3, &closure);
+                // External receipt authentication intentionally does not bind
+                // recorded_at; the index must not silently strengthen that law.
+                later.recorded_at = CommitSeq(999);
+                receipts.push(later);
+            }
+            closures.push(closure);
+        }
+        receipts.push(indexed_receipt(book, 30_000, &[]));
+        closures.extend([
+            Vec::new(),
+            vec![indexed_oid(1), indexed_oid(1)],
+            vec![indexed_oid(2), indexed_oid(1)],
+            vec![indexed_oid(90_000)],
+        ]);
+        for selected_book in [book, foreign, Id128([43; 16])] {
+            for reverse in [false, true] {
+                if reverse {
+                    receipts.reverse();
+                }
+                let index = BankReceiptIndex::new(selected_book, &receipts);
+                assert_eq!(index.receipts_checked, receipts.len());
+                for closure in &closures {
+                    let literal = receipts.iter().find(|receipt| {
+                        super::super::verify_receipt(receipt, selected_book, closure).is_ok()
+                    });
+                    assert_eq!(index.find(closure), literal, "closure={closure:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hundred_thousand_bank_receipts_are_authenticated_once() {
+        let book = Id128([44; 16]);
+        let count = 100_000_u64;
+        let receipts: Vec<_> = (0..count)
+            .map(|i| indexed_receipt(book, u128::from(i), &[indexed_oid(i)]))
+            .collect();
+        let index = BankReceiptIndex::new(book, &receipts);
+        assert_eq!(index.receipts_checked, count as usize);
+        assert_eq!(index.by_closure.len(), count as usize);
+        for i in 0..count {
+            assert_eq!(
+                index.find(&[indexed_oid(i)]).map(|receipt| receipt.run),
+                Some(VId(u128::from(i)))
+            );
+        }
+        // A live exhaustive control exposes the old cross-product on a small
+        // fixture without asking the normal test suite to do 10 billion reads.
+        let small = &receipts[..128];
+        let mut examined = 0;
+        for i in 0..128 {
+            let found = small.iter().find(|receipt| {
+                examined += 1;
+                super::super::verify_receipt(receipt, book, &[indexed_oid(i)]).is_ok()
+            });
+            assert_eq!(found, index.find(&[indexed_oid(i)]));
+        }
+        assert_eq!(examined, 128 * 129 / 2);
+    }
+
+    #[test]
+    fn bank_confirmation_index_preserves_aliases_retractions_and_coordinates() {
+        let mut confirmations = Vec::new();
+        let mut unmatched = BTreeSet::new();
+        for i in 0..1_024_u64 {
+            let key = (
+                indexed_oid(i % 13),
+                indexed_oid(i % 7),
+                VId(u128::from(i % 5)),
+            );
+            let vid = VId(u128::from(i));
+            confirmations.push((vid, key, (i % 11) as u32));
+            if i % 4 == 0 {
+                unmatched.insert(vid);
+            }
+            if i % 17 == 0 {
+                confirmations.push((VId(10_000 + u128::from(i)), key, (i % 11) as u32));
+            }
+        }
+        for reverse in [false, true] {
+            if reverse {
+                confirmations.reverse();
+            }
+            let index = BankConfirmationIndex::new(confirmations.iter().copied(), &unmatched);
+            assert_eq!(index.confirmations_visited, confirmations.len());
+            for manifest in 0..14 {
+                for statement in 0..8 {
+                    for account in 0..6 {
+                        let key = (indexed_oid(manifest), indexed_oid(statement), VId(account));
+                        let literal: BTreeSet<_> = confirmations
+                            .iter()
+                            .filter(|(vid, actual, _)| !unmatched.contains(vid) && *actual == key)
+                            .map(|(_, _, ordinal)| *ordinal)
+                            .collect();
+                        assert_eq!(index.count(key), literal.len());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hundred_thousand_bank_confirmations_are_joined_once() {
+        let count = 100_000_u64;
+        let unmatched: BTreeSet<_> = (0..count)
+            .filter(|i| i % 3 == 0)
+            .map(|i| VId(u128::from(i)))
+            .collect();
+        let index = BankConfirmationIndex::new(
+            (0..count).map(|i| {
+                (
+                    VId(u128::from(i)),
+                    (indexed_oid(i), indexed_oid(i), VId(7)),
+                    0,
+                )
+            }),
+            &unmatched,
+        );
+        assert_eq!(index.confirmations_visited, count as usize);
+        for i in 0..count {
+            assert_eq!(
+                index.count((indexed_oid(i), indexed_oid(i), VId(7))),
+                usize::from(i % 3 != 0)
+            );
+        }
+    }
 
     fn binding(line_count: usize, declared_layout: bool) -> BankStatementLink {
         let book_id = Id128([11; 16]);

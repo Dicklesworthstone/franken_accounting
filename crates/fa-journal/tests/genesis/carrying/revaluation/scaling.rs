@@ -78,6 +78,57 @@ fn a_thousand_items_in_one_entry_do_not_redecode_that_entry_per_ordinal() {
     )
     .unwrap();
     let target = f.f.h.post(request(proposal)).unwrap().entry_ref();
+    // Preparing a compound application must borrow this large immutable
+    // payload as well. A per-item target decode is itself quadratic when
+    // many ordinals of one large entry are settled together.
+    let requests = (0..128_u16)
+        .map(|ordinal| {
+            let mut request = f.f.fx_request(target, 1);
+            request.target_ordinal = ordinal;
+            request
+        })
+        .collect::<Vec<_>>();
+    let mut template =
+        f.f.h
+            .proposal(vec![], b"many-item-group", EntryClass::ORIGINAL);
+    template.effective_date = day(4, 15);
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+    let group = prepare_fx_settlement_group(
+        &f.f.h.db,
+        &f.f.h.ctx(),
+        &f.f.h.book,
+        &Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
+        &requests,
+        template,
+        &mut budget,
+    )
+    .unwrap()
+    .unwrap();
+    let group_work = group.population_work();
+    assert_eq!(group_work.history_scans, 1);
+    assert_eq!(
+        group_work.entries_decoded,
+        retained_entries(&f, group.items()[0].carrying.known_at) + 1
+    );
+    assert_eq!(
+        group_work.source_guard_entries + 1,
+        group_work.entries_decoded
+    );
+    assert_eq!(group_work.item_effect_entries, 0);
+    for index in [0, 64, 127] {
+        let item = &group.items()[index];
+        let literal = open_item_carrying_at(
+            &f.f.h.db,
+            &f.f.h.ctx(),
+            &f.f.h.book,
+            target,
+            item.carrying.ordinal,
+            item.carrying.known_at,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(item.carrying, literal);
+    }
     let prepared = f.revaluation(13, 3, 3, true).unwrap();
     let work = prepared.population_work();
     assert_eq!(work.history_scans, 1);
@@ -128,8 +179,19 @@ fn grouped_release_validation_visits_group_legs_linearly_and_undo_is_exact() {
             &mut budget,
         )
         .unwrap()
-        .unwrap()
-        .into_proposal();
+        .unwrap();
+        assert_eq!(group.audit_work().source_history_audits, 1);
+        assert_eq!(group.audit_work().successful_reuses, count - 1);
+        let group_work = group.population_work();
+        let entries = retained_entries(&f, group.items()[0].carrying.known_at);
+        assert_eq!(group_work.history_scans, 1, "items={count}");
+        // One initial target preflight precedes the full-prefix index. Every
+        // later target borrows its payload instead of decoding the book again.
+        assert_eq!(group_work.entries_decoded, entries + 1, "items={count}");
+        assert_eq!(group_work.source_guard_entries, entries, "items={count}");
+        assert_eq!(group_work.item_effect_entries, count, "items={count}");
+        assert_eq!(group_work.applications_indexed, 0);
+        let group = group.into_proposal();
         let legs = group.legs.len();
         let posted = f.f.h.post(request(group.clone())).unwrap();
         let prepared = f.revaluation(5, 1, 4, true).unwrap();

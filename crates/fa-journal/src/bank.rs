@@ -288,9 +288,12 @@ pub enum BankMatchPreparation {
 pub struct PreparedBankMatch {
     txn: WriteTxn,
     confirmation: BankMatchConfirmation,
+    capability: Capability,
 }
 
 impl PreparedBankMatch {
+    /// Recheck expiry at publication without refreshing the original source,
+    /// claim, policy or revocation witnesses.
     pub async fn commit<V: Vfs + Clone>(
         self: Box<Self>,
         db: &mut Database<V>,
@@ -299,7 +302,12 @@ impl PreparedBankMatch {
         let Self {
             mut txn,
             confirmation,
+            capability,
         } = *self;
+        if let Err(denial) = fa_policy::current(&capability, db.frontier()?) {
+            txn.abort();
+            return Ok(Err(crate::policy::refusal(&denial)));
+        }
         match txn.commit(db, &cx.commit()).await {
             Ok(recorded_at) => Ok(Ok(confirmation.recorded(recorded_at, false)?)),
             Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
@@ -542,7 +550,11 @@ pub fn prepare_bank_match<V: Vfs + Clone>(
         };
     }
     Ok(Ok(BankMatchPreparation::Ready(Box::new(
-        PreparedBankMatch { txn, confirmation },
+        PreparedBankMatch {
+            txn,
+            confirmation,
+            capability: capability.clone(),
+        },
     ))))
 }
 

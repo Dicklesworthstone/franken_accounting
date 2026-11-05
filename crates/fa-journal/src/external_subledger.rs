@@ -500,6 +500,19 @@ pub struct ExternalSubledgerReconciliation {
     pub reconciled: bool,
 }
 
+/// Actual population and lookup work for external-summary verification.
+/// These counts exclude entry/document decoding and substrate-internal work;
+/// they make the absence of repeated whole-graph joins independently visible.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExternalSubledgerVerificationWork {
+    /// Rows returned by the one selected-prefix vertex population read.
+    pub vertex_rows_selected: usize,
+    /// VId comparisons made by the selected-prefix identity searches.
+    pub identity_row_comparisons: usize,
+    /// Exact historical review-edge reads, including absent or altered edges.
+    pub review_edge_point_reads: usize,
+}
+
 /// The caller must admit whole-book reads before entering this storage path.
 /// Every dependency is read at the entry's recorded prefix, so a later review
 /// cannot retroactively validate an unreviewed summary.
@@ -508,6 +521,22 @@ pub fn reconcile_at<V: Vfs + Clone>(
     book: &BookContext,
     target: EntryRef,
     known_at: CommitSeq,
+) -> Outcome<ExternalSubledgerReconciliation> {
+    reconcile_at_counted(
+        db,
+        book,
+        target,
+        known_at,
+        &mut ExternalSubledgerVerificationWork::default(),
+    )
+}
+
+fn reconcile_at_counted<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    target: EntryRef,
+    known_at: CommitSeq,
+    work: &mut ExternalSubledgerVerificationWork,
 ) -> Outcome<ExternalSubledgerReconciliation> {
     let Some(row) = db.vertex_at(target.vid, known_at)? else {
         return Ok(Err(invalid(
@@ -581,14 +610,7 @@ pub fn reconcile_at<V: Vfs + Clone>(
             "summary's source-batch identity projection differs",
         )));
     }
-    let expected_edge = edge_id(relation::REVIEWED_BY, target.vid, review.attestation);
-    if !db.edges_at(recorded_at)?.iter().any(|edge| {
-        edge.entry.eid == expected_edge
-            && edge.entry.relation == relation::REVIEWED_BY
-            && edge.entry.src == target.vid
-            && edge.entry.dst == review.attestation
-            && edge.props.is_empty()
-    }) {
+    if !review_lineage_at(db, target.vid, review.attestation, recorded_at, work)? {
         return Ok(Err(invalid(
             "summary's independently reviewed source lineage is missing",
         )));
@@ -644,19 +666,39 @@ pub fn reconcile_unchanged_at<V: Vfs + Clone>(
             )));
         }
     }
-    let expected = edge_id(relation::REVIEWED_BY, target.vid, report.review.attestation);
-    if !db.edges_at(known_at)?.iter().any(|edge| {
-        edge.entry.eid == expected
-            && edge.entry.relation == relation::REVIEWED_BY
-            && edge.entry.src == target.vid
-            && edge.entry.dst == report.review.attestation
-            && edge.props.is_empty()
-    }) {
+    if !review_lineage_at(
+        db,
+        target.vid,
+        report.review.attestation,
+        known_at,
+        &mut ExternalSubledgerVerificationWork::default(),
+    )? {
         return Ok(Err(invalid(
             "the selected prefix lost the summary's review lineage",
         )));
     }
     Ok(Ok(report))
+}
+
+fn review_lineage_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    target: VId,
+    review: VId,
+    at: CommitSeq,
+    work: &mut ExternalSubledgerVerificationWork,
+) -> Result<bool, KernelError> {
+    let expected = edge_id(relation::REVIEWED_BY, target, review);
+    // The substrate point read uses the same half-open historical visibility
+    // and last-statement precedence as edges_at. Reading the named identity
+    // avoids materializing every unrelated edge once for every summary.
+    work.review_edge_point_reads += 1;
+    Ok(db.edge_at(expected, at)?.is_some_and(|edge| {
+        edge.entry.eid == expected
+            && edge.entry.relation == relation::REVIEWED_BY
+            && edge.entry.src == target
+            && edge.entry.dst == review
+            && edge.props.is_empty()
+    }))
 }
 
 fn derive_batch_identity(book: Id128, feed: &str, batch_key: &str) -> VId {
@@ -676,7 +718,22 @@ pub fn verify_all_at<V: Vfs + Clone>(
     book: &BookContext,
     at: CommitSeq,
 ) -> Result<Vec<String>, KernelError> {
+    verify_all_at_with_work(db, book, at).map(|(drift, _)| drift)
+}
+
+/// [`verify_all_at`] with deterministic counts of the actual identity and
+/// review-lineage lookups. VId-ordered selected rows are searched in place;
+/// no second population or decoded-payload index is retained.
+pub fn verify_all_at_with_work<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    at: CommitSeq,
+) -> Result<(Vec<String>, ExternalSubledgerVerificationWork), KernelError> {
     let rows = db.vertices_at(at)?;
+    let mut work = ExternalSubledgerVerificationWork {
+        vertex_rows_selected: rows.len(),
+        ..ExternalSubledgerVerificationWork::default()
+    };
     let mut expected = BTreeSet::new();
     let mut drift = Vec::new();
     for row in rows.iter().filter(|row| row.labels.contains(&label::ENTRY)) {
@@ -706,7 +763,7 @@ pub fn verify_all_at<V: Vfs + Clone>(
                         batch.feed, batch.batch_key
                     ));
                 }
-                match rows.iter().find(|stored| stored.vid == batch.identity()) {
+                match identity_row(&rows, batch.identity(), &mut work) {
                     Some(stored)
                         if stored.labels == vec![label::EXTERNAL_SUBLEDGER_BATCH]
                             && stored.created_at == row.created_at
@@ -723,7 +780,9 @@ pub fn verify_all_at<V: Vfs + Clone>(
                 continue;
             }
         }
-        if let Err(refusal) = reconcile_at(db, book, entry.entry_ref(row.vid), at)? {
+        if let Err(refusal) =
+            reconcile_at_counted(db, book, entry.entry_ref(row.vid), at, &mut work)?
+        {
             drift.push(refusal.message);
         }
     }
@@ -735,7 +794,22 @@ pub fn verify_all_at<V: Vfs + Clone>(
             drift.push(format!("orphan external feed identity {:032x}", row.vid.0));
         }
     }
-    Ok(drift)
+    Ok((drift, work))
+}
+
+fn identity_row<'a>(
+    rows: &'a [VertexRow],
+    vid: VId,
+    work: &mut ExternalSubledgerVerificationWork,
+) -> Option<&'a VertexRow> {
+    // Database::vertices_at guarantees unique rows in ascending VId order.
+    // Reuse that order instead of a linear scan per summary or a second map.
+    rows.binary_search_by(|row| {
+        work.identity_row_comparisons += 1;
+        row.vid.cmp(&vid)
+    })
+    .ok()
+    .map(|index| &rows[index])
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 use super::*;
 use fa_journal::external_subledger::{
     EXTERNAL_SUBLEDGER_DOCUMENT_KIND, ExternalSubledgerBatch, ExternalSubledgerDetail,
-    reconcile_at, verify_all_at,
+    reconcile_at, reconcile_unchanged_at, verify_all_at, verify_all_at_with_work,
 };
 
 fn detail(h: &Harness, batch_key: &str) -> ExternalSubledgerBatch {
@@ -225,4 +225,178 @@ fn separately_prepared_summaries_compete_for_one_source_batch_in_both_commit_ord
                 .is_empty()
         );
     }
+}
+
+#[test]
+fn external_feed_verification_uses_one_review_point_read_per_summary() {
+    let mut h = harness();
+    let mut unrelated = fgdb::WriteBatch::new(relation::REVIEWED_BY);
+    let source = VId(u128::MAX - 1);
+    let destination = VId(u128::MAX - 2);
+    unrelated.create_vertex(source, vec![], vec![]);
+    unrelated.create_vertex(destination, vec![], vec![]);
+    for index in 0..4_096_u128 {
+        unrelated.create_vertex(VId(1_000_000 + index), vec![], vec![]);
+        unrelated.add_edge(fgdb_types::EId(index + 1), source, destination, vec![]);
+    }
+    h.write_raw(unrelated);
+
+    // Unrelated rows and edges precede publication: every original review
+    // check would materialize all of them at the summary's own prefix.
+    let mut summaries = Vec::new();
+    for index in 0..4 {
+        let batch = detail(&h, &format!("lookup-{index}"));
+        retain(&mut h, &batch, true);
+        let entry = proposal(&h, &batch, format!("lookup-{index}").as_bytes());
+        let posted = h.post(h.request(entry, &["post"])).unwrap();
+        summaries.push(
+            reconcile_at(&h.db, &h.book, posted.entry_ref(), posted.recorded_at())
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    let at = h.db.frontier().unwrap();
+    let (drift, work) = verify_all_at_with_work(&h.db, &h.book, at).unwrap();
+    assert!(drift.is_empty(), "{drift:?}");
+    assert!(work.vertex_rows_selected > 4_096);
+    assert_eq!(work.review_edge_point_reads, summaries.len());
+    assert!(
+        work.identity_row_comparisons
+            <= summaries.len() * (work.vertex_rows_selected.ilog2() as usize + 2)
+    );
+
+    // Keep the former exhaustive edge predicate live in the same test. Its
+    // result agrees, but its actual materialized population grows with all
+    // unrelated edges, whereas the production path performs four point reads.
+    let mut literal_edges_materialized = 0;
+    for report in &summaries {
+        let expected = edge_id(
+            relation::REVIEWED_BY,
+            report.entry.vid,
+            report.review.attestation,
+        );
+        let edges = h.db.edges_at(report.recorded_at).unwrap();
+        literal_edges_materialized += edges.len();
+        assert!(edges.iter().any(|edge| {
+            edge.entry.eid == expected
+                && edge.entry.relation == relation::REVIEWED_BY
+                && edge.entry.src == report.entry.vid
+                && edge.entry.dst == report.review.attestation
+                && edge.props.is_empty()
+        }));
+        assert_eq!(
+            reconcile_unchanged_at(&h.db, &h.book, report.entry, at)
+                .unwrap()
+                .unwrap(),
+            *report
+        );
+    }
+    assert!(literal_edges_materialized >= summaries.len() * 4_096);
+}
+
+#[test]
+fn external_feed_history_and_dependency_refusal_order_survive_lineage_tampering() {
+    let mut h = harness();
+    let batch = detail(&h, "historical-lineage");
+    retain(&mut h, &batch, true);
+    let before = h.db.frontier().unwrap();
+    let entry = proposal(&h, &batch, b"historical-lineage");
+    let posted = h.post(h.request(entry, &["post"])).unwrap();
+    let target = posted.entry_ref();
+    let original = posted.recorded_at();
+    let report = reconcile_at(&h.db, &h.book, target, original)
+        .unwrap()
+        .unwrap();
+    assert!(
+        reconcile_at(&h.db, &h.book, target, before)
+            .unwrap()
+            .unwrap_err()
+            .message
+            .contains("entry is absent at this prefix")
+    );
+    let lineage = edge_id(relation::REVIEWED_BY, target.vid, report.review.attestation);
+    let mut tamper = fgdb::WriteBatch::new(relation::REVIEWED_BY);
+    tamper.set_edge_property(lineage, property::CODE, Some(CanonicalScalar::Int(1)));
+    h.write_raw(tamper);
+    let altered = h.db.frontier().unwrap();
+    assert_eq!(
+        reconcile_at(&h.db, &h.book, target, altered)
+            .unwrap()
+            .unwrap(),
+        report
+    );
+    assert!(
+        reconcile_unchanged_at(&h.db, &h.book, target, altered)
+            .unwrap()
+            .unwrap_err()
+            .message
+            .contains("selected prefix lost the summary's review lineage")
+    );
+
+    let mut retire = fgdb::WriteBatch::new(relation::REVIEWED_BY);
+    retire.delete_edge(lineage);
+    h.write_raw(retire);
+    let retired = h.db.frontier().unwrap();
+    assert!(h.db.edge_at(lineage, retired).unwrap().is_none());
+    assert_eq!(
+        reconcile_at(&h.db, &h.book, target, retired)
+            .unwrap()
+            .unwrap(),
+        report
+    );
+    assert!(
+        reconcile_unchanged_at(&h.db, &h.book, target, retired)
+            .unwrap()
+            .unwrap_err()
+            .message
+            .contains("selected prefix lost the summary's review lineage")
+    );
+    assert!(verify_all_at(&h.db, &h.book, retired).unwrap().is_empty());
+
+    let mut tamper = fgdb::WriteBatch::new(relation::REVIEWED_BY);
+    tamper.set_vertex_property(
+        batch.identity(),
+        property::FA_DIGEST,
+        Some(CanonicalScalar::bytes(vec![0; 32]).unwrap()),
+    );
+    h.write_raw(tamper);
+    let altered_identity = h.db.frontier().unwrap();
+    let missing_identity =
+        "missing or altered external feed identity for external-ap/historical-lineage";
+    assert_eq!(
+        verify_all_at(&h.db, &h.book, altered_identity).unwrap(),
+        [missing_identity]
+    );
+    // The immutable dependency refusal must still precede the already
+    // missing review edge; indexing must not move lineage checks earlier.
+    assert!(
+        reconcile_unchanged_at(&h.db, &h.book, target, altered_identity)
+            .unwrap()
+            .unwrap_err()
+            .message
+            .contains("unique-batch identity changed after publication")
+    );
+    let orphan = VId(u128::MAX - 3);
+    let mut remove = fgdb::WriteBatch::new(relation::REVIEWED_BY);
+    remove.delete_vertex(batch.identity());
+    remove.create_vertex(
+        orphan,
+        vec![fa_model::symbols::label::EXTERNAL_SUBLEDGER_BATCH],
+        vec![],
+    );
+    h.write_raw(remove);
+    assert_eq!(
+        verify_all_at(&h.db, &h.book, h.db.frontier().unwrap()).unwrap(),
+        [
+            missing_identity.to_string(),
+            format!("orphan external feed identity {:032x}", orphan.0),
+        ]
+    );
+    assert_eq!(
+        reconcile_unchanged_at(&h.db, &h.book, target, original)
+            .unwrap()
+            .unwrap(),
+        report
+    );
+    assert!(verify_all_at(&h.db, &h.book, original).unwrap().is_empty());
 }

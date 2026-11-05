@@ -7045,3 +7045,430 @@ fn a_direct_transfer_does_not_hide_a_layering_chain() {
     );
     witness::determinism(&snapshot, &h.book, &Layering::new().unwrap()).unwrap();
 }
+
+mod party_master_changes_scaling {
+    use super::*;
+    use fa_lantern::cutoff::PartyMasterChanges;
+    use fa_model::rea::SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS;
+    use fa_model::{ControlPayload, PartyIdentifierUpdate};
+
+    fn template(h: &mut Harness) -> fa_lantern::SnapshotEntry {
+        let date = day(2026, 1, 10);
+        let period = h.period_code(date);
+        let usd = h.usd;
+        make_snapshot_entry(
+            h,
+            VId(1),
+            CommitSeq(1),
+            date,
+            &period,
+            EntryClass::ORIGINAL,
+            vec![
+                ("6000", Side::Debit, usd, 100),
+                ("1000", Side::Credit, usd, 100),
+            ],
+            Vec::new(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+    }
+
+    fn update(
+        template: &fa_lantern::SnapshotEntry,
+        entry: u128,
+        recorded: u64,
+        party: u128,
+    ) -> fa_lantern::SnapshotEntry {
+        let mut control = template.clone();
+        control.vid = VId(entry);
+        control.recorded_at = CommitSeq(recorded);
+        control.entry.proposal.class = EntryClass::SCHEMA_CONTROL;
+        control.entry.proposal.legs.clear();
+        control.entry.proposal.unit_totals.clear();
+        control.entry.proposal.control = Some(ControlPayload::SchemaChange {
+            kind: SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS,
+            canonical_bytes: PartyIdentifierUpdate {
+                party_vid: VId(party),
+                identifiers: Vec::new(),
+            }
+            .encode()
+            .unwrap(),
+        });
+        control
+    }
+
+    // The original literal leg-by-update join, kept live beside the indexed
+    // implementation. Comparing whole findings checks order, duplicate legs,
+    // aliases, the population, all citations and the narrative together.
+    fn nested_findings(snapshot: &Snapshot, window: u32) -> (Vec<Finding>, u64) {
+        let mut updates = Vec::new();
+        for e in &snapshot.entries {
+            if let Some(ControlPayload::SchemaChange {
+                kind: SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS,
+                canonical_bytes,
+            }) = &e.entry.proposal.control
+                && let Ok(upd) = PartyIdentifierUpdate::decode(canonical_bytes)
+            {
+                let (value, code) = snapshot.rea.parties.get(&upd.party_vid).map_or_else(
+                    || (upd.party_vid, format!("{:032x}", upd.party_vid.0)),
+                    |party| (party.dimension_value_vid, party.code.clone()),
+                );
+                updates.push((e.vid, e.recorded_at.0, code, upd.party_vid, value));
+            }
+        }
+        updates.sort_by_key(|(entry, recorded, ..)| (*recorded, *entry));
+        if updates.is_empty() {
+            return (Vec::new(), 0);
+        }
+        let mut live = snapshot.live_postings().unwrap();
+        live.sort_by_key(|entry| (entry.recorded_at, entry.vid));
+        let population = live.len() as u64;
+        let mut out = Vec::new();
+        let mut comparisons = 0;
+        for e in live {
+            for leg in &e.entry.proposal.legs {
+                for (entry, recorded, code, party, value) in &updates {
+                    comparisons += 1;
+                    if leg
+                        .dimension_set
+                        .iter()
+                        .any(|(_, v)| v == party || v == value)
+                        && e.recorded_at.0 >= *recorded
+                        && e.recorded_at.0 - *recorded <= u64::from(window)
+                    {
+                        let dist = e.recorded_at.0 - *recorded;
+                        let mut cites = vec![Cite::Entry(e.vid), Cite::Entry(*entry)];
+                        if snapshot.rea.parties.contains_key(party) {
+                            cites.push(Cite::Principal(*party));
+                        }
+                        out.push(Finding {
+                            procedure: PartyMasterChanges::ID.into(),
+                            version: 1,
+                            severity: Severity::High,
+                            statistic: Statistic::count(
+                                "commits_after_master_change", dist, population,
+                            ),
+                            cites,
+                            narrative: format!(
+                                "posting to party {code} recorded {dist} commit(s) after party identifier change"
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        (out, comparisons)
+    }
+
+    #[test]
+    fn party_master_index_matches_nested_findings_including_aliases_and_time_boundaries() {
+        let mut h = harness();
+        let template = template(&mut h);
+        let mut snapshot = h.snapshot();
+        snapshot.entries.clear();
+        // Shared aliases, a party identity that is another party's alias,
+        // and an identity equal to its own alias all retain literal join law.
+        for (party, value, code) in [
+            (100, 200, "A"),
+            (300, 200, "B"),
+            (400, 100, "C"),
+            (500, 500, "D"),
+        ] {
+            snapshot.rea.parties.insert(
+                VId(party),
+                fa_journal::rea::PartyRow {
+                    vid: VId(party),
+                    dimension_value_vid: VId(value),
+                    code: code.into(),
+                    kind: fa_model::PartyKind::Vendor,
+                    name: template.entry.proposal.description.clone(),
+                    identifiers: Vec::new(),
+                    external_ids: Vec::new(),
+                    created_at: CommitSeq(1),
+                },
+            );
+        }
+        for (entry, recorded, party) in [
+            (1010, 10, 300),
+            (1009, 10, 100),
+            (1008, 9, 400),
+            (1007, 0, 100),
+            (1006, 1, 500),
+            (1005, 10, 900),
+            (1004, 60, 100),
+            (1003, u64::MAX, 100),
+        ] {
+            snapshot
+                .entries
+                .push(update(&template, entry, recorded, party));
+        }
+        let mut malformed = update(&template, 1020, 10, 100);
+        malformed.entry.proposal.control = Some(ControlPayload::SchemaChange {
+            kind: SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS,
+            canonical_bytes: vec![0xff],
+        });
+        snapshot.entries.push(malformed);
+        let mut other_kind = update(&template, 1021, 10, 100);
+        if let Some(ControlPayload::SchemaChange { kind, .. }) =
+            &mut other_kind.entry.proposal.control
+        {
+            *kind = fa_model::rea::SCHEMA_CHANGE_BIND_EXTERNAL_ID;
+        }
+        snapshot.entries.push(other_kind);
+        for (i, recorded) in [0, 9, 10, 11, 35, 36, u64::MAX].into_iter().enumerate() {
+            let mut posting = template.clone();
+            posting.vid = VId(2000 + i as u128);
+            posting.recorded_at = CommitSeq(recorded);
+            for leg in &mut posting.entry.proposal.legs {
+                leg.dimension_set = vec![
+                    (1, VId(100)),
+                    (2, VId(200)),
+                    (3, VId(200)),
+                    (4, VId(500)),
+                    (5, VId(900)),
+                ];
+            }
+            snapshot.entries.push(posting);
+        }
+        // A reversal removes the corresponding posting from this procedure.
+        let mut reversal = template.clone();
+        reversal.vid = VId(2100);
+        reversal.recorded_at = CommitSeq(12);
+        reversal.entry.proposal.class = EntryClass::REVERSAL;
+        reversal
+            .entry
+            .proposal
+            .supersession
+            .push(fa_model::Supersession {
+                target: fa_model::EntryRef {
+                    vid: VId(2003),
+                    entry_digest: template.entry.entry_digest,
+                },
+                kind: SupersessionKind::Reverses,
+                reason_code: 1,
+            });
+        snapshot.entries.push(reversal);
+
+        for window in [1, 25, u32::MAX] {
+            let procedure = PartyMasterChanges::with(
+                Params::defaults(PartyMasterChanges::ID)
+                    .unwrap()
+                    .set("window_commits", i128::from(window))
+                    .unwrap(),
+            );
+            let (expected, _) = nested_findings(&snapshot, window);
+            assert!(!expected.is_empty());
+            // The two legs produce two findings for each matched update,
+            // although both party aliases occur repeatedly on either leg.
+            assert_eq!(
+                expected
+                    .iter()
+                    .filter(|f| f
+                        .cites
+                        .starts_with(&[Cite::Entry(VId(2002)), Cite::Entry(VId(1009))]))
+                    .count(),
+                2
+            );
+            assert!(
+                expected
+                    .iter()
+                    .any(|f| f.cites == vec![Cite::Entry(VId(2002)), Cite::Entry(VId(1005))])
+            );
+            assert!(
+                !expected
+                    .iter()
+                    .any(|f| f.cites.contains(&Cite::Entry(VId(2003))))
+            );
+            for order in 0..3 {
+                let mut work = Meter::new(PartyMasterChanges::ID, None, None);
+                assert_eq!(
+                    procedure.run(&snapshot, &h.book, &mut work).unwrap(),
+                    expected,
+                    "window={window} order={order}"
+                );
+                if order == 0 {
+                    snapshot.entries.reverse();
+                } else {
+                    snapshot.entries.rotate_left(7);
+                }
+            }
+        }
+        let invalid = PartyMasterChanges::with(
+            Params::defaults(PartyMasterChanges::ID)
+                .unwrap()
+                .set("window_commits", 0)
+                .unwrap(),
+        );
+        let mut work = Meter::new(PartyMasterChanges::ID, None, None);
+        assert!(matches!(
+            invalid.run(&snapshot, &h.book, &mut work),
+            Err(LanternError::Parameter { .. })
+        ));
+        assert_eq!(work.work().total(), 0);
+    }
+
+    fn sparse_snapshot(h: &mut Harness, n: u64) -> Snapshot {
+        let template = template(h);
+        let mut snapshot = h.snapshot();
+        snapshot.entries.clear();
+        snapshot.entries.reserve((2 * n) as usize);
+        // Read-path fixtures isolate the join from storage/posting throughput.
+        // Each party has one change; most postings name a different party.
+        for i in 0..n {
+            snapshot.entries.push(update(
+                &template,
+                1_000_000 + u128::from(i),
+                i + 1,
+                10_000_000 + u128::from(i),
+            ));
+            let mut posting = template.clone();
+            posting.vid = VId(2_000_000 + u128::from(i));
+            posting.recorded_at = CommitSeq(i + 2);
+            let party_base = if i % 997 == 0 { 10_000_000 } else { 20_000_000 };
+            posting.entry.proposal.legs[0].dimension_set =
+                vec![(1, VId(party_base + u128::from(i)))];
+            snapshot.entries.push(posting);
+        }
+        snapshot
+    }
+
+    #[test]
+    fn party_master_index_handles_hundred_thousand_sparse_postings_and_updates() {
+        const N: u64 = 100_000;
+        let mut h = harness();
+        let procedure = PartyMasterChanges::new().unwrap();
+        // A live, modest-size negative control demonstrates that the old
+        // join exceeds the same linear budget while reporting identical data.
+        let small = sparse_snapshot(&mut h, 256);
+        let (expected, old_comparisons) = nested_findings(&small, 25);
+        let mut work = Meter::new(PartyMasterChanges::ID, Some(7 * 256), None);
+        assert_eq!(procedure.run(&small, &h.book, &mut work).unwrap(), expected);
+        assert_eq!(old_comparisons, 2 * 256 * 256);
+        assert!(old_comparisons > work.work().total() * 50);
+
+        let snapshot = sparse_snapshot(&mut h, N);
+        let mut work = Meter::new(PartyMasterChanges::ID, Some(7 * N), None);
+        let actual = procedure.run(&snapshot, &h.book, &mut work).unwrap();
+        let expected: Vec<_> = (0..N)
+            .step_by(997)
+            .map(|i| Finding {
+                procedure: PartyMasterChanges::ID.into(),
+                version: 1,
+                severity: Severity::High,
+                statistic: Statistic::count("commits_after_master_change", 1, N),
+                cites: vec![
+                    Cite::Entry(VId(2_000_000 + u128::from(i))),
+                    Cite::Entry(VId(1_000_000 + u128::from(i))),
+                ],
+                narrative: format!(
+                    "posting to party {:032x} recorded 1 commit(s) after party identifier change",
+                    10_000_000 + u128::from(i)
+                ),
+            })
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(work.work().entries, 2 * N);
+        assert_eq!(work.work().legs, 2 * N);
+        assert!(work.work().comparisons <= 3 * N, "{:?}", work.work());
+        assert!(work.work().within_registered_bound(
+            &fa_lantern::bind(PartyMasterChanges::ID).unwrap().complexity,
+            &snapshot
+        ));
+    }
+
+    #[test]
+    fn party_master_index_bounds_shared_party_history_by_commit_window() {
+        const N: u64 = 100_000;
+        const PARTY: u128 = 10_000_000;
+        let mut h = harness();
+        let template = template(&mut h);
+        let mut snapshot = h.snapshot();
+        snapshot.entries.clear();
+        snapshot.entries.reserve((2 * N) as usize);
+        // All changes and postings name one party. Indexing party alone is
+        // insufficient: the commit window must also avoid a full history scan.
+        for i in 0..N {
+            snapshot
+                .entries
+                .push(update(&template, 1_000_000 + u128::from(i), 4 * i, PARTY));
+            let mut posting = template.clone();
+            posting.vid = VId(2_000_000 + u128::from(i));
+            posting.recorded_at = CommitSeq(4 * i + 1);
+            posting.entry.proposal.legs[0].dimension_set = vec![(1, VId(PARTY))];
+            snapshot.entries.push(posting);
+        }
+        let procedure = PartyMasterChanges::with(
+            Params::defaults(PartyMasterChanges::ID)
+                .unwrap()
+                .set("window_commits", 1)
+                .unwrap(),
+        );
+        let mut work = Meter::new(PartyMasterChanges::ID, Some(45 * N), None);
+        let actual = procedure.run(&snapshot, &h.book, &mut work).unwrap();
+        assert_eq!(actual.len(), N as usize);
+        for (i, finding) in actual.into_iter().enumerate() {
+            assert_eq!(
+                finding,
+                Finding {
+                    procedure: PartyMasterChanges::ID.into(),
+                    version: 1,
+                    severity: Severity::High,
+                    statistic: Statistic::count("commits_after_master_change", 1, N),
+                    cites: vec![
+                        Cite::Entry(VId(2_000_000 + i as u128)),
+                        Cite::Entry(VId(1_000_000 + i as u128)),
+                    ],
+                    narrative: format!(
+                        "posting to party {PARTY:032x} recorded 1 commit(s) after party identifier change"
+                    ),
+                }
+            );
+        }
+        assert_eq!(work.work().entries, 2 * N);
+        assert_eq!(work.work().legs, 2 * N);
+        assert!(work.work().comparisons <= 40 * N, "{:?}", work.work());
+        assert!(work.work().within_registered_bound(
+            &fa_lantern::bind(PartyMasterChanges::ID).unwrap().complexity,
+            &snapshot
+        ));
+    }
+
+    #[test]
+    fn party_master_index_preparation_obeys_budget_and_cancellation() {
+        struct CancelAtSecondCheck(std::cell::Cell<usize>);
+        impl fa_lantern::Cancellation for CancelAtSecondCheck {
+            fn cancelled(&self) -> bool {
+                self.0.set(self.0.get() + 1);
+                self.0.get() >= 2
+            }
+        }
+        let mut h = harness();
+        let snapshot = sparse_snapshot(&mut h, 512);
+        let procedure = PartyMasterChanges::new().unwrap();
+        // The initial entry scan uses exactly one cancellation interval.
+        // Both refusals happen at the first index insertion, before any join.
+        let mut work = Meter::new(PartyMasterChanges::ID, Some(1024), None);
+        assert!(matches!(
+            procedure.run(&snapshot, &h.book, &mut work),
+            Err(LanternError::BudgetExhausted {
+                used: 1025,
+                budget: 1024,
+                ..
+            })
+        ));
+        assert_eq!(work.work().entries, 1024);
+        assert_eq!(work.work().legs, 0);
+        assert_eq!(work.work().comparisons, 1);
+        let cancel = CancelAtSecondCheck(std::cell::Cell::new(0));
+        let mut work = Meter::new(PartyMasterChanges::ID, None, Some(&cancel));
+        assert!(matches!(
+            procedure.run(&snapshot, &h.book, &mut work),
+            Err(LanternError::Cancelled { used: 1025, .. })
+        ));
+        assert_eq!(work.work().entries, 1024);
+        assert_eq!(work.work().legs, 0);
+        assert_eq!(work.work().comparisons, 1);
+    }
+}

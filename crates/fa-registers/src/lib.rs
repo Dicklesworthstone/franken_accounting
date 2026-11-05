@@ -1955,9 +1955,11 @@ impl Served {
 /// [`trial_balance`] at the frontier, answered from maintained registers
 /// when every period ending on or before the selection's last day can be
 /// served exactly (plan §5.3, fa-715), and from the literal fold otherwise.
-/// Both yield the same report; [`Served`] says which ran. The maintained
-/// path reads the chart, each contributing period's cells and the tail
-/// after its cursor, not the journal's history.
+/// Both yield the same report; [`Served`] says which ran. Maintained monetary
+/// sums come from checked cells and their exact tails. Metadata is enumerated
+/// at the selected snapshot; any unservable period requires one shared
+/// canonical-prefix scan to establish emptiness. [`Served::tail_length`]
+/// counts tail decodes only, not those metadata and completeness checks.
 pub fn trial_balance_served<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -2045,9 +2047,10 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
     day: DateDay,
     seq: CommitSeq,
 ) -> Result<Result<(ColumnSums, ServedPeriods), String>, RegisterError> {
-    let (accounts, periods) = report_metadata_at(db, seq)?;
+    let (accounts, periods) = report_metadata_at(db, cx, book, seq)?;
     let mut sums = ColumnSums::new();
     let mut served = Vec::new();
+    let mut populated_periods = None;
     for period in periods {
         let last = DateDay(
             period
@@ -2066,8 +2069,19 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
                 day.render()
             )));
         }
-        let Some(head) = maintained_fold_at(db, cx, book, &period.code, &accounts, seq)? else {
-            if period_has_postings_at(db, period.vid, seq)? {
+        let head = match maintained_fold_at(db, cx, book, &period.code, &accounts, seq) {
+            Ok(head) => head,
+            Err(RegisterError::Overflow | RegisterError::Capacity(_)) => {
+                // A period-local tail cannot diagnose the complete report's
+                // selected scope or its first overflowing source contribution.
+                return Ok(Err(
+                    "maintained tail requires a literal capacity diagnosis".into(),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(head) = head else {
+            if period_has_postings_at(db, cx, book, &period.code, seq, &mut populated_periods)? {
                 return Ok(Err(unservable(&period.code)));
             }
             continue;
@@ -2174,11 +2188,24 @@ fn period_activity_served_at_inner<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<(TrialBalance, Served), RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     let selected = select_periods(db, book, periods, seq)?;
-    let (accounts, _) = report_metadata_at(db, seq)?;
+    let (accounts, _) = report_metadata_at(db, cx, book, seq)?;
     let mut sums = ColumnSums::new();
     let mut served = Vec::new();
+    let mut populated_periods = None;
     for code in &selected {
-        match maintained_fold_at(db, cx, book, code, &accounts, seq)? {
+        let head = match maintained_fold_at(db, cx, book, code, &accounts, seq) {
+            Ok(head) => head,
+            Err(RegisterError::Overflow | RegisterError::Capacity(_)) => {
+                return Ok((
+                    report_at(db, book, selected.clone(), seq, None, &[], None)?,
+                    Served::Literal(
+                        "maintained tail requires a literal capacity diagnosis".into(),
+                    ),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        match head {
             Some(head) => {
                 match add_cells(&mut sums, &head.fold) {
                     Ok(()) => {}
@@ -2198,7 +2225,7 @@ fn period_activity_served_at_inner<V: asupersync::fs::Vfs + Clone>(
                 }
                 served.push((code.clone(), head.served_at, head.tail_entries));
             }
-            None if period_has_postings_at(db, period_at(db, book, code, seq)?.vid, seq)? => {
+            None if period_has_postings_at(db, cx, book, code, seq, &mut populated_periods)? => {
                 let reason = unservable(code);
                 return Ok((
                     report_at(db, book, selected.clone(), seq, None, &[], None)?,
@@ -2214,56 +2241,89 @@ fn period_activity_served_at_inner<V: asupersync::fs::Vfs + Clone>(
     ))
 }
 
-/// Read only the selected snapshot's book membership and metadata. Loading
-/// the current chart or periods here would let later schema changes alter a
-/// historical report, even when all monetary contributions were pinned.
+/// Read the selected snapshot's metadata rows, independently of derived
+/// IN_BOOK edges. Missing membership edges cannot remove a historical period
+/// or account from a maintained report. This currently scans vertex metadata;
+/// it is not a claim of work independent of unrelated book history.
 fn report_metadata_at<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
+    cx: Option<&QueryCx>,
+    book: &BookContext,
     seq: CommitSeq,
 ) -> Result<(Vec<AccountRow>, Vec<PeriodRow>), RegisterError> {
+    report_checkpoint(cx)?;
     let mut accounts = Vec::new();
     let mut periods = Vec::new();
-    for vid in db.in_neighbours_at(fa_journal::rows::book_root(), relation::IN_BOOK, seq)? {
-        let Some(row) = db.vertex_at(vid, seq)? else {
-            continue;
-        };
+    for row in db.vertices_at(seq)? {
+        report_checkpoint(cx)?;
         if row.labels.contains(&label::ACCOUNT) {
             accounts.push(AccountRow::decode(&row)?);
         }
         if row.labels.contains(&label::PERIOD) {
-            periods.push(PeriodRow::decode(&row)?);
+            let period = PeriodRow::decode(&row)?;
+            if period.calendar_id == book.calendar.id {
+                periods.push(period);
+            }
         }
     }
     accounts.sort_by(|a, b| a.code.cmp(&b.code));
     periods.sort_by(|a, b| {
         (a.fiscal_year, a.ordinal, &a.code).cmp(&(b.fiscal_year, b.ordinal, &b.code))
     });
+    report_checkpoint(cx)?;
     Ok((accounts, periods))
 }
 
-/// Whether anything that can carry a leg reaches `period`: an Entry with
-/// legs, or a register cell (a stale cell without its state is not
-/// trusted to be empty).
+/// Preserve the context-aware read's cancellation boundary during metadata
+/// and canonical-prefix inspection. The legacy context-free API has no Cx.
+fn report_checkpoint(cx: Option<&QueryCx>) -> Result<(), RegisterError> {
+    if let Some(cx) = cx {
+        cx.checkpoint()
+            .map_err(fgdb::WriteTxnError::Interrupted)
+            .map_err(KernelError::from)?;
+    }
+    Ok(())
+}
+
+/// A missing cache is skippable only when the canonical selected Entry prefix
+/// proves its period has no legs. IN_PERIOD edges are derived and cannot prove
+/// absence. Build this population lazily once per report, sharing it across
+/// every unservable period at the same book and known-at coordinate. Resolved
+/// holds still count conservatively; their exact monetary effect belongs to
+/// the literal fold. This can scan and decode the complete selected prefix.
 fn period_has_postings_at<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
-    period: VId,
+    cx: Option<&QueryCx>,
+    book: &BookContext,
+    period: &str,
     seq: CommitSeq,
+    populated: &mut Option<BTreeSet<String>>,
 ) -> Result<bool, RegisterError> {
-    for vid in db.in_neighbours_at(period, relation::IN_PERIOD, seq)? {
-        let Some(row) = db.vertex_at(vid, seq)? else {
+    report_checkpoint(cx)?;
+    if let Some(periods) = populated.as_ref() {
+        return Ok(periods.contains(period));
+    }
+    let mut periods = BTreeSet::new();
+    let mut resolver = PeriodOf::new(book);
+    let mut runs = BTreeMap::new();
+    // Reuse the literal reader's payload and migration-selection laws, but
+    // retain only the period population, checking cancellation while decoding.
+    for row in db.vertices_at(seq)? {
+        report_checkpoint(cx)?;
+        let Some(entry) = entry_from_row(db, &row, book, seq)? else {
             continue;
         };
-        if row.labels.contains(&label::REGISTER) {
-            return Ok(true);
+        if !fa_journal::migration::visible_at(db, &entry, seq, &mut runs)? {
+            continue;
         }
-        if row.labels.contains(&label::ENTRY) {
-            let entry = fa_journal::entry_storage::decode_at(db, &row, seq)?;
-            if !entry.proposal.legs.is_empty() {
-                return Ok(true);
-            }
+        if !entry.proposal.legs.is_empty() {
+            periods.insert(resolver.period(&entry)?.to_string());
         }
     }
-    Ok(false)
+    report_checkpoint(cx)?;
+    let contains = periods.contains(period);
+    *populated = Some(periods);
+    Ok(contains)
 }
 
 /// A stock position on a civil day, independent of when postings were recorded

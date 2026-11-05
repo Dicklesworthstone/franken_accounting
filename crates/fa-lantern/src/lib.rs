@@ -823,7 +823,8 @@ impl Work {
             // RegisterEquals v2 indexes gross cell prefixes once, then visits
             // the matching contributions of each discrepant claim to cite.
             // Damages additionally folds live/original lineages; reconciliation
-            // additionally scans live postings for each mirrored Instrument.
+            // indexes live units once, then visits bounded unit runs and cited
+            // entries for each mirrored Instrument.
             "O(legs log legs + attestations × legs)"
             | "O(legs log legs + (attestations + instruments) × legs)" => {
                 let attestations = snapshot.attestations.len() as u64;
@@ -832,6 +833,12 @@ impl Work {
                 } else {
                     0
                 };
+                let instrument_cites = entries.min((MAX_CITES - 1) as u64);
+                // At most C mismatching runs and C+1 matching runs are visited
+                // to emit C citations, plus one preparation and one query
+                // charge per instrument. Counts still include all mismatches.
+                let instrument_comparisons = instruments
+                    .saturating_mul(instrument_cites.saturating_mul(3).saturating_add(3));
                 Some(Self {
                     entries: entries.saturating_mul(instruments.saturating_add(3)),
                     legs: legs.saturating_mul(instruments.saturating_add(3)),
@@ -840,7 +847,7 @@ impl Work {
                         .saturating_add(
                             attestations.saturating_mul(legs.saturating_mul(2).saturating_add(1)),
                         )
-                        .saturating_add(instruments),
+                        .saturating_add(instrument_comparisons),
                 })
             }
             // jet.self_sourced_evidence: one comparison per attestation it

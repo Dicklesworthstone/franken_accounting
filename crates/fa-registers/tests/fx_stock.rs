@@ -1283,6 +1283,110 @@ fn maintained_cross_period_activity_overflow_refolds_to_identify_the_retained_so
     assert_eq!(f.db.vertices().unwrap(), before);
 }
 
+/// fa-7apf: a period-local tail cannot diagnose a stock or multi-period
+/// report. The literal selection determines both the scope and source.
+#[test]
+fn a_tail_overflow_is_served_with_the_literal_diagnosis() {
+    let mut f = Fixture::new();
+    f.post(f.proposal("january-maximum", day(2026, 1, 5), f.usd, i128::MAX));
+    let ctx = f.ctx();
+    f.runtime
+        .block_on(fa_registers::advance(
+            &mut f.db,
+            &ctx,
+            &f.book,
+            "FY2026-P01",
+        ))
+        .unwrap();
+    let safe = f.db.frontier().unwrap();
+    let january = ["FY2026-P01".to_string()];
+    let original =
+        fa_registers::trial_balance_at(&f.db, &f.book, &january, Some(safe)).unwrap();
+    let (source, recorded_at) =
+        f.append_retained_fault(f.proposal("january-overflow", day(2026, 1, 6), f.usd, 1));
+    let overflowing = f.db.frontier().unwrap();
+
+    // Move HEAD without changing the selected journal contributions. Both
+    // the earlier damaged prefix and the current prefix must diagnose it.
+    f.runtime
+        .block_on(fa_registers::advance(
+            &mut f.db,
+            &ctx,
+            &f.book,
+            "FY2025-P12",
+        ))
+        .unwrap();
+    let head = f.db.frontier().unwrap();
+    let before = f.db.vertices().unwrap();
+    let both = ["FY2025-P12".to_string(), "FY2026-P01".to_string()];
+    let query = ctx.query();
+    for at in [Some(overflowing), None] {
+        let known_at = at.unwrap_or(head);
+        for (literal, answers) in [
+            (
+                fa_registers::trial_balance_at(&f.db, &f.book, &january, at).unwrap_err(),
+                [
+                    fa_registers::trial_balance_served_at(&f.db, &f.book, &january, at)
+                        .unwrap_err(),
+                    fa_registers::trial_balance_served_at_with_context(
+                        &f.db, &query, &f.book, &january, at,
+                    )
+                    .unwrap_err(),
+                ],
+            ),
+            (
+                fa_registers::period_activity(&f.db, &f.book, &both, at).unwrap_err(),
+                [
+                    fa_registers::period_activity_served_at(&f.db, &f.book, &both, at)
+                        .unwrap_err(),
+                    fa_registers::period_activity_served_at_with_context(
+                        &f.db, &query, &f.book, &both, at,
+                    )
+                    .unwrap_err(),
+                ],
+            ),
+        ] {
+            let RegisterError::Capacity(expected) = literal else {
+                panic!("literal capacity diagnosis required: {literal:?}")
+            };
+            assert_eq!(expected.source, source);
+            assert_eq!(
+                (expected.recorded_at, expected.known_at),
+                (recorded_at, known_at)
+            );
+            assert_eq!((expected.accumulated, expected.incoming), (i128::MAX, 1));
+            for answer in answers {
+                let RegisterError::Capacity(actual) = answer else {
+                    panic!("served capacity diagnosis required: {answer:?}")
+                };
+                assert_eq!(actual, expected);
+                let refusal = actual.refusal();
+                assert_eq!((refusal.code, refusal.exit), ("FA-REF-198", 3));
+            }
+        }
+    }
+    for (report, served) in [
+        fa_registers::trial_balance_served_at(&f.db, &f.book, &january, Some(safe)).unwrap(),
+        fa_registers::trial_balance_served_at_with_context(
+            &f.db,
+            &query,
+            &f.book,
+            &january,
+            Some(safe),
+        )
+        .unwrap(),
+    ] {
+        assert_eq!(report, original);
+        assert!(matches!(served, fa_registers::Served::Maintained(_)));
+    }
+    assert_eq!(f.db.frontier().unwrap(), head, "diagnosis must not publish");
+    assert_eq!(
+        f.db.vertices().unwrap(),
+        before,
+        "diagnosis must not repair history"
+    );
+}
+
 #[test]
 fn equal_amounts_with_different_rate_provenance_have_different_source_digests() {
     fn one(source: &str) -> FunctionalStockFold {

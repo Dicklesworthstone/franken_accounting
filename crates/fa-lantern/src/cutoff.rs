@@ -354,6 +354,120 @@ procedure_boilerplate!(
     "recon.attested_register_compare"
 );
 
+struct InstrumentUnitRun {
+    // None means the entry posts several units to this account, and therefore
+    // mismatches every instrument unit. Some(unit) means only that unit occurs.
+    unit: Option<u32>,
+    end: usize,
+}
+
+#[derive(Default)]
+struct InstrumentAccountUnits {
+    entries: Vec<VId>,
+    runs: Vec<InstrumentUnitRun>,
+    only_unit: BTreeMap<u32, usize>,
+}
+
+/// A live posting contributes once per mirrored account, even with repeated
+/// legs or multiple units. Counts answer matching instruments without visiting
+/// their entries; runs skip an arbitrarily long matching citation prefix.
+#[derive(Default)]
+struct InstrumentUnitIndex {
+    accounts: BTreeMap<VId, InstrumentAccountUnits>,
+}
+
+impl InstrumentUnitIndex {
+    fn read(
+        snapshot: &Snapshot,
+        live: &[&crate::SnapshotEntry],
+        work: &mut Meter<'_>,
+    ) -> Result<Self, LanternError> {
+        let mut mirrored = BTreeSet::new();
+        for instrument in snapshot.rea.instruments.values() {
+            work.compare(1)?;
+            mirrored.insert(instrument.mirrors_account);
+        }
+        if mirrored.is_empty() {
+            return Ok(Self::default());
+        }
+        let mut observed: BTreeMap<VId, BTreeMap<VId, Option<u32>>> = BTreeMap::new();
+        for entry in live {
+            work.entry()?;
+            for leg in &entry.entry.proposal.legs {
+                work.leg()?;
+                if !mirrored.contains(&leg.account_ref) {
+                    continue;
+                }
+                work.compare(1)?;
+                observed
+                    .entry(leg.account_ref)
+                    .or_default()
+                    .entry(entry.vid)
+                    .and_modify(|unit| {
+                        if *unit != Some(leg.amount.unit.0) {
+                            *unit = None;
+                        }
+                    })
+                    .or_insert(Some(leg.amount.unit.0));
+            }
+        }
+        let mut accounts = BTreeMap::new();
+        for (account, observed) in observed {
+            let mut index = InstrumentAccountUnits::default();
+            for (entry, unit) in observed {
+                work.compare(1)?;
+                index.entries.push(entry);
+                if let Some(unit) = unit {
+                    *index.only_unit.entry(unit).or_default() += 1;
+                }
+                let end = index.entries.len();
+                if let Some(run) = index.runs.last_mut()
+                    && run.unit == unit
+                {
+                    run.end = end;
+                } else {
+                    index.runs.push(InstrumentUnitRun { unit, end });
+                }
+            }
+            accounts.insert(account, index);
+        }
+        Ok(Self { accounts })
+    }
+
+    fn mismatches(
+        &self,
+        account: VId,
+        unit: u32,
+        work: &mut Meter<'_>,
+    ) -> Result<(u64, Vec<VId>), LanternError> {
+        let Some(index) = self.accounts.get(&account) else {
+            return Ok((0, Vec::new()));
+        };
+        let count = index.entries.len() - index.only_unit.get(&unit).copied().unwrap_or(0);
+        let mut cites = Vec::with_capacity(count.min(MAX_CITES - 1));
+        if count > 0 {
+            let mut start = 0;
+            for run in &index.runs {
+                work.compare(1)?;
+                if run.unit != Some(unit) {
+                    for entry in index.entries[start..run.end]
+                        .iter()
+                        .take(MAX_CITES - 1 - cites.len())
+                    {
+                        work.compare(1)?;
+                        cites.push(*entry);
+                    }
+                }
+                if cites.len() == MAX_CITES - 1 {
+                    break;
+                }
+                start = run.end;
+            }
+        }
+        Ok((count as u64, cites))
+    }
+}
+
 impl Procedure for ReconAttestedRegisterCompare {
     fn id(&self) -> &'static str {
         Self::ID
@@ -427,24 +541,14 @@ impl Procedure for ReconAttestedRegisterCompare {
         // 2. Check every Instrument vertex mirroring an account for unit consistency
         let mut live = snapshot.live_postings_through(through)?;
         live.sort_by_key(|e| e.vid);
+        let instrument_units = InstrumentUnitIndex::read(snapshot, &live, work)?;
         for inst in snapshot.rea.instruments.values() {
             work.compare(1)?;
-            let mut mismatched_entries = Vec::new();
-            for e in &live {
-                work.entry()?;
-                for leg in &e.entry.proposal.legs {
-                    work.leg()?;
-                    if leg.account_ref == inst.mirrors_account && leg.amount.unit != inst.unit {
-                        mismatched_entries.push(e.vid);
-                    }
-                }
-            }
-            if !mismatched_entries.is_empty() {
-                mismatched_entries.sort_unstable();
-                mismatched_entries.dedup();
-                let count = mismatched_entries.len() as u64;
+            let (count, mismatched_entries) =
+                instrument_units.mismatches(inst.mirrors_account, inst.unit.0, work)?;
+            if count > 0 {
                 let mut cites = vec![Cite::Account(inst.mirrors_account)];
-                for evid in mismatched_entries.into_iter().take(MAX_CITES - 1) {
+                for evid in mismatched_entries {
                     cites.push(Cite::Entry(evid));
                 }
                 out.push(finding(
@@ -761,6 +865,92 @@ pub struct PartyMasterChanges {
 }
 procedure_boilerplate!(PartyMasterChanges, "party.master_changes");
 
+struct PartyMasterUpdate {
+    entry: VId,
+    recorded: u64,
+    code: String,
+    party: VId,
+    value: VId,
+}
+
+/// Each alias retains positions in the original `(recorded, entry)` order.
+/// A posting only joins updates for its dimension values and commit window;
+/// unrelated history never multiplies the number of posting-leg comparisons.
+struct PartyMasterIndex {
+    by_value: BTreeMap<VId, Vec<(u64, usize)>>,
+}
+
+impl PartyMasterIndex {
+    fn new(updates: &[PartyMasterUpdate], work: &mut Meter<'_>) -> Result<Self, LanternError> {
+        let mut by_value: BTreeMap<VId, Vec<(u64, usize)>> = BTreeMap::new();
+        for (index, update) in updates.iter().enumerate() {
+            work.compare(1)?;
+            by_value
+                .entry(update.party)
+                .or_default()
+                .push((update.recorded, index));
+            if update.value != update.party {
+                work.compare(1)?;
+                by_value
+                    .entry(update.value)
+                    .or_default()
+                    .push((update.recorded, index));
+            }
+        }
+        Ok(Self { by_value })
+    }
+
+    fn boundary(
+        updates: &[(u64, usize)],
+        sequence: u64,
+        inclusive: bool,
+        work: &mut Meter<'_>,
+    ) -> Result<usize, LanternError> {
+        let (mut lo, mut hi) = (0, updates.len());
+        while lo < hi {
+            work.compare(1)?;
+            let mid = lo + (hi - lo) / 2;
+            if updates[mid].0 < sequence || (inclusive && updates[mid].0 == sequence) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        Ok(lo)
+    }
+
+    fn matching(
+        &self,
+        dimensions: &[(u32, VId)],
+        recorded: u64,
+        window: u32,
+        work: &mut Meter<'_>,
+    ) -> Result<BTreeSet<usize>, LanternError> {
+        let from = recorded.saturating_sub(u64::from(window));
+        let mut values = BTreeSet::new();
+        let mut selected = BTreeSet::new();
+        for &(_, value) in dimensions {
+            work.compare(1)?;
+            if !values.insert(value) {
+                continue;
+            }
+            let Some(updates) = self.by_value.get(&value) else {
+                continue;
+            };
+            let lo = Self::boundary(updates, from, false, work)?;
+            let hi = Self::boundary(updates, recorded, true, work)?;
+            for &(_, index) in &updates[lo..hi] {
+                work.compare(1)?;
+                // A leg may name both the Party and its dimension value (or
+                // repeat a value in different dimensions). It still yields
+                // exactly one finding per matching update, in update order.
+                selected.insert(index);
+            }
+        }
+        Ok(selected)
+    }
+}
+
 impl Procedure for PartyMasterChanges {
     fn id(&self) -> &'static str {
         Self::ID
@@ -787,7 +977,7 @@ impl Procedure for PartyMasterChanges {
         }
 
         // Collect all UpdatePartyIdentifiers schema controls
-        let mut updates: Vec<(VId, u64, String, VId, VId)> = Vec::new();
+        let mut updates = Vec::new();
         for e in &snapshot.entries {
             work.entry()?;
             if let Some(ControlPayload::SchemaChange {
@@ -801,47 +991,49 @@ impl Procedure for PartyMasterChanges {
                     || (pvid, format!("{:032x}", pvid.0)),
                     |p| (p.dimension_value_vid, p.code.clone()),
                 );
-                updates.push((e.vid, e.recorded_at.0, code, pvid, pval_vid));
+                updates.push(PartyMasterUpdate {
+                    entry: e.vid,
+                    recorded: e.recorded_at.0,
+                    code,
+                    party: pvid,
+                    value: pval_vid,
+                });
             }
         }
-        updates.sort_by_key(|(vid, seq, _, _, _)| (*seq, *vid));
+        updates.sort_by_key(|update| (update.recorded, update.entry));
 
         if updates.is_empty() {
             return Ok(Vec::new());
         }
-
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| (e.recorded_at, e.vid));
         let population = live.len() as u64;
+        let index = PartyMasterIndex::new(&updates, work)?;
         let mut out = Vec::new();
 
         for e in &live {
             for leg in &e.entry.proposal.legs {
                 work.leg()?;
-                for (ctrl_vid, ctrl_seq, code, pvid, pval_vid) in &updates {
+                for position in
+                    index.matching(&leg.dimension_set, e.recorded_at.0, window_commits, work)?
+                {
                     work.compare(1)?;
-                    if leg
-                        .dimension_set
-                        .iter()
-                        .any(|(_, d)| d == pval_vid || d == pvid)
-                        && e.recorded_at.0 >= *ctrl_seq
-                        && e.recorded_at.0 - *ctrl_seq <= u64::from(window_commits)
-                    {
-                        let dist = e.recorded_at.0 - *ctrl_seq;
-                        let mut cites = vec![Cite::Entry(e.vid), Cite::Entry(*ctrl_vid)];
-                        if snapshot.rea.parties.contains_key(pvid) {
-                            cites.push(Cite::Principal(*pvid));
-                        }
-                        out.push(finding(
-                            Self::ID,
-                            Severity::High,
-                            Statistic::count("commits_after_master_change", dist, population),
-                            cites,
-                            format!(
-                                "posting to party {code} recorded {dist} commit(s) after party identifier change"
-                            ),
-                        ));
+                    let update = &updates[position];
+                    let dist = e.recorded_at.0 - update.recorded;
+                    let mut cites = vec![Cite::Entry(e.vid), Cite::Entry(update.entry)];
+                    if snapshot.rea.parties.contains_key(&update.party) {
+                        cites.push(Cite::Principal(update.party));
                     }
+                    out.push(finding(
+                        Self::ID,
+                        Severity::High,
+                        Statistic::count("commits_after_master_change", dist, population),
+                        cites,
+                        format!(
+                            "posting to party {} recorded {dist} commit(s) after party identifier change",
+                            update.code
+                        ),
+                    ));
                 }
             }
         }

@@ -6,14 +6,16 @@
 //! close, and an allocation that omits an open item must still be visited.
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use super::*;
-use crate::chart::{ChartSnapshot, FxRevaluationRoute};
+use crate::chart::{ChartSnapshot, FxRevaluationRoute, FxRevaluationRoutes};
 use crate::genesis::BookSpec;
 use fa_model::{Entry, FxRevaluationItem};
 
 type ItemKey = (VId, u16);
 type ApplicationPositions = BTreeMap<usize, Vec<(usize, usize)>>;
+type RouteObservations = BTreeMap<(DateDay, CommitSeq), Option<Rc<FxRevaluationRoutes>>>;
 
 /// Counted work for the shared carrying observation within one revaluation.
 /// Historical verification may perform additional, separately pinned
@@ -32,6 +34,21 @@ pub struct CarryingPopulationWork {
     /// Actual historical point reads while recognizing allocated release
     /// reversal suffixes in the selected observation, before item selection.
     pub release_lineage_entries_read: usize,
+}
+
+impl CarryingPopulationWork {
+    pub(crate) fn accumulate(&mut self, other: Self) {
+        self.history_scans += other.history_scans;
+        self.entries_decoded += other.entries_decoded;
+        self.applications_indexed += other.applications_indexed;
+        self.reversal_links_examined += other.reversal_links_examined;
+        self.source_guard_entries += other.source_guard_entries;
+        self.item_effect_entries += other.item_effect_entries;
+        self.settlement_legs_examined += other.settlement_legs_examined;
+        self.release_items_examined += other.release_items_examined;
+        self.release_legs_examined += other.release_legs_examined;
+        self.release_lineage_entries_read += other.release_lineage_entries_read;
+    }
 }
 
 struct Adjustment {
@@ -81,18 +98,35 @@ impl SourceGuard {
     }
 }
 
-pub(crate) struct CarryingHistory {
-    pub(crate) at: CommitSeq,
-    pub(crate) spec: BookSpec,
-    chart: RefCell<Option<ChartSnapshot>>,
+/// Immutable entry payloads and structural event indexes. A historical view
+/// supplies its own cutoff and every cutoff-dependent cache below.
+pub(crate) struct CarryingIndex {
+    at: CommitSeq,
+    book_id: Id128,
     entries: Vec<(CommitSeq, VId, Entry)>,
     by_id: BTreeMap<VId, usize>,
-    native_order: Vec<usize>,
-    reversals: BTreeMap<VId, VId>,
-    live: RefCell<BTreeMap<VId, Result<bool, &'static str>>>,
+    native_rank: Vec<usize>,
+    reversals: BTreeMap<VId, (CommitSeq, VId)>,
+    first_duplicate_reversal: Option<CommitSeq>,
     applications: BTreeMap<ItemKey, ApplicationPositions>,
     adjustments: BTreeMap<usize, Adjustment>,
     adjustments_by_source: BTreeMap<(VId, Option<VId>), Vec<usize>>,
+    // These proofs are pinned to their own exact historical coordinates,
+    // independent of the carrying view's cutoff. Never cache a head route
+    // as a substitute for a historical projection.
+    route_observations: RefCell<RouteObservations>,
+    route_reads: Cell<usize>,
+    route_reuses: Cell<usize>,
+    work: CarryingPopulationWork,
+}
+
+pub(crate) struct CarryingHistory {
+    pub(crate) at: CommitSeq,
+    pub(crate) spec: BookSpec,
+    index: Rc<CarryingIndex>,
+    end: usize,
+    chart: RefCell<Option<ChartSnapshot>>,
+    live: RefCell<BTreeMap<VId, Result<bool, &'static str>>>,
     guards: RefCell<BTreeMap<VId, SourceGuard>>,
     routes: RefCell<BTreeMap<usize, Result<FxRevaluationRoute, Refusal>>>,
     release_indices: RefCell<BTreeMap<usize, Result<allocated::ReleaseIndex, Refusal>>>,
@@ -101,16 +135,14 @@ pub(crate) struct CarryingHistory {
     work: Cell<CarryingPopulationWork>,
 }
 
-impl CarryingHistory {
+impl CarryingIndex {
     pub(crate) fn read_at<V: Vfs + Clone>(
         db: &Database<V>,
         cx: &PurposeContexts,
         book: &BookContext,
         at: CommitSeq,
     ) -> Result<Self, KernelError> {
-        let spec = crate::fx::book_spec_at(db, book, at)?;
         let mut entries = Vec::new();
-        let mut reversals = BTreeMap::new();
         let mut work = CarryingPopulationWork {
             history_scans: 1,
             ..CarryingPopulationWork::default()
@@ -130,17 +162,6 @@ impl CarryingHistory {
             if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
                 continue;
             }
-            if entry.proposal.class == EntryClass::REVERSAL {
-                for link in &entry.proposal.supersession {
-                    if link.kind == SupersessionKind::Reverses
-                        && reversals.insert(link.target.vid, row.vid).is_some()
-                    {
-                        return Err(KernelError::Corrupt(
-                            "an application has duplicate reversal successors".into(),
-                        ));
-                    }
-                }
-            }
             // read_entry_at returns this same selected row's created_at;
             // revaluation has already authenticated immutable Entry history.
             entries.push((row.created_at, row.vid, entry));
@@ -152,12 +173,17 @@ impl CarryingHistory {
             .enumerate()
             .map(|(index, (_, vid, _))| (*vid, index))
             .collect();
-        let native_order = native_order.iter().map(|vid| by_id[vid]).collect();
+        let mut native_rank = vec![0; entries.len()];
+        for (rank, vid) in native_order.iter().enumerate() {
+            native_rank[by_id[vid]] = rank;
+        }
         let mut applications: BTreeMap<ItemKey, ApplicationPositions> = BTreeMap::new();
         let mut affected: BTreeMap<VId, BTreeSet<ItemKey>> = BTreeMap::new();
         let mut adjustments = BTreeMap::new();
         let mut adjustments_by_source: BTreeMap<(VId, Option<VId>), Vec<usize>> = BTreeMap::new();
-        for (index, (_, vid, entry)) in entries.iter().enumerate() {
+        let mut reversals = BTreeMap::new();
+        let mut first_duplicate_reversal = None;
+        for (index, (seq, vid, entry)) in entries.iter().enumerate() {
             cx.query()
                 .checkpoint()
                 .map_err(fgdb::WriteTxnError::Interrupted)?;
@@ -188,6 +214,19 @@ impl CarryingHistory {
 
             let mut targets = BTreeSet::new();
             if entry.proposal.class == EntryClass::REVERSAL {
+                for link in &entry.proposal.supersession {
+                    if link.kind == SupersessionKind::Reverses {
+                        if let std::collections::btree_map::Entry::Vacant(slot) =
+                            reversals.entry(link.target.vid)
+                        {
+                            slot.insert((*seq, *vid));
+                        } else {
+                            // Do not let damage in a later prefix poison a
+                            // historical view that predates its second edge.
+                            first_duplicate_reversal.get_or_insert(*seq);
+                        }
+                    }
+                }
                 // Only preceding recorded effects exist in the literal fold.
                 // Propagating that same relation once avoids a whole ledger
                 // walk (or another ancestry walk) for each affected item.
@@ -226,16 +265,104 @@ impl CarryingHistory {
         }
         Ok(Self {
             at,
-            spec,
-            chart: RefCell::new(None),
+            book_id: book.book_id,
             entries,
             by_id,
-            native_order,
+            native_rank,
             reversals,
-            live: RefCell::new(BTreeMap::new()),
+            first_duplicate_reversal,
             applications,
             adjustments,
             adjustments_by_source,
+            route_observations: RefCell::new(BTreeMap::new()),
+            route_reads: Cell::new(0),
+            route_reuses: Cell::new(0),
+            work,
+        })
+    }
+
+    pub(crate) fn entries(&self) -> &[(CommitSeq, VId, Entry)] {
+        &self.entries
+    }
+
+    pub(crate) fn position(&self, vid: VId) -> Option<usize> {
+        self.by_id.get(&vid).copied()
+    }
+
+    pub(crate) fn build_work(&self) -> CarryingPopulationWork {
+        self.work
+    }
+
+    pub(crate) fn route_work(&self) -> (usize, usize) {
+        (self.route_reads.get(), self.route_reuses.get())
+    }
+
+    pub(crate) fn routes_at<V: Vfs + Clone>(
+        &self,
+        db: &Database<V>,
+        book: &BookContext,
+        date: DateDay,
+        at: CommitSeq,
+    ) -> Result<Option<Rc<FxRevaluationRoutes>>, KernelError> {
+        if book.book_id != self.book_id {
+            return Err(KernelError::Corrupt(
+                "historical routes belong to another indexed book".into(),
+            ));
+        }
+        if let Some(routes) = self.route_observations.borrow().get(&(date, at)) {
+            self.route_reuses.set(self.route_reuses.get() + 1);
+            return Ok(routes.clone());
+        }
+        self.route_reads.set(self.route_reads.get() + 1);
+        let routes = crate::chart::fx_revaluation_routes_at(db, book, date, at)?.map(Rc::new);
+        self.route_observations
+            .borrow_mut()
+            .insert((date, at), routes.clone());
+        Ok(routes)
+    }
+}
+
+impl CarryingHistory {
+    pub(crate) fn read_at<V: Vfs + Clone>(
+        db: &Database<V>,
+        cx: &PurposeContexts,
+        book: &BookContext,
+        at: CommitSeq,
+    ) -> Result<Self, KernelError> {
+        let spec = crate::fx::book_spec_at(db, book, at)?;
+        let index = Rc::new(CarryingIndex::read_at(db, cx, book, at)?);
+        Self::from_index(spec, index, at, true)
+    }
+
+    pub(crate) fn from_index(
+        spec: BookSpec,
+        index: Rc<CarryingIndex>,
+        at: CommitSeq,
+        include_build_work: bool,
+    ) -> Result<Self, KernelError> {
+        if spec.book_id != index.book_id || at > index.at {
+            return Err(KernelError::Corrupt(
+                "carrying view exceeds its indexed book prefix".into(),
+            ));
+        }
+        if index.first_duplicate_reversal.is_some_and(|seq| seq <= at) {
+            return Err(KernelError::Corrupt(
+                "an application has duplicate reversal successors".into(),
+            ));
+        }
+        let end = index.entries.partition_point(|(seq, _, _)| *seq <= at);
+        let work = if include_build_work {
+            index.work
+        } else {
+            CarryingPopulationWork::default()
+        };
+        Ok(Self {
+            at,
+            spec,
+            index,
+            end,
+            chart: RefCell::new(None),
+            live: RefCell::new(BTreeMap::new()),
             guards: RefCell::new(BTreeMap::new()),
             routes: RefCell::new(BTreeMap::new()),
             release_indices: RefCell::new(BTreeMap::new()),
@@ -246,7 +373,11 @@ impl CarryingHistory {
     }
 
     pub(crate) fn original(&self, vid: VId) -> Option<(&Entry, CommitSeq)> {
-        let (seq, _, entry) = self.entries.get(*self.by_id.get(&vid)?)?;
+        let position = *self.index.by_id.get(&vid)?;
+        if position >= self.end {
+            return None;
+        }
+        let (seq, _, entry) = self.index.entries.get(position)?;
         Some((entry, *seq))
     }
 
@@ -256,9 +387,15 @@ impl CarryingHistory {
         vid: VId,
     ) -> Result<Result<bool, &'static str>, KernelError> {
         let mut work = self.work.get();
-        let result = cached_liveness(
+        let result = cached_liveness_with(
             vid,
-            &self.reversals,
+            |target| {
+                self.index
+                    .reversals
+                    .get(&target)
+                    .filter(|(seq, _)| *seq <= self.at)
+                    .map(|(_, successor)| *successor)
+            },
             &mut self.live.borrow_mut(),
             cx,
             &mut work,
@@ -312,8 +449,11 @@ impl CarryingHistory {
                     .or_default()
                     .push(index);
             }
-            for (order, &index) in self.native_order.iter().enumerate() {
-                let (seq, vid, entry) = &self.entries[index];
+            // Per-row failures are retained, never returned early. Visit
+            // only this prefix and attach each entry's original native rank;
+            // SourceGuard still selects exactly the literal first refusal.
+            for (index, (seq, vid, entry)) in self.index.entries[..self.end].iter().enumerate() {
+                let order = self.index.native_rank[index];
                 cx.query()
                     .checkpoint()
                     .map_err(fgdb::WriteTxnError::Interrupted)?;
@@ -356,7 +496,7 @@ impl CarryingHistory {
                         })
                         .err()
                 } else {
-                    let adjustment = self.adjustments.get(&index).map(|value| &value.basis);
+                    let adjustment = self.index.adjustments.get(&index).map(|value| &value.basis);
                     if adjustment.is_some_and(|basis| {
                         basis.source_account == source && basis.item_allocation.is_some()
                     }) {
@@ -386,14 +526,18 @@ impl CarryingHistory {
         entity: Option<VId>,
         recorded: CommitSeq,
     ) -> BTreeSet<usize> {
-        let first = self.entries.partition_point(|(seq, _, _)| *seq < recorded);
+        let first = self
+            .index
+            .entries
+            .partition_point(|(seq, _, _)| *seq < recorded);
         let mut selected = BTreeSet::new();
-        if let Some(events) = self.applications.get(&target) {
-            selected.extend(events.range(first..).map(|(index, _)| *index));
+        if let Some(events) = self.index.applications.get(&target) {
+            selected.extend(events.range(first..self.end).map(|(index, _)| *index));
         }
-        if let Some(events) = self.adjustments_by_source.get(&(source, entity)) {
+        if let Some(events) = self.index.adjustments_by_source.get(&(source, entity)) {
             selected.extend(
-                events[events.partition_point(|index| *index < first)..]
+                events[events.partition_point(|index| *index < first)
+                    ..events.partition_point(|index| *index < self.end)]
                     .iter()
                     .copied(),
             );
@@ -405,11 +549,12 @@ impl CarryingHistory {
         let mut work = self.work.get();
         work.item_effect_entries += 1;
         self.work.set(work);
-        &self.entries[index]
+        &self.index.entries[index]
     }
 
     pub(crate) fn applications(&self, target: ItemKey, index: usize) -> &[(usize, usize)] {
-        self.applications
+        self.index
+            .applications
             .get(&target)
             .and_then(|events| events.get(&index))
             .map_or(&[], Vec::as_slice)
@@ -425,7 +570,8 @@ impl CarryingHistory {
     ) -> Result<T, Refusal> {
         if !self.release_indices.borrow().contains_key(&index) {
             let mut work = self.work.get();
-            let result = allocated::ReleaseIndex::new(&self.entries[index].2.proposal, &mut work);
+            let result =
+                allocated::ReleaseIndex::new(&self.index.entries[index].2.proposal, &mut work);
             self.work.set(work);
             self.release_indices.borrow_mut().insert(index, result);
         }
@@ -442,7 +588,7 @@ impl CarryingHistory {
             return result.clone();
         }
         let result = self.with_release_index(index, |release, work| {
-            release.retained_shape(&self.entries[index].2.proposal, work)
+            release.retained_shape(&self.index.entries[index].2.proposal, work)
         });
         self.release_shapes
             .borrow_mut()
@@ -459,7 +605,7 @@ impl CarryingHistory {
         }
         let mut work = self.work.get();
         let valid = settlement_ranges_counted(
-            &self.entries[index].2.proposal,
+            &self.index.entries[index].2.proposal,
             &mut work.settlement_legs_examined,
         )
         .is_ok();
@@ -473,7 +619,7 @@ impl CarryingHistory {
         index: usize,
         expected: &fa_model::FxSettlementValuationRelease,
     ) -> Result<(), Refusal> {
-        let proposal = &self.entries[index].2.proposal;
+        let proposal = &self.index.entries[index].2.proposal;
         if proposal
             .base_totals
             .as_ref()
@@ -489,7 +635,7 @@ impl CarryingHistory {
     }
 
     pub(crate) fn adjustment(&self, index: usize) -> Option<&FxRevaluationBasis> {
-        self.adjustments.get(&index).map(|value| &value.basis)
+        self.index.adjustments.get(&index).map(|value| &value.basis)
     }
 
     pub(crate) fn allocation_item(
@@ -497,7 +643,7 @@ impl CarryingHistory {
         index: usize,
         target: ItemKey,
     ) -> Option<&FxRevaluationItem> {
-        let adjustment = self.adjustments.get(&index)?;
+        let adjustment = self.index.adjustments.get(&index)?;
         let ordinal = *adjustment.items.get(&target)?;
         adjustment
             .basis
@@ -516,13 +662,11 @@ impl CarryingHistory {
         if let Some(result) = self.routes.borrow().get(&index) {
             return Ok(result.clone());
         }
-        let basis = &self.adjustments[&index].basis;
-        let result = match crate::chart::fx_revaluation_routes_at(
-            db,
-            book,
-            basis.closing_date,
-            basis.observed_at,
-        )? {
+        let basis = &self.index.adjustments[&index].basis;
+        let result = match self
+            .index
+            .routes_at(db, book, basis.closing_date, basis.observed_at)?
+        {
             None => Err(invalid("item allocation has no retained route map")),
             Some(routes) => match routes.routes.get(&basis.source_account).copied() {
                 None => Err(invalid("item allocation has no source route")),
@@ -549,6 +693,16 @@ pub(crate) fn cached_liveness(
     cx: &PurposeContexts,
     work: &mut CarryingPopulationWork,
 ) -> Result<Result<bool, &'static str>, KernelError> {
+    cached_liveness_with(start, |vid| reversals.get(&vid).copied(), cached, cx, work)
+}
+
+fn cached_liveness_with(
+    start: VId,
+    next: impl Fn(VId) -> Option<VId>,
+    cached: &mut BTreeMap<VId, Result<bool, &'static str>>,
+    cx: &PurposeContexts,
+    work: &mut CarryingPopulationWork,
+) -> Result<Result<bool, &'static str>, KernelError> {
     let mut path = Vec::new();
     let mut seen = BTreeSet::new();
     let mut current = start;
@@ -562,13 +716,13 @@ pub(crate) fn cached_liveness(
         if !seen.insert(current) {
             break Err("cyclic application reversal lineage");
         }
-        let Some(next) = reversals.get(&current) else {
+        let Some(successor) = next(current) else {
             cached.insert(current, Ok(true));
             break Ok(true);
         };
         work.reversal_links_examined += 1;
         path.push(current);
-        current = *next;
+        current = successor;
     };
     for vid in path.into_iter().rev() {
         live = live.map(|value| !value);
