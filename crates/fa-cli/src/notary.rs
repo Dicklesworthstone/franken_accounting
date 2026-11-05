@@ -2008,8 +2008,17 @@ fn leaf_kinds(kinds: &fa::LeafKinds) -> Json {
 
 pub(crate) fn verify_accumulator(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     arguments(args, "fa verify accumulator --book <dir> --json")?;
-    let book = ctx.books.open(args)?;
-    let result = book.verify_accumulator()?;
+    let principal = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "verify"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        crate::cli::admit_whole_book_read(
+            book,
+            &capability,
+            &[Op::Verify],
+            "verifying the accumulator",
+        )
+    })?;
+    let result = book.verify_accumulator_with_history(principal, &capability)??;
     let green = result.is_green();
     let through = if green {
         result.states.first().map(|state| state.through_seq.0)

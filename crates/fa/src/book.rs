@@ -5350,6 +5350,21 @@ impl Book {
         with_store!(&self.store, core => core.verify_accumulator(&self.purposes()))
     }
 
+    /// Verify the accumulator after loading only the retained delta interval
+    /// needed to share a journal observation across its checkpoints. Current
+    /// whole-book Read and Verify authority admit that loading. No journal
+    /// commit is published; unavailable history retains literal verification.
+    pub fn verify_accumulator_with_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_notary::AccumulatorVerification> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.verify_accumulator_with_history(&purposes, principal, capability)
+        ))
+    }
+
     /// Every journaled accumulator state, newest first, following each
     /// state's `prev_state_oid` (plan §13.2; `fa checkpoint list`). This
     /// reads the chain as recorded and recomputes nothing: a link it cannot

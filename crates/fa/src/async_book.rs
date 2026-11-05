@@ -29,6 +29,10 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::book::{BookError, BookKeys, Entropy, Outcome, ProducedBundle};
 
+#[cfg(test)]
+#[path = "async_book/accumulator_tests.rs"]
+mod accumulator_tests;
+
 pub(crate) const BOOK_BLOB_STORE: u16 = 1;
 
 #[derive(Clone, Copy)]
@@ -4867,6 +4871,96 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, book| {
             Ok(fa_notary::verify_accumulator(db, cx, book, &self.signer)?)
         })
+    }
+
+    /// Verify the accumulator after optionally loading the native delta
+    /// interval that lets one journal observation serve its entire chain.
+    /// Current whole-book Read and Verify authority precede every read.
+    /// Loading changes no durable state; unavailable history or a damaged
+    /// chain keeps the original literal verification and its diagnostics.
+    pub async fn verify_accumulator_with_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_notary::AccumulatorVerification> {
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
+            .and_then(|()| {
+                fa_policy::require(
+                    capability,
+                    fa_policy::Op::Verify,
+                    "verifying the accumulator",
+                )
+            })
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = self.query(cx, |db, book| {
+            Ok(fa_journal::policy::current_at(db, book, capability)?.map(|_| ()))
+        })? {
+            return Ok(Err(refusal));
+        }
+        let oldest = self.query(cx, |db, book| {
+            let states = match fa_notary::chain(db, None) {
+                Ok(states) => states,
+                // Verification reports broken links as findings, so loading
+                // an optional window must not turn them into an earlier error.
+                Err(KernelError::Corrupt(_)) => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
+            if states.len() < 2 {
+                return Ok(None);
+            }
+            for (index, stored) in states.iter().enumerate() {
+                let state = &stored.state;
+                let previous = states.get(index + 1);
+                let prior = previous.map(|stored| &stored.state);
+                let evidence = match state.evidence_after {
+                    None => prior.is_none_or(|state| state.evidence_after.is_none()),
+                    Some(boundary) => boundary == fa_notary::state::chained_boundary(prior),
+                };
+                let access = match state.access_after {
+                    None => prior.is_none_or(|state| state.access_after.is_none()),
+                    Some(boundary) => {
+                        boundary == fa_notary::state::chained_access_boundary(prior)
+                            && state
+                                .evidence_after
+                                .is_some_and(|evidence| evidence <= boundary)
+                    }
+                };
+                if state.book_id != book.book_id
+                    || state.branch_id != fa_model::Id128::TRUNK
+                    || stored.recorded_at <= state.through_seq
+                    || !evidence
+                    || !access
+                    || previous.is_some_and(|previous| {
+                        previous.state.through_seq >= state.through_seq
+                            || previous.recorded_at > state.through_seq
+                            || previous.state.leaf_count > state.leaf_count
+                    })
+                {
+                    return Ok(None);
+                }
+            }
+            Ok(states.last().map(|stored| stored.state.through_seq))
+        })?;
+        if let Some(oldest) = oldest
+            && let Err(fgdb::RebuildError::Interrupted(error)) =
+                self.db.ensure_delta_window(&cx.commit(), oldest).await
+        {
+            return Err(BookError::Context(error));
+        }
+        // The delta interval is an optional acceleration witness. Other
+        // hydration failures leave the old window intact and the literal
+        // verifier decides the result, just as after explicit retirement.
+        if let Err(refusal) = self.query(cx, |db, book| {
+            Ok(fa_journal::policy::current_at(db, book, capability)?.map(|_| ()))
+        })? {
+            return Ok(Err(refusal));
+        }
+        Ok(Ok(self.verify_accumulator(cx)?))
     }
 
     /// Every journaled accumulator state, newest first, as `checkpoint`
