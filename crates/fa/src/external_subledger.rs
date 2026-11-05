@@ -19,7 +19,7 @@ use fa_policy::{Capability, Op, Reach};
 use fgdb_types::CommitSeq;
 use fgdb_types::context::PurposeContexts;
 
-use crate::{AsyncBook, Outcome};
+use crate::{AsyncBook, BookError, Outcome};
 
 pub use fa_journal::external_subledger::{
     EXTERNAL_SUBLEDGER_DOCUMENT_KIND, EXTERNAL_SUBLEDGER_EVIDENCE_ROLE, EXTERNAL_SUBLEDGER_MIME,
@@ -78,11 +78,64 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         &mut self,
         cx: &PurposeContexts,
         document: Oid,
-        mut template: EntryPayload,
+        template: EntryPayload,
         capability: &Capability,
     ) -> Outcome<EntryPayload> {
-        let admission =
-            fa_policy::admit_read(capability, template.principal_ref, self.context().book_id)
+        self.prepare_external_subledger_with_admission(cx, document, template, capability, None)
+            .await
+    }
+
+    /// Derive a summary for this planner's open draft without granting a
+    /// general read. The capability must be confined to the named draft;
+    /// source redaction and all generated-effect caveats remain in force.
+    pub async fn prepare_external_subledger_in_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        name: &str,
+        document: Oid,
+        template: EntryPayload,
+    ) -> Outcome<EntryPayload> {
+        let admission = match self.query(cx, |db, book| {
+            Ok(fa_journal::draft::admit_sources(
+                db, book, capability, name,
+            )?)
+        })? {
+            Ok(admission) => admission,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        self.prepare_external_subledger_with_admission(
+            cx,
+            document,
+            template,
+            capability,
+            Some(&admission),
+        )
+        .await
+    }
+
+    async fn prepare_external_subledger_with_admission(
+        &mut self,
+        cx: &PurposeContexts,
+        document: Oid,
+        mut template: EntryPayload,
+        capability: &Capability,
+        draft: Option<&fa_journal::draft::DraftSourceAdmission>,
+    ) -> Outcome<EntryPayload> {
+        match draft {
+            Some(admission) => {
+                if let Err(refusal) = self.query(cx, |db, book| {
+                    Ok(admission.admit_proposal(db, book, &template)?)
+                })? {
+                    return Ok(Err(refusal));
+                }
+            }
+            None => {
+                let admission = fa_policy::admit_read(
+                    capability,
+                    template.principal_ref,
+                    self.context().book_id,
+                )
                 .and_then(|()| {
                     fa_policy::require(
                         capability,
@@ -91,16 +144,35 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     )
                 })
                 .and_then(|()| fa_policy::reach(capability, &Reach::whole_book(true), None));
-        if let Err(denial) = admission {
-            return Ok(Err(fa_journal::policy::refusal(&denial)));
+                if let Err(denial) = admission {
+                    return Ok(Err(fa_journal::policy::refusal(&denial)));
+                }
+                let admitted = self.query(cx, |db, book| {
+                    Ok(fa_journal::policy::current_at(db, book, capability)?.map(|_| ()))
+                })?;
+                if let Err(refusal) = admitted {
+                    return Ok(Err(refusal));
+                }
+            }
         }
-        let admitted = self.query(cx, |db, book| {
-            Ok(fa_journal::policy::current_at(db, book, capability)?.map(|_| ()))
-        })?;
-        if let Err(refusal) = admitted {
-            return Ok(Err(refusal));
-        }
-        let source = match self.read_document_for(cx, capability, &document).await? {
+        let source = match draft {
+            Some(admission) => {
+                let query = cx.query();
+                query.checkpoint().map_err(BookError::Context)?;
+                query
+                    .with_restriction_async(fa_journal::redaction::read_document_for_draft_source(
+                        &mut self.db,
+                        cx,
+                        &self.context,
+                        admission,
+                        &self.blobs,
+                        document,
+                    ))
+                    .await?
+            }
+            None => self.read_document_for(cx, capability, &document).await?,
+        };
+        let source = match source {
             Ok(DocumentRead::Full(source)) => source,
             Ok(DocumentRead::Redacted(_)) => {
                 return Ok(Err(invalid(
@@ -140,13 +212,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         // The document read may have suspended for retained blob I/O. An
         // authority revoked meanwhile cannot obtain a prepared summary.
-        let admitted = self.query(cx, |db, book| {
-            Ok(fa_journal::policy::current_at(db, book, capability)?.map(|_| ()))
-        })?;
+        let admitted = match draft {
+            Some(admission) => {
+                self.query(cx, |db, book| Ok(admission.recheck(db, book)?.map(|_| ())))?
+            }
+            None => self.query(cx, |db, book| {
+                Ok(fa_journal::policy::current_at(db, book, capability)?.map(|_| ()))
+            })?,
+        };
         if let Err(refusal) = admitted {
             return Ok(Err(refusal));
         }
-        Ok(batch.proposal(template))
+        let proposal = batch.proposal(template);
+        if let (Some(admission), Ok(proposal)) = (draft, &proposal)
+            && let Err(refusal) = self.query(cx, |db, book| {
+                Ok(admission.admit_proposal(db, book, proposal)?)
+            })?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(proposal)
     }
 
     /// Recompute one source/summary pair against the prefix where it was

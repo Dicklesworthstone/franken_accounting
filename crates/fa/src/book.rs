@@ -896,6 +896,21 @@ impl Book {
         )))
     }
 
+    /// Derive only the named external-detail summary for this capability's
+    /// own open draft, under its explicit draft branch confinement.
+    pub fn prepare_external_subledger_in_draft(
+        &mut self,
+        capability: &fa_policy::Capability,
+        name: &str,
+        document: fa_model::Oid,
+        template: fa_model::EntryPayload,
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_external_subledger_in_draft(
+            &purposes, capability, name, document, template,
+        )))
+    }
+
     /// Recompute one externally fed summary from its reviewed immutable detail.
     pub fn reconcile_external_subledger_feed(
         &self,
@@ -3516,6 +3531,29 @@ impl Book {
         )))
     }
 
+    /// Derive an FX proposal for the holder's own open draft without granting
+    /// document or balance reads. Every generated effect is admitted before
+    /// return and independently validated when the intent enters the draft.
+    pub fn value_fx_proposal_in_draft(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+        proposal: fa_model::EntryPayload,
+        law: crate::FxLawId,
+        rate_oids: &[fa_model::Oid],
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.value_fx_proposal_in_draft(
+            &purposes, capability, name, proposal, law, rate_oids, &mut budget,
+        )))
+    }
+
     /// Derive a named proportional hold resolution without publication.
     /// Current authority is checked before reading the immutable book spec;
     /// journal admission later authenticates the hold and recomputes every
@@ -3614,6 +3652,22 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(
             core.prepare_lot_disposal(&purposes, capability, request, template)
+        ))
+    }
+
+    /// Derive a reviewed disposal for the explicitly confined draft owner.
+    /// The source population remains internal to the disposal law; callers
+    /// receive only the existing reviewed quantity, cost and applications.
+    pub fn prepare_lot_disposal_in_draft(
+        &mut self,
+        capability: &fa_policy::Capability,
+        name: &str,
+        request: &crate::LotDisposalPostRequest,
+        template: fa_model::EntryPayload,
+    ) -> Outcome<crate::PreparedLotDisposal> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_lot_disposal_in_draft(&purposes, capability, name, request, template)
         ))
     }
 
@@ -7695,6 +7749,29 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&self.store, core => core.query(&purposes, |db, book| {
             Ok(fa_journal::policy::current_at(db, book, capability)?.map(|_| ()))
+        }))
+    }
+
+    /// Preflight a source-derived write into one explicitly confined draft.
+    /// This grants no report, entry or document read operation.
+    pub fn admit_draft_sources(
+        &self,
+        capability: &fa_policy::Capability,
+        name: &str,
+    ) -> Outcome<()> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.query(&purposes, |db, book| {
+            Ok(fa_journal::draft::admit_sources(db, book, capability, name)?.map(|_| ()))
+        }))
+    }
+
+    /// Resolve only the owned open draft already named by this capability's
+    /// explicit branch caveat, for a source-derived write preparation.
+    pub fn draft_source_name(&self, capability: &fa_policy::Capability) -> Outcome<String> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.query(&purposes, |db, book| {
+            Ok(fa_journal::draft::admit_sources_for_branch(db, book, capability)?
+                .map(|admission| admission.name().to_string()))
         }))
     }
 

@@ -6348,7 +6348,12 @@ fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let issuer = capability_issuer(ctx, args)?;
-    let mut book = ctx.books.open_admitted(args, |book| {
+    // This command's --branch value is the capability caveat parsed below.
+    // Open the issuing book itself; treating the 32-hex caveat as a replay
+    // selector would reject every confined capability before it was issued.
+    let mut opening = args.clone();
+    opening.flags.remove("--branch");
+    let mut book = ctx.books.open_admitted(&opening, |book| {
         admit_whole_book_read(
             book,
             &issuer,
@@ -6911,11 +6916,19 @@ fn plan_document_into_draft(
     let capability = ctx.capability(args, crate::fx::posting_ops(doc))?;
     let out = &ctx.out;
     let mut book = ctx.books.open_admitted(args, |book| {
-        crate::fx::admit_intent_sources(book, &capability, doc)
+        crate::fx::admit_draft_intent_sources(book, &capability, doc, name)
     })?;
     let earlier = batch_plan::draft_entries(&mut book, &capability, name, doc)?;
     let BuiltPost { request: req, .. } = build_post_request_with_prior(
-        out, &mut book, args, forced, doc, who, capability, &earlier,
+        out,
+        &mut book,
+        args,
+        forced,
+        doc,
+        who,
+        capability,
+        &earlier,
+        Some(name),
     )?;
     let req = prepare_balancing_request(args, req)?;
     let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
@@ -7920,8 +7933,9 @@ fn post_batch_document(
     let who = ctx.principal(args);
     let capability = ctx.capability(args, crate::fx::posting_ops(doc))?;
     let out = &ctx.out;
-    let mut book = ctx.books.open_admitted(args, |book| {
-        crate::fx::admit_intent_sources(book, &capability, doc)
+    let mut book = ctx.books.open_admitted(args, |book| match draft {
+        Some(name) => crate::fx::admit_draft_intent_sources(book, &capability, doc, name),
+        None => crate::fx::admit_intent_sources(book, &capability, doc),
     })?;
     let mut intents = Vec::with_capacity(members.len());
     let mut classes = Vec::with_capacity(members.len());
@@ -7955,6 +7969,7 @@ fn post_batch_document(
                     who,
                     capability.clone(),
                     &earlier,
+                    draft,
                 )
                 .map_err(|f| batch_member_fail(i, f))?;
                 classes.push(built.class_name);
@@ -8291,6 +8306,7 @@ fn build_post_request(
         who,
         capability,
         &batch_plan::PriorEntries::new(),
+        None,
     )
 }
 
@@ -8307,19 +8323,26 @@ fn build_post_request_with_prior(
     who: VId,
     capability: Capability,
     earlier: &batch_plan::PriorEntries,
+    draft: Option<&str>,
 ) -> Result<BuiltPost, Fail> {
     if doc.get("fx").is_some() || doc.get("external_subledger").is_some() {
-        fa_policy::admit_read(&capability, who, book.context().book_id)
-            .and_then(|()| {
-                fa_policy::require(
-                    &capability,
-                    fa_policy::Op::Post,
-                    "preparing an FX-valued posting",
-                )
-            })
-            .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
-            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
-        book.read_scope(who, &capability)??;
+        if let Some(name) = draft.filter(|_| capability.branch().is_some()) {
+            book.admit_draft_sources(&capability, name)??;
+        } else {
+            fa_policy::admit_read(&capability, who, book.context().book_id)
+                .and_then(|()| {
+                    fa_policy::require(
+                        &capability,
+                        fa_policy::Op::Post,
+                        "preparing an FX-valued posting",
+                    )
+                })
+                .and_then(|()| {
+                    fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None)
+                })
+                .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+            book.read_scope(who, &capability)??;
+        }
     }
     let ctx = book.context().clone();
     let class_name = match doc.get("class") {
@@ -9119,8 +9142,9 @@ fn build_post_request_with_prior(
             }
         }
     }
-    let proposal = crate::external_subledger::value_intent(book, &capability, doc, proposal)?;
-    let proposal = crate::fx::value_intent(book, &capability, doc, proposal)?;
+    let proposal =
+        crate::external_subledger::value_intent(book, &capability, doc, proposal, draft)?;
+    let proposal = crate::fx::value_intent(book, &capability, doc, proposal, draft)?;
     let proposal = match reverse_on {
         Some(day) => fa_journal::with_auto_reverse(proposal, day),
         None => proposal,

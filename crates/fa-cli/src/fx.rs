@@ -70,6 +70,47 @@ pub(crate) fn admit_intent_sources(
     Ok(())
 }
 
+/// A source-derived draft act uses its own typed write admission only when
+/// the capability is explicitly branch-confined. Unconfined callers retain
+/// the ordinary source-read contract, including all direct posting routes.
+pub(crate) fn admit_draft_intent_sources(
+    book: &Book,
+    capability: &Capability,
+    doc: &Json,
+    name: &str,
+) -> Result<(), Fail> {
+    if capability.branch().is_some() {
+        // Even a literal or dependent intent must name the confined branch
+        // before the book opener can disclose its coordinate. Keep retained
+        // ordinary retries possible after closure; only new source derivation
+        // below requires an open draft.
+        fa_policy::admit_within(
+            capability,
+            &fa_policy::Intent {
+                principal: capability.holder(),
+                trunk: false,
+                op: fa_policy::Op::Post,
+                book: book.context().book_id,
+                legs: &[],
+            },
+            &fa_policy::Reach {
+                branch: Some(fa_model::draft_branch(book.context().book_id, name)),
+                ..fa_policy::Reach::whole_book(false)
+            },
+            None,
+        )
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        if needs_source_read(doc) {
+            book.admit_draft_sources(capability, name)??;
+        } else {
+            book.admit_current(capability)??;
+        }
+        Ok(())
+    } else {
+        admit_intent_sources(book, capability, doc)
+    }
+}
+
 pub(crate) fn fx_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args
         .positional
@@ -273,6 +314,7 @@ pub(crate) fn value_intent(
     capability: &Capability,
     doc: &Json,
     proposal: EntryPayload,
+    draft: Option<&str>,
 ) -> Result<EntryPayload, Fail> {
     let Some(fx) = doc.get("fx") else {
         return Ok(proposal);
@@ -327,12 +369,12 @@ pub(crate) fn value_intent(
             ));
         }
     }
-    Ok(book.value_fx_proposal(
-        capability,
-        proposal,
-        law,
-        &oids.into_iter().collect::<Vec<_>>(),
-    )??)
+    let oids = oids.into_iter().collect::<Vec<_>>();
+    if let Some(name) = draft.filter(|_| capability.branch().is_some()) {
+        Ok(book.value_fx_proposal_in_draft(capability, name, proposal, law, &oids)??)
+    } else {
+        Ok(book.value_fx_proposal(capability, proposal, law, &oids)??)
+    }
 }
 
 /// Group allocation must supply the targets before carrying-value expansion.
@@ -364,7 +406,7 @@ pub(crate) fn prepare_group_intent(
     }
     let basis = prepared.known_at();
     let observations = prepared.allocations().to_vec();
-    let mut proposal = value_intent(book, capability, doc, prepared.into_proposal())?;
+    let mut proposal = value_intent(book, capability, doc, prepared.into_proposal(), None)?;
     let expected = proposal.clone();
     let invalidated = || {
         Fail::Refusal(fa_journal::Refusal::new(

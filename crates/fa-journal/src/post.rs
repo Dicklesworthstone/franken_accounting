@@ -1139,6 +1139,21 @@ pub(crate) enum Admission {
     ScratchScenario(crate::scenario::Rehearsing),
 }
 
+impl Admission {
+    /// Source derivation is part of an already authorized native draft act
+    /// only when the retained capability is explicitly confined to the same
+    /// private token's branch. Callers still run `authorize_request` first.
+    pub(crate) fn admits_confined_draft_sources(self, capability: &Capability) -> bool {
+        let branch = match self {
+            Self::PlanDraft(token) => token.branch(),
+            Self::Promote(token) => token.branch(),
+            Self::ScratchDraft(token) => token.branch(),
+            _ => return false,
+        };
+        capability.branch() == Some(branch)
+    }
+}
+
 pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -1222,7 +1237,7 @@ pub(crate) fn authorize_effects<V: asupersync::fs::Vfs + Clone>(
 /// Only a private draft admission token substitutes its verified logical
 /// branch for the proposal's eventual trunk destination. It grants neither a
 /// new capability nor any exception to the other posting laws.
-fn authorize_effects_in_branch<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn authorize_effects_in_branch<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     capability: &Capability,
@@ -2179,7 +2194,13 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // Native drafts also revalidate the complete retained source population
     // at their current preparation prefix. Cases and scenarios remain refused.
     if crate::disposal::has_basis(proposal) {
-        if let Err(refusal) = crate::disposal::authorize(db, book, &req.capability)? {
+        // Only a private, already admitted draft path can substitute source
+        // derivation for general Read. Its retained planner must explicitly
+        // be confined to that same draft; direct plans, batches and scenarios
+        // keep their existing whole-book source admission.
+        if !admission.admits_confined_draft_sources(&req.capability)
+            && let Err(refusal) = crate::disposal::authorize(db, book, &req.capability)?
+        {
             return Ok(Err(refusal));
         }
         if (carried.is_some() && disposal_batch.is_none())

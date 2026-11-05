@@ -1360,6 +1360,7 @@ pub(crate) fn authorize_members<V: Vfs + Clone>(
         // The complete source is observed during history hydration and exact
         // plan retry too, before per-member posting preparation is reached.
         if crate::disposal::has_basis(intent.proposal())
+            && !admission.admits_confined_draft_sources(capability)
             && let Err(refusal) = crate::disposal::authorize(db, book, capability)?
         {
             return Ok(Err(member_refusal(index, refusal)));

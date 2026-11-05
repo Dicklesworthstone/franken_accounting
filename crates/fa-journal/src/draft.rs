@@ -131,6 +131,183 @@ fn draft_reach(book: &BookContext, name: &str) -> fa_policy::Reach<'static> {
     }
 }
 
+/// Authority for a source-derived draft preparation, never a general read.
+/// Only [`admit_sources`] constructs this value, from a Post capability with
+/// an explicit branch caveat naming its own open draft. Every use rechecks
+/// the retained capability and draft; possession of a stale token grants
+/// neither source access nor publication authority.
+#[derive(Clone, Debug)]
+pub struct DraftSourceAdmission {
+    book_id: Id128,
+    name: String,
+    capability: Capability,
+}
+
+impl DraftSourceAdmission {
+    /// The already admitted owner's draft, not a listing of book drafts.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn capability(&self) -> &Capability {
+        &self.capability
+    }
+
+    /// Re-admit before observing sources and after any suspended source I/O.
+    /// Point reads suffice: preparation does not return the retained draft's
+    /// members, and the eventual Plan replays its complete ordered history.
+    pub fn recheck<V: asupersync::fs::Vfs + Clone>(
+        &self,
+        db: &Database<V>,
+        book: &BookContext,
+    ) -> Outcome<CommitSeq> {
+        if let Err(refusal) = check_name(&self.name) {
+            return Ok(Err(refusal));
+        }
+        if self.book_id != book.book_id
+            || self.capability.branch() != Some(fa_model::draft_branch(book.book_id, &self.name))
+        {
+            return Ok(Err(denial(&Denial::OutOfScope {
+                caveat: "branch",
+                value: "source-derived planning requires confinement to this named draft".into(),
+            })));
+        }
+        if let Err(refusal) = admit(db, book, &self.capability, Kind::Plan, &self.name)? {
+            return Ok(Err(refusal));
+        }
+        let vid = draft_vid(book.book_id, &self.name);
+        let Some(row) = db.vertex(vid)? else {
+            return Ok(Err(unknown(&self.name)));
+        };
+        if !row.labels.contains(&label::DRAFT_SET) {
+            return Err(KernelError::Corrupt(format!(
+                "draft identity {:032x} holds a vertex that is not a DraftSet",
+                vid.0
+            )));
+        }
+        let body = draft_row_body(&row)?;
+        if body.owner != self.capability.holder() {
+            return Ok(Err(Refusal::new(
+                code::CAPABILITY,
+                exit::SAFETY,
+                "only the owner may prepare source-derived intents for this draft",
+                "plan §15.2 (a draft is its owner's intent log); fa-txgy.7",
+                "use a capability confined to your own open draft",
+            )));
+        }
+        let state = DraftState::from_scalar(prop(&row, property::STATE))
+            .ok_or_else(|| KernelError::Corrupt(format!("draft {:032x} state mirror", vid.0)))?;
+        if state != DraftState::Open {
+            return Ok(Err(not_open(&body, state)));
+        }
+        Ok(Ok(db.frontier()?))
+    }
+
+    /// Admit the declared template and then every derived effect before it
+    /// can be disclosed. This is effect admission, so an empty subledger
+    /// template can precede derivation; Plan still performs full structural,
+    /// source, evidence and monetary validation of the completed intent.
+    pub fn admit_proposal<V: asupersync::fs::Vfs + Clone>(
+        &self,
+        db: &Database<V>,
+        book: &BookContext,
+        proposal: &EntryPayload,
+    ) -> Outcome<()> {
+        if proposal.book_id != book.book_id || proposal.branch_id != Id128::TRUNK {
+            return Ok(Err(Refusal::new(
+                code::COORDINATE,
+                exit::USAGE,
+                "a source-derived draft proposal must name this book and its eventual trunk destination",
+                "plan §15.2 (promotion preserves the reviewed intent)",
+                "build the proposal for this book and plan it into the named draft",
+            )));
+        }
+        if let Err(refusal) = self.recheck(db, book)? {
+            return Ok(Err(refusal));
+        }
+        crate::post::authorize_effects_in_branch(
+            db,
+            book,
+            &self.capability,
+            proposal.principal_ref,
+            proposal,
+            true,
+            fa_model::draft_branch(book.book_id, &self.name),
+        )
+        .map(|result| result.map(|_| ()))
+    }
+}
+
+/// Admit only named-source derivation for an explicitly branch-confined
+/// draft owner. The typed source factories return derived effects, never
+/// documents, balances or a reusable read capability.
+pub fn admit_sources<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    name: &str,
+) -> Outcome<DraftSourceAdmission> {
+    let admission = DraftSourceAdmission {
+        book_id: book.book_id,
+        name: name.to_string(),
+        capability: capability.clone(),
+    };
+    Ok(admission.recheck(db, book)?.map(|_| admission))
+}
+
+/// Resolve the draft already named by a capability's branch caveat using one
+/// admitted root lookup. This lets a source-only review command select the
+/// owner's draft without listing other drafts or requiring balance access.
+pub fn admit_sources_for_branch<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+) -> Outcome<DraftSourceAdmission> {
+    let Some(branch) = capability.branch().filter(|branch| *branch != Id128::TRUNK) else {
+        return Ok(Err(denial(&Denial::OutOfScope {
+            caveat: "branch",
+            value: "source-derived review requires an explicit draft branch".into(),
+        })));
+    };
+    if let Err(error) = fa_policy::admit_within(
+        capability,
+        &Intent {
+            principal: capability.holder(),
+            trunk: false,
+            op: Op::Post,
+            book: book.book_id,
+            legs: &[],
+        },
+        &fa_policy::Reach {
+            branch: Some(branch),
+            ..fa_policy::Reach::whole_book(false)
+        },
+        None,
+    ) {
+        return Ok(Err(denial(&error)));
+    }
+    if let Err(refusal) = crate::policy::current_at(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    let vid = VId(u128::from_be_bytes(branch.0));
+    let Some(row) = db.vertex(vid)? else {
+        return Ok(Err(Refusal::new(
+            code::DRAFT_UNKNOWN,
+            exit::REFUSAL,
+            "the capability's branch does not name an existing draft",
+            "plan §15.2 (source derivation belongs to an owned open draft)",
+            "open the named draft with the confined capability first",
+        )));
+    };
+    if !row.labels.contains(&label::DRAFT_SET) {
+        return Err(KernelError::Corrupt(
+            "the capability's draft identity holds a different kind of vertex".into(),
+        ));
+    }
+    let body = draft_row_body(&row)?;
+    admit_sources(db, book, capability, &body.name)
+}
+
 /// The `state` projection of a `DraftSet` (lifecycle-by-transition).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DraftState {
