@@ -1267,6 +1267,20 @@ mod source_draft_tests {
             if law == "SpecificId" {
                 args.extend(["--target", &target]);
             }
+            let reg = registry().unwrap();
+            let parsed = fa_cli::args::parse(
+                &args
+                    .iter()
+                    .map(|arg| (*arg).to_string())
+                    .collect::<Vec<_>>(),
+                &reg.value_flags(),
+                &reg.switches(),
+            )
+            .unwrap();
+            assert_eq!(
+                fa_cli::cli::bound_command_admissible(reg, "dispose", &parsed, &authority).unwrap(),
+                &[Op::Post]
+            );
             let before = f.book.head().unwrap();
             let (exit, reviewed) = f.bound(&authority, &args, None);
             assert_eq!(exit, 0, "{law}: {reviewed:?}");
@@ -1378,6 +1392,8 @@ mod source_draft_tests {
         let rate = f.rate.clone();
         for argv in [
             vec!["tb", "--period", "FY2026-P03"],
+            vec!["draft", "list"],
+            vec!["draft", "show", name],
             vec!["entry", "show", "E:00000000000000000000000000000001"],
             vec!["document", "read", &evidence],
             vec!["document", "read", &rate],

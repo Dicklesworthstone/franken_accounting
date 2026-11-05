@@ -6460,6 +6460,12 @@ subcommands = ["year-end"]
 ops = ["read", "post", "close"]
 
 [[bound]]
+verbs = ["post", "batch"]
+when_all = ["--draft"]
+ops = ["post"]
+reach = "judged"
+
+[[bound]]
 verbs = ["post", "commit", "reverse", "reclass", "reserve", "resolve", "invoice", "bill", "receipt", "payment", "accrue", "defer", "batch", "post-reserve", "void-reserve", "replace"]
 ops = ["post"]
 
@@ -6786,6 +6792,7 @@ ops = ["approve"]
 verbs = ["draft"]
 subcommands = ["new", "plan", "discard"]
 ops = ["post"]
+reach = "judged"
 
 [[bound]]
 verbs = ["draft"]
@@ -7433,6 +7440,12 @@ verbs = ["chart"]
 subcommands = ["lot-policy"]
 args = ["set"]
 ops = ["read", "schema_change"]
+
+[[bound]]
+verbs = ["dispose"]
+when_any = ["--review-only", "--review-out"]
+ops = ["post"]
+reach = "judged"
 
 [[bound]]
 verbs = ["dispose"]

@@ -3210,3 +3210,29 @@ fixture, not qualification of the later combined tree. `fa-cet` remains in
 progress under its original first-party-renderer, external-validation and
 cross-machine acceptance. No validator, output pin, font requirement or
 acceptance condition was weakened to admit this PDF.
+
+### 2026-11-05 — CLI preflight prevents admitted Post-only draft workflows (`fa-txgy.7`)
+
+The combined `abb6fec2217d119bcd14fb593a967a34495474c2` tree passes exact
+Tier 0, but the real unfiltered `fa-cli --test authority_cli` execution exits
+101: 10 pass, four fail, with no ignored or filtered cases. All four
+`source_draft_tests` fail at `draft new`, before their FX, external-subledger,
+disposal-review or no-read checks execute. The generic bound-command registry
+marks draft creation as whole-book reach and rejects the capability's named
+draft branch as trunk-incompatible. The native draft lifecycle already judges
+that logical branch and current issuance; its surface was disconnected. The
+native log and exit remain in
+`/home/ubuntu/.codex/artifacts/fa-gap-work-20261031.lM8xfA/specificid-authority-abb6fec2-vmi1152480-20261105.log`
+and its adjacent exit file. Remote exit 101 is an executed failure, not an
+offloader refusal, and the new disposal test has not yet exercised its factory.
+
+The repair delegates only `draft new|plan|discard` and `post|batch --draft`
+to native scope admission. Draft listing, showing and promotion keep their
+whole-book front-door policy. Disposal review gets a separate Post-only
+registry row and an Agent review exception; the handler still requires either
+ordinary Read/Post or the current explicitly confined owner-draft source
+admission. Ordinary disposal retains Read/Post and Agent trunk restrictions.
+No accounting admission or test expectation is removed. The positive disposal
+test additionally checks the MCP preflight, and general draft listing/showing
+join the no-read negatives. Corrected native execution is pending; these edits
+are not evidence that the four workflows pass or that the broad bead is done.

@@ -2682,10 +2682,16 @@ pub fn bound_command_admissible(
     let agent_correction_review = (verb == "replace"
         || (verb == "reverse" && args.flag("--replace-with").is_some()))
         && (args.switch("--review-only") || args.flag("--review-out").is_some());
+    // Disposal review derives a proposal only. Its typed handler requires
+    // either ordinary Read/Post or the caller's explicitly confined owned
+    // draft admission; this never authorizes a monetary trunk write.
+    let agent_disposal_review =
+        verb == "dispose" && (args.switch("--review-only") || args.flag("--review-out").is_some());
     if authority.profile() == crate::authority::LaunchProfile::Agent
         && is_monetary_trunk_post
         && !agent_rehearsal
         && !agent_correction_review
+        && !agent_disposal_review
     {
         return Err(format!(
             "`{}` writes or plans monetary entries on trunk, which the Agent profile cannot perform (FA-REF-013)",
