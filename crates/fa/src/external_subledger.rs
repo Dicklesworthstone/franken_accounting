@@ -167,6 +167,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                         admission,
                         &self.blobs,
                         document,
+                        fa_journal::redaction::DraftSourceKind::ExternalSubledgerDetail,
                     ))
                     .await?
             }

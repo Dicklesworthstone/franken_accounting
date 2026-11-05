@@ -106,7 +106,10 @@ fn exported(book: &Path, args: &[&str]) -> Json {
     assert_eq!(text(&line, "kind"), args[0]);
     if args[0] == "access-log" {
         assert_eq!(text(&line, "signatures"), "ed25519");
-        assert_eq!(text(&line, "trust"), "recipient_book_branch_and_checkpoint_key");
+        assert_eq!(
+            text(&line, "trust"),
+            "recipient_book_branch_and_checkpoint_key"
+        );
     } else if args[0] == "signed-checkpoint" {
         assert_eq!(text(&line, "signatures"), "ed25519");
         assert_eq!(text(&line, "trust"), "checkpoint_public_key");

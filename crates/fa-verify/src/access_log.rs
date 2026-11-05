@@ -115,7 +115,14 @@ pub fn verify_access_log(
     trusted_keys: &[[u8; 32]],
     request: &AccessLogRequest,
 ) -> Result<VerifiedAccessLog, AccessLogError> {
-    verify_components(prefix, state, signed_checkpoint, trusted_keys, request, None)
+    verify_components(
+        prefix,
+        state,
+        signed_checkpoint,
+        trusted_keys,
+        request,
+        None,
+    )
 }
 
 /// The three-component API with a recipient-owned book, branch and optional
@@ -225,7 +232,10 @@ fn verify_components(
                 "signed book and branch differ from the recipient's selected source",
             ));
         }
-        if expected.checkpoint_oid.is_some_and(|oid| oid != checkpoint.oid) {
+        if expected
+            .checkpoint_oid
+            .is_some_and(|oid| oid != checkpoint.oid)
+        {
             return Err(error(
                 "access.checkpoint_pin",
                 "signed checkpoint differs from the recipient's exact checkpoint pin",

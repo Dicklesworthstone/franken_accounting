@@ -10,7 +10,10 @@ use crate::access_log::{
 pub(super) fn run(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
     // Validate every option before opening any artifact. Separate components
     // retain their original grammar; a portable proof requires source identity.
-    let path = subject(args, "a portable access-log proof or native v2 complete-prefix file")?;
+    let path = subject(
+        args,
+        "a portable access-log proof or native v2 complete-prefix file",
+    )?;
     let components = match (args.one("--state"), args.one("--checkpoint")) {
         (Some(state), Some(checkpoint)) => Some((state, checkpoint)),
         (None, None) => None,
@@ -97,14 +100,9 @@ pub(super) fn run(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
         let state = load(read, state_path, args.hex)?;
         let checkpoint = load(read, checkpoint_path, args.hex)?;
         match expected.as_ref() {
-            Some(expected) => verify_access_log_expected(
-                &input,
-                &state,
-                &checkpoint,
-                &keys,
-                &request,
-                expected,
-            ),
+            Some(expected) => {
+                verify_access_log_expected(&input, &state, &checkpoint, &keys, &request, expected)
+            }
             None => verify_access_log(&input, &state, &checkpoint, &keys, &request),
         }
     } else {

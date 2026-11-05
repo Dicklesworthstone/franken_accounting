@@ -304,7 +304,10 @@ fn portable_access_log_export_verifies_offline_and_preserves_its_retained_checkp
     assert_eq!(verified.events[0].recorded_at, selected.recorded_at.0);
     assert_eq!(verified.events[0].principal, selected.record.principal.0);
     assert_eq!(verified.events[0].command, selected.record.command);
-    assert_eq!(verified.events[0].request_digest, selected.record.request_digest);
+    assert_eq!(
+        verified.events[0].request_digest,
+        selected.record.request_digest
+    );
     assert!(verified.checked_records > events.len());
     assert!(
         fa_verify::verify_access_log_proof(
@@ -340,7 +343,10 @@ fn portable_access_log_export_verifies_offline_and_preserves_its_retained_checkp
     f.post("after-access-proof", "2026-03-20", "2.00", &evidence);
     f.checkpoint();
     let before = f.head();
-    assert_eq!(bytes(&exported(&f.book, &["access-log", "--state", oid])), retained);
+    assert_eq!(
+        bytes(&exported(&f.book, &["access-log", "--state", oid])),
+        retained
+    );
     let latest = bytes(&exported(&f.book, &["access-log"]));
     assert_eq!(
         fa_verify::verify_access_log_proof(&latest, &[key], &request, &expected)
@@ -352,7 +358,13 @@ fn portable_access_log_export_verifies_offline_and_preserves_its_retained_checkp
     let path = f.dir.join("access-log.proof");
     let file = exported(
         &f.book,
-        &["access-log", "--state", oid, "--out", path.to_str().unwrap()],
+        &[
+            "access-log",
+            "--state",
+            oid,
+            "--out",
+            path.to_str().unwrap(),
+        ],
     );
     assert_eq!(get(&file, "bytes"), &Json::Null);
     assert_eq!(std::fs::read(&path).unwrap(), retained);

@@ -612,14 +612,101 @@ where
     read_document_after_admission(db, ctx, book, capability, store, oid, before_fetch).await
 }
 
+/// The closed document families that source-derived draft preparation may
+/// observe. A caller cannot turn a draft's Post authority into an arbitrary
+/// document read by choosing its own kind or media type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DraftSourceKind {
+    FxRate,
+    ExternalSubledgerDetail,
+}
+
+impl DraftSourceKind {
+    const fn kind(self) -> u8 {
+        match self {
+            Self::FxRate => crate::fx::RATE_DOCUMENT_KIND,
+            Self::ExternalSubledgerDetail => {
+                crate::external_subledger::EXTERNAL_SUBLEDGER_DOCUMENT_KIND
+            }
+        }
+    }
+
+    const fn mime(self) -> &'static str {
+        match self {
+            Self::FxRate => "application/vnd.franken.fx-rate.v1",
+            Self::ExternalSubledgerDetail => crate::external_subledger::EXTERNAL_SUBLEDGER_MIME,
+        }
+    }
+
+    fn refusal(self) -> Refusal {
+        Refusal::new(
+            code::CAPABILITY,
+            exit::SAFETY,
+            "the selected document is not admitted for this draft source operation",
+            "FA-INV-10 (authorization before observation); plan §15.2 / fa-txgy.7 (typed source derivation)",
+            match self {
+                Self::FxRate => "name a canonical Rate document retained by this book",
+                Self::ExternalSubledgerDetail => {
+                    "name a canonical external-subledger detail Workpaper retained by this book"
+                }
+            },
+        )
+    }
+}
+
+/// Validate public identity and kind before the document payload is decoded.
+/// Wrong-purpose sources get the same refusal even when their private payload
+/// is corrupt, unavailable or governed by a redaction contract.
+fn admit_draft_source_document<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    oid: Oid,
+    source: DraftSourceKind,
+) -> Outcome<[u8; 32]> {
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let expected = policy.kind_by_tag(source.kind()).ok_or_else(|| {
+        KernelError::Corrupt("a typed draft source has no registered document kind".into())
+    })?;
+    let txn_cx = ctx.txn();
+    let txn = db.begin(&txn_cx)?;
+    let vid = document_vid(&oid);
+    let is_document = txn.vertex_has_label(db, vid, label::DOCUMENT)?;
+    let kind = txn.vertex_property(db, vid, property::CODE)?;
+    let identity = txn.vertex_property(db, vid, property::BOOK_ID)?;
+    let digest = txn.vertex_property(db, vid, property::FA_DIGEST)?;
+    txn.abort();
+    if is_document != Some(true)
+        || !matches!(kind, Some(CanonicalScalar::Text(value))
+            if value.as_bytes() == expected.name.as_bytes())
+        || !matches!(identity, Some(CanonicalScalar::Bytes(value))
+            if value.as_slice() == book.book_id.0)
+    {
+        return Ok(Err(source.refusal()));
+    }
+    let Some(CanonicalScalar::Bytes(bytes)) = digest else {
+        return Ok(Err(source.refusal()));
+    };
+    let Ok(commit) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+        return Ok(Err(source.refusal()));
+    };
+    if document_oid(book.book_id, &commit) != oid {
+        return Ok(Err(source.refusal()));
+    }
+    Ok(Ok(commit))
+}
+
 /// Resolve a source for a typed owned-draft derivation, under the original
 /// planner's document disclosure restrictions. This is a database-level
 /// operation: facades may expose only the resulting monetary proposal, never
 /// a general document read through the draft admission.
 ///
 /// Ownership, open state and current authority are checked before source
-/// metadata and again after potentially suspended blob I/O. The shared body
-/// selects the governing redaction contract before reading any source bytes.
+/// metadata and again after potentially suspended blob I/O. The expected
+/// registered kind and identity must match public mirrors before payload
+/// decoding. The verified record's kind, media type and identity are checked
+/// again before any external blob bytes are fetched. Governing redaction
+/// contracts still apply, including to capabilities holding Privileged.
 pub async fn read_document_for_draft_source<V, B>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -627,14 +714,22 @@ pub async fn read_document_for_draft_source<V, B>(
     admission: &crate::draft::DraftSourceAdmission,
     store: &BlobStore<B>,
     oid: Oid,
+    source: DraftSourceKind,
 ) -> Outcome<DocumentRead>
 where
     V: asupersync::fs::Vfs + Clone,
     B: asupersync::fs::Vfs + Clone,
 {
+    ctx.query()
+        .checkpoint()
+        .map_err(WriteTxnError::Interrupted)?;
     if let Err(refusal) = admission.recheck(db, book)? {
         return Ok(Err(refusal));
     }
+    let commit = match admit_draft_source_document(db, ctx, book, oid, source)? {
+        Ok(commit) => commit,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let result = read_document_after_admission(
         db,
         ctx,
@@ -642,9 +737,22 @@ where
         admission.capability(),
         store,
         oid,
-        |_| Ok(()),
+        |record| {
+            if record.book_id != book.book_id
+                || record.kind != source.kind()
+                || record.mime != source.mime()
+                || record.doc_commit != commit
+                || record.oid() != oid
+            {
+                return Err(source.refusal());
+            }
+            Ok(())
+        },
     )
     .await?;
+    ctx.query()
+        .checkpoint()
+        .map_err(WriteTxnError::Interrupted)?;
     if let Err(refusal) = admission.recheck(db, book)? {
         return Ok(Err(refusal));
     }
@@ -880,6 +988,7 @@ mod tests {
             &mut self,
             admission: &crate::draft::DraftSourceAdmission,
             oid: Oid,
+            source: DraftSourceKind,
         ) -> Result<DocumentRead, Refusal> {
             self.runtime
                 .block_on(self.contexts.query().with_restriction_async(
@@ -890,16 +999,17 @@ mod tests {
                         admission,
                         &self.store,
                         oid,
+                        source,
                     ),
                 ))
                 .unwrap()
         }
     }
 
-    #[test]
-    fn draft_source_admission_preserves_redaction_and_expires_when_the_draft_closes() {
-        let mut f = ReadFixture::new();
-        let name = "source-review";
+    fn source_draft(
+        f: &mut ReadFixture,
+        name: &str,
+    ) -> (Capability, crate::draft::DraftSourceAdmission) {
         let planner = Capability::new(VId(31), Profile::Agent, &[Op::Post], VId(1))
             .unwrap()
             .for_books(&[f.book.book_id])
@@ -920,27 +1030,104 @@ mod tests {
         let admission = crate::draft::admit_sources(&f.db, &f.book, &planner, name)
             .unwrap()
             .unwrap();
+        (planner, admission)
+    }
+
+    fn typed_source(f: &ReadFixture, source: DraftSourceKind) -> Document {
+        let day = DateDay::from_ymd(2026, 3, 1).unwrap();
+        let usd = f.book.units.lookup("USD").unwrap();
+        match source {
+            DraftSourceKind::FxRate => {
+                let rate = crate::fx::FxRateDocument::new(
+                    crate::fx::FxRateTerms {
+                        base_unit: usd,
+                        quote_unit: f.book.units.lookup("EUR").unwrap(),
+                        rate_num: 11,
+                        rate_den: 10,
+                        rounding: fa_money::RoundingLaw::HalfEven,
+                    },
+                    day,
+                    1,
+                    crate::fx::FxRatePurpose::SpotClose,
+                    "Declared Rate source",
+                )
+                .unwrap();
+                Document {
+                    kind: crate::fx::RATE_DOCUMENT_KIND,
+                    mime: "application/vnd.franken.fx-rate.v1".into(),
+                    bytes: rate.canonical_bytes().unwrap(),
+                    ..doc(0)
+                }
+            }
+            DraftSourceKind::ExternalSubledgerDetail => {
+                let batch = crate::external_subledger::ExternalSubledgerBatch {
+                    book_id: f.book.book_id,
+                    feed: "typed-source".into(),
+                    batch_key: "complete-detail".into(),
+                    effective_date: day,
+                    rows: [
+                        (1, VId(100), fa_money::Side::Debit),
+                        (2, VId(200), fa_money::Side::Credit),
+                    ]
+                    .into_iter()
+                    .map(
+                        |(id, account, side)| crate::external_subledger::ExternalSubledgerDetail {
+                            source_digest: [id; 32],
+                            account,
+                            side,
+                            amount: fa_money::Amount::new(usd, 100),
+                            dimensions: Vec::new(),
+                        },
+                    )
+                    .collect(),
+                };
+                Document {
+                    kind: crate::external_subledger::EXTERNAL_SUBLEDGER_DOCUMENT_KIND,
+                    mime: crate::external_subledger::EXTERNAL_SUBLEDGER_MIME.into(),
+                    bytes: batch.canonical_bytes().unwrap(),
+                    ..doc(0)
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn draft_sources_admit_only_the_declared_family_before_private_payloads() {
+        let mut f = ReadFixture::new();
+        let name = "source-review";
+        let (planner, admission) = source_draft(&mut f, name);
+        for source in [
+            DraftSourceKind::FxRate,
+            DraftSourceKind::ExternalSubledgerDetail,
+        ] {
+            let document = typed_source(&f, source);
+            f.add(&document);
+            let head = f.db.frontier().unwrap();
+            assert_eq!(
+                f.draft_source(&admission, document.oid(), source).unwrap(),
+                DocumentRead::Full(document.clone())
+            );
+            let other = match source {
+                DraftSourceKind::FxRate => DraftSourceKind::ExternalSubledgerDetail,
+                DraftSourceKind::ExternalSubledgerDetail => DraftSourceKind::FxRate,
+            };
+            assert_eq!(
+                f.draft_source(&admission, document.oid(), other)
+                    .unwrap_err()
+                    .code,
+                code::CAPABILITY
+            );
+            assert_eq!(
+                f.read(&planner, document.oid()).unwrap_err().code,
+                code::CAPABILITY,
+                "source preparation never adds a general Read operation"
+            );
+            assert_eq!(f.db.frontier().unwrap(), head);
+        }
         let invoice = Document { kind: 1, ..doc(19) };
         let statement = doc(CHUNK_BYTES + 19);
         f.add(&invoice);
         f.add(&statement);
-        let head = f.db.frontier().unwrap();
-        assert_eq!(
-            f.draft_source(&admission, invoice.oid()).unwrap(),
-            DocumentRead::Full(invoice.clone())
-        );
-        assert_eq!(
-            f.read(&planner, invoice.oid()).unwrap_err().code,
-            code::CAPABILITY,
-            "source admission adds no general Read operation"
-        );
-        assert_eq!(
-            f.draft_source(&admission, statement.oid())
-                .unwrap_err()
-                .code,
-            code::REDACTED_VIEW_ABSENT
-        );
-        assert_eq!(f.db.frontier().unwrap(), head);
 
         let privileged = Capability::embedded(planner.holder(), &["post", "privileged"])
             .unwrap()
@@ -955,17 +1142,6 @@ mod tests {
         let caveated_source = crate::draft::admit_sources(&f.db, &f.book, &caveated, name)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            f.draft_source(&privileged_source, statement.oid()).unwrap(),
-            DocumentRead::Full(statement.clone())
-        );
-        assert_eq!(
-            f.draft_source(&caveated_source, statement.oid())
-                .unwrap_err()
-                .code,
-            code::REDACTED_VIEW_ABSENT,
-            "Privileged does not override a governing redaction caveat"
-        );
 
         let revealer = Capability::embedded(VId(7), &["privileged"]).unwrap();
         f.runtime
@@ -979,30 +1155,49 @@ mod tests {
             ))
             .unwrap()
             .unwrap();
+        let refused_before = f
+            .draft_source(&admission, invoice.oid(), DraftSourceKind::FxRate)
+            .unwrap_err();
         let mut poison = WriteBatch::new(relation::CUSTODY_OF);
-        poison.set_vertex_property(
-            document_vid(&statement.oid()),
-            property::FA_PAYLOAD,
-            Some(scalar_bytes("_fa_payload", vec![0xff]).unwrap()),
-        );
+        for document in [&invoice, &statement] {
+            poison.set_vertex_property(
+                document_vid(&document.oid()),
+                property::FA_PAYLOAD,
+                Some(scalar_bytes("_fa_payload", vec![0xff]).unwrap()),
+            );
+        }
         f.runtime
             .block_on(f.db.write(&f.contexts.commit(), poison))
             .unwrap();
         let head = f.db.frontier().unwrap();
-        for source in [&admission, &caveated_source] {
-            let DocumentRead::Redacted(view) = f.draft_source(source, statement.oid()).unwrap()
-            else {
-                panic!("governed draft sources must preserve their redacted view");
-            };
-            assert_eq!(view.verify(), Ok(()));
-            assert_eq!(view.doc_commit, statement.doc_commit());
+        for token in [&admission, &privileged_source, &caveated_source] {
+            for source in [
+                DraftSourceKind::FxRate,
+                DraftSourceKind::ExternalSubledgerDetail,
+            ] {
+                for document in [&invoice, &statement] {
+                    let refused = f.draft_source(token, document.oid(), source).unwrap_err();
+                    assert_eq!(refused.code, code::CAPABILITY);
+                    assert_eq!(refused.message, refused_before.message);
+                }
+            }
         }
+        let reader = f.reader();
         assert_eq!(
-            f.draft_source(&privileged_source, statement.oid())
+            f.read(&reader, invoice.oid()).unwrap_err().code,
+            code::DOCUMENT_DRIFT,
+            "an admitted ordinary read reaches the same poisoned payload"
+        );
+        let DocumentRead::Redacted(view) = f.read(&reader, statement.oid()).unwrap() else {
+            panic!("ordinary governed reads must preserve the redacted view");
+        };
+        assert_eq!(view.verify(), Ok(()));
+        let privileged_reader = Capability::embedded(VId(7), &["read", "privileged"]).unwrap();
+        assert_eq!(
+            f.read(&privileged_reader, statement.oid())
                 .unwrap_err()
                 .code,
-            code::DOCUMENT_DRIFT,
-            "only unconfined Privileged source admission inspects the poisoned payload"
+            code::DOCUMENT_DRIFT
         );
         assert_eq!(f.db.frontier().unwrap(), head);
 
@@ -1019,13 +1214,112 @@ mod tests {
             .unwrap();
         let head = f.db.frontier().unwrap();
         assert_eq!(
-            f.draft_source(&privileged_source, statement.oid())
+            f.draft_source(&privileged_source, statement.oid(), DraftSourceKind::FxRate)
                 .unwrap_err()
                 .code,
             code::DRAFT_NOT_OPEN,
-            "a stale source token refuses before the poisoned source payload"
+            "a closed draft refuses before even the public source metadata"
         );
         assert_eq!(f.db.frontier().unwrap(), head);
+    }
+
+    #[test]
+    fn draft_source_identity_guards_precede_payload_decoding() {
+        for corruption in ["label", "book", "commitment"] {
+            let mut f = ReadFixture::new();
+            let (_, admission) = source_draft(&mut f, "source-identity");
+            let document = typed_source(&f, DraftSourceKind::FxRate);
+            f.add(&document);
+            let vid = document_vid(&document.oid());
+            let mut poison = WriteBatch::new(relation::CUSTODY_OF);
+            poison.set_vertex_property(
+                vid,
+                property::FA_PAYLOAD,
+                Some(scalar_bytes("_fa_payload", vec![0xff]).unwrap()),
+            );
+            match corruption {
+                "label" => {
+                    poison.set_vertex_label(vid, label::DOCUMENT, false);
+                }
+                "book" => {
+                    poison.set_vertex_property(
+                        vid,
+                        property::BOOK_ID,
+                        Some(scalar_bytes("book_id", vec![0xa5; 16]).unwrap()),
+                    );
+                }
+                _ => {
+                    poison.set_vertex_property(
+                        vid,
+                        property::FA_DIGEST,
+                        Some(scalar_bytes("_fa_digest", vec![0; 32]).unwrap()),
+                    );
+                }
+            }
+            f.runtime
+                .block_on(f.db.write(&f.contexts.commit(), poison))
+                .unwrap();
+            let head = f.db.frontier().unwrap();
+            assert_eq!(
+                f.draft_source(&admission, document.oid(), DraftSourceKind::FxRate)
+                    .unwrap_err()
+                    .code,
+                code::CAPABILITY,
+                "{corruption}: reject the source identity before its private payload"
+            );
+            assert_eq!(f.db.frontier().unwrap(), head);
+        }
+    }
+
+    #[test]
+    fn draft_source_media_type_is_checked_before_external_blob_io() {
+        for source in [
+            DraftSourceKind::FxRate,
+            DraftSourceKind::ExternalSubledgerDetail,
+        ] {
+            let mut f = ReadFixture::new();
+            let (_, admission) = source_draft(&mut f, "source-media-type");
+            let mut document = typed_source(&f, source);
+            document.mime = "text/plain".into();
+            f.add(&document);
+            // Retain a valid external record without creating its blob. A
+            // body fetch would expose BLOB_MISSING instead of the type refusal.
+            let mut external = WriteBatch::new(relation::CUSTODY_OF);
+            external.set_vertex_property(
+                document_vid(&document.oid()),
+                property::FA_PAYLOAD,
+                Some(
+                    scalar_bytes(
+                        "_fa_payload",
+                        document
+                            .canonical_bytes_external(
+                                f.store.id(),
+                                &crate::blob::locator_of(&document.doc_commit()),
+                            )
+                            .unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            );
+            f.runtime
+                .block_on(f.db.write(&f.contexts.commit(), external))
+                .unwrap();
+            let head = f.db.frontier().unwrap();
+            assert_eq!(
+                f.draft_source(&admission, document.oid(), source)
+                    .unwrap_err()
+                    .code,
+                code::CAPABILITY,
+                "a wrong media type must not request source bytes"
+            );
+            let reader = f.reader();
+            assert_eq!(
+                f.read(&reader, document.oid()).unwrap_err().code,
+                code::BLOB_MISSING,
+                "the ordinary reader proves the missing-blob trap is live"
+            );
+            assert_eq!(f.db.frontier().unwrap(), head);
+        }
     }
 
     #[test]

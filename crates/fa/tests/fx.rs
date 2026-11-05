@@ -890,3 +890,71 @@ fn draft_source_subledger_admits_generated_amounts_and_rechecks_revocation() {
     );
     assert_eq!(f.book.head().unwrap(), revoked_at);
 }
+
+#[test]
+fn draft_source_factories_reject_unrelated_documents_and_rate_media_types() {
+    let mut f = Fixture::new();
+    let name = "typed-source-boundary";
+    let planner = draft_source_capability(&f, name, 10_000);
+    f.book
+        .open_draft(
+            planner.clone(),
+            name,
+            day(5),
+            "Only typed source preparation",
+        )
+        .unwrap()
+        .unwrap();
+    let rate = f.rate(11, "Correct typed Rate source");
+    let rate_oid = f.upload_rate(&rate);
+    let mislabeled = f.rate(12, "Rate bytes under an unrelated media type");
+    let wrong_mime = f
+        .book
+        .upload_document(
+            &cap(&["post"]),
+            UploadRequest {
+                kind: RATE_DOCUMENT_KIND,
+                mime: "text/plain".into(),
+                bytes: mislabeled.canonical_bytes().unwrap(),
+                asserted_grade: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let mut proposal = f.proposal(b"typed-source-only");
+    proposal.principal_ref = planner.holder();
+    let head = f.book.head().unwrap();
+    for oid in [f.invoice.document_oid, wrong_mime.oid] {
+        let refused = f
+            .book
+            .value_fx_proposal_in_draft(
+                &planner,
+                name,
+                proposal.clone(),
+                FxLawId::SpotClose,
+                &[oid],
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.code, code::CAPABILITY);
+        assert!(!refused.message.contains("Customer invoice"));
+        assert_eq!(f.book.head().unwrap(), head);
+    }
+    proposal.legs.clear();
+    proposal.unit_totals.clear();
+    proposal.evidence.clear();
+    for oid in [f.invoice.document_oid, rate_oid] {
+        let refused = f
+            .book
+            .prepare_external_subledger_in_draft(&planner, name, oid, proposal.clone())
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            refused.code,
+            code::CAPABILITY,
+            "the source family must be refused before decoding another document format"
+        );
+        assert_eq!(f.book.head().unwrap(), head);
+    }
+    assert_eq!(f.book.draft(name).unwrap().unwrap().intents.len(), 0);
+}

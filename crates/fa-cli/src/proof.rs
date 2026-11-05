@@ -446,7 +446,10 @@ pub(crate) fn proof_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let encoded = output.is_none().then(|| hex(&artifact.bytes));
     let public_key = hex(&book.checkpoint_public_key());
-    let signed = matches!(proof_kind, ProofKind::SignedCheckpoint | ProofKind::AccessLog);
+    let signed = matches!(
+        proof_kind,
+        ProofKind::SignedCheckpoint | ProofKind::AccessLog
+    );
     let trust_note = if proof_kind == ProofKind::AccessLog {
         "The file contains the canonical state, its signed checkpoint and every checkpoint payload. Verify your independently selected source and interval with `fa-verify access-log <proof-file> --book <expected-book-id> --branch <expected-branch-id> --key <trusted-key> --after-seq <exclusive-start> --through-seq <inclusive-end> [--reader <principal-vid>] [--expect-checkpoint <retained-checkpoint-oid>]`. The result proves recorded access attempts; successful delivery is not established.".to_string()
     } else if proof_kind == ProofKind::State {

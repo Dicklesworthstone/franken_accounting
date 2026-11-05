@@ -839,14 +839,9 @@ fn portable_proof_rejects_wrong_recipient_identity_and_exact_checkpoint_pin() {
         // All supplied components are internally consistent and signed by a
         // trusted key. That does not make them the recipient's selected source.
         assert_eq!(
-            verify_access_log_proof(
-                &portable_fixture(),
-                &[trusted_key()],
-                &request(),
-                &changed,
-            )
-            .unwrap_err()
-            .predicate,
+            verify_access_log_proof(&portable_fixture(), &[trusted_key()], &request(), &changed,)
+                .unwrap_err()
+                .predicate,
             predicate,
         );
         // Identity is established before state or record payload decoding.
@@ -937,7 +932,14 @@ fn portable_proof_keeps_signed_coverage_and_all_payload_checks_before_filtering(
 fn portable_proof_framing_and_aggregate_limits_are_checked_before_decoding() {
     let expected = expected_source();
     let proof = portable_fixture();
-    for end in [0, 1, 3, 4, 4 + ACCESS_LOG_PROOF_FORMAT.len(), proof.len() - 1] {
+    for end in [
+        0,
+        1,
+        3,
+        4,
+        4 + ACCESS_LOG_PROOF_FORMAT.len(),
+        proof.len() - 1,
+    ] {
         assert_eq!(
             verify_access_log_proof(&proof[..end], &[trusted_key()], &request(), &expected)
                 .unwrap_err()
@@ -1022,7 +1024,13 @@ fn portable_argv() -> Vec<String> {
 #[test]
 fn portable_cli_requires_source_expectations_and_reads_only_one_artifact() {
     let no_read = |path: &str| -> std::io::Result<Vec<u8>> { panic!("usage error read {path}") };
-    for missing in ["--book", "--branch", "--key", "--after-seq", "--through-seq"] {
+    for missing in [
+        "--book",
+        "--branch",
+        "--key",
+        "--after-seq",
+        "--through-seq",
+    ] {
         let mut args = portable_argv();
         let index = args.iter().position(|arg| arg == missing).unwrap();
         args.drain(index..index + 2);
@@ -1047,7 +1055,10 @@ fn portable_cli_requires_source_expectations_and_reads_only_one_artifact() {
         }
     }
     let read = |path: &str| {
-        assert_eq!(path, "portable", "the source book and external components are never read");
+        assert_eq!(
+            path, "portable",
+            "the source book and external components are never read"
+        );
         Ok(portable_fixture())
     };
     let mut args = portable_argv();
@@ -1055,18 +1066,31 @@ fn portable_cli_requires_source_expectations_and_reads_only_one_artifact() {
     args.extend(["--expect-checkpoint".to_string(), pin]);
     let checked = fa_verify::cli::run(&args, &read);
     assert_eq!(checked.exit, 0, "{}", checked.stdout);
-    assert!(checked.stdout.contains("\"source_selection\":\"recipient_bound\""));
+    assert!(
+        checked
+            .stdout
+            .contains("\"source_selection\":\"recipient_bound\"")
+    );
     assert!(checked.stdout.contains("\"count\":1"));
     assert!(checked.stdout.contains("\"checked_records\":5"));
-    let pin_index = args.iter().position(|arg| arg == "--expect-checkpoint").unwrap() + 1;
+    let pin_index = args
+        .iter()
+        .position(|arg| arg == "--expect-checkpoint")
+        .unwrap()
+        + 1;
     args[pin_index] = "ff".repeat(32);
     let refused = fa_verify::cli::run(&args, &read);
     assert_eq!(refused.exit, 8, "{}", refused.stdout);
     assert!(refused.stdout.contains("access.checkpoint_pin"));
     let mut mixed = portable_argv();
     mixed.extend(
-        ["--state", "unopened-state", "--checkpoint", "unopened-checkpoint"]
-            .map(str::to_string),
+        [
+            "--state",
+            "unopened-state",
+            "--checkpoint",
+            "unopened-checkpoint",
+        ]
+        .map(str::to_string),
     );
     assert_eq!(fa_verify::cli::run(&mixed, &read).exit, 2);
 }
@@ -1096,7 +1120,11 @@ fn executable_verifies_portable_raw_and_hex_proofs_with_independent_source_pins(
         .args(&args)
         .output()
         .unwrap();
-    assert!(raw.status.success(), "{}", String::from_utf8_lossy(&raw.stderr));
+    assert!(
+        raw.status.success(),
+        "{}",
+        String::from_utf8_lossy(&raw.stderr)
+    );
     assert!(String::from_utf8_lossy(&raw.stdout).contains("\"count\":1"));
     fs::write(&path, fa_verify::blake3::hex(&proof)).unwrap();
     let hex = Command::new(env!("CARGO_BIN_EXE_fa-verify"))
@@ -1104,6 +1132,10 @@ fn executable_verifies_portable_raw_and_hex_proofs_with_independent_source_pins(
         .arg("--hex")
         .output()
         .unwrap();
-    assert!(hex.status.success(), "{}", String::from_utf8_lossy(&hex.stderr));
+    assert!(
+        hex.status.success(),
+        "{}",
+        String::from_utf8_lossy(&hex.stderr)
+    );
     assert_eq!(raw.stdout, hex.stdout);
 }
