@@ -1450,6 +1450,9 @@ also completes format and remote workspace check, but exits 2/VOID because this
 assessment was edited while it ran. Its compile success is a scoped observation,
 not a Tier-0 PASS for the edited tree. A final settled-tree run is required
 before publication.
+The separate README/scoreboard test request ended with remote/outer exit 137
+at the 1,800-second offload cap while compiling the facade. Neither target
+executed; this is UNRUN, not a failing walkthrough or passing command campaign.
 The AST scan found no `todo!` or `unimplemented!` macro calls; this establishes
 neither architectural completeness nor behavioral correctness. Remaining
 diagnostic outcomes and final audit publication are recorded in the evidence
@@ -1496,7 +1499,7 @@ No whole 1.0 goal is promoted to WORKING from source existence alone.
 | V32 Reference/simulation | PARTIAL independent arithmetic and fault/history tests; full system, 1,000-seed and all barrier/race campaign remain | fa-2ihd, fa-0fl |
 | V33 Formal/model/fuzz | UNPROVEN formal lanes and full fuzz campaign; source models/smoke are narrower evidence | fa-09q8, fa-dj6j, fa-apde, fa-yrhb |
 | V34 Performance | UNPROVEN stated-scale SLOs; all 20 remain inactive and self-speedups do not establish competitive wins | fa-ykbp, fa-7mhm |
-| V35 Qualification/governance | Current Clippy diagnostic is RED; full canonical PASS is UNPROVEN; large-note transport, closure debt, capability joins and scoreboard semantics remain | fa-0hs4.1, fa-0hs4.2, fa-0hs4.3, fa-0hs4.4, fa-8jcr, fa-ubl0 |
+| V35 Qualification/governance | Current Clippy diagnostic is RED; full canonical PASS is UNPROVEN; large-note transport, closure debt, capability joins and scoreboard semantics remain | fa-0hs4.1, fa-0hs4.2, fa-0hs4.3, fa-0hs4.4, fa-0hs4.19, fa-8jcr, fa-ubl0 |
 | V36 Release/publications | UNPROVEN actual distinct-builder/linkage/offline-install and composed all-reader acceptance | fa-nfq2, fa-wwip, fa-q5kx, fa-rdid |
 | V37 Lots/assets | PARTIAL source-bound relief and schedules; full dimension/FX/method/batch/certificate acceptance remains | fa-0hs4.9, fa-c34, fa-y1vr |
 | V38 Real-book operability | UNPROVEN 100k-entry CLI/fad composition with counted total work and unchanged fold/proof results | fa-0hs4.6, fa-q7vt, fa-rcw1, fa-wo2n, fa-rbs3, fa-vr7q |
@@ -1579,15 +1582,33 @@ by adding another nominal PASS count. Final graph ownership and execution
 outcomes are recorded with the audit landing; no implementation bead closes from
 this planning work.
 
-**Tracker publication boundary.** `.beads/issues.jsonl` has an exclusive active
-reservation held by IvoryHorizon. The suite requires a single graph writer, so
-this audit requested a handoff rather than mutating or exporting that graph
-concurrently. The self-contained proposed child, ordinary regression names and
-dependency direction are retained in `large-note-bead.txt` in the evidence
-directory; the existing baseline owners remain fa-0hs4.1/fa-0hs4.2. The final
-read-only graph checks still show 491 records and no active cycles. A pending
-handoff is not a created Bead or a completed repair. Existing descriptions,
-comments, dependencies and statuses are preserved.
+**Tracker publication.** IvoryHorizon handed off the exclusive graph-writer
+reservation before any tracker mutation. New P1 bug **fa-0hs4.19** owns the
+real-sized verdict transport repair and its ordinary positive/negative tests
+together. fa-0hs4.2 depends on it. The publisher already streams its note through
+`git notes -F -`; the new task preserves that path and requires a publication
+regression plus inspection of closure callers. Synthetic validation fixtures
+remain explicitly distinguished from executed accounting evidence.
+
+Evidence comments update the eight existing owners fa-0hs4, fa-0hs4.2/.3/.4/.6,
+fa-kae, fa-sa4w and fa-wwip. fa-0hs4.3's title now reflects the configured hooks;
+its historical description and acceptance remain intact. The final graph has
+**492 records: 149 open, 101 in progress, 242 closed**, 884 graph edges and no
+active cycles. No implementation issue was closed.
+
+Export initially refused a stale DB. A reviewed additive reconciliation imported
+only the owner's already committed fa-txgy/fa-txgy.2 corrections from JSONL,
+including the existing Sage-workflow blocker; it deleted nothing and retained
+the nine local modified/new records. The exporter also sorted comments on 47
+otherwise untouched records and remapped ten colliding internal comment IDs,
+so 65 raw records differ. The preservation check proves that all 491 original
+records, exact original dependency rows, acceptance, statuses, owners, assignees,
+priorities, labels, descriptions, notes and every comment's author, text, issue
+binding and creation time survive. Original raw JSONL is retained. The exact
+65-record attribution helper exits 0; `export-preservation-verified.json` names
+every raw changed ID and internal-ID remap. This is export normalization, not
+65 completed tasks or additional product scope. Final refinement found no other
+unowned broad goal or dependency cycle within this audited cut.
 
 #### Current-cut refresh (2026-10-30, IvoryHorizon)
 
