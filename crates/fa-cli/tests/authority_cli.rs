@@ -1402,7 +1402,9 @@ mod source_draft_tests {
             let book_id = f.book.context().book_id;
             for (legs, (native, carried, cash, loss)) in proposal
                 .legs
-                .chunks_exact(5)
+                .as_chunks::<5>()
+                .0
+                .iter()
                 .zip([(4_000, 4_400, 5_200, 800), (6_000, 6_600, 7_800, 1_200)])
             {
                 let applying = &legs[0];
