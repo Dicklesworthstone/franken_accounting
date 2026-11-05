@@ -3292,3 +3292,12 @@ guard intact. The original positive regression remains and now also asserts
 literal 100.00 EUR / 110.00 USD values and retained reversal effects. Qualification
 of this repair is pending; other FX laws and source-derived reversal families
 receive no new admission from this change.
+
+The later `dd2e7485` run passed the existing 16 authority cases and all 3
+writing cases, but both newly added payable tests failed before application
+planning: their fixtures read `data.entry` from an ordinary posting result,
+whose canonical identity field is `data.vid`. Those two reads were corrected;
+the draft result's `entry` field and every economic/refusal assertion remain.
+The failed run (outer/remote 101, 8611 ms) is retained, with no passing credit
+for the two new cases. Its unfiltered genesis request separately did not run:
+source initialization returned 73 before a source/execution grant, outer 103.

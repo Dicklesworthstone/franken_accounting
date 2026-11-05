@@ -1303,7 +1303,7 @@ mod source_draft_tests {
             f.evidence
         );
         let posted = f.owner(&["post", "--intent", "-"], Some(&bill));
-        let target = text(field(&posted, "data"), "entry").to_string();
+        let target = text(field(&posted, "data"), "vid").to_string();
         let target_vid = VId(u128::from_str_radix(&target, 16).unwrap());
         let (source, _) = f.book.read_entry(target_vid).unwrap().unwrap();
         let name = "payable-application";
@@ -1352,7 +1352,7 @@ mod source_draft_tests {
             f.evidence
         );
         let posted = f.owner(&["post", "--intent", "-"], Some(&bill));
-        let target = text(field(&posted, "data"), "entry").to_string();
+        let target = text(field(&posted, "data"), "vid").to_string();
         let payment = |key: &str, amount: &str, evidence: &str| {
             format!(
                 r#"{{"effective_date":"{DATE}","idempotency_key":"{key}","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"2000","amount":"{amount} USD","settles":[{{"entry":"{target}","ordinal":1,"amount":"{amount} USD"}}]}},{{"side":"credit","account":"1000","amount":"{amount} USD"}}]}}"#
