@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=a036aa86e7916f4556b534b5860fee46fec4a72b
+tree=88d3794462cf08a88efc360bb2e39b3c61525922
+lane=remote
+host=hetzner1:Linux-x86_64
+worker=vmi1153651
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=8
+check_status=PASS
+check_seconds=1270
+log_dir=/data/tmp/fa-tier0.qtLrJt
+recorded_utc=2026-11-05T00:15:23Z
