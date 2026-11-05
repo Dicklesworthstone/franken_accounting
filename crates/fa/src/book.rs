@@ -3812,6 +3812,27 @@ impl Book {
         )))
     }
 
+    /// Derive only admitted foreign settlement effects into the holder's own
+    /// explicitly confined draft, without granting general entry or balance reads.
+    pub fn prepare_fx_settlement_group_in_draft(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+        requests: &[crate::FxSettlementRequest],
+        template: fa_model::EntryPayload,
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_fx_settlement_group_in_draft(
+            &purposes, capability, name, requests, template, &mut budget,
+        )))
+    }
+
     /// Exact functional-currency period activity at a retained journal prefix.
     /// Pending holds stay separate. This is not cumulative stock or a certificate.
     pub fn functional_period_activity(
@@ -7773,6 +7794,21 @@ impl Book {
             Ok(fa_journal::draft::admit_sources_for_branch(db, book, capability)?
                 .map(|admission| admission.name().to_string()))
         }))
+    }
+
+    /// Resolve only the canonical handle of one explicitly named open-item
+    /// source under the owned draft's current capability. No source payload
+    /// is returned; an absent or out-of-scope target yields the same `None`.
+    pub fn draft_source_entry_ref(
+        &mut self,
+        capability: &fa_policy::Capability,
+        name: &str,
+        vid: fgdb_types::VId,
+    ) -> Outcome<Option<fa_model::EntryRef>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.draft_source_entry_ref(
+            &purposes, capability, name, vid,
+        ))
     }
 
     /// Install complete additive routes for period-end FX revaluation.

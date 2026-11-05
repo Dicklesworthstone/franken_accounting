@@ -5342,7 +5342,7 @@ pub fn read_entry_at<V: asupersync::fs::Vfs + Clone>(
 /// its last leg — exactly what a scope admission reads. Any disagreement is
 /// corruption, raised before the payload drives an effect, for every
 /// caller: the mirrors are what scoped tokens are admitted by.
-fn checked_entry<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn checked_entry<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     row: &VertexRow,
 ) -> Result<(Entry, CommitSeq), KernelError> {

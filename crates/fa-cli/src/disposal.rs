@@ -636,17 +636,29 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let ordinal = ordinal
                 .parse::<u16>()
                 .map_err(|_| usage("invalid quantity-leg ordinal", DISPOSE_USAGE))?;
-            let (entry, _) = book
-                .read_scope(principal, &capability)??
-                .read_entry(vid, None)??
-                .ok_or_else(|| usage("the selected lot entry does not exist", DISPOSE_USAGE))?;
-            specific_ids.push((
-                EntryRef {
-                    vid,
-                    entry_digest: entry.entry_digest,
-                },
-                ordinal,
-            ));
+            let target = match draft.as_deref() {
+                Some(name) => book
+                    .draft_source_entry_ref(&capability, name, vid)??
+                    .ok_or_else(|| {
+                        usage(
+                            "the selected lot entry is unavailable within this draft's source scope",
+                            DISPOSE_USAGE,
+                        )
+                    })?,
+                None => {
+                    let (entry, _) = book
+                        .read_scope(principal, &capability)??
+                        .read_entry(vid, None)??
+                        .ok_or_else(|| {
+                            usage("the selected lot entry does not exist", DISPOSE_USAGE)
+                        })?;
+                    EntryRef {
+                        vid,
+                        entry_digest: entry.entry_digest,
+                    }
+                }
+            };
+            specific_ids.push((target, ordinal));
         }
         let book_id = book.context().book_id;
         let request = LotDisposalPostRequest {

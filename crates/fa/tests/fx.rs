@@ -958,3 +958,173 @@ fn draft_source_factories_reject_unrelated_documents_and_rate_media_types() {
     }
     assert_eq!(f.book.draft(name).unwrap().unwrap().intents.len(), 0);
 }
+
+#[test]
+fn confined_carrying_facade_derives_only_effects_and_keeps_rate_disclosure_typed() {
+    let mut f = Fixture::new();
+    let accounts = [
+        ("1000", AccountType::ASSET),
+        ("2990", AccountType::LIABILITY),
+        ("7000", AccountType::EXPENSE),
+    ]
+    .into_iter()
+    .map(|(code, kind)| AccountSpec {
+        code: code.into(),
+        name: code.into(),
+        account_type: kind.0,
+        normal_balance: u8::from(kind == AccountType::LIABILITY),
+        is_leaf: true,
+        unit_policy: UnitPolicy::AnyCurrency,
+        parent_code: None,
+        limit: None,
+    })
+    .collect::<Vec<_>>();
+    f.book
+        .install_chart(
+            &accounts,
+            PRINCIPAL,
+            day(1),
+            b"confined-carrying-routes",
+            &cap(&["schema_change"]),
+        )
+        .unwrap()
+        .unwrap();
+    let spot = f.rate(11, "Invoice carrying basis");
+    let spot_oid = f.upload_rate(&spot);
+    let source = f.proposal(b"confined-carrying-invoice");
+    let valued = f.value(source, spot_oid);
+    let posted = f.book.post(post_request(valued)).unwrap().unwrap();
+    let settlement = FxRateDocument::new(
+        FxRateTerms {
+            base_unit: f.usd,
+            quote_unit: f.eur,
+            rate_num: 13,
+            rate_den: 10,
+            rounding: RoundingLaw::HalfEven,
+        },
+        day(5),
+        1,
+        FxRatePurpose::Settlement,
+        "Named partial settlement quote",
+    )
+    .unwrap();
+    let settlement_oid = f.upload_rate(&settlement);
+    let name = "confined-carrying-facade";
+    let planner = draft_source_capability(&f, name, 1_000)
+        .with_ceiling(f.usd, 1_300)
+        .unwrap();
+    f.book
+        .open_draft(planner.clone(), name, day(5), "Review partial settlement")
+        .unwrap()
+        .unwrap();
+    let book_id = f.book.context().book_id;
+    let input = fa::FxSettlementRequest {
+        target: posted.entry_ref(),
+        target_ordinal: 0,
+        amount: Amount::new(f.eur, 1_000),
+        settlement_amount: Amount::new(f.usd, 1_300),
+        settlement_account: account_vid(book_id, "1000"),
+        conversion_account: account_vid(book_id, "2990"),
+        realized_fx_account: account_vid(book_id, "7000"),
+        rate_document: settlement_oid,
+    };
+    let mut template = f.proposal(b"confined-carrying-payment");
+    template.principal_ref = planner.holder();
+    template.legs.clear();
+    template.unit_totals.clear();
+    let literal = f
+        .book
+        .prepare_fx_settlement_group(
+            &Capability::embedded(planner.holder(), &["read", "post"]).unwrap(),
+            std::slice::from_ref(&input),
+            template.clone(),
+        )
+        .unwrap()
+        .unwrap()
+        .into_proposal();
+    let head = f.book.head().unwrap();
+    assert_eq!(
+        f.book
+            .draft_source_entry_ref(&planner, name, posted.entry_ref().vid)
+            .unwrap()
+            .unwrap(),
+        Some(posted.entry_ref())
+    );
+    assert_eq!(
+        f.book
+            .draft_source_entry_ref(&planner, name, VId(0xdead))
+            .unwrap()
+            .unwrap(),
+        None
+    );
+    let generated = f
+        .book
+        .prepare_fx_settlement_group_in_draft(
+            &planner,
+            name,
+            std::slice::from_ref(&input),
+            template.clone(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(generated, literal);
+    assert_eq!(generated.legs[0].amount.mantissa, 1_000);
+    assert_eq!(generated.legs[0].base_amount.unwrap().mantissa, 1_100);
+    assert_eq!(
+        generated
+            .legs
+            .iter()
+            .find(|leg| leg.account_ref == input.realized_fx_account)
+            .unwrap()
+            .amount
+            .mantissa,
+        200
+    );
+    assert_eq!(f.book.head().unwrap(), head);
+    assert_eq!(
+        f.book
+            .prepare_fx_settlement_group(&planner, std::slice::from_ref(&input), template.clone(),)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::CAPABILITY
+    );
+    assert_eq!(
+        f.book
+            .read_document_for(&planner, &settlement_oid)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::CAPABILITY
+    );
+
+    let mut wrong_source = input.clone();
+    wrong_source.rate_document = f.invoice.document_oid;
+    let denied = f
+        .book
+        .prepare_fx_settlement_group_in_draft(&planner, name, &[wrong_source], template.clone())
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(denied.code, code::CAPABILITY);
+    assert!(!denied.message.contains("Customer invoice"));
+    assert_eq!(f.book.head().unwrap(), head);
+
+    f.book
+        .revoke_capability(
+            cap(&["issue_capability"]),
+            planner.commitment().unwrap(),
+            day(5),
+            b"revoke-confined-carrying",
+            "Withdraw the source planner",
+        )
+        .unwrap()
+        .unwrap();
+    let revoked_at = f.book.head().unwrap();
+    let denied = f
+        .book
+        .prepare_fx_settlement_group_in_draft(&planner, name, &[input], template)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(denied.code, "FA-REF-023");
+    assert_eq!(f.book.head().unwrap(), revoked_at);
+}

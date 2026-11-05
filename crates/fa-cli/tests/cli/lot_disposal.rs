@@ -669,41 +669,81 @@ fn lot_agent_token(dir: &Path, book: &Path) -> String {
 }
 
 fn lot_agent_review(book: &Path, token: &str, evidence: &str, account: &str, key: &str) -> Json {
-    doc(&ok(
-        book,
-        "agent retains disposal review",
-        &[
-            "--token",
-            token,
-            "dispose",
-            "--account",
-            account,
-            "--quantity",
-            "5.000000 SHARE",
-            "--quantity-offset",
-            "1499",
-            "--cost-offset",
-            "5100",
-            "--date",
-            "2026-03-15",
-            "--key",
-            key,
-            "--evidence",
-            evidence,
-            "--review-only",
-            "--json",
-        ],
-    ))
+    lot_agent_review_with_targets(book, token, evidence, account, key, &[])
+}
+
+fn lot_agent_review_with_targets(
+    book: &Path,
+    token: &str,
+    evidence: &str,
+    account: &str,
+    key: &str,
+    targets: &[String],
+) -> Json {
+    let mut args = vec![
+        "--token",
+        token,
+        "dispose",
+        "--account",
+        account,
+        "--quantity",
+        "5.000000 SHARE",
+        "--quantity-offset",
+        "1499",
+        "--cost-offset",
+        "5100",
+        "--date",
+        "2026-03-15",
+        "--key",
+        key,
+        "--evidence",
+        evidence,
+        "--review-only",
+        "--json",
+    ];
+    for target in targets {
+        args.extend(["--target", target.as_str()]);
+    }
+    doc(&ok(book, "agent retains disposal review", &args))
 }
 
 #[test]
 fn post_only_confined_agent_prepares_and_appends_a_lot_review_without_read() -> std::io::Result<()>
 {
+    post_only_lot_review_workflow("FIFO")
+}
+
+#[test]
+fn post_only_confined_agent_selects_specific_lots_without_entry_read() -> std::io::Result<()> {
+    post_only_lot_review_workflow("SpecificId")
+}
+
+fn post_only_lot_review_workflow(law: &str) -> std::io::Result<()> {
     use fa::{Book, BookKeys, Entropy};
 
-    let (dir, book, evidence) = setup("FIFO")?;
+    let (dir, book, evidence) = setup(law)?;
     let keys = BookKeys::load(&book.join("book.keys")).unwrap();
     let open = || Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+    // The calling owner supplies only a named acquisition handle to the
+    // Agent. Choosing the later, cheaper layer distinguishes SpecificId from
+    // FIFO; the confined command must authenticate it without a read grant.
+    let targets = if law == "SpecificId" {
+        let owner = open();
+        let quantity_unit = owner.context().units.lookup("SHARE").unwrap();
+        let account = fa_model::account_vid(owner.context().book_id, "1400");
+        let source = owner
+            .open_items(Some(account), None)
+            .unwrap()
+            .into_iter()
+            .find(|item| {
+                item.unit_id == quantity_unit.0
+                    && item.effective_date == fa_time::DateDay::parse("2026-03-10").unwrap()
+            })
+            .unwrap();
+        vec![format!("{:032x}:{}", source.entry.0, source.ordinal)]
+    } else {
+        Vec::new()
+    };
     let name = "post-only-inventory-review";
     let branch = fa_model::draft_branch(open().context().book_id, name);
     let branch_hex = branch.to_hex();
@@ -779,20 +819,42 @@ fn post_only_confined_agent_prepares_and_appends_a_lot_review_without_read() -> 
         );
         assert_eq!(frontier(&book), before, "refused access publishes nothing");
     }
+    if let Some(target) = targets.first() {
+        let (vid, _) = target.rsplit_once(':').unwrap();
+        let (code, out, err) = run(
+            &book,
+            "named lot source still grants no entry read",
+            &["--token", &token, "entry", "show", vid, "--json"],
+        );
+        assert_eq!(code, 7, "{out}\n{err}");
+        assert_eq!(frontier(&book), before);
+    }
 
     // This helper deliberately supplies --review-only without --draft. The
     // source admission must resolve the owned draft from the issued branch.
-    let review = lot_agent_review(&book, &token, &evidence, "1400", "confined-fifo-review");
+    let review = lot_agent_review_with_targets(
+        &book,
+        &token,
+        &evidence,
+        "1400",
+        "confined-lot-review",
+        &targets,
+    );
     let original = retained_disposal(&review);
-    assert_eq!(text(&review, "law"), "FIFO");
+    assert_eq!(text(&review, "law"), law);
+    let expected_cost = if law == "SpecificId" {
+        "10.00 USD"
+    } else {
+        "50.00 USD"
+    };
     assert_eq!(
         arr(&review, "legs")
             .iter()
-            .filter(|leg| text(leg, "amount") == "50.00 USD")
+            .filter(|leg| text(leg, "amount") == expected_cost)
             .count(),
         2
     );
-    let batch = batch_file(&dir, "confined-fifo-batch", vec![review_member(&review)]);
+    let batch = batch_file(&dir, "confined-lot-batch", vec![review_member(&review)]);
     let planned = ok_bound_batch(
         &book,
         "append the exact post-only lot review",
@@ -829,10 +891,17 @@ fn post_only_confined_agent_prepares_and_appends_a_lot_review_without_read() -> 
     assert_eq!(Some(i128::from(at.0)), int(&promoted, "recorded_at"));
     assert_eq!(
         remaining_lots(&book, "1400"),
-        vec![
-            ("10.000000 SHARE".into(), "20.00 USD".into()),
-            ("5.000000 SHARE".into(), "50.00 USD".into()),
-        ]
+        if law == "SpecificId" {
+            vec![
+                ("10.000000 SHARE".into(), "100.00 USD".into()),
+                ("5.000000 SHARE".into(), "10.00 USD".into()),
+            ]
+        } else {
+            vec![
+                ("10.000000 SHARE".into(), "20.00 USD".into()),
+                ("5.000000 SHARE".into(), "50.00 USD".into()),
+            ]
+        }
     );
     Ok(())
 }

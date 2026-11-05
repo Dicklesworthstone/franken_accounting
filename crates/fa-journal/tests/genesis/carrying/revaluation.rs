@@ -17,6 +17,121 @@ mod audits;
 mod scaling;
 
 #[test]
+fn post_only_draft_carrying_preserves_allocated_valuation_relief_and_revalidation() {
+    for change_source in [false, true] {
+        let mut f = RevaluedFixture::new(Side::Debit, &[(3, 10), (3, 10)]);
+        let allocation = f.revaluation(13, 3, 3, true).unwrap();
+        f.post_revaluation(allocation, b"confined-allocated-basis");
+        let name = "confined-allocated-relief";
+        let planner = Capability::new(
+            AGENT,
+            fa_policy::Profile::Agent,
+            &[fa_policy::Op::Post],
+            PRINCIPAL,
+        )
+        .unwrap()
+        .on_branch(fa_model::draft_branch(f.f.h.book.book_id, name))
+        .unwrap()
+        .with_ceiling(f.f.foreign, 3)
+        .unwrap()
+        .with_ceiling(f.f.h.usd, 13)
+        .unwrap();
+        f.f.h.open_draft(planner.clone(), name).unwrap();
+        let source = fa_journal::draft::admit_sources(&f.f.h.db, &f.f.h.book, &planner, name)
+            .unwrap()
+            .unwrap();
+        let inputs = [
+            f.f.fx_request(f.targets[0], 1),
+            f.f.fx_request(f.targets[1], 3),
+        ];
+        let key = b"confined-allocated-group";
+        let mut template = f.f.h.proposal(vec![], key, EntryClass::ORIGINAL);
+        template.principal_ref = AGENT;
+        template.effective_date = day(4, 15);
+        let cx = f.f.h.ctx();
+        let stripped = Cx::detached_cancel_context();
+        let mut budget =
+            ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+        let expected = prepare_fx_settlement_group(
+            &f.f.h.db,
+            &cx,
+            &f.f.h.book,
+            &Capability::embedded(AGENT, &["read", "post"]).unwrap(),
+            &inputs,
+            template.clone(),
+            &mut budget,
+        )
+        .unwrap()
+        .unwrap()
+        .into_proposal();
+        let head = f.f.h.db.frontier().unwrap();
+        let proposal = fa_journal::carrying::prepare_fx_settlement_group_in_draft(
+            &mut f.f.h.db,
+            &cx,
+            &f.f.h.book,
+            &source,
+            &inputs,
+            template,
+            &mut budget,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(proposal, expected);
+        assert_eq!(
+            proposal.base_totals.as_ref().unwrap().fx_law_oid,
+            FxLawId::SettlementAllocatedCarrying.oid()
+        );
+        let (_, raw) = proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION)
+            .unwrap();
+        let basis = fa_model::FxSettlementValuationBasis::decode(raw).unwrap();
+        assert_eq!(basis.items.len(), 2);
+        assert_eq!(basis.items[0].total_relief.mantissa, 4);
+        assert_eq!(basis.items[1].total_relief.mantissa, 13);
+        assert_eq!(f.f.h.db.frontier().unwrap(), head);
+        let planned =
+            f.f.h
+                .plan_draft(planner.clone(), name, proposal.clone())
+                .unwrap();
+        let reviewed = planned.plan.unwrap().members()[0].entry.clone();
+        if change_source {
+            let changed = f.revaluation(5, 1, 3, true).unwrap();
+            f.post_revaluation(changed, b"new-basis-before-confined-promotion");
+            let head = f.f.h.db.frontier().unwrap();
+            let rows = f.f.h.db.vertices().unwrap();
+            assert!(f.f.h.promote(f.f.h.approver_capability(), name).is_err());
+            assert_eq!(f.f.h.db.frontier().unwrap(), head);
+            assert_eq!(f.f.h.db.vertices().unwrap(), rows);
+            assert_eq!(f.f.h.draft(name).state, DraftState::Open);
+        } else {
+            let promoted = f.f.h.promote(f.f.h.approver_capability(), name).unwrap();
+            assert_eq!(promoted.entries.len(), 1);
+            assert_eq!(promoted.entries[0].entry_digest, reviewed.entry_digest);
+            assert_eq!(
+                read_entry(&f.f.h.db, promoted.entries[0].vid)
+                    .unwrap()
+                    .unwrap()
+                    .0,
+                reviewed
+            );
+            assert_eq!(
+                f.position(f.targets[0], None),
+                OracleRevaluedCarrying {
+                    native: 2,
+                    historical_base: 7,
+                    carrying_base: 9,
+                }
+            );
+            assert_eq!(f.position(f.targets[1], None).native, 0);
+            assert_eq!(f.position(f.targets[1], None).carrying_base, 0);
+            f.f.verify();
+        }
+    }
+}
+
+#[test]
 fn mixed_fx_batches_protect_declared_valuation_leaves_before_any_revaluation() {
     for (fx_first, route_month) in [(false, 3), (true, 3), (false, 4), (true, 4)] {
         let mut f = RevaluedFixture::with_routes_from(Side::Debit, &[(3, 10)], day(route_month, 1));

@@ -1091,6 +1091,44 @@ mod source_draft_tests {
             )
         }
 
+        fn settlement_sources(&mut self) -> (Vec<String>, String) {
+            self.owner(
+                &["chart", "import", "-"],
+                Some(r#"{"accounts":[{"code":"2990","name":"FX Conversion","type":"Liability","unit":"any-currency"},{"code":"4900","name":"Realized FX","type":"Revenue","unit":"USD"}]}"#),
+            );
+            let targets = ["first-source-bill", "second-source-bill"]
+                .into_iter()
+                .map(|key| {
+                    let input = self.fx_intent(key);
+                    let posted = self.owner(&["post", "--intent", "-"], Some(&input));
+                    text(field(&posted, "data"), "vid").to_string()
+                })
+                .collect();
+            let rate = self.owner(
+                &["fx", "rate", "add", "--from-json", "-"],
+                Some(r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"13","rate_den":"10","rounding":"HalfEven","as_of":"2026-03-15","retrieved_at_ns":1772712000000000001,"purpose":"settlement","source":"independent payment-date quote"}"#),
+            );
+            (targets, text(field(&rate, "data"), "oid").into())
+        }
+
+        fn settlement_intent(&self, key: &str, rate: &str, targets: &[String]) -> String {
+            let legs = targets
+                .iter()
+                .zip([("40.00", "52.00"), ("60.00", "78.00")])
+                .enumerate()
+                .map(|(i, (target, (native, cash)))| {
+                    format!(
+                        r#"{{"side":"credit","account":"1000","amount":"{cash} USD","memo":"wire {i}"}},{{"side":"debit","account":"2100","amount":"{native} EUR","memo":"payable relief {i}","settles":[{{"entry":"{target}","ordinal":1,"amount":"{native} EUR"}}]}}"#
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                r#"{{"effective_date":"{DATE}","idempotency_key":"{key}","evidence":["{}"],"legs":[{legs}],"fx":{{"law":"SettlementCarryingBasis","rates":["D:{rate}"],"conversion_account":"2990","realized_fx_account":"4900"}}}}"#,
+                self.evidence
+            )
+        }
+
         fn external_source(&mut self) -> String {
             let input = format!(
                 r#"{{"feed":"vendor-ap","batch_key":"march-confined","effective_date":"{DATE}","rows":[{{"source_digest":"{}","account":"6000","side":"debit","amount":"100.00 USD"}},{{"source_digest":"{}","account":"2000","side":"credit","amount":"100.00 USD"}}]}}"#,
@@ -1208,6 +1246,87 @@ mod source_draft_tests {
             field(field(&after, "data"), "rows")
         );
         f.promote_exact(&cap, name, 2);
+    }
+
+    #[test]
+    fn post_only_draft_capability_plans_foreign_payments_with_exact_carrying_relief() {
+        for count in [1, 2] {
+            let mut f = Fixture::new();
+            let (targets, rate) = f.settlement_sources();
+            let name = "foreign-payments";
+            let (cap, authority) = f.agent("foreign-payment-agent", Some(name));
+            f.open(&authority, name);
+            let before = f.owner(&["tb", "--period", "FY2026-P03"], None);
+            let intent = f.settlement_intent("confined-fx-payment", &rate, &targets[..count]);
+            let (exit, planned) = f.bound(
+                &authority,
+                &["post", "--intent", "-", "--draft", name],
+                Some(&intent),
+            );
+            assert_eq!(exit, 0, "{count} independent items: {planned:?}");
+            assert_eq!(text(&planned, "event"), "draft_planned");
+            let entries = f.book.draft_entries(&cap, name).unwrap().unwrap();
+            assert_eq!(entries.len(), 1);
+            let proposal = &entries[0].proposal;
+            assert_eq!(proposal.legs.len(), count * 5);
+            assert_eq!(
+                proposal.base_totals.as_ref().unwrap().fx_law_oid,
+                fa::FxLawId::SettlementCarryingBasis.oid()
+            );
+            let book_id = f.book.context().book_id;
+            for (legs, (native, carried, cash, loss)) in proposal
+                .legs
+                .chunks_exact(5)
+                .zip([(4_000, 4_400, 5_200, 800), (6_000, 6_600, 7_800, 1_200)])
+            {
+                let applying = &legs[0];
+                assert_eq!(applying.account_ref, fa_model::account_vid(book_id, "2100"));
+                assert_eq!(applying.side, fa_money::Side::Debit);
+                assert_eq!(applying.amount.mantissa, native);
+                assert_eq!(applying.base_amount.unwrap().mantissa, carried);
+                assert!(applying.memo.is_some());
+                let paid = legs
+                    .iter()
+                    .find(|leg| leg.account_ref == fa_model::account_vid(book_id, "1000"))
+                    .unwrap();
+                assert_eq!(paid.side, fa_money::Side::Credit);
+                assert_eq!(paid.amount.mantissa, cash);
+                assert!(paid.memo.is_some());
+                let realized = legs
+                    .iter()
+                    .find(|leg| leg.account_ref == fa_model::account_vid(book_id, "4900"))
+                    .unwrap();
+                assert_eq!(realized.side, fa_money::Side::Debit);
+                assert_eq!(realized.amount.mantissa, loss);
+            }
+            let after = f.owner(&["tb", "--period", "FY2026-P03"], None);
+            assert_eq!(
+                field(field(&before, "data"), "rows"),
+                field(field(&after, "data"), "rows"),
+                "source preparation and draft planning do not alter trunk"
+            );
+            let (exit, refused) = f.bound(&authority, &["entry", "show", &targets[0]], None);
+            assert_eq!(exit, 7, "source identity is not a read grant: {refused:?}");
+            assert_eq!(field(&refused, "coordinate"), &Json::Null);
+            f.promote_exact(&cap, name, 1);
+            let remaining = f.owner(&["open-items", "--account", "2100"], None);
+            let mut amounts: Vec<_> = field(field(&remaining, "data"), "items")
+                .as_arr()
+                .unwrap()
+                .iter()
+                .map(|item| text(item, "open"))
+                .filter(|amount| *amount != "0.00 EUR")
+                .collect();
+            amounts.sort_unstable();
+            assert_eq!(
+                amounts,
+                if count == 1 {
+                    vec!["100.00 EUR", "60.00 EUR"]
+                } else {
+                    vec!["40.00 EUR", "60.00 EUR"]
+                }
+            );
+        }
     }
 
     #[test]

@@ -3,6 +3,283 @@
 
 use super::*;
 
+fn confined_planner(f: &Fixture, name: &str, native: i128, base: i128) -> Capability {
+    Capability::new(
+        AGENT,
+        fa_policy::Profile::Agent,
+        &[fa_policy::Op::Post],
+        PRINCIPAL,
+    )
+    .unwrap()
+    .on_branch(fa_model::draft_branch(f.h.book.book_id, name))
+    .unwrap()
+    .with_ceiling(f.foreign, native)
+    .unwrap()
+    .with_ceiling(f.h.usd, base)
+    .unwrap()
+}
+
+fn prepare_confined_group(
+    f: &mut Fixture,
+    capability: &Capability,
+    name: &str,
+    requests: &[FxSettlementRequest],
+    key: &[u8],
+) -> fa_journal::refusal::Outcome<EntryPayload> {
+    let admission = match fa_journal::draft::admit_sources(&f.h.db, &f.h.book, capability, name)? {
+        Ok(admission) => admission,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let mut template = f.h.proposal(vec![], key, EntryClass::ORIGINAL);
+    template.principal_ref = AGENT;
+    let cx = f.h.ctx();
+    let stripped = Cx::detached_cancel_context();
+    let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+    fa_journal::carrying::prepare_fx_settlement_group_in_draft(
+        &mut f.h.db,
+        &cx,
+        &f.h.book,
+        &admission,
+        requests,
+        template,
+        &mut budget,
+    )
+}
+
+#[test]
+fn post_only_draft_carrying_matches_native_effects_and_promotes_exactly() {
+    for base in [1, 6, 10] {
+        let mut f = fixture(3, base);
+        let second = f.another_target();
+        let name = "confined-foreign-carrying";
+        let planner = confined_planner(&f, name, 3, 10);
+        f.h.open_draft(planner.clone(), name).unwrap();
+        let requests = [f.fx_request(f.target, 1), f.fx_request(second, 3)];
+        let key = b"confined-foreign-effects";
+        let mut expected = f.prepare_group(&requests, key).unwrap().into_proposal();
+        expected.principal_ref = AGENT;
+        let head = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let proposal = prepare_confined_group(&mut f, &planner, name, &requests, key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(proposal, expected);
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        assert_eq!(f.carrying().open_native.mantissa, 3);
+        assert_eq!(f.carrying().open_base.mantissa, base);
+        assert!(
+            fa_journal::policy::admit_reads(&f.h.db, &f.h.book, AGENT, &planner)
+                .unwrap()
+                .is_err()
+        );
+        let mut direct = request(proposal.clone());
+        direct.capability = planner.clone();
+        assert_eq!(f.h.post(direct).unwrap_err().exit, exit::SAFETY);
+        let planned =
+            f.h.plan_draft(planner.clone(), name, proposal.clone())
+                .unwrap();
+        let reviewed = planned.plan.unwrap().members()[0].entry.clone();
+        assert_eq!(reviewed.proposal, proposal);
+        let promoted = f.h.promote(f.h.approver_capability(), name).unwrap();
+        assert_eq!(promoted.entries.len(), 1);
+        assert_eq!(promoted.entries[0].entry_digest, reviewed.entry_digest);
+        let (posted, _) = read_entry(&f.h.db, promoted.entries[0].vid)
+            .unwrap()
+            .unwrap();
+        assert_eq!(posted, reviewed);
+        assert_eq!(f.carrying().open_native.mantissa, 2);
+        assert_eq!(f.carrying_for(second).open_native.mantissa, 0);
+        f.verify();
+        let head = f.h.db.frontier().unwrap();
+        assert_eq!(
+            prepare_confined_group(&mut f, &planner, name, &requests, key)
+                .unwrap()
+                .unwrap_err()
+                .code,
+            fa_journal::refusal::code::DRAFT_NOT_OPEN
+        );
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+    }
+}
+
+#[test]
+fn confined_carrying_checks_declared_and_generated_ceilings_without_source_balances() {
+    let mut f = fixture(3, 10);
+    let name = "bounded-foreign-carrying";
+    let planner = confined_planner(&f, name, 3, 10);
+    f.h.open_draft(planner.clone(), name).unwrap();
+    let input = f.fx_request(f.target, 1);
+    let head = f.h.db.frontier().unwrap();
+    for (native_limit, cash_limit, amount) in [(1, 10, 2), (3, 1, 1)] {
+        let restricted = confined_planner(&f, name, native_limit, cash_limit);
+        let mut absent = f.fx_request(f.target, amount);
+        absent.target.vid = VId(0xdead);
+        absent.rate_document = Oid([0xee; 32]);
+        let denied = prepare_confined_group(
+            &mut f,
+            &restricted,
+            name,
+            &[absent],
+            b"declared-ceiling-before-source",
+        )
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(denied.code, fa_journal::refusal::code::CAPABILITY);
+        assert!(denied.message.contains("ceiling"), "{denied}");
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+    }
+    // Requested cash is 2, but one third of the retained basis relieves 3.
+    // The larger generated USD conversion effect must also fit the token.
+    let generated_limit = confined_planner(&f, name, 3, 2);
+    let denied = prepare_confined_group(
+        &mut f,
+        &generated_limit,
+        name,
+        std::slice::from_ref(&input),
+        b"generated-ceiling",
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(denied.code, fa_journal::refusal::code::CAPABILITY);
+    assert_eq!(
+        denied.message,
+        "generated settlement effects exceed the capability's permitted scope or amount ceiling"
+    );
+    assert!(denied.detail.is_none(), "{denied:?}");
+    assert_eq!(f.h.db.frontier().unwrap(), head);
+    assert_eq!(f.carrying().open_base.mantissa, 10);
+}
+
+#[test]
+fn confined_carrying_handles_are_scoped_and_source_authority_is_rechecked() {
+    for revoke in [false, true] {
+        let mut f = fixture(3, 10);
+        let name = "current-foreign-source-authority";
+        let planner = confined_planner(&f, name, 3, 10);
+        f.h.open_draft(planner.clone(), name).unwrap();
+        let source = fa_journal::draft::admit_sources(&f.h.db, &f.h.book, &planner, name)
+            .unwrap()
+            .unwrap();
+        let cx = f.h.ctx();
+        assert_eq!(
+            fa_journal::carrying::draft_source_entry_ref(
+                &mut f.h.db,
+                &cx,
+                &f.h.book,
+                &source,
+                f.target.vid,
+            )
+            .unwrap()
+            .unwrap(),
+            Some(f.target)
+        );
+        assert_eq!(
+            fa_journal::carrying::draft_source_entry_ref(
+                &mut f.h.db,
+                &cx,
+                &f.h.book,
+                &source,
+                VId(0xdead),
+            )
+            .unwrap()
+            .unwrap(),
+            None
+        );
+        let input = f.fx_request(f.target, 1);
+        let proposal = prepare_confined_group(
+            &mut f,
+            &planner,
+            name,
+            std::slice::from_ref(&input),
+            b"source-authority-recheck",
+        )
+        .unwrap()
+        .unwrap();
+        f.h.plan_draft(planner.clone(), name, proposal).unwrap();
+        let expected = if revoke {
+            f.h.revoke(&planner, 182);
+            "FA-REF-023"
+        } else {
+            f.h.discard(planner.clone(), name).unwrap();
+            fa_journal::refusal::code::DRAFT_NOT_OPEN
+        };
+        let head = f.h.db.frontier().unwrap();
+        let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+        damage.set_vertex_property(
+            f.target.vid,
+            property::FA_PAYLOAD,
+            Some(CanonicalScalar::bytes(vec![0xff]).unwrap()),
+        );
+        f.h.write_raw(damage);
+        let denied = fa_journal::carrying::draft_source_entry_ref(
+            &mut f.h.db,
+            &cx,
+            &f.h.book,
+            &source,
+            f.target.vid,
+        )
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(
+            denied.code, expected,
+            "authority must precede the poisoned source"
+        );
+        assert_eq!(f.h.db.frontier().unwrap().0, head.0 + 1);
+    }
+}
+
+#[test]
+fn confined_source_handles_reject_foreign_books_and_non_item_classes_before_decode() {
+    for wrong_book in [false, true] {
+        let mut f = fixture(3, 10);
+        let name = "typed-open-item-handles";
+        let planner = confined_planner(&f, name, 3, 10);
+        f.h.open_draft(planner.clone(), name).unwrap();
+        let source = fa_journal::draft::admit_sources(&f.h.db, &f.h.book, &planner, name)
+            .unwrap()
+            .unwrap();
+        let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+        damage.set_vertex_property(
+            f.target.vid,
+            property::FA_PAYLOAD,
+            Some(CanonicalScalar::bytes(vec![0xff]).unwrap()),
+        );
+        if wrong_book {
+            damage.set_vertex_property(
+                f.target.vid,
+                property::BOOK_ID,
+                Some(CanonicalScalar::bytes(vec![0xee; 16]).unwrap()),
+            );
+        } else {
+            damage.set_vertex_property(
+                f.target.vid,
+                property::CLASS,
+                Some(CanonicalScalar::Int(i64::from(EntryClass::DRAFT_CONTROL.0))),
+            );
+        }
+        f.h.write_raw(damage);
+        let cx = f.h.ctx();
+        let head = f.h.db.frontier().unwrap();
+        for vid in [f.target.vid, VId(0xdead)] {
+            assert_eq!(
+                fa_journal::carrying::draft_source_entry_ref(
+                    &mut f.h.db,
+                    &cx,
+                    &f.h.book,
+                    &source,
+                    vid,
+                )
+                .unwrap()
+                .unwrap(),
+                None,
+                "unavailable source metadata must prevent poisoned payload decoding"
+            );
+        }
+        assert_eq!(f.h.db.frontier().unwrap(), head);
+    }
+}
+
 fn agent_proposal(prepared: PreparedFxSettlement) -> EntryPayload {
     let mut proposal = prepared.into_proposal();
     proposal.principal_ref = AGENT;
