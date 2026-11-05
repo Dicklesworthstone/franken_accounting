@@ -84,9 +84,11 @@
 //! zero-effect publications and offsetting changes hidden by the endpoint delta.
 //! Their exact source commitments never substitute rounded display amounts.
 //!
-//! ProcedureCertificate v1 additionally replays `jet.round_amounts` v1 from
-//! that complete native history. Its six-document closure binds native unit
-//! scales, procedure semantics and the decision card's policy identifier.
+//! ProcedureCertificate v1 additionally replays `jet.round_amounts` and
+//! `jet.period_end_timing` v1 from that complete native history. Authenticated
+//! period declarations supply the exclusive ends and period citations. The
+//! six-document closure binds native unit scales, procedure semantics and the
+//! decision card's policy identifier.
 //! Findings, citations, population, work and every output digest are rebuilt.
 //! This statistical computation does not establish fraud or approval admission.
 
@@ -179,7 +181,10 @@ pub use portfolio::{
     AgingPortfolioRequest, AgingPortfolioScope, VerifiedAgingPortfolio,
     VerifiedAgingPortfolioAccount,
 };
-pub use procedure::{VerifiedProcedure, VerifiedRoundAmountFinding};
+pub use procedure::{
+    VerifiedProcedure, VerifiedProcedureFinding, VerifiedProcedureParameters,
+    VerifiedProcedureStatistic,
+};
 pub use reconciliation::{VerifiedAgingReconciliation, VerifiedAgingReconciliationRow};
 pub use registry::Reason as ExplanationReason;
 pub use roll_forward::{
@@ -1507,6 +1512,7 @@ fn verify_report_with_native_subledger_input(
                 &inputs,
                 &cert.registry_digest,
                 &request.registry_digest,
+                request.parameters,
             )?;
             let units = definitions.unit_scales.keys().copied().collect();
             procedure_registry = Some(definitions);
@@ -2156,18 +2162,41 @@ fn verify_report_with_native_subledger_input(
                 .filter(|(index, _)| {
                     envelopes[**index].class != 12 || visible_migrations.contains(&(**index as u64))
                 })
-                .map(|(&index, info)| procedure::Entry {
-                    identity: info.identity,
-                    digest: envelopes[index].record_digest,
-                    recorded_at: envelopes[index].commit_seq,
-                    class: envelopes[index].class,
-                    legs: legs[index]
-                        .iter()
-                        .map(|leg| (leg.unit, leg.mantissa))
-                        .collect(),
-                    supersession: info.supersession.clone(),
+                .map(|(&index, info)| {
+                    let period = if matches!(
+                        request.parameters,
+                        procedure::VerifiedProcedureParameters::PeriodEndTiming { .. }
+                    ) && !legs[index].is_empty()
+                    {
+                        let effective = envelopes[index].effective_day.ok_or_else(|| {
+                            failed("procedure_period", "monetary entry has no effective date")
+                        })?;
+                        let code = schema.entry_period(info, effective)?;
+                        let (_, end, _, _) = schema.period_state(&code).ok_or_else(|| {
+                            failed("procedure_period", "authenticated entry period is absent")
+                        })?;
+                        Some(procedure::EntryPeriod {
+                            code,
+                            effective,
+                            end,
+                        })
+                    } else {
+                        None
+                    };
+                    Ok(procedure::Entry {
+                        identity: info.identity,
+                        digest: envelopes[index].record_digest,
+                        recorded_at: envelopes[index].commit_seq,
+                        class: envelopes[index].class,
+                        legs: legs[index]
+                            .iter()
+                            .map(|leg| (leg.unit, leg.mantissa))
+                            .collect(),
+                        supersession: info.supersession.clone(),
+                        period,
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, ReportError>>()?;
             let definitions = procedure_registry
                 .as_ref()
                 .ok_or_else(|| failed("registry_closure", "procedure registries are absent"))?;

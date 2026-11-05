@@ -2051,7 +2051,7 @@ fa dimension close cost_center CC10 --on 2026-07-01 --book acme.fabook --json
 fa dimension list cost_center --book acme.fabook --json
 fa tb --period FY2026-P03 --dimension cost_center=CC --book acme.fabook --json
 
-# A Canon posting rule (plan §10.3): a small, total, typed language from an REA event and declared inputs to legs. fa rule check compiles it against the book's units, resolves every rounding law and dimension, and refuses it unless its debits provably equal its credits in every unit; it reports the content address of its IR. fa rule propose journals it as a RuleVersion addressed by that digest under rule_change (the kernel compiles the source itself; the same IR again writes nothing), fa rule list|show read the versions, fa rule eval shows the legs a file or a journaled version derives from a recorded event, fa rule activate binds the rule's name to a version from a date under dual control (two independent Human approvers), and fa rule derive posts the entry the version in force derives from an event, which the kernel re-derives inside the commit and refuses unless it reproduces exactly (FA-INV-05 rule-reproduction); without --rule, every rule in force for the event's kind derives its entry. A rule names the class it produces: Original by default, or `produces Adjusting` for accruals, deferrals and depreciation, which a soft-closed period admits. fa rule backtest reports every recorded event whose entry a candidate version would change against the version in force (or --compare), and fa rule test runs a rule over its golden corpus of TOML cases, exiting 8 unless every case holds (available today; rule families bound to intents are next, fa-c34).
+# A Canon posting rule (plan §10.3): a small, total, typed language from an REA event and declared inputs to legs. fa rule check compiles it against the book's units, resolves every rounding law and dimension, and refuses it unless its debits provably equal its credits in every unit; it reports the content address of its IR. fa rule propose journals it as a RuleVersion addressed by that digest under rule_change (the kernel compiles the source itself; the same IR again writes nothing), fa rule list|show read the versions, fa rule eval shows the legs a file or a journaled version derives from a recorded event, fa rule activate binds the rule's name to a version from a date under dual control (two independent Human approvers), and fa rule derive posts the entry the version in force derives from an event, which the kernel re-derives inside the commit and refuses unless it reproduces exactly (FA-INV-05 rule-reproduction); without --rule, the complete active matching set derives in rule-name order and publishes atomically. A rule names the class it produces: Original by default, or `produces Adjusting` for accruals, deferrals and depreciation, which a soft-closed period admits. fa rule backtest reports every recorded event whose entry a candidate version would change against the version in force (or --compare), and fa rule test runs a rule over its golden corpus of TOML cases, exiting 8 unless every case holds (available today; explicit derivations have portable single-entry plans, automatic event derivations have portable complete-batch plans, and broader rule-family dispatch from business intents remains in fa-c34).
 #   rule sale_with_tax v1 for event Sale {
 #     inputs { as_of: date }
 #     authority {
@@ -2072,7 +2072,14 @@ fa rule eval --rule <ir_digest> --event EV-1001 --input as_of=2026-03-31 --book 
 fa rule activate <ir_digest> --from 2026-04-01 --dry-run --book acme.fabook --json   # then two approvers: fa approve --proposal <digest>
 fa rule activate --plan <plan-bytes-file> --approval <vid> --approval <vid> --book acme.fabook --json
 fa rule derive --rule <ir_digest> --event EV-1001 --input as_of=2026-04-30 --book acme.fabook --json
-fa rule derive --event EV-1002 --book acme.fabook --json   # every rule in force for the event; rules with inputs are listed as skipped
+# Or rehearse one derivation, review its exact native plan, then commit it:
+fa rule derive --rule <ir_digest> --event EV-1001 --input as_of=2026-04-30 --dry-run --plan-out sale.plan --book acme.fabook --json
+fa commit --plan sale.plan --grant read --book acme.fabook --json
+# For an event whose matching rules need no declared inputs:
+fa rule derive --event EV-1002 --book acme.fabook --json   # the complete matching set in one atomic transaction
+# Or review the complete automatic batch before publishing it:
+fa rule derive --event EV-1002 --dry-run --plan-out event.plan --book acme.fabook --json
+fa commit --plan event.plan --grant read --book acme.fabook --json
 fa rule backtest sale_with_tax_v2.rule --from 2026-01-01 --to 2026-03-31 --input as_of=2026-03-31 --book acme.fabook --json
 fa rule test sale_with_tax.rule --golden rules/sale_with_tax/golden --book acme.fabook --json   # exit 8 names each failing case
 ```
@@ -2086,6 +2093,46 @@ IR digest and requires a new dual-controlled activation. `rule check` and
 `rule show` report the grants. Existing sources without the block retain their
 original IR bytes and report `authority: "legacy_unbounded"`; their caller's
 capability checks still apply.
+
+A single-rule `derive --rule <ir_digest> --dry-run` runs the same native admission
+as posting and aborts the staged transaction. Its portable `RuleDerived` plan
+retains the sealed proposal, rule version, event, inputs, evidence, admitted
+effects, snapshot and caller capability.
+
+Without `--rule`, `derive --event` selects every activated rule whose version in
+force on the event's date matches its kind, in rule-name order. The complete set
+publishes in one native transaction, so a later member's refusal cannot leave an
+earlier entry posted. No matching rule, or any matching rule that requires
+declared inputs, refuses the whole request; select an individual rule and supply
+its inputs explicitly when needed. Successful `rule_derivations` output lists
+every member at the same recorded sequence and keeps `skipped: []`.
+`--input` and `--key` require one explicit `--rule`; repeating `--rule` refuses.
+
+Automatic `derive --dry-run` rehearses and aborts that same complete transaction.
+Its portable `batch_plan` reports `intent_kind: "AutomaticRules"` and
+`scope: "same-snapshot-automatic-rules"`. Every member previews its exact
+accounting effects and a `derivation` object naming the rule's `ir_digest`,
+recorded `event` vid and `inputs_digest`; ordinary batch members report
+`derivation: null`. Save the complete artifact with `--plan-out`, review every
+member, then pass it unchanged to `fa commit --plan`. A dry run posts nothing,
+including when `--yes` is present.
+
+The kernel independently checks the complete matching set at the actual native
+transaction basis and guards that source prefix through publication. It also
+reproduces every rule, enforces its declared output ceilings and the caller's
+current authority, and applies the ordinary posting laws. The first plan commit
+requires the reviewed snapshot; an intervening publication requires another dry
+run. Once a plan has committed, retrying its exact saved bytes returns the
+original recorded outcome without new entries, even after later rule activations.
+The embedded-owner examples use `--grant read` at commit because derivation plans
+bind both read and post authority. Agent-profile plans remain rehearsals; a
+Human must independently prepare and review a plan before trunk publication.
+
+The dedicated `AutomaticRules` profile admits only the complete same-event set
+of Rule-origin Original or Adjusting entries. Ordinary user-authored batches,
+replacement reviews and scenario containers retain their Intent-origin
+restrictions; automatic-rule batches cannot be placed in drafts. Unsupported
+dry-run and plan options refuse before a rule handler can write.
 
 An account-subtree extract needs authenticated hierarchy and complete account/range coverage, or the complete-prefix fallback. Membership alone does not prove scope completeness. A stock balance also needs its contributing opening history or an explicitly labeled baseline plus complete delta; the verifier reports these predicates separately.
 

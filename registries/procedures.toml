@@ -1609,13 +1609,13 @@ meaning = "Haircut in basis points applied after contra-account netting to each 
 
 [[procedure]]
 id = "solvency.cash_flow_test"
-version = 4
+version = 5
 claim = "statistical"
 evidence = "FA-EVID-L53"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Equitable cash-flow solvency test (ability to pay debts as they come due): compares the balances of the accounts holding the `cash` account role (registries/account_roles.toml, assigned with fa chart role) against open payable items and short-term obligations maturing within horizon_days of the coordinate's effective date. Refused when no account holds the role. Version 4 nets overdrawn and positive cash accounts per unit before flooring liquidity at zero in the unscheduled book-wide screen, using the authenticated schedule's net-before-floor rule; version 3 discarded each overdraft. Authenticated schedules additionally partition by legal entity. Version 3 judges a scheduled obligation open as of the effective date, netting supersession within that window, so a payment or reversal dated later neither relieves it nor erases it; the unscheduled screen nets cash as of the effective date and liabilities through the horizon, each in its own window. Version 2 netted the whole snapshot and let settlements through the horizon relieve obligations without spending the cash that paid them. Version 1 guessed the accounts from code and name tokens."
+summary = "Equitable cash-flow solvency test (ability to pay debts as they come due): compares the balances of the accounts holding the `cash` account role (registries/account_roles.toml, assigned with fa chart role) against open payable items and short-term obligations maturing within horizon_days of the coordinate's effective date. Refused when no account holds the role. Version 5 judges both cash and liabilities at the coordinate's effective date in the unscheduled book-wide screen. Future payments, reversals and new liabilities cannot change that earlier position. Without authenticated maturity terms the fallback reports only an as-of liquidity shortfall against book liabilities, not a contractual maturity or insolvency conclusion. Version 4 introduced netting overdrawn and positive cash accounts per unit before flooring liquidity at zero, using the authenticated schedule's net-before-floor rule; version 3 discarded each overdraft. Authenticated schedules additionally partition by legal entity. Version 3 judges a scheduled obligation open as of the effective date, netting supersession within that window, so a payment or reversal dated later neither relieves it nor erases it; versions 3 and 4 used different cash and liability cutoffs in the unscheduled screen and could let a future payment relieve debt without spending its cash. Version 2 netted the whole snapshot and let settlements through the horizon relieve obligations without spending the cash that paid them. Version 1 guessed the accounts from code and name tokens."
 effective_through = "optional"
 
 [[parameter]]

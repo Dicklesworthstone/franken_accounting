@@ -554,6 +554,135 @@ pub fn rule_names_at<V: Vfs + Clone>(
     Ok(names)
 }
 
+/// The complete rule population selected for one automatic event derivation.
+/// Versions are ordered by rule name, and every matching active version must
+/// be executable without caller-supplied inputs. No member is silently skipped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutomaticRuleSelection {
+    pub event: crate::rea::EventRow,
+    pub versions: Vec<RuleVersionRow>,
+}
+
+/// Admit the catalog and event observation before reading either. Planning
+/// remains available to Agent profiles; the batch's publication admission,
+/// not this source reader, decides whether the caller may write trunk.
+pub(crate) fn authorize_automatic_rules<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    known_at: Option<CommitSeq>,
+) -> Outcome<()> {
+    let reach = Reach {
+        branch: Some(Id128::TRUNK),
+        observes: known_at.map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+        periods: None,
+        through: None,
+        accounts: None,
+    };
+    if let Err(denial) = fa_policy::admit_read(capability, capability.holder(), book.book_id)
+        .and_then(|()| {
+            fa_policy::require(capability, Op::Post, "preparing automatic rule derivation")
+        })
+        .and_then(|()| fa_policy::reach(capability, &reach, None))
+    {
+        return Ok(Err(crate::policy::refusal(&denial)));
+    }
+    Ok(crate::policy::current_at(db, book, capability)?.map(|_| ()))
+}
+
+/// Select every activated rule matching a retained event at one committed
+/// prefix. The version in force is selected on the event's occurred-on date.
+/// Native posting independently reproduces each rule and checks its activation
+/// on the resulting entry's effective date.
+///
+/// The facade and the batch kernel use this same complete selection. A rule
+/// requiring explicit inputs, an empty population, or a population exceeding
+/// the atomic batch bound is refused instead of producing a partial "all" plan.
+pub fn automatic_rules_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    event: VId,
+    at: CommitSeq,
+) -> Outcome<AutomaticRuleSelection> {
+    if let Err(refusal) = authorize_automatic_rules(db, book, capability, Some(at))? {
+        return Ok(Err(refusal));
+    }
+    if at > db.frontier()? {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            "automatic rule selection is beyond the retained book frontier",
+            "plan §10.2 / §10.4 (one retained event and rule-catalog prefix)",
+            "prepare the automatic rule derivation at the current book frontier",
+        )));
+    }
+    let mut rea = crate::rea::read_rea_at(db, book, at)?;
+    let Some(event_row) = rea.events.remove(&event) else {
+        return Ok(Err(derivation_refusal(
+            format!(
+                "event {:032x} is not recorded in this book at {}",
+                event.0, at.0
+            ),
+            "fa event list names the recorded events",
+        )));
+    };
+    let mut versions = Vec::new();
+    for name in rule_names_at(db, at)? {
+        if name.vid != rule_name_vid(book.book_id, &name.name) {
+            return Err(corrupt("an automatic rule name has another name's address"));
+        }
+        let Some(digest) = name.bindings.in_force(event_row.spec.occurred_on) else {
+            continue;
+        };
+        let Some(version) = rule_version_at(db, book, &digest, at)? else {
+            return Err(corrupt(format!(
+                "rule {} binds a version the book does not hold at {}",
+                name.name, at.0,
+            )));
+        };
+        if version.rule.name() != name.name {
+            return Err(corrupt("a rule name binds another name's version"));
+        }
+        if version.rule.event() != event_row.spec.kind {
+            continue;
+        }
+        if !version.rule.inputs().is_empty() {
+            return Ok(Err(derivation_refusal(
+                format!(
+                    "automatic derivation of event {} includes rule {} v{}, which requires explicit inputs; no rule was selected for posting",
+                    event_row.spec.code,
+                    version.rule.name(),
+                    version.rule.version(),
+                ),
+                "derive the input-dependent rule explicitly with fa rule derive --rule <ir-digest> --event <event> --input <name=value>; automatic derivation requires every matching rule to have no declared inputs",
+            )));
+        }
+        versions.push(version);
+        if versions.len() > fa_model::limits::MAX_BATCH_ENTRIES {
+            return Ok(Err(derivation_refusal(
+                "the complete automatic rule selection exceeds the registered atomic batch limit"
+                    .into(),
+                "review the active rule population; use explicit single-rule derivations when it cannot fit one atomic batch",
+            )));
+        }
+    }
+    if versions.is_empty() {
+        return Ok(Err(derivation_refusal(
+            format!(
+                "no activated rule matches event {} on {}",
+                event_row.spec.code,
+                event_row.spec.occurred_on.render(),
+            ),
+            "fa rule list shows activated rules; activate a rule matching this event kind and date before automatic derivation",
+        )));
+    }
+    Ok(Ok(AutomaticRuleSelection {
+        event: event_row,
+        versions,
+    }))
+}
+
 /// A planned activation: what [`activate_rule_version`] rebuilds its
 /// proposal from, with the description sealed once. Approvers bind
 /// [`RuleActivationPlan::proposal_digest`].

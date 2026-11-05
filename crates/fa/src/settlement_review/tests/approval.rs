@@ -168,3 +168,58 @@ fn internally_valid_but_false_target_handles_and_dimensions_do_not_receive_appro
         assert_eq!(h.head(), at);
     }
 }
+
+#[test]
+fn a_rule_derived_intent_cannot_enter_or_authorize_the_settlement_review_profile() {
+    let (mut h, review) = fixture();
+    let original = review.canonical_bytes().unwrap();
+    let original_intent_len = review.intent.canonical_bytes().unwrap().len();
+    let mut proposal = review.proposal().clone();
+    proposal.origin = EntryOrigin::Rule {
+        rule_version_oid: Oid([4; 32]),
+        event_ref: VId(5),
+        inputs_digest: [6; 32],
+    };
+    let intent = PostIntent::rule_derived(proposal, Vec::new()).unwrap();
+    let intent_bytes = intent.canonical_bytes().unwrap();
+    assert_eq!(PostIntent::decode(&intent_bytes).unwrap(), intent);
+
+    // The v1 review has 35 fixed bytes before its length-prefixed intent.
+    // Replace only that nested request, retaining every valid allocation
+    // and source handle. A globally valid new verb must not widen this profile.
+    let mut encoded = original[..35].to_vec();
+    encoded.extend_from_slice(&u32::try_from(intent_bytes.len()).unwrap().to_le_bytes());
+    encoded.extend_from_slice(&intent_bytes);
+    encoded.extend_from_slice(&original[39 + original_intent_len..]);
+    assert!(matches!(
+        SettlementReview::decode(&encoded),
+        Err(SettlementReviewError::Invalid(
+            "a review is an unapproved Intent-origin Original or Adjusting request"
+        ))
+    ));
+    let mut changed = review;
+    changed.intent = intent;
+    assert!(changed.canonical_bytes().is_err());
+
+    // Even a correctly named hostile container and a distinct authorized
+    // approver must not publish an approval through the old review operation.
+    let digest = fa_model::domain_digest(b"fa:settlement-review:v1", &[&encoded]);
+    let cx = h.cx();
+    let at = h.head();
+    let refusal = h
+        .runtime
+        .block_on(
+            h.book
+                .approve_settlement_review(&cx, &changed, digest, &approver()),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, fa_journal::refusal::code::STRUCTURE);
+    assert_eq!(refusal.exit, exit::USAGE);
+    assert!(refusal.message.contains("Intent-origin"));
+    assert_eq!(
+        h.head(),
+        at,
+        "unsupported review origins cannot record approvals"
+    );
+}

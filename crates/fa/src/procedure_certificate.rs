@@ -166,7 +166,7 @@ fn offline_unsupported(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §11.1/13.3 (independent procedure replay requires its complete supported input and policy closure)",
-        "export a jet.round_amounts v1 certificate with its canonical registry closure and no effective cutoff or input handles; replay other procedure profiles in their original book",
+        "export a jet.round_amounts or jet.period_end_timing v1 certificate with its canonical registry closure and no effective cutoff or input handles; replay other procedure profiles in their original book",
     )
 }
 fn encode_error(e: fa_model::EncodeError) -> Refusal {
@@ -459,17 +459,20 @@ fn decode_run(bytes: &[u8]) -> Result<ProcedureRun, Refusal> {
 }
 
 impl ProcedureCertificate {
-    /// The first independent procedure interpreter has one explicit profile.
+    /// Independent procedure replay accepts these two bounded v1 profiles.
     /// Native replay continues to support the wider catalog and legacy hashes.
     pub(crate) fn check_offline_profile(&self) -> Result<(), Refusal> {
         if self.format() != PROCEDURE_CERTIFICATE_FORMAT
-            || self.report.procedure != "jet.round_amounts"
+            || !matches!(
+                self.report.procedure.as_str(),
+                "jet.round_amounts" | "jet.period_end_timing"
+            )
             || self.report.version != 1
             || self.report.coordinate.effective_through.is_some()
             || !self.report.inputs.is_empty()
         {
             return Err(offline_unsupported(
-                "portable procedures support only jet.round_amounts v1 without an effective cutoff or input handles",
+                "portable procedures support only jet.round_amounts and jet.period_end_timing v1 without an effective cutoff or input handles",
             ));
         }
         if self.registry != registry_digest()? {

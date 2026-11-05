@@ -10,7 +10,7 @@ use fa_model::{
     ApprovalRef, EntryClass, EntryRef, Reader, SupersessionKind, Writer, domain_digest,
 };
 
-use crate::{IntentError, MAX_INTENT_BYTES, PostIntent, bounded, version};
+use crate::{IntentError, MAX_INTENT_BYTES, PostIntent, PostIntentKind, bounded, version};
 
 /// Two bounded PostIntents plus the magic, version, and two length fields.
 pub const MAX_REPLACEMENT_REVIEW_BYTES: usize = 2 * MAX_INTENT_BYTES + 30;
@@ -28,6 +28,13 @@ impl ReplacementReview {
     /// only the posting kernel can decide whether its target and effects are
     /// lawful in the current book.
     pub fn new(reversal: PostIntent, replacement: PostIntent) -> Result<Self, IntentError> {
+        if reversal.kind != PostIntentKind::PostEntry
+            || replacement.kind != PostIntentKind::PostEntry
+        {
+            return Err(IntentError::Invalid(
+                "rule-derived intents require a single-entry PostPlan",
+            ));
+        }
         let rev = reversal.proposal();
         let rep = replacement.proposal();
         let paired = match (rev.supersession.as_slice(), rep.supersession.as_slice()) {

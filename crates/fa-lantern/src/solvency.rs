@@ -1090,26 +1090,12 @@ pub(crate) fn run_unscheduled_book_screen(
 ) -> Result<Vec<Finding>, LanternError> {
     let cash = snapshot.role_population(procedure)?;
     let ref_date = as_of_day(snapshot)?;
-    let horizon_end = checked_horizon_end(procedure, ref_date, horizon_days)?;
-    // Cash is judged as it stood on `ref_date` and book liabilities as they
-    // stand through `horizon_end`, each with supersession netted within its
-    // own window: a reversal dated after a window leaves what stood in it.
-    // Each entry live in either window is visited once.
-    let on_ref_date: BTreeSet<VId> = snapshot
-        .live_postings_through(Some(ref_date))?
-        .iter()
-        .map(|e| e.vid)
-        .collect();
-    let through_horizon: BTreeSet<VId> = snapshot
-        .live_postings_through(Some(horizon_end))?
-        .iter()
-        .map(|e| e.vid)
-        .collect();
-    let mut visit: Vec<_> = snapshot
-        .entries
-        .iter()
-        .filter(|e| on_ref_date.contains(&e.vid) || through_horizon.contains(&e.vid))
-        .collect();
+    checked_horizon_end(procedure, ref_date, horizon_days)?;
+    // A balance screen has no contractual maturities from which to project a
+    // future position. Judge cash and liabilities at the same effective cutoff:
+    // a later payment cannot relieve debt while leaving its spent cash here,
+    // and a later reversal or new borrowing cannot change the earlier position.
+    let mut visit = snapshot.live_postings_through(Some(ref_date))?;
     visit.sort_by_key(|e| e.vid);
 
     let mut cash_net: BTreeMap<(VId, u32), i128> = BTreeMap::new();
@@ -1121,17 +1107,12 @@ pub(crate) fn run_unscheduled_book_screen(
     // A cash account holds the Asset role only, so no leg is both.
     for e in &visit {
         work.entry()?;
-        let cash_window = on_ref_date.contains(&e.vid);
-        let liability_window = through_horizon.contains(&e.vid);
         for leg in &e.entry.proposal.legs {
             work.leg()?;
             let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                 continue;
             };
             if cash.contains(&leg.account_ref) {
-                if !cash_window {
-                    continue;
-                }
                 population = population.saturating_add(1);
                 let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                 let c = cash_net
@@ -1140,7 +1121,7 @@ pub(crate) fn run_unscheduled_book_screen(
                 *c = c
                     .checked_add(signed)
                     .ok_or(LanternError::Overflow("cash_flow_test cash fold"))?;
-            } else if AccountType(acct.account_type) == AccountType::LIABILITY && liability_window {
+            } else if AccountType(acct.account_type) == AccountType::LIABILITY {
                 population = population.saturating_add(1);
                 let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                 let l = liab_net
@@ -1186,16 +1167,16 @@ pub(crate) fn run_unscheduled_book_screen(
         // another account is positive. This remains an unscheduled screen;
         // it does not invent a maturity or duplicate a scheduled obligation.
         let liquid_cash = liquid_cash.max(0);
-        let mut maturing_obligations = 0i128;
+        let mut book_liabilities = 0i128;
         for (&(_, u), &net) in &liab_net {
             if u == unit_id && net < 0 {
-                maturing_obligations = maturing_obligations
+                book_liabilities = book_liabilities
                     .checked_add(amount_negated(net, "cash_flow_test obligation")?)
                     .ok_or(LanternError::Overflow("cash_flow_test obligations sum"))?;
             }
         }
-        if maturing_obligations > liquid_cash {
-            let shortfall = maturing_obligations
+        if book_liabilities > liquid_cash {
+            let shortfall = book_liabilities
                 .checked_sub(liquid_cash)
                 .ok_or(LanternError::Overflow("cash_flow_test shortfall"))?;
             let mut cites: Vec<Cite> = unit_accts
@@ -1223,7 +1204,7 @@ pub(crate) fn run_unscheduled_book_screen(
                 },
                 cites,
                 format!(
-                    "unit {unit_id} cash-flow insolvent over {horizon_days}-day horizon: liquid_cash={liquid_cash}, maturing_obligations={maturing_obligations}, shortfall={shortfall} (maturity_basis=unscheduled_book_liability_screen; no authenticated maturity schedule declared)"
+                    "unit {unit_id} as-of liquidity screen at {ref_date}: liquid_cash={liquid_cash}, book_liabilities={book_liabilities}, shortfall={shortfall} (maturity_basis=unscheduled_book_liability_screen; no authenticated maturity schedule declared; no contractual maturity conclusion for the {horizon_days}-day horizon)"
                 ),
             ));
         }
@@ -2501,6 +2482,182 @@ fn make_superseding_posting(
 
 #[cfg(test)]
 #[test]
+fn unscheduled_cash_flow_screen_uses_one_as_of_for_cash_and_liabilities() {
+    let as_of = day(2026, 4, 30);
+    for (payment_day, expected_cash, expected_liabilities, expected_population) in [
+        (day(2026, 4, 29), 0, 200, 5),
+        (as_of, 0, 200, 5),
+        (day(2026, 5, 1), 200, 400, 3),
+        (day(2026, 5, 30), 200, 400, 3),
+        (day(2026, 6, 1), 200, 400, 3),
+    ] {
+        let (mut snapshot, book, cash, payable, document) = test_fixture(as_of);
+        let usd = book.units.lookup("USD").unwrap();
+        let expense = account_vid(book.book_id, "6000");
+        snapshot.entries.push(make_posting(
+            &book,
+            VId(10),
+            day(2026, 4, 1),
+            EntryClass::ORIGINAL,
+            vec![
+                LegPayload::simple(Side::Debit, cash, Amount::new(usd, 200)),
+                LegPayload::simple(Side::Credit, expense, Amount::new(usd, 200)),
+            ],
+            Vec::new(),
+            document,
+        ));
+        for vid in [VId(20), VId(21)] {
+            snapshot.entries.push(make_posting(
+                &book,
+                vid,
+                day(2026, 4, 2),
+                EntryClass::ORIGINAL,
+                vec![
+                    LegPayload::simple(Side::Debit, expense, Amount::new(usd, 200)),
+                    LegPayload::simple(Side::Credit, payable, Amount::new(usd, 200)),
+                ],
+                Vec::new(),
+                document,
+            ));
+        }
+        let invoice = &snapshot.entries[2];
+        let mut payment = LegPayload::simple(Side::Debit, payable, Amount::new(usd, 200));
+        payment.settles.push(Settlement {
+            target: EntryRef {
+                vid: invoice.vid,
+                entry_digest: invoice.entry.entry_digest,
+            },
+            ordinal: 1,
+            amount: Amount::new(usd, 200),
+        });
+        snapshot.entries.push(make_posting(
+            &book,
+            VId(30),
+            payment_day,
+            EntryClass::ORIGINAL,
+            vec![
+                payment,
+                LegPayload::simple(Side::Credit, cash, Amount::new(usd, 200)),
+            ],
+            Vec::new(),
+            document,
+        ));
+
+        // Cash 200 against liabilities 400 is short by 200. Paying one debt
+        // spends the same 200 of cash: it cannot eliminate that shortfall,
+        // whether the payment is already effective or lies after the cutoff.
+        let procedure = crate::cutoff::SolvencyCashFlowTest::new().unwrap();
+        let report = run_over(&snapshot, &book, &procedure).unwrap();
+        assert_eq!(report.findings.len(), 1, "payment on {payment_day}");
+        let finding = &report.findings[0];
+        assert_eq!(finding.statistic.value, 200);
+        assert_eq!(finding.statistic.population, expected_population);
+        assert!(
+            finding
+                .narrative
+                .contains(&format!("liquid_cash={expected_cash},"))
+        );
+        assert!(
+            finding
+                .narrative
+                .contains(&format!("book_liabilities={expected_liabilities},"))
+        );
+        assert!(
+            finding
+                .narrative
+                .contains("no contractual maturity conclusion")
+        );
+        assert_eq!(
+            finding.cites.contains(&Cite::Entry(VId(30))),
+            payment_day <= as_of,
+        );
+        assert!(
+            crate::witness::determinism(&snapshot, &book, &procedure)
+                .unwrap()
+                .deterministic()
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn unscheduled_cash_flow_screen_ignores_future_liabilities_and_reversals() {
+    let as_of = day(2026, 4, 30);
+    let (mut snapshot, book, cash, payable, document) = test_fixture(as_of);
+    let usd = book.units.lookup("USD").unwrap();
+    let expense = account_vid(book.book_id, "6000");
+    let funding = make_posting(
+        &book,
+        VId(10),
+        day(2026, 4, 1),
+        EntryClass::ORIGINAL,
+        vec![
+            LegPayload::simple(Side::Debit, cash, Amount::new(usd, 100)),
+            LegPayload::simple(Side::Credit, expense, Amount::new(usd, 100)),
+        ],
+        Vec::new(),
+        document,
+    );
+    let liability = make_posting(
+        &book,
+        VId(20),
+        day(2026, 4, 2),
+        EntryClass::ORIGINAL,
+        vec![
+            LegPayload::simple(Side::Debit, expense, Amount::new(usd, 200)),
+            LegPayload::simple(Side::Credit, payable, Amount::new(usd, 200)),
+        ],
+        Vec::new(),
+        document,
+    );
+    snapshot.entries.extend([funding, liability.clone()]);
+    let procedure = crate::cutoff::SolvencyCashFlowTest::new().unwrap();
+    let original = run_over(&snapshot, &book, &procedure).unwrap();
+    assert_eq!(original.findings.len(), 1);
+    assert_eq!(original.findings[0].statistic.value, 100);
+
+    snapshot.entries.push(make_reversal(
+        &book,
+        VId(30),
+        day(2026, 5, 1),
+        &liability,
+        document,
+    ));
+    let reversed_later = run_over(&snapshot, &book, &procedure).unwrap();
+    assert_eq!(reversed_later.findings, original.findings);
+
+    snapshot.entries.push(make_posting(
+        &book,
+        VId(40),
+        day(2026, 5, 2),
+        EntryClass::ORIGINAL,
+        vec![
+            LegPayload::simple(Side::Debit, expense, Amount::new(usd, 500)),
+            LegPayload::simple(Side::Credit, payable, Amount::new(usd, 500)),
+        ],
+        Vec::new(),
+        document,
+    ));
+    let new_liability_later = run_over(&snapshot, &book, &procedure).unwrap();
+    assert_eq!(new_liability_later.findings, original.findings);
+
+    // Once the coordinate reaches the reversal, the original obligation is
+    // gone. Reaching the new borrowing then exposes that debt in the screen.
+    snapshot.coordinate.effective_through = Some(day(2026, 5, 1));
+    assert!(
+        run_over(&snapshot, &book, &procedure)
+            .unwrap()
+            .findings
+            .is_empty()
+    );
+    snapshot.coordinate.effective_through = Some(day(2026, 5, 2));
+    let current = run_over(&snapshot, &book, &procedure).unwrap();
+    assert_eq!(current.findings.len(), 1);
+    assert_eq!(current.findings[0].statistic.value, 400);
+}
+
+#[cfg(test)]
+#[test]
 fn unscheduled_cash_nets_overdrafts_like_a_single_entity_schedule() {
     let as_of = day(2026, 4, 30);
     for (other_side, other_amount, expected_cash, expected_shortfall) in [
@@ -2576,7 +2733,7 @@ fn unscheduled_cash_nets_overdrafts_like_a_single_entity_schedule() {
         }
         let procedure = crate::cutoff::SolvencyCashFlowTest::new().unwrap();
         let screen = run_over(&snapshot, &book, &procedure).unwrap();
-        assert_eq!(screen.version, 4);
+        assert_eq!(screen.version, 5);
         assert_eq!(screen.findings.len(), usize::from(expected_shortfall > 0));
         if expected_shortfall > 0 {
             let finding = &screen.findings[0];

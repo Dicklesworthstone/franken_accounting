@@ -63,6 +63,7 @@ use crate::templates;
 use crate::verbs::{self, Condition, Dangerous, Registry, Verb};
 
 mod batch_plan;
+pub(crate) use batch_plan::emit as emit_batch_plan;
 mod correction_review;
 mod outcome_recovery;
 
@@ -2399,7 +2400,13 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
             | "void-reserve"
             | "replace"
     ) || (verb == "close" && args.positional.get(1).map(String::as_str) == Some("year-end"))
-        || (verb == "fx" && args.positional.get(1).map(String::as_str) == Some("revalue")))
+        || (verb == "fx" && args.positional.get(1).map(String::as_str) == Some("revalue"))
+        || (verb == "rule"
+            && args.positional.get(1).map(String::as_str) == Some("derive")
+            && args.flag_all("--rule").len() <= 1
+            && args.switch("--dry-run")
+            && args.flag("--plan").is_none()
+            && args.flag_all("--approval").is_empty()))
         && (args.switch("--dry-run")
             || args.switch("--review-only")
             || args.flag("--review-out").is_some())
@@ -9684,7 +9691,7 @@ pub(crate) fn restore_post_review(ctx: &Ctx<'_>, args: &Args) -> Result<PostInte
     )?;
     let path = args.require("--review", "<file|hex|->")?;
     let bytes = read_review_bytes(&ctx.files, path, ctx.authority().is_some())?;
-    let review = PostIntent::decode(&bytes).map_err(|e| {
+    let review = PostIntent::decode_review(&bytes).map_err(|e| {
         usage(
             format!("invalid post review: {e}"),
             "use the unchanged bytes of fa post --review-only or --review-out",
@@ -9980,6 +9987,7 @@ pub(crate) fn emit_post_plan(
 ) -> Result<(), Fail> {
     let certificate = plan.certificate();
     let proposal = plan.proposal();
+    let rule_derived = matches!(&plan.intent().proposal().origin, EntryOrigin::Rule { .. });
     let encode_error = |e| Fail::Internal(format!("encode the admitted post plan: {e}"));
     let bytes = plan.canonical_bytes().map_err(encode_error)?;
     let plan_digest = hex(&plan.digest().map_err(encode_error)?);
@@ -10248,7 +10256,11 @@ pub(crate) fn emit_post_plan(
         command
     };
     let commit_guidance = if rehearsal {
-        "This Agent-profile plan is a rehearsal: it commits for no one (FA-REF-013). Plan the same intent into a draft with --draft <name> (open one with `fa draft new <name>`); a Human holding approve promotes the draft.".to_string()
+        if rule_derived {
+            "This Agent-profile plan is a rehearsal: it commits for no one (FA-REF-013). A Human holding read and post must independently prepare the same rule derivation with --dry-run, review the new single-entry plan, and commit it under that same capability."
+        } else {
+            "This Agent-profile plan is a rehearsal: it commits for no one (FA-REF-013). Plan the same intent into a draft with --draft <name> (open one with `fa draft new <name>`); a Human holding approve promotes the draft."
+        }.to_string()
     } else if bound_void {
         "MCP cannot commit this void plan. Ask the operator to separately prepare, review and confirm the release.".to_string()
     } else {
@@ -10344,7 +10356,14 @@ pub(crate) fn emit_post_plan(
     out.event_with_actions(
         "plan",
         vec![
-            ("intent_kind", s("PostEntry")),
+            (
+                "intent_kind",
+                s(if rule_derived {
+                    "RuleDerived"
+                } else {
+                    "PostEntry"
+                }),
+            ),
             ("class", s(proposal.class.name().unwrap_or("?"))),
             ("effective_date", s(proposal.effective_date.render())),
             ("period", s(&certificate.period)),
@@ -11065,7 +11084,13 @@ pub(crate) trait RetainedReview: Sized {
 
 impl RetainedReview for fa::PostIntent {
     fn decode_review(bytes: &[u8]) -> Result<Self, fa::IntentError> {
-        Self::decode(bytes)
+        let review = Self::decode(bytes)?;
+        if !matches!(&review.proposal().origin, EntryOrigin::Intent { .. }) {
+            return Err(fa::IntentError::Invalid(
+                "a PostEntry review requires an Intent-origin request; use a single native rule plan",
+            ));
+        }
+        Ok(review)
     }
     fn review_bytes(&self) -> Result<Vec<u8>, fa::IntentError> {
         self.canonical_bytes()
@@ -11244,7 +11269,7 @@ fn approve_post_review_bytes(
     bytes: &[u8],
     expected_digest: [u8; 32],
 ) -> Result<(), Fail> {
-    let review = PostIntent::decode(bytes).map_err(|error| {
+    let review = PostIntent::decode_review(bytes).map_err(|error| {
         usage(
             format!("invalid entry approval review: {error}"),
             "supply the unchanged canonical entry review and its independently retained review_digest",

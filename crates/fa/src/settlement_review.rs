@@ -21,7 +21,9 @@ use asupersync::fs::Vfs;
 use fa_intents::{IntentError, PostIntent};
 use fa_journal::{Refusal, exit};
 use fa_model::limits::{MAX_ENTRY_BYTES, MAX_SETTLES_PER_LEG};
-use fa_model::{ApprovalRef, DecodeError, EncodeError, EntryClass, EntryPayload, Reader, Writer};
+use fa_model::{
+    ApprovalRef, DecodeError, EncodeError, EntryClass, EntryOrigin, EntryPayload, Reader, Writer,
+};
 use fa_policy::Capability;
 use fa_registers::open_items::{SettlementAllocation, SettlementPlan, SettlementRequest};
 use fgdb_types::context::PurposeContexts;
@@ -149,9 +151,10 @@ impl SettlementReview {
         let proposal = self.proposal();
         if !self.intent.approvals().is_empty()
             || !matches!(proposal.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING)
+            || !matches!(&proposal.origin, EntryOrigin::Intent { .. })
         {
             return Err(invalid(
-                "a review is an unapproved Original or Adjusting intent",
+                "a review is an unapproved Intent-origin Original or Adjusting request",
             ));
         }
         let leg = proposal

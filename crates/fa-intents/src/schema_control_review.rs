@@ -1,8 +1,8 @@
 //! A schema-control proposal (a lot policy or an asset schedule) retained
 //! before its independently recorded approvals.
 //!
-//! The review is request data, not a PostEntry intent: PostIntent keeps its
-//! Intent-origin boundary, and only the typed control operation that
+//! The review is request data, not a PostEntry intent: PostIntent::new keeps
+//! its Intent-origin boundary, and only the typed control operation that
 //! rebuilds this exact proposal can publish it. It is neither an approval,
 //! certificate, signature nor publication permit. When the control is
 //! recorded the kernel still checks the canonical control bytes, current

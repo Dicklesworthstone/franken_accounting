@@ -339,19 +339,20 @@ fn admit_carrying_batch_accounts<V: Vfs + Clone>(
 
 /// A committed-prefix lot derivation composes only if no earlier member
 /// can change its account's acquisitions, applications or policy. Native
-/// Original disposals cannot change policy or reversal liveness; distinct
-/// source accounts and disjoint source/offset effects establish the rest.
+/// Original disposals and nonapplying Original companions cannot change
+/// policy or reversal liveness. Distinct disposal sources and isolation of
+/// every companion and offset from those sources establish the rest.
 /// Shared offsets outside this source set still use ordinary staged witnesses.
 fn independent_disposal_batch(
     batch: &PostBatch,
     admission: Admission,
-) -> Result<Option<IndependentDisposalBatch>, Refusal> {
+) -> Outcome<Option<IndependentDisposalBatch>> {
     if !batch
         .members()
         .iter()
         .any(|member| crate::disposal::has_basis(member.proposal()))
     {
-        return Ok(None);
+        return Ok(Ok(None));
     }
     if !matches!(
         admission,
@@ -361,11 +362,8 @@ fn independent_disposal_batch(
             | Admission::VerifiedBatch(_)
             | Admission::Promote(_)
             | Admission::ScratchDraft(_)
-    ) || batch.members().iter().any(|member| {
-        member.proposal().class != EntryClass::ORIGINAL
-            || !crate::disposal::has_basis(member.proposal())
-    }) {
-        return Err(crate::disposal::unsupported_batch());
+    ) {
+        return Ok(Err(crate::disposal::unsupported_batch()));
     }
     let invalid = |index, message: String| {
         member_refusal(
@@ -375,29 +373,75 @@ fn independent_disposal_batch(
                 exit::REFUSAL,
                 message,
                 "plan §5.8–5.10 / §6.5 (independent lot sources at one committed prefix)",
-                "batch only disposals of distinct lot accounts whose offsets do not touch another member's lot account; prepare dependent relief after the earlier publication",
+                "use distinct disposal source accounts, keep every ordinary companion and other disposal's offsets outside those sources, and prepare dependent relief after the earlier publication",
             ),
         )
     };
     let mut sources = BTreeSet::new();
     let mut bases = Vec::with_capacity(batch.members().len());
     for (index, member) in batch.members().iter().enumerate() {
-        let basis = member
-            .proposal()
-            .lot_disposal_basis()
-            .map_err(|error| invalid(index, error.to_string()))?
-            .ok_or_else(|| invalid(index, "a disposal member has no lot basis".into()))?;
+        let proposal = member.proposal();
+        if !crate::disposal::has_basis(proposal) {
+            // Revenue/receivable companions may share one publication with
+            // native cost relief, but cannot alter liveness, apply to a source
+            // or introduce another committed-prefix derivation.
+            if proposal.class != EntryClass::ORIGINAL
+                || !proposal.supersession.is_empty()
+                || proposal.pending.is_some()
+                || proposal.control.is_some()
+                || proposal.legs.iter().any(|leg| !leg.settles.is_empty())
+                || crate::post::requires_aggregate_basis(proposal)?
+            {
+                return Ok(Err(member_refusal(
+                    index,
+                    crate::disposal::unsupported_batch(),
+                )));
+            }
+            bases.push(None);
+            continue;
+        }
+        if proposal.class != EntryClass::ORIGINAL {
+            return Ok(Err(member_refusal(
+                index,
+                crate::disposal::unsupported_batch(),
+            )));
+        }
+        let basis = match proposal.lot_disposal_basis() {
+            Ok(Some(basis)) => basis,
+            Ok(None) => {
+                return Ok(Err(invalid(
+                    index,
+                    "a disposal member has no lot basis".into(),
+                )));
+            }
+            Err(error) => return Ok(Err(invalid(index, error.to_string()))),
+        };
         // Account identity, not a supplied policy digest or a quantity unit,
         // is the dependency: FIFO and pooled cost can span multiple layers.
         if !sources.insert(basis.account) {
-            return Err(invalid(
+            return Ok(Err(invalid(
                 index,
                 "atomic lot disposals require distinct governed source accounts".into(),
-            ));
+            )));
         }
-        bases.push(basis);
+        bases.push(Some(basis));
     }
     for (index, (member, basis)) in batch.members().iter().zip(&bases).enumerate() {
+        let Some(basis) = basis else {
+            if member
+                .proposal()
+                .legs
+                .iter()
+                .any(|leg| sources.contains(&leg.account_ref))
+            {
+                return Ok(Err(invalid(
+                    index,
+                    "an ordinary lot-disposal companion touches a participating source account"
+                        .into(),
+                )));
+            }
+            continue;
+        };
         let touches_another_source =
             |account: VId| account != basis.account && sources.contains(&account);
         if touches_another_source(basis.quantity_offset_account)
@@ -408,14 +452,14 @@ fn independent_disposal_batch(
                 .iter()
                 .any(|leg| touches_another_source(leg.account_ref))
         {
-            return Err(invalid(
+            return Ok(Err(invalid(
                 index,
                 "a lot disposal's effects or offsets touch another batch member's source account"
                     .into(),
-            ));
+            )));
         }
     }
-    Ok(Some(IndependentDisposalBatch(())))
+    Ok(Ok(Some(IndependentDisposalBatch(()))))
 }
 
 /// Schedule amounts depend on their own immutable acquisition and charge
@@ -1228,7 +1272,7 @@ fn judge_retry<V: Vfs + Clone>(
         Ok(carrying) => carrying,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let disposal = match independent_disposal_batch(batch, admission) {
+    let disposal = match independent_disposal_batch(batch, admission)? {
         Ok(disposal) => disposal,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -1340,6 +1384,71 @@ pub(crate) fn batchable(class: fa_model::EntryClass) -> bool {
     .contains(&class)
 }
 
+/// Automatic selection is a complete native posting request. It does not
+/// confer a draft, case, replacement, or scenario execution protocol.
+fn automatic_batch_mode(batch: &PostBatch, admission: Admission) -> Result<(), Refusal> {
+    if batch.automatic_event().is_some()
+        && !matches!(
+            admission,
+            Admission::Commit | Admission::Plan | Admission::VerifiedBatch(_)
+        )
+    {
+        return Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            "automatic rule batches require the native batch posting or planning protocol",
+            "plan §5.8 / §10.2 (complete automatic rule derivation)",
+            "prepare the automatic derivation with fa rule derive --event <event> --dry-run and commit its native batch plan",
+        ));
+    }
+    Ok(())
+}
+
+/// Check completeness at the transaction's committed basis. Each member has
+/// already passed ordinary Canon reproduction and authority checks. This
+/// comparison additionally prevents omitted, substituted, or reordered rules.
+/// It is deliberately reached only for fresh effects, after recorded retries.
+fn verify_automatic_selection<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    batch: &PostBatch,
+    at: CommitSeq,
+) -> Outcome<()> {
+    let Some(event) = batch.automatic_event() else {
+        return Ok(Ok(()));
+    };
+    let selected = match crate::rule::automatic_rules_at(db, book, capability, event, at)? {
+        Ok(selected) => selected,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let complete = selected.versions.len() == batch.members().len()
+        && selected
+            .versions
+            .iter()
+            .zip(batch.members())
+            .all(|(version, member)| {
+                matches!(
+                    &member.proposal().origin,
+                    fa_model::EntryOrigin::Rule { rule_version_oid, event_ref, .. }
+                        if rule_version_oid.0 == version.rule.ir_digest() && *event_ref == event
+                )
+            });
+    if !complete {
+        return Ok(Err(Refusal::new(
+            code::CANON_RULE,
+            exit::REFUSAL,
+            format!(
+                "automatic rule batch for event {} does not contain the complete activated selection in rule-name order",
+                selected.event.spec.code,
+            ),
+            "plan §5.8 / §10.2 / §10.4 (one atomic event derivation over the complete selected rule population)",
+            "prepare the complete current selection with fa rule derive --event <event> --dry-run; do not omit, reorder, or substitute its rule-derived members",
+        )));
+    }
+    Ok(Ok(()))
+}
+
 /// Authorize every member's request under `admission` before any
 /// observation (doctrine 8).
 pub(crate) fn authorize_members<V: Vfs + Clone>(
@@ -1349,6 +1458,14 @@ pub(crate) fn authorize_members<V: Vfs + Clone>(
     batch: &PostBatch,
     admission: Admission,
 ) -> Outcome<()> {
+    if let Err(refusal) = automatic_batch_mode(batch, admission) {
+        return Ok(Err(refusal));
+    }
+    if batch.automatic_event().is_some()
+        && let Err(refusal) = crate::rule::authorize_automatic_rules(db, book, capability, None)?
+    {
+        return Ok(Err(refusal));
+    }
     for (index, intent) in batch.members().iter().enumerate() {
         if let Err(refusal) = crate::post::authorize_request(
             db,
@@ -1537,6 +1654,18 @@ fn stage_batch_with<V: Vfs + Clone>(
             "a batch is staged with one capability per member".into(),
         ));
     }
+    if let Err(refusal) = automatic_batch_mode(batch, admission) {
+        return Ok(Err(refusal));
+    }
+    if batch.automatic_event().is_some() {
+        for capability in capabilities {
+            if let Err(refusal) =
+                crate::rule::authorize_automatic_rules(db, book, capability, None)?
+            {
+                return Ok(Err(refusal));
+            }
+        }
+    }
     let closing = match singleton_closing_draft(batch, admission) {
         Ok(closing) => closing,
         Err(refusal) => return Ok(Err(refusal)),
@@ -1582,7 +1711,7 @@ fn stage_batch_with<V: Vfs + Clone>(
         Ok(carrying) => carrying,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let disposal = match independent_disposal_batch(batch, admission) {
+    let disposal = match independent_disposal_batch(batch, admission)? {
         Ok(disposal) => disposal,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -1711,6 +1840,12 @@ fn stage_batch_with<V: Vfs + Clone>(
             "a validated batch has no member".into(),
         ));
     };
+    if let Err(refusal) =
+        verify_automatic_selection(db, book, &capabilities[0], batch, txn.basis())?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if carrying.is_some()
         && let Err(refusal) = admit_carrying_batch_accounts(db, ctx, book, &resolved, txn.basis())?
     {
@@ -1765,7 +1900,7 @@ fn stage_batch_with<V: Vfs + Clone>(
         return Ok(Err(refusal));
     }
     let aggregate = resolved.iter().try_fold(
-        carrying.is_some() || disposal.is_some(),
+        carrying.is_some() || disposal.is_some() || batch.automatic_event().is_some(),
         |aggregate, entry| {
             crate::post::requires_aggregate_basis(&entry.proposal)
                 .map(|required| aggregate || required)
