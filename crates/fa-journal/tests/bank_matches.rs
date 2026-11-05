@@ -993,6 +993,128 @@ fn concurrent_preparations_cannot_confirm_the_same_cash_leg_for_two_statements()
 }
 
 #[test]
+fn prepared_bank_confirmation_rechecks_expiry_at_publication() {
+    // An independent document moves the frontier without changing any source,
+    // policy, revocation or claim witness. The same preparation remains valid
+    // one frontier before expiry and must refuse at the exact expiry frontier.
+    for remaining_frontiers in [1_u64, 2] {
+        let mut h = Harness::new();
+        let entry = h.entry(&[10_000], "WIRE", b"cash");
+        let (import, line) = h.imported("WIRE", 10_000, b"statement");
+        let request = h.request(import, line, entry, 0);
+        let source = h.head();
+        let expires_at = CommitSeq(source.0 + remaining_frontiers);
+        let capability = cap(CONFIRMER).expiring_at(expires_at);
+        let match_vid =
+            bank_match_vid(h.book.book_id, request.import.manifest().statement_oid, 1);
+        let claim_vid = bank_matched_leg_vid(h.book.book_id, entry.vid, 0);
+        let cx = h.cx();
+        let BankMatchPreparation::Ready(prepared) =
+            prepare_bank_match(&mut h.db, &cx, &h.book, &capability, request.clone())
+                .unwrap()
+                .unwrap()
+        else {
+            panic!("fresh confirmation must prepare before expiry");
+        };
+        assert_eq!(h.head(), source, "preparation publishes nothing");
+        let unrelated = Document {
+            bytes: b"Unrelated evidence retained after bank-match preparation".to_vec(),
+            ..h.evidence.clone()
+        };
+        h.runtime
+            .block_on(add_document(&mut h.db, &cx, &h.book, &unrelated))
+            .unwrap()
+            .unwrap();
+        let before = h.head();
+        assert_eq!(before, CommitSeq(source.0 + 1));
+        let result = h
+            .runtime
+            .block_on(prepared.commit(&mut h.db, &cx))
+            .unwrap();
+        if remaining_frontiers == 1 {
+            assert_eq!(before, expires_at);
+            let refused = result.unwrap_err();
+            assert_eq!(
+                (refused.code, refused.exit),
+                (fa_policy::denial::code::EXPIRED, refusal::exit::SAFETY)
+            );
+            assert_eq!(h.head(), before);
+            assert!(h.db.vertex(match_vid).unwrap().is_none());
+            assert!(h.db.vertex(claim_vid).unwrap().is_none());
+            assert_eq!(h.db.delta_since(before).unwrap().count(), 0);
+            // An expired preparation did not consume either claim. A fresh
+            // admission under current authority can still confirm the request.
+            let recorded = h.confirm(&cap(CONFIRMER), request).unwrap();
+            assert_eq!(recorded.match_vid, match_vid);
+            assert_eq!(recorded.recorded_at, CommitSeq(before.0 + 1));
+        } else {
+            assert_eq!(CommitSeq(before.0 + 1), expires_at);
+            let recorded = result.unwrap();
+            assert_eq!(recorded.recorded_at, CommitSeq(before.0 + 1));
+            assert_eq!(recorded.match_vid, match_vid);
+            assert_eq!(recorded.confirmation.entry_ref, entry);
+            assert_eq!(recorded.confirmation.source_known_at, source);
+            assert_eq!(
+                recorded.confirmation.capability_commitment,
+                capability.commitment().unwrap()
+            );
+            assert!(h.db.vertex(claim_vid).unwrap().is_some());
+            assert_eq!(h.read(match_vid, None).unwrap(), Some(recorded));
+        }
+    }
+}
+
+#[test]
+fn prepared_bank_confirmation_preserves_its_revocation_witness() {
+    let mut h = Harness::new();
+    let entry = h.entry(&[10_000], "WIRE", b"cash");
+    let (import, line) = h.imported("WIRE", 10_000, b"statement");
+    let request = h.request(import, line, entry, 0);
+    let match_vid = bank_match_vid(h.book.book_id, request.import.manifest().statement_oid, 1);
+    let claim_vid = bank_matched_leg_vid(h.book.book_id, entry.vid, 0);
+    let capability = cap(CONFIRMER);
+    let cx = h.cx();
+    let BankMatchPreparation::Ready(prepared) =
+        prepare_bank_match(&mut h.db, &cx, &h.book, &capability, request.clone())
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("fresh confirmation must prepare before revocation");
+    };
+    let revocation = RevocationRequest {
+        capability: Capability::embedded(OWNER, &["issue_capability"]).unwrap(),
+        revoked: capability.commitment().unwrap(),
+        effective_date: day(),
+        idempotency_key: b"revoke-prepared-bank-confirmer".to_vec(),
+        description: seal(&h.book, "revoke prepared bank confirmer"),
+    };
+    h.runtime
+        .block_on(revoke_capability(&mut h.db, &cx, &h.book, revocation))
+        .unwrap()
+        .unwrap();
+    let before = h.head();
+    let refused = h
+        .runtime
+        .block_on(prepared.commit(&mut h.db, &cx))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        (refused.code, refused.exit),
+        (refusal::code::CONFLICT, refusal::exit::CONFLICT)
+    );
+    assert_eq!(h.head(), before);
+    assert!(h.db.vertex(match_vid).unwrap().is_none());
+    assert!(h.db.vertex(claim_vid).unwrap().is_none());
+    assert_eq!(h.db.delta_since(before).unwrap().count(), 0);
+    let refused = h.confirm(&capability, request).unwrap_err();
+    assert_eq!(
+        (refused.code, refused.exit),
+        (fa_policy::denial::code::REVOKED, refusal::exit::SAFETY)
+    );
+    assert_eq!(h.head(), before);
+}
+
+#[test]
 fn confirmation_and_claim_damage_fail_closed_without_rewriting_earlier_facts() {
     for attack in 0..4 {
         let mut h = Harness::new();
