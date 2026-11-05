@@ -163,7 +163,7 @@ fn from_entry(
                 ..
             }
         )
-        || entry_mirrors(&entry)? != row.props
+        || entry_mirrors(entry)? != row.props
     {
         return Err(corrupt("immutable source control or mirrors differ"));
     }

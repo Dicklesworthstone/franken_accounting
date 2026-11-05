@@ -215,8 +215,7 @@ fn a_report_minor_must_match_its_migration_source_manifests() {
     let changed = with_empty_source_manifest_list(&bytes);
     assert_eq!(
         verify_fixture(&changed, anchor)
-            .err()
-            .expect("minor 1 without source manifests must be refused")
+            .expect_err("minor 1 without source manifests must be refused")
             .predicate,
         "supported_report"
     );
@@ -287,8 +286,7 @@ fn bound_frontier_before_first_chunk_needs_native_source_storage_but_no_populati
         // minor 0 until the first selected chunk needs its population witness.
         assert_eq!(
             verify_fixture(&with_empty_source_manifest_list(&bytes), anchor)
-                .err()
-                .expect("a source binding without selected chunks still uses minor 0")
+                .expect_err("a source binding without selected chunks still uses minor 0")
                 .predicate,
             "supported_report"
         );

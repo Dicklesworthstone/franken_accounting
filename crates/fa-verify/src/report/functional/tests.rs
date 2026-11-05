@@ -1146,8 +1146,7 @@ fn v3_complete_bundle_requires_independent_inputs_and_rejects_resealed_output() 
     let alternate_minor = crate::report::tests::with_empty_source_manifest_list(&bundle);
     assert_eq!(
         verify(&alternate_minor, Some(&pin))
-            .err()
-            .expect("functional report minor 1 requires source manifests")
+            .expect_err("functional report minor 1 requires source manifests")
             .predicate,
         "supported_report"
     );

@@ -2347,7 +2347,7 @@ mod tests {
                     // exercises both sets of inverted memberships.
                     take(group, full_dimensions && group != 0);
                 }
-                for group in (0..count).rev().filter(|group| group % 10 == 0) {
+                for group in (0..count).rev().filter(|group| group.is_multiple_of(10)) {
                     take(group, full_dimensions);
                 }
                 let entries = u64::from(count + count.div_ceil(10));

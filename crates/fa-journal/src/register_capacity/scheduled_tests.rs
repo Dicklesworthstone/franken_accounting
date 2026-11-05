@@ -219,7 +219,7 @@ fn scheduled_capacity_matches_literal_for_each_native_staged_prefix() {
         assert_eq!(prepared.as_ref().map(|_| ()), literal.as_ref().map(|_| ()));
         let prepared = prepared.unwrap();
         assert!(prepared.from_summary);
-        if number % 2 == 0 {
+        if number.is_multiple_of(2) {
             txn.write_ordered(&mut fixture.db, vec![entry_batch(&ctx, vid, &entry)])
                 .unwrap();
             capacity.accept(prepared);
