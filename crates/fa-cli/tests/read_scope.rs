@@ -1191,6 +1191,111 @@ fn an_account_scoped_token_is_refused_every_query_before_the_book_is_opened() {
 }
 
 #[test]
+fn direct_procedure_certification_admits_current_whole_book_read_and_produce_before_open() {
+    let f = Fixture::new();
+    let (reader, _) = f.issue("procedure-reader", &[]);
+    let (producer, _) = f.issue_ops("procedure-producer", &["read", "produce"], &[]);
+    let (scoped, _) = f.issue_ops(
+        "procedure-account-scoped",
+        &["read", "produce"],
+        &["--account", "1000"],
+    );
+    let plain = f.ok(&["--token", &reader, "procedure", "run", "jet.round_amounts"]);
+    assert_eq!(text(&plain, "event"), "procedure_run");
+    let head = || {
+        number(
+            f.ok(&["book", "info"]).get("coordinate").unwrap(),
+            "known_at",
+        )
+    };
+    let before = head();
+    for (token, missing) in [(&reader, "produce"), (&scoped, "reaches the whole book")] {
+        for output_only in [false, true] {
+            let mut arguments = vec![
+                "--token",
+                token.as_str(),
+                "procedure",
+                "run",
+                "jet.round_amounts",
+            ];
+            if output_only {
+                arguments.extend(["--certificate-out", "denied-procedure.certificate"]);
+            } else {
+                arguments.push("--certify");
+            }
+            let (exit, error) = f.run(&arguments);
+            assert_eq!(exit, 7, "{arguments:?}: {error:?}");
+            assert!(text(data(&error), "message").contains(missing), "{error:?}");
+            assert_eq!(error.get("book"), Some(&Json::Null), "{error:?}");
+            assert_eq!(error.get("coordinate"), Some(&Json::Null), "{error:?}");
+            assert_eq!(head(), before, "the refused call never opens the book");
+        }
+    }
+    assert!(!f.dir.join("denied-procedure.certificate").exists());
+
+    // Certifying a bank procedure still needs the separate reconcile right,
+    // before its source population or even the book's coordinate is observed.
+    for selector in ["recon.bank_statement_drift", "recon.bank_statement_drift@1"] {
+        for operation in [
+            vec!["procedure", "run", selector],
+            vec!["procedure", "run", selector, "--certify"],
+            vec!["finding", "record", selector],
+        ] {
+            let mut arguments = vec!["--token", producer.as_str()];
+            arguments.extend(operation);
+            let (exit, error) = f.run(&arguments);
+            assert_eq!(exit, 7, "{arguments:?}: {error:?}");
+            assert!(text(data(&error), "message").contains("reconcile"));
+            assert_eq!(error.get("book"), Some(&Json::Null));
+            assert_eq!(error.get("coordinate"), Some(&Json::Null));
+            assert_eq!(head(), before);
+        }
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .current_dir(&f.dir)
+        .args([
+            "--book",
+            "book",
+            "--token",
+            &producer,
+            "procedure",
+            "run",
+            "jet.round_amounts",
+            "--effective-through",
+            "2026-03-31",
+            "--certificate-out",
+            "admitted-procedure.certificate",
+            "--json",
+        ])
+        .env_remove("FA_BOOK")
+        .env_remove("FA_TOKEN")
+        .output()
+        .expect("certify with explicit read and produce authority");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{stdout}\n{:?}", output.stderr);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    for line in &lines {
+        fa_cli::verbs::registry().unwrap().check_line(line).unwrap();
+    }
+    let report = json::parse(lines[0]).unwrap();
+    let metadata = json::parse(lines[1]).unwrap();
+    assert_eq!(text(&report, "event"), "procedure_run");
+    assert_eq!(text(&metadata, "event"), "report_certificate");
+    let oid = text(data(&metadata), "oid");
+    assert_eq!(text(&report, "certificate"), oid);
+    let encoded = std::fs::read(f.dir.join("admitted-procedure.certificate")).unwrap();
+    fa::procedure_certificate::ProcedureCertificate::decode(&encoded).unwrap();
+    let replayed = f.ok(&["--token", &reader, "replay", &format!("C:{oid}")]);
+    assert_eq!(data(&replayed), data(&report));
+    assert_eq!(
+        number(data(&f.ok(&["finding", "runs"])), "total_recorded_runs"),
+        0
+    );
+}
+
+#[test]
 fn per_row_open_amount_uses_the_existing_query_authority_boundary() {
     let f = Fixture::new();
     let statement = "MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code:'1000'}) CALL fa.open_amount(l) YIELD open, age_days WHERE age_days >= 20 RETURN a.code AS account, open, age_days EFFECTIVE AT '2026-03-31'";

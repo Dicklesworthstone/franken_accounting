@@ -2066,6 +2066,13 @@ fa diff --from draft:close-2026-03 --to trunk --json
 fa procedure run jet.weekend --book acme.fabook --json
 fa procedure run trace.libr --effective-through 2025-12-31 --account 1010 --source <deposit entry vid> --book acme.fabook --json
 fa procedure run graph.related_party_exposure --param max_depth=4 --book acme.fabook --json
+# Retain an independently replayable run without recording a FindingRun in the journal.
+# --certificate-out implies --certify; both require current whole-book Read and Produce.
+fa procedure run jet.round_amounts --effective-through 2025-12-31 --certificate-out round-amounts.cert --book acme.fabook --json
+fa replay --certificate round-amounts.cert --book acme.fabook --json
+# Round amounts and period-end timing default to v2, which accepts an optional effective cutoff.
+# Explicit @1 retains the original no-cutoff algorithm for reproducing historical runs.
+fa procedure run jet.period_end_timing@1 --certify --book acme.fabook --json
 # A procedure runs under a work meter with no clock, entropy, network or filesystem: --budget refuses it mid-run (exit 3, no finding) at the first unit past the cap.
 fa procedure run graph.layering --budget 5000000 --book acme.fabook --json
 # Every procedure that selects accounts (suspense and inventory aging, intercompany, lapping, capitalization, confirmation coverage, payroll, cash-flow solvency, preferences, Ponzi and distribution) tests the accounts holding a journaled role, never accounts guessed from their codes or names (a chart's accounts may carry "roles" too, and the three templates' do). While no account holds its role a procedure refuses with this fix (exit 3), rather than report an empty population as nothing found.

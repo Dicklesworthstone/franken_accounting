@@ -1477,7 +1477,13 @@ fn dated_jet_findings_record_and_replay_current_and_retained_versions() {
         let unbounded = ok(
             &f.book,
             &[
-                "procedure", "run", id, "--param", parameter, "--known-at", &source,
+                "procedure",
+                "run",
+                id,
+                "--param",
+                parameter,
+                "--known-at",
+                &source,
             ],
         );
         assert_eq!(number(data(&unbounded), "finding_count"), all);
@@ -1489,7 +1495,13 @@ fn dated_jet_findings_record_and_replay_current_and_retained_versions() {
         let past = ok(
             &f.book,
             &[
-                "procedure", "run", id, "--param", parameter, "--known-at", &historical,
+                "procedure",
+                "run",
+                id,
+                "--param",
+                parameter,
+                "--known-at",
+                &historical,
             ],
         );
         assert_eq!(number(data(&past), "finding_count"), selected);
@@ -1523,7 +1535,13 @@ fn dated_jet_findings_record_and_replay_current_and_retained_versions() {
         let retained = ok(
             &f.book,
             &[
-                "finding", "record", &legacy, "--param", parameter, "--known-at", &source,
+                "finding",
+                "record",
+                &legacy,
+                "--param",
+                parameter,
+                "--known-at",
+                &source,
             ],
         );
         assert_eq!(number(data(&retained), "version"), 1);

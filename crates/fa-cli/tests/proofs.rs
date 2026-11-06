@@ -18,6 +18,8 @@ mod explanation_report;
 mod indirect_cash_flow_basis;
 #[path = "proofs/prefix.rs"]
 mod prefix;
+#[path = "proofs/procedure.rs"]
+mod procedure;
 #[path = "proofs/report.rs"]
 mod report;
 #[path = "proofs/roll_forward.rs"]

@@ -461,7 +461,8 @@ fn record(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let digest = if let Some(digest) = source {
         digest
     } else {
-        let (id, version) = selected.ok_or_else(|| usage("record needs a procedure id", EXAMPLE))?;
+        let (id, version) =
+            selected.ok_or_else(|| usage("record needs a procedure id", EXAMPLE))?;
         let request = ProcedureRequest {
             procedure: id.to_string(),
             version,
