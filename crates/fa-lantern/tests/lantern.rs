@@ -14,6 +14,7 @@ use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::evidence::{Document, add_document};
 use fa_journal::policy::{ApprovalRequest, Approved, record_approval};
+use fa_journal::post::read_entry;
 use fa_journal::*;
 use fa_lantern::aging::OpenItemsAging;
 use fa_lantern::cutoff::PeriodBoundary;
