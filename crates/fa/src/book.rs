@@ -1090,6 +1090,23 @@ impl Book {
         ))
     }
 
+    /// Prepare a rule-backed Accrue or Defer using its immutable Adjusting
+    /// family, event evidence, declared inputs and optional reversal schedule.
+    /// Pass the resulting RuleDerived intent to native planning or posting.
+    pub fn prepare_rule_intent(
+        &self,
+        capability: &fa_journal::Capability,
+        kind: crate::rule::RuleIntentKind,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &crate::rule::Inputs,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_intents::PostIntent> {
+        with_store!(&self.store, core => core.prepare_rule_intent(
+            &self.purposes(), capability, kind, ir_digest, event, inputs, idempotency_key,
+        ))
+    }
+
     /// Prepare every active matching rule as one complete atomic batch.
     /// A required input or empty matching set refuses before publication.
     /// Native plan/post rechecks selection, authority and every derivation.
@@ -1116,6 +1133,23 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.derive_rule_entry(
             &purposes, capability, ir_digest, event, inputs, idempotency_key,
+        )))
+    }
+
+    /// Derive and post a typed rule-backed Accrue or Defer. The native
+    /// kernel rechecks the rule's exact effects and caller authority.
+    pub fn derive_rule_intent(
+        &mut self,
+        capability: &fa_journal::Capability,
+        kind: crate::rule::RuleIntentKind,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &crate::rule::Inputs,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::Posted> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.derive_rule_intent(
+            &purposes, capability, kind, ir_digest, event, inputs, idempotency_key,
         )))
     }
 

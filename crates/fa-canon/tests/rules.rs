@@ -3,7 +3,7 @@
 
 use fa_canon::{
     AuthorityError, AuthorityGrant, CompiledRule, EvalError, InputType, InputValue, Inputs,
-    Produces, RuleAuthority, compile, evaluate, validate_authority,
+    Produces, RuleAuthority, RuleIntentKind, compile, evaluate, validate_authority,
 };
 use fa_model::{Erasable, EventKind, EventResource, EventSpec, EvidenceRef, Oid, SealKey, Writer};
 use fa_money::{Amount, RoundingLaw, Side, Unit, UnitKind, UnitRegistry};
@@ -1041,4 +1041,120 @@ fn retained_source_binds_authority_without_reinterpreting_historical_units() {
             .0
             .contains("another scale")
     );
+}
+
+/// Accrue and Defer invoke the existing Adjusting family. Selecting either
+/// business intent retains the source-bound authority and schedule, and does
+/// not create another IR or input encoding for the same derivation.
+#[test]
+fn adjusting_business_intents_preserve_the_rule_inputs_and_reversal() {
+    let units = units();
+    let source = r#"rule rent_policy v1 for event Accrual produces Adjusting {
+        inputs { charge: amount("USD"), as_of: date, back: date }
+        authority {
+            debit "6000" upto "100.00 USD" dims { cost_center = "CC1" }
+            credit "2100" upto "100.00 USD"
+        }
+        debit "6000" charge dims { cost_center = "CC1" }
+        credit "2100" charge
+        effective as_of
+        reverses back
+    }"#;
+    let rule = compile(source, &units).unwrap();
+    let ir = rule.ir().to_vec();
+    let digest = rule.ir_digest();
+    let mut inputs = as_of();
+    let reverse_on = DateDay::from_ymd(2026, 4, 1).unwrap();
+    inputs.set("back", InputValue::Date(reverse_on));
+    inputs.set("charge", InputValue::Amount(usd(&units, 7_500)));
+    let encoded_inputs = fa_canon::encode_inputs(&rule, &inputs).unwrap();
+    let accrual = event(EventKind::Accrual, Vec::new());
+    let direct = evaluate(&rule, &accrual, &inputs).unwrap();
+    assert_eq!(
+        legs(&direct),
+        [(Side::Debit, "6000", 7_500), (Side::Credit, "2100", 7_500)]
+    );
+    assert_eq!(direct.effective, DateDay::from_ymd(2026, 3, 31).unwrap());
+    assert_eq!(direct.reverse_on, Some(reverse_on));
+    assert!(matches!(rule.authority(), RuleAuthority::Declared(_)));
+
+    // Exercise retained source and inputs as a reopened caller would.
+    let retained = CompiledRule::decode(&ir, &units).unwrap();
+    let retained_inputs = fa_canon::decode_inputs(&retained, &encoded_inputs).unwrap();
+    for intent in [RuleIntentKind::Accrue, RuleIntentKind::Defer] {
+        assert_eq!(intent.required_produces(), Produces::Adjusting);
+        assert_eq!(intent.validate_rule(&rule), Ok(()));
+        assert_eq!(intent.validate_rule(&retained), Ok(()));
+        assert_eq!(retained.ir(), ir);
+        assert_eq!(retained.ir_digest(), digest);
+        assert_eq!(
+            fa_canon::encode_inputs(&retained, &retained_inputs).unwrap(),
+            encoded_inputs
+        );
+        assert_eq!(
+            evaluate(&retained, &accrual, &retained_inputs).unwrap(),
+            direct
+        );
+    }
+
+    // A compatible family does not waive missing inputs, output ceilings
+    // or the rule's own requirement that the reversal follows the entry.
+    assert!(matches!(
+        evaluate(&retained, &accrual, &Inputs::new()),
+        Err(EvalError::MissingInput { .. })
+    ));
+    let mut over = inputs.clone();
+    over.set("charge", InputValue::Amount(usd(&units, 10_001)));
+    assert!(matches!(
+        evaluate(&retained, &accrual, &over),
+        Err(EvalError::Authority(_))
+    ));
+    let mut too_early = inputs;
+    too_early.set(
+        "back",
+        InputValue::Date(DateDay::from_ymd(2026, 3, 31).unwrap()),
+    );
+    assert!(matches!(
+        evaluate(&retained, &accrual, &too_early),
+        Err(EvalError::ReversalNotAfter { .. })
+    ));
+}
+
+/// Neither an accrual event nor an intent-like rule name authorizes an
+/// Original rule to implement an Adjusting business intent.
+#[test]
+fn adjusting_business_intents_refuse_original_rules_with_or_without_authority() {
+    let units = units();
+    let legacy = r#"rule accrue v1 for event Accrual {
+        debit "6000" "1.00 USD" credit "2100" "1.00 USD"
+    }"#;
+    let declared = r#"rule defer v1 for event Accrual produces Original {
+        authority {
+            debit "6000" upto "1.00 USD" credit "2100" upto "1.00 USD"
+        }
+        debit "6000" "1.00 USD" credit "2100" "1.00 USD"
+    }"#;
+    for source in [legacy, declared] {
+        let rule = compile(source, &units).unwrap();
+        let retained = CompiledRule::decode(rule.ir(), &units).unwrap();
+        for intent in [RuleIntentKind::Accrue, RuleIntentKind::Defer] {
+            for selected in [&rule, &retained] {
+                let error = intent.validate_rule(selected).unwrap_err();
+                assert_eq!(error.intent, intent);
+                assert_eq!(error.actual_produces, Produces::Original);
+                let message = error.to_string();
+                assert!(message.contains(intent.name()), "{message}");
+                assert!(message.contains("Adjusting"), "{message}");
+                assert!(message.contains("Original"), "{message}");
+            }
+        }
+        // Existing Adjusting policies need no new marker or authority block.
+        let adjusting_source = source
+            .replace("produces Original", "produces Adjusting")
+            .replace("event Accrual {", "event Accrual produces Adjusting {");
+        let adjusting = compile(&adjusting_source, &units).unwrap();
+        for intent in [RuleIntentKind::Accrue, RuleIntentKind::Defer] {
+            assert_eq!(intent.validate_rule(&adjusting), Ok(()));
+        }
+    }
 }
