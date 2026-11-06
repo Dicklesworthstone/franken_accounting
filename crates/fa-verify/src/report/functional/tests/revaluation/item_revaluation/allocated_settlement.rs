@@ -921,7 +921,7 @@ fn allocated_settlement_cannot_use_another_sources_dedicated_valuation_as_cash()
         30,
         b"ordinary-cash-account",
         &quote,
-        &[legitimate.clone()],
+        std::slice::from_ref(&legitimate),
     );
     records.push(honest.record);
     rates.push(quote.clone());

@@ -134,7 +134,7 @@ pub(super) fn shape(
             "item revaluation law, class, entity or closing coordinate differs",
         ));
     }
-    for (ordinal, pair) in legs.chunks_exact(2).enumerate() {
+    for (ordinal, pair) in legs.as_chunks::<2>().0.iter().enumerate() {
         let first = &pair[0];
         let second = &pair[1];
         let start = ordinal * 2;
@@ -151,8 +151,8 @@ pub(super) fn shape(
                 "item adjustment must contain ordered opposite route pairs",
             ));
         }
-        for leg_ordinal in start..start + 2 {
-            let detail = &entry.details[leg_ordinal];
+        for (offset, detail) in entry.details[start..start + 2].iter().enumerate() {
+            let leg_ordinal = start + offset;
             if !detail.settlements.is_empty()
                 || detail.base_amount != Some((history.spec.base, first.mantissa))
                 || history.item_entity(index, leg_ordinal) != basis.entity

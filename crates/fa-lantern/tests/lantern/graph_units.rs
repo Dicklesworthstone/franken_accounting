@@ -172,8 +172,8 @@ fn related_party(h: &mut Harness, snapshot: &mut Snapshot) -> VId {
     fa_model::party_value_vid(h.book.book_id, "AFFILIATE")
 }
 
-fn assert_coordinate(finding: &Finding, unit: UnitId, entity: Option<VId>) {
-    assert_eq!(finding.version, 2);
+fn assert_coordinate(finding: &Finding, version: u16, unit: UnitId, entity: Option<VId>) {
+    assert_eq!(finding.version, version);
     assert!(finding.narrative.contains(&format!("unit {},", unit.0)));
     let entity = entity.map_or_else(
         || "implicit book entity".into(),
@@ -238,7 +238,7 @@ fn communities_do_not_join_paths_across_currencies_or_entities() {
         assert_eq!(result.findings.len(), 1);
         assert_eq!(result.findings[0].statistic.value, 10_000);
         assert_eq!(result.findings[0].statistic.population, 3);
-        assert_coordinate(&result.findings[0], usd, first_entity);
+        assert_coordinate(&result.findings[0], 3, usd, first_entity);
         assert!(
             determinism(&snapshot, &h.book, &procedure)
                 .unwrap()
@@ -255,7 +255,7 @@ fn communities_do_not_report_connected_component_unions() {
         ["2000", "4000", "6000", "7000"],
     ];
     let date = day(2026, 3, 15);
-    // Each clique has six real transfers totalling 600. The one-unit
+    // Each clique has six real transfers totalling 600 minor units. The one-unit
     // bridge makes the entire graph connected without merging its clusters.
     for group in &groups {
         for (index, &from) in group.iter().enumerate() {
@@ -291,7 +291,7 @@ fn communities_do_not_report_connected_component_unions() {
             assert_eq!(finding.statistic.value, 9983);
             assert_eq!(finding.statistic.population, 8);
             assert_eq!(finding.severity, Severity::Medium);
-            assert_coordinate(finding, h.usd, None);
+            assert_coordinate(finding, 3, h.usd, None);
             finding
                 .cites
                 .iter()
@@ -371,7 +371,7 @@ fn communities_keep_maximum_amounts_and_witnesses_in_their_own_coordinates() {
             .unwrap();
         assert_eq!(finding.statistic.value, 10_000);
         assert_eq!(finding.statistic.population, 2);
-        assert_coordinate(finding, unit, Some(entity));
+        assert_coordinate(finding, 3, unit, Some(entity));
         witnesses.insert(finding.narrative.split("cgse_witness=").nth(1).unwrap());
     }
     assert_eq!(
@@ -442,7 +442,7 @@ fn shell_signatures_do_not_pair_different_currencies_or_entities() {
                 Cite::Entry(VId(73_002))
             ]
         );
-        assert_coordinate(finding, usd, first_entity);
+        assert_coordinate(finding, 2, usd, first_entity);
     }
 }
 
@@ -490,7 +490,7 @@ fn other_coordinates_documents_do_not_hide_an_undocumented_conduit() {
     let result = run_over(&snapshot, &h.book, &procedure).unwrap();
     assert_eq!(result.findings.len(), 1);
     let finding = &result.findings[0];
-    assert_coordinate(finding, usd, Some(ENTITY_A));
+    assert_coordinate(finding, 2, usd, Some(ENTITY_A));
     assert_eq!(finding.statistic.value, 9_000);
     assert_eq!(finding.statistic.population, 2);
     assert_eq!(
@@ -560,7 +560,7 @@ fn related_exposure_uses_only_the_affected_currency_and_entity_at_registered_sca
             .iter()
             .find(|finding| finding.statistic.value == amount)
             .unwrap();
-        assert_coordinate(finding, unit, Some(ENTITY_A));
+        assert_coordinate(finding, 2, unit, Some(ENTITY_A));
         assert_eq!(finding.statistic.scale, scale);
         assert_eq!(finding.statistic.population, 1);
         assert!(finding.cites.contains(&Cite::Entry(VId(75_001))));

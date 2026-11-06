@@ -769,7 +769,7 @@ fn with_dimensions(record: &Record, dimensions: &[(u32, u128)]) -> Record {
     let begin = end - details.len() * 67;
     let mut w = Writer::default();
     w.fixed(&raw[..begin]);
-    for leg in raw[begin..end].chunks_exact(67) {
+    for leg in raw[begin..end].as_chunks::<67>().0 {
         assert_eq!(&leg[58..62], &[0; 4]);
         w.fixed(&leg[..58]).count(dimensions.len());
         for (kind, value) in dimensions {
