@@ -6,6 +6,9 @@
 //! effective-date cutoff, and v2 with an optional inclusive cutoff. No profile
 //! accepts input handles. The cutoff selects postings before reversal liveness
 //! while the input commitment retains every visible entry at the frontier.
+//! Replacement identities require a later authenticated reversal, replacement,
+//! or non-migration settlement reference; the ambiguous historical key namespace
+//! is never inferred from producer output or an unreferenced payload.
 //! It proves the statistical computation and decision-card encoding, not fraud,
 //! approval admission, policy activation, or authenticity of source documents.
 
@@ -154,6 +157,8 @@ pub(super) struct Entry {
     pub class: u16,
     pub legs: Vec<(u32, i128)>,
     pub supersession: Vec<(u128, [u8; 32], u8)>,
+    /// EntryRefs from authenticated application payloads, not output rows.
+    pub settlements: Vec<(u128, [u8; 32])>,
     pub period: Option<EntryPeriod>,
 }
 
@@ -335,6 +340,118 @@ fn candidate(w: &mut Writer, action: &[u8], parameter: i128, score: i128) {
     w.bytes(action).i128(parameter).i128(score);
 }
 
+fn in_window(entry: &Entry, effective_through: Option<i32>) -> bool {
+    !entry.legs.is_empty()
+        && entry.class != 2
+        && effective_through.is_none_or(|through| {
+            entry
+                .effective
+                .is_some_and(|effective| effective <= through)
+        })
+}
+
+/// A replacement payload alone admits both the historical key identity and
+/// the current target-derived one. A later signed EntryRef fixes the original
+/// namespace without trusting the report's claimed input digest. Resolve every
+/// replacement in the complete recorded population, even when a date filter or
+/// a later reversal removes it from the finding stream.
+fn replacement_history(entries: &[Entry]) -> Result<(), ReportError> {
+    if !entries
+        .iter()
+        .any(|entry| entry.class == 5 || entry.supersession.iter().any(|(_, _, kind)| *kind == 2))
+    {
+        return Ok(());
+    }
+    let mut identities = BTreeMap::new();
+    let mut reversals = BTreeMap::new();
+    let mut references = BTreeMap::new();
+    for entry in entries {
+        if identities.insert(entry.identity, entry).is_some() {
+            return Err(failed("procedure_lineage", "duplicate entry identity"));
+        }
+        if entry.class != 5 && entry.supersession.iter().any(|(_, _, kind)| *kind == 2) {
+            return Err(failed(
+                "procedure_profile",
+                "Replaces requires a Replacement entry",
+            ));
+        }
+        if matches!(entry.class, 4 | 5) {
+            for &(target, digest, kind) in &entry.supersession {
+                if (entry.class, kind) == (4, 1)
+                    && reversals
+                        .insert(target, (digest, entry.recorded_at))
+                        .is_some()
+                {
+                    return Err(failed(
+                        "procedure_lineage",
+                        "entry has more than one reversal",
+                    ));
+                }
+                if matches!((entry.class, kind), (4, 1) | (5, 2)) {
+                    references
+                        .entry((target, digest))
+                        .and_modify(|at: &mut u64| {
+                            *at = (*at).max(entry.recorded_at);
+                        })
+                        .or_insert(entry.recorded_at);
+                }
+            }
+        }
+        // Staged migration rows are not identity witnesses. Ordinary source
+        // visibility remains governed by the existing migration interpreter.
+        if !entry.legs.is_empty() && !matches!(entry.class, 2 | 12) {
+            for &target in &entry.settlements {
+                references
+                    .entry(target)
+                    .and_modify(|at: &mut u64| {
+                        *at = (*at).max(entry.recorded_at);
+                    })
+                    .or_insert(entry.recorded_at);
+            }
+        }
+    }
+    for entry in entries.iter().filter(|entry| entry.class == 5) {
+        let [(target, digest, 2)] = entry.supersession.as_slice() else {
+            return Err(failed(
+                "procedure_lineage",
+                "replacement requires exactly one Replaces target",
+            ));
+        };
+        let expected = hash_parts(b"fa:vid:replacement:v1", &[&target.to_le_bytes()]);
+        if entry.identity.to_le_bytes() != expected[..16] {
+            return Err(failed(
+                "procedure_profile",
+                "legacy replacement identities remain unsupported",
+            ));
+        }
+        let original = identities
+            .get(target)
+            .ok_or_else(|| failed("procedure_lineage", "replacement target is absent"))?;
+        if original.digest != *digest
+            || original.recorded_at >= entry.recorded_at
+            || original.class == 2
+            || original.legs.is_empty()
+            || entry.legs.is_empty()
+            || reversals.get(target) != Some(&(*digest, entry.recorded_at))
+        {
+            return Err(failed(
+                "procedure_lineage",
+                "replacement requires its earlier posted target and same-commit paired reversal",
+            ));
+        }
+        if !references
+            .get(&(entry.identity, entry.digest))
+            .is_some_and(|at| *at > entry.recorded_at)
+        {
+            return Err(failed(
+                "procedure_identity",
+                "replacement has no authenticated later reference resolving its original identity",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Independent FADC v1 threshold law. The policy epoch is a disclosed
 /// identifier; nothing here claims that its approval rules admitted entries.
 fn decision_card(
@@ -397,15 +514,7 @@ fn liveness(
     entries: &[Entry],
     effective_through: Option<i32>,
 ) -> Result<BTreeMap<u128, bool>, ReportError> {
-    let in_window = |entry: &&Entry| {
-        !entry.legs.is_empty()
-            && entry.class != 2
-            && effective_through.is_none_or(|through| {
-                entry
-                    .effective
-                    .is_some_and(|effective| effective <= through)
-            })
-    };
+    let selected = |entry: &&Entry| in_window(entry, effective_through);
     let mut identities = BTreeMap::new();
     let mut reversed_by = BTreeMap::new();
     for entry in entries {
@@ -413,7 +522,7 @@ fn liveness(
             return Err(failed("procedure_lineage", "duplicate entry identity"));
         }
     }
-    for entry in entries.iter().filter(in_window) {
+    for entry in entries.iter().filter(selected) {
         if entry.class == 4 {
             let [(target, digest, 1)] = entry.supersession.as_slice() else {
                 return Err(failed(
@@ -438,7 +547,7 @@ fn liveness(
         }
     }
     let mut live = BTreeMap::new();
-    for entry in entries.iter().filter(in_window) {
+    for entry in entries.iter().filter(selected) {
         if live.contains_key(&entry.identity) {
             continue;
         }
@@ -511,20 +620,25 @@ fn recompute_version(
     mut entries: Vec<Entry>,
     registry: &Registry,
 ) -> Result<(VerifiedProcedure, Vec<u8>), ReportError> {
-    // The immutable payload admits both a historical key identity and the
-    // newer target-derived Replacement identity. Neither may be guessed when
-    // reproducing a full population digest or the exact leg citations.
-    if entries
-        .iter()
-        .any(|entry| entry.class == 5 || entry.supersession.iter().any(|(_, _, kind)| *kind == 2))
-    {
-        return Err(failed(
-            "procedure_profile",
-            "replacement identities require a future procedure proof profile",
-        ));
-    }
+    replacement_history(&entries)?;
     entries.sort_unstable_by_key(|entry| entry.identity);
     let live = liveness(&entries, effective_through)?;
+    // Match native selection: every unreversed in-window replacement hides
+    // its target, even if that replacing entry is itself superseded later.
+    let replaced: BTreeSet<_> = entries
+        .iter()
+        .filter(|entry| {
+            in_window(entry, effective_through)
+                && live.get(&entry.identity).copied().unwrap_or(false)
+        })
+        .flat_map(|entry| {
+            entry
+                .supersession
+                .iter()
+                .filter(|(_, _, kind)| *kind == 2)
+                .map(|(target, _, _)| *target)
+        })
+        .collect();
     let population = entries.len() as u64;
     let mut inputs = Writer::default();
     inputs.u64(known_at);
@@ -555,6 +669,7 @@ fn recompute_version(
         if entry.legs.is_empty()
             || matches!(entry.class, 2 | 4)
             || !live.get(&entry.identity).copied().unwrap_or(false)
+            || replaced.contains(&entry.identity)
         {
             continue;
         }
@@ -770,6 +885,7 @@ mod tests {
             class,
             legs,
             supersession: Vec::new(),
+            settlements: Vec::new(),
             period: None,
         }
     }
@@ -979,6 +1095,186 @@ mod tests {
             end,
         });
         value
+    }
+
+    fn replacement_population() -> Vec<Entry> {
+        let original = timing_entry(1000, 27, 32);
+        let mut undo = entry(2, 4, original.legs.clone());
+        undo.recorded_at = 2;
+        undo.effective = Some(28);
+        undo.supersession
+            .push((original.identity, original.digest, 1));
+        let digest = hash_parts(
+            b"fa:vid:replacement:v1",
+            &[&original.identity.to_le_bytes()],
+        );
+        let identity = u128::from_le_bytes(digest[..16].try_into().unwrap());
+        let mut corrected = timing_entry(identity, 29, 32);
+        corrected.class = 5;
+        corrected.recorded_at = 2;
+        corrected.legs = vec![(1, 200_000), (1, 200_000)];
+        corrected
+            .supersession
+            .push((original.identity, original.digest, 2));
+        let mut payment = timing_entry(3, 30, 32);
+        payment.recorded_at = 3;
+        payment.legs = vec![(1, 50_000), (1, 50_000)];
+        payment
+            .settlements
+            .push((corrected.identity, corrected.digest));
+        vec![original, undo, corrected, payment]
+    }
+
+    #[test]
+    fn resolved_replacements_use_the_complete_prefix_before_effective_selection() {
+        let entries = replacement_population();
+        let replacement = entries[2].identity;
+        for profile in [
+            ROUND_THREE,
+            VerifiedProcedureParameters::PeriodEndTiming { window_days: 3 },
+        ] {
+            for (through, live_entries) in [(26, 0), (27, 1), (28, 0), (29, 1), (30, 2)] {
+                let (verified, _) = recompute_version(
+                    [1; 16],
+                    3,
+                    2,
+                    Some(through),
+                    profile,
+                    entries.clone(),
+                    &registry(),
+                )
+                .unwrap();
+                assert_eq!(verified.population, 4);
+                assert_eq!(verified.live_entries, live_entries);
+                if through == 29 {
+                    assert_eq!(verified.findings.len(), 1);
+                    assert_eq!(verified.findings[0].entry, replacement);
+                }
+            }
+            let (legacy, _) = recompute([1; 16], 3, profile, entries.clone(), &registry()).unwrap();
+            let (current, _) =
+                recompute_version([1; 16], 3, 2, None, profile, entries.clone(), &registry())
+                    .unwrap();
+            assert_eq!(legacy.findings, current.findings);
+            assert_eq!(legacy.inputs_digest, current.inputs_digest);
+        }
+        // The same witness cannot resolve a certificate whose recorded
+        // population ended before that payment, whatever its effective cutoff.
+        for through in [None, Some(26), Some(29)] {
+            assert_eq!(
+                recompute_version(
+                    [1; 16],
+                    2,
+                    2,
+                    through,
+                    ROUND_THREE,
+                    entries[..3].to_vec(),
+                    &registry(),
+                )
+                .unwrap_err()
+                .predicate,
+                "procedure_identity"
+            );
+        }
+    }
+
+    #[test]
+    fn replacement_identity_requires_signed_digest_time_namespace_and_paired_lineage() {
+        for (variant, predicate) in [
+            ("missing pair", "procedure_lineage"),
+            ("different commit", "procedure_lineage"),
+            ("target digest", "procedure_lineage"),
+            ("target time", "procedure_lineage"),
+            ("duplicate identity", "procedure_lineage"),
+            ("legacy identity", "procedure_profile"),
+            ("missing witness", "procedure_identity"),
+            ("witness digest", "procedure_identity"),
+            ("witness time", "procedure_identity"),
+            ("pending witness", "procedure_identity"),
+            ("migration witness", "procedure_identity"),
+            ("control witness", "procedure_identity"),
+        ] {
+            let mut entries = replacement_population();
+            match variant {
+                "missing pair" => {
+                    entries.remove(1);
+                }
+                "different commit" => entries[1].recorded_at = 1,
+                "target digest" => entries[2].supersession[0].1[0] ^= 1,
+                "target time" => entries[0].recorded_at = 2,
+                "duplicate identity" => entries.push(entries[0].clone()),
+                "legacy identity" => entries[2].identity ^= 1,
+                "missing witness" => {
+                    entries.pop();
+                }
+                "witness digest" => entries[3].settlements[0].1[0] ^= 1,
+                "witness time" => entries[3].recorded_at = 2,
+                "pending witness" => entries[3].class = 2,
+                "migration witness" => entries[3].class = 12,
+                "control witness" => entries[3].legs.clear(),
+                _ => unreachable!(),
+            }
+            for through in [None, Some(26), Some(29)] {
+                assert_eq!(
+                    recompute_version(
+                        [1; 16],
+                        3,
+                        2,
+                        through,
+                        ROUND_THREE,
+                        entries.clone(),
+                        &registry(),
+                    )
+                    .unwrap_err()
+                    .predicate,
+                    predicate,
+                    "{variant} at {through:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn replacement_supersession_tracks_reversal_and_restoration_independently() {
+        let mut entries = replacement_population();
+        entries.pop();
+        let original = entries[0].identity;
+        let corrected = entries[2].identity;
+        for (identity, target, effective) in [(10, 1, 30), (11, 2, 31), (12, 4, 32)] {
+            let mut undo = entry(identity, 4, entries[target].legs.clone());
+            undo.recorded_at = entries.len() as u64;
+            undo.effective = Some(effective);
+            undo.supersession
+                .push((entries[target].identity, entries[target].digest, 1));
+            entries.push(undo);
+        }
+        for (through, expected) in [
+            (28, None),
+            (29, Some(corrected)),
+            (30, Some(corrected)),
+            (31, Some(original)),
+            (32, Some(corrected)),
+        ] {
+            let (verified, _) = recompute_version(
+                [1; 16],
+                5,
+                2,
+                Some(through),
+                ROUND_THREE,
+                entries.clone(),
+                &registry(),
+            )
+            .unwrap();
+            assert_eq!(verified.live_entries, u64::from(expected.is_some()));
+            assert_eq!(
+                verified
+                    .findings
+                    .iter()
+                    .map(|finding| finding.entry)
+                    .collect::<Vec<_>>(),
+                expected.into_iter().collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

@@ -127,7 +127,9 @@ commands:
                                                 and jet.round_amounts / jet.period_end_timing v1/v2 statistical procedures.
                                                 V1 requires no effective cutoff; v2 accepts an inclusive cutoff.
                                                 Both profiles require no input handles;
-                                                Replacement histories are refused. Exact statistical and decision-card
+                                                Replacement histories require current target-derived identities and later
+                                                authenticated references resolving every corrected entry; unresolved and
+                                                legacy identities refuse. Exact statistical and decision-card
                                                 replay does not establish fraud, approval admission or policy activation.
                                                 V1 statements require --units;
                                                 native traces retain every consecutive source, including zero-effect steps;

@@ -2195,6 +2195,16 @@ fn verify_report_with_native_subledger_input(
                             .map(|leg| (leg.unit, leg.mantissa))
                             .collect(),
                         supersession: info.supersession.clone(),
+                        settlements: crate::envelope::proposal_leg_details(
+                            &records[index].1[..records[index].0],
+                        )?
+                        .into_iter()
+                        .flat_map(|leg| {
+                            leg.settlements
+                                .into_iter()
+                                .map(|reference| (reference.target, reference.digest))
+                        })
+                        .collect(),
                         period,
                     })
                 })

@@ -267,9 +267,7 @@ pub fn registry_row_version(
     version: i128,
 ) -> Result<(i128, String), String> {
     let current = registry_row(procedures_toml, id)?;
-    if version == 1
-        && current.0 == 2
-        && matches!(id, "jet.round_amounts" | "jet.period_end_timing")
+    if version == 1 && current.0 == 2 && matches!(id, "jet.round_amounts" | "jet.period_end_timing")
     {
         let doc = fa_registry::procedures::legacy_v1_document_from_text(procedures_toml)
             .map_err(|e| e.to_string())?;
@@ -407,7 +405,9 @@ mod tests {
             "procedure = \"jet.round_amounts\"\nname = \"round_power\"\ndefault = 4\n",
         );
         assert_ne!(
-            registry_row_version(&changed, "jet.round_amounts", 1).unwrap().1,
+            registry_row_version(&changed, "jet.round_amounts", 1)
+                .unwrap()
+                .1,
             table.get("jet.round_amounts").unwrap().row_digest,
             "reconstructing v1 cannot conceal a changed parameter default"
         );

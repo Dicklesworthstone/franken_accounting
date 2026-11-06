@@ -155,6 +155,73 @@ fn reverse_at(h: &mut Harness, target: VId, date: DateDay) -> VId {
     entry_ref.vid
 }
 
+/// A correction is one native commit, even when its two members take effect
+/// on different days. Selection must not confuse either date with publication.
+fn replace_at(
+    h: &mut Harness,
+    target: VId,
+    reversal_date: DateDay,
+    replacement_date: DateDay,
+    cents: i128,
+) -> (VId, VId) {
+    let (original, _) = read_entry(&h.db, target).unwrap().unwrap();
+    let target = EntryRef {
+        vid: target,
+        entry_digest: original.entry_digest,
+    };
+    let mut reversal = h.proposal(&Spec::simple(reversal_date, "6000", "1000", 1));
+    reversal.class = EntryClass::REVERSAL;
+    reversal.legs = original.proposal.legs.clone();
+    for leg in &mut reversal.legs {
+        leg.side = match leg.side {
+            Side::Debit => Side::Credit,
+            Side::Credit => Side::Debit,
+        };
+    }
+    reversal.unit_totals = EntryPayload::fold_unit_totals(&reversal.legs).unwrap();
+    reversal.supersession = vec![fa_model::Supersession {
+        target,
+        kind: SupersessionKind::Reverses,
+        reason_code: 1,
+    }];
+    let mut replacement = h.proposal(&Spec::simple(replacement_date, "6000", "1000", cents));
+    replacement.class = EntryClass::REPLACEMENT;
+    replacement.supersession = vec![fa_model::Supersession {
+        target,
+        kind: SupersessionKind::Replaces,
+        reason_code: 1,
+    }];
+    let request = |proposal| PostRequest {
+        proposal,
+        approvals: Vec::new(),
+        plan_certificate: None,
+        capability: Capability::embedded(PREPARER, &["post"]).unwrap(),
+    };
+    let before = h.db.frontier().unwrap();
+    let contexts = h.ctx();
+    let (reversal, replacement) = h
+        .runtime
+        .block_on(fa_journal::post::post_replacement_pair(
+            &mut h.db,
+            &contexts,
+            &h.book,
+            request(reversal),
+            request(replacement),
+            None,
+        ))
+        .expect("native correction publication")
+        .expect("the exact reversal and corrected entry are admitted together");
+    assert!(matches!(reversal, Posted::Committed { .. }));
+    assert!(matches!(replacement, Posted::Committed { .. }));
+    assert_eq!(reversal.recorded_at(), replacement.recorded_at());
+    assert_eq!(replacement.recorded_at().0, before.0 + 1);
+    for member in [&reversal, &replacement] {
+        h.posted
+            .push((member.entry_ref().vid, member.recorded_at()));
+    }
+    (reversal.entry_ref().vid, replacement.entry_ref().vid)
+}
+
 #[test]
 fn versioned_jet_effective_cutoffs_are_inclusive_without_truncating_source_entries() {
     let mut h = harness();
@@ -321,6 +388,123 @@ fn versioned_jet_applies_cutoffs_before_reversal_parity_and_preserves_known_at()
         );
     }
     assert_eq!(h.db.frontier().unwrap(), restored_at);
+}
+
+#[test]
+fn versioned_jet_selects_replacement_chains_at_recorded_and_effective_boundaries() {
+    let mut h = harness();
+    let original = h.post(&Spec::simple(day(2026, 1, 30), "6000", "1000", 100_000));
+    let original_at = h.db.frontier().unwrap();
+    let (_, first) = replace_at(
+        &mut h,
+        original,
+        day(2026, 2, 27),
+        day(2026, 2, 28),
+        200_000,
+    );
+    let first_at = h.db.frontier().unwrap();
+    let (_, second) = replace_at(&mut h, first, day(2026, 3, 29), day(2026, 3, 30), 300_000);
+    let second_at = h.db.frontier().unwrap();
+    let undo = reverse_at(&mut h, second, day(2026, 4, 29));
+    let undone_at = h.db.frontier().unwrap();
+    reverse_at(&mut h, undo, day(2026, 4, 30));
+    let restored_at = h.db.frontier().unwrap();
+
+    for (known_at, cutoff, expected) in [
+        (original_at, day(2026, 4, 30), Some(original)),
+        (first_at, day(2026, 2, 26), Some(original)),
+        (first_at, day(2026, 2, 27), None),
+        (first_at, day(2026, 2, 28), Some(first)),
+        (second_at, day(2026, 2, 28), Some(first)),
+        (second_at, day(2026, 3, 29), None),
+        (second_at, day(2026, 3, 30), Some(second)),
+        (undone_at, day(2026, 4, 28), Some(second)),
+        (undone_at, day(2026, 4, 29), None),
+        (restored_at, day(2026, 4, 29), None),
+        (restored_at, day(2026, 4, 30), Some(second)),
+        (restored_at, day(2026, 2, 26), Some(original)),
+    ] {
+        let snapshot = Snapshot::read(
+            &h.db,
+            &h.ctx().query(),
+            &h.book,
+            Some(known_at),
+            Some(cutoff),
+        )
+        .unwrap();
+        let selected: Vec<VId> = snapshot
+            .live_postings_through(Some(cutoff))
+            .unwrap()
+            .iter()
+            .map(|entry| entry.vid)
+            .collect();
+        assert_eq!(selected, expected.into_iter().collect::<Vec<_>>());
+        for id in [RoundAmounts::ID, PeriodEndTiming::ID] {
+            let result = run_over(&snapshot, &h.book, retained_jet(id, 2).as_ref()).unwrap();
+            assert_eq!(result.population, snapshot.entries.len() as u64);
+            assert_eq!(result.work.entries, u64::from(expected.is_some()));
+            assert_eq!(
+                flagged(&result),
+                selected,
+                "{id}: known_at={} cutoff={cutoff}",
+                known_at.0
+            );
+            h.assert_cites_resolve(&result);
+        }
+    }
+    assert_eq!(h.db.frontier().unwrap(), restored_at);
+}
+
+#[test]
+fn versioned_jet_restores_a_replaced_target_only_when_its_replacement_is_not_live() {
+    let mut h = harness();
+    let original = h.post(&Spec::simple(day(2026, 1, 30), "6000", "1000", 100_000));
+    let (undo, corrected) = replace_at(
+        &mut h,
+        original,
+        day(2026, 2, 27),
+        day(2026, 2, 28),
+        200_000,
+    );
+    let paired_at = h.db.frontier().unwrap();
+    reverse_at(&mut h, undo, day(2026, 3, 29));
+    let revived_target_at = h.db.frontier().unwrap();
+    let undo_corrected = reverse_at(&mut h, corrected, day(2026, 3, 30));
+    let undone_replacement_at = h.db.frontier().unwrap();
+    reverse_at(&mut h, undo_corrected, day(2026, 3, 31));
+    let restored_replacement_at = h.db.frontier().unwrap();
+
+    // Reversing a pair's negation revives the original by parity, but its
+    // live correction still supersedes it. Reversing that correction lets
+    // the revived original stand; restoring it suppresses the original again.
+    for (known_at, cutoff, expected) in [
+        (paired_at, day(2026, 3, 31), corrected),
+        (revived_target_at, day(2026, 3, 29), corrected),
+        (undone_replacement_at, day(2026, 3, 29), corrected),
+        (undone_replacement_at, day(2026, 3, 30), original),
+        (restored_replacement_at, day(2026, 3, 30), original),
+        (restored_replacement_at, day(2026, 3, 31), corrected),
+    ] {
+        let snapshot = Snapshot::read(
+            &h.db,
+            &h.ctx().query(),
+            &h.book,
+            Some(known_at),
+            Some(cutoff),
+        )
+        .unwrap();
+        for id in [RoundAmounts::ID, PeriodEndTiming::ID] {
+            let result = run_over(&snapshot, &h.book, retained_jet(id, 2).as_ref()).unwrap();
+            assert_eq!(result.work.entries, 1);
+            assert_eq!(
+                flagged(&result),
+                vec![expected],
+                "{id}: known_at={} cutoff={cutoff}",
+                known_at.0
+            );
+        }
+    }
+    assert_eq!(h.db.frontier().unwrap(), restored_replacement_at);
 }
 
 #[test]

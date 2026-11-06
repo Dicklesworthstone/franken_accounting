@@ -29,7 +29,7 @@ use fgdb_crypto::Hasher;
 use fgdb_gql::{GqlParameters, GqlQueryPolicy};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const PROCEDURE_CERTIFICATE_FORMAT: &[u8] = b"fa:procedure-certificate:v1";
 pub const EXTENDED_PROCEDURE_CERTIFICATE_FORMAT: &[u8] = extended::FORMAT;
@@ -187,6 +187,132 @@ fn offline_unsupported(message: impl Into<String>) -> Refusal {
         "export a jet.round_amounts or jet.period_end_timing v1 (no effective cutoff) or v2 (optional cutoff) certificate with its original canonical registry closure and no input handles; replay other profiles in their original book",
     )
 }
+
+/// The signed payload of a historical Replacement does not identify its own
+/// native vertex namespace. Only a later authenticated EntryRef can resolve
+/// that ambiguity independently. Inspect the entire original recorded prefix,
+/// before an effective cutoff removes any of its monetary rows.
+pub(crate) fn check_offline_population(
+    journal: &fa_notary::Journal,
+    known_at: CommitSeq,
+) -> fa_journal::refusal::Outcome<()> {
+    use fa_model::{EntryClass, SupersessionKind};
+
+    let unsupported = |message| {
+        Refusal::new(
+            fa_notary::code::SCOPE_UNSUPPORTED,
+            exit::REFUSAL,
+            message,
+            "plan §8.2/11.1/13.3 (every corrected procedure input must preserve its authenticated identity and paired lineage)",
+            "replay this retained procedure in its original book; portable replay requires an existing later authenticated reference to each canonical replacement within the certificate's original known-at prefix",
+        )
+    };
+    if !journal.leaves.iter().any(|leaf| {
+        leaf.envelope.is_entry()
+            && leaf.envelope.commit_seq <= known_at
+            && leaf.envelope.class == EntryClass::REPLACEMENT
+    }) {
+        return Ok(Ok(()));
+    }
+    let mut entries = BTreeMap::new();
+    let mut replacements = BTreeMap::new();
+    let mut reversals = BTreeMap::new();
+    let mut references = BTreeMap::new();
+    for leaf in journal
+        .leaves
+        .iter()
+        .filter(|leaf| leaf.envelope.is_entry() && leaf.envelope.commit_seq <= known_at)
+    {
+        let fa_notary::Record::Entry(entry) = leaf.record()? else {
+            continue;
+        };
+        let proposal = &entry.proposal;
+        let at = leaf.envelope.commit_seq;
+        let posted = proposal.class != EntryClass::PENDING && !proposal.legs.is_empty();
+        if entries
+            .insert(leaf.vid, (entry.entry_digest, at, posted))
+            .is_some()
+        {
+            return Ok(Err(unsupported(
+                "procedure population has duplicate entry identities",
+            )));
+        }
+        if proposal.class == EntryClass::REPLACEMENT {
+            let [supersession] = proposal.supersession.as_slice() else {
+                return Ok(Err(unsupported(
+                    "replacement requires one authenticated Replaces target",
+                )));
+            };
+            if supersession.kind != SupersessionKind::Replaces
+                || leaf.vid != fa_journal::rows::replacement_vid(supersession.target.vid)
+                || !posted
+            {
+                return Ok(Err(unsupported(
+                    "portable procedure replay does not support legacy or malformed replacement identities",
+                )));
+            }
+            replacements.insert(leaf.vid, (entry.entry_digest, at, supersession.target));
+        }
+        for supersession in &proposal.supersession {
+            if proposal.class == EntryClass::REVERSAL
+                && supersession.kind == SupersessionKind::Reverses
+                && reversals
+                    .insert(
+                        supersession.target.vid,
+                        (supersession.target.entry_digest, at),
+                    )
+                    .is_some()
+            {
+                return Ok(Err(unsupported(
+                    "procedure population has more than one reversal for an entry",
+                )));
+            }
+            if matches!(
+                (proposal.class, supersession.kind),
+                (EntryClass::REVERSAL, SupersessionKind::Reverses)
+                    | (EntryClass::REPLACEMENT, SupersessionKind::Replaces)
+            ) {
+                references
+                    .entry((supersession.target.vid, supersession.target.entry_digest))
+                    .and_modify(|latest: &mut CommitSeq| *latest = (*latest).max(at))
+                    .or_insert(at);
+            }
+        }
+        // Unactivated migration rows cannot resolve another row's identity.
+        // Ordinary source visibility still follows the migration interpreter.
+        if posted && proposal.class != EntryClass::MIGRATION {
+            for settlement in proposal.legs.iter().flat_map(|leg| &leg.settles) {
+                references
+                    .entry((settlement.target.vid, settlement.target.entry_digest))
+                    .and_modify(|latest: &mut CommitSeq| *latest = (*latest).max(at))
+                    .or_insert(at);
+            }
+        }
+    }
+    for (identity, (digest, at, target)) in replacements {
+        if !entries
+            .get(&target.vid)
+            .is_some_and(|(digest, target_at, posted)| {
+                *digest == target.entry_digest && *target_at < at && *posted
+            })
+            || reversals.get(&target.vid) != Some(&(target.entry_digest, at))
+        {
+            return Ok(Err(unsupported(
+                "replacement requires its earlier posted target and same-commit paired reversal",
+            )));
+        }
+        if !references
+            .get(&(identity, digest))
+            .is_some_and(|latest| *latest > at)
+        {
+            return Ok(Err(unsupported(
+                "replacement has no authenticated later reference resolving its original identity",
+            )));
+        }
+    }
+    Ok(Ok(()))
+}
+
 fn encode_error(e: fa_model::EncodeError) -> Refusal {
     invalid(format!("procedure encoding: {e}"))
 }

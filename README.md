@@ -1360,6 +1360,42 @@ and RFC3339 instant selectors; replay preserves the original coordinate even
 after later postings or ticks arrive. Signed witness claims, independent offline
 bundles, and certificates for additional report families remain unfinished.
 
+### Certified forensic procedures
+
+`fa procedure run <id> --certify` retains a replayable procedure certificate
+without publishing a FindingRun into the review journal. `--certificate-out`
+also writes a new file and implies certification. Both forms need current
+whole-book Read and Produce authority; bank statement drift also needs
+Reconcile. Native certification accepts procedures whose complete input
+closures have been audited, and refuses unsupported profiles.
+
+```bash
+fa procedure run jet.round_amounts --effective-through 2026-03-31 \
+  --certificate-out round-amounts.cert --book acme.fabook --json
+fa replay round-amounts.cert --book acme.fabook --json
+fa bundle produce --certificate C:<oid> --book acme.fabook --json
+```
+
+The standalone verifier recomputes `jet.round_amounts` and
+`jet.period_end_timing` v1 and v2 from their authenticated source records.
+Current v2 accepts an inclusive effective cutoff and selects dated postings
+before resolving reversal liveness and replacement supersession. The input
+commitment still includes the complete population at the chosen recorded
+sequence, including controls and entries beyond the cutoff. Explicit `@1`
+reproduces the original algorithm, which takes no effective cutoff.
+
+Corrected books can be exported when every Replacement uses the current
+target-derived identity and a later authenticated reversal, replacement or
+ordinary settlement reference resolves that identity within the certificate's
+original recorded prefix. The verifier checks the paired reversal and target
+lineage before applying the date cutoff. A future-effective reference may
+resolve an identity without changing the earlier dated result; a reference
+recorded after the certificate's frontier cannot. Unreferenced replacements,
+legacy identity aliases and migration-only identity witnesses remain outside
+this portable profile and are refused. These restrictions leave native replay
+available in the original book. Statistical findings remain observations with
+citations, without establishing fraud or the validity of approval admission.
+
 ### Typed posting plans
 
 The library, CLI and MCP can rehearse an entry through the actual posting
