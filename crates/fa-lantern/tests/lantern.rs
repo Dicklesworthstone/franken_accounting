@@ -4905,6 +4905,155 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     witness::determinism(&snapshot, &h.book, &ConfirmCoverage::new().unwrap()).unwrap();
 }
 
+/// A native Replace publishes two successors of one target. A later Replace
+/// therefore gives the chain two possible witnesses; the registered entry_vid
+/// tie-break must select the least VID independently of snapshot row order.
+#[test]
+fn reversal_patterns_choose_the_least_native_replacement_successor() {
+    use fa_lantern::cutoff::ReversalPatterns;
+    use fa_model::{EntryRef, Supersession};
+
+    fn replace(h: &mut Harness, target: VId, cents: i128) -> (EntryRef, EntryRef) {
+        let (original, _) = read_entry(&h.db, target).unwrap().unwrap();
+        let target = EntryRef {
+            vid: target,
+            entry_digest: original.entry_digest,
+        };
+        let spec = Spec::simple(original.proposal.effective_date, "6000", "1000", cents);
+        let mut reversal = h.proposal(&spec);
+        reversal.class = EntryClass::REVERSAL;
+        reversal.legs = original.proposal.legs.clone();
+        for leg in &mut reversal.legs {
+            leg.side = match leg.side {
+                Side::Debit => Side::Credit,
+                Side::Credit => Side::Debit,
+            };
+        }
+        reversal.unit_totals = EntryPayload::fold_unit_totals(&reversal.legs).unwrap();
+        reversal.supersession = vec![Supersession {
+            target,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
+        }];
+        let mut replacement = h.proposal(&spec);
+        replacement.class = EntryClass::REPLACEMENT;
+        replacement.supersession = vec![Supersession {
+            target,
+            kind: SupersessionKind::Replaces,
+            reason_code: 1,
+        }];
+        let request = |proposal| PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            capability: Capability::embedded(PREPARER, &["post"]).unwrap(),
+            plan_certificate: None,
+        };
+        let before = h.db.frontier().unwrap();
+        let ctx = h.ctx();
+        let (reversal, replacement) = h
+            .runtime
+            .block_on(fa_journal::post::post_replacement_pair(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                request(reversal),
+                request(replacement),
+                None,
+            ))
+            .expect("native replacement transaction")
+            .expect("both replacement members are admitted");
+        assert!(matches!(reversal, Posted::Committed { .. }));
+        assert!(matches!(replacement, Posted::Committed { .. }));
+        assert_eq!(reversal.recorded_at(), replacement.recorded_at());
+        assert_eq!(reversal.recorded_at().0, before.0 + 1);
+        assert_eq!(h.db.frontier().unwrap(), reversal.recorded_at());
+        h.posted
+            .push((reversal.entry_ref().vid, reversal.recorded_at()));
+        h.posted
+            .push((replacement.entry_ref().vid, replacement.recorded_at()));
+        (reversal.entry_ref(), replacement.entry_ref())
+    }
+
+    let mut h = harness();
+    let baseline_entries = h.snapshot().entries.len();
+    let original = h.post(&Spec::simple(day(2026, 3, 15), "6000", "1000", 100));
+    let procedure = ReversalPatterns::new().unwrap();
+    let (_, corrected) = replace(&mut h, original, 125);
+    let single = h.snapshot();
+    assert_eq!(single.entries.len(), baseline_entries + 3);
+    let negative = run_over(&single, &h.book, &procedure).unwrap();
+    assert!(
+        negative.findings.is_empty(),
+        "one same-period correction is not a reversal chain"
+    );
+
+    let (next_reversal, next_replacement) = replace(&mut h, corrected.vid, 150);
+    let snapshot = h.snapshot();
+    assert_eq!(snapshot.entries.len(), baseline_entries + 5);
+    let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+    assert_eq!(result.findings.len(), 3);
+    let least_successor = next_reversal.vid.min(next_replacement.vid);
+    assert_ne!(next_reversal.vid, next_replacement.vid);
+    for (entry, cites, length) in [
+        (
+            corrected.vid,
+            vec![
+                Cite::Entry(corrected.vid),
+                Cite::Entry(original),
+                Cite::Entry(least_successor),
+            ],
+            3,
+        ),
+        (
+            next_reversal.vid,
+            vec![Cite::Entry(next_reversal.vid), Cite::Entry(corrected.vid)],
+            2,
+        ),
+        (
+            next_replacement.vid,
+            vec![
+                Cite::Entry(next_replacement.vid),
+                Cite::Entry(corrected.vid),
+            ],
+            2,
+        ),
+    ] {
+        let finding = result
+            .findings
+            .iter()
+            .find(|finding| finding.cites.first() == Some(&Cite::Entry(entry)))
+            .expect("each chained correction has one finding");
+        assert_eq!(finding.severity, Severity::High);
+        assert_eq!(finding.cites, cites);
+        assert_eq!(
+            finding.statistic,
+            Statistic::count(
+                "reversal_chain_entries",
+                length,
+                (baseline_entries + 5) as u64
+            )
+        );
+    }
+    h.assert_cites_resolve(&result);
+    for mut permuted in [snapshot.with_entries_reversed(), snapshot.clone()] {
+        permuted.entries.rotate_left(1);
+        let reordered = run_over(&permuted, &h.book, &procedure).unwrap();
+        assert_eq!(reordered.findings, result.findings);
+        assert_eq!(reordered.findings_digest, result.findings_digest);
+        assert_eq!(reordered.work, result.work);
+    }
+    assert!(
+        witness::determinism(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
+    // Charge both successor selection and chain lookup for all four links.
+    // Keep these checks after the causal citation and permutation assertions.
+    assert_eq!(result.work.entries, (baseline_entries + 5) as u64);
+    assert_eq!(result.work.legs, 0);
+    assert_eq!(result.work.comparisons, 8);
+}
+
 /// H18 (fa-yugf.98): `events.subsequent` treats a prior period as a closed
 /// boundary only when its latest recorded transition put it in SoftClosed,
 /// Closed or Locked. Version 1 counted every period with any transition, and

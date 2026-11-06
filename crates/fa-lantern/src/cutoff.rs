@@ -1337,7 +1337,8 @@ impl Procedure for ExpenseCapitalization {
 
 /// `reversal.patterns` (plan §11.7, `FA-EVID-L50`): systematic reversal and
 /// re-aging patterns (chains of Reversal/Replacement entries or cross-period
-/// reversals).
+/// reversals). Version 2 selects the least successor entry VID as its
+/// canonical chain witness, including when a replacement has two successors.
 pub struct ReversalPatterns {
     params: Params,
 }
@@ -1348,7 +1349,7 @@ impl Procedure for ReversalPatterns {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1362,9 +1363,17 @@ impl Procedure for ReversalPatterns {
         let mut by_vid: BTreeMap<VId, &crate::SnapshotEntry> = BTreeMap::new();
         let mut superseded_by_map: BTreeMap<VId, VId> = BTreeMap::new();
         for e in &snapshot.entries {
+            work.entry()?;
             by_vid.insert(e.vid, e);
             for s in &e.entry.proposal.supersession {
-                superseded_by_map.insert(s.target.vid, e.vid);
+                work.compare(1)?;
+                // A Replace publishes a reversal and a replacement against
+                // one target. Apply the registered entry_vid tie-break to
+                // the witness instead of depending on snapshot row order.
+                superseded_by_map
+                    .entry(s.target.vid)
+                    .and_modify(|next| *next = (*next).min(e.vid))
+                    .or_insert(e.vid);
             }
         }
 
@@ -1372,7 +1381,6 @@ impl Procedure for ReversalPatterns {
         let mut out = Vec::new();
 
         for e in &snapshot.entries {
-            work.entry()?;
             let Some(s) = e.entry.proposal.supersession.first() else {
                 continue;
             };

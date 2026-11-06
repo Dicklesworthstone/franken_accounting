@@ -1564,7 +1564,7 @@ meaning = "Civil days without inventory relief movement after which an inventory
 
 [[procedure]]
 id = "reversal.patterns"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L50"
 tie_break = "entry_vid"
