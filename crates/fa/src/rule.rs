@@ -26,8 +26,8 @@ use crate::{AsyncBook, Outcome};
 pub use fa_canon::{
     AuthorityError, AuthorityGrant, CANON_INPUTS_DOMAIN, CanonError, CompiledRule, Dependencies,
     Derivation, DerivedLeg, EvalError, InputDecl, InputType, InputValue, Inputs, IrError,
-    MAX_SOURCE_BYTES, Produces, RuleAuthority, decode_inputs, encode_inputs, evaluate,
-    validate_authority,
+    MAX_SOURCE_BYTES, Produces, RuleAuthority, RuleIntentError, RuleIntentKind, decode_inputs,
+    encode_inputs, evaluate, validate_authority,
 };
 pub use fa_journal::refusal::code::CANON_RULE;
 pub use fa_journal::rule::{
@@ -39,6 +39,18 @@ pub use fa_journal::rule::{
 /// Compile `source` against this book's registered units.
 pub fn compile_rule(context: &BookContext, source: &str) -> Result<CompiledRule, Refusal> {
     fa_canon::compile(source, &context.units).map_err(|error| rule_refusal(&error))
+}
+
+/// A typed business operation must invoke a rule in its declared family.
+/// The rule's immutable produced class is also checked by native reproduction.
+pub fn rule_intent_refusal(rule: &CompiledRule, error: &RuleIntentError) -> Refusal {
+    Refusal::new(
+        fa_journal::refusal::code::CANON_RULE,
+        fa_journal::refusal::exit::REFUSAL,
+        format!("rule {} v{}: {error}", rule.name(), rule.version()),
+        "plan §10.2 / Appendix B (Accrue and Defer use the Adjusting rule family)",
+        "select an activated rule declared produces Adjusting; use fa rule show <ir_digest> to inspect its class and declared inputs",
+    )
 }
 
 /// Display metadata for one member of a prepared automatic derivation.
@@ -184,6 +196,46 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         inputs: &Inputs,
         key: &[u8],
     ) -> Outcome<fa_intents::PostIntent> {
+        self.prepare_rule_entry_for(cx, capability, None, ir_digest, event, inputs, key)
+    }
+
+    /// Prepare a Canon derivation for a typed business operation.
+    /// Accrue and Defer require the Adjusting family before evaluating any
+    /// input or sealing a proposal. The rule owns the legs, effective date,
+    /// evidence and reversal schedule; callers cannot override those effects.
+    /// The result uses the ordinary RuleDerived bytes and native planning law.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_rule_intent(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        kind: RuleIntentKind,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &Inputs,
+        key: &[u8],
+    ) -> Outcome<fa_intents::PostIntent> {
+        if let Err(denial) = fa_policy::require(
+            capability,
+            fa_policy::Op::Post,
+            "preparing a rule-backed business intent",
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        self.prepare_rule_entry_for(cx, capability, Some(kind), ir_digest, event, inputs, key)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_rule_entry_for(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        kind: Option<RuleIntentKind>,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &Inputs,
+        key: &[u8],
+    ) -> Outcome<fa_intents::PostIntent> {
         let built = self.query(cx, |db, book| {
             let at = match crate::subledger::admitted_at(db, book, capability, None)? {
                 Ok(at) => at,
@@ -198,6 +250,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(version) => version,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        if let Some(kind) = kind
+            && let Err(error) = kind.validate_rule(&version.rule)
+        {
+            return Ok(Err(rule_intent_refusal(&version.rule, &error)));
+        }
         let Some(event_row) = self.read_event(cx, event, None)? else {
             return Ok(Err(fa_journal::refusal::Refusal::new(
                 fa_journal::refusal::code::STRUCTURE,
@@ -353,6 +410,37 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(intent) => intent,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        self.post_prepared_rule_entry(cx, capability, intent).await
+    }
+
+    /// Prepare and post a typed rule-backed Accrue or Defer operation.
+    /// Native admission independently rechecks activation, reproduction,
+    /// RuleAuthority, the scheduled reversal and the current caller's rights.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn derive_rule_intent(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        kind: RuleIntentKind,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &Inputs,
+        key: &[u8],
+    ) -> Outcome<fa_journal::Posted> {
+        let intent =
+            match self.prepare_rule_intent(cx, capability, kind, ir_digest, event, inputs, key)? {
+                Ok(intent) => intent,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        self.post_prepared_rule_entry(cx, capability, intent).await
+    }
+
+    async fn post_prepared_rule_entry(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        intent: fa_intents::PostIntent,
+    ) -> Outcome<fa_journal::Posted> {
         self.post(
             cx,
             fa_journal::PostRequest {

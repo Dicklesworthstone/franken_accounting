@@ -29,6 +29,7 @@
 
 mod check;
 mod eval;
+mod intent;
 mod ir;
 mod lex;
 mod parse;
@@ -41,6 +42,7 @@ pub use eval::{
     AuthorityError, Derivation, DerivedLeg, EvalError, InputValue, Inputs, decode_inputs,
     encode_inputs, evaluate, validate_authority,
 };
+pub use intent::{RuleIntentError, RuleIntentKind};
 pub use ir::{
     AuthorityGrant, CANON_INPUTS_DOMAIN, CANON_IR_DOMAIN, CompiledRule, DateSource, Dependencies,
     InputDecl, InputType, IrError, LegTemplate, Node, Produces, RuleAuthority,

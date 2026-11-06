@@ -9988,6 +9988,21 @@ pub(crate) fn emit_post_plan(
     let certificate = plan.certificate();
     let proposal = plan.proposal();
     let rule_derived = matches!(&plan.intent().proposal().origin, EntryOrigin::Rule { .. });
+    let derivation = match &proposal.origin {
+        EntryOrigin::Rule {
+            rule_version_oid,
+            event_ref,
+            inputs_digest,
+        } => Some((
+            hex(&rule_version_oid.0),
+            format!("{:032x}", event_ref.0),
+            hex(inputs_digest),
+        )),
+        _ => None,
+    };
+    let reverse_on = fa_journal::schedule::auto_reverse(proposal)
+        .map_err(|error| Fail::Internal(format!("admitted plan reversal schedule: {error}")))?
+        .map(|(date, _)| date);
     let encode_error = |e| Fail::Internal(format!("encode the admitted post plan: {e}"));
     let bytes = plan.canonical_bytes().map_err(encode_error)?;
     let plan_digest = hex(&plan.digest().map_err(encode_error)?);
@@ -10289,6 +10304,14 @@ pub(crate) fn emit_post_plan(
         certificate_digest,
         human_legs.join("\n"),
     );
+    if let Some((rule, event, inputs)) = &derivation {
+        human.push_str(&format!(
+            "\nRule {rule} over event {event}; inputs {inputs}"
+        ));
+    }
+    if let Some(date) = reverse_on {
+        human.push_str(&format!("\nScheduled exact reversal on {}", date.render()));
+    }
     if let Some((ordinal, requested, moved)) = &balancing {
         human.push_str(&format!(
             "\nBalancing leg {ordinal}: requested {requested}, planned {moved}"
@@ -10365,7 +10388,21 @@ pub(crate) fn emit_post_plan(
                 }),
             ),
             ("class", s(proposal.class.name().unwrap_or("?"))),
+            (
+                "derivation",
+                derivation.map_or(Json::Null, |(rule, event, inputs)| {
+                    obj(vec![
+                        ("ir_digest", s(rule)),
+                        ("event", s(event)),
+                        ("inputs_digest", s(inputs)),
+                    ])
+                }),
+            ),
             ("effective_date", s(proposal.effective_date.render())),
+            (
+                "reverse_on",
+                reverse_on.map_or(Json::Null, |date| s(date.render())),
+            ),
             ("period", s(&certificate.period)),
             ("principal", s(format!("{:032x}", certificate.principal.0))),
             ("idempotency_key", s(hex(&proposal.idempotency_key))),

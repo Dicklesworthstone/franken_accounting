@@ -13,8 +13,8 @@
 
 use fa::rule::{
     CompiledRule, Derivation, EvalError, InputType, InputValue, Inputs,
-    RULE_ACTIVATION_PLAN_DOMAIN, RuleActivationPlan, RuleAuthority, RuleNameRow, RuleVersionRow,
-    compile_rule, evaluation_refusal,
+    RULE_ACTIVATION_PLAN_DOMAIN, RuleActivationPlan, RuleAuthority, RuleIntentKind, RuleNameRow,
+    RuleVersionRow, compile_rule, evaluation_refusal, rule_intent_refusal,
 };
 use fa_money::{Amount, Side};
 use fa_time::DateDay;
@@ -505,7 +505,91 @@ fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let Some(rule) = args.flag("--rule") else {
         return derive_all(ctx, args, target);
     };
-    let digest = digest_arg(rule, DERIVE)?;
+    derive_selected(ctx, args, target, rule, None)
+}
+
+/// A typed business operation shares the exact Canon derivation and native
+/// plan/post pipeline with rule derive. Its family is checked in the facade;
+/// the caller supplies inputs, never replacement effects or reversal timing.
+pub(crate) fn derive_business_intent(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    kind: RuleIntentKind,
+) -> Result<(), Fail> {
+    check_post_planning_options(args)?;
+    let example = format!(
+        "fa {} --rule <ir_digest> --event <code|vid> [--input <name>=<value>]... [--key K] [--dry-run [--plan-out <new-file>]]",
+        kind.name().to_ascii_lowercase(),
+    );
+    if args.positional.len() != 1 {
+        return Err(usage(
+            "a rule-backed business intent takes no positional",
+            example,
+        ));
+    }
+    for flag in ["--rule", "--event", "--key"] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(format!("supply exactly one {flag}"), example));
+        }
+    }
+    for flag in [
+        "--intent",
+        "--date",
+        "--debit",
+        "--credit",
+        "--amount",
+        "--reverse-on",
+        "--description",
+        "--evidence",
+        "--period",
+        "--draft",
+        "--scenario",
+        "--plan",
+        "--approval",
+        "--review",
+        "--review-out",
+    ] {
+        if !args.flag_all(flag).is_empty() {
+            return Err(usage(
+                format!(
+                    "{flag} cannot override a rule-backed intent: the selected rule and recorded event own its effects, evidence and reversal schedule"
+                ),
+                example,
+            ));
+        }
+    }
+    let rule = args
+        .flag("--rule")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            usage(
+                "a rule-backed business intent requires --rule",
+                example.clone(),
+            )
+        })?;
+    let event = args
+        .flag("--event")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            usage(
+                "a rule-backed business intent requires --event",
+                example.clone(),
+            )
+        })?;
+    derive_selected(ctx, args, event, rule, Some(kind))
+}
+
+/// Select one immutable version and event, parse only the rule's declared
+/// inputs, then use the same facade preparation and native posting laws on
+/// every surface. A business intent additionally requires its rule family.
+fn derive_selected(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    target: &str,
+    selected_rule: &str,
+    kind: Option<RuleIntentKind>,
+) -> Result<(), Fail> {
+    let digest = digest_arg(selected_rule, DERIVE)?;
     let who = ctx.principal(args);
     let cap = ctx.capability(args, &["read", "post"])?;
     let mut selected = None;
@@ -532,19 +616,32 @@ fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )
         })?
         .rule;
+    if let Some(kind) = kind {
+        kind.validate_rule(&rule)
+            .map_err(|error| rule_intent_refusal(&rule, &error))?;
+    }
     let given = inputs(&rule, &args.flag_all("--input"), &book.context().units)?;
     let key = match args.flag("--key") {
         Some(key) => key.to_string(),
         None => default_key(event_vid, &rule, &given)?,
     };
     if args.switch("--dry-run") {
-        let intent =
-            book.prepare_rule_entry(&cap, &digest, event_vid, &given, key.as_bytes())??;
+        let intent = match kind {
+            Some(kind) => {
+                book.prepare_rule_intent(&cap, kind, &digest, event_vid, &given, key.as_bytes())??
+            }
+            None => book.prepare_rule_entry(&cap, &digest, event_vid, &given, key.as_bytes())??,
+        };
         let plan = book.plan(intent, &cap)??;
         ctx.out.at_book(&book)?;
         return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan, &cap);
     }
-    let posted = book.derive_rule_entry(&cap, &digest, event_vid, &given, key.as_bytes())??;
+    let posted = match kind {
+        Some(kind) => {
+            book.derive_rule_intent(&cap, kind, &digest, event_vid, &given, key.as_bytes())??
+        }
+        None => book.derive_rule_entry(&cap, &digest, event_vid, &given, key.as_bytes())??,
+    };
     ctx.out.at_book(&book)?;
     crate::cli::emit_posted(&ctx.out, posted, rule.produces().name(), false, None, None)
 }
