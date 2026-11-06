@@ -28379,8 +28379,9 @@ fn query_runs_the_profile_over_the_books_graph() -> std::io::Result<()> {
         "CALL fa.aging('open_items') EFFECTIVE AT '2026-03-31' AS KNOWN AT {march}"
     ));
     assert_eq!(called.render(), aged.render());
-    // Planted: an unregistered procedure exits as fa procedure run does; a
-    // run is never certified as a query, and a parameter is an integer.
+    // Planted: an unregistered procedure exits as fa procedure run does;
+    // certification never substitutes an unavailable version, and a parameter
+    // is an integer.
     let (exit, out) = run(&["query", "CALL fa.jet('no_such_test')", "--json"]);
     let (direct, direct_out) = run(&["procedure", "run", "jet.no_such_test", "--json"]);
     assert_eq!(exit, direct, "{out}\n{direct_out}");
@@ -28388,7 +28389,7 @@ fn query_runs_the_profile_over_the_books_graph() -> std::io::Result<()> {
     for argv in [
         &[
             "query",
-            "CALL fa.jet('round_amounts')",
+            "CALL fa.jet('round_amounts@65535')",
             "--certify",
             "--json",
         ][..],

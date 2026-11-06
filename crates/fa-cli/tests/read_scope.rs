@@ -1296,6 +1296,137 @@ fn direct_procedure_certification_admits_current_whole_book_read_and_produce_bef
 }
 
 #[test]
+fn constant_procedure_calls_admit_the_direct_operations_before_opening_the_book() {
+    let f = Fixture::new();
+    let (reader, _) = f.issue("query-procedure-reader", &[]);
+    let (producer, _) = f.issue_ops("query-procedure-producer", &["read", "produce"], &[]);
+    let (scoped, _) = f.issue_ops(
+        "query-procedure-scoped",
+        &["read", "produce"],
+        &["--account", "1000"],
+    );
+    let statement = "CALL fa.jet('round_amounts@2', {round_power: 2}) EFFECTIVE AT '2026-03-31'";
+    let head = || {
+        number(
+            f.ok(&["book", "info"]).get("coordinate").unwrap(),
+            "known_at",
+        )
+    };
+    let before = head();
+    for (token, message) in [(&reader, "produce"), (&scoped, "reaches the whole book")] {
+        for mode in ["certify", "file", "explain"] {
+            let query = if mode == "explain" {
+                format!("EXPLAIN (CERTIFICATE) {statement}")
+            } else {
+                statement.to_string()
+            };
+            let mut arguments = vec!["--token", token.as_str(), "query", query.as_str()];
+            match mode {
+                "certify" => arguments.push("--certify"),
+                "file" => arguments.extend(["--certificate-out", "denied-query-procedure.cert"]),
+                _ => {}
+            }
+            let (exit, error) = f.run(&arguments);
+            assert_eq!(exit, 7, "{arguments:?}: {error:?}");
+            assert!(text(data(&error), "message").contains(message), "{error:?}");
+            assert_eq!(error.get("book"), Some(&Json::Null), "{error:?}");
+            assert_eq!(error.get("coordinate"), Some(&Json::Null), "{error:?}");
+            assert_eq!(head(), before, "refusal must precede access logging");
+        }
+    }
+    for selector in ["bank_statement_drift", "bank_statement_drift@1"] {
+        for mode in ["plain", "certify", "file", "explain"] {
+            let call = format!("CALL fa.recon('{selector}')");
+            let query = if mode == "explain" {
+                format!("EXPLAIN (CERTIFICATE) {call}")
+            } else {
+                call
+            };
+            let mut arguments = vec!["--token", producer.as_str(), "query", query.as_str()];
+            match mode {
+                "certify" => arguments.push("--certify"),
+                "file" => arguments.extend(["--certificate-out", "denied-query-procedure.cert"]),
+                _ => {}
+            }
+            let (exit, error) = f.run(&arguments);
+            assert_eq!(exit, 7, "{arguments:?}: {error:?}");
+            assert!(
+                text(data(&error), "message").contains("reconcile"),
+                "{error:?}"
+            );
+            assert_eq!(error.get("book"), Some(&Json::Null));
+            assert_eq!(error.get("coordinate"), Some(&Json::Null));
+            assert_eq!(head(), before);
+        }
+    }
+    for (query, expected_exit) in [
+        ("CALL fa.jet('round_amounts@01')", 3),
+        ("CALL fa.jet('round_amounts@65535')", 2),
+        ("CALL fa.jet('round_amounts') YIELD findings", 3),
+    ] {
+        let (exit, error) = f.run(&[
+            "--token",
+            &producer,
+            "query",
+            query,
+            "--certificate-out",
+            "denied-query-procedure.cert",
+        ]);
+        assert_eq!(exit, expected_exit, "{query}: {error:?}");
+        assert_eq!(error.get("book"), Some(&Json::Null));
+        assert_eq!(error.get("coordinate"), Some(&Json::Null));
+        assert_eq!(
+            head(),
+            before,
+            "invalid selectors are judged without opening"
+        );
+    }
+    assert!(!f.dir.join("denied-query-procedure.cert").exists());
+
+    let query = format!("EXPLAIN (CERTIFICATE) {statement} AS KNOWN AT {before}");
+    let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .current_dir(&f.dir)
+        .args([
+            "--book",
+            "book",
+            "--token",
+            &producer,
+            "query",
+            &query,
+            "--certificate-out",
+            "admitted-query-procedure.cert",
+            "--json",
+        ])
+        .env_remove("FA_BOOK")
+        .env_remove("FA_TOKEN")
+        .output()
+        .expect("certify a constant CALL with direct read and produce authority");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{stdout}\n{:?}", output.stderr);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    for line in &lines {
+        fa_cli::verbs::registry().unwrap().check_line(line).unwrap();
+    }
+    let report = json::parse(lines[0]).unwrap();
+    let metadata = json::parse(lines[1]).unwrap();
+    assert_eq!(text(&report, "event"), "procedure_run");
+    assert_eq!(text(&metadata, "event"), "report_certificate");
+    let oid = text(data(&metadata), "oid");
+    assert_eq!(text(&report, "certificate"), oid);
+    let encoded = std::fs::read(f.dir.join("admitted-query-procedure.cert")).unwrap();
+    let certificate = fa::procedure_certificate::ProcedureCertificate::decode(&encoded).unwrap();
+    assert_eq!(certificate.known_at().0, u64::try_from(before).unwrap());
+    assert_eq!(certificate.report().version, 2);
+    let replayed = f.ok(&["--token", &reader, "replay", &format!("C:{oid}")]);
+    assert_eq!(data(&replayed), data(&report));
+    assert_eq!(
+        number(data(&f.ok(&["finding", "runs"])), "total_recorded_runs"),
+        0
+    );
+}
+
+#[test]
 fn per_row_open_amount_uses_the_existing_query_authority_boundary() {
     let f = Fixture::new();
     let statement = "MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code:'1000'}) CALL fa.open_amount(l) YIELD open, age_days WHERE age_days >= 20 RETURN a.code AS account, open, age_days EFFECTIVE AT '2026-03-31'";

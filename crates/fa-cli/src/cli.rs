@@ -1909,6 +1909,7 @@ fn access_record(
         && operations.contains(&fa_policy::Op::Read);
     let reconciliation_read = operations.contains(&fa_policy::Op::Read)
         && (verb == "procedure"
+            || verb == "query"
             || verb == "match"
             || (verb == "bank"
                 && matches!(
@@ -2266,6 +2267,12 @@ fn dispatch_with(
     if args.switch("--help") {
         return emit_help(out, reg, Some(verb));
     }
+    if verb.name == "query" {
+        // Parse and validate a standalone procedure selector before bound
+        // admission or host-path preflight can open the book. The same pure
+        // translation supplies its direct procedure authority below.
+        crate::query::procedure_invocation(args)?;
+    }
     if !verb.subcommands.is_empty() {
         let joined = verb.subcommands.join("|");
         match args.positional.get(1) {
@@ -2469,6 +2476,11 @@ pub(crate) fn bound_command_rule(
     verb: &str,
     args: &Args,
 ) -> Option<(&'static [fa_policy::Op], bool)> {
+    if verb == "query"
+        && let Ok(Some(invocation)) = crate::query::procedure_invocation(args)
+    {
+        return bound_command_rule("procedure", &invocation);
+    }
     let reg = crate::verbs::registry().ok()?;
     let present = |flag: &str| args.switch(flag) || !args.flag_all(flag).is_empty();
     let value = |flag: &str| args.flag(flag).map(str::to_string);
@@ -2729,6 +2741,12 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
         return Ok(());
     };
     let sub = args.positional.get(1).map(String::as_str);
+    let translated = if verb.name == "query" {
+        crate::query::procedure_invocation(args)?
+    } else {
+        None
+    };
+    let admission_args = translated.as_ref().unwrap_or(args);
     let Some((required, judged)) = bound_command_rule(&verb.name, args) else {
         return Err(Refusal::new(
             fa_journal::refusal::code::CAPABILITY,
@@ -2754,7 +2772,8 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
     // unsupported rehearsal prerequisite before opening the book, including
     // the AccessEvent a bound read would otherwise publish on its first open.
     if required.contains(&fa_policy::Op::Produce)
-        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
+        && (admission_args.switch("--certify")
+            || admission_args.flag("--certificate-out").is_some())
     {
         fa_policy::admit_direct_write(authority.capability())
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
