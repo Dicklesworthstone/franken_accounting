@@ -984,8 +984,8 @@ fn a_lantern_procedure_call_runs_the_registered_procedure() {
             "not BETWEEN",
         ),
         (
-            "EXPLAIN (CERTIFICATE) CALL fa.jet('round_amounts')",
-            "fa finding record",
+            "EXPLAIN (CERTIFICATE) CALL fa.jet('round_amounts') AT BRANCH 'scenario:forecast'",
+            "not certified",
         ),
         ("CALL fa.jet('Round-Amounts')", "lowercase letters"),
         (
@@ -1010,6 +1010,62 @@ fn a_lantern_procedure_call_runs_the_registered_procedure() {
         assert_eq!(r.law, Law::Profile, "{text}");
         assert!(r.message.contains(says), "{text}: {r:?}");
     }
+}
+
+#[test]
+fn constant_procedure_certification_preserves_versions_arguments_and_coordinates() {
+    for (selector, version, cutoff) in [
+        ("round_amounts", None, true),
+        ("round_amounts@1", Some(1), false),
+        ("round_amounts@2", Some(2), true),
+    ] {
+        let text = format!(
+            "CALL fa.jet('{selector}', {{round_power: 2, budget: 1000}}) AS KNOWN AT 7{}",
+            if cutoff {
+                " EFFECTIVE AT '2026-03-31'"
+            } else {
+                ""
+            }
+        );
+        let plain = rewrite(&text).unwrap();
+        let certified = rewrite(&format!("EXPLAIN (CERTIFICATE) {text}")).unwrap();
+        assert!(!plain.certify);
+        assert!(certified.certify);
+        assert_eq!(plain.selection, certified.selection);
+        assert_eq!(certified.known_at, KnownAt::Seq(7));
+        assert_eq!(
+            certified.effective,
+            cutoff.then(|| EffectiveSelector::AsOf(DateDay::parse("2026-03-31").unwrap()))
+        );
+        assert_eq!(
+            certified.selection,
+            Selection::Procedure {
+                id: version.map_or_else(
+                    || "jet.round_amounts".into(),
+                    |version| format!("jet.round_amounts@{version}"),
+                ),
+                arguments: vec![
+                    ("round_power".into(), ProcedureArgument::Integer("2".into())),
+                    ("budget".into(), ProcedureArgument::Integer("1000".into())),
+                ],
+            }
+        );
+    }
+    for version in ["", "0", "01", "-1", "+1", "65536", "1@2", "one"] {
+        let text = format!("EXPLAIN (CERTIFICATE) CALL fa.jet('round_amounts@{version}')");
+        let refusal = refused(&text);
+        assert_eq!(refusal.law, Law::Profile, "{text}");
+        assert!(
+            refusal.message.contains("canonical positive u16"),
+            "{refusal:?}"
+        );
+    }
+    // Registry availability is the direct procedure runner's decision. The
+    // pure rewriter preserves a syntactically valid requested version exactly.
+    assert!(matches!(
+        rewrite("CALL fa.jet('round_amounts@65535')").unwrap().selection,
+        Selection::Procedure { id, .. } if id == "jet.round_amounts@65535"
+    ));
 }
 
 #[test]

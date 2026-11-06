@@ -420,8 +420,12 @@ meaning = "power of ten"
         ] {
             assert!(p.get(id).is_some(), "{id} is registered");
             let row = p.get(id).unwrap();
-            // benford.first_digit gained its account_type scope at version 2.
-            let version = if id == "benford.first_digit" { 2 } else { 1 };
+            // Benford v2 adds account-type scope; the two dated JET v2
+            // profiles add an optional effective cutoff. Other rows retain v1.
+            let version = match id {
+                "benford.first_digit" | "jet.round_amounts" | "jet.period_end_timing" => 2,
+                _ => 1,
+            };
             assert_eq!(row.version, version, "{id}");
             assert_eq!(
                 row.claim,

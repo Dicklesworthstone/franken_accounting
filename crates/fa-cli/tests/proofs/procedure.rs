@@ -256,6 +256,149 @@ fn direct_procedure_certificates_replay_and_verify_without_recording_findings() 
 }
 
 #[test]
+fn constant_procedure_calls_retain_the_direct_certificate_and_replay_its_original_selection() {
+    let fixture = Fixture::new();
+    let evidence = fixture.chart_and_evidence();
+    fixture.post("ordinary", "2026-03-15", "1.23", &evidence);
+    let selected = fixture.post("selected", "2026-03-29", "100.00", &evidence);
+    fixture.post("after-cutoff", "2026-03-31", "200.00", &evidence);
+    let known_at = fixture.head();
+    let at = known_at.to_string();
+    let direct_arguments = [
+        "procedure",
+        "run",
+        "jet.round_amounts@2",
+        "--known-at",
+        &at,
+        "--effective-through",
+        "2026-03-30",
+        "--param",
+        "round_power=2",
+        "--budget",
+        "100000",
+        "--certify",
+    ];
+    let (expected, direct_metadata) = certified(&fixture, &direct_arguments);
+    assert_eq!(integer(&expected, "finding_count"), 1);
+    let expected_bytes = bytes(&direct_metadata);
+    let statement = format!(
+        "CALL fa.jet('round_amounts@2', {{round_power: 2, budget: 100000}}) \
+         EFFECTIVE AT '2026-03-30' AS KNOWN AT {known_at}"
+    );
+    let path = fixture.dir.join("query-procedure.certificate");
+    for mode in ["certify", "file", "explain"] {
+        let query = if mode == "explain" {
+            format!("EXPLAIN (CERTIFICATE) {statement}")
+        } else {
+            statement.clone()
+        };
+        let mut arguments = vec!["query", query.as_str()];
+        match mode {
+            "certify" => arguments.push("--certify"),
+            "file" => arguments.extend(["--certificate-out", path.to_str().unwrap()]),
+            _ => {}
+        }
+        let before = fixture.head();
+        let (report, metadata) = certified(&fixture, &arguments);
+        assert_eq!(report.get("data"), expected.get("data"), "{mode}");
+        assert_eq!(bytes(&metadata), expected_bytes, "{mode}");
+        assert_eq!(text(&metadata, "output_format"), "fa:procedure-output:v1");
+        assert_eq!(
+            fixture.head(),
+            before,
+            "the query spelling reuses the exact retained direct artifact"
+        );
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), expected_bytes);
+    let certificate =
+        fa::procedure_certificate::ProcedureCertificate::decode(&expected_bytes).unwrap();
+    assert_eq!(certificate.report().version, 2);
+    assert_eq!(
+        certificate.report().parameters,
+        vec![("round_power".into(), 2)]
+    );
+    let locator = format!("C:{}", text(&direct_metadata, "oid"));
+
+    // A retained v1 selection keeps its original no-cutoff algorithm instead
+    // of silently using the current version named by the registry.
+    let legacy_query = format!(
+        "EXPLAIN (CERTIFICATE) CALL fa.jet('round_amounts@1', {{round_power: 2}}) \
+         AS KNOWN AT {known_at}"
+    );
+    let (legacy_report, legacy_metadata) = certified(&fixture, &["query", &legacy_query]);
+    let legacy =
+        fa::procedure_certificate::ProcedureCertificate::decode(&bytes(&legacy_metadata)).unwrap();
+    assert_eq!(legacy.report().version, 1);
+    assert!(legacy.report().coordinate.effective_through.is_none());
+    assert_eq!(integer(&legacy_report, "finding_count"), 2);
+    let legacy_locator = format!("C:{}", text(&legacy_metadata, "oid"));
+
+    fixture.post("later-backdated", "2026-03-30", "300.00", &evidence);
+    for source in [locator.as_str(), path.to_str().unwrap()] {
+        let replayed = ok(&fixture.book, &["replay", source]);
+        assert_eq!(replayed.get("data"), expected.get("data"));
+        assert_eq!(replayed.get("certificate"), expected.get("certificate"));
+    }
+    assert_eq!(
+        ok(&fixture.book, &["replay", &legacy_locator]).get("data"),
+        legacy_report.get("data")
+    );
+    assert_eq!(
+        text(
+            &ok(&fixture.book, &["certificate", "status", &locator]),
+            "status"
+        ),
+        "Changed"
+    );
+    let state = fixture.checkpoint();
+    let signed = exported(
+        &fixture.book,
+        &["signed-checkpoint", "--state", text(&state, "oid")],
+    );
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    let checkpoint = fa_verify::verify_checkpoint(&bytes(&signed), &[key]).unwrap();
+    let before = fixture.head();
+    let produced = ok(
+        &fixture.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &locator,
+            "--state",
+            text(&state, "oid"),
+        ],
+    );
+    let verified = fa_verify::report::verify_report_expected(
+        &bytes(&produced),
+        &[key],
+        Some(&checkpoint.checkpoint),
+        Some(&unhex(text(&produced, "receipt"))),
+        Some(certificate.digest()),
+    )
+    .expect("the procedure CALL retains the independently verifiable direct certificate");
+    assert_eq!(verified.output, certificate.output());
+    assert_eq!(verified.known_at, known_at);
+    let independent = verified.procedure.unwrap();
+    assert_eq!(independent.version, 2);
+    assert_eq!(independent.findings.len(), 1);
+    assert_eq!(
+        independent.findings[0].entry,
+        u128::from_str_radix(text(&selected, "vid"), 16).unwrap()
+    );
+    assert_eq!(fixture.head(), before);
+    assert_eq!(
+        integer(
+            &ok(&fixture.book, &["finding", "runs"]),
+            "total_recorded_runs"
+        ),
+        0
+    );
+}
+
+#[test]
 fn direct_procedure_certificate_output_refusals_publish_no_findings_or_metadata() {
     let fixture = Fixture::new();
     let evidence = fixture.chart_and_evidence();
@@ -304,6 +447,37 @@ fn direct_procedure_certificate_output_refusals_publish_no_findings_or_metadata(
             unused,
             "--certificate-out",
             unused,
+        ],
+        vec![
+            "query",
+            "CALL fa.jet('round_amounts')",
+            "--certificate-out",
+            "-",
+        ],
+        vec![
+            "query",
+            "CALL fa.jet('round_amounts')",
+            "--certificate-out",
+            &existing,
+        ],
+        vec![
+            "query",
+            "CALL fa.jet('round_amounts')",
+            "--certificate-out",
+            unused,
+            "--certificate-out",
+            unused,
+        ],
+        vec![
+            "query",
+            "EXPLAIN (CERTIFICATE) CALL fa.jet('round_amounts', {budget: 0})",
+        ],
+        vec![
+            "query",
+            "CALL fa.jet('round_amounts')",
+            "--certify",
+            "--branch",
+            "scenario:forecast",
         ],
     ] {
         let (code, events) = invoke(&fixture, &arguments);

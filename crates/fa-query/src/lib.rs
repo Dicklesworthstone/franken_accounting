@@ -31,6 +31,9 @@
 //! - `CALL fa.access_log` and `CALL fa.access_log('<reader>')`, the runtime
 //!   graph's AccessEvents (`fa access log`) at the head: a read-only bound
 //!   session's own query is among them, recorded before it observed;
+//! - `CALL fa.<family>('<name>[@<version>]'[, {argument: value, ...}])`,
+//!   the registered Lantern run at the selected recorded/effective coordinate;
+//!   certification uses that procedure's own retained certificate;
 //! - one `CALL fa.open_amount(l) YIELD open, age_days` inside a MATCH
 //!   pipeline with an explicit `EFFECTIVE AT` cutoff: source values and a
 //!   native row continuation, with unit provenance retained for exact sums;
@@ -159,8 +162,8 @@ pub enum Selection {
     /// `CALL fa.access_log('<reader>')`: the AccessEvents recorded so far, or
     /// one reader's, as `fa access log` reads them.
     AccessLog { reader: Option<String> },
-    /// `CALL fa.<family>('<name>'[, {<argument>: <value>, ...}])`: the
-    /// registered Lantern procedure `<family>.<name>`, as `fa procedure run`
+    /// `CALL fa.<family>('<name>[@<version>]'[, {<argument>: <value>, ...}])`:
+    /// the registered Lantern selector `<family>.<name>[@<version>]`, as `fa procedure run`
     /// runs it, with the statement's known-at and its `EFFECTIVE AT` day as
     /// the run's effective-through. Arguments are in the order written.
     Procedure {
@@ -968,24 +971,40 @@ fn call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> 
     }
 }
 
-/// `CALL fa.<family>('<name>'[, {<argument>: <value>, ...}])`: a registered
-/// Lantern procedure, run as `fa procedure run <family>.<name>` (which judges
+/// `CALL fa.<family>('<name>[@<version>]'[, {<argument>: <value>, ...}])`:
+/// a registered Lantern procedure, run as `fa procedure run <family>.<name>[@<version>]` (which judges
 /// the id and its arguments). It reads at the statement's known-at, through
-/// its `EFFECTIVE AT` day; a procedure takes no period, range, view, branch or
-/// certificate (record a run with `fa finding record`).
+/// its `EFFECTIVE AT` day; a procedure takes no period, range, view or branch.
+/// Certification delegates to that procedure's complete native input closure.
 fn lantern_call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> {
-    const FIX: &str = "CALL fa.jet('round_amounts') | CALL fa.trace('libr', {account: '1000', source: 'E:<entry vid>'}) EFFECTIVE AT '2026-03-31' [AS KNOWN AT <seq>]; arguments are integer parameters, account, source and budget";
+    const FIX: &str = "[EXPLAIN (CERTIFICATE)] CALL fa.jet('round_amounts@2', {round_power: 3}) [EFFECTIVE AT '2026-03-31'] [AS KNOWN AT <seq>]; arguments are integer parameters, account, source and budget";
     let at = |i: usize| lexed.tokens.get(i).map_or(lexed.text.len(), |t| t.start);
     let refuse = |i: usize, message: &str| Err(Refusal::new(Law::Profile, at(i), message, FIX));
     let name = lexed.unquoted(5);
-    if name.is_empty()
-        || !name
+    let (base, version) = name
+        .split_once('@')
+        .map_or((name.as_str(), None), |(base, version)| {
+            (base, Some(version))
+        });
+    if base.is_empty()
+        || !base
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
     {
         return refuse(
             5,
             "a procedure name is lowercase letters, digits and underscores",
+        );
+    }
+    if version.is_some_and(|text| {
+        !text
+            .parse::<u16>()
+            .ok()
+            .is_some_and(|version| version > 0 && version.to_string() == text)
+    }) {
+        return refuse(
+            5,
+            "a procedure version is a canonical positive u16 after @, such as round_amounts@1",
         );
     }
     let id = format!("{}.{name}", lexed.str(3));
@@ -1055,8 +1074,6 @@ fn lantern_call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, R
         Some("a procedure reads at a recorded sequence: AS KNOWN AT <seq> or HEAD")
     } else if selectors.branch.is_some() {
         Some("a procedure reads trunk")
-    } else if selectors.certify {
-        Some("a procedure run is not certified as a query; record it: fa finding record <id>")
     } else {
         None
     };

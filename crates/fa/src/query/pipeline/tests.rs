@@ -19,15 +19,15 @@ fn cap(ops: &[&str]) -> Capability {
     Capability::embedded(PRINCIPAL, ops).unwrap()
 }
 
-pub(super) struct Fixture {
-    pub(super) book: Book,
+pub(crate) struct Fixture {
+    pub(crate) book: Book,
     evidence: EvidenceRef,
-    pub(super) usd: UnitId,
+    pub(crate) usd: UnitId,
     eur: UnitId,
 }
 
 impl Fixture {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let units = UnitRegistry::embedded().unwrap();
         let usd = units.lookup("USD").unwrap();
         let eur = units.lookup("EUR").unwrap();
@@ -97,7 +97,7 @@ impl Fixture {
         }
     }
 
-    pub(super) fn proposal(
+    pub(crate) fn proposal(
         &self,
         key: &str,
         date: &str,
@@ -147,7 +147,7 @@ impl Fixture {
         }
     }
 
-    pub(super) fn post(&mut self, proposal: EntryPayload) -> EntryRef {
+    pub(crate) fn post(&mut self, proposal: EntryPayload) -> EntryRef {
         self.book
             .post(PostRequest {
                 proposal,

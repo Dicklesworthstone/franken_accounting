@@ -31,16 +31,34 @@ const EXAMPLE: &str = "fa query \"MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN 
 const CERTIFY_EXAMPLE: &str =
     "fa query \"MATCH (a:Account) RETURN a.code AS KNOWN AT 12\" --certify --json";
 
-pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    let text = match args.positional.as_slice() {
-        [_, text] => text.as_str(),
-        _ => {
-            return Err(usage(
-                "fa query takes exactly one statement (quote it)",
-                EXAMPLE,
-            ));
-        }
+fn statement(args: &Args) -> Result<&str, Fail> {
+    match args.positional.as_slice() {
+        [_, text] => Ok(text),
+        _ => Err(usage(
+            "fa query takes exactly one statement (quote it)",
+            EXAMPLE,
+        )),
+    }
+}
+
+/// Pure command translation shared by pre-open admission and execution.
+/// A standalone Lantern CALL has exactly the direct procedure's authority,
+/// retained version and certificate family; its query spelling changes none.
+pub(crate) fn procedure_invocation(args: &Args) -> Result<Option<Args>, Fail> {
+    let profiled =
+        fa::compile_query(statement(args)?).map_err(|r| Fail::Refusal(fa::profile_refusal(&r)))?;
+    let QuerySelection::Procedure { id, arguments } = &profiled.selection else {
+        return Ok(None);
     };
+    let invocation = lantern_args(args, &profiled, id, arguments)?;
+    // The registry judge is pure. Invalid selectors must not open a book
+    // merely because --certificate-out also names a host path.
+    crate::cli::procedure_selector(id)?;
+    Ok(Some(invocation))
+}
+
+pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let text = statement(args)?;
     let profiled = fa::compile_query(text).map_err(|r| Fail::Refusal(fa::profile_refusal(&r)))?;
     // AT BRANCH 'scenario:<name>' or 'draft:<name>' is the same --branch:
     // the book source admits authority on trunk, then reads the replay.
@@ -273,21 +291,15 @@ fn effective_label(
 /// The `fa procedure run <id>` a Lantern procedure CALL runs: the statement's
 /// known-at as `--known-at`, its `EFFECTIVE AT` day as `--effective-through`,
 /// `account`, `source` and `budget` as those flags, and every other argument
-/// as an integer `--param`. A run is recorded by `fa finding record`, not
-/// certified, and reads trunk.
+/// as an integer `--param`. Certification uses the direct procedure's
+/// retained family; a FindingRun remains a separate explicit publication.
 fn lantern_args(
     args: &Args,
     profiled: &fa::ProfiledQuery,
     id: &str,
     arguments: &[(String, fa::QueryArgument)],
 ) -> Result<Args, Fail> {
-    const FIX: &str = "fa query \"CALL fa.trace('libr', {account: '1000', source: 'E:<entry vid>', round_power: 2}) EFFECTIVE AT '2026-03-31'\" --json; record a run: fa finding record <id>";
-    if args.switch("--certify") || args.flag("--certificate-out").is_some() {
-        return Err(usage(
-            "a procedure CALL is not certified as a query; record its run with fa finding record <id>",
-            FIX,
-        ));
-    }
+    const FIX: &str = "fa query \"CALL fa.jet('round_amounts@2', {round_power: 3}) EFFECTIVE AT '2026-03-31' AS KNOWN AT 12\" --certify --json; publish findings separately: fa finding record <id>";
     if args
         .flag("--branch")
         .is_some_and(|branch| branch != "trunk")
@@ -296,6 +308,9 @@ fn lantern_args(
     }
     let mut read = args.clone();
     read.positional = vec!["procedure".to_string(), "run".to_string(), id.to_string()];
+    if profiled.certify && !read.switch("--certify") {
+        read.switches.push("--certify".to_string());
+    }
     if let QueryKnownAt::Seq(seq) = &profiled.known_at {
         read.flags
             .insert("--known-at".to_string(), vec![seq.to_string()]);
