@@ -1532,7 +1532,7 @@ fn party_label(snapshot: &Snapshot, node: VId) -> String {
 }
 
 /// `graph.communities`: community detection over the money-flow projection via
-/// `fnx_algorithms::louvain_communities` and `connected_components` with CGSE witness.
+/// `fnx_algorithms::louvain_communities` with CGSE witness.
 /// Topology and exact transfer volumes stay inside one native unit and entity.
 pub struct Communities {
     params: Params,
@@ -1544,7 +1544,7 @@ impl Procedure for Communities {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        3
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1593,10 +1593,10 @@ impl Procedure for Communities {
                 let _ = g.add_edge(vid_node(u), vid_node(v));
             }
             let (mut comms, _) = fnx_cgse::collect_witnesses(|| {
-                let mut out_comms =
-                    fnx_algorithms::louvain_communities(&g, 1.0, "weight", 1e-7, None, Some(0));
-                out_comms.extend(fnx_algorithms::connected_components(&g).components);
-                out_comms
+                // A whole connected component has no external edges, so adding
+                // it as another candidate would force its internal share to
+                // 100% even when Louvain splits it into distinct communities.
+                fnx_algorithms::louvain_communities(&g, 1.0, "weight", 1e-7, None, Some(0))
             });
             for c in &mut comms {
                 c.sort();

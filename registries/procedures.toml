@@ -1333,13 +1333,13 @@ meaning = "Minimum basis points of the incoming transfer an intermediary party f
 
 [[procedure]]
 id = "graph.communities"
-version = 2
+version = 3
 claim = "statistical"
 evidence = "FA-EVID-L36"
 tie_break = "account_vid"
 complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
 calibration = "uncalibrated"
-summary = "Community detection via fnx louvain_communities and connected_components independently within each native unit and legal entity, with the partition bound into the CGSE witness: flags multi-account communities whose exact internal transfer share reaches min_internal_share_bps. No cross-currency or cross-entity topology or amount pooling."
+summary = "Community detection via fnx louvain_communities independently within each native unit and legal entity, with the partition bound into the CGSE witness: flags multi-account communities whose exact internal transfer share reaches min_internal_share_bps. Version 3 evaluates only Louvain communities; version 2 also reported whole connected components, whose internal share is always 100%. No cross-currency or cross-entity topology or amount pooling."
 
 [[parameter]]
 procedure = "graph.communities"

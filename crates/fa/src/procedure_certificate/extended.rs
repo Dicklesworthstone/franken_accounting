@@ -34,7 +34,8 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("graph.layering", 2),
     // fa-b6xs: reads live postings and the REA parties this closure binds.
     ("graph.party_layering", 2),
-    ("graph.communities", 2),
+    // Version 3 screens only Louvain communities, without component unions.
+    ("graph.communities", 3),
     // fa-b6xs: reads live postings and the REA parties this closure binds.
     ("graph.party_communities", 1),
     // fa-b6xs: reads live postings and the REA parties this closure binds.
@@ -59,7 +60,8 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("expense.capitalization", 2),
     // Version 3 nets supersession within the as-of window.
     ("aging.inventory", 3),
-    ("reversal.patterns", 1),
+    // Version 2 chooses the least successor identity for a stable witness.
+    ("reversal.patterns", 2),
     ("confirm.coverage", 2),
     // Version 3 judges each position as of the effective date (fa-gebi, fa-ti99).
     ("solvency.balance_sheet_test", 3),
@@ -112,6 +114,7 @@ const RETAINED_CLOSURES: &[(&str, u16)] = &[
     ("expense.capitalization", 1),
     ("graph.circular_flows", 1),
     ("graph.communities", 1),
+    ("graph.communities", 2),
     ("graph.layering", 1),
     ("graph.party_circular_flows", 1),
     ("graph.party_layering", 1),
@@ -132,6 +135,7 @@ const RETAINED_CLOSURES: &[(&str, u16)] = &[
     ("recon.book_to_book", 1),
     ("recon.intercompany", 1),
     ("recon.lapping", 1),
+    ("reversal.patterns", 1),
     ("solvency.balance_sheet_test", 1),
     ("solvency.balance_sheet_test", 2),
     ("solvency.cash_flow_test", 1),

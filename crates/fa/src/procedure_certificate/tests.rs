@@ -346,19 +346,19 @@ fn partitioned_graph_procedures_certify_and_replay_only_their_scoped_version() {
     let (source, _) = f.post(1, "3000", "1000", 100, false);
     f.post(2, "1000", "1010", 90, false);
     let before = f.head();
-    for id in [
-        "graph.communities",
-        "graph.related_party_exposure",
-        "graph.shell_signature",
+    for (id, version) in [
+        ("graph.communities", 3),
+        ("graph.related_party_exposure", 2),
+        ("graph.shell_signature", 2),
     ] {
-        assert_eq!(fa_lantern::bind(id).unwrap().version, 2);
-        assert!(extended::supported(id, 2));
+        assert_eq!(fa_lantern::bind(id).unwrap().version, version);
+        assert!(extended::supported(id, version));
         assert!(!extended::supported(id, 1));
         let certified = f.certify(&f.request(id, source));
-        assert_eq!(certified.report.version, 2);
+        assert_eq!(certified.report.version, version);
         assert_eq!(certified.report.coordinate.known_at, before);
         assert!(certified.report.findings.iter().all(|finding| {
-            finding.version == 2 && finding.narrative.contains("implicit book entity")
+            finding.version == version && finding.narrative.contains("implicit book entity")
         }));
         if id == "graph.communities" {
             assert!(!certified.report.findings.is_empty());
@@ -380,12 +380,14 @@ fn partitioned_graph_procedures_certify_and_replay_only_their_scoped_version() {
             .unwrap()
             .unwrap();
         assert_eq!(replayed, certified.report);
-        let mut wrong_version = certificate;
-        wrong_version.report.version = 1;
-        assert!(
-            wrong_version.request().is_err(),
-            "unscoped v1 must not replay as v2"
-        );
+        for old_version in 1..version {
+            let mut wrong_version = certificate.clone();
+            wrong_version.report.version = old_version;
+            assert!(
+                wrong_version.request().is_err(),
+                "{id} v{old_version} must not replay as v{version}"
+            );
+        }
         assert_eq!(f.head(), before, "certification and replay never publish");
     }
 }

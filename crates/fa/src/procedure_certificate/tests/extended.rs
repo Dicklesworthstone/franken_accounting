@@ -158,7 +158,7 @@ fn historical_extended_versions_keep_their_complete_native_closure() {
         ("events.subsequent", &[1, 2]),
         ("expense.capitalization", &[1]),
         ("graph.circular_flows", &[1]),
-        ("graph.communities", &[1]),
+        ("graph.communities", &[1, 2]),
         ("graph.layering", &[1]),
         ("graph.party_circular_flows", &[1]),
         ("graph.party_layering", &[1]),
@@ -175,6 +175,7 @@ fn historical_extended_versions_keep_their_complete_native_closure() {
         ("recon.book_to_book", &[1]),
         ("recon.intercompany", &[1]),
         ("recon.lapping", &[1]),
+        ("reversal.patterns", &[1]),
         ("solvency.balance_sheet_test", &[1, 2]),
         ("solvency.cash_flow_test", &[1, 2, 3, 4]),
     ];
@@ -183,7 +184,7 @@ fn historical_extended_versions_keep_their_complete_native_closure() {
             .iter()
             .map(|(_, versions)| versions.len())
             .sum::<usize>(),
-        45
+        47
     );
     for &(id, versions) in histories {
         for &version in versions {
@@ -250,8 +251,10 @@ fn historical_extended_versions_keep_their_complete_native_closure() {
         ("damages.but_for", 2),
         ("recon.book_to_book", 2),
         ("graph.circular_flows", 3),
+        ("graph.communities", 4),
         ("graph.party_circular_flows", 3),
         ("graph.round_trips", 1),
+        ("reversal.patterns", 3),
     ] {
         assert!(
             !extended::has_retained_closure(id, version),

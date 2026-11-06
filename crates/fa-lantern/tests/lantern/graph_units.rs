@@ -234,7 +234,7 @@ fn communities_do_not_join_paths_across_currencies_or_entities() {
             true,
         );
         let result = run_over(&snapshot, &h.book, &procedure).unwrap();
-        assert_eq!(result.version, 2);
+        assert_eq!(result.version, 3);
         assert_eq!(result.findings.len(), 1);
         assert_eq!(result.findings[0].statistic.value, 10_000);
         assert_eq!(result.findings[0].statistic.population, 3);
@@ -245,6 +245,92 @@ fn communities_do_not_join_paths_across_currencies_or_entities() {
                 .deterministic()
         );
     }
+}
+
+#[test]
+fn communities_do_not_report_connected_component_unions() {
+    let mut h = harness();
+    let groups = [
+        ["1000", "1010", "1020", "1200"],
+        ["2000", "4000", "6000", "7000"],
+    ];
+    let date = day(2026, 3, 15);
+    // Each clique has six real transfers totalling 600. The one-unit
+    // bridge makes the entire graph connected without merging its clusters.
+    for group in &groups {
+        for (index, &from) in group.iter().enumerate() {
+            for &to in &group[index + 1..] {
+                h.post(&Spec::simple(date, to, from, 100));
+            }
+        }
+    }
+    h.post(&Spec::simple(date, groups[1][0], groups[0][0], 1));
+    assert_eq!(h.posted.len(), 13);
+    let snapshot = h.snapshot();
+    let head = snapshot.coordinate.known_at;
+    let procedure = Communities::with(
+        Params::defaults(Communities::ID)
+            .unwrap()
+            .set("min_community_size", 4)
+            .unwrap()
+            .set("min_internal_share_bps", 9900)
+            .unwrap(),
+    );
+    let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+    h.assert_cites_resolve(&result);
+    assert_eq!(result.findings.len(), 2, "{:?}", result.findings);
+    let expected: BTreeSet<BTreeSet<VId>> = groups
+        .iter()
+        .map(|group| group.iter().map(|code| h.account(code)).collect())
+        .collect();
+    let actual: BTreeSet<BTreeSet<VId>> = result
+        .findings
+        .iter()
+        .map(|finding| {
+            // floor(600 * 10000 / 601), independently of Louvain's topology.
+            assert_eq!(finding.statistic.value, 9983);
+            assert_eq!(finding.statistic.population, 8);
+            assert_eq!(finding.severity, Severity::Medium);
+            assert_coordinate(finding, h.usd, None);
+            finding
+                .cites
+                .iter()
+                .map(|cite| match cite {
+                    Cite::Account(vid) => *vid,
+                    other => panic!("unexpected community citation {other:?}"),
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(actual, expected);
+
+    let strict = Communities::with(
+        procedure
+            .params()
+            .clone()
+            .set("min_internal_share_bps", 10_000)
+            .unwrap(),
+    );
+    assert!(
+        run_over(&snapshot, &h.book, &strict)
+            .unwrap()
+            .findings
+            .is_empty(),
+        "neither cluster retains all of its incident volume"
+    );
+    let mut permuted = snapshot.clone();
+    permuted.entries.reverse();
+    assert_eq!(
+        run_over(&permuted, &h.book, &procedure).unwrap().findings,
+        result.findings
+    );
+    assert!(
+        determinism(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
+    assert_eq!(result.version, 3);
+    assert_eq!(h.snapshot().coordinate.known_at, head);
 }
 
 #[test]
