@@ -120,7 +120,8 @@ exceptions = [
 ]
 
 # These packages declare license-file rather than an SPDX expression. The
-# current first-party LICENSE and pinned fgdb b323bd1 / fnx 9d710b1 / fsym bd1ad68 LICENSE
+# current first-party LICENSE and pinned fgdb b323bd1 / fnx 9d710b1 / fsym bd1ad68
+# and franken_markdown 7d0472b LICENSE
 # bytes are identical (SHA256 32a82e0a5754e72e51fae44b65a936c831c07376f21c90f5fb9e76897fcc3509).
 # Clarify that exact text, including its rider; a changed text must fail.
 [[licenses.clarify]]
@@ -414,6 +415,21 @@ license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 crate = "fsym-bigint@0.1.0"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
 license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fmd-font@0.4.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "fmd-math@0.3.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+
+[[licenses.clarify]]
+crate = "franken_markdown@0.7.0"
+expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fsym-budget@0.1.0"
