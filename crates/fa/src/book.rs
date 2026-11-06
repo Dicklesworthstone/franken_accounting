@@ -7363,7 +7363,7 @@ impl Book {
     /// Run a compiled profile query at `known_at` (`fa query`; see
     /// [`crate::query`]): native execution over one recorded prefix. A bounded
     /// open-amount pipeline combines its source read and historical fold with
-    /// a native continuation; it cannot produce a v1 query certificate.
+    /// a native continuation; `certify_query` binds both stages in v2.
     /// With `period`, the period must exist there.
     pub fn query_native(
         &self,

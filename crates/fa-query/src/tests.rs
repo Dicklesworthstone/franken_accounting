@@ -596,10 +596,17 @@ fn a_pipeline_refuses_unbound_calls_ambiguous_names_and_unsupported_shapes() {
         good.replace("RETURN open", "RETURN l.amount AS open"),
         good.replace("RETURN open", "RETURN l.amount AS `open`"),
         good.replace("MATCH (l:Leg)", "MATCH (l:Leg), (open:Account)"),
-        format!("EXPLAIN (CERTIFICATE) {good}"),
+        format!("EXPLAIN (CERTIFICATE) {good} AT BRANCH 'scenario:forecast'"),
     ] {
         assert_eq!(refused(&text).law, Law::Profile, "{text}");
     }
+    let (profile, certified) = native(&format!("EXPLAIN (CERTIFICATE) {good}"));
+    let (_, plain) = native(good);
+    assert!(profile.certify);
+    assert_eq!(
+        certified, plain,
+        "certification retains the same two stages"
+    );
 }
 
 /// Plan §7.4: a restatement view is a known-at selector of one period's

@@ -34,7 +34,8 @@ schema_version = 1
 
 [[procedure]]
 id = "jet.round_amounts"
-version = 1
+version = 2
+effective_through = "optional"
 claim = "statistical"
 evidence = "FA-EVID-L01"
 tie_break = "entry_vid"
@@ -51,7 +52,8 @@ meaning = "A leg is round when its magnitude is a whole multiple of 10^round_pow
 
 [[procedure]]
 id = "jet.period_end_timing"
-version = 1
+version = 2
+effective_through = "optional"
 claim = "statistical"
 evidence = "FA-EVID-L02"
 tie_break = "entry_vid"

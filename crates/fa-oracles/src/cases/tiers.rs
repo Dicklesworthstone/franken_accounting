@@ -251,6 +251,32 @@ pub fn tiers() -> Result<Tiers, Vec<LoadError>> {
 pub fn registry_row(procedures_toml: &str, id: &str) -> Result<(i128, String), String> {
     let doc = fa_registry::toml::parse(procedures_toml)
         .map_err(|e| format!("registries/procedures.toml:{}: {}", e.line, e.message))?;
+    registry_document_row(&doc, id)
+}
+
+/// Resolve a pinned row against the current or explicitly retained algorithm.
+/// Only the two retained v1 journal tests may use their former declaration;
+/// all other semantic edits still invalidate the original row digest.
+///
+/// # Errors
+///
+/// When the registry does not parse or names no such procedure.
+pub fn registry_row_version(
+    procedures_toml: &str,
+    id: &str,
+    version: i128,
+) -> Result<(i128, String), String> {
+    let current = registry_row(procedures_toml, id)?;
+    if version == 1 && current.0 == 2 && matches!(id, "jet.round_amounts" | "jet.period_end_timing")
+    {
+        let doc = fa_registry::procedures::legacy_v1_document_from_text(procedures_toml)
+            .map_err(|e| e.to_string())?;
+        return registry_document_row(&doc, id);
+    }
+    Ok(current)
+}
+
+fn registry_document_row(doc: &Document, id: &str) -> Result<(i128, String), String> {
     let rows = |name: &str, key: &str| -> Vec<Table> {
         doc.arrays
             .get(name)
@@ -329,7 +355,8 @@ mod tests {
         assert_eq!(t.rows.len(), SEEDED.len());
         for id in SEEDED {
             let row = t.get(id).expect("a seeded row");
-            let (version, digest) = registry_row(PROCEDURES, id).expect("a registry row");
+            let (version, digest) =
+                registry_row_version(PROCEDURES, id, row.version).expect("a registry row");
             assert_eq!(row.version, version, "{id}");
             assert_eq!(row.row_digest, digest, "{id}");
             assert_ne!(row.reader, row.second_reader, "{id}");
@@ -357,6 +384,33 @@ mod tests {
         for id in SEEDED {
             assert_eq!(row_digest(&edited, id), row_digest(PROCEDURES, id), "{id}");
         }
+    }
+
+    #[test]
+    fn retained_jet_versions_keep_the_exact_classified_row() {
+        let table = tiers().unwrap();
+        for id in ["jet.round_amounts", "jet.period_end_timing"] {
+            let pinned = table.get(id).unwrap();
+            let legacy = registry_row_version(PROCEDURES, id, 1).unwrap();
+            let current = registry_row(PROCEDURES, id).unwrap();
+            assert_eq!(legacy, (pinned.version, pinned.row_digest.clone()), "{id}");
+            assert_eq!(current.0, 2);
+            assert_ne!(current.1, legacy.1, "v2 needs its own classification");
+            assert_eq!(registry_row_version(PROCEDURES, id, 2).unwrap(), current);
+        }
+        let old = "procedure = \"jet.round_amounts\"\nname = \"round_power\"\ndefault = 3\n";
+        assert_eq!(PROCEDURES.matches(old).count(), 1);
+        let changed = PROCEDURES.replace(
+            old,
+            "procedure = \"jet.round_amounts\"\nname = \"round_power\"\ndefault = 4\n",
+        );
+        assert_ne!(
+            registry_row_version(&changed, "jet.round_amounts", 1)
+                .unwrap()
+                .1,
+            table.get("jet.round_amounts").unwrap().row_digest,
+            "reconstructing v1 cannot conceal a changed parameter default"
+        );
     }
 
     #[test]

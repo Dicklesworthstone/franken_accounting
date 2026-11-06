@@ -1,10 +1,12 @@
 //! Per-row open amounts over a certified native source, then an ordinary
 //! native row continuation. No GQL predicate or projection is evaluated here.
-//! This interactive form is deliberately not a v1 query certificate: its
-//! second native result alone cannot certify the journal-derived parameters.
+//! A v2 query certificate retains both native reads and commits to the
+//! complete derived parameter transcript. Replay regenerates that transcript
+//! from the first read and the historical journal fold, never supplied values.
 
 use std::collections::BTreeMap;
 
+use fa_model::domain_digest;
 use fa_money::UnitId;
 use fa_query::OpenAmount;
 use fgdb_types::CanonicalDecimal;
@@ -15,6 +17,19 @@ use super::*;
 /// We refuse a larger source rather than truncate it or execute batches with
 /// different grouping, ordering or pagination semantics.
 const MAX_PARAMETER_BYTES: usize = 64 * 1024;
+const PARAMETER_DOMAIN: &[u8] = b"fa:query-open-amount-parameters:v1";
+
+/// The first native read and every named, typed value passed to the second.
+/// The continuation's own native certificate independently binds these values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Evidence {
+    pub source: NativeResultCertificate,
+    pub parameters_digest: [u8; 32],
+}
+
+fn parameters_digest(parameters: &GqlParameters) -> [u8; 32] {
+    domain_digest(PARAMETER_DOMAIN, &[&parameters.canonical_bytes()])
+}
 
 fn invalid(why: impl Into<String>) -> Refusal {
     Refusal::new(
@@ -111,13 +126,21 @@ fn parameters(
             })?;
         values.push(row);
     }
-    GqlParameters::new()
+    let parameters = GqlParameters::new()
         .with_list(procedure.parameter(), values)
         .map_err(|error| {
             invalid(format!(
                 "the native continuation refused its bounded parameter: {error}"
             ))
-        })
+        })?;
+    // Include parameter names, type tags and list/map framing in the bound,
+    // not just the sum of the carried values' encodings.
+    if parameters.canonical_bytes().len() > MAX_PARAMETER_BYTES {
+        return Err(invalid(
+            "the open_amount continuation exceeds its 64 KiB parameter bound",
+        ));
+    }
+    Ok(parameters)
 }
 
 pub(super) fn execute<V: Vfs + Clone>(
@@ -127,9 +150,9 @@ pub(super) fn execute<V: Vfs + Clone>(
     native: &Native,
     procedure: &OpenAmount,
     seq: CommitSeq,
-) -> Result<Result<(QueryRows, NativeResultCertificate), Refusal>, BookError> {
+) -> Result<Result<ExecutedQuery, Refusal>, BookError> {
     let source = native.statement(seq.0);
-    let (result, _) = match db.execute_certified(
+    let (result, source_certificate) = match db.execute_certified(
         cx,
         &source,
         &GqlParameters::new(),
@@ -171,23 +194,112 @@ pub(super) fn execute<V: Vfs + Clone>(
         Err(error) => return Ok(Err(native_refusal(&statement, &error))),
     };
     Ok(
-        result_of(native, seq, result, &certificate).and_then(|mut rows| {
-            if native.aggregation().is_none() {
-                if rows.columns.len() != procedure.columns().len() {
-                    return Err(invalid(
-                        "the native continuation returned an unexpected column count",
-                    ));
-                }
-                rows.columns = procedure.columns().to_vec();
-            }
-            rows.statement = format!("{source}; {statement}");
-            Ok((rows, certificate))
+        finish(native, procedure, seq, result, &certificate).map(|rows| ExecutedQuery {
+            rows,
+            native: certificate,
+            pipeline: Some(Evidence {
+                source: source_certificate,
+                parameters_digest: parameters_digest(&parameters),
+            }),
         }),
     )
 }
 
+/// Replay both native stages with freshly derived values at the certified
+/// recorded/effective coordinate. The caller first replays the whole-prefix
+/// ReportCertificate and validates the statements and stage coordinates.
+pub(super) fn replay<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    native: &Native,
+    seq: CommitSeq,
+    evidence: &Evidence,
+    continuation: &NativeResultCertificate,
+) -> Result<Result<QueryRows, Refusal>, BookError> {
+    let Some(procedure) = native.open_amount() else {
+        return Ok(Err(invalid(
+            "pipeline evidence needs an open_amount statement",
+        )));
+    };
+    let result = match db.replay(
+        cx,
+        &evidence.source,
+        &GqlParameters::new(),
+        book.symbols.clone(),
+        policy(MAX_QUERY_ROWS),
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            return Ok(Err(invalid(format!(
+                "the pipeline source read does not replay: {error}"
+            ))));
+        }
+    };
+    let QueryResult::Rows { rows, .. } = result else {
+        return Ok(Err(invalid(
+            "the replayed pipeline source is not a native read",
+        )));
+    };
+    let snapshot = fa_registers::open_items::history::open_items_as_of(
+        db,
+        book,
+        None,
+        procedure.effective_through(),
+        Some(seq),
+    )?;
+    let parameters = match parameters(book, procedure, rows, &snapshot.items) {
+        Ok(parameters) => parameters,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if parameters_digest(&parameters) != evidence.parameters_digest {
+        return Ok(Err(invalid(
+            "the regenerated open_amount parameters differ from their certified commitment",
+        )));
+    }
+    let result = match db.replay(
+        cx,
+        continuation,
+        &parameters,
+        book.symbols.clone(),
+        budget(native),
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            return Ok(Err(invalid(format!(
+                "the pipeline continuation does not replay: {error}"
+            ))));
+        }
+    };
+    Ok(finish(native, procedure, seq, result, continuation))
+}
+
+fn finish(
+    native: &Native,
+    procedure: &OpenAmount,
+    seq: CommitSeq,
+    result: QueryResult,
+    certificate: &NativeResultCertificate,
+) -> Result<QueryRows, Refusal> {
+    let mut rows = result_of(native, seq, result, certificate)?;
+    if native.aggregation().is_none() {
+        if rows.columns.len() != procedure.columns().len() {
+            return Err(invalid(
+                "the native continuation returned an unexpected column count",
+            ));
+        }
+        rows.columns = procedure.columns().to_vec();
+    }
+    rows.statement = format!(
+        "{}; {}",
+        native.statement(seq.0),
+        procedure.statement(seq.0)
+    );
+    Ok(rows)
+}
+
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 #[cfg(test)]
 mod bounds_tests;

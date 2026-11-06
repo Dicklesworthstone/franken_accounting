@@ -197,6 +197,21 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
     Ok(procedure)
 }
 
+/// Construct the current or an explicitly retained algorithm version.
+pub fn build_version(
+    id: &str,
+    version: u16,
+    params: Params,
+    inputs: Inputs,
+) -> Result<Box<dyn Procedure>, LanternError> {
+    crate::bind_version(id, version)?;
+    match (id, version) {
+        (RoundAmounts::ID, 1) => Ok(Box::new(RoundAmounts::with_version(params, 1))),
+        (PeriodEndTiming::ID, 1) => Ok(Box::new(PeriodEndTiming::with_version(params, 1))),
+        _ => build(id, params, inputs),
+    }
+}
+
 #[cfg(test)]
 mod network_tests {
     use super::*;

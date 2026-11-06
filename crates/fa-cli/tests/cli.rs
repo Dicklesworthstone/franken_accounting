@@ -28629,6 +28629,134 @@ fn a_certified_query_replays_its_rows_byte_for_byte() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A saved two-stage query proves its historical residuals after the CLI
+/// reopens the book. Future settlements do not move the effective cutoff;
+/// backdated settlements change status, but never the retained answer.
+#[test]
+fn a_certified_open_amount_pipeline_replays_after_reopening_and_later_settlements()
+-> std::io::Result<()> {
+    let dir = tmp("query-pipeline-certificate")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "book",
+        "create",
+        "--name",
+        "Certified Receivables",
+        "--json",
+    ]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivable","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let invoice = write(
+        &dir,
+        "invoice.json",
+        r#"{"effective_date":"2026-03-01","idempotency_key":"invoice","legs":[{"side":"debit","account":"1200","amount":"100.00 USD"},{"side":"credit","account":"4000","amount":"100.00 USD"}]}"#,
+    );
+    let posted = ok(&[
+        "post",
+        "--intent",
+        &invoice,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let invoice_vid = text(&doc(&posted), "vid").to_string();
+    let settle = |key: &str, date: &str, amount: &str| {
+        let path = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"1000","amount":"{amount} USD"}},{{"side":"credit","account":"1200","amount":"{amount} USD","settles":[{{"entry":"{invoice_vid}","ordinal":0,"amount":"{amount} USD"}}]}}]}}"#
+            ),
+        );
+        ok(&["post", "--intent", &path, "--evidence", &evidence, "--json"]);
+    };
+    settle("first-receipt", "2026-03-10", "40.00");
+    let statement = "MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code:'1200'}), (l)-[:IN_UNIT]->(u:Unit) CALL fa.open_amount(l) YIELD open, age_days WHERE open IS NOT NULL RETURN u.code AS unit, SUM(open) AS total ORDER BY unit EFFECTIVE AT '2026-03-20'";
+    let file = dir.join("pipeline.cert").display().to_string();
+    let out = ok(&[
+        "query",
+        statement,
+        "--certify",
+        "--certificate-out",
+        &file,
+        "--json",
+    ]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2, "{out}");
+    assert_eq!(field(lines[0], "event"), Some("query_rows"));
+    assert_eq!(field(lines[1], "event"), Some("report_certificate"));
+    let certified = doc(lines[0]);
+    let certificate = doc(lines[1]);
+    let oid = text(&certificate, "oid").to_string();
+    assert_eq!(field(lines[0], "certificate"), Some(oid.as_str()));
+    assert_eq!(text(&certificate, "output_format"), "fa:query-result:v1");
+    assert_eq!(int(&certificate, "known_at"), int(&certified, "known_at"));
+    assert_eq!(
+        Json::Arr(arr(&certified, "rows").to_vec()).render(),
+        r#"[["USD","60"]]"#
+    );
+    let decoded = fa::QueryCertificate::decode(&std::fs::read(&file)?).unwrap();
+    assert_eq!(decoded.format(), fa::QUERY_CERTIFICATE_FORMAT_V2);
+    assert_eq!(
+        decoded.pipeline_source().unwrap().plan.snapshot_seq,
+        decoded.known_at()
+    );
+    assert_eq!(decoded.native().plan.snapshot_seq, decoded.known_at());
+    assert!(decoded.parameters_digest().is_some());
+    let status = |oid: &str| {
+        let out = ok(&["certificate", "status", &format!("C:{oid}"), "--json"]);
+        text(&doc(&out), "status").to_string()
+    };
+    assert_eq!(status(&oid), "Current");
+    settle("future-receipt", "2026-03-25", "10.00");
+    assert_eq!(status(&oid), "Current", "the effective cutoff is fixed");
+    settle("backdated-receipt", "2026-03-15", "20.00");
+    assert_eq!(status(&oid), "Changed");
+    let current = doc(&ok(&["query", statement, "--json"]));
+    assert_eq!(
+        Json::Arr(arr(&current, "rows").to_vec()).render(),
+        r#"[["USD","40"]]"#
+    );
+    // Every invocation starts a fresh process and opens the persisted book.
+    for source in [format!("C:{oid}"), file] {
+        let replayed = ok(&["replay", &source, "--json"]);
+        assert_eq!(replayed.lines().count(), 1, "{replayed}");
+        assert_eq!(field(&replayed, "event"), Some("query_rows"));
+        assert_eq!(field(&replayed, "certificate"), Some(oid.as_str()));
+        assert_eq!(doc(&replayed).render(), certified.render());
+    }
+    let explained = ok(&[
+        "query",
+        &format!("EXPLAIN (CERTIFICATE) {statement}"),
+        "--json",
+    ]);
+    let lines: Vec<&str> = explained.lines().collect();
+    assert_eq!(lines.len(), 2, "{explained}");
+    assert_eq!(field(lines[1], "event"), Some("report_certificate"));
+    let explained_oid = text(&doc(lines[1]), "oid").to_string();
+    assert_ne!(explained_oid, oid);
+    assert_eq!(status(&explained_oid), "Current");
+    let replayed = doc(&ok(&["replay", &format!("C:{explained_oid}"), "--json"]));
+    assert_eq!(replayed.render(), doc(lines[0]).render());
+    assert_eq!(
+        Json::Arr(arr(&replayed, "rows").to_vec()).render(),
+        r#"[["USD","40"]]"#
+    );
+    Ok(())
+}
+
 /// fa-5c1: the profile's exact sums are a differential against the register
 /// fold. Each account's debits and credits in a period, summed by a query
 /// over its legs, equal `fa tb --activity` for that period, and a posting in

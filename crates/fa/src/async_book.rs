@@ -5974,19 +5974,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )));
         }
         if matches!(report, ReportBundleCertificate::Procedure(_))
-            && journal.leaves.iter().any(|leaf| {
-                leaf.envelope.is_entry()
-                    && leaf.envelope.commit_seq <= certificate.known_at
-                    && leaf.envelope.class == EntryClass::REPLACEMENT
-            })
+            && let Err(refusal) = crate::procedure_certificate::check_offline_population(
+                &journal,
+                certificate.known_at,
+            )?
         {
-            return Ok(Err(fa_journal::Refusal::new(
-                fa_notary::code::SCOPE_UNSUPPORTED,
-                fa_journal::exit::REFUSAL,
-                "portable round-amount procedures do not yet support replacement histories with ambiguous original entry identities",
-                "plan §11.1/13.3 (every procedure input and citation must preserve its authenticated entry identity)",
-                "replay this procedure in its original book and retain its certificate until the independent interpreter supports the original replacement identity law",
-            )));
+            return Ok(Err(refusal));
         }
         if let crate::ReportSelection::OpenItems { account } = &certificate.selection
             && let Err(refusal) =

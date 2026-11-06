@@ -2472,13 +2472,21 @@ pub(crate) fn bound_command_rule(
     let reg = crate::verbs::registry().ok()?;
     let present = |flag: &str| args.switch(flag) || !args.flag_all(flag).is_empty();
     let value = |flag: &str| args.flag(flag).map(str::to_string);
-    let (index, rule) = reg.bound_rule(
-        verb,
-        args.positional.get(1).map(String::as_str),
-        args.positional.get(2).map(String::as_str),
-        &present,
-        &value,
-    )?;
+    let subcommand = args.positional.get(1).map(String::as_str);
+    let argument = args.positional.get(2).map(String::as_str).map(|argument| {
+        if matches!(
+            (verb, subcommand),
+            ("procedure", Some("run")) | ("finding", Some("record"))
+        ) {
+            // Authority belongs to the procedure across all retained versions.
+            // Match before access logging opens the book; the handler still
+            // validates the complete selector and refuses malformed versions.
+            argument.split_once('@').map_or(argument, |(id, _)| id)
+        } else {
+            argument
+        }
+    });
+    let (index, rule) = reg.bound_rule(verb, subcommand, argument, &present, &value)?;
     Some((bound_rule_ops().get(index)?.as_deref()?, rule.judged))
 }
 
@@ -23526,22 +23534,51 @@ fn calibration_name(c: &fa_registry::procedures::Calibration) -> &'static str {
     }
 }
 
-/// A date given to a procedure that folds every posting regardless of
-/// effective date is refused, never silently ignored (fa-9pjp): the
-/// registry row's `effective_through` says which procedures take one.
+/// Select the current algorithm or an explicitly retained durable version.
+/// The version is part of the procedure id, not an unbound execution flag.
+pub(crate) fn procedure_selector(selector: &str) -> Result<(&str, Option<u16>), Fail> {
+    let Some((id, text)) = selector.split_once('@') else {
+        fa_lantern::bind(selector).map_err(lantern_usage)?;
+        return Ok((selector, None));
+    };
+    let version = text
+        .parse::<u16>()
+        .ok()
+        .filter(|version| *version > 0 && version.to_string() == text)
+        .ok_or_else(|| {
+            usage(
+                format!("invalid procedure version in `{selector}`"),
+                "fa procedure run jet.round_amounts@1 --json",
+            )
+        })?;
+    fa_lantern::bind_version(id, version).map_err(|error| match error {
+        fa_lantern::LanternError::Version { registry, .. } => usage(
+            format!("`{selector}` is not an available procedure version (current: {registry})"),
+            "use the current id shown by fa procedure list --json, or an explicitly retained version",
+        ),
+        other => lantern_usage(other),
+    })?;
+    Ok((id, Some(version)))
+}
+
+/// Refuse a date that the selected current or retained algorithm ignores.
 pub(crate) fn refuse_untaken_date(
-    id: &str,
+    selector: &str,
     effective_through: Option<DateDay>,
 ) -> Result<(), Fail> {
     if effective_through.is_none() {
         return Ok(());
     }
-    let procedures = fa_registry::procedures::Procedures::embedded()
-        .map_err(|e| usage(e.to_string(), "fa procedure list --json"))?;
-    match procedures.get(id).map(|row| row.effective_through) {
-        Some(fa_registry::procedures::EffectiveThrough::NotTaken) => Err(usage(
+    let (id, version) = procedure_selector(selector)?;
+    let row = match version {
+        Some(version) => fa_lantern::bind_version(id, version),
+        None => fa_lantern::bind(id),
+    }
+    .map_err(lantern_usage)?;
+    match row.effective_through {
+        fa_registry::procedures::EffectiveThrough::NotTaken => Err(usage(
             format!(
-                "{id} folds every posting regardless of effective date; it does not take --effective-through"
+                "{selector} folds every posting regardless of effective date; it does not take --effective-through"
             ),
             "omit --effective-through, or narrow the snapshot with --known-at <seq>; `fa procedure list --json` shows each procedure's effective_through",
         )),
@@ -23849,6 +23886,23 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     let out = &ctx.out;
     let sub = args.positional.get(1).map(String::as_str);
     let example = "fa procedure run jet.round_amounts --book <dir> --json";
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    if certify && sub != Some("run") {
+        return Err(usage(
+            "procedure certificates require a run",
+            "fa procedure run jet.round_amounts --certify --json",
+        ));
+    }
+    if args.flag_all("--certificate-out").len() > 1
+        || args
+            .flag("--certificate-out")
+            .is_some_and(|path| path.is_empty() || path == "-")
+    {
+        return Err(usage(
+            "--certificate-out requires exactly one new file path",
+            "fa procedure run jet.round_amounts --certificate-out run.cert --json",
+        ));
+    }
     match sub {
         Some("list") => {
             if let Some(extra) = args.positional.get(2) {
@@ -23900,10 +23954,11 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
             Ok(())
         }
         Some("run") => {
-            let id = args
+            let selector = args
                 .positional
                 .get(2)
                 .ok_or_else(|| usage("procedure run needs a procedure id", example))?;
+            let (id, version) = procedure_selector(selector)?;
             if let Some(extra) = args.positional.get(3) {
                 return Err(usage(format!("unexpected argument `{extra}`"), example));
             }
@@ -23940,7 +23995,7 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                     )
                 })?),
             };
-            refuse_untaken_date(id, effective_through)?;
+            refuse_untaken_date(selector, effective_through)?;
             // The run's work budget (fa-1tvm): the procedure stops at the
             // first charge past it, and the run is refused with exit 3 and
             // no finding.
@@ -23956,10 +24011,25 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                 })
                 .transpose()?;
             let who = ctx.principal(args);
-            let bank_cap = if id == "recon.bank_statement_drift" {
-                let cap = ctx.capability(args, &["read"])?;
-                for op in [fa_policy::Op::Read, fa_policy::Op::Reconcile] {
-                    fa_policy::require(&cap, op, "observing bank statement drift")
+            let bank = id == "recon.bank_statement_drift";
+            let protected_cap = if certify || bank {
+                let cap = ctx.capability(
+                    args,
+                    if certify {
+                        &["read", "produce"]
+                    } else {
+                        &["read"]
+                    },
+                )?;
+                let mut ops = vec![fa_policy::Op::Read];
+                if certify {
+                    ops.push(fa_policy::Op::Produce);
+                }
+                if bank {
+                    ops.push(fa_policy::Op::Reconcile);
+                }
+                for op in ops {
+                    fa_policy::require(&cap, op, "reading or certifying a procedure")
                         .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
                 }
                 fa_policy::reach(&cap, &fa_policy::Reach::whole_book(true), None)
@@ -23968,7 +24038,7 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
             } else {
                 None
             };
-            let mut book = if let Some(cap) = &bank_cap {
+            let mut book = if let Some(cap) = &protected_cap {
                 ctx.books.open_admitted(args, |book| {
                     book.read_scope(who, cap)??;
                     Ok(())
@@ -23992,22 +24062,52 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                     .map(|text| parse_vid(text.strip_prefix("E:").unwrap_or(text), "--source"))
                     .transpose()?,
             };
-            let run = if let Some(cap) = &bank_cap {
+            let (run, artifact) = if let Some(cap) = &protected_cap {
                 let request = fa::ProcedureRequest {
-                    procedure: id.clone(),
+                    procedure: id.to_string(),
+                    version,
                     parameters: params,
                     inputs,
                     known_at,
                     effective_through,
                     budget,
                 };
-                book.run_procedure_with_history(who, cap, &request)??
+                if certify {
+                    let certified = book.certify_procedure_with_history(who, cap, &request)??;
+                    let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+                    (certified.report, Some(artifact))
+                } else {
+                    (book.run_procedure_with_history(who, cap, &request)??, None)
+                }
             } else {
-                let built =
-                    fa_lantern::catalog::build(id, params, inputs).map_err(lantern_usage)?;
-                book.run_procedure(built.as_ref(), known_at, effective_through, budget)?
+                let built = match version {
+                    Some(version) => {
+                        fa_lantern::catalog::build_version(id, version, params, inputs)
+                    }
+                    None => fa_lantern::catalog::build(id, params, inputs),
+                }
+                .map_err(lantern_usage)?;
+                (
+                    book.run_procedure(built.as_ref(), known_at, effective_through, budget)?,
+                    None,
+                )
             };
+            let retained = artifact
+                .as_ref()
+                .zip(protected_cap.as_ref())
+                .map(|(artifact, cap)| {
+                    notary::retain_report_artifact(&mut book, &ctx.files, args, artifact, cap)
+                })
+                .transpose()?;
+            let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
             out.known_at(run.coordinate.known_at);
+            if artifact.is_some() {
+                out.effective(
+                    run.coordinate
+                        .effective_through
+                        .map_or_else(|| "all".into(), |day| format!("through:{}", day.render())),
+                );
+            }
             // Human mode prints one finding per line; robot mode carries
             // them in the event alone (stdout is one JSON object a line).
             for f in run.findings.iter().filter(|_| !out.json) {
@@ -24026,7 +24126,7 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                 run.findings.len(),
                 run.population
             );
-            out.event(
+            out.event_with_certificate(
                 "procedure_run",
                 vec![
                     ("procedure", s(&run.procedure)),
@@ -24081,7 +24181,18 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                     ("findings_digest", s(hex(&run.findings_digest))),
                 ],
                 &human,
+                digest.as_deref(),
             );
+            if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
+                notary::emit_report_artifact(
+                    out,
+                    args,
+                    artifact,
+                    "fa:procedure-output:v1",
+                    &bytes,
+                    &retained,
+                );
+            }
             Ok(())
         }
         _ => Err(unhandled("procedure", sub)),

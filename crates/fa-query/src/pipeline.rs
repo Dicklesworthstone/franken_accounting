@@ -115,13 +115,6 @@ pub(crate) fn compile(
             ));
         }
     };
-    if selectors.certify {
-        return Err(refused(
-            lexed,
-            call,
-            "a per-row procedure has two native stages and is not a v1 query certificate",
-        ));
-    }
     for i in 1..call {
         if clause_word(lexed, i) && !(lexed.word(i, "MATCH") || lexed.word(i, "WHERE")) {
             return Err(refused(

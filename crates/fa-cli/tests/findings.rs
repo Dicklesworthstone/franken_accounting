@@ -1370,14 +1370,14 @@ fn an_effective_date_is_refused_where_a_procedure_would_ignore_it() {
         &[
             "procedure",
             "run",
-            "jet.round_amounts",
+            "jet.round_amounts@1",
             "--effective-through",
             "2026-01-31",
         ][..],
         &[
             "finding",
             "record",
-            "jet.round_amounts",
+            "jet.round_amounts@1",
             "--effective-through",
             "2026-01-31",
         ][..],
@@ -1435,9 +1435,143 @@ fn an_effective_date_is_refused_where_a_procedure_would_ignore_it() {
         let row = rows.iter().find(|r| text(r, "id") == id).expect(id);
         text(row, "effective_through").to_string()
     };
-    assert_eq!(declared("jet.round_amounts"), "not_taken");
+    assert_eq!(declared("jet.round_amounts"), "optional");
+    assert_eq!(declared("jet.period_end_timing"), "optional");
+    assert_eq!(declared("graph.concentration"), "not_taken");
     assert_eq!(declared("lookback.preferences"), "optional");
     assert_eq!(declared("aging.open_items"), "required");
+}
+
+/// Both native commands and retained workpapers select the same effective
+/// window. The old algorithm remains explicitly addressable and replays
+/// with its original version after a new process opens the book.
+#[test]
+fn dated_jet_findings_record_and_replay_current_and_retained_versions() {
+    let f = Fixture::new();
+    f.post("cutoff-jan29", "2026-01-29", "200.00 USD");
+    let historical = f.head().to_string();
+    f.post("cutoff-jan31", "2026-01-31", "300.00 USD");
+    let source = f.head().to_string();
+    for (id, parameter, selected, all) in [
+        ("jet.round_amounts", "round_power=2", 2, 3),
+        ("jet.period_end_timing", "window_days=3", 1, 2),
+    ] {
+        let before = f.head();
+        let run = ok(
+            &f.book,
+            &[
+                "procedure",
+                "run",
+                id,
+                "--param",
+                parameter,
+                "--known-at",
+                &source,
+                "--effective-through",
+                "2026-01-30",
+            ],
+        );
+        assert_eq!(number(data(&run), "version"), 2);
+        assert_eq!(number(data(&run), "finding_count"), selected);
+        assert_eq!(text(data(&run), "effective_through"), "2026-01-30");
+        let unbounded = ok(
+            &f.book,
+            &[
+                "procedure",
+                "run",
+                id,
+                "--param",
+                parameter,
+                "--known-at",
+                &source,
+            ],
+        );
+        assert_eq!(number(data(&unbounded), "finding_count"), all);
+        assert_eq!(
+            number(data(&run), "population"),
+            number(data(&unbounded), "population"),
+            "the cutoff does not truncate the source evidence population"
+        );
+        let past = ok(
+            &f.book,
+            &[
+                "procedure",
+                "run",
+                id,
+                "--param",
+                parameter,
+                "--known-at",
+                &historical,
+            ],
+        );
+        assert_eq!(number(data(&past), "finding_count"), selected);
+        assert_eq!(f.head(), before, "native runs remain read-only");
+
+        let recorded = ok(
+            &f.book,
+            &[
+                "finding",
+                "record",
+                id,
+                "--param",
+                parameter,
+                "--known-at",
+                &source,
+                "--effective-through",
+                "2026-01-30",
+            ],
+        );
+        assert_eq!(number(data(&recorded), "version"), 2);
+        assert_eq!(number(data(&recorded), "finding_count"), selected);
+        let certificate = text(data(&recorded), "certificate");
+        let (_, packet) = f.export(certificate, &format!("{id}-v2.fawp"), true, None);
+        let before_replay = f.head();
+        let (exit, replayed) = call(&f.book, &["finding", "replay", "-"], Some(&packet));
+        assert_eq!(exit, 0, "{id}: {replayed:?}");
+        assert_eq!(number(data(&replayed[0]), "finding_count"), selected);
+        assert_eq!(f.head(), before_replay);
+
+        let legacy = format!("{id}@1");
+        let retained = ok(
+            &f.book,
+            &[
+                "finding",
+                "record",
+                &legacy,
+                "--param",
+                parameter,
+                "--known-at",
+                &source,
+            ],
+        );
+        assert_eq!(number(data(&retained), "version"), 1);
+        assert_eq!(number(data(&retained), "finding_count"), all);
+        let certificate = text(data(&retained), "certificate");
+        let (_, packet) = f.export(certificate, &format!("{id}-v1.fawp"), true, None);
+        let (exit, replayed) = call(&f.book, &["finding", "replay", "-"], Some(&packet));
+        assert_eq!(exit, 0, "{legacy}: {replayed:?}");
+        assert_eq!(number(data(&replayed[0]), "finding_count"), all);
+    }
+}
+
+#[test]
+fn unknown_or_malformed_procedure_versions_are_refused_before_recording() {
+    let f = Fixture::new();
+    let before = f.head();
+    for selector in [
+        "jet.round_amounts@0",
+        "jet.round_amounts@01",
+        "jet.round_amounts@3",
+        "jet.round_amounts@1@2",
+        "jet.period_end_timing@65536",
+        "jet.weekend@2",
+    ] {
+        for (verb, action) in [("procedure", "run"), ("finding", "record")] {
+            let (exit, events) = call(&f.book, &[verb, action, selector], None);
+            assert_eq!(exit, 2, "{verb} {action} {selector}: {events:?}");
+            assert_eq!(f.head(), before, "{selector} published nothing");
+        }
+    }
 }
 
 /// fa-qip: `fa search` indexes each finding of every run recorded at the

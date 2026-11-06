@@ -489,7 +489,7 @@ pub(super) fn verify(
     ))
 }
 
-/// Procedure v1 closes over the native source, its original procedure
+/// Procedure certificates close over the native source, their original procedure
 /// registry, and the policy identifier used by the deterministic decision
 /// card. Policy admission and journaled activation remain outside this proof.
 pub(super) fn verify_procedure(
@@ -497,6 +497,7 @@ pub(super) fn verify_procedure(
     native_digest: &[u8; 32],
     procedure_digest: &[u8; 32],
     profile: super::procedure::VerifiedProcedureParameters,
+    version: u16,
 ) -> Result<super::procedure::Registry, ReportError> {
     const NAMES: [&str; 6] = [
         "account_types",
@@ -537,7 +538,12 @@ pub(super) fn verify_procedure(
             "selected procedure must occur exactly once in its registry",
         ));
     };
-    if integer(row, "version")? != 1
+    if integer(row, "version")? != i128::from(version)
+        || match version {
+            1 => row.contains_key("effective_through"),
+            2 => string(row, "effective_through")? != "optional",
+            _ => true,
+        }
         || string(row, "claim")? != "statistical"
         || string(row, "evidence")? != profile.evidence()
         || string(row, "tie_break")? != "entry_vid"

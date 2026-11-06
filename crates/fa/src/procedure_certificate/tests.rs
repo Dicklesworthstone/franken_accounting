@@ -292,10 +292,16 @@ fn every_supported_procedure_has_a_native_replayable_certificate_and_does_not_wr
     f.post(4, "1020", "6000", 10, false);
     let before = f.head();
     let mut certificates = Vec::new();
-    assert_eq!(CERTIFIABLE_PROCEDURES.len(), 24);
-    for &(id, _) in CERTIFIABLE_PROCEDURES {
-        let row = fa_lantern::bind(id).unwrap();
-        let certified = f.certify(&f.request(&row.id, source));
+    assert_eq!(CERTIFIABLE_PROCEDURES.len(), 26);
+    for &(id, version) in CERTIFIABLE_PROCEDURES {
+        let row = fa_lantern::bind_version(id, version).unwrap();
+        let mut request = f.request(&row.id, source);
+        request.version = Some(version);
+        if version == 1 && matches!(id, "jet.round_amounts" | "jet.period_end_timing") {
+            request.effective_through = None;
+        }
+        let certified = f.certify(&request);
+        assert_eq!(certified.report.version, version);
         let bytes = certified.certificate.canonical_bytes().unwrap();
         let decoded = ProcedureCertificate::decode(&bytes).unwrap();
         assert_eq!(decoded.report(), &certified.report);

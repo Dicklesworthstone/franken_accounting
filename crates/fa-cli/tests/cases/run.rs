@@ -969,12 +969,13 @@ impl<'c> BookRun<'c> {
                 }
                 Some(StepKind::PeriodLock) => self.period_lock(step),
                 Some(StepKind::FindingRecord) => {
-                    let procedure = step
-                        .reference
-                        .split_once('@')
-                        .map_or(step.reference.as_str(), |(p, _)| p);
                     let params = step.params.clone().unwrap_or_default();
-                    self.finding_record(step.seq, procedure, step.principal.as_deref(), &params);
+                    self.finding_record(
+                        step.seq,
+                        &step.reference,
+                        step.principal.as_deref(),
+                        &params,
+                    );
                 }
                 Some(StepKind::EngagementFile) => self.engagement_file(step),
                 Some(StepKind::RuleCheck | StepKind::RulePropose | StepKind::RuleBacktest) => {
@@ -1774,14 +1775,15 @@ impl<'c> BookRun<'c> {
     fn finding_record(
         &mut self,
         seq: i128,
-        procedure: &str,
+        selector: &str,
         principal: Option<&str>,
         params: &[String],
     ) {
+        let procedure = selector.split_once('@').map_or(selector, |(id, _)| id);
         let mut args = vec![
             s("finding"),
             s("record"),
-            procedure.to_string(),
+            selector.to_string(),
             s("--known-at"),
             s(self.head),
         ];

@@ -335,8 +335,9 @@ pub use proof::{
     WitnessRequest, Witnessed,
 };
 pub use query::{
-    CertifiedQuery, MAX_QUERY_ROWS, QUERY_CERTIFICATE_FORMAT, QUERY_OUTPUT_FORMAT, QueryCell,
-    QueryCertificate, QueryCertificateStatus, QueryRows, profile_refusal,
+    CertifiedQuery, MAX_QUERY_ROWS, QUERY_CERTIFICATE_FORMAT, QUERY_CERTIFICATE_FORMAT_V2,
+    QUERY_OUTPUT_FORMAT, QueryCell, QueryCertificate, QueryCertificateStatus, QueryRows,
+    profile_refusal,
 };
 pub use recurring::{
     RecurringBatch, RecurringBlocked, RecurringHistory, RecurringPlan, RecurringReadWork,

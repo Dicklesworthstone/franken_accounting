@@ -409,8 +409,11 @@ fn record(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let Some(id) = request_id {
         crate::cli::refuse_untaken_date(id, effective)?;
     }
-    let mut parameters = request_id
-        .map(|id| {
+    let selected = request_id
+        .map(|id| crate::cli::procedure_selector(id))
+        .transpose()?;
+    let mut parameters = selected
+        .map(|(id, _)| {
             fa_lantern::Params::defaults(id)
                 .map_err(|e| usage(e.to_string(), "fa procedure list --json"))
         })
@@ -447,7 +450,7 @@ fn record(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .transpose()?;
     let who = ctx.principal(args);
     let cap = capability(ctx, args, &["read", "produce"])?;
-    if request_id.is_some_and(|id| id == "recon.bank_statement_drift") {
+    if selected.is_some_and(|(id, _)| id == "recon.bank_statement_drift") {
         fa_policy::require(&cap, Op::Reconcile, "recording bank statement drift")
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     }
@@ -458,9 +461,11 @@ fn record(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let digest = if let Some(digest) = source {
         digest
     } else {
-        let id = request_id.ok_or_else(|| usage("record needs a procedure id", EXAMPLE))?;
+        let (id, version) =
+            selected.ok_or_else(|| usage("record needs a procedure id", EXAMPLE))?;
         let request = ProcedureRequest {
-            procedure: id.clone(),
+            procedure: id.to_string(),
+            version,
             parameters: parameters
                 .ok_or_else(|| usage("record needs procedure parameters", EXAMPLE))?,
             inputs: fa_lantern::catalog::Inputs {

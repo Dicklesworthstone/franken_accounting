@@ -1513,6 +1513,7 @@ fn verify_report_with_native_subledger_input(
                 &cert.registry_digest,
                 &request.registry_digest,
                 request.parameters,
+                request.version,
             )?;
             let units = definitions.unit_scales.keys().copied().collect();
             procedure_registry = Some(definitions);
@@ -2187,12 +2188,23 @@ fn verify_report_with_native_subledger_input(
                         identity: info.identity,
                         digest: envelopes[index].record_digest,
                         recorded_at: envelopes[index].commit_seq,
+                        effective: envelopes[index].effective_day,
                         class: envelopes[index].class,
                         legs: legs[index]
                             .iter()
                             .map(|leg| (leg.unit, leg.mantissa))
                             .collect(),
                         supersession: info.supersession.clone(),
+                        settlements: crate::envelope::proposal_leg_details(
+                            &records[index].1[..records[index].0],
+                        )?
+                        .into_iter()
+                        .flat_map(|leg| {
+                            leg.settlements
+                                .into_iter()
+                                .map(|reference| (reference.target, reference.digest))
+                        })
+                        .collect(),
                         period,
                     })
                 })
@@ -2649,7 +2661,9 @@ fn verify_report_with_native_subledger_input(
             checkpoint: signed,
             known_at: cert.known_at,
             time_selection: cert.time_selection,
-            effective_through: None,
+            effective_through: verified_procedure
+                .as_ref()
+                .and_then(|run| run.effective_through),
             activity: false,
             periods: Vec::new(),
             rows: Vec::new(),

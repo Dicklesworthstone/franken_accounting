@@ -107,6 +107,7 @@ fn reversal(f: &Fixture, source: VId, key: &[u8], date: u8) -> EntryPayload {
             Side::Debit => Side::Credit,
             Side::Credit => Side::Debit,
         };
+        leg.settles.clear();
     }
     proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
     proposal
@@ -114,6 +115,67 @@ fn reversal(f: &Fixture, source: VId, key: &[u8], date: u8) -> EntryPayload {
 
 fn reverse(f: &mut Fixture, source: VId, key: &[u8], date: u8) -> VId {
     let proposal = reversal(f, source, key, date);
+    post(f, proposal)
+}
+
+fn replace(
+    f: &mut Fixture,
+    source: VId,
+    key: &[u8],
+    undo_day: u8,
+    corrected_day: u8,
+    amount: i128,
+) -> (VId, VId) {
+    let undo = reversal(f, source, &[key, b":undo"].concat(), undo_day);
+    let mut corrected = template(f, source, key, corrected_day);
+    corrected.class = EntryClass::REPLACEMENT;
+    corrected.supersession = vec![fa_model::Supersession {
+        target: undo.supersession[0].target,
+        kind: fa_model::SupersessionKind::Replaces,
+        reason_code: 1,
+    }];
+    for leg in &mut corrected.legs {
+        leg.amount.mantissa = amount;
+        leg.settles.clear();
+    }
+    corrected.unit_totals = EntryPayload::fold_unit_totals(&corrected.legs).unwrap();
+    let request = |proposal| PostRequest {
+        proposal,
+        approvals: Vec::new(),
+        plan_certificate: None,
+        capability: cap(&["post"]),
+    };
+    let cx = f.cx();
+    let (undo, corrected) = f
+        .runtime
+        .block_on(
+            f.book
+                .post_replacement_pair(&cx, request(undo), request(corrected)),
+        )
+        .unwrap()
+        .unwrap();
+    (undo.entry_ref().vid, corrected.entry_ref().vid)
+}
+
+fn pay_corrected(f: &mut Fixture, corrected: VId) -> VId {
+    let (entry, _) = f.book.read_entry(&f.cx(), corrected).unwrap().unwrap();
+    let target = fa_model::EntryRef {
+        vid: corrected,
+        entry_digest: entry.entry_digest,
+    };
+    let mut proposal = template(f, corrected, b"offline-paid-correction", 30);
+    proposal.class = EntryClass::ORIGINAL;
+    proposal.supersession.clear();
+    proposal.legs = vec![
+        LegPayload::simple(Side::Credit, f.id("1000"), Amount::new(f.unit, 50_000)),
+        LegPayload::simple(Side::Debit, f.id("1010"), Amount::new(f.unit, 50_000)),
+    ];
+    proposal.legs[0].settles.push(fa_model::Settlement {
+        target,
+        ordinal: 1,
+        amount: Amount::new(f.unit, 50_000),
+    });
+    proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
     post(f, proposal)
 }
 
@@ -194,6 +256,287 @@ fn reseal(certificate: &mut ProcedureCertificate) {
         *certificate,
         "the negative must pass the producer's integrity-only decoder"
     );
+}
+
+fn cutoff_request(f: &Fixture, procedure: &str, through: Option<u8>) -> ProcedureRequest {
+    let mut request = ProcedureRequest::new(procedure, catalog::Inputs::default()).unwrap();
+    request.known_at = Some(f.head());
+    request.effective_through = through.map(day);
+    request
+}
+
+#[test]
+fn retained_registry_closures_match_the_published_baseline_and_replay_old_versions() {
+    // Independently hashed the exact git objects at 383e7108d5755ad1eff6bbb9569c7c758be22f52.
+    // Keep both the canonical closure and the pre-canonical raw-text contract.
+    let hex = |digest: [u8; 32]| {
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    assert_eq!(
+        hex(retained_registry_digest().unwrap()),
+        "2665c0983ceae1dbfea287404ff767774d0eb66838ce6718a1ce714a29d02783"
+    );
+    assert_eq!(
+        hex(retained_legacy_registry_digest().unwrap()),
+        "ac6da88181fe324ea7298fb65566c5ec7f7ebb568ae1f49fbd977fe71cbd2bab"
+    );
+    let mut f = Fixture::new(126);
+    f.post(31, "3000", "1000", 100_000, false);
+    for id in ["jet.round_amounts", "jet.period_end_timing", "jet.weekend"] {
+        let mut request = cutoff_request(&f, id, None);
+        request.version = Some(1);
+        let certified = f.certify(&request);
+        for registry in [
+            retained_registry_digest().unwrap(),
+            retained_legacy_registry_digest().unwrap(),
+        ] {
+            let mut retained = certified.certificate.clone();
+            retained.registry = registry;
+            reseal(&mut retained);
+            let replayed = f
+                .book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &retained)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                replayed, certified.report,
+                "retained {id}@1 must not use the current algorithm"
+            );
+            if registry == retained_legacy_registry_digest().unwrap() {
+                assert!(
+                    retained.check_offline_profile().is_err(),
+                    "raw-text closures remain native-only"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn effective_cutoffs_replay_before_reversal_liveness_at_the_original_known_at() {
+    for (seed, id) in [(122, "jet.round_amounts"), (123, "jet.period_end_timing")] {
+        let mut f = Fixture::new(seed);
+        let (original, _) = f.post(29, "3000", "1000", 100_000, false);
+        let (future, _) = f.post(31, "3000", "1000", 200_000, false);
+        let historical = f.certify(&cutoff_request(&f, id, Some(29)));
+        let historical_at = f.head();
+        let reversal = reverse(&mut f, original, b"cutoff-reversal", 30);
+        reverse(&mut f, reversal, b"cutoff-restoration", 31);
+        let frontier = f.head();
+        let runs: Vec<_> = [(28, 0), (29, 1), (30, 0), (31, 2)]
+            .into_iter()
+            .map(|(through, expected)| {
+                (
+                    through,
+                    expected,
+                    f.certify(&cutoff_request(&f, id, Some(through))),
+                )
+            })
+            .collect();
+        let mut legacy_request = cutoff_request(&f, id, None);
+        legacy_request.version = Some(1);
+        let legacy = f.certify(&legacy_request);
+        assert_eq!(legacy.report.version, 1);
+        assert_eq!(legacy.report.work.entries, 2);
+        assert!(
+            legacy
+                .report
+                .findings
+                .iter()
+                .all(|finding| finding.version == 1)
+        );
+        assert!(matches!(
+            f.book.procedure_certificate_status(&f.cx(), PRINCIPAL, &cap(&["read"]), &legacy.certificate)
+                .unwrap().unwrap(),
+            ProcedureCertificateStatus::Current { checked_at } if checked_at == frontier
+        ));
+
+        // A subsequently recorded backdated entry and the later reversals are
+        // in the signed checkpoint, but cannot enter an earlier known-at view.
+        f.post(29, "3000", "1000", 300_000, false);
+        let key = f.book.checkpoint_public_key();
+        let produced = produce(&mut f, &historical.certificate);
+        let verified = verify(&produced, &historical.certificate, key);
+        assert_eq!(verified.known_at, historical_at.0);
+        assert!(verified.checkpoint.checkpoint.through_seq > frontier.0);
+        assert_eq!(verified.procedure.as_ref().unwrap().live_entries, 1);
+        assert_eq!(
+            verified.procedure.as_ref().unwrap().findings[0].entry,
+            original.0
+        );
+
+        let mut input_digests = BTreeSet::new();
+        let population = runs[0].2.report.population;
+        for (through, expected, certified) in runs {
+            assert_eq!(certified.report.population, population);
+            let native = f
+                .book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &certified.certificate)
+                .unwrap()
+                .unwrap();
+            assert_eq!(native, certified.report);
+            let produced = produce(&mut f, &certified.certificate);
+            let verified = verify(&produced, &certified.certificate, key);
+            assert_eq!(verified.known_at, frontier.0);
+            assert_eq!(verified.effective_through, Some(day(through).0));
+            let procedure = verified.procedure.unwrap();
+            assert_eq!(procedure.version, 2);
+            assert_eq!(procedure.effective_through, Some(day(through).0));
+            assert_eq!(procedure.population, population);
+            assert!(
+                population > procedure.live_entries,
+                "undated controls remain in the closure"
+            );
+            assert_eq!(procedure.live_entries, expected);
+            assert_eq!(procedure.findings.len() as u64, expected);
+            assert!(input_digests.insert(procedure.inputs_digest));
+            if through == 29 {
+                let command = fa_verify::cli::run(
+                    &[
+                        "report".into(),
+                        "cutoff.fab".into(),
+                        "--key".into(),
+                        key.iter().map(|byte| format!("{byte:02x}")).collect(),
+                        "--receipt".into(),
+                        "cutoff.receipt".into(),
+                        "--json".into(),
+                    ],
+                    &|path| match path {
+                        "cutoff.fab" => Ok(produced.bundle.bytes.clone()),
+                        "cutoff.receipt" => Ok(produced.receipt.clone()),
+                        _ => Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "unexpected input",
+                        )),
+                    },
+                );
+                assert_eq!(command.exit, 0, "{}", command.stdout);
+                assert!(
+                    command
+                        .stdout
+                        .contains(&format!("\"effective_through\":{}", day(29).0))
+                );
+                assert!(command.stdout.contains("\"version\":2"));
+            }
+            if through == 31 {
+                assert_eq!(
+                    procedure
+                        .findings
+                        .iter()
+                        .map(|finding| finding.entry)
+                        .collect::<BTreeSet<_>>(),
+                    BTreeSet::from([original.0, future.0]),
+                );
+            }
+        }
+        let produced = produce(&mut f, &legacy.certificate);
+        let verified = verify(&produced, &legacy.certificate, key);
+        assert_eq!(verified.effective_through, None);
+        let procedure = verified.procedure.unwrap();
+        assert_eq!(procedure.version, 1);
+        assert_eq!(procedure.live_entries, 2);
+        assert_eq!(decode_run(&verified.output).unwrap(), legacy.report);
+    }
+}
+
+#[test]
+fn repaired_effective_cutoff_outputs_cannot_hide_reversals_future_entries_or_controls() {
+    for (seed, id) in [(124, "jet.round_amounts"), (125, "jet.period_end_timing")] {
+        let mut f = Fixture::new(seed);
+        let (original, _) = f.post(29, "3000", "1000", 100_000, false);
+        let (future, _) = f.post(31, "3000", "1000", 200_000, false);
+        reverse(&mut f, original, b"hostile-cutoff-reversal", 30);
+        let certified = f.certify(&cutoff_request(&f, id, Some(29)));
+        let later = f.certify(&cutoff_request(&f, id, Some(30)));
+        assert_eq!(certified.report.findings.len(), 1);
+        assert!(later.report.findings.is_empty());
+        let produced = produce(&mut f, &certified.certificate);
+        let key = f.book.checkpoint_public_key();
+        verify(&produced, &certified.certificate, key);
+        for variant in [
+            "changed cutoff",
+            "out-of-window reversal",
+            "future entry omitted",
+            "controls omitted",
+        ] {
+            let mut forged = certified.certificate.clone();
+            match variant {
+                "changed cutoff" => {
+                    forged.report.coordinate.effective_through =
+                        later.report.coordinate.effective_through;
+                    forged.report.inputs_digest = later.report.inputs_digest;
+                }
+                "out-of-window reversal" => {
+                    forged.report.findings = later.report.findings.clone();
+                    forged.report.work = later.report.work;
+                }
+                _ => {
+                    // Re-run the real producer over a deliberately incomplete
+                    // population and repair every input/decision/output hash.
+                    // The independent verifier still has the complete prefix.
+                    let cx = f.cx();
+                    forged.report = f
+                        .book
+                        .query(&cx, |db, book| {
+                            let mut snapshot = Snapshot::read(
+                                db,
+                                &cx.query(),
+                                book,
+                                Some(certified.certificate.known_at()),
+                                Some(day(29)),
+                            )?;
+                            snapshot.entries.retain(|entry| {
+                                if variant == "future entry omitted" {
+                                    entry.vid != future
+                                } else {
+                                    !entry.entry.proposal.legs.is_empty()
+                                }
+                            });
+                            let mut inputs = Writer::new();
+                            inputs.u64(snapshot.coordinate.known_at.0).opt(
+                                snapshot.coordinate.effective_through.as_ref(),
+                                |w, through| {
+                                    w.i32(through.0);
+                                },
+                            );
+                            inputs.list(&snapshot.entries, |w, entry| {
+                                w.u128(entry.vid.0)
+                                    .fixed(&entry.entry.entry_digest)
+                                    .u64(entry.recorded_at.0);
+                            });
+                            snapshot.inputs_digest = raw_digest(
+                                fa_lantern::INPUTS_DIGEST_DOMAIN,
+                                &inputs.finish().unwrap(),
+                            );
+                            let method = catalog::build(
+                                id,
+                                Params::defaults(id)?,
+                                catalog::Inputs::default(),
+                            )?;
+                            Ok(fa_lantern::run_over_metered(
+                                &snapshot,
+                                book,
+                                method.as_ref(),
+                                None,
+                                Some(&cx.query()),
+                            )?)
+                        })
+                        .unwrap();
+                }
+            }
+            reseal(&mut forged);
+            let bundle = replace_certificate(&produced.bundle.bytes, &forged);
+            let error = verify_report_expected(&bundle, &[key], None, None, Some(forged.digest()))
+                .expect_err(variant);
+            assert_eq!(
+                error.predicate, "procedure_recomputation",
+                "{id} {variant}: {error}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -662,13 +1005,26 @@ fn round_amounts_offline_scope_is_explicit_and_production_authority_precedes_obs
     let mut f = Fixture::new(114);
     let (source, _) = f.post(1, "3000", "1000", 100_000, false);
     let ordinary = f.certify(&round_request(&f, 3, None)).certificate;
-    let cutoff = f.certify(&round_request(&f, 3, Some(day(5)))).certificate;
+    let mut handles = ordinary.clone();
+    handles
+        .report
+        .inputs
+        .push(("account".into(), format!("{:032x}", f.id("1000").0)));
+    reseal(&mut handles);
+    let mut legacy_cutoff = ordinary.clone();
+    legacy_cutoff.registry = retained_registry_digest().unwrap();
+    legacy_cutoff.report.version = 1;
+    legacy_cutoff.report.coordinate.effective_through = Some(day(5));
+    for finding in &mut legacy_cutoff.report.findings {
+        finding.version = 1;
+    }
+    reseal(&mut legacy_cutoff);
     let other = f.certify(&f.request("jet.weekend", source)).certificate;
     let produced = produce(&mut f, &ordinary);
     let key = f.book.checkpoint_public_key();
     let cx = f.cx();
     let before = f.head();
-    for unsupported in [&cutoff, &other] {
+    for unsupported in [&handles, &legacy_cutoff, &other] {
         let refused = f
             .runtime
             .block_on(f.book.produce_procedure_report_bundle(
@@ -693,9 +1049,9 @@ fn round_amounts_offline_scope_is_explicit_and_production_authority_precedes_obs
         let mut forged = ordinary.clone();
         match variant {
             "version" => {
-                forged.report.version = 2;
+                forged.report.version = 3;
                 for finding in &mut forged.report.findings {
-                    finding.version = 2;
+                    finding.version = 3;
                 }
             }
             "handles" => forged
@@ -788,7 +1144,7 @@ fn round_amounts_large_population_replays_the_calibrated_decision_branch() {
 }
 
 #[test]
-fn round_amounts_refuses_replacement_sources_but_preserves_earlier_certificates() {
+fn round_amounts_refuses_unreferenced_replacements_but_preserves_earlier_certificates() {
     let mut f = Fixture::new(116);
     let (source, _) = f.post(1, "3000", "1000", 100_000, false);
     let original = f.certify(&round_request(&f, 3, None)).certificate;
@@ -856,6 +1212,271 @@ fn round_amounts_refuses_replacement_sources_but_preserves_earlier_certificates(
         verify_report_expected(&bundle, &[key], None, None, Some(current.digest()),).is_err(),
         "an outer pin cannot establish an unsupported replacement identity law"
     );
+}
+
+#[test]
+fn corrected_and_paid_procedures_resolve_identity_at_known_at_before_filtering_dates() {
+    let mut f = Fixture::new(121);
+    let (original, _) = f.post(27, "3000", "1000", 100_000, false);
+    let (_, corrected) = replace(&mut f, original, b"offline-paid-pair", 28, 29, 200_000);
+    let unresolved: Vec<_> = ["jet.round_amounts", "jet.period_end_timing"]
+        .into_iter()
+        .map(|id| f.certify(&cutoff_request(&f, id, Some(29))).certificate)
+        .collect();
+    let payment = pay_corrected(&mut f, corrected);
+    let frontier = f.head();
+    let cases: Vec<_> = ["jet.round_amounts", "jet.period_end_timing"]
+        .into_iter()
+        .flat_map(|id| {
+            [27, 28, 29, 30]
+                .into_iter()
+                .map(|through| {
+                    (
+                        id,
+                        through,
+                        f.certify(&cutoff_request(&f, id, Some(through))),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let versions: Vec<_> = ["jet.round_amounts", "jet.period_end_timing"]
+        .into_iter()
+        .flat_map(|id| {
+            [1, 2]
+                .into_iter()
+                .map(|version| {
+                    let mut request = cutoff_request(&f, id, None);
+                    request.version = Some(version);
+                    f.certify(&request)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let key = f.book.checkpoint_public_key();
+    for (id, through, certified) in cases {
+        let produced = produce(&mut f, &certified.certificate);
+        let result = verify(&produced, &certified.certificate, key);
+        let procedure = result.procedure.as_ref().unwrap();
+        assert_eq!(result.known_at, frontier.0);
+        assert_eq!(
+            procedure.live_entries,
+            match through {
+                28 => 0,
+                30 => 2,
+                _ => 1,
+            }
+        );
+        let expected = match (id, through) {
+            ("jet.round_amounts", 27) => vec![original.0],
+            (_, 29) | ("jet.round_amounts", 30) => vec![corrected.0],
+            ("jet.period_end_timing", 30) => vec![corrected.0, payment.0],
+            _ => Vec::new(),
+        };
+        assert_eq!(
+            procedure
+                .findings
+                .iter()
+                .map(|finding| finding.entry)
+                .collect::<BTreeSet<_>>(),
+            expected.into_iter().collect()
+        );
+        if through == 29 {
+            // The signed later payment resolves the canonical VID while its
+            // day-30 monetary effects remain outside this inclusive cutoff.
+            assert_eq!(procedure.findings[0].entry, corrected.0);
+            let historical = unresolved
+                .iter()
+                .find(|cert| cert.report.procedure == id)
+                .unwrap();
+            let before = f.head();
+            let cx = f.cx();
+            let refusal = f
+                .runtime
+                .block_on(f.book.produce_procedure_report_bundle(
+                    &cx,
+                    PRINCIPAL,
+                    &cap(&["read", "produce"]),
+                    None,
+                    historical,
+                ))
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(refusal.code, fa_notary::code::SCOPE_UNSUPPORTED);
+            assert!(refusal.message.contains("no authenticated later reference"));
+            assert_eq!(f.head(), before);
+            for repaired_output in [false, true] {
+                let mut forged = historical.clone();
+                if repaired_output {
+                    forged.report.findings.clear();
+                    forged.report.work = Work::default();
+                    reseal(&mut forged);
+                }
+                let bundle = replace_certificate(&produced.bundle.bytes, &forged);
+                let error =
+                    verify_report_expected(&bundle, &[key], None, None, Some(forged.digest()))
+                        .unwrap_err();
+                assert_eq!(
+                    error.predicate, "procedure_identity",
+                    "{id}, repaired={repaired_output}: {error}"
+                );
+            }
+        }
+    }
+    for certified in versions {
+        let produced = produce(&mut f, &certified.certificate);
+        let result = verify(&produced, &certified.certificate, key);
+        assert_eq!(
+            result.procedure.as_ref().unwrap().version,
+            certified.report.version
+        );
+        assert_eq!(result.procedure.as_ref().unwrap().live_entries, 2);
+    }
+}
+
+#[test]
+fn corrected_procedures_replay_reversal_restoration_and_reject_rehashed_aliases() {
+    let mut f = Fixture::new(122);
+    let (original, _) = f.post(27, "3000", "1000", 100_000, false);
+    let (paired_undo, corrected) =
+        replace(&mut f, original, b"offline-restored-pair", 28, 29, 200_000);
+    reverse(&mut f, paired_undo, b"offline-revive-original", 29);
+    let undo_corrected = reverse(&mut f, corrected, b"offline-reverse-correction", 30);
+    let historical: Vec<_> = ["jet.round_amounts", "jet.period_end_timing"]
+        .into_iter()
+        .map(|id| f.certify(&cutoff_request(&f, id, Some(31))))
+        .collect();
+    reverse(&mut f, undo_corrected, b"offline-restore-correction", 31);
+    let cases: Vec<_> = ["jet.round_amounts", "jet.period_end_timing"]
+        .into_iter()
+        .flat_map(|id| {
+            [27, 28, 29, 30, 31]
+                .into_iter()
+                .map(|through| {
+                    (
+                        id,
+                        through,
+                        f.certify(&cutoff_request(&f, id, Some(through))),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let key = f.book.checkpoint_public_key();
+    for certified in historical {
+        let produced = produce(&mut f, &certified.certificate);
+        let result = verify(&produced, &certified.certificate, key);
+        let procedure = result.procedure.as_ref().unwrap();
+        assert_eq!(procedure.live_entries, 1);
+        let expected = if procedure.procedure == "jet.round_amounts" {
+            vec![original.0]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            procedure
+                .findings
+                .iter()
+                .map(|finding| finding.entry)
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+    for (id, through, certified) in cases {
+        let produced = produce(&mut f, &certified.certificate);
+        let result = verify(&produced, &certified.certificate, key);
+        let procedure = result.procedure.as_ref().unwrap();
+        assert_eq!(procedure.live_entries, u64::from(through != 28));
+        let expected = match (id, through) {
+            (_, 29 | 31) => vec![corrected.0],
+            ("jet.round_amounts", 27 | 30) => vec![original.0],
+            _ => Vec::new(),
+        };
+        assert_eq!(
+            procedure
+                .findings
+                .iter()
+                .map(|finding| finding.entry)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        if through != 31 {
+            continue;
+        }
+        for variant in [
+            "legacy alias",
+            "missing paired reversal",
+            "missing identity witness",
+        ] {
+            let mut forged = certified.certificate.clone();
+            let cx = f.cx();
+            forged.report = f
+                .book
+                .query(&cx, |db, book| {
+                    let mut snapshot = Snapshot::read(
+                        db,
+                        &cx.query(),
+                        book,
+                        Some(certified.certificate.known_at()),
+                        Some(day(31)),
+                    )?;
+                    match variant {
+                        "legacy alias" => {
+                            let target = snapshot
+                                .entries
+                                .iter_mut()
+                                .find(|entry| entry.vid == corrected)
+                                .unwrap();
+                            target.vid = fa_model::entry_vid(
+                                target.entry.proposal.book_id,
+                                &target.entry.proposal.principal_ref.0.to_le_bytes(),
+                                &target.entry.proposal.idempotency_key,
+                            );
+                        }
+                        "missing paired reversal" => {
+                            snapshot.entries.retain(|entry| entry.vid != paired_undo)
+                        }
+                        "missing identity witness" => {
+                            snapshot.entries.retain(|entry| entry.vid != undo_corrected)
+                        }
+                        _ => unreachable!(),
+                    }
+                    snapshot.entries.sort_by_key(|entry| entry.vid);
+                    let mut inputs = Writer::new();
+                    inputs.u64(snapshot.coordinate.known_at.0).opt(
+                        snapshot.coordinate.effective_through.as_ref(),
+                        |w, through| {
+                            w.i32(through.0);
+                        },
+                    );
+                    inputs.list(&snapshot.entries, |w, entry| {
+                        w.u128(entry.vid.0)
+                            .fixed(&entry.entry.entry_digest)
+                            .u64(entry.recorded_at.0);
+                    });
+                    snapshot.inputs_digest =
+                        raw_digest(fa_lantern::INPUTS_DIGEST_DOMAIN, &inputs.finish().unwrap());
+                    let method =
+                        catalog::build(id, Params::defaults(id)?, catalog::Inputs::default())?;
+                    Ok(fa_lantern::run_over_metered(
+                        &snapshot,
+                        book,
+                        method.as_ref(),
+                        None,
+                        Some(&cx.query()),
+                    )?)
+                })
+                .unwrap();
+            reseal(&mut forged);
+            let bundle = replace_certificate(&produced.bundle.bytes, &forged);
+            let error = verify_report_expected(&bundle, &[key], None, None, Some(forged.digest()))
+                .expect_err(variant);
+            assert_eq!(
+                error.predicate, "procedure_recomputation",
+                "{id} {variant}: {error}"
+            );
+        }
+    }
 }
 
 fn timing_request(f: &Fixture, window_days: i128) -> ProcedureRequest {

@@ -5,7 +5,7 @@
 //! result digest.
 //! A per-row `fa.open_amount` call derives historical residuals between two
 //! native reads. Its continuation keeps native GQL's row semantics; the
-//! two-stage interactive result is not a v1 query certificate. Non-items
+//! v2 query certificate binds both reads and the regenerated parameters. Non-items
 //! (including Pending legs) yield NULL, which a native `open IS NOT NULL`
 //! or age predicate may exclude before an exact aggregate.
 //!
@@ -34,7 +34,8 @@ mod certificate;
 mod pipeline;
 
 pub use certificate::{
-    CertifiedQuery, QUERY_CERTIFICATE_FORMAT, QueryCertificate, QueryCertificateStatus,
+    CertifiedQuery, QUERY_CERTIFICATE_FORMAT, QUERY_CERTIFICATE_FORMAT_V2, QueryCertificate,
+    QueryCertificateStatus,
 };
 
 /// The canonical bytes of a query's result begin with this tag.
@@ -392,7 +393,16 @@ fn result_of(
     })
 }
 
-/// One certified native read of `native` at `seq` (at most the head).
+/// The native evidence of one execution. A pipeline retains its source
+/// read as well as its continuation; neither stage alone certifies the
+/// journal-derived open amounts between them.
+struct ExecutedQuery {
+    rows: QueryRows,
+    native: NativeResultCertificate,
+    pipeline: Option<pipeline::Evidence>,
+}
+
+/// The native read or two-stage pipeline at `seq` (at most the head).
 fn execute<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &QueryCx,
@@ -400,7 +410,7 @@ fn execute<V: Vfs + Clone>(
     native: &Native,
     seq: CommitSeq,
     period: Option<&str>,
-) -> Result<Result<(QueryRows, NativeResultCertificate), Refusal>, BookError> {
+) -> Result<Result<ExecutedQuery, Refusal>, BookError> {
     // A period range's filter waits for its days, resolved at `seq`.
     let bound;
     let native = match period {
@@ -431,7 +441,13 @@ fn execute<V: Vfs + Clone>(
         }
         Err(error) => return Ok(Err(native_refusal(&statement, &error))),
     };
-    Ok(result_of(native, seq, result, &certificate).map(|rows| (rows, certificate)))
+    Ok(
+        result_of(native, seq, result, &certificate).map(|rows| ExecutedQuery {
+            rows,
+            native: certificate,
+            pipeline: None,
+        }),
+    )
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
@@ -446,7 +462,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Result<Result<QueryRows, Refusal>, BookError> {
         self.query(cx, |db, book| {
             let seq = fa_registers::resolve_known_at(db, Some(known_at))?;
-            Ok(execute(db, &cx.query(), book, native, seq, period)?.map(|(rows, _)| rows))
+            Ok(execute(db, &cx.query(), book, native, seq, period)?.map(|executed| executed.rows))
         })
     }
 }

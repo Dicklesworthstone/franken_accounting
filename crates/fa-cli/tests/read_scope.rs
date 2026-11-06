@@ -1191,6 +1191,111 @@ fn an_account_scoped_token_is_refused_every_query_before_the_book_is_opened() {
 }
 
 #[test]
+fn direct_procedure_certification_admits_current_whole_book_read_and_produce_before_open() {
+    let f = Fixture::new();
+    let (reader, _) = f.issue("procedure-reader", &[]);
+    let (producer, _) = f.issue_ops("procedure-producer", &["read", "produce"], &[]);
+    let (scoped, _) = f.issue_ops(
+        "procedure-account-scoped",
+        &["read", "produce"],
+        &["--account", "1000"],
+    );
+    let plain = f.ok(&["--token", &reader, "procedure", "run", "jet.round_amounts"]);
+    assert_eq!(text(&plain, "event"), "procedure_run");
+    let head = || {
+        number(
+            f.ok(&["book", "info"]).get("coordinate").unwrap(),
+            "known_at",
+        )
+    };
+    let before = head();
+    for (token, missing) in [(&reader, "produce"), (&scoped, "reaches the whole book")] {
+        for output_only in [false, true] {
+            let mut arguments = vec![
+                "--token",
+                token.as_str(),
+                "procedure",
+                "run",
+                "jet.round_amounts",
+            ];
+            if output_only {
+                arguments.extend(["--certificate-out", "denied-procedure.certificate"]);
+            } else {
+                arguments.push("--certify");
+            }
+            let (exit, error) = f.run(&arguments);
+            assert_eq!(exit, 7, "{arguments:?}: {error:?}");
+            assert!(text(data(&error), "message").contains(missing), "{error:?}");
+            assert_eq!(error.get("book"), Some(&Json::Null), "{error:?}");
+            assert_eq!(error.get("coordinate"), Some(&Json::Null), "{error:?}");
+            assert_eq!(head(), before, "the refused call never opens the book");
+        }
+    }
+    assert!(!f.dir.join("denied-procedure.certificate").exists());
+
+    // Certifying a bank procedure still needs the separate reconcile right,
+    // before its source population or even the book's coordinate is observed.
+    for selector in ["recon.bank_statement_drift", "recon.bank_statement_drift@1"] {
+        for operation in [
+            vec!["procedure", "run", selector],
+            vec!["procedure", "run", selector, "--certify"],
+            vec!["finding", "record", selector],
+        ] {
+            let mut arguments = vec!["--token", producer.as_str()];
+            arguments.extend(operation);
+            let (exit, error) = f.run(&arguments);
+            assert_eq!(exit, 7, "{arguments:?}: {error:?}");
+            assert!(text(data(&error), "message").contains("reconcile"));
+            assert_eq!(error.get("book"), Some(&Json::Null));
+            assert_eq!(error.get("coordinate"), Some(&Json::Null));
+            assert_eq!(head(), before);
+        }
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .current_dir(&f.dir)
+        .args([
+            "--book",
+            "book",
+            "--token",
+            &producer,
+            "procedure",
+            "run",
+            "jet.round_amounts",
+            "--effective-through",
+            "2026-03-31",
+            "--certificate-out",
+            "admitted-procedure.certificate",
+            "--json",
+        ])
+        .env_remove("FA_BOOK")
+        .env_remove("FA_TOKEN")
+        .output()
+        .expect("certify with explicit read and produce authority");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{stdout}\n{:?}", output.stderr);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    for line in &lines {
+        fa_cli::verbs::registry().unwrap().check_line(line).unwrap();
+    }
+    let report = json::parse(lines[0]).unwrap();
+    let metadata = json::parse(lines[1]).unwrap();
+    assert_eq!(text(&report, "event"), "procedure_run");
+    assert_eq!(text(&metadata, "event"), "report_certificate");
+    let oid = text(data(&metadata), "oid");
+    assert_eq!(text(&report, "certificate"), oid);
+    let encoded = std::fs::read(f.dir.join("admitted-procedure.certificate")).unwrap();
+    fa::procedure_certificate::ProcedureCertificate::decode(&encoded).unwrap();
+    let replayed = f.ok(&["--token", &reader, "replay", &format!("C:{oid}")]);
+    assert_eq!(data(&replayed), data(&report));
+    assert_eq!(
+        number(data(&f.ok(&["finding", "runs"])), "total_recorded_runs"),
+        0
+    );
+}
+
+#[test]
 fn per_row_open_amount_uses_the_existing_query_authority_boundary() {
     let f = Fixture::new();
     let statement = "MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code:'1000'}) CALL fa.open_amount(l) YIELD open, age_days WHERE age_days >= 20 RETURN a.code AS account, open, age_days EFFECTIVE AT '2026-03-31'";
@@ -1198,32 +1303,81 @@ fn per_row_open_amount_uses_the_existing_query_authority_boundary() {
     let rows = f.rows(&["--token", &reader, "query", statement]);
     assert_eq!(rows, json::parse(r#"[["1000","5",21]]"#).unwrap());
 
-    let (scoped, _) = f.issue("pipeline-scoped", &["--account", "1000"]);
+    let (scoped, _) = f.issue_ops(
+        "pipeline-scoped",
+        &["read", "produce"],
+        &["--account", "1000"],
+    );
     for statement in [statement.to_string(), statement.replace("'1000'", "'4000'")] {
-        let (exit, event) = f.run(&["--token", &scoped, "query", &statement]);
-        assert_eq!(exit, 7, "{event:?}");
-        assert_eq!(text(data(&event), "refusal_id"), "FA-REF-011");
-        assert!(text(data(&event), "message").contains("reaches the whole book"));
-        assert_eq!(
-            event.get("book"),
-            Some(&Json::Null),
-            "scope denied before book open"
-        );
-        assert_eq!(event.get("coordinate"), Some(&Json::Null));
+        for (query, certify) in [
+            (statement.clone(), false),
+            (statement.clone(), true),
+            (format!("EXPLAIN (CERTIFICATE) {statement}"), false),
+        ] {
+            let mut args = vec!["--token", scoped.as_str(), "query", query.as_str()];
+            if certify {
+                args.push("--certify");
+            }
+            let (exit, event) = f.run(&args);
+            assert_eq!(exit, 7, "{event:?}");
+            assert_eq!(text(data(&event), "refusal_id"), "FA-REF-011");
+            assert!(text(data(&event), "message").contains("reaches the whole book"));
+            assert_eq!(
+                event.get("book"),
+                Some(&Json::Null),
+                "scope denied before book open"
+            );
+            assert_eq!(event.get("coordinate"), Some(&Json::Null));
+        }
     }
 
-    let (exit, event) = f.run(&["--token", &reader, "query", statement, "--certify"]);
-    assert_eq!(exit, 3, "{event:?}");
-    assert_eq!(text(data(&event), "refusal_id"), "FA-REF-188");
-    assert!(text(data(&event), "message").contains("two native stages"));
-    let (exit, event) = f.run(&[
-        "--token",
-        &reader,
-        "query",
-        &format!("EXPLAIN (CERTIFICATE) {statement}"),
-    ]);
-    assert_eq!(exit, 3, "{event:?}");
-    assert_eq!(text(data(&event), "refusal_id"), "FA-REF-188");
+    let (read_only, _) = f.issue("pipeline-read-only", &[]);
+    assert_eq!(f.rows(&["--token", &read_only, "query", statement]), rows);
+    for (query, certify) in [
+        (statement.to_string(), true),
+        (format!("EXPLAIN (CERTIFICATE) {statement}"), false),
+    ] {
+        let mut args = vec!["--token", read_only.as_str(), "query", query.as_str()];
+        if certify {
+            args.push("--certify");
+        }
+        let (exit, event) = f.run(&args);
+        assert_eq!(exit, 7, "{event:?}");
+        assert!(text(data(&event), "message").contains("produce"));
+        assert_eq!(event.get("book"), Some(&Json::Null));
+        assert_eq!(event.get("coordinate"), Some(&Json::Null));
+
+        // A certificate emits two events; the single-event fixture runner
+        // remains appropriate for the authority refusals above.
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fa"));
+        command
+            .current_dir(&f.dir)
+            .args(["--book", "book", "--token", &reader, "query", &query]);
+        if certify {
+            command.arg("--certify");
+        }
+        let output = command
+            .arg("--json")
+            .env_remove("FA_BOOK")
+            .env_remove("FA_TOKEN")
+            .output()
+            .expect("certify pipeline");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(output.status.success(), "{stdout}\n{:?}", output.stderr);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), 2, "{stdout}");
+        for line in &lines {
+            fa_cli::verbs::registry().unwrap().check_line(line).unwrap();
+        }
+        let certified = json::parse(lines[0]).unwrap();
+        let certificate = json::parse(lines[1]).unwrap();
+        assert_eq!(text(&certified, "event"), "query_rows");
+        assert_eq!(data(&certified).get("rows"), Some(&rows));
+        assert_eq!(text(&certificate, "event"), "report_certificate");
+        let oid = text(data(&certificate), "oid");
+        let replayed = f.ok(&["--token", &reader, "replay", &format!("C:{oid}")]);
+        assert_eq!(data(&replayed), data(&certified));
+    }
 }
 
 /// A pinned auditor reads a complete historical ledger prefix under current

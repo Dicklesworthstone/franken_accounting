@@ -22,7 +22,7 @@
 > do not replace the full gate.
 
 > **Status (2026-11-05): implementation in progress.**
-> The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. `fa query` runs GQL over the book's graph in the FrankenAccounting profile (`AS KNOWN AT`, `FOR PERIOD` for one period or a range, `EFFECTIVE AT|BETWEEN`, `AT BRANCH`, the restatement views, and `CALL fa.trial_balance|explain_balance|statement|open_items|access_log` or any registered Lantern procedure as `CALL fa.<family>('<name>', {...})`), with the amount law checked before anything runs, and ordinary native queries support `--certify` with byte-for-byte replay. A bounded per-row `CALL fa.open_amount(l) YIELD open, age_days` now combines historical open-item residuals with native filtering and exact aggregation: it requires `EFFECTIVE AT`, preserves units and NULL non-items, and refuses two-stage certification. A token with any scope caveat is refused every query before the book opens; additional per-row procedures and broader pipeline shapes remain open (`fa-5c1`). Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and PriorPeriodAdjustment, Revision, Restatement and PolicyChangeRetrospective cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries). Year-end close and closing routes run as `fa close`. Reviewed CloseRuns now bind a bounded task DAG, execute unchanged draft promotions and an optional final period transition, and commit each effect with its completion receipt; `close status` survives restart and exact retries do not repeat effects. `close run` executes and resumes ready tasks, and `close dry-run --run` certifies their combined monetary effects in one scratch history. Automatic task generation, a global execution-certificate gate and statement packages remain open (`fa-4o0`). Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); every command a bound session runs (an issued token or a fixed MCP launch authority, Agent and writing sessions included) is recorded as an AccessEvent before it reads the book, listed by `fa access log` (the token-less embedded owner is not recorded yet, `fa-7dw`); ordinary CLI and daemon calls can bind issued Human operator tokens for controller, approval and witness workflows; calls without a token retain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open. Accrue and Defer now also invoke explicitly selected Canon rules in the Adjusting family, with portable review of the exact derived entry and optional reversal. This is the first rule-backed business-intent family; broader business-intent dispatch remains open (`fa-c34`).
+> The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. `fa query` runs GQL over the book's graph in the FrankenAccounting profile (`AS KNOWN AT`, `FOR PERIOD` for one period or a range, `EFFECTIVE AT|BETWEEN`, `AT BRANCH`, the restatement views, and `CALL fa.trial_balance|explain_balance|statement|open_items|access_log` or any registered Lantern procedure as `CALL fa.<family>('<name>', {...})`), with the amount law checked before anything runs, and ordinary native queries support `--certify` with byte-for-byte replay. A bounded per-row `CALL fa.open_amount(l) YIELD open, age_days` combines historical open-item residuals with native filtering and exact aggregation: it requires `EFFECTIVE AT`, preserves units and NULL non-items, and supports v2 certificates that replay both native stages and regenerate their journal-derived parameters. A token with any scope caveat is refused every query before the book opens; additional per-row procedures and broader pipeline shapes remain open (`fa-5c1`). Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and PriorPeriodAdjustment, Revision, Restatement and PolicyChangeRetrospective cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries). Year-end close and closing routes run as `fa close`. Reviewed CloseRuns now bind a bounded task DAG, execute unchanged draft promotions and an optional final period transition, and commit each effect with its completion receipt; `close status` survives restart and exact retries do not repeat effects. `close run` executes and resumes ready tasks, and `close dry-run --run` certifies their combined monetary effects in one scratch history. Automatic task generation, a global execution-certificate gate and statement packages remain open (`fa-4o0`). Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); every command a bound session runs (an issued token or a fixed MCP launch authority, Agent and writing sessions included) is recorded as an AccessEvent before it reads the book, listed by `fa access log` (the token-less embedded owner is not recorded yet, `fa-7dw`); ordinary CLI and daemon calls can bind issued Human operator tokens for controller, approval and witness workflows; calls without a token retain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open. Accrue and Defer now also invoke explicitly selected Canon rules in the Adjusting family, with portable review of the exact derived entry and optional reversal. This is the first rule-backed business-intent family; broader business-intent dispatch remains open (`fa-c34`).
 
 > **A note on tense.** The sections above `## TL;DR` document **what runs today** (and [`crates/fa-cli/tests/readme.rs`](./crates/fa-cli/tests/readme.rs) executes `### Try it today` and validates every present-tense `fa` command above `## TL;DR`). Starting at `## TL;DR`, the README describes the **1.0 target state** from [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md), with target-only capabilities annotated with the bead (`fa-…`) that delivers them.
 
@@ -1360,6 +1360,42 @@ and RFC3339 instant selectors; replay preserves the original coordinate even
 after later postings or ticks arrive. Signed witness claims, independent offline
 bundles, and certificates for additional report families remain unfinished.
 
+### Certified forensic procedures
+
+`fa procedure run <id> --certify` retains a replayable procedure certificate
+without publishing a FindingRun into the review journal. `--certificate-out`
+also writes a new file and implies certification. Both forms need current
+whole-book Read and Produce authority; bank statement drift also needs
+Reconcile. Native certification accepts procedures whose complete input
+closures have been audited, and refuses unsupported profiles.
+
+```bash
+fa procedure run jet.round_amounts --effective-through 2026-03-31 \
+  --certificate-out round-amounts.cert --book acme.fabook --json
+fa replay round-amounts.cert --book acme.fabook --json
+fa bundle produce --certificate C:<oid> --book acme.fabook --json
+```
+
+The standalone verifier recomputes `jet.round_amounts` and
+`jet.period_end_timing` v1 and v2 from their authenticated source records.
+Current v2 accepts an inclusive effective cutoff and selects dated postings
+before resolving reversal liveness and replacement supersession. The input
+commitment still includes the complete population at the chosen recorded
+sequence, including controls and entries beyond the cutoff. Explicit `@1`
+reproduces the original algorithm, which takes no effective cutoff.
+
+Corrected books can be exported when every Replacement uses the current
+target-derived identity and a later authenticated reversal, replacement or
+ordinary settlement reference resolves that identity within the certificate's
+original recorded prefix. The verifier checks the paired reversal and target
+lineage before applying the date cutoff. A future-effective reference may
+resolve an identity without changing the earlier dated result; a reference
+recorded after the certificate's frontier cannot. Unreferenced replacements,
+legacy identity aliases and migration-only identity witnesses remain outside
+this portable profile and are refused. These restrictions leave native replay
+available in the original book. Statistical findings remain observations with
+citations, without establishing fraud or the validity of approval admission.
+
 ### Typed posting plans
 
 The library, CLI and MCP can rehearse an entry through the actual posting
@@ -2066,6 +2102,13 @@ fa diff --from draft:close-2026-03 --to trunk --json
 fa procedure run jet.weekend --book acme.fabook --json
 fa procedure run trace.libr --effective-through 2025-12-31 --account 1010 --source <deposit entry vid> --book acme.fabook --json
 fa procedure run graph.related_party_exposure --param max_depth=4 --book acme.fabook --json
+# Retain an independently replayable run without recording a FindingRun in the journal.
+# --certificate-out implies --certify; both require current whole-book Read and Produce.
+fa procedure run jet.round_amounts --effective-through 2025-12-31 --certificate-out round-amounts.cert --book acme.fabook --json
+fa replay --certificate round-amounts.cert --book acme.fabook --json
+# Round amounts and period-end timing default to v2, which accepts an optional effective cutoff.
+# Explicit @1 retains the original no-cutoff algorithm for reproducing historical runs.
+fa procedure run jet.period_end_timing@1 --certify --book acme.fabook --json
 # A procedure runs under a work meter with no clock, entropy, network or filesystem: --budget refuses it mid-run (exit 3, no finding) at the first unit past the cap.
 fa procedure run graph.layering --budget 5000000 --book acme.fabook --json
 # Every procedure that selects accounts (suspense and inventory aging, intercompany, lapping, capitalization, confirmation coverage, payroll, cash-flow solvency, preferences, Ponzi and distribution) tests the accounts holding a journaled role, never accounts guessed from their codes or names (a chart's accounts may carry "roles" too, and the three templates' do). While no account holds its role a procedure refuses with this fix (exit 3), rather than report an empty population as nothing found.
@@ -2248,9 +2291,15 @@ This form accepts one call after `MATCH`/`WHERE`, followed by `WHERE`,
 at most 10,000 source rows and one 64 KiB continuation parameter. Narrow the
 pre-call pattern or filter when either bound is exceeded; a later `LIMIT`
 cannot reduce the source work. Values outside the exact native decimal
-range refuse. The two-stage pipeline is interactive: `--certify`,
-`--certificate-out` and `EXPLAIN (CERTIFICATE)` refuse. Certified open-items
-and aging reports remain the retained-proof workflows.
+range refuse. `--certify`, `--certificate-out` and `EXPLAIN (CERTIFICATE)`
+produce a v2 query certificate binding both native stages, the complete
+named parameter transcript and the whole-prefix source certificate. Replay
+checks the source, repeats the historical open-item fold at the explicit
+cutoff, regenerates the parameters and replays the continuation before
+comparing the exact output. Retention and certificate status use the same
+query workflow as ordinary v1 queries, whose bytes remain unchanged.
+Certification requires current whole-book read and produce authority and a
+recorded sequence on trunk; scenario and draft queries remain uncertified.
 
 ```gql
 -- Target: correlated valid-time graph selection still needs later fa-5c1 slices.

@@ -29,7 +29,7 @@ use fgdb_crypto::Hasher;
 use fgdb_gql::{GqlParameters, GqlQueryPolicy};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const PROCEDURE_CERTIFICATE_FORMAT: &[u8] = b"fa:procedure-certificate:v1";
 pub const EXTENDED_PROCEDURE_CERTIFICATE_FORMAT: &[u8] = extended::FORMAT;
@@ -46,7 +46,9 @@ const CERTIFICATE_DOMAIN: &[u8] = b"fa:procedure-certificate-digest:v1";
 /// before they can be certified here. This does not restrict ordinary runs.
 pub const CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("jet.round_amounts", 1),
+    ("jet.round_amounts", 2),
     ("jet.period_end_timing", 1),
+    ("jet.period_end_timing", 2),
     ("jet.post_closing", 1),
     ("jet.weekend", 1),
     ("jet.self_approved", 1),
@@ -87,6 +89,9 @@ const RETAINED_ORIGINAL_CLOSURES: &[(&str, u16)] = &[("benford.first_digit", 1)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcedureRequest {
     pub procedure: String,
+    /// Pin a retained semantic version. `None` selects the current registry
+    /// version; replay always supplies the certificate's original version.
+    pub version: Option<u16>,
     pub parameters: Params,
     pub inputs: catalog::Inputs,
     pub known_at: Option<CommitSeq>,
@@ -100,12 +105,25 @@ impl ProcedureRequest {
     pub fn new(procedure: &str, inputs: catalog::Inputs) -> Result<Self, fa_lantern::LanternError> {
         Ok(Self {
             procedure: procedure.into(),
+            version: None,
             parameters: Params::defaults(procedure)?,
             inputs,
             known_at: None,
             effective_through: None,
             budget: None,
         })
+    }
+
+    fn build(&self) -> Result<Box<dyn fa_lantern::Procedure>, fa_lantern::LanternError> {
+        match self.version {
+            Some(version) => catalog::build_version(
+                &self.procedure,
+                version,
+                self.parameters.clone(),
+                self.inputs,
+            ),
+            None => catalog::build(&self.procedure, self.parameters.clone(), self.inputs),
+        }
     }
 }
 
@@ -166,9 +184,135 @@ fn offline_unsupported(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §11.1/13.3 (independent procedure replay requires its complete supported input and policy closure)",
-        "export a jet.round_amounts or jet.period_end_timing v1 certificate with its canonical registry closure and no effective cutoff or input handles; replay other procedure profiles in their original book",
+        "export a jet.round_amounts or jet.period_end_timing v1 (no effective cutoff) or v2 (optional cutoff) certificate with its original canonical registry closure and no input handles; replay other profiles in their original book",
     )
 }
+
+/// The signed payload of a historical Replacement does not identify its own
+/// native vertex namespace. Only a later authenticated EntryRef can resolve
+/// that ambiguity independently. Inspect the entire original recorded prefix,
+/// before an effective cutoff removes any of its monetary rows.
+pub(crate) fn check_offline_population(
+    journal: &fa_notary::Journal,
+    known_at: CommitSeq,
+) -> fa_journal::refusal::Outcome<()> {
+    use fa_model::{EntryClass, SupersessionKind};
+
+    let unsupported = |message| {
+        Refusal::new(
+            fa_notary::code::SCOPE_UNSUPPORTED,
+            exit::REFUSAL,
+            message,
+            "plan §8.2/11.1/13.3 (every corrected procedure input must preserve its authenticated identity and paired lineage)",
+            "replay this retained procedure in its original book; portable replay requires an existing later authenticated reference to each canonical replacement within the certificate's original known-at prefix",
+        )
+    };
+    if !journal.leaves.iter().any(|leaf| {
+        leaf.envelope.is_entry()
+            && leaf.envelope.commit_seq <= known_at
+            && leaf.envelope.class == EntryClass::REPLACEMENT
+    }) {
+        return Ok(Ok(()));
+    }
+    let mut entries = BTreeMap::new();
+    let mut replacements = BTreeMap::new();
+    let mut reversals = BTreeMap::new();
+    let mut references = BTreeMap::new();
+    for leaf in journal
+        .leaves
+        .iter()
+        .filter(|leaf| leaf.envelope.is_entry() && leaf.envelope.commit_seq <= known_at)
+    {
+        let fa_notary::Record::Entry(entry) = leaf.record()? else {
+            continue;
+        };
+        let proposal = &entry.proposal;
+        let at = leaf.envelope.commit_seq;
+        let posted = proposal.class != EntryClass::PENDING && !proposal.legs.is_empty();
+        if entries
+            .insert(leaf.vid, (entry.entry_digest, at, posted))
+            .is_some()
+        {
+            return Ok(Err(unsupported(
+                "procedure population has duplicate entry identities",
+            )));
+        }
+        if proposal.class == EntryClass::REPLACEMENT {
+            let [supersession] = proposal.supersession.as_slice() else {
+                return Ok(Err(unsupported(
+                    "replacement requires one authenticated Replaces target",
+                )));
+            };
+            if supersession.kind != SupersessionKind::Replaces
+                || leaf.vid != fa_journal::rows::replacement_vid(supersession.target.vid)
+                || !posted
+            {
+                return Ok(Err(unsupported(
+                    "portable procedure replay does not support legacy or malformed replacement identities",
+                )));
+            }
+            replacements.insert(leaf.vid, (entry.entry_digest, at, supersession.target));
+        }
+        for supersession in &proposal.supersession {
+            if proposal.class == EntryClass::REVERSAL
+                && supersession.kind == SupersessionKind::Reverses
+                && reversals
+                    .insert(
+                        supersession.target.vid,
+                        (supersession.target.entry_digest, at),
+                    )
+                    .is_some()
+            {
+                return Ok(Err(unsupported(
+                    "procedure population has more than one reversal for an entry",
+                )));
+            }
+            if matches!(
+                (proposal.class, supersession.kind),
+                (EntryClass::REVERSAL, SupersessionKind::Reverses)
+                    | (EntryClass::REPLACEMENT, SupersessionKind::Replaces)
+            ) {
+                references
+                    .entry((supersession.target.vid, supersession.target.entry_digest))
+                    .and_modify(|latest: &mut CommitSeq| *latest = (*latest).max(at))
+                    .or_insert(at);
+            }
+        }
+        // Unactivated migration rows cannot resolve another row's identity.
+        // Ordinary source visibility still follows the migration interpreter.
+        if posted && proposal.class != EntryClass::MIGRATION {
+            for settlement in proposal.legs.iter().flat_map(|leg| &leg.settles) {
+                references
+                    .entry((settlement.target.vid, settlement.target.entry_digest))
+                    .and_modify(|latest: &mut CommitSeq| *latest = (*latest).max(at))
+                    .or_insert(at);
+            }
+        }
+    }
+    for (identity, (digest, at, target)) in replacements {
+        if !entries
+            .get(&target.vid)
+            .is_some_and(|(digest, target_at, posted)| {
+                *digest == target.entry_digest && *target_at < at && *posted
+            })
+            || reversals.get(&target.vid) != Some(&(target.entry_digest, at))
+        {
+            return Ok(Err(unsupported(
+                "replacement requires its earlier posted target and same-commit paired reversal",
+            )));
+        }
+        if !references
+            .get(&(identity, digest))
+            .is_some_and(|latest| *latest > at)
+        {
+            return Ok(Err(unsupported(
+                "replacement has no authenticated later reference resolving its original identity",
+            )));
+        }
+    }
+    Ok(Ok(()))
+}
+
 fn encode_error(e: fa_model::EncodeError) -> Refusal {
     invalid(format!("procedure encoding: {e}"))
 }
@@ -194,6 +338,38 @@ fn registry_digest() -> Result<[u8; 32], Refusal> {
     crate::certificate::canonical_closure(b"fa:procedure-registry:v2", PROCEDURE_REGISTRIES)
 }
 
+fn retained_registry_document() -> Result<Vec<u8>, Refusal> {
+    fa_registry::procedures::legacy_v1_document()
+        .map(|document| document.canonical_bytes())
+        .map_err(|error| invalid(format!("retained procedure registry: {error}")))
+}
+
+/// Exact canonical closure immediately before the two JET window laws became
+/// v2. Other rows and the foundation remain bound, including for certificates
+/// of unchanged procedures retained across this registry revision.
+fn retained_registry_digest() -> Result<[u8; 32], Refusal> {
+    let procedures = retained_registry_document()?;
+    let foundations = fa_registry::toml::parse(include_str!("../../../franken-stack.lock"))
+        .map_err(|error| invalid(format!("foundation registry: {error}")))?
+        .canonical_bytes();
+    let mut closure = Hasher::new();
+    closure.update(b"fa:procedure-registry:v2");
+    for (name, bytes) in [("procedures", procedures), ("foundations", foundations)] {
+        closure.update(name.as_bytes());
+        closure.update(&[0]);
+        closure.update(&raw_digest(b"fa:registry-canonical-digest:v1", &bytes));
+    }
+    Ok(closure.finalize().0)
+}
+
+fn registry_digest_for_run(procedure: &str, version: u16) -> Result<[u8; 32], Refusal> {
+    if version == 1 && matches!(procedure, "jet.round_amounts" | "jet.period_end_timing") {
+        retained_registry_digest()
+    } else {
+        registry_digest()
+    }
+}
+
 /// The v1 raw-text closure, accepted only from certificates retained before
 /// fa-t8gk; new certificates never carry it.
 fn legacy_registry_digest() -> [u8; 32] {
@@ -202,6 +378,37 @@ fn legacy_registry_digest() -> [u8; 32] {
         .map(|(_, text)| text.as_bytes())
         .collect();
     domain_digest(b"fa:procedure-registry:v1", &sources)
+}
+
+/// Preserve the existing raw-text compatibility path across this exact
+/// semantic revision. The inverse is restricted to the two complete row
+/// prefixes we changed; unknown layouts or versions are never guessed.
+fn retained_legacy_registry_digest() -> Result<[u8; 32], Refusal> {
+    let mut procedures = PROCEDURE_REGISTRIES[0].1.to_string();
+    for id in ["jet.round_amounts", "jet.period_end_timing"] {
+        let current = format!(
+            "[[procedure]]\nid = \"{id}\"\nversion = 2\neffective_through = \"optional\"\n"
+        );
+        if procedures.matches(&current).count() != 1 {
+            return Err(invalid(
+                "the original raw-text procedure registry is unavailable",
+            ));
+        }
+        let previous = format!("[[procedure]]\nid = \"{id}\"\nversion = 1\n");
+        procedures = procedures.replacen(&current, &previous, 1);
+    }
+    let reconstructed = fa_registry::toml::parse(&procedures)
+        .map_err(|error| invalid(format!("retained raw procedure registry: {error}")))?
+        .canonical_bytes();
+    if reconstructed != retained_registry_document()? {
+        return Err(invalid(
+            "the retained raw and canonical procedure registries disagree",
+        ));
+    }
+    Ok(domain_digest(
+        b"fa:procedure-registry:v1",
+        &[procedures.as_bytes(), PROCEDURE_REGISTRIES[1].1.as_bytes()],
+    ))
 }
 fn approval_statement(at: CommitSeq) -> String {
     format!(
@@ -459,7 +666,7 @@ fn decode_run(bytes: &[u8]) -> Result<ProcedureRun, Refusal> {
 }
 
 impl ProcedureCertificate {
-    /// Independent procedure replay accepts these two bounded v1 profiles.
+    /// Independent procedure replay accepts these two bounded v1/v2 profiles.
     /// Native replay continues to support the wider catalog and legacy hashes.
     pub(crate) fn check_offline_profile(&self) -> Result<(), Refusal> {
         if self.format() != PROCEDURE_CERTIFICATE_FORMAT
@@ -467,17 +674,17 @@ impl ProcedureCertificate {
                 self.report.procedure.as_str(),
                 "jet.round_amounts" | "jet.period_end_timing"
             )
-            || self.report.version != 1
-            || self.report.coordinate.effective_through.is_some()
+            || !matches!(self.report.version, 1 | 2)
+            || (self.report.version == 1 && self.report.coordinate.effective_through.is_some())
             || !self.report.inputs.is_empty()
         {
             return Err(offline_unsupported(
-                "portable procedures support only jet.round_amounts and jet.period_end_timing v1 without an effective cutoff or input handles",
+                "portable procedures support only jet.round_amounts and jet.period_end_timing v1 without a cutoff, or v2 with an optional cutoff, and no input handles",
             ));
         }
-        if self.registry != registry_digest()? {
+        if self.registry != registry_digest_for_run(&self.report.procedure, self.report.version)? {
             return Err(offline_unsupported(
-                "portable procedures require the original canonical v2 procedure registry closure; legacy raw-text commitments cannot be substituted",
+                "portable procedures require their version's original canonical procedure registry closure; legacy raw-text commitments cannot be substituted",
             ));
         }
         Ok(())
@@ -509,18 +716,22 @@ impl ProcedureCertificate {
                 "the native source and procedure certificate require different foundation registries",
             ));
         }
-        for (name, text) in [
-            (
+        let procedures = if self.registry == retained_registry_digest()? {
+            retained_registry_document()?
+        } else {
+            canonical(
                 "procedures",
                 include_str!("../../../registries/procedures.toml"),
-            ),
-            (
+            )?
+        };
+        native.push(("procedures".into(), procedures));
+        native.push((
+            "sod_policy".into(),
+            canonical(
                 "sod_policy",
                 include_str!("../../../registries/sod_policy.toml"),
-            ),
-        ] {
-            native.push((name.to_string(), canonical(name, text)?));
-        }
+            )?,
+        ));
         Ok(native)
     }
 
@@ -736,7 +947,12 @@ impl ProcedureCertificate {
             ));
         }
         let current = registry_digest()?;
-        if self.registry != current && self.registry != legacy_registry_digest() {
+        let retained = retained_registry_digest()?;
+        if self.registry != current
+            && self.registry != retained
+            && self.registry != legacy_registry_digest()
+            && self.registry != retained_legacy_registry_digest()?
+        {
             return Err(crate::certificate::registry_unavailable(
                 "procedure certificate",
                 &self.registry,
@@ -744,9 +960,28 @@ impl ProcedureCertificate {
                 PROCEDURE_REGISTRIES,
             ));
         }
+        if matches!(
+            self.report.procedure.as_str(),
+            "jet.round_amounts" | "jet.period_end_timing"
+        ) {
+            let declared = match self.report.version {
+                1 => {
+                    self.registry == retained || self.registry == retained_legacy_registry_digest()?
+                }
+                2 => self.registry == current || self.registry == legacy_registry_digest(),
+                _ => false,
+            };
+            if !declared {
+                return Err(invalid(
+                    "procedure registry does not declare this algorithm version",
+                ));
+            }
+        }
         let mut request = ProcedureRequest::new(&self.report.procedure, catalog::Inputs::default())
             .map_err(lantern_error)?;
-        let row = fa_lantern::bind(&self.report.procedure).map_err(lantern_error)?;
+        request.version = Some(self.report.version);
+        let row = fa_lantern::bind_version(&self.report.procedure, self.report.version)
+            .map_err(lantern_error)?;
         if row.version != self.report.version
             || row.claim != self.report.claim
             || row.evidence != self.report.evidence
@@ -788,12 +1023,7 @@ impl ProcedureCertificate {
                 _ => return Err(invalid("unsupported procedure input")),
             }
         }
-        let built = catalog::build(
-            &request.procedure,
-            request.parameters.clone(),
-            request.inputs,
-        )
-        .map_err(lantern_error)?;
+        let built = request.build().map_err(lantern_error)?;
         if built.inputs() != self.report.inputs {
             return Err(invalid("procedure declared handles differ"));
         }
@@ -946,15 +1176,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
-        let built = match catalog::build(
-            &request.procedure,
-            request.parameters.clone(),
-            request.inputs,
-        ) {
+        let built = match request.build() {
             Ok(procedure) => procedure,
             Err(error) => return Ok(Err(lantern_error(error))),
         };
-        let row = fa_lantern::bind(built.id())?;
+        let row = fa_lantern::bind_version(built.id(), built.version())?;
         for (name, present) in [
             ("account", request.inputs.account.is_some()),
             ("source", request.inputs.source.is_some()),
@@ -1101,7 +1327,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(request) => request,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let built = catalog::build(&request.procedure, request.parameters, request.inputs)?;
+        let built = request.build()?;
         let bank_procedure = request.procedure == bank::PROCEDURE;
         let result = self.query(cx, |db, book| {
             let mut snapshot =
@@ -1170,15 +1396,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(r) = authorize(self, cx, principal, capability, true, bank_procedure)? {
             return Ok(Err(r));
         }
-        let built = match catalog::build(
-            &request.procedure,
-            request.parameters.clone(),
-            request.inputs,
-        ) {
+        let built = match request.build() {
             Ok(p) => p,
             Err(e) => return Ok(Err(lantern_error(e))),
         };
-        let row = fa_lantern::bind(built.id())?;
+        let row = fa_lantern::bind_version(built.id(), built.version())?;
         if !supported(&row.id, row.version)
             && !extended::supported(&row.id, row.version)
             && !bank::supported(&row.id, row.version)
@@ -1255,7 +1477,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Ok(b) => b,
                 Err(r) => return Ok(Err(r)),
             };
-            let registry = match registry_digest() {
+            let registry = match registry_digest_for_run(&report.procedure, report.version) {
                 Ok(closure) => closure,
                 Err(r) => return Ok(Err(r)),
             };
@@ -1313,7 +1535,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(r) => r,
             Err(r) => return Ok(Err(r)),
         };
-        let built = catalog::build(&request.procedure, request.parameters, request.inputs)?;
+        let built = request.build()?;
         let result = self.query(cx, |db, book| {
             if let Err(r) = crate::certificate::replay_report(db, cx, book, &certificate.source)? {
                 return Ok(Err(r));
