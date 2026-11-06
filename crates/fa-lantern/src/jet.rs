@@ -42,6 +42,27 @@ pub(crate) fn ordinal(i: usize) -> Result<u16, LanternError> {
 }
 
 macro_rules! procedure_boilerplate {
+    ($ty:ident, $id:literal, $version:literal) => {
+        impl $ty {
+            pub const ID: &'static str = $id;
+
+            /// The current registered algorithm and pinned defaults.
+            pub fn new() -> Result<Self, LanternError> {
+                Ok(Self::with(Params::defaults($id)?))
+            }
+
+            /// The current registered algorithm with explicit parameters.
+            #[must_use]
+            pub fn with(params: Params) -> Self {
+                Self::with_version(params, $version)
+            }
+
+            /// Only the version-aware catalog constructs historical algorithms.
+            pub(crate) fn with_version(params: Params, version: u16) -> Self {
+                Self { params, version }
+            }
+        }
+    };
     ($ty:ident, $id:literal) => {
         impl $ty {
             pub const ID: &'static str = $id;
@@ -64,18 +85,20 @@ macro_rules! procedure_boilerplate {
 pub(crate) use procedure_boilerplate;
 
 /// `jet.round_amounts`: legs whose magnitude is a whole multiple of
-/// `10^round_power` units.
+/// `10^round_power` units. Version 2 selects the effective window before
+/// supersession netting; version 1 retains its original all-date population.
 pub struct RoundAmounts {
     params: Params,
+    version: u16,
 }
-procedure_boilerplate!(RoundAmounts, "jet.round_amounts");
+procedure_boilerplate!(RoundAmounts, "jet.round_amounts", 2);
 
 impl Procedure for RoundAmounts {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        self.version
     }
     fn params(&self) -> &Params {
         &self.params
@@ -99,7 +122,12 @@ impl Procedure for RoundAmounts {
             .ok_or(LanternError::Overflow("round factor"))?;
         let mut population = 0u64;
         let mut hits = Vec::new();
-        for e in snapshot.live_postings()? {
+        let through = if self.version == 1 {
+            None
+        } else {
+            snapshot.coordinate.effective_through
+        };
+        for e in snapshot.live_postings_through(through)? {
             work.entry()?;
             let mut round = Vec::new();
             for (i, leg) in e.entry.proposal.legs.iter().enumerate() {
@@ -136,7 +164,7 @@ impl Procedure for RoundAmounts {
                 } else {
                     Severity::Low
                 };
-                finding(
+                let mut value = finding(
                     Self::ID,
                     severity,
                     Statistic::count("round_legs", round.len() as u64, population),
@@ -145,25 +173,29 @@ impl Procedure for RoundAmounts {
                         "{} of {legs} legs are whole multiples of 10^{power} units",
                         round.len()
                     ),
-                )
+                );
+                value.version = self.version;
+                value
             })
             .collect())
     }
 }
 
 /// `jet.period_end_timing`: entries effective in the last `window_days`
-/// days of their period.
+/// days of their period. Version 2 selects the effective window before
+/// supersession netting; version 1 retains its original all-date population.
 pub struct PeriodEndTiming {
     params: Params,
+    version: u16,
 }
-procedure_boilerplate!(PeriodEndTiming, "jet.period_end_timing");
+procedure_boilerplate!(PeriodEndTiming, "jet.period_end_timing", 2);
 
 impl Procedure for PeriodEndTiming {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        self.version
     }
     fn params(&self) -> &Params {
         &self.params
@@ -180,7 +212,12 @@ impl Procedure for PeriodEndTiming {
         );
         let mut population = 0u64;
         let mut hits = Vec::new();
-        for e in snapshot.live_postings()? {
+        let through = if self.version == 1 {
+            None
+        } else {
+            snapshot.coordinate.effective_through
+        };
+        for e in snapshot.live_postings_through(through)? {
             work.entry()?;
             let Some(period) = snapshot.period_of(e) else {
                 continue;
@@ -197,7 +234,7 @@ impl Procedure for PeriodEndTiming {
         Ok(hits
             .into_iter()
             .map(|(vid, period, days)| {
-                finding(
+                let mut value = finding(
                     Self::ID,
                     Severity::Low,
                     Statistic::count("days_to_period_end", days as u64, population),
@@ -205,7 +242,9 @@ impl Procedure for PeriodEndTiming {
                     format!(
                         "effective {days} day(s) before the period's last day (window {window})"
                     ),
-                )
+                );
+                value.version = self.version;
+                value
             })
             .collect())
     }

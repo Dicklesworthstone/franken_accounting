@@ -1513,6 +1513,7 @@ fn verify_report_with_native_subledger_input(
                 &cert.registry_digest,
                 &request.registry_digest,
                 request.parameters,
+                request.version,
             )?;
             let units = definitions.unit_scales.keys().copied().collect();
             procedure_registry = Some(definitions);
@@ -2187,6 +2188,7 @@ fn verify_report_with_native_subledger_input(
                         identity: info.identity,
                         digest: envelopes[index].record_digest,
                         recorded_at: envelopes[index].commit_seq,
+                        effective: envelopes[index].effective_day,
                         class: envelopes[index].class,
                         legs: legs[index]
                             .iter()
@@ -2649,7 +2651,9 @@ fn verify_report_with_native_subledger_input(
             checkpoint: signed,
             known_at: cert.known_at,
             time_selection: cert.time_selection,
-            effective_through: None,
+            effective_through: verified_procedure
+                .as_ref()
+                .and_then(|run| run.effective_through),
             activity: false,
             periods: Vec::new(),
             rows: Vec::new(),

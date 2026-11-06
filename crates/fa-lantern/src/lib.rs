@@ -1018,7 +1018,7 @@ impl Work {
 pub trait Procedure {
     /// The registry id (`family.name`).
     fn id(&self) -> &'static str;
-    /// The version this code implements; must equal the registry row's.
+    /// The version this code implements; current or explicitly retained.
     fn version(&self) -> u16;
     fn params(&self) -> &Params;
     /// Declared inputs beyond the parameters (a date, a period, an account),
@@ -1090,6 +1090,27 @@ pub fn bind(id: &str) -> Result<Row, LanternError> {
         })
 }
 
+/// Resolve the current registry row or an explicitly retained durable version.
+pub fn bind_version(id: &str, version: u16) -> Result<Row, LanternError> {
+    let mut row = bind(id)?;
+    if row.version == version {
+        return Ok(row);
+    }
+    if version == 1
+        && row.version == 2
+        && matches!(id, jet::RoundAmounts::ID | jet::PeriodEndTiming::ID)
+    {
+        row.version = 1;
+        row.effective_through = fa_registry::procedures::EffectiveThrough::NotTaken;
+        return Ok(row);
+    }
+    Err(LanternError::Version {
+        procedure: row.id,
+        code: version,
+        registry: row.version,
+    })
+}
+
 /// Deterministic work budget for `procedure` over `snapshot`, derived from the
 /// procedure's registered `complexity` bound in `registries/procedures.toml`.
 pub fn default_budget(procedure: &str, snapshot: &Snapshot) -> Result<u64, LanternError> {
@@ -1150,14 +1171,7 @@ pub fn run_over_metered(
 ) -> Result<ProcedureRun, LanternError> {
     let mut meter = Meter::new(procedure.id(), budget, cancellation);
     meter.checkpoint()?;
-    let row = bind(procedure.id())?;
-    if row.version != procedure.version() {
-        return Err(LanternError::Version {
-            procedure: row.id,
-            code: procedure.version(),
-            registry: row.version,
-        });
-    }
+    let row = bind_version(procedure.id(), procedure.version())?;
     let params = procedure.params();
     if params.procedure != row.id {
         return Err(LanternError::Parameter {

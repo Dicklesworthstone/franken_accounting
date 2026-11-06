@@ -3,7 +3,9 @@
 //! The complete journal prefix supplies the population; native read witnesses
 //! and the producer's findings supply no arithmetic or period metadata. These
 //! profiles accept `jet.round_amounts` and `jet.period_end_timing` v1 without an
-//! effective-date cutoff or input handles.
+//! effective-date cutoff, and v2 with an optional inclusive cutoff. No profile
+//! accepts input handles. The cutoff selects postings before reversal liveness
+//! while the input commitment retains every visible entry at the frontier.
 //! It proves the statistical computation and decision-card encoding, not fraud,
 //! approval admission, policy activation, or authenticity of source documents.
 
@@ -64,8 +66,10 @@ pub(super) struct Certificate<'a> {
     pub output: &'a [u8],
     pub digest: [u8; 32],
     pub parameters: VerifiedProcedureParameters,
+    pub version: u16,
     book: [u8; 16],
     known_at: u64,
+    effective_through: Option<i32>,
 }
 
 /// A supported statistic and the exact citations needed to reproduce it.
@@ -111,6 +115,9 @@ pub struct VerifiedProcedure {
     pub version: u16,
     pub book_id: [u8; 16],
     pub known_at: u64,
+    /// Inclusive effective-date selection, independently applied before
+    /// reversal liveness. Controls remain part of the authenticated population.
+    pub effective_through: Option<i32>,
     pub parameters: VerifiedProcedureParameters,
     /// Every visible entry, including controls, reservations and reversals.
     pub population: u64,
@@ -143,6 +150,7 @@ pub(super) struct Entry {
     pub identity: u128,
     pub digest: [u8; 32],
     pub recorded_at: u64,
+    pub effective: Option<i32>,
     pub class: u16,
     pub legs: Vec<(u32, i128)>,
     pub supersession: Vec<(u128, [u8; 32], u8)>,
@@ -204,11 +212,12 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "only statistical jet.round_amounts and jet.period_end_timing v1 are supported",
+                "only statistical jet.round_amounts and jet.period_end_timing v1/v2 are supported",
             ));
         }
     };
-    if question.u16("procedure.version")? != 1
+    let version = question.u16("procedure.version")?;
+    if !matches!(version, 1 | 2)
         || question.u8("procedure.claim")? != 0
         || text(&mut question, 128, "procedure.evidence")? != evidence
     {
@@ -219,10 +228,15 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     }
     let book = question.fixed("procedure.book")?;
     let known_at = question.u64("procedure.known_at")?;
-    if question.present("procedure.effective_through")? {
+    let effective_through = if question.present("procedure.effective_through")? {
+        Some(question.i32("procedure.effective_through")?)
+    } else {
+        None
+    };
+    if version == 1 && effective_through.is_some() {
         return Err(failed(
             "procedure_profile",
-            "procedure verification requires no effective-date cutoff",
+            "v1 procedure verification requires no effective-date cutoff",
         ));
     }
     if question.count(1, 20, "procedure.parameters")? != 1
@@ -261,8 +275,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         output,
         digest,
         parameters,
+        version,
         book,
         known_at,
+        effective_through,
     })
 }
 
@@ -271,13 +287,27 @@ fn parameters(w: &mut Writer, value: VerifiedProcedureParameters) {
     w.count(1).bytes(name.as_bytes()).i128(i128::from(amount));
 }
 
-fn coordinate(w: &mut Writer, book: &[u8; 16], known_at: u64) {
-    w.fixed(book).u64(known_at).u8(0);
+fn cutoff(w: &mut Writer, effective_through: Option<i32>) {
+    if let Some(day) = effective_through {
+        w.u8(1).i32(day);
+    } else {
+        w.u8(0);
+    }
 }
 
-fn finding(w: &mut Writer, value: &VerifiedProcedureFinding, profile: VerifiedProcedureParameters) {
+fn coordinate(w: &mut Writer, book: &[u8; 16], known_at: u64, effective_through: Option<i32>) {
+    w.fixed(book).u64(known_at);
+    cutoff(w, effective_through);
+}
+
+fn finding(
+    w: &mut Writer,
+    value: &VerifiedProcedureFinding,
+    profile: VerifiedProcedureParameters,
+    version: u16,
+) {
     w.bytes(profile.id().as_bytes())
-        .u16(1)
+        .u16(version)
         .u8(value.severity)
         .bytes(value.statistic.name().as_bytes())
         .i128(i128::from(value.statistic.value()))
@@ -310,10 +340,14 @@ fn candidate(w: &mut Writer, action: &[u8], parameter: i128, score: i128) {
 fn decision_card(
     policy_oid: &[u8; 32],
     profile: VerifiedProcedureParameters,
+    version: u16,
     population: u64,
 ) -> Vec<u8> {
     let mut state = Writer::default();
-    state.bytes(profile.id().as_bytes()).u16(1).u64(population);
+    state
+        .bytes(profile.id().as_bytes())
+        .u16(version)
+        .u64(population);
     parameters(&mut state, profile);
     let calibrated = population >= 100;
     let (parameter, value) = profile.parameter();
@@ -359,7 +393,19 @@ fn decision_card(
 
 /// Memoized parity traversal: a long reversal chain is linear work, not a
 /// quadratic walk for every entry, and cycles are rejected without recursion.
-fn liveness(entries: &[Entry]) -> Result<BTreeMap<u128, bool>, ReportError> {
+fn liveness(
+    entries: &[Entry],
+    effective_through: Option<i32>,
+) -> Result<BTreeMap<u128, bool>, ReportError> {
+    let in_window = |entry: &&Entry| {
+        !entry.legs.is_empty()
+            && entry.class != 2
+            && effective_through.is_none_or(|through| {
+                entry
+                    .effective
+                    .is_some_and(|effective| effective <= through)
+            })
+    };
     let mut identities = BTreeMap::new();
     let mut reversed_by = BTreeMap::new();
     for entry in entries {
@@ -367,10 +413,7 @@ fn liveness(entries: &[Entry]) -> Result<BTreeMap<u128, bool>, ReportError> {
             return Err(failed("procedure_lineage", "duplicate entry identity"));
         }
     }
-    for entry in entries
-        .iter()
-        .filter(|e| !e.legs.is_empty() && e.class != 2)
-    {
+    for entry in entries.iter().filter(in_window) {
         if entry.class == 4 {
             let [(target, digest, 1)] = entry.supersession.as_slice() else {
                 return Err(failed(
@@ -395,10 +438,7 @@ fn liveness(entries: &[Entry]) -> Result<BTreeMap<u128, bool>, ReportError> {
         }
     }
     let mut live = BTreeMap::new();
-    for entry in entries
-        .iter()
-        .filter(|e| !e.legs.is_empty() && e.class != 2)
-    {
+    for entry in entries.iter().filter(in_window) {
         if live.contains_key(&entry.identity) {
             continue;
         }
@@ -444,7 +484,15 @@ pub(super) fn replay(
             "procedure and native source coordinates differ",
         ));
     }
-    let (verified, output) = recompute(book, known_at, request.parameters, entries, registry)?;
+    let (verified, output) = recompute_version(
+        book,
+        known_at,
+        request.version,
+        request.effective_through,
+        request.parameters,
+        entries,
+        registry,
+    )?;
     if output != request.output {
         return Err(failed(
             "procedure_recomputation",
@@ -454,9 +502,11 @@ pub(super) fn replay(
     Ok((verified, output))
 }
 
-fn recompute(
+fn recompute_version(
     book: [u8; 16],
     known_at: u64,
+    version: u16,
+    effective_through: Option<i32>,
     profile: VerifiedProcedureParameters,
     mut entries: Vec<Entry>,
     registry: &Registry,
@@ -474,10 +524,12 @@ fn recompute(
         ));
     }
     entries.sort_unstable_by_key(|entry| entry.identity);
-    let live = liveness(&entries)?;
+    let live = liveness(&entries, effective_through)?;
     let population = entries.len() as u64;
     let mut inputs = Writer::default();
-    inputs.u64(known_at).u8(0).count(entries.len());
+    inputs.u64(known_at);
+    cutoff(&mut inputs, effective_through);
+    inputs.count(entries.len());
     for entry in &entries {
         inputs
             .u128(entry.identity)
@@ -486,7 +538,7 @@ fn recompute(
     }
     let inputs_digest = hash_parts(b"fa:lantern-inputs:v1", &[&inputs.buf]);
     let mut params = Writer::default();
-    params.bytes(profile.id().as_bytes()).u16(1);
+    params.bytes(profile.id().as_bytes()).u16(version);
     parameters(&mut params, profile);
     params.count(0);
     let parameters_digest = hash_parts(b"fa:lantern-parameters:v1", &[&params.buf]);
@@ -619,7 +671,7 @@ fn recompute(
     let mut encoded_findings = Writer::default();
     encoded_findings.count(findings.len());
     for value in &findings {
-        finding(&mut encoded_findings, value, profile);
+        finding(&mut encoded_findings, value, profile, version);
         if encoded_findings.buf.len() > MAX_OUTPUT {
             return Err(failed("bounded_input", "procedure findings exceed 32 MiB"));
         }
@@ -627,24 +679,24 @@ fn recompute(
     let mut finding_inputs = Writer::default();
     finding_inputs
         .bytes(profile.id().as_bytes())
-        .u16(1)
+        .u16(version)
         .fixed(&parameters_digest)
         .fixed(&inputs_digest);
-    coordinate(&mut finding_inputs, &book, known_at);
+    coordinate(&mut finding_inputs, &book, known_at, effective_through);
     let findings_digest = hash_parts(
         b"fa:lantern-findings:v1",
         &[&finding_inputs.buf, &encoded_findings.buf],
     );
-    let decision_card = decision_card(&registry.policy_oid, profile, population);
+    let decision_card = decision_card(&registry.policy_oid, profile, version, population);
     let decision_card_digest = framed_hash(b"fa:decision-card:v1", &decision_card);
     let mut output = Writer::default();
     output
         .bytes(OUTPUT_FORMAT)
         .bytes(profile.id().as_bytes())
-        .u16(1)
+        .u16(version)
         .u8(0)
         .bytes(profile.evidence().as_bytes());
-    coordinate(&mut output, &book, known_at);
+    coordinate(&mut output, &book, known_at, effective_through);
     parameters(&mut output, profile);
     output
         .count(0)
@@ -661,9 +713,10 @@ fn recompute(
     Ok((
         VerifiedProcedure {
             procedure: profile.id().into(),
-            version: 1,
+            version,
             book_id: book,
             known_at,
+            effective_through,
             parameters: profile,
             population,
             live_entries,
@@ -696,11 +749,24 @@ mod tests {
         }
     }
 
+    // Retain every v1 arithmetic and negative-control test against the exact
+    // legacy wire law while testing the new date selector explicitly below.
+    fn recompute(
+        book: [u8; 16],
+        known_at: u64,
+        profile: VerifiedProcedureParameters,
+        entries: Vec<Entry>,
+        registry: &Registry,
+    ) -> Result<(VerifiedProcedure, Vec<u8>), ReportError> {
+        recompute_version(book, known_at, 1, None, profile, entries, registry)
+    }
+
     fn entry(identity: u128, class: u16, legs: Vec<(u32, i128)>) -> Entry {
         Entry {
             identity,
             digest: hash_parts(b"test-entry", &[&identity.to_le_bytes()]),
             recorded_at: 1,
+            effective: if legs.is_empty() { None } else { Some(0) },
             class,
             legs,
             supersession: Vec::new(),
@@ -768,6 +834,8 @@ mod tests {
             book: [1; 16],
             known_at: 9,
             parameters: ROUND_THREE,
+            version: 1,
+            effective_through: None,
         };
         assert_eq!(
             replay(&request, [1; 16], 9, population(), &registry())
@@ -828,7 +896,9 @@ mod tests {
         let mut second = entry(3, 4, original.legs.clone());
         second.supersession = first.supersession.clone();
         assert_eq!(
-            liveness(&[original, first, second]).unwrap_err().predicate,
+            liveness(&[original, first, second], None)
+                .unwrap_err()
+                .predicate,
             "procedure_lineage"
         );
 
@@ -837,7 +907,7 @@ mod tests {
         a.supersession.push((b.identity, b.digest, 1));
         b.supersession.push((a.identity, a.digest, 1));
         assert_eq!(
-            liveness(&[a, b]).unwrap_err().predicate,
+            liveness(&[a, b], None).unwrap_err().predicate,
             "procedure_lineage"
         );
 
@@ -902,12 +972,95 @@ mod tests {
 
     fn timing_entry(identity: u128, effective: i32, end: i32) -> Entry {
         let mut value = entry(identity, 1, vec![(1, 100_000), (1, 100_000)]);
+        value.effective = Some(effective);
         value.period = Some(EntryPeriod {
             code: "FY2026-P01".into(),
             effective,
             end,
         });
         value
+    }
+
+    #[test]
+    fn v2_cutoff_precedes_reversal_parity_and_retains_undated_population() {
+        let original = timing_entry(1000, 28, 31);
+        let mut reversed = entry(2, 4, original.legs.clone());
+        reversed.effective = Some(29);
+        reversed
+            .supersession
+            .push((original.identity, original.digest, 1));
+        let mut restored = entry(3, 4, reversed.legs.clone());
+        restored.effective = Some(30);
+        restored
+            .supersession
+            .push((reversed.identity, reversed.digest, 1));
+        let entries = vec![original, reversed, restored, entry(4, 17, Vec::new())];
+        for profile in [
+            ROUND_THREE,
+            VerifiedProcedureParameters::PeriodEndTiming { window_days: 3 },
+        ] {
+            let mut digests = BTreeSet::new();
+            for (through, expected_live) in [(27, 0), (28, 1), (29, 0), (30, 1)] {
+                let (verified, output) = recompute_version(
+                    [1; 16],
+                    9,
+                    2,
+                    Some(through),
+                    profile,
+                    entries.clone(),
+                    &registry(),
+                )
+                .unwrap();
+                assert_eq!(verified.version, 2);
+                assert_eq!(verified.effective_through, Some(through));
+                assert_eq!(
+                    verified.population, 4,
+                    "controls and later-effective entries stay bound"
+                );
+                assert_eq!(verified.live_entries, expected_live);
+                assert_eq!(verified.findings.len() as u64, expected_live);
+                assert!(digests.insert(verified.inputs_digest));
+                let request = Certificate {
+                    source: &[],
+                    registry_digest: [0; 32],
+                    output: &output,
+                    digest: [0; 32],
+                    parameters: profile,
+                    version: 2,
+                    book: [1; 16],
+                    known_at: 9,
+                    effective_through: Some(through),
+                };
+                assert_eq!(
+                    replay(&request, [1; 16], 9, entries.clone(), &registry())
+                        .unwrap()
+                        .0,
+                    verified
+                );
+                let forged = Certificate {
+                    effective_through: Some(through + 1),
+                    ..request
+                };
+                assert_eq!(
+                    replay(&forged, [1; 16], 9, entries.clone(), &registry())
+                        .unwrap_err()
+                        .predicate,
+                    "procedure_recomputation"
+                );
+            }
+            let (legacy, legacy_output) =
+                recompute([1; 16], 9, profile, entries.clone(), &registry()).unwrap();
+            let (current, current_output) =
+                recompute_version([1; 16], 9, 2, None, profile, entries.clone(), &registry())
+                    .unwrap();
+            assert_eq!(legacy.findings, current.findings);
+            assert_eq!(legacy.inputs_digest, current.inputs_digest);
+            assert_ne!(legacy.parameters_digest, current.parameters_digest);
+            assert_ne!(
+                legacy_output, current_output,
+                "the new law has its own version"
+            );
+        }
     }
 
     #[test]

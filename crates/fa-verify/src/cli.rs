@@ -124,8 +124,9 @@ commands:
                                                 native AR/AP party/control reconciliation, account roll-forwards,
                                                 direct cash flows, changes in equity and their comparisons, lot schedules,
                                                 native/functional one-book consolidated group statements,
-                                                and jet.round_amounts v1 statistical procedures.
-                                                Round-amount procedures require no cutoff or input handles;
+                                                and jet.round_amounts / jet.period_end_timing v1/v2 statistical procedures.
+                                                V1 requires no effective cutoff; v2 accepts an inclusive cutoff.
+                                                Both profiles require no input handles;
                                                 Replacement histories are refused. Exact statistical and decision-card
                                                 replay does not establish fraud, approval admission or policy activation.
                                                 V1 statements require --units;
@@ -2291,6 +2292,7 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
             ("known_at", n(report.known_at)),
             ("procedure", s(&report.procedure)),
             ("version", n(u64::from(report.version))),
+            ("effective_through", day(report.effective_through)),
             ("claim", s("statistical")),
             ("evidence", s(report.parameters.evidence())),
             (parameter, n(u64::from(value))),

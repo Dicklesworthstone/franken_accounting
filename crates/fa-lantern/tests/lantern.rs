@@ -951,9 +951,8 @@ fn undeclared_procedures_ignore_the_effective_date() {
     println!(
         "{undeclared} undeclared procedures ignore the date; {declared} declare it; optional ones that move on this corpus: {moved:?}"
     );
-    // recon.attested_register_compare v2 added an optional cutoff (fa-80es).
-    // Its claim and instrument folds now explicitly consume that coordinate.
-    assert_eq!(declared, 23);
+    // The round-amount and period-end v2 folds also take an optional cutoff.
+    assert_eq!(declared, 25);
     assert!(undeclared >= 40, "{undeclared}");
     // The comparison can see a date: declared procedures do move with it here.
     assert!(!moved.is_empty(), "the corpus exercises no effective date");

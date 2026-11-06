@@ -23526,22 +23526,51 @@ fn calibration_name(c: &fa_registry::procedures::Calibration) -> &'static str {
     }
 }
 
-/// A date given to a procedure that folds every posting regardless of
-/// effective date is refused, never silently ignored (fa-9pjp): the
-/// registry row's `effective_through` says which procedures take one.
+/// Select the current algorithm or an explicitly retained durable version.
+/// The version is part of the procedure id, not an unbound execution flag.
+pub(crate) fn procedure_selector(selector: &str) -> Result<(&str, Option<u16>), Fail> {
+    let Some((id, text)) = selector.split_once('@') else {
+        fa_lantern::bind(selector).map_err(lantern_usage)?;
+        return Ok((selector, None));
+    };
+    let version = text
+        .parse::<u16>()
+        .ok()
+        .filter(|version| *version > 0 && version.to_string() == text)
+        .ok_or_else(|| {
+            usage(
+                format!("invalid procedure version in `{selector}`"),
+                "fa procedure run jet.round_amounts@1 --json",
+            )
+        })?;
+    fa_lantern::bind_version(id, version).map_err(|error| match error {
+        fa_lantern::LanternError::Version { registry, .. } => usage(
+            format!("`{selector}` is not an available procedure version (current: {registry})"),
+            "use the current id shown by fa procedure list --json, or an explicitly retained version",
+        ),
+        other => lantern_usage(other),
+    })?;
+    Ok((id, Some(version)))
+}
+
+/// Refuse a date that the selected current or retained algorithm ignores.
 pub(crate) fn refuse_untaken_date(
-    id: &str,
+    selector: &str,
     effective_through: Option<DateDay>,
 ) -> Result<(), Fail> {
     if effective_through.is_none() {
         return Ok(());
     }
-    let procedures = fa_registry::procedures::Procedures::embedded()
-        .map_err(|e| usage(e.to_string(), "fa procedure list --json"))?;
-    match procedures.get(id).map(|row| row.effective_through) {
-        Some(fa_registry::procedures::EffectiveThrough::NotTaken) => Err(usage(
+    let (id, version) = procedure_selector(selector)?;
+    let row = match version {
+        Some(version) => fa_lantern::bind_version(id, version),
+        None => fa_lantern::bind(id),
+    }
+    .map_err(lantern_usage)?;
+    match row.effective_through {
+        fa_registry::procedures::EffectiveThrough::NotTaken => Err(usage(
             format!(
-                "{id} folds every posting regardless of effective date; it does not take --effective-through"
+                "{selector} folds every posting regardless of effective date; it does not take --effective-through"
             ),
             "omit --effective-through, or narrow the snapshot with --known-at <seq>; `fa procedure list --json` shows each procedure's effective_through",
         )),
@@ -23900,10 +23929,11 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
             Ok(())
         }
         Some("run") => {
-            let id = args
+            let selector = args
                 .positional
                 .get(2)
                 .ok_or_else(|| usage("procedure run needs a procedure id", example))?;
+            let (id, version) = procedure_selector(selector)?;
             if let Some(extra) = args.positional.get(3) {
                 return Err(usage(format!("unexpected argument `{extra}`"), example));
             }
@@ -23940,7 +23970,7 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                     )
                 })?),
             };
-            refuse_untaken_date(id, effective_through)?;
+            refuse_untaken_date(selector, effective_through)?;
             // The run's work budget (fa-1tvm): the procedure stops at the
             // first charge past it, and the run is refused with exit 3 and
             // no finding.
@@ -23994,7 +24024,8 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
             };
             let run = if let Some(cap) = &bank_cap {
                 let request = fa::ProcedureRequest {
-                    procedure: id.clone(),
+                    procedure: id.to_string(),
+                    version,
                     parameters: params,
                     inputs,
                     known_at,
@@ -24003,8 +24034,11 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                 };
                 book.run_procedure_with_history(who, cap, &request)??
             } else {
-                let built =
-                    fa_lantern::catalog::build(id, params, inputs).map_err(lantern_usage)?;
+                let built = match version {
+                    Some(version) => fa_lantern::catalog::build_version(id, version, params, inputs),
+                    None => fa_lantern::catalog::build(id, params, inputs),
+                }
+                .map_err(lantern_usage)?;
                 book.run_procedure(built.as_ref(), known_at, effective_through, budget)?
             };
             out.known_at(run.coordinate.known_at);

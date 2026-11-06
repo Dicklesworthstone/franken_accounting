@@ -7,7 +7,8 @@
 //! `finding_record` step names, and, once it has a book variant, the
 //! runner-generated `jet.self_sourced_evidence` row (A7a's SELF rows). A
 //! version or row change invalidates the row until two readers classify the
-//! procedure again. The §9.4 exception: a P- or A-tier D is admitted only
+//! procedure again; retained versions must still match their exact pinned
+//! declaration. The §9.4 exception: a P- or A-tier D is admitted only
 //! with `population = "sourced_complete"` and the facts that establish
 //! completeness in `population_basis`.
 
@@ -15,7 +16,7 @@ use std::collections::BTreeMap;
 
 use super::super::book::StepKind;
 use super::super::expect::ExpectationType;
-use super::super::tiers::{self, FILE, Tiers, registry_row};
+use super::super::tiers::{self, FILE, Tiers, registry_row_version};
 use super::super::{Case, EXPECTATIONS_FILE};
 use super::{CheckReport, Context};
 
@@ -174,7 +175,7 @@ fn row_problems(table: &Tiers, procedures: &str, procedure: &str, claims: &[Clai
         )];
     };
     let mut out = Vec::new();
-    match registry_row(procedures, procedure) {
+    match registry_row_version(procedures, procedure, row.version) {
         Err(e) => out.push(e),
         Ok((version, digest)) => {
             if row.version != version || row.row_digest != digest {
@@ -283,9 +284,9 @@ mod tests {
 
     #[test]
     fn version_bump_in_a_test_copy_invalidates_the_row() {
-        let old = "id = \"jet.round_amounts\"\nversion = 1\n";
+        let old = "id = \"jet.round_amounts\"\nversion = 2\n";
         assert_eq!(PROCEDURES.matches(old).count(), 1);
-        let edited = PROCEDURES.replace(old, "id = \"jet.round_amounts\"\nversion = 2\n");
+        let edited = PROCEDURES.replace(old, "id = \"jet.round_amounts\"\nversion = 3\n");
         let new = row_digest(&edited, "jet.round_amounts").expect("a digest");
         let (line, old_digest) = table_row("jet.round_amounts");
         assert_ne!(new, old_digest);
@@ -298,7 +299,7 @@ mod tests {
         let text = r.render(None);
         assert_eq!(r.verdict, Verdict::Fail, "{text}");
         let want = format!(
-            "FAIL K-TIER case_procedure_tiers.toml:{line} jet.round_amounts@1: registry is at version 2, row digest {old_digest} != {new}"
+            "FAIL K-TIER case_procedure_tiers.toml:{line} jet.round_amounts@1: registry is at version 3, row digest {old_digest} != {new}"
         );
         assert!(text.lines().any(|l| l == want), "{want}\n{text}");
         assert_eq!(

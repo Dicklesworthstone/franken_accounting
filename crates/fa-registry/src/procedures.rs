@@ -11,6 +11,42 @@ use crate::{RegistryError, invalid, load, req_int, req_str};
 const PROCEDURES: &str = include_str!("../../../registries/procedures.toml");
 const R: &str = "procedures.toml";
 
+/// The canonical registry closure preceding the two effective-window JET
+/// algorithms. Durable certificates and authored case references may retain
+/// those v1 rows; their other fields and all other procedures remain exact.
+/// This is not a fallback for an arbitrary future registry revision.
+pub fn legacy_v1_document() -> Result<crate::toml::Document, RegistryError> {
+    legacy_v1_document_from_text(PROCEDURES)
+}
+
+/// Reconstruct the retained JET rows from a supplied registry for validators
+/// that must also reject changed registry inputs. Only the explicit v2
+/// optional-window transition is reversible; all other edits remain visible
+/// in the canonical bytes and their commitment.
+pub fn legacy_v1_document_from_text(text: &str) -> Result<crate::toml::Document, RegistryError> {
+    let mut doc = load(R, text)?;
+    let rows = doc
+        .arrays
+        .get_mut("procedure")
+        .ok_or_else(|| invalid(R, "missing procedure rows"))?;
+    for id in ["jet.round_amounts", "jet.period_end_timing"] {
+        let row = rows
+            .iter_mut()
+            .find(|row| row.get("id").and_then(crate::toml::Value::as_str) == Some(id))
+            .ok_or_else(|| invalid(R, format!("missing retained procedure {id}")))?;
+        if row.get("version").and_then(crate::toml::Value::as_int) == Some(2)
+            && row
+                .get("effective_through")
+                .and_then(crate::toml::Value::as_str)
+                == Some("optional")
+        {
+            row.insert("version".into(), crate::toml::Value::Int(1));
+            row.remove("effective_through");
+        }
+    }
+    Ok(doc)
+}
+
 /// The claim class of a procedure's output (plan §11.9, doctrine 12).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Claim {
@@ -446,7 +482,8 @@ meaning = "power of ten"
         assert_eq!(date("aging.open_items"), EffectiveThrough::Required);
         assert_eq!(date("trace.libr"), EffectiveThrough::Required);
         assert_eq!(date("lookback.preferences"), EffectiveThrough::Optional);
-        assert_eq!(date("jet.round_amounts"), EffectiveThrough::NotTaken);
+        assert_eq!(date("jet.round_amounts"), EffectiveThrough::Optional);
+        assert_eq!(date("jet.period_end_timing"), EffectiveThrough::Optional);
         assert_eq!(date("graph.concentration"), EffectiveThrough::NotTaken);
     }
 
