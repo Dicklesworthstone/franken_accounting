@@ -295,7 +295,8 @@ fn parsed_entry(
                     && (amount > 0
                         || amount == 0
                             && base.as_ref().is_some_and(|claim| {
-                                [law_oid(4), law_oid(8), law_oid(11)].contains(&claim.law)
+                                [law_oid(4), law_oid(8), law_oid(10), law_oid(11)]
+                                    .contains(&claim.law)
                             })
                             && leg.unit != spec.base)
                     && (leg.unit != spec.base || amount == leg.mantissa) =>
@@ -509,11 +510,11 @@ pub(super) fn verify_history(
     for (&index, info) in infos {
         if info.fx_revaluation_basis.is_some()
             && base_totals(&records[index].1[..records[index].0])?
-                .is_none_or(|base| base.law != law_oid(2))
+                .is_none_or(|base| ![law_oid(2), law_oid(9)].contains(&base.law))
         {
             return Err(failed(
                 "supported_report",
-                "source-bound revaluation requires the registered aggregate PeriodEndRevaluation law",
+                "source-bound revaluation requires its registered aggregate or item-allocation law",
             ));
         }
         let envelope = &envelopes[index];
@@ -523,6 +524,17 @@ pub(super) fn verify_history(
             spec,
             registry,
         )?;
+        if info.fx_settlement_basis.is_some()
+            && entry
+                .base
+                .as_ref()
+                .is_none_or(|claim| claim.law != law_oid(10))
+        {
+            return Err(failed(
+                "functional_carrying",
+                "allocated relief provenance requires SettlementAllocatedCarrying",
+            ));
+        }
         if let Some(claim) = &entry.base {
             if envelope.class == 12 && claim.law != law_oid(1) {
                 return Err(failed(
@@ -536,14 +548,36 @@ pub(super) fn verify_history(
                 law_oid(3),
                 law_oid(4),
                 law_oid(8),
+                law_oid(9),
+                law_oid(10),
                 law_oid(11),
             ]
             .contains(&claim.law)
                 || claim.law == law_oid(11) && !registry.spot_carrying
+                || claim.law == law_oid(9) && !registry.item_revaluation
+                || claim.law == law_oid(10) && !registry.allocated_carrying
             {
                 return Err(failed(
                     "supported_report",
-                    "functional replay supports SpotClose, aggregate PeriodEndRevaluation, PeriodAverage, source-bound SettlementCarryingBasis v1 and YearEndCloseCarrying; translation and item-allocation laws require their own source proofs",
+                    "functional replay supports registered direct valuations, source-bound settlements including allocated carrying releases, aggregate and item revaluation, and carrying close; translation requires its own source proofs",
+                ));
+            }
+            if claim.law == law_oid(9) {
+                let mut header = Reader::new(&records[index].1[..records[index].0]);
+                header.u16("entry.major")?;
+                if header.u16("entry.minor")? < 4 || envelope.class != 10 {
+                    return Err(failed(
+                        "functional_valuation",
+                        "PeriodEndItemRevaluation requires schema minor 4 and Revaluation class; corrections require a new source-bound cumulative adjustment",
+                    ));
+                }
+            }
+            if claim.law == law_oid(10)
+                && (!matches!(envelope.class, 1 | 4 | 7) || info.fx_settlement_basis.is_none())
+            {
+                return Err(failed(
+                    "functional_carrying",
+                    "allocated settlement requires its complete release basis on Original, Adjusting or an exact Reversal",
                 ));
             }
             if claim.rates.is_empty() && claim.law != law_oid(8) {
@@ -572,7 +606,9 @@ pub(super) fn verify_history(
                     .entry(*oid)
                     .and_modify(|at| *at = (*at).min(envelope.commit_seq))
                     .or_insert(envelope.commit_seq);
-                if [law_oid(4), law_oid(11)].contains(&claim.law) && envelope.class != 4 {
+                if [law_oid(4), law_oid(10), law_oid(11)].contains(&claim.law)
+                    && envelope.class != 4
+                {
                     settlement_use
                         .entry(*oid)
                         .and_modify(|at| *at = (*at).min(envelope.commit_seq))
@@ -649,6 +685,7 @@ pub(super) fn verify_history(
                 || legs[target].is_empty()
                 || legs[index].len() != legs[target].len()
                 || entry.base != original.base
+                || infos[&index].fx_settlement_basis != infos[&target].fx_settlement_basis
             {
                 return Err(failed(
                     "functional_reversal",
@@ -684,11 +721,9 @@ pub(super) fn verify_history(
                 }
             }
             parents.insert(index, target);
-        } else if entry
-            .base
-            .as_ref()
-            .is_some_and(|claim| ![law_oid(4), law_oid(2), law_oid(8)].contains(&claim.law))
-        {
+        } else if entry.base.as_ref().is_some_and(|claim| {
+            ![law_oid(4), law_oid(2), law_oid(8), law_oid(9), law_oid(10)].contains(&claim.law)
+        }) {
             let (_, period_end) = schema.bounds(std::slice::from_ref(&period))?;
             compute(
                 &legs[index],
@@ -716,7 +751,7 @@ pub(super) fn verify_history(
         }
         complete.extend(path);
     }
-    revaluation::verify(
+    let revaluations = revaluation::prepare(
         spec,
         registry,
         &rates,
@@ -737,6 +772,7 @@ pub(super) fn verify_history(
         &parsed,
         &parents,
         migration_activations,
+        &revaluations,
     )?;
     closing::verify(
         spec,

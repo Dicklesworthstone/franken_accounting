@@ -94,30 +94,70 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                 {
                     let basis = fa_model::FxRevaluationBasis::decode(raw)
                         .map_err(|e| fa_journal::KernelError::Model(e.into()))?;
-                    if basis.item_allocation.is_some()
-                        || proposal.class != fa_model::EntryClass::REVALUATION
+                    let expected_law = if basis.item_allocation.is_some() {
+                        FxLawId::PeriodEndItemRevaluation
+                    } else {
+                        FxLawId::PeriodEndRevaluation
+                    };
+                    if proposal.class != fa_model::EntryClass::REVALUATION
                         || proposal.base_totals.as_ref().is_none_or(|base| {
-                            FxLawId::from_oid(&base.fx_law_oid)
-                                != Some(FxLawId::PeriodEndRevaluation)
+                            FxLawId::from_oid(&base.fx_law_oid) != Some(expected_law)
                         })
                     {
                         return Ok(Err(refused(
-                            "portable functional revaluation supports only source-bound aggregate PeriodEndRevaluation v1",
+                            "portable functional revaluation requires its aggregate or complete item-allocation basis under the matching registered law",
+                        )));
+                    }
+                }
+                let release = proposal
+                    .extensions
+                    .iter()
+                    .find(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION);
+                if let Some((_, raw)) = release {
+                    fa_model::FxSettlementValuationBasis::decode(raw)
+                        .map_err(|error| fa_journal::KernelError::Model(error.into()))?;
+                    if !matches!(
+                        proposal.class,
+                        fa_model::EntryClass::ORIGINAL
+                            | fa_model::EntryClass::ADJUSTING
+                            | fa_model::EntryClass::REVERSAL
+                    ) || proposal.base_totals.as_ref().is_none_or(|base| {
+                        FxLawId::from_oid(&base.fx_law_oid)
+                            != Some(FxLawId::SettlementAllocatedCarrying)
+                    }) {
+                        return Ok(Err(refused(
+                            "portable allocated settlement requires its exact registered law and an Original, Adjusting or exact inherited Reversal",
                         )));
                     }
                 }
                 let Some(base) = &proposal.base_totals else {
                     continue;
                 };
-                if FxLawId::from_oid(&base.fx_law_oid) == Some(FxLawId::PeriodEndRevaluation)
-                    && proposal.class != fa_model::EntryClass::REVERSAL
+                if FxLawId::from_oid(&base.fx_law_oid) == Some(FxLawId::SettlementAllocatedCarrying)
+                    && release.is_none()
+                {
+                    return Ok(Err(refused(
+                        "portable allocated settlement requires its complete immutable valuation-release basis",
+                    )));
+                }
+                if FxLawId::from_oid(&base.fx_law_oid) == Some(FxLawId::PeriodEndItemRevaluation)
+                    && proposal.class != fa_model::EntryClass::REVALUATION
+                {
+                    return Ok(Err(refused(
+                        "portable PeriodEndItemRevaluation admits only its source-bound Revaluation class",
+                    )));
+                }
+                if matches!(
+                    FxLawId::from_oid(&base.fx_law_oid),
+                    Some(FxLawId::PeriodEndRevaluation | FxLawId::PeriodEndItemRevaluation)
+                ) && proposal.class != fa_model::EntryClass::REVERSAL
                     && !proposal
                         .extensions
                         .iter()
                         .any(|(tag, _)| *tag == fa_model::entry::FX_REVALUATION_EXTENSION)
                 {
                     return Ok(Err(refused(
-                        "portable PeriodEndRevaluation requires its retained cumulative source basis",
+                        "portable period-end revaluation requires its retained cumulative source basis",
                     )));
                 }
                 if FxLawId::from_oid(&base.fx_law_oid) == Some(FxLawId::YearEndCloseCarrying) {
@@ -142,14 +182,16 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                     Some(
                         FxLawId::SpotClose
                             | FxLawId::PeriodEndRevaluation
+                            | FxLawId::PeriodEndItemRevaluation
                             | FxLawId::PeriodAverage
                             | FxLawId::SettlementCarryingBasis
+                            | FxLawId::SettlementAllocatedCarrying
                             | FxLawId::SettlementSpotCarrying
                             | FxLawId::YearEndCloseCarrying
                     )
                 ) {
                     return Ok(Err(refused(
-                        "portable functional reports support SpotClose, aggregate PeriodEndRevaluation, PeriodAverage, source-bound SettlementCarryingBasis and SettlementSpotCarrying, YearEndCloseCarrying and exact inherited reversals",
+                        "portable functional reports support SpotClose, source-bound aggregate and item PeriodEndRevaluation, PeriodAverage, source-bound SettlementCarryingBasis, SettlementAllocatedCarrying and SettlementSpotCarrying, YearEndCloseCarrying and the registered exact inherited reversals",
                     )));
                 }
                 for oid in &base.rate_doc_oids {
@@ -425,4 +467,268 @@ pub(super) fn validate(
         }
     }
     Ok(Ok(()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fa_journal::custody::CustodyEvent;
+    use fa_model::IntakeSource;
+    use fa_model::entry::{FX_ITEM_CARRYING_SCHEMA_MINOR, FX_REVALUATION_EXTENSION};
+    use fa_model::erasable::SealKey;
+    use fa_model::{
+        BaseTotals, EntryClass, EntryPayload, EntryRef, Erasable, EvidenceRef,
+        FxItemRevaluationBasis, FxRevaluationBasis, FxRevaluationItem, Id128, LegPayload,
+        PeriodRef, Supersession, SupersessionKind,
+    };
+    use fa_money::{Amount, Side, UnitId};
+    use fa_time::DateDay;
+
+    const BOOK: Id128 = Id128([3; 16]);
+    const RATE: Oid = Oid([4; 32]);
+    const COMMITMENT: [u8; 32] = [5; 32];
+
+    fn proposal(allocated: bool, law: FxLawId) -> EntryPayload {
+        let amount = Amount::new(UnitId(0), 1);
+        let mut legs = vec![
+            LegPayload::simple(Side::Debit, VId(2), amount),
+            LegPayload::simple(Side::Credit, VId(3), amount),
+        ];
+        for leg in &mut legs {
+            leg.base_amount = Some(amount);
+        }
+        let basis = FxRevaluationBasis {
+            period: "P1".into(),
+            closing_date: DateDay(30),
+            observed_at: CommitSeq(2),
+            source_account: VId(1),
+            entity: None,
+            routes_entry: VId(8),
+            routes_digest: [8; 32],
+            rate_document: RATE,
+            rate_commit: COMMITMENT,
+            source_digest: [9; 32],
+            item_allocation: allocated.then(|| FxItemRevaluationBasis {
+                allocation_law: 1,
+                allocation_version: 1,
+                items: vec![FxRevaluationItem {
+                    target: EntryRef {
+                        vid: VId(10),
+                        entry_digest: [10; 32],
+                    },
+                    ordinal: 0,
+                    open_native: Amount::new(UnitId(1), 2),
+                    historical_base: Amount::new(UnitId(0), 2),
+                    prior_valuation: Amount::new(UnitId(0), 0),
+                    target_base: Amount::new(UnitId(0), 3),
+                }],
+            }),
+        };
+        EntryPayload {
+            schema_minor: FX_ITEM_CARRYING_SCHEMA_MINOR,
+            book_id: BOOK,
+            branch_id: Id128::TRUNK,
+            class: EntryClass::REVALUATION,
+            effective_date: DateDay(30),
+            document_date: None,
+            description: Erasable::seal(
+                &"item closing".to_string(),
+                None,
+                &SealKey([7; 32]),
+                [1; 32],
+                [2; 24],
+            ),
+            effective_period: Some(PeriodRef {
+                calendar: "cy".into(),
+                code: "P1".into(),
+            }),
+            unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+            legs,
+            control: None,
+            base_totals: Some(BaseTotals {
+                unit_id: 0,
+                debits: 1,
+                credits: 1,
+                fx_law_oid: law.oid(),
+                rate_doc_oids: vec![RATE],
+                residual: None,
+            }),
+            idempotency_key: b"item-closing".to_vec(),
+            origin: EntryOrigin::Intent {
+                intent_oid: Oid([6; 32]),
+                intent_kind: 1,
+            },
+            principal_ref: VId(7),
+            session_ref: None,
+            evidence: vec![EvidenceRef {
+                document_oid: RATE,
+                doc_commit: COMMITMENT,
+                role: 3,
+            }],
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            tags: Vec::new(),
+            extensions: vec![(FX_REVALUATION_EXTENSION, basis.canonical_bytes().unwrap())],
+        }
+    }
+
+    fn journal(proposal: EntryPayload, receipt: bool) -> Journal {
+        let mut records = vec![(
+            VId(11),
+            Record::from(proposal.seal(Vec::new(), None).unwrap()),
+            CommitSeq(3),
+        )];
+        if receipt {
+            records.push((
+                VId(12),
+                Record::Custody(CustodyEvent {
+                    book_id: BOOK,
+                    document_oid: RATE,
+                    index: 0,
+                    prev_digest: [0; 32],
+                    body: CustodyBody::Receipt {
+                        source: IntakeSource::Email {
+                            message_id: "closing-quote".into(),
+                        },
+                        received_by: VId(7),
+                        digest_at_receipt: COMMITMENT,
+                        run_ref: None,
+                    },
+                }),
+                CommitSeq(2),
+            ));
+        }
+        Journal::from_records_with_evidence(BOOK, CommitSeq(3), Some(CommitSeq(1)), records)
+            .unwrap()
+    }
+
+    #[test]
+    fn aggregate_and_complete_item_revaluation_export_the_authenticated_rate_closure() {
+        for (allocated, law) in [
+            (false, FxLawId::PeriodEndRevaluation),
+            (true, FxLawId::PeriodEndItemRevaluation),
+        ] {
+            let proposal = proposal(allocated, law);
+            assert_eq!(
+                rate_oids(&journal(proposal.clone(), true), CommitSeq(3))
+                    .unwrap()
+                    .unwrap(),
+                vec![RATE]
+            );
+            assert!(
+                rate_oids(&journal(proposal, false), CommitSeq(3))
+                    .unwrap()
+                    .is_err(),
+                "an item allocation cannot substitute for the quote's authenticated receipt"
+            );
+        }
+    }
+
+    #[test]
+    fn item_revaluation_export_refuses_mismatched_law_missing_basis_and_other_classes() {
+        for (allocated, law) in [
+            (false, FxLawId::PeriodEndItemRevaluation),
+            (true, FxLawId::PeriodEndRevaluation),
+            (true, FxLawId::SettlementAllocatedCarrying),
+        ] {
+            assert!(
+                rate_oids(&journal(proposal(allocated, law), true), CommitSeq(3))
+                    .unwrap()
+                    .is_err()
+            );
+        }
+        for class in [
+            EntryClass::REVALUATION,
+            EntryClass::ORIGINAL,
+            EntryClass::REVERSAL,
+        ] {
+            let mut proposal = proposal(true, FxLawId::PeriodEndItemRevaluation);
+            proposal.extensions.clear();
+            proposal.class = class;
+            if class == EntryClass::REVERSAL {
+                proposal.supersession.push(Supersession {
+                    target: EntryRef {
+                        vid: VId(10),
+                        entry_digest: [10; 32],
+                    },
+                    kind: SupersessionKind::Reverses,
+                    reason_code: 1,
+                });
+            }
+            assert!(
+                rate_oids(&journal(proposal, true), CommitSeq(3))
+                    .unwrap()
+                    .is_err()
+            );
+        }
+        let mut settlement = proposal(false, FxLawId::SettlementAllocatedCarrying);
+        settlement.extensions.clear();
+        settlement.class = EntryClass::ORIGINAL;
+        assert!(
+            rate_oids(&journal(settlement, true), CommitSeq(3))
+                .unwrap()
+                .is_err(),
+            "allocated settlement cannot omit its retained valuation-release basis"
+        );
+    }
+    #[test]
+    fn allocated_settlement_export_requires_canonical_matching_release_provenance() {
+        let release = fa_model::FxSettlementValuationBasis {
+            items: vec![fa_model::FxSettlementValuationRelease {
+                applying_ordinal: 0,
+                source_digest: [13; 32],
+                historical_relief: Amount::new(UnitId(0), 1),
+                total_relief: Amount::new(UnitId(0), 2),
+                valuation_relief: Amount::new(UnitId(0), 1),
+                routes_entry: VId(8),
+                routes_digest: [8; 32],
+                valuation_account: VId(2),
+                unrealized_account: VId(3),
+            }],
+        }
+        .canonical_bytes()
+        .unwrap();
+        for class in [
+            EntryClass::ORIGINAL,
+            EntryClass::ADJUSTING,
+            EntryClass::REVERSAL,
+        ] {
+            let mut declared = proposal(false, FxLawId::SettlementAllocatedCarrying);
+            declared.class = class;
+            declared.extensions = vec![(
+                fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION,
+                release.clone(),
+            )];
+            if class == EntryClass::REVERSAL {
+                declared.supersession.push(Supersession {
+                    target: EntryRef {
+                        vid: VId(10),
+                        entry_digest: [10; 32],
+                    },
+                    kind: SupersessionKind::Reverses,
+                    reason_code: 1,
+                });
+            }
+            assert_eq!(
+                rate_oids(&journal(declared.clone(), true), CommitSeq(3))
+                    .unwrap()
+                    .unwrap(),
+                vec![RATE]
+            );
+            assert!(
+                rate_oids(&journal(declared.clone(), false), CommitSeq(3))
+                    .unwrap()
+                    .is_err()
+            );
+            declared.base_totals.as_mut().unwrap().fx_law_oid =
+                FxLawId::SettlementCarryingBasis.oid();
+            assert!(
+                rate_oids(&journal(declared, true), CommitSeq(3))
+                    .unwrap()
+                    .is_err(),
+                "release provenance cannot be relabeled as ordinary historical-cost settlement"
+            );
+        }
+    }
 }

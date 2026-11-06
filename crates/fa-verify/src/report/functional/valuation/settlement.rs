@@ -4,6 +4,8 @@
 //! amounts. Exact reversals negate the recorded effect, including a reversal
 //! of a reversal; they never reprice an old application against a new pool.
 
+mod allocated;
+
 use super::{
     BookParameters, LeafEnvelope, Leg, ParsedEntry, Rate, Reader, ReportError, failed, law_oid,
     metadata, registry,
@@ -12,17 +14,160 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type Target = (usize, u16);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct AllocationRoute {
+    pub(super) entry: u128,
+    pub(super) digest: [u8; 32],
+    pub(super) valuation: u128,
+    pub(super) unrealized: u128,
+}
+
+pub(super) struct AllocationUpdate {
+    pub(super) target: Target,
+    pub(super) valuation: i128,
+    pub(super) route: AllocationRoute,
+    pub(super) date: i32,
+}
+
+#[derive(Clone)]
+struct ReleaseCoverage {
+    source: u128,
+    route: AllocationRoute,
+    valuation_ordinal: Option<usize>,
+}
+
+/// Checked carrying components, retained only at publications that change a
+/// target. Revaluation and allocated settlement consume these snapshots
+/// instead of trusting amounts or source digests asserted by their own bases.
+#[derive(Clone, Copy)]
+pub(super) struct Remaining {
+    pub(super) native: i128,
+    pub(super) historical: i128,
+    pub(super) valuation: i128,
+    pub(super) allocated: Option<AllocationRoute>,
+    pub(super) source_digest: [u8; 32],
+    pub(super) latest_effective: i32,
+}
+
+#[derive(Default)]
+pub(super) struct CheckedCarrying {
+    pub(super) changes: BTreeMap<Target, Vec<(u64, Remaining)>>,
+    pub(super) reversals: BTreeMap<usize, usize>,
+    allocations: BTreeSet<usize>,
+    releases: BTreeMap<usize, Vec<ReleaseCoverage>>,
+}
+
+impl CheckedCarrying {
+    pub(super) fn covers_valuation(
+        &self,
+        index: usize,
+        source: u128,
+        valuation: u128,
+        unrealized: u128,
+        legs: &[Vec<Leg>],
+    ) -> Result<(), ReportError> {
+        let releases = self.releases.get(&index).ok_or_else(|| {
+            invalid("dedicated valuation history contains an unrelated or unchecked adjustment")
+        })?;
+        check_release_coverage(releases, index, source, valuation, unrealized, legs)
+    }
+
+    fn record(&mut self, target: Target, sequence: u64, state: &Carrying) {
+        self.changes.entry(target).or_default().push((
+            sequence,
+            Remaining {
+                native: state.native,
+                historical: state.base,
+                valuation: state.valuation,
+                allocated: state.allocated,
+                source_digest: state.source_hash.finalize(),
+                latest_effective: state.latest_effective,
+            },
+        ));
+    }
+
+    pub(super) fn remaining(&self, target: Target, at: u64) -> Option<Remaining> {
+        let changes = self.changes.get(&target)?;
+        let end = changes.partition_point(|(sequence, _)| *sequence <= at);
+        end.checked_sub(1).map(|last| changes[last].1)
+    }
+
+    /// Effective-date selection is needed for the complete closing
+    /// population; the full-prefix check separately rejects a later undo.
+    pub(super) fn is_live(
+        &self,
+        source: usize,
+        at: u64,
+        day: i32,
+        envelopes: &[LeafEnvelope],
+    ) -> Result<bool, ReportError> {
+        let mut live = true;
+        let mut parent = source;
+        while let Some(&child) = self.reversals.get(&parent) {
+            if envelopes[child].commit_seq > at {
+                break;
+            }
+            if effective(&envelopes[child])? <= day {
+                if effective(&envelopes[parent])? > day {
+                    return Err(invalid(
+                        "a selected reversal's parent is outside the effective population",
+                    ));
+                }
+                live = !live;
+            }
+            parent = child;
+        }
+        Ok(live)
+    }
+}
+
+fn check_release_coverage(
+    releases: &[ReleaseCoverage],
+    index: usize,
+    source: u128,
+    valuation: u128,
+    unrealized: u128,
+    legs: &[Vec<Leg>],
+) -> Result<(), ReportError> {
+    let mut covered = BTreeSet::new();
+    for release in releases
+        .iter()
+        .filter(|release| release.route.valuation == valuation)
+    {
+        if release.source != source || release.route.unrealized != unrealized {
+            return Err(invalid(
+                "a valuation release belongs to another source or route",
+            ));
+        }
+        covered.extend(release.valuation_ordinal);
+    }
+    if legs[index]
+        .iter()
+        .enumerate()
+        .any(|(ordinal, leg)| leg.account == valuation && !covered.contains(&ordinal))
+    {
+        return Err(invalid(
+            "dedicated valuation account contains an uncovered settlement leg",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 struct Effect {
     target: Target,
     native: i128,
     base: i128,
+    valuation: i128,
 }
 struct Carrying {
     original_native: i128,
     original_base: i128,
     native: i128,
     base: i128,
+    valuation: i128,
+    allocated: Option<AllocationRoute>,
+    source_hash: crate::blake3::Hasher,
     latest_effective: i32,
 }
 struct History<'a> {
@@ -33,6 +178,35 @@ struct History<'a> {
     legs: &'a [Vec<Leg>],
     parsed: &'a BTreeMap<usize, ParsedEntry>,
     migration_activations: &'a BTreeMap<u64, u64>,
+    releases: BTreeMap<usize, Vec<allocated::Release>>,
+}
+
+pub(super) fn source_hasher(
+    identity: u128,
+    digest: [u8; 32],
+    ordinal: u16,
+) -> crate::blake3::Hasher {
+    let mut hash = crate::blake3::Hasher::new();
+    hash.update(b"fa:allocated-carrying-source:v1");
+    hash.update(&identity.to_le_bytes());
+    hash.update(&digest);
+    hash.update(&ordinal.to_le_bytes());
+    hash
+}
+
+fn bind_effect(
+    state: &mut Carrying,
+    index: usize,
+    envelopes: &[LeafEnvelope],
+    infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+) {
+    state
+        .source_hash
+        .update(&envelopes[index].commit_seq.to_le_bytes());
+    state
+        .source_hash
+        .update(&infos[&index].identity.to_le_bytes());
+    state.source_hash.update(&envelopes[index].record_digest);
 }
 
 fn invalid(detail: &str) -> ReportError {
@@ -52,12 +226,12 @@ fn effective(envelope: &LeafEnvelope) -> Result<i32, ReportError> {
         .effective_day
         .ok_or_else(|| invalid("a carrying source or application has no effective date"))
 }
-/// SettlementCarryingBasis (law 4) or SettlementSpotCarrying (law 11).
+/// The three independently checked source-bound carrying laws.
 fn carries(entry: &ParsedEntry) -> bool {
     entry
         .base
         .as_ref()
-        .is_some_and(|claim| [law_oid(4), law_oid(11)].contains(&claim.law))
+        .is_some_and(|claim| [law_oid(4), law_oid(10), law_oid(11)].contains(&claim.law))
 }
 /// A foreign-unit leg's application outside a carrying law, or any
 /// application a reversal authors. Checked whether or not the prefix holds a
@@ -132,6 +306,30 @@ fn add_routes(
 }
 
 impl History<'_> {
+    fn initial(
+        &self,
+        target: Target,
+        infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+    ) -> Result<Carrying, ReportError> {
+        let (source, ordinal) = target;
+        let native = self.legs[source][usize::from(ordinal)].mantissa;
+        let base = self.parsed[&source].amounts[usize::from(ordinal)];
+        Ok(Carrying {
+            original_native: native,
+            original_base: base,
+            native,
+            base,
+            valuation: 0,
+            allocated: None,
+            source_hash: source_hasher(
+                infos[&source].identity,
+                self.envelopes[source].record_digest,
+                ordinal,
+            ),
+            latest_effective: effective(&self.envelopes[source])?,
+        })
+    }
+
     fn target(
         &self,
         entry: usize,
@@ -373,6 +571,7 @@ impl History<'_> {
             target,
             native: settled.mantissa,
             base: relief,
+            valuation: 0,
         })
     }
 
@@ -438,6 +637,7 @@ impl History<'_> {
             target,
             native: reference.amount,
             base: recorded,
+            valuation: 0,
         })
     }
 }
@@ -477,16 +677,9 @@ pub(super) fn verify(
     parsed: &BTreeMap<usize, ParsedEntry>,
     parents: &BTreeMap<usize, usize>,
     migration_activations: &BTreeMap<u64, u64>,
+    revaluations: &super::revaluation::Prepared<'_>,
 ) -> Result<(), ReportError> {
-    if !parsed.values().any(carries) {
-        return if parsed.iter().any(|(&index, entry)| {
-            unsupported_application(spec, &envelopes[index], entry, &legs[index])
-        }) {
-            Err(unsupported_application_error())
-        } else {
-            Ok(())
-        };
-    }
+    let mut checked = CheckedCarrying::default();
     let history = History {
         spec,
         registry,
@@ -495,7 +688,34 @@ pub(super) fn verify(
         legs,
         parsed,
         migration_activations,
+        releases: allocated::read_history(spec, registry, envelopes, infos, parsed, parents)?,
     };
+    if !parsed.values().any(|entry| {
+        carries(entry)
+            || entry
+                .base
+                .as_ref()
+                .is_some_and(|claim| claim.law == law_oid(9))
+    }) {
+        if parsed.iter().any(|(&index, entry)| {
+            unsupported_application(spec, &envelopes[index], entry, &legs[index])
+        }) {
+            return Err(unsupported_application_error());
+        }
+        // Preserve the legacy direct/native reversal scope. Aggregate
+        // revaluation still runs both complete source proofs, in publication
+        // order, without imposing carrying-only reversal admission rules.
+        let mut order: Vec<_> = parsed.keys().copied().collect();
+        order.sort_by_key(|index| (envelopes[*index].commit_seq, infos[index].identity));
+        for index in order {
+            if !revaluations.verify_entry(index, &checked)?.is_empty() {
+                return Err(invalid(
+                    "item allocation requires the chronological carrying replay",
+                ));
+            }
+        }
+        return Ok(());
+    }
     let mut identities = BTreeMap::new();
     for (&index, info) in infos {
         for identity in info.identities() {
@@ -522,6 +742,7 @@ pub(super) fn verify(
                     "carrying reversals require a unique earlier-publication target",
                 ));
             }
+            checked.reversals.insert(parent, index);
             roots.insert(index, roots[&parent]);
         } else {
             roots.insert(index, index);
@@ -541,18 +762,23 @@ pub(super) fn verify(
                 "entry class cannot originate SettlementCarryingBasis",
             ));
         }
-        if parsed[&index]
-            .base
-            .as_ref()
-            .is_some_and(|claim| claim.law == law_oid(11))
-            && !matches!(envelopes[index].class, 1 | 3)
-        {
+        let law = parsed[&index].base.as_ref().expect("carrying claim").law;
+        if law == law_oid(11) && !matches!(envelopes[index].class, 1 | 3) {
             return Err(invalid(
                 "entry class cannot originate SettlementSpotCarrying",
             ));
         }
+        if law == law_oid(10) && !matches!(envelopes[index].class, 1 | 7) {
+            return Err(invalid(
+                "entry class cannot originate SettlementAllocatedCarrying",
+            ));
+        }
+        let ranges = history.ranges(index)?;
+        if law == law_oid(10) {
+            allocated::check_ranges(&history.releases[&index], &ranges)?;
+        }
         let mut seen = BTreeSet::new();
-        for range in history.ranges(index)? {
+        for range in ranges {
             let target = history.target(index, range.start, &identities)?;
             if !seen.insert(target) {
                 return Err(invalid(
@@ -560,16 +786,7 @@ pub(super) fn verify(
                 ));
             }
             if let std::collections::btree_map::Entry::Vacant(slot) = targets.entry(target) {
-                let (source, ordinal) = target;
-                let native = legs[source][usize::from(ordinal)].mantissa;
-                let base = parsed[&source].amounts[usize::from(ordinal)];
-                slot.insert(Carrying {
-                    original_native: native,
-                    original_base: base,
-                    native,
-                    base,
-                    latest_effective: effective(&envelopes[source])?,
-                });
+                slot.insert(history.initial(target, infos)?);
             }
             components.entry(index).or_default().push((range, target));
         }
@@ -585,10 +802,38 @@ pub(super) fn verify(
             cursor + order[cursor..].partition_point(|index| envelopes[*index].commit_seq == seq);
         let group = &order[cursor..end];
         let mut impacts: BTreeMap<Target, Vec<(usize, Effect)>> = BTreeMap::new();
-        // Every fresh application observes the complete prefix before this
-        // publication, never an arbitrary order of entries inside the commit.
+        let mut allocations = Vec::new();
+        let mut release_coverage = BTreeMap::new();
+        // Every new operation observes the same complete pre-publication
+        // prefix. Revaluation itself forbids monetary/schema siblings.
         for &index in group {
+            for update in revaluations.verify_entry(index, &checked)? {
+                allocations.push((index, update));
+            }
             let current = if let Some(&parent) = parents.get(&index) {
+                // Reversing a source cannot leave valuation behind, even if
+                // this is the final record and no later report reprices it.
+                for (_, state) in targets.range((parent, 0)..=(parent, u16::MAX)) {
+                    if state.allocated.is_some()
+                        && (state.valuation != 0
+                            || effective(&envelopes[index])? < state.latest_effective)
+                    {
+                        return Err(invalid(
+                            "source undo strands an allocated valuation or predates its carrying history",
+                        ));
+                    }
+                }
+                if let Some(coverage) = checked.releases.get(&parent) {
+                    for effect in effects.get(&parent).into_iter().flatten() {
+                        if effective(&envelopes[index])? < targets[&effect.target].latest_effective
+                        {
+                            return Err(invalid(
+                                "allocated-settlement undo precedes a later item allocation or application",
+                            ));
+                        }
+                    }
+                    release_coverage.insert(index, coverage.clone());
+                }
                 effects
                     .get(&parent)
                     .into_iter()
@@ -598,6 +843,7 @@ pub(super) fn verify(
                             target: effect.target,
                             native: negate(effect.native)?,
                             base: negate(effect.base)?,
+                            valuation: negate(effect.valuation)?,
                         })
                     })
                     .collect::<Result<Vec<_>, ReportError>>()?
@@ -609,11 +855,17 @@ pub(super) fn verify(
                             "settlement target is reversed at its precommit prefix",
                         ));
                     }
+                    let state = &targets[target];
                     let account = legs[target.0][usize::from(target.1)].account;
                     let source_seq = envelopes[target.0].commit_seq;
                     if routes.get(&account).is_some_and(|(valuation, _)| {
                         postings.get(valuation).is_some_and(|entries| {
-                            entries.range((source_seq, 0)..(seq, 0)).next().is_some()
+                            entries
+                                .range((source_seq, 0)..(seq, 0))
+                                .any(|(_, adjustment)| {
+                                    !checked.allocations.contains(adjustment)
+                                        && !checked.releases.contains_key(adjustment)
+                                })
                         })
                     }) {
                         return Err(failed(
@@ -621,12 +873,50 @@ pub(super) fn verify(
                             "aggregate valuation adjustments have no registered per-item carrying allocation",
                         ));
                     }
-                    current.push(history.component(
-                        index,
-                        range.clone(),
-                        *target,
-                        &targets[target],
-                    )?);
+                    let is_allocated = parsed[&index]
+                        .base
+                        .as_ref()
+                        .is_some_and(|claim| claim.law == law_oid(10));
+                    if state.allocated.is_some() && !is_allocated {
+                        return Err(failed(
+                            "supported_report",
+                            "this target requires its registered allocated carrying relief",
+                        ));
+                    }
+                    current.push(if is_allocated {
+                        let before = seq
+                            .checked_sub(1)
+                            .ok_or_else(|| invalid("allocated application has sequence zero"))?;
+                        let source_digest = checked
+                            .remaining(*target, before)
+                            .ok_or_else(|| {
+                                invalid("allocated application has no checked carrying snapshot")
+                            })?
+                            .source_digest;
+                        allocated::component(
+                            &history,
+                            index,
+                            range.clone(),
+                            *target,
+                            state,
+                            source_digest,
+                        )?
+                    } else {
+                        history.component(index, range.clone(), *target, state)?
+                    });
+                }
+                if let Some(releases) = history.releases.get(&index) {
+                    let ranges = components.get(&index).expect("allocated component ranges");
+                    let coverage = allocated::coverage(index, releases, ranges, legs);
+                    // Dedicated valuation leaves of every retained route are
+                    // reserved, including routes for other sources and epochs
+                    // whose effective date lies after this payment.
+                    for (&source, &(valuation, unrealized)) in &routes {
+                        check_release_coverage(
+                            &coverage, index, source, valuation, unrealized, legs,
+                        )?;
+                    }
+                    release_coverage.insert(index, coverage);
                 }
                 current
             };
@@ -655,18 +945,30 @@ pub(super) fn verify(
             for (index, effect) in changes {
                 state.native = sub(state.native, effect.native)?;
                 state.base = sub(state.base, effect.base)?;
+                state.valuation = sub(state.valuation, effect.valuation)?;
                 state.latest_effective = state.latest_effective.max(effective(&envelopes[index])?);
+                bind_effect(state, index, envelopes, infos);
             }
-            if state.native < 0
-                || state.native > state.original_native
-                || state.base < 0
-                || state.base > state.original_base
-            {
-                return Err(invalid(
-                    "an application or undo exceeds its original native/base capacity",
-                ));
-            }
+            check_state(state)?;
+            checked.record(target, seq, state);
         }
+        for (index, update) in allocations {
+            let state = match targets.entry(update.target) {
+                std::collections::btree_map::Entry::Occupied(slot) => slot.into_mut(),
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert(history.initial(update.target, infos)?)
+                }
+            };
+            state.valuation = update.valuation;
+            state.allocated = Some(update.route);
+            state.latest_effective = update.date;
+            bind_effect(state, index, envelopes, infos);
+            check_state(state)?;
+            checked.record(update.target, seq, state);
+            checked.allocations.insert(index);
+            affected_sources.insert(update.target.0);
+        }
+        checked.releases.extend(release_coverage);
         for &index in group {
             let root = roots[&index];
             affected_sources.insert(root);
@@ -685,15 +987,36 @@ pub(super) fn verify(
                 && targets
                     .range((source, 0)..=(source, u16::MAX))
                     .any(|(_, state)| {
-                        state.native != state.original_native || state.base != state.original_base
+                        state.native != state.original_native
+                            || state.base != state.original_base
+                            || state.valuation != 0
                     })
             {
                 return Err(invalid(
-                    "a committed frontier strands carrying relief on a reversed source",
+                    "a committed frontier strands carrying relief or valuation on a reversed source",
                 ));
             }
         }
         cursor = end;
+    }
+    Ok(())
+}
+
+fn check_state(state: &Carrying) -> Result<(), ReportError> {
+    let total = state
+        .base
+        .checked_add(state.valuation)
+        .ok_or_else(|| invalid("remaining allocated carrying total overflow"))?;
+    if state.native < 0
+        || state.native > state.original_native
+        || state.base < 0
+        || state.base > state.original_base
+        || total < 0
+        || state.native == 0 && (state.base != 0 || state.valuation != 0)
+    {
+        return Err(invalid(
+            "an application or exact undo exceeds its original capacity or strands carrying value",
+        ));
     }
     Ok(())
 }

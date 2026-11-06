@@ -29,6 +29,9 @@ pub(super) struct EntryInfo<'a> {
     /// Immutable cumulative FX basis; functional replay independently checks
     /// its source population, routes and original observation.
     pub fx_revaluation_basis: Option<&'a [u8]>,
+    /// Immutable extension 37. Functional replay reconstructs the historical,
+    /// total and valuation relief from the exact preceding item state.
+    pub fx_settlement_basis: Option<&'a [u8]>,
     /// Intrinsic native/carrying YearEndClose source basis, independently
     /// reproduced when functional replay relies on source-bound closing.
     pub year_end_close_basis: Option<&'a [u8]>,
@@ -313,6 +316,7 @@ pub(super) fn entry_info<'a>(
     }
     let mut recurring = None;
     let mut fx_revaluation_basis = None;
+    let mut fx_settlement_basis = None;
     let mut year_end_close_basis = None;
     let mut obligation_maturity = None;
     let mut case_member = None;
@@ -359,6 +363,15 @@ pub(super) fn entry_info<'a>(
                     ));
                 }
                 fx_revaluation_basis = Some(bytes);
+            }
+            if tag == 37 {
+                if minor < 4 || !matches!(envelope.class, 1 | 4 | 7) || has_control || has_pending {
+                    return Err(failed(
+                        "supported_report",
+                        "allocated settlement requires schema minor 4 and an Original, Adjusting or exact Reversal without lifecycle effects",
+                    ));
+                }
+                fx_settlement_basis = Some(bytes);
             }
             if tag == 33 {
                 obligation_maturity = Some(bytes);
@@ -466,6 +479,7 @@ pub(super) fn entry_info<'a>(
         supersession_reasons,
         rule_version_oid,
         fx_revaluation_basis,
+        fx_settlement_basis,
         year_end_close_basis,
         obligation_maturity,
         case_member,

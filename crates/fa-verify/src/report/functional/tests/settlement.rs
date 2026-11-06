@@ -6,21 +6,27 @@
 use super::*;
 
 #[derive(Clone)]
-struct Application {
-    identity: u128,
-    digest: [u8; 32],
-    ordinal: u16,
-    unit: u32,
-    amount: i128,
+pub(super) struct Application {
+    pub(super) identity: u128,
+    pub(super) digest: [u8; 32],
+    pub(super) ordinal: u16,
+    pub(super) unit: u32,
+    pub(super) amount: i128,
 }
 
 #[derive(Clone)]
-struct AppliedLeg {
-    leg: TestLeg,
-    applications: Vec<Application>,
+pub(super) struct AppliedLeg {
+    pub(super) leg: TestLeg,
+    pub(super) applications: Vec<Application>,
 }
 
-fn leg(code: &'static str, debit: bool, unit: u32, native: i128, base: i128) -> AppliedLeg {
+pub(super) fn leg(
+    code: &'static str,
+    debit: bool,
+    unit: u32,
+    native: i128,
+    base: i128,
+) -> AppliedLeg {
     AppliedLeg {
         leg: TestLeg {
             code,
@@ -38,7 +44,7 @@ fn leg(code: &'static str, debit: bool, unit: u32, native: i128, base: i128) -> 
 // Its sources are the authenticated target handle, prior applications, their
 // exact reversals, and the retained Settlement Rate document.
 #[allow(clippy::too_many_arguments)]
-fn application_entry(
+pub(super) fn application_entry(
     seq: u64,
     class: u16,
     day: i32,
@@ -216,7 +222,7 @@ fn payment(seq: u64, day: i32, key: &[u8], legs: &[AppliedLeg], rate: &RateFixtu
     application_entry(seq, 1, day, key, legs, (4, rate, None), None)
 }
 
-fn swapped(legs: &[AppliedLeg]) -> Vec<AppliedLeg> {
+pub(super) fn swapped(legs: &[AppliedLeg]) -> Vec<AppliedLeg> {
     legs.iter()
         .cloned()
         .map(|mut applied| {
