@@ -105,6 +105,7 @@ fn period_end_timing_widens_civil_day_distances_before_comparing_the_window() {
     let posted = h.post(&Spec::simple(day(2026, 3, 15), "6000", "1000", 100));
     let mut source = h.snapshot();
     source.entries.retain(|entry| entry.vid == posted);
+    source.coordinate.effective_through = None;
     // Exercise the public procedure snapshot boundary, starting with a real
     // posting. These altered snapshots are arithmetic inputs, not certificates
     // of posting admission at the extreme dates.

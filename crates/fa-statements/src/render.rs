@@ -2392,10 +2392,11 @@ mod tests {
             (format, digest(&bytes), bytes.len())
         })
         .collect();
-        // GOLDEN-CHANGE: embed the pinned font/Unicode map, declare the IR
-        // metadata schema, use actual integer glyph advances and a complete
-        // honestly named RGB profile. Native semantic controls, Poppler and
-        // veraPDF validate the new output. Other format pins stay unchanged.
+        // The PDF pins retain the embedded font/Unicode map, declared IR
+        // metadata and complete RGB profile validated by Poppler and veraPDF.
+        // GOLDEN-CHANGE (SVG): measured columns and declared text extents fix
+        // actual wide-label/amount collisions, checked by native geometry
+        // controls and Firefox. Keep the other four format pins unchanged.
         let pinned: Vec<(&str, String, usize)> = [
             (
                 "pdf",
@@ -2414,8 +2415,8 @@ mod tests {
             ),
             (
                 "svg",
-                "58f5eda2aaf83305fba9d54da26ca5b83b6b3a3250448f9d46922b4664a75144",
-                5377,
+                "d6e30c877b5079ee9479d7a1632fd5cdf280d51e116fe3d2d7541c175295624e",
+                6925,
             ),
             (
                 "md",
