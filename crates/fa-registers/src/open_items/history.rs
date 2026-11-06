@@ -55,19 +55,35 @@ pub fn open_items_as_of<V: asupersync::fs::Vfs + Clone>(
 /// [`open_items_as_of`] over `entries`, the journal's entries at `known_at`.
 pub(crate) fn snapshot_of(
     book: &BookContext,
-    mut entries: Vec<(VId, Entry, CommitSeq)>,
+    entries: Vec<(VId, Entry, CommitSeq)>,
     account: Option<VId>,
     effective_through: DateDay,
     known_at: CommitSeq,
 ) -> Result<OpenItemSnapshot, RegisterError> {
-    restrict_effective(&mut entries, account, effective_through)?;
     Ok(OpenItemSnapshot {
         book_id: book.book_id,
         known_at,
         effective_through,
         account,
-        items: fold_open_items(&entries, account)?,
+        items: open_items_from_entries(entries, account, Some(effective_through))?,
     })
+}
+
+/// Fold an already selected immutable journal prefix. The caller supplies
+/// complete entries visible at its known-at coordinate, including reversals
+/// and settlement applications; no mutable applied mirrors are consulted.
+/// A civil-date cutoff is inclusive and retains the same split-link refusals
+/// as [`open_items_as_of`]. Without one, every supplied entry participates in
+/// lineage, even if its effective date is later than the remaining open items.
+pub fn open_items_from_entries(
+    mut entries: Vec<(VId, Entry, CommitSeq)>,
+    account: Option<VId>,
+    effective_through: Option<DateDay>,
+) -> Result<Vec<OpenItem>, RegisterError> {
+    if let Some(through) = effective_through {
+        restrict_effective(&mut entries, account, through)?;
+    }
+    fold_open_items(&entries, account)
 }
 
 fn restrict_effective(
