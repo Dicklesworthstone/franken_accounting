@@ -508,7 +508,7 @@ fn repaired_effective_cutoff_outputs_cannot_hide_reversals_future_entries_or_con
                                     .u64(entry.recorded_at.0);
                             });
                             snapshot.inputs_digest = raw_digest(
-                                fa_lantern::INPUTS_DIGEST_DOMAIN,
+                                b"fa:lantern-inputs:v1",
                                 &inputs.finish().unwrap(),
                             );
                             let method = catalog::build(
@@ -1455,7 +1455,7 @@ fn corrected_procedures_replay_reversal_restoration_and_reject_rehashed_aliases(
                             .u64(entry.recorded_at.0);
                     });
                     snapshot.inputs_digest =
-                        raw_digest(fa_lantern::INPUTS_DIGEST_DOMAIN, &inputs.finish().unwrap());
+                        raw_digest(b"fa:lantern-inputs:v1", &inputs.finish().unwrap());
                     let method =
                         catalog::build(id, Params::defaults(id)?, catalog::Inputs::default())?;
                     Ok(fa_lantern::run_over_metered(
