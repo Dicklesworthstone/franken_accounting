@@ -1,6 +1,8 @@
 //! Independently encoded source commitments and hand-calculated adjustments.
 use super::*;
 
+mod item_revaluation;
+
 pub(super) fn chart() -> [(&'static str, u8, u32); 4] {
     [
         ("1000", 1, 1),
@@ -520,9 +522,9 @@ fn revaluation_refuses_forged_basis_balanced_wrong_delta_and_unsupported_allocat
     bad[7] = mutate_basis(&records[7], |raw| {
         raw[14..16].copy_from_slice(&2u16.to_le_bytes())
     });
-    assert_eq!(
-        replay(&bad, &rates).unwrap_err().predicate,
-        "supported_report"
+    assert!(
+        replay(&bad, &rates).is_err(),
+        "changing the basis version cannot supply the missing complete item population"
     );
     assert!(
         replay(&records, &rates[..1]).is_err(),

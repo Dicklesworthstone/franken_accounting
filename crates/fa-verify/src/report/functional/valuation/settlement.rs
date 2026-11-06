@@ -12,6 +12,58 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type Target = (usize, u16);
 
+/// Checked historical relief, retained only at publications that change a
+/// target. Item revaluation consumes this replay instead of trusting the
+/// carrying amounts asserted by its own basis.
+#[derive(Clone, Copy)]
+pub(super) struct Remaining {
+    pub(super) native: i128,
+    pub(super) historical: i128,
+    pub(super) latest_effective: i32,
+}
+
+#[derive(Default)]
+pub(super) struct CheckedCarrying {
+    pub(super) changes: BTreeMap<Target, Vec<(u64, Remaining)>>,
+    pub(super) reversals: BTreeMap<usize, usize>,
+}
+
+impl CheckedCarrying {
+    pub(super) fn remaining(&self, target: Target, at: u64) -> Option<Remaining> {
+        let changes = self.changes.get(&target)?;
+        let end = changes.partition_point(|(sequence, _)| *sequence <= at);
+        end.checked_sub(1).map(|last| changes[last].1)
+    }
+
+    /// Effective-date selection is needed for the complete closing
+    /// population; the full-prefix check separately rejects a later undo.
+    pub(super) fn is_live(
+        &self,
+        source: usize,
+        at: u64,
+        day: i32,
+        envelopes: &[LeafEnvelope],
+    ) -> Result<bool, ReportError> {
+        let mut live = true;
+        let mut parent = source;
+        while let Some(&child) = self.reversals.get(&parent) {
+            if envelopes[child].commit_seq > at {
+                break;
+            }
+            if effective(&envelopes[child])? <= day {
+                if effective(&envelopes[parent])? > day {
+                    return Err(invalid(
+                        "a selected reversal's parent is outside the effective population",
+                    ));
+                }
+                live = !live;
+            }
+            parent = child;
+        }
+        Ok(live)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Effect {
     target: Target,
@@ -477,16 +529,23 @@ pub(super) fn verify(
     parsed: &BTreeMap<usize, ParsedEntry>,
     parents: &BTreeMap<usize, usize>,
     migration_activations: &BTreeMap<u64, u64>,
-) -> Result<(), ReportError> {
-    if !parsed.values().any(carries) {
+) -> Result<CheckedCarrying, ReportError> {
+    if !parsed.values().any(|entry| {
+        carries(entry)
+            || entry
+                .base
+                .as_ref()
+                .is_some_and(|claim| claim.law == law_oid(9))
+    }) {
         return if parsed.iter().any(|(&index, entry)| {
             unsupported_application(spec, &envelopes[index], entry, &legs[index])
         }) {
             Err(unsupported_application_error())
         } else {
-            Ok(())
+            Ok(CheckedCarrying::default())
         };
     }
+    let mut checked = CheckedCarrying::default();
     let history = History {
         spec,
         registry,
@@ -509,6 +568,31 @@ pub(super) fn verify(
             }
         }
     }
+    let mut allocations = BTreeMap::new();
+    for (&index, entry) in parsed {
+        if entry
+            .base
+            .as_ref()
+            .is_some_and(|claim| claim.law == law_oid(9))
+        {
+            let raw = infos[&index]
+                .fx_revaluation_basis
+                .ok_or_else(|| invalid("item revaluation has no retained basis"))?;
+            let targets = super::revaluation::allocated_targets(raw)?
+                .into_iter()
+                .map(|(identity, ordinal)| {
+                    identities
+                        .get(&identity)
+                        .copied()
+                        .map(|source| (source, ordinal))
+                        .ok_or_else(|| {
+                            invalid("allocated target is absent from the authenticated prefix")
+                        })
+                })
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            allocations.insert(index, targets);
+        }
+    }
     let mut order: Vec<_> = parsed.keys().copied().collect();
     order.sort_by_key(|index| (envelopes[*index].commit_seq, infos[index].identity));
     let mut roots = BTreeMap::new();
@@ -522,6 +606,7 @@ pub(super) fn verify(
                     "carrying reversals require a unique earlier-publication target",
                 ));
             }
+            checked.reversals.insert(parent, index);
             roots.insert(index, roots[&parent]);
         } else {
             roots.insert(index, index);
@@ -613,12 +698,18 @@ pub(super) fn verify(
                     let source_seq = envelopes[target.0].commit_seq;
                     if routes.get(&account).is_some_and(|(valuation, _)| {
                         postings.get(valuation).is_some_and(|entries| {
-                            entries.range((source_seq, 0)..(seq, 0)).next().is_some()
+                            entries
+                                .range((source_seq, 0)..(seq, 0))
+                                .any(|(_, adjustment)| {
+                                    allocations
+                                        .get(adjustment)
+                                        .is_none_or(|allocated| allocated.contains(target))
+                                })
                         })
                     }) {
                         return Err(failed(
                             "supported_report",
-                            "aggregate valuation adjustments have no registered per-item carrying allocation",
+                            "this target requires allocated carrying relief or has an aggregate adjustment without an allocation",
                         ));
                     }
                     current.push(history.component(
@@ -661,11 +752,20 @@ pub(super) fn verify(
                 || state.native > state.original_native
                 || state.base < 0
                 || state.base > state.original_base
+                || state.native == 0 && state.base != 0
             {
                 return Err(invalid(
                     "an application or undo exceeds its original native/base capacity",
                 ));
             }
+            checked.changes.entry(target).or_default().push((
+                seq,
+                Remaining {
+                    native: state.native,
+                    historical: state.base,
+                    latest_effective: state.latest_effective,
+                },
+            ));
         }
         for &index in group {
             let root = roots[&index];
@@ -695,5 +795,5 @@ pub(super) fn verify(
         }
         cursor = end;
     }
-    Ok(())
+    Ok(checked)
 }

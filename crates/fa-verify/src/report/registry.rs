@@ -800,12 +800,43 @@ pub(super) struct FunctionalRegistry {
     /// Complete immutable unit definitions used by carrying-close sources.
     pub unit_table_digest: [u8; 32],
     pub spot_carrying: bool,
+    pub item_revaluation: bool,
 }
 
 /// Add an independently encoded additive row to the retained legacy fixture.
 /// Its old rows remain byte-for-byte unchanged, including their negative controls.
 #[cfg(test)]
 pub(super) fn spot_law_fixture(bytes: &[u8]) -> Vec<u8> {
+    additional_fx_law_fixture(bytes, 11)
+}
+
+/// Independently encode the additive item law without changing legacy rows.
+#[cfg(test)]
+pub(super) fn item_law_fixture(bytes: &[u8]) -> Vec<u8> {
+    additional_fx_law_fixture(bytes, 9)
+}
+
+#[cfg(test)]
+fn additional_fx_law_fixture(bytes: &[u8], id: i128) -> Vec<u8> {
+    let (code, name, purpose, date, classes, meaning) = match id {
+        9 => (
+            "period_end_item_revaluation",
+            "PeriodEndItemRevaluation",
+            "PeriodClose",
+            "period_end_date",
+            ["Revaluation"].as_slice(),
+            "Complete open-item closing valuation under LargestRemainder v1",
+        ),
+        11 => (
+            "settlement_spot_carrying",
+            "SettlementSpotCarrying",
+            "Settlement",
+            "entry_effective_date",
+            ["Original", "Adjusting", "Reversal"].as_slice(),
+            "Same-unit settlement: current quote equals remaining carrying relief, with no residual absorption",
+        ),
+        _ => panic!("no independently specified test law"),
+    };
     let mut r = Cursor {
         bytes,
         at: MAGIC.len(),
@@ -818,13 +849,13 @@ pub(super) fn spot_law_fixture(bytes: &[u8]) -> Vec<u8> {
     }
     let arrays = r.count(256, 16).unwrap();
     for _ in 0..arrays {
-        let name = r.text().unwrap();
+        let table_name = r.text().unwrap();
         let count_at = r.at;
         let count = r.count(4096, 8).unwrap();
         for _ in 0..count {
             r.table().unwrap();
         }
-        if name != "law" {
+        if table_name != "law" {
             continue;
         }
         fn text(out: &mut Vec<u8>, value: &str) {
@@ -834,29 +865,23 @@ pub(super) fn spot_law_fixture(bytes: &[u8]) -> Vec<u8> {
         let mut row = 12_u64.to_le_bytes().to_vec();
         text(&mut row, "admitted_classes");
         row.push(4);
-        row.extend_from_slice(&3_u64.to_le_bytes());
-        for value in ["Original", "Adjusting", "Reversal"] {
+        row.extend_from_slice(&(classes.len() as u64).to_le_bytes());
+        for value in classes {
             row.push(1);
             text(&mut row, value);
         }
-        for (key, value) in [
-            ("code", "settlement_spot_carrying"),
-            ("date_selector", "entry_effective_date"),
-        ] {
+        for (key, value) in [("code", code), ("date_selector", date)] {
             text(&mut row, key);
             row.push(1);
             text(&mut row, value);
         }
         text(&mut row, "id");
         row.push(2);
-        row.extend_from_slice(&11_i128.to_le_bytes());
+        row.extend_from_slice(&id.to_le_bytes());
         for (key, value) in [
-            (
-                "meaning",
-                "Same-unit settlement: current quote equals remaining carrying relief, with no residual absorption",
-            ),
-            ("name", "SettlementSpotCarrying"),
-            ("rate_purpose", "Settlement"),
+            ("meaning", meaning),
+            ("name", name),
+            ("rate_purpose", purpose),
             ("residual_mode", "none"),
             ("rounding_law", "HalfEven"),
             ("standard_ref", "plan 5.2 and 5.7"),
@@ -971,6 +996,14 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
             ["Closing", "Reversal"].as_slice(),
         ),
         (
+            9,
+            "period_end_item_revaluation",
+            "PeriodEndItemRevaluation",
+            "PeriodClose",
+            "period_end_date",
+            ["Revaluation"].as_slice(),
+        ),
+        (
             11,
             "settlement_spot_carrying",
             "SettlementSpotCarrying",
@@ -979,12 +1012,12 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
             ["Original", "Adjusting", "Reversal"].as_slice(),
         ),
     ] {
-        // Older retained registry closures precede the additive law11. They
-        // stay readable, but cannot authorize a claim under that newer law.
-        if id == 11
+        // Older retained closures remain readable, but cannot authorize a
+        // claim under an additive law absent from that exact closure.
+        if matches!(id, 9 | 11)
             && !laws
                 .iter()
-                .any(|row| matches!(row.get("id"), Some(Value::Int(11))))
+                .any(|row| matches!(row.get("id"), Some(Value::Int(value)) if *value == id))
         {
             continue;
         }
@@ -1001,7 +1034,7 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
             || string(row, "date_selector")? != date
             || string(row, "rounding_law")? != if id == 8 { "None" } else { "HalfEven" }
             || string(row, "residual_mode")?
-                != if matches!(id, 2 | 8 | 11) {
+                != if matches!(id, 2 | 8 | 9 | 11) {
                     "none"
                 } else {
                     "designated_leg"
@@ -1118,6 +1151,9 @@ pub(super) fn verify_functional(
     definitions.spot_carrying = rows(&docs[4], "law")?
         .iter()
         .any(|row| matches!(row.get("id"), Some(Value::Int(11))));
+    definitions.item_revaluation = rows(&docs[4], "law")?
+        .iter()
+        .any(|row| matches!(row.get("id"), Some(Value::Int(9))));
     Ok(definitions)
 }
 
@@ -1139,6 +1175,7 @@ fn functional_definitions(doc: &Document) -> Result<FunctionalRegistry, ReportEr
         units: definitions,
         unit_table_digest: functional_unit_table_digest(doc)?,
         spot_carrying: false,
+        item_revaluation: false,
     })
 }
 

@@ -509,11 +509,11 @@ pub(super) fn verify_history(
     for (&index, info) in infos {
         if info.fx_revaluation_basis.is_some()
             && base_totals(&records[index].1[..records[index].0])?
-                .is_none_or(|base| base.law != law_oid(2))
+                .is_none_or(|base| ![law_oid(2), law_oid(9)].contains(&base.law))
         {
             return Err(failed(
                 "supported_report",
-                "source-bound revaluation requires the registered aggregate PeriodEndRevaluation law",
+                "source-bound revaluation requires its registered aggregate or item-allocation law",
             ));
         }
         let envelope = &envelopes[index];
@@ -536,15 +536,27 @@ pub(super) fn verify_history(
                 law_oid(3),
                 law_oid(4),
                 law_oid(8),
+                law_oid(9),
                 law_oid(11),
             ]
             .contains(&claim.law)
                 || claim.law == law_oid(11) && !registry.spot_carrying
+                || claim.law == law_oid(9) && !registry.item_revaluation
             {
                 return Err(failed(
                     "supported_report",
-                    "functional replay supports SpotClose, aggregate PeriodEndRevaluation, PeriodAverage, source-bound SettlementCarryingBasis v1 and YearEndCloseCarrying; translation and item-allocation laws require their own source proofs",
+                    "functional replay supports registered direct valuations, source-bound settlements, aggregate and item revaluation, and carrying close; allocated settlement and translation require their own source proofs",
                 ));
+            }
+            if claim.law == law_oid(9) {
+                let mut header = Reader::new(&records[index].1[..records[index].0]);
+                header.u16("entry.major")?;
+                if header.u16("entry.minor")? < 4 || envelope.class != 10 {
+                    return Err(failed(
+                        "functional_valuation",
+                        "PeriodEndItemRevaluation requires schema minor 4 and Revaluation class; corrections require a new source-bound cumulative adjustment",
+                    ));
+                }
             }
             if claim.rates.is_empty() && claim.law != law_oid(8) {
                 return Err(failed("functional_rates", "FX claim has no Rate evidence"));
@@ -684,11 +696,9 @@ pub(super) fn verify_history(
                 }
             }
             parents.insert(index, target);
-        } else if entry
-            .base
-            .as_ref()
-            .is_some_and(|claim| ![law_oid(4), law_oid(2), law_oid(8)].contains(&claim.law))
-        {
+        } else if entry.base.as_ref().is_some_and(|claim| {
+            ![law_oid(4), law_oid(2), law_oid(8), law_oid(9)].contains(&claim.law)
+        }) {
             let (_, period_end) = schema.bounds(std::slice::from_ref(&period))?;
             compute(
                 &legs[index],
@@ -716,6 +726,17 @@ pub(super) fn verify_history(
         }
         complete.extend(path);
     }
+    let carrying = settlement::verify(
+        spec,
+        registry,
+        &rates,
+        envelopes,
+        infos,
+        legs,
+        &parsed,
+        &parents,
+        migration_activations,
+    )?;
     revaluation::verify(
         spec,
         registry,
@@ -726,17 +747,7 @@ pub(super) fn verify_history(
         legs,
         &parsed,
         migration_activations,
-    )?;
-    settlement::verify(
-        spec,
-        registry,
-        &rates,
-        envelopes,
-        infos,
-        legs,
-        &parsed,
-        &parents,
-        migration_activations,
+        &carrying,
     )?;
     closing::verify(
         spec,

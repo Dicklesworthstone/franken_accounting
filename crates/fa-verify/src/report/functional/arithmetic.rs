@@ -143,6 +143,57 @@ pub(super) fn convert(
     quotient.as_i128().ok_or_else(invalid)
 }
 
+/// Hamilton allocation of a nonnegative closing value over strictly positive
+/// native open amounts. A shared exact denominator makes remainder ordering
+/// independent of narrowing; equal remainders retain the caller's canonical
+/// item order. This is independent of the producer's money implementation.
+pub(super) fn largest_remainder(total: i128, weights: &[i128]) -> Result<Vec<i128>, ReportError> {
+    let invalid = || {
+        failed(
+            "functional_allocation",
+            "invalid or overflowing exact open-item allocation",
+        )
+    };
+    if total < 0
+        || weights.is_empty()
+        || weights.len() > 2048
+        || weights.iter().any(|weight| *weight <= 0)
+    {
+        return Err(invalid());
+    }
+    let denominator = weights.iter().try_fold(Wide::ZERO, |sum, weight| {
+        sum.add(Wide::from_u128(*weight as u128))
+            .ok_or_else(invalid)
+    })?;
+    let mut shares = Vec::with_capacity(weights.len());
+    let mut remainders = Vec::with_capacity(weights.len());
+    let mut distributed = 0i128;
+    for (index, weight) in weights.iter().enumerate() {
+        let numerator = Wide::from_u128(total as u128)
+            .multiply(*weight as u128)
+            .ok_or_else(invalid)?;
+        let (quotient, remainder) = numerator.div_rem(denominator).ok_or_else(invalid)?;
+        let share = quotient.as_i128().ok_or_else(invalid)?;
+        distributed = distributed.checked_add(share).ok_or_else(invalid)?;
+        shares.push(share);
+        remainders.push((index, remainder));
+    }
+    let remaining = total.checked_sub(distributed).ok_or_else(invalid)?;
+    let remaining = usize::try_from(remaining).map_err(|_| invalid())?;
+    if remaining >= weights.len() {
+        return Err(invalid());
+    }
+    remainders.sort_unstable_by(|(left_index, left), (right_index, right)| {
+        right
+            .compare(*left)
+            .then_with(|| left_index.cmp(right_index))
+    });
+    for (index, _) in remainders.into_iter().take(remaining) {
+        shares[index] = shares[index].checked_add(1).ok_or_else(invalid)?;
+    }
+    Ok(shares)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +243,53 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn item_allocations_conserve_exact_totals_with_canonical_ties() {
+        assert_eq!(largest_remainder(100, &[1, 1, 1]).unwrap(), [34, 33, 33]);
+        assert_eq!(largest_remainder(100, &[1, 2, 3]).unwrap(), [17, 33, 50]);
+        assert_eq!(largest_remainder(11, &[2, 3, 7]).unwrap(), [2, 3, 6]);
+        assert_eq!(largest_remainder(2, &[1, 1, 1, 1]).unwrap(), [1, 1, 0, 0]);
+        assert_eq!(largest_remainder(0, &[1, 7]).unwrap(), [0, 0]);
+        let large = i128::MAX;
+        assert_eq!(
+            largest_remainder(large, &[large, large]).unwrap(),
+            [large / 2 + 1, large / 2]
+        );
+        assert_eq!(
+            largest_remainder(large, &[1, large - 1]).unwrap(),
+            [1, large - 1]
+        );
+    }
+
+    #[test]
+    fn item_allocations_match_a_small_integer_oracle_and_refuse_invalid_domains() {
+        for total in 0..24i128 {
+            for weights in [[1, 1, 1], [1, 2, 3], [2, 1, 5], [7, 3, 2], [3, 9, 6]] {
+                let divisor: i128 = weights.iter().sum();
+                let mut expected: Vec<_> = weights.iter().map(|w| total * w / divisor).collect();
+                let remainder_count = total - expected.iter().sum::<i128>();
+                let mut priority: Vec<_> = (0..weights.len()).collect();
+                priority.sort_by_key(|index| (-(total * weights[*index] % divisor), *index));
+                for index in priority.into_iter().take(remainder_count as usize) {
+                    expected[index] += 1;
+                }
+                let actual = largest_remainder(total, &weights).unwrap();
+                assert_eq!(actual, expected);
+                assert_eq!(actual.iter().sum::<i128>(), total);
+                for (share, weight) in actual.iter().zip(weights) {
+                    let floor = total * weight / divisor;
+                    assert!(*share == floor || *share == floor + 1);
+                }
+            }
+        }
+        assert!(largest_remainder(-1, &[1]).is_err());
+        assert!(largest_remainder(1, &[]).is_err());
+        assert!(largest_remainder(1, &[0, 1]).is_err());
+        assert!(largest_remainder(1, &[-1, 2]).is_err());
+        assert!(largest_remainder(1, &[1; 2049]).is_err());
+        let boundary = largest_remainder(2047, &[1; 2048]).unwrap();
+        assert_eq!(boundary[..2047], [1; 2047]);
+        assert_eq!(boundary[2047], 0);
     }
 }

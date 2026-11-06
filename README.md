@@ -225,6 +225,19 @@ certificate also archives its exact registry sources. Replay and export can use
 older foundation provenance only when the accounting and valuation meanings
 remain supported and the native source reads and output still reproduce.
 
+Functional bundles also support source-bound open-item revaluation under
+`PeriodEndItemRevaluation`. Offline replay reconstructs the complete remaining
+native and historical-cost population, checks the retained closing Rate and
+route, and independently applies LargestRemainder with the original item order
+for ties. Every recorded item balance and generated valuation/unrealized pair
+must match, including offsetting adjustments whose net change is zero. Both
+the reviewed observation and the prefix immediately before publication must
+reproduce the source commitment. Omitting an open item or substituting a
+balanced but incorrect allocation is refused. Earlier source-bound payments
+and their exact undos feed the remaining-item calculation. Allocated settlements
+under `SettlementAllocatedCarrying` still require their separate offline
+release proof; they are not admitted by this revaluation support.
+
 This verifies computation and journal bindings. It does not independently prove
 historical Approval-row birth, Human profiles, separation of duties, policy
 admission or the definition object's atomic publication; the verifier exposes

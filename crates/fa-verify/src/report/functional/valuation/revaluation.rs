@@ -1,13 +1,16 @@
-//! Independent aggregate PeriodEndRevaluation v1 source replay.
+//! Independent aggregate and item-allocated period-end revaluation replay.
 //!
 //! A balanced adjustment is insufficient. Both the reviewed observation and
 //! the immediately preceding committed prefix must reproduce its complete
 //! exposure, cumulative carrying adjustment, routing and source commitment.
-//! Item-allocated revaluation has a different law and remains unsupported.
+//! Item allocation also reproduces every original source's checked remaining
+//! native amount, historical cost, prior valuation and complete dimensions.
+
+mod items;
 
 use super::{
     BookParameters, LeafEnvelope, Leg, ParsedEntry, Rate, Reader, ReportError, failed, framed_hash,
-    law_oid, metadata, registry,
+    law_oid, metadata, registry, settlement,
 };
 use crate::codec::Writer;
 use crate::envelope::proposal_after_legs;
@@ -28,17 +31,26 @@ struct Basis {
     rate: [u8; 32],
     rate_commit: [u8; 32],
     source_digest: [u8; 32],
+    items: Option<Vec<items::Item>>,
 }
 
 impl Basis {
     fn read(bytes: &[u8]) -> Result<Self, ReportError> {
+        if bytes.len() > 64 * 1024 {
+            return Err(failed(
+                "bounded_input",
+                "FX revaluation basis exceeds its 64 KiB native extension bound",
+            ));
+        }
         let mut r = Reader::new(bytes);
-        if r.fixed::<14>("revaluation.magic")? != *b"FA-FX-REVALUE\0"
-            || r.u16("revaluation.version")? != 1
-        {
+        if r.fixed::<14>("revaluation.magic")? != *b"FA-FX-REVALUE\0" {
+            return Err(invalid("unsupported revaluation basis magic"));
+        }
+        let version = r.u16("revaluation.version")?;
+        if !matches!(version, 1 | 2) {
             return Err(failed(
                 "supported_report",
-                "portable functional reports support aggregate FX revaluation v1; item allocation requires its separate source replay",
+                "unsupported FX revaluation basis version",
             ));
         }
         let result = Self {
@@ -55,6 +67,11 @@ impl Basis {
             rate: r.fixed("revaluation.rate")?,
             rate_commit: r.fixed("revaluation.rate_commit")?,
             source_digest: r.fixed("revaluation.source_digest")?,
+            items: if version == 2 {
+                Some(items::read(&mut r)?)
+            } else {
+                None
+            },
         };
         r.finish("revaluation basis")?;
         if result.period.is_empty() || result.observed_at == 0 {
@@ -62,6 +79,20 @@ impl Basis {
         }
         Ok(result)
     }
+}
+
+/// Membership is used only to distinguish allocated targets from other
+/// sources while checking applications. Every decoded claim is subsequently
+/// authenticated against both complete revaluation source prefixes.
+pub(super) fn allocated_targets(raw: &[u8]) -> Result<BTreeSet<(u128, u16)>, ReportError> {
+    let basis = Basis::read(raw)?;
+    let items = basis
+        .items
+        .ok_or_else(|| invalid("item revaluation requires its canonical v2 basis"))?;
+    Ok(items
+        .into_iter()
+        .map(|item| (item.target, item.ordinal))
+        .collect())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -233,6 +264,8 @@ struct History<'a> {
     activations: &'a BTreeMap<u64, u64>,
     bases: BTreeMap<usize, Basis>,
     order: Vec<usize>,
+    carrying: &'a settlement::CheckedCarrying,
+    allocations: BTreeMap<(usize, u16), Vec<items::Allocation>>,
 }
 
 impl History<'_> {
@@ -324,17 +357,25 @@ impl History<'_> {
                 "this dimension has no aggregate revaluation treatment",
             ));
         }
-        Ok(dimensions
+        Ok(self.item_entity(index, ordinal))
+    }
+
+    fn item_entity(&self, index: usize, ordinal: usize) -> Option<u128> {
+        self.parsed[&index].details[ordinal]
+            .dimensions
             .iter()
             .find(|(kind, _)| *kind == 1)
             .map(|(_, id)| *id)
             .or_else(|| {
                 (self.spec.entities.len() == 1)
                     .then(|| *self.spec.entities.keys().next().expect("one entity"))
-            }))
+            })
     }
 
     fn shape(&self, index: usize, basis: &Basis, route: Route) -> Result<(), ReportError> {
+        if basis.items.is_some() {
+            return items::shape(self, index, basis, route);
+        }
         let entry = &self.parsed[&index];
         let Some(claim) = &entry.base else {
             return Err(invalid("revaluation has no functional totals"));
@@ -506,9 +547,15 @@ impl History<'_> {
                 continue;
             }
             for (ordinal, leg) in self.legs[previous].iter().enumerate() {
-                if ![basis.source, route.valuation].contains(&leg.account)
-                    || self.entity(previous, ordinal)? != basis.entity
-                {
+                if ![basis.source, route.valuation].contains(&leg.account) {
+                    continue;
+                }
+                let entity = if basis.items.is_some() {
+                    self.item_entity(previous, ordinal)
+                } else {
+                    self.entity(previous, ordinal)?
+                };
+                if entity != basis.entity {
                     continue;
                 }
                 source
@@ -571,6 +618,17 @@ impl History<'_> {
             .checked_add(adjustment)
             .and_then(|current| target.checked_sub(current))
             .ok_or_else(|| invalid("revaluation delta exceeds i128"))?;
+        if basis.items.is_some() {
+            return items::reproduce(
+                self,
+                index,
+                basis,
+                at,
+                route,
+                native,
+                [exposure, carrying, adjustment, target],
+            );
+        }
         let first = &self.legs[index][0];
         if delta == 0 || delta.checked_abs() != Some(first.mantissa) || first.debit != (delta > 0) {
             return Err(invalid(
@@ -592,6 +650,7 @@ pub(super) fn verify<'a>(
     legs: &'a [Vec<Leg>],
     parsed: &'a BTreeMap<usize, ParsedEntry>,
     activations: &'a BTreeMap<u64, u64>,
+    carrying: &'a settlement::CheckedCarrying,
 ) -> Result<(), ReportError> {
     let mut bases = BTreeMap::new();
     let mut publications = BTreeSet::new();
@@ -627,16 +686,16 @@ pub(super) fn verify<'a>(
             && parsed[&index]
                 .base
                 .as_ref()
-                .is_some_and(|base| base.law == law_oid(2))
+                .is_some_and(|base| [law_oid(2), law_oid(9)].contains(&base.law))
         {
             return Err(invalid(
-                "PeriodEndRevaluation requires its complete source-bound basis",
+                "period-end revaluation requires its complete source-bound basis",
             ));
         }
     }
     let mut order: Vec<_> = infos.keys().copied().collect();
     order.sort_by_key(|index| (envelopes[*index].commit_seq, infos[index].identity));
-    let history = History {
+    let mut history = History {
         spec,
         registry,
         rates,
@@ -648,8 +707,10 @@ pub(super) fn verify<'a>(
         activations,
         bases,
         order,
+        carrying,
+        allocations: BTreeMap::new(),
     };
-    for &index in &history.order {
+    for index in history.order.clone() {
         if let Some(basis) = history.bases.get(&index) {
             let before = envelopes[index]
                 .commit_seq
@@ -664,7 +725,9 @@ pub(super) fn verify<'a>(
             if before != basis.observed_at {
                 history.reproduce(index, basis, before)?;
             }
+            items::record(&mut history, index)?;
         }
     }
+    items::verify_frontiers(&history)?;
     Ok(())
 }
