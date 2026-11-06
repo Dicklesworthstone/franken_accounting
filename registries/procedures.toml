@@ -912,13 +912,13 @@ meaning = "Maximum civil days between the original entry and its cross-period re
 
 [[procedure]]
 id = "jet.suspense_aging"
-version = 2
+version = 3
 claim = "statistical"
 evidence = "FA-EVID-L28"
 tie_break = "account_vid"
-complexity = "O(legs log legs)"
+complexity = "O((entries + legs + applications) log (entries + legs + applications))"
 calibration = "uncalibrated"
-summary = "Accounts holding the `suspense` account role (registries/account_roles.toml, assigned with fa chart role) that retain a non-zero balance or uncleared postings older than max_age_days as of the coordinate's effective date. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens."
+summary = "Accounts holding the `suspense` role with nonzero open-item residuals older than max_age_days, folded from immutable settlements and reversal lineage. Fully cleared items do not contribute age or citations; offsetting unapplied items remain open even when their net is zero. The date is the coordinate's effective date, or the latest live posting date when omitted. Refused when the role is unassigned or an effective cutoff splits a settlement/reversal. Version 2 aged an account's first-ever posting; version 1 guessed accounts from names."
 effective_through = "optional"
 
 [[parameter]]

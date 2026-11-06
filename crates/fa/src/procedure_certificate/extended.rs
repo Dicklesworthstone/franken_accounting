@@ -19,7 +19,8 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("jet.unusual_preparers", 1),
     ("jet.manual_vs_rule", 1),
     ("jet.large_round_reversals", 1),
-    ("jet.suspense_aging", 2),
+    // Version 3 ages native open residuals, including explicit applications.
+    ("jet.suspense_aging", 3),
     ("jet.intercompany_unmatched", 2),
     ("benford.second_digit", 2),
     ("benford.first_two_digits", 2),
@@ -122,6 +123,7 @@ const RETAINED_CLOSURES: &[(&str, u16)] = &[
     ("graph.shell_signature", 1),
     ("jet.intercompany_unmatched", 1),
     ("jet.suspense_aging", 1),
+    ("jet.suspense_aging", 2),
     ("jet.unusual_accounts", 1),
     ("lookback.preferences", 1),
     ("lookback.preferences", 2),

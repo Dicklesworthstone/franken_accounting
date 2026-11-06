@@ -165,7 +165,7 @@ fn historical_extended_versions_keep_their_complete_native_closure() {
         ("graph.related_party_exposure", &[1]),
         ("graph.shell_signature", &[1]),
         ("jet.intercompany_unmatched", &[1]),
-        ("jet.suspense_aging", &[1]),
+        ("jet.suspense_aging", &[1, 2]),
         ("jet.unusual_accounts", &[1]),
         ("lookback.preferences", &[1, 2]),
         ("payroll.ghost", &[1]),
@@ -184,7 +184,7 @@ fn historical_extended_versions_keep_their_complete_native_closure() {
             .iter()
             .map(|(_, versions)| versions.len())
             .sum::<usize>(),
-        47
+        48
     );
     for &(id, versions) in histories {
         for &version in versions {
@@ -255,6 +255,7 @@ fn historical_extended_versions_keep_their_complete_native_closure() {
         ("graph.party_circular_flows", 3),
         ("graph.round_trips", 1),
         ("reversal.patterns", 3),
+        ("jet.suspense_aging", 4),
     ] {
         assert!(
             !extended::has_retained_closure(id, version),
@@ -366,7 +367,7 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
         // netting moved aging.inventory to version 3; cash-overdraft netting
         // and a shared cash/liability cutoff moved the cash-flow screen to 5.
         let version = match id {
-            "lookback.preferences" | "aging.inventory" => 3,
+            "lookback.preferences" | "aging.inventory" | "jet.suspense_aging" => 3,
             "solvency.cash_flow_test" => 5,
             "ponzi.net_investment" => 5,
             "distribution.rising_tide" | "distribution.pro_rata" => 4,

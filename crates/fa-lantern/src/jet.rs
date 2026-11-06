@@ -4,7 +4,7 @@
 //! (and the legs or approval that made it a hit) and reports the population
 //! it was drawn from.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::KernelError;
 use fa_journal::attestation::{AttestationClaim, Subject};
@@ -978,19 +978,33 @@ impl Procedure for LargeRoundReversals {
 }
 
 /// `jet.suspense_aging`: accounts holding the `suspense` role with uncleared
-/// balances older than `max_age_days`. Version 2 selects by role; version 1
-/// guessed from code and name tokens.
+/// items older than `max_age_days`. Version 3 ages the native settlement
+/// fold's residuals; version 2 aged an account's first-ever posting.
 pub struct SuspenseAging {
     params: Params,
 }
 procedure_boilerplate!(SuspenseAging, "jet.suspense_aging");
+
+fn suspense_entry_cites(mut items: Vec<(fa_time::DateDay, VId)>) -> Vec<Cite> {
+    // Retain an entry that explains the age even when the citation budget is
+    // exhausted. Selection follows age, but final citation order follows VID.
+    items.sort_unstable();
+    let mut entries = BTreeSet::new();
+    for (_, vid) in items {
+        if entries.len() == MAX_CITES - 1 {
+            break;
+        }
+        entries.insert(vid);
+    }
+    entries.into_iter().map(Cite::Entry).collect()
+}
 
 impl Procedure for SuspenseAging {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        3
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1004,8 +1018,7 @@ impl Procedure for SuspenseAging {
         let max_age = i32::try_from(self.params.get_u32("max_age_days")?)
             .map_err(|_| LanternError::Overflow("max_age_days"))?;
         let suspense_vids = snapshot.role_population(Self::ID)?;
-        let mut live = snapshot.live_postings_through(snapshot.coordinate.effective_through)?;
-        live.sort_by_key(|e| e.vid);
+        let live = snapshot.live_postings_through(snapshot.coordinate.effective_through)?;
         let population = live.len() as u64;
         let as_of = snapshot
             .coordinate
@@ -1014,44 +1027,67 @@ impl Procedure for SuspenseAging {
         let Some(as_of) = as_of else {
             return Ok(Vec::new());
         };
-        let mut balances: BTreeMap<(VId, fa_money::UnitId), (i128, fa_time::DateDay, Vec<VId>)> =
-            BTreeMap::new();
-        for e in &live {
+        // Reuse the authoritative application/lineage fold. Do not equate
+        // opposing legs with a settlement, or let cleared history age a new
+        // item. Charge the complete input and conservative tree/sort work
+        // before folding; a budget refusal never runs the uncharged fold.
+        let mut entries = Vec::with_capacity(snapshot.entries.len());
+        let mut input_size = snapshot.entries.len() as u64;
+        for e in &snapshot.entries {
             work.entry()?;
-            let eff = e.entry.proposal.effective_date;
             for leg in &e.entry.proposal.legs {
                 work.leg()?;
-                if !suspense_vids.contains(&leg.account_ref) {
-                    continue;
-                }
-                let signed = signed_leg(leg.side, leg.amount.mantissa)?;
-                let entry = balances
-                    .entry((leg.account_ref, leg.amount.unit))
-                    .or_insert((0, eff, Vec::new()));
-                entry.0 = entry
-                    .0
-                    .checked_add(signed)
-                    .ok_or(LanternError::Overflow("suspense balance"))?;
-                if eff < entry.1 {
-                    entry.1 = eff;
-                }
-                if entry.2.last().copied() != Some(e.vid) {
-                    entry.2.push(e.vid);
+                input_size = input_size.saturating_add(1);
+                for _ in &leg.settles {
+                    work.compare(1)?;
+                    input_size = input_size.saturating_add(1);
                 }
             }
+            entries.push((e.vid, e.entry.clone(), e.recorded_at));
         }
-        let mut out = Vec::new();
-        for ((acct_vid, _unit), (net, oldest, mut entry_vids)) in balances {
-            work.compare(1)?;
-            if net == 0 {
+        let ordering = input_size
+            .saturating_mul(u64::from(input_size.max(1).ilog2()) + 1)
+            .saturating_mul(8);
+        work.compare(ordering)?;
+        let items = fa_registers::open_items::history::open_items_from_entries(
+            entries,
+            None,
+            snapshot.coordinate.effective_through,
+        )?;
+        let mut balances: BTreeMap<
+            (VId, u32),
+            (i128, fa_time::DateDay, Vec<(fa_time::DateDay, VId)>),
+        > = BTreeMap::new();
+        for item in items {
+            work.leg()?;
+            if item.open == 0 || !suspense_vids.contains(&item.account) {
                 continue;
             }
-            let age = as_of.0 - oldest.0;
+            let signed = signed_leg(item.side, item.open)?;
+            let entry = balances.entry((item.account, item.unit_id)).or_insert((
+                0,
+                item.effective_date,
+                Vec::new(),
+            ));
+            entry.0 = entry
+                .0
+                .checked_add(signed)
+                .ok_or(LanternError::Overflow("suspense open balance"))?;
+            if item.effective_date < entry.1 {
+                entry.1 = item.effective_date;
+            }
+            entry.2.push((item.effective_date, item.entry));
+        }
+        let mut out = Vec::new();
+        for ((acct_vid, unit), (net, oldest, entry_vids)) in balances {
+            work.compare(1)?;
+            let age = as_of
+                .0
+                .checked_sub(oldest.0)
+                .ok_or(LanternError::Overflow("suspense age"))?;
             if age > max_age {
-                entry_vids.sort_unstable();
-                entry_vids.dedup();
                 let mut cites = vec![Cite::Account(acct_vid)];
-                cites.extend(entry_vids.into_iter().take(MAX_CITES - 1).map(Cite::Entry));
+                cites.extend(suspense_entry_cites(entry_vids));
                 let severity = if age > max_age.saturating_mul(2) {
                     Severity::High
                 } else {
@@ -1063,7 +1099,7 @@ impl Procedure for SuspenseAging {
                     Statistic::count("age_days", age as u64, population),
                     cites,
                     format!(
-                        "suspense/clearing account retains non-zero net balance {net} aged {age} day(s) (max_age_days {max_age})"
+                        "suspense/clearing account retains uncleared items with net balance {net} in unit {unit} aged {age} day(s) (max_age_days {max_age}); opposing items are not implicitly settled"
                     ),
                 ));
             }
@@ -1158,5 +1194,28 @@ impl Procedure for IntercompanyUnmatched {
             ));
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod suspense_tests {
+    use super::*;
+
+    /// Pure citation selection, not fabricated journal entries: the oldest
+    /// item has the greatest VID and must survive a saturated citation budget.
+    #[test]
+    fn bounded_citations_keep_an_oldest_item_and_ignore_input_order() {
+        let oldest = VId(u128::MAX);
+        let mut items: Vec<_> = (0..=MAX_CITES)
+            .map(|id| (fa_time::DateDay(90), VId(u128::try_from(id).unwrap())))
+            .collect();
+        items.extend([(fa_time::DateDay(0), oldest); 2]);
+        let cites = suspense_entry_cites(items.clone());
+        assert_eq!(cites.len(), MAX_CITES - 1);
+        assert_eq!(cites.first(), Some(&Cite::Entry(VId(0))));
+        assert_eq!(cites.last(), Some(&Cite::Entry(oldest)));
+        assert!(!cites.contains(&Cite::Entry(VId(u128::try_from(MAX_CITES - 2).unwrap()))));
+        items.reverse();
+        assert_eq!(suspense_entry_cites(items), cites);
     }
 }

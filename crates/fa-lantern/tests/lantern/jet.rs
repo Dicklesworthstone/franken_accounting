@@ -8,6 +8,422 @@ use fa_lantern::jet::{SelfSourcedEvidence, UnusualAccounts};
 use fa_lantern::{default_budget, run_over_metered};
 use fa_model::EntryRef;
 
+fn suspense_harness() -> Harness {
+    let mut h = harness();
+    let ctx = h.ctx();
+    let spec = AccountRoleSpec {
+        account: h.account("1000"),
+        role: "suspense".into(),
+        assigned: true,
+    };
+    let description = h.seal("native suspense test population");
+    h.runtime
+        .block_on(record_account_role(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &spec,
+            PREPARER,
+            b"suspense-role",
+            description,
+            &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    h
+}
+
+fn post_suspense_proposal(h: &mut Harness, proposal: EntryPayload) -> VId {
+    let ctx = h.ctx();
+    let request = PostRequest {
+        proposal,
+        approvals: Vec::new(),
+        plan_certificate: None,
+        capability: Capability::embedded(PREPARER, &["post"]).unwrap(),
+    };
+    let Posted::Committed {
+        entry_ref,
+        recorded_at,
+        ..
+    } = h
+        .runtime
+        .block_on(post(&mut h.db, &ctx, &h.book, request))
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("a fresh native suspense proposal must commit")
+    };
+    h.posted.push((entry_ref.vid, recorded_at));
+    entry_ref.vid
+}
+
+fn pay_suspense(h: &mut Harness, target: VId, date: DateDay, cents: i128) -> VId {
+    let (original, _) = read_entry(&h.db, target).unwrap().unwrap();
+    assert_eq!(original.proposal.legs[0].account_ref, h.account("1000"));
+    let mut proposal = h.proposal(&Spec::simple(date, "1010", "1000", cents));
+    proposal.legs[1].settles.push(fa_model::Settlement {
+        target: original.entry_ref(target),
+        ordinal: 0,
+        amount: Amount::new(h.usd, cents),
+    });
+    post_suspense_proposal(h, proposal)
+}
+
+/// A real explicit application clears an old item. An unrelated young
+/// posting must not inherit its age, and a partial application must leave
+/// the original residual's age intact at both historical coordinates.
+#[test]
+fn suspense_aging_uses_uncleared_native_items_and_historical_applications() {
+    use fa_lantern::jet::SuspenseAging;
+
+    let mut h = suspense_harness();
+    let old = h.post(&Spec::simple(day(2026, 1, 1), "1000", "4000", 10_000));
+    let partial = pay_suspense(&mut h, old, day(2026, 1, 2), 6_000);
+    let young = h.post(&Spec::simple(day(2026, 3, 30), "1000", "4000", 5_000));
+    let before_clear = h.db.frontier().unwrap();
+    let procedure = SuspenseAging::new().unwrap();
+    let snapshot = Snapshot::read(
+        &h.db,
+        &h.ctx().query(),
+        &h.book,
+        None,
+        Some(day(2026, 3, 31)),
+    )
+    .unwrap();
+    let positive = run_over(&snapshot, &h.book, &procedure).unwrap();
+    assert_eq!(positive.findings.len(), 1);
+    let finding = &positive.findings[0];
+    assert_eq!(finding.severity, Severity::High);
+    assert_eq!(finding.statistic, Statistic::count("age_days", 89, 3));
+    let mut entries = vec![old, young];
+    entries.sort_unstable();
+    let mut expected = vec![Cite::Account(h.account("1000"))];
+    expected.extend(entries.into_iter().map(Cite::Entry));
+    assert_eq!(finding.cites, expected);
+    assert!(!finding.cites.contains(&Cite::Entry(partial)));
+    assert!(finding.narrative.contains("net balance 9000"));
+    assert_eq!(positive.version, 3);
+    let row = fa_lantern::bind(SuspenseAging::ID).unwrap();
+    assert!(
+        positive
+            .work
+            .within_registered_bound(&row.complexity, &snapshot)
+    );
+    let budget = default_budget(SuspenseAging::ID, &snapshot).unwrap();
+    let metered = run_over_metered(&snapshot, &h.book, &procedure, Some(budget), None).unwrap();
+    assert_eq!(metered, positive);
+    assert!(matches!(
+        run_over_metered(&snapshot, &h.book, &procedure, Some(0), None),
+        Err(LanternError::BudgetExhausted { .. })
+    ));
+    assert_eq!(h.db.frontier().unwrap(), before_clear);
+
+    let final_payment = pay_suspense(&mut h, old, day(2026, 3, 31), 4_000);
+    let after_clear = h.db.frontier().unwrap();
+    let cleared = Snapshot::read(
+        &h.db,
+        &h.ctx().query(),
+        &h.book,
+        None,
+        Some(day(2026, 3, 31)),
+    )
+    .unwrap();
+    let negative = run_over(&cleared, &h.book, &procedure).unwrap();
+    assert!(negative.findings.is_empty(), "{negative:?}");
+    assert!(
+        negative
+            .work
+            .within_registered_bound(&row.complexity, &cleared)
+    );
+    assert!(
+        witness::determinism(&cleared, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
+    let permuted = cleared.with_legs_reversed();
+    let payment = permuted
+        .entries
+        .iter()
+        .find(|e| e.vid == final_payment)
+        .unwrap();
+    assert_eq!(payment.entry.proposal.legs[0].settles[0].ordinal, 1);
+    let historical = Snapshot::read(
+        &h.db,
+        &h.ctx().query(),
+        &h.book,
+        Some(before_clear),
+        Some(day(2026, 3, 31)),
+    )
+    .unwrap();
+    assert_eq!(
+        run_over(&historical, &h.book, &procedure).unwrap(),
+        positive
+    );
+    let earlier = Snapshot::read(
+        &h.db,
+        &h.ctx().query(),
+        &h.book,
+        None,
+        Some(day(2026, 3, 30)),
+    )
+    .unwrap();
+    let earlier = run_over(&earlier, &h.book, &procedure).unwrap();
+    assert_eq!(earlier.findings.len(), 1);
+    assert_eq!(
+        earlier.findings[0].statistic,
+        Statistic::count("age_days", 88, 3)
+    );
+    let inferred = Snapshot::read(&h.db, &h.ctx().query(), &h.book, None, None).unwrap();
+    assert!(
+        run_over(&inferred, &h.book, &procedure)
+            .unwrap()
+            .findings
+            .is_empty()
+    );
+    assert_eq!(h.db.frontier().unwrap(), after_clear);
+}
+
+#[test]
+fn suspense_aging_does_not_implicitly_clear_offsetting_unapplied_items() {
+    use fa_lantern::jet::SuspenseAging;
+
+    let mut h = suspense_harness();
+    let debit = h.post(&Spec::simple(day(2026, 1, 1), "1000", "4000", 10_000));
+    let credit = h.post(&Spec::simple(day(2026, 3, 1), "1010", "1000", 10_000));
+    let before = h.db.frontier().unwrap();
+    let snapshot = Snapshot::read(
+        &h.db,
+        &h.ctx().query(),
+        &h.book,
+        None,
+        Some(day(2026, 3, 31)),
+    )
+    .unwrap();
+    let procedure = SuspenseAging::new().unwrap();
+    let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+    assert_eq!(result.findings.len(), 1);
+    assert_eq!(
+        result.findings[0].statistic,
+        Statistic::count("age_days", 89, 2)
+    );
+    assert!(result.findings[0].narrative.contains("net balance 0"));
+    let mut entries = vec![debit, credit];
+    entries.sort_unstable();
+    let mut cites = vec![Cite::Account(h.account("1000"))];
+    cites.extend(entries.into_iter().map(Cite::Entry));
+    assert_eq!(result.findings[0].cites, cites);
+    assert!(
+        witness::determinism(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn suspense_aging_keeps_known_only_reversals_after_the_last_live_posting_date() {
+    use fa_lantern::jet::SuspenseAging;
+
+    let mut h = suspense_harness();
+    let old = h.post(&Spec::simple(day(2026, 1, 1), "1000", "4000", 10_000));
+    h.post(&Spec::simple(day(2026, 3, 30), "1000", "4000", 5_000));
+    let (original, _) = read_entry(&h.db, old).unwrap().unwrap();
+    let mut reversal = h.proposal(&Spec::simple(day(2026, 4, 1), "4000", "1000", 10_000));
+    reversal.class = EntryClass::REVERSAL;
+    reversal.legs = original.proposal.legs.clone();
+    for leg in &mut reversal.legs {
+        leg.side = match leg.side {
+            Side::Debit => Side::Credit,
+            Side::Credit => Side::Debit,
+        };
+    }
+    reversal.unit_totals = EntryPayload::fold_unit_totals(&reversal.legs).unwrap();
+    reversal.supersession.push(fa_model::Supersession {
+        target: original.entry_ref(old),
+        kind: SupersessionKind::Reverses,
+        reason_code: 1,
+    });
+    post_suspense_proposal(&mut h, reversal);
+    let before = h.db.frontier().unwrap();
+    let procedure = SuspenseAging::new().unwrap();
+    let inferred = Snapshot::read(&h.db, &h.ctx().query(), &h.book, None, None).unwrap();
+    assert!(
+        run_over(&inferred, &h.book, &procedure)
+            .unwrap()
+            .findings
+            .is_empty()
+    );
+    let historical = Snapshot::read(
+        &h.db,
+        &h.ctx().query(),
+        &h.book,
+        None,
+        Some(day(2026, 3, 31)),
+    )
+    .unwrap();
+    let old_is_live = run_over(&historical, &h.book, &procedure).unwrap();
+    assert_eq!(old_is_live.findings.len(), 1);
+    assert_eq!(
+        old_is_live.findings[0].statistic,
+        Statistic::count("age_days", 89, 2)
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+/// One native entry can open two units on the same suspense account. Equal
+/// mantissas and ages must remain distinguishable, and applying USD cannot
+/// clear the JPY item from that entry.
+#[test]
+fn suspense_aging_names_each_native_unit_and_clears_only_the_applied_unit() {
+    use fa_lantern::jet::SuspenseAging;
+
+    let mut h = harness();
+    let chart = [
+        AccountSpec {
+            code: "1090".into(),
+            name: "Multi-currency suspense".into(),
+            account_type: 1,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "4090".into(),
+            name: "Multi-currency counterparty".into(),
+            account_type: 4,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+    ];
+    let ctx = h.ctx();
+    let capability = Capability::embedded(PREPARER, &["schema_change"]).unwrap();
+    let description = h.seal("native multi-unit suspense chart");
+    h.runtime
+        .block_on(install_chart(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &chart,
+            PREPARER,
+            day(2026, 1, 1),
+            b"suspense-unit-chart",
+            description,
+            &capability,
+        ))
+        .unwrap()
+        .unwrap();
+    let description = h.seal("native multi-unit suspense role");
+    let role = AccountRoleSpec {
+        account: h.account("1090"),
+        role: "suspense".into(),
+        assigned: true,
+    };
+    h.runtime
+        .block_on(record_account_role(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &role,
+            PREPARER,
+            b"suspense-unit-role",
+            description,
+            &capability,
+        ))
+        .unwrap()
+        .unwrap();
+
+    let usd = h.usd;
+    let jpy = h.book.units.lookup("JPY").unwrap();
+    assert_eq!((usd.0, jpy.0), (840, 392));
+    let mut proposal = h.proposal(&Spec::simple(day(2026, 1, 1), "1090", "4090", 10_000));
+    proposal.legs.extend([
+        LegPayload::simple(Side::Debit, h.account("1090"), Amount::new(jpy, 10_000)),
+        LegPayload::simple(Side::Credit, h.account("4090"), Amount::new(jpy, 10_000)),
+    ]);
+    proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+    let original = post_suspense_proposal(&mut h, proposal);
+    let before = h.db.frontier().unwrap();
+    let procedure = SuspenseAging::new().unwrap();
+    let snapshot = Snapshot::read(
+        &h.db,
+        &h.ctx().query(),
+        &h.book,
+        None,
+        Some(day(2026, 3, 31)),
+    )
+    .unwrap();
+    let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+    assert_eq!(result.findings.len(), 2);
+    for finding in &result.findings {
+        assert_eq!(finding.statistic, Statistic::count("age_days", 89, 1));
+        assert_eq!(
+            finding.cites,
+            vec![Cite::Account(h.account("1090")), Cite::Entry(original)]
+        );
+        assert!(finding.narrative.contains("net balance 10000"));
+    }
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|f| f.narrative.contains("unit 840 "))
+    );
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|f| f.narrative.contains("unit 392 "))
+    );
+    assert_ne!(
+        result.findings[0].canonical_bytes().unwrap(),
+        result.findings[1].canonical_bytes().unwrap()
+    );
+    h.assert_cites_resolve(&result);
+    assert!(
+        witness::determinism(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    let (entry, _) = read_entry(&h.db, original).unwrap().unwrap();
+    let mut payment = h.proposal(&Spec::simple(day(2026, 3, 31), "4090", "1090", 10_000));
+    payment.legs[1].settles.push(fa_model::Settlement {
+        target: entry.entry_ref(original),
+        ordinal: 0,
+        amount: Amount::new(usd, 10_000),
+    });
+    post_suspense_proposal(&mut h, payment);
+    let after = h.db.frontier().unwrap();
+    let cleared = Snapshot::read(
+        &h.db,
+        &h.ctx().query(),
+        &h.book,
+        None,
+        Some(day(2026, 3, 31)),
+    )
+    .unwrap();
+    let remaining = run_over(&cleared, &h.book, &procedure).unwrap();
+    assert_eq!(remaining.findings.len(), 1);
+    assert!(remaining.findings[0].narrative.contains("unit 392 "));
+    assert_eq!(
+        remaining.findings[0].statistic,
+        Statistic::count("age_days", 89, 2)
+    );
+    assert_eq!(remaining.findings[0].cites, result.findings[0].cites);
+    assert!(
+        witness::determinism(&cleared, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
+    assert_eq!(h.db.frontier().unwrap(), after);
+}
+
 /// evidence_policy.toml's `AgentUpload` grade (self-sourced).
 const AGENT_UPLOAD: u8 = 4;
 

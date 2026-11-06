@@ -951,6 +951,28 @@ impl Work {
                 legs: open_items,
                 comparisons: 0,
             }),
+            // jet.suspense_aging v3 reuses the immutable open-item fold:
+            // input entries/legs/applications, then the residual legs. The
+            // conservative ordering charge also covers memoized lineage and
+            // the date-selection validation; no budget is borrowed from a
+            // cached fold prepared for a different snapshot.
+            "O((entries + legs + applications) log (entries + legs + applications))" => {
+                let applications = snapshot
+                    .entries
+                    .iter()
+                    .flat_map(|e| &e.entry.proposal.legs)
+                    .fold(0_u64, |n, leg| n.saturating_add(leg.settles.len() as u64));
+                let input_size = entries.saturating_add(legs).saturating_add(applications);
+                Some(Self {
+                    entries,
+                    legs: legs.saturating_mul(2),
+                    comparisons: input_size
+                        .saturating_mul(u64::from(input_size.max(1).ilog2()) + 1)
+                        .saturating_mul(8)
+                        .saturating_add(applications)
+                        .saturating_add(legs),
+                })
+            }
             "O(legs log legs)"
             | "O(ids log ids)"
             | "O(flow legs log flow legs)"

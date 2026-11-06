@@ -613,8 +613,27 @@ impl Snapshot {
     #[must_use]
     pub fn with_legs_reversed(&self) -> Self {
         let mut s = self.clone();
+        let lengths: BTreeMap<_, _> = s
+            .entries
+            .iter()
+            .map(|e| (e.vid, e.entry.proposal.legs.len()))
+            .collect();
         for e in &mut s.entries {
             e.entry.proposal.legs.reverse();
+            // A settlement follows its target leg through the permutation.
+            // Moving only the source vector would silently apply it to a
+            // different account/side in the target and change open amounts.
+            for leg in &mut e.entry.proposal.legs {
+                for settlement in &mut leg.settles {
+                    if let Some(length) = lengths.get(&settlement.target.vid)
+                        && let Some(ordinal) = length
+                            .checked_sub(usize::from(settlement.ordinal) + 1)
+                            .and_then(|ordinal| u16::try_from(ordinal).ok())
+                    {
+                        settlement.ordinal = ordinal;
+                    }
+                }
+            }
         }
         s
     }
