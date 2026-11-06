@@ -1,6 +1,8 @@
 //! Law 9 vectors are encoded independently of the native producer and verifier.
 use super::*;
 
+mod allocated_settlement;
+
 #[derive(Clone)]
 struct Item {
     source: Record,

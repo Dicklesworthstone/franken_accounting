@@ -4,13 +4,15 @@
 //! intake receipts. Book parameters are certificate/receipt-bound inputs, not
 //! a proof of genesis. This profile verifies SpotClose, PeriodAverage and
 //! source-bound SettlementCarryingBasis, aggregate PeriodEndRevaluation and
-//! complete open-item PeriodEndItemRevaluation. Inherited reversals retain
+//! complete open-item PeriodEndItemRevaluation. SettlementAllocatedCarrying
+//! independently releases each item's historical and total value. Reversals retain
 //! their original valuations; item revaluation is corrected cumulatively.
 //! Migration contributions use independently authenticated run bodies and
 //! lifecycle controls; activation changes visibility and the watermark without
 //! changing a chunk's birth. Source-bound native/carrying year-end closes are
-//! independently reconstructed. SettlementAllocatedCarrying and translation
-//! remain unsupported until their separate source proofs can be replayed.
+//! independently reconstructed. Allocated settlements independently release
+//! historical and total carrying values through the retained valuation route.
+//! Translation remains unsupported until its separate source proofs can be replayed.
 //! Dimension reports project only after this complete validation. Their
 //! authenticated descendant identities bind the fold, and original leg
 //! ordinals survive projection even when its displayed cells are one-sided.

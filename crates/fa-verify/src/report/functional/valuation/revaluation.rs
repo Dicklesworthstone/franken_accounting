@@ -81,20 +81,6 @@ impl Basis {
     }
 }
 
-/// Membership is used only to distinguish allocated targets from other
-/// sources while checking applications. Every decoded claim is subsequently
-/// authenticated against both complete revaluation source prefixes.
-pub(super) fn allocated_targets(raw: &[u8]) -> Result<BTreeSet<(u128, u16)>, ReportError> {
-    let basis = Basis::read(raw)?;
-    let items = basis
-        .items
-        .ok_or_else(|| invalid("item revaluation requires its canonical v2 basis"))?;
-    Ok(items
-        .into_iter()
-        .map(|item| (item.target, item.ordinal))
-        .collect())
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Route {
     valuation: u128,
@@ -252,7 +238,7 @@ pub(super) fn bind_account(
     w.bytes(&effectivity.buf);
 }
 
-struct History<'a> {
+pub(super) struct Prepared<'a> {
     spec: &'a BookParameters,
     registry: &'a registry::FunctionalRegistry,
     rates: &'a BTreeMap<[u8; 32], Rate>,
@@ -264,11 +250,9 @@ struct History<'a> {
     activations: &'a BTreeMap<u64, u64>,
     bases: BTreeMap<usize, Basis>,
     order: Vec<usize>,
-    carrying: &'a settlement::CheckedCarrying,
-    allocations: BTreeMap<(usize, u16), Vec<items::Allocation>>,
 }
 
-impl History<'_> {
+impl Prepared<'_> {
     fn snapshot(&self, at: u64) -> Result<(metadata::Schema, Vec<Routes>), ReportError> {
         let mut schema = metadata::Schema::default();
         let mut declarations: Vec<Routes> = Vec::new();
@@ -425,7 +409,13 @@ impl History<'_> {
         Ok(())
     }
 
-    fn reproduce(&self, index: usize, basis: &Basis, at: u64) -> Result<(), ReportError> {
+    fn reproduce(
+        &self,
+        index: usize,
+        basis: &Basis,
+        at: u64,
+        carrying_history: &settlement::CheckedCarrying,
+    ) -> Result<(), ReportError> {
         let (schema, declarations) = self.snapshot(at)?;
         let (start, end, kind, state) = schema
             .period_state(&basis.period)
@@ -537,11 +527,20 @@ impl History<'_> {
                 .iter()
                 .any(|leg| leg.account == route.valuation)
             {
-                let old = self.bases.get(&previous).ok_or_else(|| invalid("dedicated valuation history contains an unrelated or unsupported adjustment"))?;
-                if old.source != basis.source {
-                    return Err(invalid("valuation account belongs to another source"));
+                if let Some(old) = self.bases.get(&previous) {
+                    if old.source != basis.source {
+                        return Err(invalid("valuation account belongs to another source"));
+                    }
+                    self.shape(previous, old, route)?;
+                } else {
+                    carrying_history.covers_valuation(
+                        previous,
+                        basis.source,
+                        route.valuation,
+                        route.unrealized,
+                        self.legs,
+                    )?;
                 }
-                self.shape(previous, old, route)?;
             }
             if envelope.effective_day.is_none_or(|date| date > basis.date) {
                 continue;
@@ -627,6 +626,7 @@ impl History<'_> {
                 route,
                 native,
                 [exposure, carrying, adjustment, target],
+                carrying_history,
             );
         }
         let first = &self.legs[index][0];
@@ -640,7 +640,7 @@ impl History<'_> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn verify<'a>(
+pub(super) fn prepare<'a>(
     spec: &'a BookParameters,
     registry: &'a registry::FunctionalRegistry,
     rates: &'a BTreeMap<[u8; 32], Rate>,
@@ -650,8 +650,7 @@ pub(super) fn verify<'a>(
     legs: &'a [Vec<Leg>],
     parsed: &'a BTreeMap<usize, ParsedEntry>,
     activations: &'a BTreeMap<u64, u64>,
-    carrying: &'a settlement::CheckedCarrying,
-) -> Result<(), ReportError> {
+) -> Result<Prepared<'a>, ReportError> {
     let mut bases = BTreeMap::new();
     let mut publications = BTreeSet::new();
     for (&index, info) in infos {
@@ -695,7 +694,7 @@ pub(super) fn verify<'a>(
     }
     let mut order: Vec<_> = infos.keys().copied().collect();
     order.sort_by_key(|index| (envelopes[*index].commit_seq, infos[index].identity));
-    let mut history = History {
+    let prepared = Prepared {
         spec,
         registry,
         rates,
@@ -707,27 +706,43 @@ pub(super) fn verify<'a>(
         activations,
         bases,
         order,
-        carrying,
-        allocations: BTreeMap::new(),
     };
-    for index in history.order.clone() {
-        if let Some(basis) = history.bases.get(&index) {
-            let before = envelopes[index]
-                .commit_seq
-                .checked_sub(1)
-                .ok_or_else(|| invalid("revaluation has sequence zero"))?;
-            if basis.observed_at > before {
-                return Err(invalid(
-                    "revaluation observation does not precede publication",
-                ));
-            }
-            history.reproduce(index, basis, basis.observed_at)?;
-            if before != basis.observed_at {
-                history.reproduce(index, basis, before)?;
-            }
-            items::record(&mut history, index)?;
-        }
+    // Route controls after the final closing still cannot dedicate an
+    // account with existing posting history. Validate the entire retained
+    // route chronology, even when no later revaluation would observe it.
+    if !prepared.bases.is_empty()
+        && let Some(&last) = prepared.order.last()
+    {
+        prepared.snapshot(envelopes[last].commit_seq)?;
     }
-    items::verify_frontiers(&history)?;
-    Ok(())
+    Ok(prepared)
+}
+
+impl Prepared<'_> {
+    /// This is called at its actual publication by the carrying replay.
+    /// No allocation is released to that driver until both complete source
+    /// observations and every item component have been independently checked.
+    pub(super) fn verify_entry(
+        &self,
+        index: usize,
+        carrying: &settlement::CheckedCarrying,
+    ) -> Result<Vec<settlement::AllocationUpdate>, ReportError> {
+        let Some(basis) = self.bases.get(&index) else {
+            return Ok(Vec::new());
+        };
+        let before = self.envelopes[index]
+            .commit_seq
+            .checked_sub(1)
+            .ok_or_else(|| invalid("revaluation has sequence zero"))?;
+        if basis.observed_at > before {
+            return Err(invalid(
+                "revaluation observation does not precede publication",
+            ));
+        }
+        self.reproduce(index, basis, basis.observed_at, carrying)?;
+        if before != basis.observed_at {
+            self.reproduce(index, basis, before, carrying)?;
+        }
+        items::updates(self, index)
+    }
 }

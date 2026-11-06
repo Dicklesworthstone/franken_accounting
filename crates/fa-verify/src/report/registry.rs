@@ -801,6 +801,7 @@ pub(super) struct FunctionalRegistry {
     pub unit_table_digest: [u8; 32],
     pub spot_carrying: bool,
     pub item_revaluation: bool,
+    pub allocated_carrying: bool,
 }
 
 /// Add an independently encoded additive row to the retained legacy fixture.
@@ -817,6 +818,11 @@ pub(super) fn item_law_fixture(bytes: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(test)]
+pub(super) fn allocated_law_fixture(bytes: &[u8]) -> Vec<u8> {
+    additional_fx_law_fixture(bytes, 10)
+}
+
+#[cfg(test)]
 fn additional_fx_law_fixture(bytes: &[u8], id: i128) -> Vec<u8> {
     let (code, name, purpose, date, classes, meaning) = match id {
         9 => (
@@ -826,6 +832,14 @@ fn additional_fx_law_fixture(bytes: &[u8], id: i128) -> Vec<u8> {
             "period_end_date",
             ["Revaluation"].as_slice(),
             "Complete open-item closing valuation under LargestRemainder v1",
+        ),
+        10 => (
+            "settlement_allocated_carrying",
+            "SettlementAllocatedCarrying",
+            "Settlement",
+            "settlement_and_settled_item_dates",
+            ["Original", "Adjusting", "Reversal"].as_slice(),
+            "Source-bound historical and total carrying relief with explicit signed valuation release",
         ),
         11 => (
             "settlement_spot_carrying",
@@ -1004,6 +1018,14 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
             ["Revaluation"].as_slice(),
         ),
         (
+            10,
+            "settlement_allocated_carrying",
+            "SettlementAllocatedCarrying",
+            "Settlement",
+            "settlement_and_settled_item_dates",
+            ["Original", "Adjusting", "Reversal"].as_slice(),
+        ),
+        (
             11,
             "settlement_spot_carrying",
             "SettlementSpotCarrying",
@@ -1014,7 +1036,7 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
     ] {
         // Older retained closures remain readable, but cannot authorize a
         // claim under an additive law absent from that exact closure.
-        if matches!(id, 9 | 11)
+        if matches!(id, 9..=11)
             && !laws
                 .iter()
                 .any(|row| matches!(row.get("id"), Some(Value::Int(value)) if *value == id))
@@ -1034,7 +1056,7 @@ fn functional_laws(doc: &Document) -> Result<(), ReportError> {
             || string(row, "date_selector")? != date
             || string(row, "rounding_law")? != if id == 8 { "None" } else { "HalfEven" }
             || string(row, "residual_mode")?
-                != if matches!(id, 2 | 8 | 9 | 11) {
+                != if matches!(id, 2 | 8..=11) {
                     "none"
                 } else {
                     "designated_leg"
@@ -1154,6 +1176,9 @@ pub(super) fn verify_functional(
     definitions.item_revaluation = rows(&docs[4], "law")?
         .iter()
         .any(|row| matches!(row.get("id"), Some(Value::Int(9))));
+    definitions.allocated_carrying = rows(&docs[4], "law")?
+        .iter()
+        .any(|row| matches!(row.get("id"), Some(Value::Int(10))));
     Ok(definitions)
 }
 
@@ -1176,6 +1201,7 @@ fn functional_definitions(doc: &Document) -> Result<FunctionalRegistry, ReportEr
         unit_table_digest: functional_unit_table_digest(doc)?,
         spot_carrying: false,
         item_revaluation: false,
+        allocated_carrying: false,
     })
 }
 

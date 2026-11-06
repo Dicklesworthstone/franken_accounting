@@ -234,9 +234,24 @@ must match, including offsetting adjustments whose net change is zero. Both
 the reviewed observation and the prefix immediately before publication must
 reproduce the source commitment. Omitting an open item or substituting a
 balanced but incorrect allocation is refused. Earlier source-bound payments
-and their exact undos feed the remaining-item calculation. Allocated settlements
-under `SettlementAllocatedCarrying` still require their separate offline
-release proof; they are not admitted by this revaluation support.
+and their exact undos feed the remaining-item calculation.
+
+Functional bundles also replay `SettlementAllocatedCarrying` against the
+independently checked item history. Each payment must reproduce its retained
+source digest, historical-cost relief, total carrying relief and signed
+valuation release. Partial payments round historical and total relief
+independently with HalfEven; the final payment consumes the exact remaining
+amounts. The verifier checks the current settlement Rate, every core settlement
+leg, and the explicit valuation/unrealized release through the original route.
+An exact reversal restores its recorded components without rewinding the
+source history. Later revaluation reads these checked remaining balances.
+Forged relief, omitted release legs, stale item histories and substituted
+routes are refused, even when the supplied totals balance.
+
+This item-carrying profile currently binds sources through their current
+intrinsic entry identities. Older replacement entries retained under legacy
+key-derived identities are refused; those histories need consistent identity
+resolution across the allocation, source commitment and settlement chain.
 
 This verifies computation and journal bindings. It does not independently prove
 historical Approval-row birth, Human profiles, separation of duties, policy

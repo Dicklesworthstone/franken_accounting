@@ -109,9 +109,37 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                         )));
                     }
                 }
+                let release = proposal
+                    .extensions
+                    .iter()
+                    .find(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION);
+                if let Some((_, raw)) = release {
+                    fa_model::FxSettlementValuationBasis::decode(raw)
+                        .map_err(|error| fa_journal::KernelError::Model(error.into()))?;
+                    if !matches!(
+                        proposal.class,
+                        fa_model::EntryClass::ORIGINAL
+                            | fa_model::EntryClass::ADJUSTING
+                            | fa_model::EntryClass::REVERSAL
+                    ) || proposal.base_totals.as_ref().is_none_or(|base| {
+                        FxLawId::from_oid(&base.fx_law_oid)
+                            != Some(FxLawId::SettlementAllocatedCarrying)
+                    }) {
+                        return Ok(Err(refused(
+                            "portable allocated settlement requires its exact registered law and an Original, Adjusting or exact inherited Reversal",
+                        )));
+                    }
+                }
                 let Some(base) = &proposal.base_totals else {
                     continue;
                 };
+                if FxLawId::from_oid(&base.fx_law_oid) == Some(FxLawId::SettlementAllocatedCarrying)
+                    && release.is_none()
+                {
+                    return Ok(Err(refused(
+                        "portable allocated settlement requires its complete immutable valuation-release basis",
+                    )));
+                }
                 if FxLawId::from_oid(&base.fx_law_oid) == Some(FxLawId::PeriodEndItemRevaluation)
                     && proposal.class != fa_model::EntryClass::REVALUATION
                 {
@@ -157,12 +185,13 @@ fn claims(journal: &Journal, known_at: CommitSeq) -> Outcome<RateClaims> {
                             | FxLawId::PeriodEndItemRevaluation
                             | FxLawId::PeriodAverage
                             | FxLawId::SettlementCarryingBasis
+                            | FxLawId::SettlementAllocatedCarrying
                             | FxLawId::SettlementSpotCarrying
                             | FxLawId::YearEndCloseCarrying
                     )
                 ) {
                     return Ok(Err(refused(
-                        "portable functional reports support SpotClose, source-bound aggregate and item PeriodEndRevaluation, PeriodAverage, source-bound SettlementCarryingBasis and SettlementSpotCarrying, YearEndCloseCarrying and the registered exact inherited reversals",
+                        "portable functional reports support SpotClose, source-bound aggregate and item PeriodEndRevaluation, PeriodAverage, source-bound SettlementCarryingBasis, SettlementAllocatedCarrying and SettlementSpotCarrying, YearEndCloseCarrying and the registered exact inherited reversals",
                     )));
                 }
                 for oid in &base.rate_doc_oids {
@@ -640,7 +669,66 @@ mod tests {
             rate_oids(&journal(settlement, true), CommitSeq(3))
                 .unwrap()
                 .is_err(),
-            "allocated settlement requires its separate independent replay"
+            "allocated settlement cannot omit its retained valuation-release basis"
         );
+    }
+    #[test]
+    fn allocated_settlement_export_requires_canonical_matching_release_provenance() {
+        let release = fa_model::FxSettlementValuationBasis {
+            items: vec![fa_model::FxSettlementValuationRelease {
+                applying_ordinal: 0,
+                source_digest: [13; 32],
+                historical_relief: Amount::new(UnitId(0), 1),
+                total_relief: Amount::new(UnitId(0), 2),
+                valuation_relief: Amount::new(UnitId(0), 1),
+                routes_entry: VId(8),
+                routes_digest: [8; 32],
+                valuation_account: VId(2),
+                unrealized_account: VId(3),
+            }],
+        }
+        .canonical_bytes()
+        .unwrap();
+        for class in [
+            EntryClass::ORIGINAL,
+            EntryClass::ADJUSTING,
+            EntryClass::REVERSAL,
+        ] {
+            let mut declared = proposal(false, FxLawId::SettlementAllocatedCarrying);
+            declared.class = class;
+            declared.extensions = vec![(
+                fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION,
+                release.clone(),
+            )];
+            if class == EntryClass::REVERSAL {
+                declared.supersession.push(Supersession {
+                    target: EntryRef {
+                        vid: VId(10),
+                        entry_digest: [10; 32],
+                    },
+                    kind: SupersessionKind::Reverses,
+                    reason_code: 1,
+                });
+            }
+            assert_eq!(
+                rate_oids(&journal(declared.clone(), true), CommitSeq(3))
+                    .unwrap()
+                    .unwrap(),
+                vec![RATE]
+            );
+            assert!(
+                rate_oids(&journal(declared.clone(), false), CommitSeq(3))
+                    .unwrap()
+                    .is_err()
+            );
+            declared.base_totals.as_mut().unwrap().fx_law_oid =
+                FxLawId::SettlementCarryingBasis.oid();
+            assert!(
+                rate_oids(&journal(declared, true), CommitSeq(3))
+                    .unwrap()
+                    .is_err(),
+                "release provenance cannot be relabeled as ordinary historical-cost settlement"
+            );
+        }
     }
 }

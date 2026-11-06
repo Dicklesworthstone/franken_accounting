@@ -75,32 +75,27 @@ pub(super) fn read(r: &mut Reader<'_>) -> Result<Vec<Item>, ReportError> {
     Ok(items)
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct Allocation {
-    sequence: u64,
-    date: i32,
-    valuation: i128,
-    route: Route,
-}
-
-fn allocation(history: &History<'_>, target: (usize, u16), at: u64) -> Option<Allocation> {
-    let changes = history.allocations.get(&target)?;
-    let end = changes.partition_point(|allocation| allocation.sequence <= at);
-    end.checked_sub(1).map(|last| changes[last])
-}
-
 fn remaining(
-    history: &History<'_>,
+    history: &Prepared<'_>,
     target: (usize, u16),
     at: u64,
+    carrying: &settlement::CheckedCarrying,
 ) -> Result<settlement::Remaining, ReportError> {
-    if let Some(remaining) = history.carrying.remaining(target, at) {
+    if let Some(remaining) = carrying.remaining(target, at) {
         return Ok(remaining);
     }
     let (source, ordinal) = target;
     Ok(settlement::Remaining {
         native: history.legs[source][usize::from(ordinal)].mantissa,
         historical: history.parsed[&source].amounts[usize::from(ordinal)],
+        valuation: 0,
+        allocated: None,
+        source_digest: settlement::source_hasher(
+            history.infos[&source].identity,
+            history.envelopes[source].record_digest,
+            ordinal,
+        )
+        .finalize(),
         latest_effective: history.envelopes[source]
             .effective_day
             .ok_or_else(|| invalid("item source has no effective date"))?,
@@ -108,7 +103,7 @@ fn remaining(
 }
 
 pub(super) fn shape(
-    history: &History<'_>,
+    history: &Prepared<'_>,
     index: usize,
     basis: &Basis,
     route: Route,
@@ -191,13 +186,14 @@ fn add(sum: &mut i128, value: i128, debit: bool) -> Result<(), ReportError> {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reproduce(
-    history: &History<'_>,
+    history: &Prepared<'_>,
     index: usize,
     basis: &Basis,
     at: u64,
     route: Route,
     native_unit: u32,
     totals: [i128; 4],
+    carrying: &settlement::CheckedCarrying,
 ) -> Result<(), ReportError> {
     let mut sources = Vec::new();
     let mut sums = [0i128; 3];
@@ -228,7 +224,7 @@ pub(super) fn reproduce(
             let detail = &history.parsed[&source].details[ordinal];
             let law = history.parsed[&source].base.as_ref().map(|claim| claim.law);
             if !detail.settlements.is_empty() {
-                if !law.is_some_and(|law| [law_oid(4), law_oid(11)].contains(&law)) {
+                if !law.is_some_and(|law| [law_oid(4), law_oid(10), law_oid(11)].contains(&law)) {
                     return Err(invalid(
                         "item population contains an application without checked carrying relief",
                     ));
@@ -246,16 +242,10 @@ pub(super) fn reproduce(
                     "item population requires valued original SpotClose/PeriodAverage open items",
                 ));
             }
-            if !history
-                .carrying
-                .is_live(source, at, basis.date, history.envelopes)?
-            {
+            if !carrying.is_live(source, at, basis.date, history.envelopes)? {
                 continue;
             }
-            if !history
-                .carrying
-                .is_live(source, at, i32::MAX, history.envelopes)?
-            {
+            if !carrying.is_live(source, at, i32::MAX, history.envelopes)? {
                 return Err(invalid(
                     "item source is reversed after the selected closing date",
                 ));
@@ -274,11 +264,13 @@ pub(super) fn reproduce(
                 ));
             }
             let target = (source, ordinal as u16);
-            let remaining = remaining(history, target, at)?;
-            let allocated = allocation(history, target, at);
-            let valuation = allocated.map_or(0, |prior| prior.valuation);
+            let remaining = remaining(history, target, at, carrying)?;
+            let allocated = remaining.allocated;
+            let valuation = remaining.valuation;
             if remaining.latest_effective > basis.date
-                || allocated.is_some_and(|prior| prior.date > basis.date || prior.route != route)
+                || allocated.is_some_and(|prior| {
+                    prior.valuation != route.valuation || prior.unrealized != route.unrealized
+                })
             {
                 return Err(invalid(
                     "item closing date or route precedes its checked carrying history",
@@ -392,83 +384,37 @@ pub(super) fn reproduce(
     Ok(())
 }
 
-pub(super) fn record(history: &mut History<'_>, index: usize) -> Result<(), ReportError> {
+pub(super) fn updates(
+    history: &Prepared<'_>,
+    index: usize,
+) -> Result<Vec<settlement::AllocationUpdate>, ReportError> {
     let basis = &history.bases[&index];
     let Some(items) = &basis.items else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let identities: BTreeMap<_, _> = history
         .infos
         .iter()
         .map(|(&source, info)| (info.identity, source))
         .collect();
-    let route = Route {
+    let route = settlement::AllocationRoute {
+        entry: basis.routes_entry,
+        digest: basis.routes_digest,
         valuation: history.legs[index][0].account,
         unrealized: history.legs[index][1].account,
     };
-    for item in items {
-        let source = identities[&item.target];
-        history
-            .allocations
-            .entry((source, item.ordinal))
-            .or_default()
-            .push(Allocation {
-                sequence: history.envelopes[index].commit_seq,
-                date: basis.date,
+    items
+        .iter()
+        .map(|item| {
+            Ok(settlement::AllocationUpdate {
+                target: (identities[&item.target], item.ordinal),
                 valuation: item
                     .target_base
                     .checked_sub(item.historical)
                     .ok_or_else(|| invalid("allocated carrying amount exceeds i128"))?,
                 route,
-            });
-    }
-    Ok(())
-}
-
-/// Validate later exact undos even when the report contains no subsequent
-/// revaluation. An application undo restores its recorded historical relief;
-/// a source undo cannot strand an allocation or predate its carrying history.
-pub(super) fn verify_frontiers(history: &History<'_>) -> Result<(), ReportError> {
-    for (&target, allocations) in &history.allocations {
-        for &(sequence, state) in history.carrying.changes.get(&target).into_iter().flatten() {
-            let Some(prior) = allocation(history, target, sequence) else {
-                continue;
-            };
-            let total = state
-                .historical
-                .checked_add(prior.valuation)
-                .ok_or_else(|| invalid("restored allocated carrying total exceeds i128"))?;
-            if total < 0 || state.native == 0 && total != 0 {
-                return Err(invalid(
-                    "an exact application undo leaves invalid allocated carrying",
-                ));
-            }
-        }
-        if let Some(&undo) = history.carrying.reversals.get(&target.0) {
-            let sequence = history.envelopes[undo].commit_seq;
-            let before = sequence
-                .checked_sub(1)
-                .ok_or_else(|| invalid("source undo has sequence zero"))?;
-            if let Some(prior) = allocation(history, target, before) {
-                let state = remaining(history, target, before)?;
-                let date = history.envelopes[undo]
-                    .effective_day
-                    .ok_or_else(|| invalid("source undo has no effective date"))?;
-                if prior.valuation != 0 || date < prior.date.max(state.latest_effective) {
-                    return Err(invalid(
-                        "source undo strands an allocated valuation or predates its carrying history",
-                    ));
-                }
-            }
-        }
-        // The first allocation always occurs after its source. This is also
-        // a useful invariant for later carrying-law replay extensions.
-        if allocations
-            .first()
-            .is_some_and(|allocation| allocation.sequence <= history.envelopes[target.0].commit_seq)
-        {
-            return Err(invalid("allocation does not follow its source publication"));
-        }
-    }
-    Ok(())
+                date: basis.date,
+            })
+        })
+        .collect()
 }
