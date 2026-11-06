@@ -4,10 +4,12 @@
 //! `--dry-run`, `--plan-out`, `--draft` and `--evidence` behave exactly as
 //! they do for `fa post`.
 //!
-//! There is no posting rule (Canon) yet, so nothing is inferred: the caller
+//! The invoice and bill forms use explicit accounting inputs: the caller
 //! names the control account (receivable or payable) and each line's
 //! account, there is no implicit tax, and a line that asks for tax is
-//! refused. A line's total is its quantity times its unit price, computed
+//! refused. Accrue and Defer can instead invoke a selected Canon Adjusting
+//! rule whose immutable program owns all effects and reversal timing.
+//! A line's total is its quantity times its unit price, computed
 //! exactly in the price's own decimal places; the kernel then checks that
 //! amount against the unit's registered scale. The control leg names the
 //! party, so the customer or vendor carries the subledger.
@@ -791,11 +793,10 @@ pub(crate) fn defer_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     adjusting(ctx, args, "defer")
 }
 
-/// The two forms of an Adjusting posting: `--intent <file|->` (any legs;
-/// `class` may be omitted and anything but Adjusting is refused), or the
-/// two-leg flags `--date --debit --credit --amount`. Either way it posts
-/// through `fa post`'s own path, so `--dry-run`, `--plan-out`, `--draft`,
-/// `--scenario`, `--evidence` and `--reverse-on` behave exactly as there.
+/// An Adjusting operation can invoke a selected Canon rule with --rule,
+/// --event and declared --input values, retaining its own date, evidence and
+/// optional reversal. Explicit --intent and two-leg flag forms still use the
+/// native PostEntry path. Every form supports native dry-run plans.
 fn adjusting(ctx: &mut Ctx<'_>, args: &Args, verb: &str) -> Result<(), Fail> {
     let example = format!(
         "fa {verb} --date 2026-03-31 --debit 6100 --credit 2100 --amount \"1500.00 USD\" [--reverse-on 2026-04-01] [--description <text>] [--key K] --evidence <oid> [--dry-run] --json, or fa {verb} --intent <entry.json|-> [--reverse-on YYYY-MM-DD]"
@@ -804,6 +805,20 @@ fn adjusting(ctx: &mut Ctx<'_>, args: &Args, verb: &str) -> Result<(), Fail> {
         return Err(usage(
             format!("{verb} takes no positional argument"),
             example,
+        ));
+    }
+    if args.flag("--rule").is_some() {
+        let kind = match verb {
+            "accrue" => fa::rule::RuleIntentKind::Accrue,
+            "defer" => fa::rule::RuleIntentKind::Defer,
+            _ => return Err(Fail::Internal("unknown Adjusting business intent".into())),
+        };
+        return crate::rule::derive_business_intent(ctx, args, kind);
+    }
+    if !args.flag_all("--input").is_empty() {
+        return Err(usage(
+            "--input requires --rule and --event for a rule-backed Adjusting intent",
+            format!("fa {verb} --rule <ir_digest> --event <code|vid> --input <name>=<value>"),
         ));
     }
     const LEG_FLAGS: [&str; 6] = [

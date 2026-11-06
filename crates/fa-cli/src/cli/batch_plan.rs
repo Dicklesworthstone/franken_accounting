@@ -291,6 +291,9 @@ pub(crate) fn emit(
         .enumerate()
     {
         let proposal = &entry.proposal;
+        let reverse_on = fa_journal::schedule::auto_reverse(proposal)
+            .map_err(|error| Fail::Internal(format!("admitted batch reversal schedule: {error}")))?
+            .map(|(date, _)| date);
         let vid = entry_vid(entry)?;
         human.push_str(&format!(
             "\n{index}: {} {:032x}, effective {} in {period}:",
@@ -372,6 +375,12 @@ pub(crate) fn emit(
             }
             _ => Json::Null,
         };
+        if let Some(date) = reverse_on {
+            human.push_str(&format!(
+                "\n  Scheduled exact reversal on {}",
+                date.render()
+            ));
+        }
         let pending = proposal.pending.as_ref();
         members.push(obj(vec![
             ("index", Json::Int(index as i128)),
@@ -379,6 +388,10 @@ pub(crate) fn emit(
             ("class", s(proposal.class.name().unwrap_or("?"))),
             ("derivation", derivation),
             ("effective_date", s(proposal.effective_date.render())),
+            (
+                "reverse_on",
+                reverse_on.map_or(Json::Null, |date| s(date.render())),
+            ),
             ("period", s(period)),
             ("idempotency_key", s(hex(&proposal.idempotency_key))),
             ("intent_digest", s(hex(&intent.digest().map_err(encode)?))),

@@ -21,8 +21,8 @@
 > expiry discovery over 10,000 admitted unrelated entries. Scoped results
 > do not replace the full gate.
 
-> **Status (2026-11-02): implementation in progress.**
-> The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. `fa query` runs GQL over the book's graph in the FrankenAccounting profile (`AS KNOWN AT`, `FOR PERIOD` for one period or a range, `EFFECTIVE AT|BETWEEN`, `AT BRANCH`, the restatement views, and `CALL fa.trial_balance|explain_balance|statement|open_items|access_log` or any registered Lantern procedure as `CALL fa.<family>('<name>', {...})`), with the amount law checked before anything runs, and ordinary native queries support `--certify` with byte-for-byte replay. A bounded per-row `CALL fa.open_amount(l) YIELD open, age_days` now combines historical open-item residuals with native filtering and exact aggregation: it requires `EFFECTIVE AT`, preserves units and NULL non-items, and refuses two-stage certification. A token with any scope caveat is refused every query before the book opens; additional per-row procedures and broader pipeline shapes remain open (`fa-5c1`). Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and PriorPeriodAdjustment, Revision, Restatement and PolicyChangeRetrospective cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries). Year-end close and closing routes run as `fa close`. Reviewed CloseRuns now bind a bounded task DAG, execute unchanged draft promotions and an optional final period transition, and commit each effect with its completion receipt; `close status` survives restart and exact retries do not repeat effects. `close run` executes and resumes ready tasks, and `close dry-run --run` certifies their combined monetary effects in one scratch history. Automatic task generation, a global execution-certificate gate and statement packages remain open (`fa-4o0`). Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); every command a bound session runs (an issued token or a fixed MCP launch authority, Agent and writing sessions included) is recorded as an AccessEvent before it reads the book, listed by `fa access log` (the token-less embedded owner is not recorded yet, `fa-7dw`); ordinary CLI and daemon calls can bind issued Human operator tokens for controller, approval and witness workflows; calls without a token retain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open.
+> **Status (2026-11-05): implementation in progress.**
+> The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. `fa query` runs GQL over the book's graph in the FrankenAccounting profile (`AS KNOWN AT`, `FOR PERIOD` for one period or a range, `EFFECTIVE AT|BETWEEN`, `AT BRANCH`, the restatement views, and `CALL fa.trial_balance|explain_balance|statement|open_items|access_log` or any registered Lantern procedure as `CALL fa.<family>('<name>', {...})`), with the amount law checked before anything runs, and ordinary native queries support `--certify` with byte-for-byte replay. A bounded per-row `CALL fa.open_amount(l) YIELD open, age_days` now combines historical open-item residuals with native filtering and exact aggregation: it requires `EFFECTIVE AT`, preserves units and NULL non-items, and refuses two-stage certification. A token with any scope caveat is refused every query before the book opens; additional per-row procedures and broader pipeline shapes remain open (`fa-5c1`). Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and PriorPeriodAdjustment, Revision, Restatement and PolicyChangeRetrospective cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries). Year-end close and closing routes run as `fa close`. Reviewed CloseRuns now bind a bounded task DAG, execute unchanged draft promotions and an optional final period transition, and commit each effect with its completion receipt; `close status` survives restart and exact retries do not repeat effects. `close run` executes and resumes ready tasks, and `close dry-run --run` certifies their combined monetary effects in one scratch history. Automatic task generation, a global execution-certificate gate and statement packages remain open (`fa-4o0`). Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); every command a bound session runs (an issued token or a fixed MCP launch authority, Agent and writing sessions included) is recorded as an AccessEvent before it reads the book, listed by `fa access log` (the token-less embedded owner is not recorded yet, `fa-7dw`); ordinary CLI and daemon calls can bind issued Human operator tokens for controller, approval and witness workflows; calls without a token retain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open. Accrue and Defer now also invoke explicitly selected Canon rules in the Adjusting family, with portable review of the exact derived entry and optional reversal. This is the first rule-backed business-intent family; broader business-intent dispatch remains open (`fa-c34`).
 
 > **A note on tense.** The sections above `## TL;DR` document **what runs today** (and [`crates/fa-cli/tests/readme.rs`](./crates/fa-cli/tests/readme.rs) executes `### Try it today` and validates every present-tense `fa` command above `## TL;DR`). Starting at `## TL;DR`, the README describes the **1.0 target state** from [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md), with target-only capabilities annotated with the bead (`fa-…`) that delivers them.
 
@@ -273,6 +273,57 @@ single-unit holds. Generic Resolution intents accept
 `"proportion":{"law":"BalancedLargestRemainder","rate":"0.37"}`;
 choose exactly one of `proportion`, `amount` or explicit `legs`. The MCP
 `fa_adjust_post_reserve` tool accepts the same `proportion` and `law` strings.
+
+### Rule-backed accruals and deferrals
+
+`fa accrue` and `fa defer` accept an explicit `--rule <ir_digest>` and
+recorded `--event`, with each declared value supplied through `--input`.
+The selected activated version must declare `produces Adjusting`; its name
+or event kind cannot make an Original-producing rule eligible. The rule owns
+the accounts, exact amounts, dimensions, effective date and optional
+`reverses` date, and the recorded event supplies the evidence. Current native
+admission reproduces those effects and enforces the rule's output authority,
+period law and caller capability.
+
+These examples assume activated Adjusting policies with declared `charge`,
+`as_of` and `back` inputs, where `back` supplies the rule's reversal date,
+and recorded events of the policies' event kind. Inspect the selected version
+with `fa rule show <ir_digest>` before supplying its inputs.
+
+```bash
+fa accrue --rule <accrual_ir_digest> --event EV-RENT --input "charge=1500.00 USD" --input as_of=2026-03-31 --input back=2026-04-01 --dry-run --plan-out accrual.plan --book ./books/acme --json
+fa commit --plan accrual.plan --grant read --book ./books/acme --json
+fa defer --rule <deferral_ir_digest> --event EV-DEFER --input "charge=1200.00 USD" --input as_of=2026-03-31 --input back=2026-04-01 --dry-run --plan-out deferral.plan --book ./books/acme --json
+fa commit --plan deferral.plan --grant read --book ./books/acme --json
+```
+
+A dry run publishes nothing and returns the existing portable `RuleDerived`
+plan. The preview shows the rule version, recorded event, input digest and
+scheduled `reverse_on` date, alongside the exact legs and native effects.
+The reversal date is null when the policy schedules none. Human previews name
+the same coordinates and date. Commit the reviewed bytes through the ordinary
+`fa commit --plan` path; the first commit requires the reviewed snapshot and
+an exact saved-plan retry returns its recorded outcome.
+
+The default request key is shared with explicit `fa rule derive` for the same
+rule version, event and inputs. Switching between these frontends does not
+create another posting. Keep any custom `--key` unchanged when retrying.
+
+Rule-backed mode cannot combine `--rule` with `--intent`, `--date`,
+`--debit`, `--credit`, `--amount`, `--reverse-on`, `--evidence`,
+`--description`, `--period`, `--draft` or `--scenario`. Supply the policy's
+declared inputs instead. Without `--rule`, the existing manual two-leg and
+entry-intent forms remain available.
+
+Both read and post authority are required for rule-backed mode; manual
+accruals and deferrals keep their post-only admission. The MCP
+`fa_adjust_accrue` and `fa_adjust_defer` tools expose the same rule, event and
+input arguments and return complete inline plan bytes on `dry_run`; they do
+not accept host `plan-out` paths. A bound Human can review those bytes and use
+`fa_post_commit_plan` with the same authority. Agent-profile plans remain
+rehearsals, and a Human must independently prepare and review a plan before
+trunk publication. Accrue and Defer are the first rule-backed Adjusting family;
+broader business-intent dispatch remains open on `fa-c34`.
 
 ### Timed holds and scheduled reversals
 
@@ -2051,7 +2102,7 @@ fa dimension close cost_center CC10 --on 2026-07-01 --book acme.fabook --json
 fa dimension list cost_center --book acme.fabook --json
 fa tb --period FY2026-P03 --dimension cost_center=CC --book acme.fabook --json
 
-# A Canon posting rule (plan §10.3): a small, total, typed language from an REA event and declared inputs to legs. fa rule check compiles it against the book's units, resolves every rounding law and dimension, and refuses it unless its debits provably equal its credits in every unit; it reports the content address of its IR. fa rule propose journals it as a RuleVersion addressed by that digest under rule_change (the kernel compiles the source itself; the same IR again writes nothing), fa rule list|show read the versions, fa rule eval shows the legs a file or a journaled version derives from a recorded event, fa rule activate binds the rule's name to a version from a date under dual control (two independent Human approvers), and fa rule derive posts the entry the version in force derives from an event, which the kernel re-derives inside the commit and refuses unless it reproduces exactly (FA-INV-05 rule-reproduction); without --rule, the complete active matching set derives in rule-name order and publishes atomically. A rule names the class it produces: Original by default, or `produces Adjusting` for accruals, deferrals and depreciation, which a soft-closed period admits. fa rule backtest reports every recorded event whose entry a candidate version would change against the version in force (or --compare), and fa rule test runs a rule over its golden corpus of TOML cases, exiting 8 unless every case holds (available today; explicit derivations have portable single-entry plans, automatic event derivations have portable complete-batch plans, and broader rule-family dispatch from business intents remains in fa-c34).
+# A Canon posting rule (plan §10.3): a small, total, typed language from an REA event and declared inputs to legs. fa rule check compiles it against the book's units, resolves every rounding law and dimension, and refuses it unless its debits provably equal its credits in every unit; it reports the content address of its IR. fa rule propose journals it as a RuleVersion addressed by that digest under rule_change (the kernel compiles the source itself; the same IR again writes nothing), fa rule list|show read the versions, fa rule eval shows the legs a file or a journaled version derives from a recorded event, fa rule activate binds the rule's name to a version from a date under dual control (two independent Human approvers), and fa rule derive posts the entry the version in force derives from an event, which the kernel re-derives inside the commit and refuses unless it reproduces exactly (FA-INV-05 rule-reproduction); without --rule, the complete active matching set derives in rule-name order and publishes atomically. A rule names the class it produces: Original by default, or `produces Adjusting` for accruals, deferrals and depreciation, which a soft-closed period admits. fa rule backtest reports every recorded event whose entry a candidate version would change against the version in force (or --compare), and fa rule test runs a rule over its golden corpus of TOML cases, exiting 8 unless every case holds (available today; explicit derivations have portable single-entry plans, automatic event derivations have portable complete-batch plans, Accrue and Defer dispatch to the Adjusting rule family, and broader business-intent dispatch remains in fa-c34).
 #   rule sale_with_tax v1 for event Sale {
 #     inputs { as_of: date }
 #     authority {
@@ -2097,7 +2148,13 @@ capability checks still apply.
 A single-rule `derive --rule <ir_digest> --dry-run` runs the same native admission
 as posting and aborts the staged transaction. Its portable `RuleDerived` plan
 retains the sealed proposal, rule version, event, inputs, evidence, admitted
-effects, snapshot and caller capability.
+effects, snapshot and caller capability. Its `derivation` object previews the rule's
+`ir_digest`, recorded `event` vid and `inputs_digest`; ordinary PostEntry plans
+report `derivation: null`. Single-entry and batch-member previews also expose
+`reverse_on`, the exact scheduled civil date or null, without changing the
+native plan formats or their scopes. Human previews show the same provenance
+and reversal schedule. The rule-backed `accrue` and `defer` modes use this same
+single-entry plan and retry identity.
 
 Without `--rule`, `derive --event` selects every activated rule whose version in
 force on the event's date matches its kind, in rule-name order. The complete set

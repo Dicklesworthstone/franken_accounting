@@ -30167,3 +30167,498 @@ fn automatic_rule_derivation_is_atomic_reviewable_and_retryable_from_the_cli() -
     }
     Ok(())
 }
+
+/// Accrue and Defer may derive their complete Adjusting proposal from an
+/// activated Canon rule. Portable review and immediate posting share the
+/// native RuleDerived path, retained inputs, reversal schedule and retry key.
+#[test]
+fn accrue_and_defer_derive_reviewed_adjustments_from_recorded_events() -> std::io::Result<()> {
+    let dir = tmp("canon-adjusting-intents")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "book",
+        "create",
+        "--name",
+        "Rule Adjustments",
+        "--time-zone",
+        "UTC",
+        "--json",
+    ]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"2100","name":"Accrued liabilities","type":"Liability","unit":"USD"},{"code":"2400","name":"Unearned revenue","type":"Liability","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6100","name":"Utilities","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let open = || {
+        let keys = fa::BookKeys::load(&book.join("book.keys")).unwrap();
+        fa::Book::open_dir(&book, keys, fa::Entropy::deterministic(0xacde)).unwrap()
+    };
+    let head = || open().head().unwrap();
+    for (code, kind, amount) in [
+        ("EV-ACCRUE", "accrual", "charge:40.00 USD"),
+        ("EV-DEFER", "sale", "charge:60.00 USD"),
+        ("EV-DIRECT", "accrual", "charge:30.00 USD"),
+        ("EV-ACCRUE-OVER", "accrual", "charge:100.01 USD"),
+        ("EV-DEFER-OVER", "sale", "charge:100.01 USD"),
+    ] {
+        ok(&[
+            "event",
+            "record",
+            "--code",
+            code,
+            "--kind",
+            kind,
+            "--occurred-on",
+            "2026-03-31",
+            "--evidence",
+            &evidence,
+            "--resource",
+            amount,
+            "--json",
+        ]);
+    }
+    let activate = |name: &str, event: &str, adjusting: bool, debit: &str, credit: &str| {
+        let class = if adjusting { "produces Adjusting" } else { "" };
+        let reversal = if adjusting { "reverses back" } else { "" };
+        let source = write(
+            &dir,
+            &format!("{name}.rule"),
+            &format!(
+                r#"rule {name} v1 for event {event} {class} {{
+  inputs {{ back: date }}
+  authority {{
+    debit "{debit}" upto "100.00 USD"
+    credit "{credit}" upto "100.00 USD"
+  }}
+  let charge = event.resource("charge", "USD")
+  debit "{debit}" charge
+  credit "{credit}" charge
+  {reversal}
+}}"#,
+            ),
+        );
+        let digest = text(
+            &doc(&ok(&["rule", "propose", &source, "--json"])),
+            "ir_digest",
+        )
+        .to_string();
+        let planned = doc(&ok(&[
+            "rule",
+            "activate",
+            &digest,
+            "--from",
+            "2026-03-01",
+            "--dry-run",
+            "--json",
+        ]));
+        let file = write(&dir, &format!("{name}.activation"), text(&planned, "bytes"));
+        let proposal = text(&planned, "proposal_digest");
+        let approve = |who: &str| {
+            text(
+                &doc(&ok(&[
+                    "approve",
+                    "--proposal",
+                    proposal,
+                    "--as",
+                    who,
+                    "--json",
+                ])),
+                "approval_vid",
+            )
+            .to_string()
+        };
+        let (a, b) = (approve("controller-a"), approve("controller-b"));
+        ok(&[
+            "rule",
+            "activate",
+            "--plan",
+            &file,
+            "--approval",
+            &a,
+            "--approval",
+            &b,
+            "--json",
+        ]);
+        digest
+    };
+    let accrue = activate("utilities_accrual", "Accrual", true, "6100", "2100");
+    let defer = activate("revenue_deferral", "Sale", true, "4000", "2400");
+    let original = activate("original_charge", "Accrual", false, "6100", "2100");
+    ok(&["period", "soft-close", "FY2026-P03", "--json"]);
+    let verbs = [
+        (
+            "accrue",
+            accrue.as_str(),
+            "EV-ACCRUE",
+            "EV-ACCRUE-OVER",
+            "6100",
+            "2100",
+            "40.00 USD",
+        ),
+        (
+            "defer",
+            defer.as_str(),
+            "EV-DEFER",
+            "EV-DEFER-OVER",
+            "4000",
+            "2400",
+            "60.00 USD",
+        ),
+    ];
+    let before = head();
+    let refused_path = dir.join("refused.plan");
+    for (verb, digest, event, over, _, _, _) in verbs {
+        // The family is checked before period admission: Original is not
+        // silently changed into Adjusting, even in a SoftClosed period.
+        let (code, out, err) = run(&[
+            verb,
+            "--rule",
+            &original,
+            "--event",
+            "EV-ACCRUE",
+            "--input",
+            "back=2026-04-01",
+            "--dry-run",
+            "--json",
+        ]);
+        assert_eq!(
+            (code, field(&out, "refusal_id")),
+            (3, Some("FA-REF-196")),
+            "{out}\n{err}"
+        );
+        assert!(
+            out.contains("Adjusting") && out.contains("Original"),
+            "{out}"
+        );
+        assert_eq!(head(), before);
+        let (code, out, err) = run(&[
+            verb,
+            "--rule",
+            digest,
+            "--event",
+            event,
+            "--key",
+            "missing-rule-input",
+            "--dry-run",
+            "--plan-out",
+            refused_path.to_str().unwrap(),
+            "--yes",
+            "--json",
+        ]);
+        assert_eq!(
+            (code, field(&out, "refusal_id")),
+            (3, Some("FA-REF-196")),
+            "{out}\n{err}"
+        );
+        assert!(out.contains("back"), "{out}");
+        assert_eq!(head(), before);
+        assert!(!refused_path.exists());
+        let (code, out, err) = run(&[
+            verb,
+            "--rule",
+            digest,
+            "--event",
+            over,
+            "--input",
+            "back=2026-04-01",
+            "--dry-run",
+            "--plan-out",
+            refused_path.to_str().unwrap(),
+            "--yes",
+            "--json",
+        ]);
+        assert_eq!(
+            (code, field(&out, "refusal_id")),
+            (3, Some("FA-REF-196")),
+            "{out}\n{err}"
+        );
+        assert!(out.contains("authority"), "{out}");
+        assert_eq!(head(), before);
+        assert!(!refused_path.exists());
+    }
+    // These fields belong to the rule and event. A nonexistent intent or
+    // branch also proves rejection happens before trying that input path.
+    for (index, (flag, value)) in [
+        ("--intent", "must-not-read.json"),
+        ("--date", "2026-03-30"),
+        ("--debit", "6100"),
+        ("--credit", "2100"),
+        ("--amount", "1.00 USD"),
+        ("--reverse-on", "2026-04-02"),
+        ("--evidence", evidence.as_str()),
+        ("--description", "manual override"),
+        ("--draft", "must-not-open"),
+        ("--scenario", "must-not-open"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (verb, digest, event, _, _, _, _) = verbs[index % verbs.len()];
+        let (code, out, err) = run(&[
+            verb,
+            "--rule",
+            digest,
+            "--event",
+            event,
+            "--input",
+            "back=2026-04-01",
+            flag,
+            value,
+            "--dry-run",
+            "--yes",
+            "--json",
+        ]);
+        assert_eq!(code, 2, "{verb} {flag}\n{out}\n{err}");
+        assert_eq!(head(), before, "a manual override cannot publish");
+    }
+    for verb in ["accrue", "defer"] {
+        let (code, out, err) = run(&[
+            verb,
+            "--date",
+            "2026-03-31",
+            "--debit",
+            "6100",
+            "--credit",
+            "2100",
+            "--amount",
+            "1.00 USD",
+            "--evidence",
+            &evidence,
+            "--input",
+            "back=2026-04-01",
+            "--json",
+        ]);
+        assert_eq!(code, 2, "{out}\n{err}");
+        assert_eq!(
+            head(),
+            before,
+            "rule inputs cannot be ignored by the manual path"
+        );
+    }
+
+    let april = fa_time::DateDay::parse("2026-04-01").unwrap();
+    for (verb, digest, event, _, debit, credit, amount) in verbs {
+        let before_plan = head();
+        // No confirmation flag is needed to prepare a read-only review.
+        let inline = ok(&[
+            verb,
+            "--rule",
+            digest,
+            "--event",
+            event,
+            "--input",
+            "back=2026-04-01",
+            "--dry-run",
+            "--json",
+        ]);
+        assert_eq!(text(&robot_line(&inline), "event"), "plan");
+        let inline_data = doc(&inline);
+        assert_eq!(text(&inline_data, "intent_kind"), "RuleDerived");
+        assert_eq!(inline_data.get("file"), Some(&Json::Null));
+        assert!(!text(&inline_data, "bytes").is_empty());
+        assert_eq!(head(), before_plan);
+        let path = dir.join(format!("{verb}.plan"));
+        let path_text = path.to_str().unwrap();
+        let planned = ok(&[
+            verb,
+            "--rule",
+            digest,
+            "--event",
+            event,
+            "--input",
+            "back=2026-04-01",
+            "--dry-run",
+            "--plan-out",
+            path_text,
+            "--yes",
+            "--json",
+        ]);
+        assert_eq!(text(&robot_line(&planned), "event"), "plan");
+        let data = doc(&planned);
+        assert_eq!(text(&data, "intent_kind"), "RuleDerived");
+        assert_eq!(text(&data, "class"), "Adjusting");
+        assert_eq!(text(&data, "reverse_on"), "2026-04-01");
+        let preview_origin = data
+            .get("derivation")
+            .expect("review names its rule origin");
+        assert_eq!(text(preview_origin, "ir_digest"), digest);
+        assert_eq!(int(&data, "snapshot_seq"), Some(i128::from(before_plan.0)));
+        let bytes = std::fs::read(&path)?;
+        let plan = fa::PostPlan::decode(&bytes).unwrap();
+        assert_eq!(plan.canonical_bytes().unwrap(), bytes);
+        let proposal = plan.proposal();
+        assert_eq!(proposal.class, fa_model::EntryClass::ADJUSTING);
+        let event_vid = fa_model::event_vid(proposal.book_id, event);
+        assert_eq!(
+            text(preview_origin, "event"),
+            format!("{:032x}", event_vid.0)
+        );
+        let retained_event = open().read_event(event_vid, None).unwrap().unwrap();
+        assert_eq!(proposal.evidence, retained_event.spec.evidence);
+        assert_eq!(proposal.effective_date, retained_event.spec.occurred_on);
+        let inputs = proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::RULE_INPUTS_EXTENSION)
+            .expect("the rule's exact inputs remain in the proposal");
+        match &proposal.origin {
+            fa_model::EntryOrigin::Rule {
+                rule_version_oid,
+                event_ref,
+                inputs_digest,
+            } => {
+                assert_eq!(hex_of(&rule_version_oid.0), digest);
+                assert_eq!(*event_ref, event_vid);
+                assert_eq!(text(preview_origin, "inputs_digest"), hex_of(inputs_digest));
+                assert_eq!(
+                    *inputs_digest,
+                    fa_model::domain_digest(fa::rule::CANON_INPUTS_DOMAIN, &[inputs.1.as_slice()]),
+                );
+            }
+            other => panic!("typed adjustment lost Rule origin: {other:?}"),
+        }
+        assert_eq!(
+            fa_journal::schedule::auto_reverse(proposal).unwrap(),
+            Some((april, fa_journal::schedule::RULE_EXACT_NEGATION)),
+        );
+        let legs = arr(&data, "legs");
+        assert_eq!(legs.len(), 2);
+        assert_eq!(text(&legs[0], "account"), debit);
+        assert_eq!(text(&legs[0], "side"), "debit");
+        assert_eq!(text(&legs[0], "amount"), amount);
+        assert_eq!(text(&legs[1], "account"), credit);
+        assert_eq!(text(&legs[1], "side"), "credit");
+        assert_eq!(text(&legs[1], "amount"), amount);
+        assert_eq!(
+            head(),
+            before_plan,
+            "--yes cannot turn rehearsal into publication"
+        );
+
+        let committed = doc(&ok(&[
+            "commit", "--plan", path_text, "--grant", "read", "--json",
+        ]));
+        assert_eq!(committed.get("already_recorded"), Some(&Json::Bool(false)));
+        assert_eq!(text(&committed, "plan_digest"), text(&data, "plan_digest"));
+        let vid = text(&committed, "vid");
+        let native_vid = fgdb_types::VId(u128::from_str_radix(vid, 16).unwrap());
+        let (entry, recorded_at) = open().read_entry(native_vid).unwrap().unwrap();
+        assert_eq!(entry.entry_digest, plan.prepared_entry().entry_digest);
+        assert_eq!(entry.proposal.origin, proposal.origin);
+        assert_eq!(entry.proposal.extensions, proposal.extensions);
+        assert_eq!(entry.proposal.evidence, proposal.evidence);
+        assert_eq!(
+            fa_journal::schedule::auto_reverse(&entry.proposal).unwrap(),
+            Some((april, fa_journal::schedule::RULE_EXACT_NEGATION)),
+        );
+        assert_eq!(
+            int(&committed, "recorded_at"),
+            Some(i128::from(recorded_at.0))
+        );
+        let after = head();
+        assert!(after > before_plan);
+        let again = doc(&ok(&[
+            "commit", "--plan", path_text, "--grant", "read", "--json",
+        ]));
+        assert_eq!(again.get("already_recorded"), Some(&Json::Bool(true)));
+        assert_eq!(text(&again, "vid"), vid);
+        assert_eq!(int(&again, "recorded_at"), Some(i128::from(recorded_at.0)));
+        assert_eq!(head(), after);
+
+        // A typed spelling does not create a second logical derivation.
+        for args in [
+            vec![
+                verb,
+                "--rule",
+                digest,
+                "--event",
+                event,
+                "--input",
+                "back=2026-04-01",
+                "--json",
+            ],
+            vec![
+                "rule",
+                "derive",
+                "--rule",
+                digest,
+                "--event",
+                event,
+                "--input",
+                "back=2026-04-01",
+                "--json",
+            ],
+        ] {
+            let retry = ok(&args);
+            assert_eq!(text(&robot_line(&retry), "event"), "recorded");
+            assert_eq!(text(&doc(&retry), "vid"), vid);
+            assert_eq!(head(), after);
+        }
+    }
+
+    // The immediate typed path also posts a fresh event, with an explicit
+    // caller key shared by its typed and generic retry spellings.
+    let before_direct = head();
+    let direct_args = [
+        "accrue",
+        "--rule",
+        &accrue,
+        "--event",
+        "EV-DIRECT",
+        "--input",
+        "back=2026-04-01",
+        "--key",
+        "custom-accrual",
+        "--json",
+    ];
+    let direct = ok(&direct_args);
+    assert_eq!(text(&robot_line(&direct), "event"), "posted");
+    let direct_data = doc(&direct);
+    let vid = text(&direct_data, "vid");
+    let native_vid = fgdb_types::VId(u128::from_str_radix(vid, 16).unwrap());
+    let (entry, _) = open().read_entry(native_vid).unwrap().unwrap();
+    assert_eq!(entry.proposal.class, fa_model::EntryClass::ADJUSTING);
+    assert!(matches!(
+        &entry.proposal.origin,
+        fa_model::EntryOrigin::Rule { .. }
+    ));
+    assert_eq!(entry.proposal.idempotency_key.as_slice(), b"custom-accrual");
+    assert_eq!(
+        fa_journal::schedule::auto_reverse(&entry.proposal).unwrap(),
+        Some((april, fa_journal::schedule::RULE_EXACT_NEGATION)),
+    );
+    let after_direct = head();
+    assert!(after_direct > before_direct);
+    for args in [
+        direct_args.to_vec(),
+        vec![
+            "rule",
+            "derive",
+            "--rule",
+            &accrue,
+            "--event",
+            "EV-DIRECT",
+            "--input",
+            "back=2026-04-01",
+            "--key",
+            "custom-accrual",
+            "--json",
+        ],
+    ] {
+        let retry = ok(&args);
+        assert_eq!(text(&robot_line(&retry), "event"), "recorded");
+        assert_eq!(text(&doc(&retry), "vid"), vid);
+        assert_eq!(head(), after_direct);
+    }
+    Ok(())
+}
