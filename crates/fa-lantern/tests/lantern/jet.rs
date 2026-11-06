@@ -100,6 +100,92 @@ fn flagged(run: &ProcedureRun) -> Vec<VId> {
 }
 
 #[test]
+fn period_end_timing_widens_civil_day_distances_before_comparing_the_window() {
+    let mut h = harness();
+    let posted = h.post(&Spec::simple(day(2026, 3, 15), "6000", "1000", 100));
+    let mut source = h.snapshot();
+    source.entries.retain(|entry| entry.vid == posted);
+    // Exercise the public procedure snapshot boundary, starting with a real
+    // posting. These altered snapshots are arithmetic inputs, not certificates
+    // of posting admission at the extreme dates.
+    for (start, end, effective, window, expected) in [
+        (i32::MIN, i32::MAX, i32::MIN, 3, None),
+        (i32::MIN, i32::MIN + 1, i32::MIN, 3, Some(0)),
+        (i32::MAX - 4, i32::MAX, i32::MAX - 1, 3, Some(0)),
+        (i32::MAX - 4, i32::MAX, i32::MAX - 3, 3, Some(2)),
+        (i32::MAX - 4, i32::MAX, i32::MAX - 4, 3, None),
+        (i32::MIN, i32::MAX, -1, i32::MAX, None),
+        (i32::MIN, i32::MAX, 0, i32::MAX, Some(2_147_483_646)),
+    ] {
+        let calendar = FiscalCalendar::custom(
+            "boundary",
+            vec![fa_time::CustomYear {
+                fiscal_year: 2026,
+                bounds: vec![DateDay(start), DateDay(end)],
+            }],
+            0,
+        )
+        .unwrap();
+        assert!(calendar.periods_for_year(2026).unwrap()[0].contains(DateDay(effective)));
+
+        let mut snapshot = source.clone();
+        snapshot.entries[0].entry.proposal.effective_date = DateDay(effective);
+        let code = snapshot.entries[0].period.clone();
+        let period = snapshot.periods.get_mut(&code).unwrap();
+        period.start = DateDay(start);
+        period.end = DateDay(end);
+        let procedure = PeriodEndTiming::with(
+            Params::defaults(PeriodEndTiming::ID)
+                .unwrap()
+                .set("window_days", i128::from(window))
+                .unwrap(),
+        );
+        let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+        assert_eq!(result.work.entries, 1);
+        assert_eq!(result.work.legs, 0);
+        assert_eq!(
+            flagged(&result),
+            if expected.is_some() {
+                vec![posted]
+            } else {
+                vec![]
+            }
+        );
+        if let Some(days) = expected {
+            assert_eq!(
+                result.findings[0].statistic,
+                Statistic::count("days_to_period_end", days, 1)
+            );
+            assert_eq!(
+                result.findings[0].cites,
+                vec![Cite::Entry(posted), Cite::Period(code.clone())]
+            );
+        }
+
+        let rows = [naive::Row {
+            index: 0,
+            date: DateDay(effective),
+            document_date: None,
+            period: code,
+            period_start: Some(DateDay(start)),
+            period_end: DateDay(end),
+            legs: Vec::new(),
+            preparer: "P7".into(),
+            approvers: Vec::new(),
+            description_chars: None,
+            external_ids: Vec::new(),
+            recorded_after_close: false,
+            reverses: None,
+            replaces: None,
+        }];
+        assert_eq!(
+            naive::period_end_timing(&rows, window),
+            if expected.is_some() { vec![0] } else { vec![] }
+        );
+    }
+}
+
+#[test]
 fn self_sourced_evidence_flags_agent_upload_only() {
     let mut h = harness();
     let person = h.evidence[0];

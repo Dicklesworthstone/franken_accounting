@@ -109,8 +109,8 @@ pub fn period_end_timing(rows: &[Row], window: i32) -> Vec<usize> {
     live_rows(rows)
         .into_iter()
         .filter(|r| {
-            let d = r.period_end.0 - 1 - r.date.0;
-            d >= 0 && d < window
+            let d = i64::from(r.period_end.0) - 1 - i64::from(r.date.0);
+            d >= 0 && d < i64::from(window)
         })
         .map(|r| r.index)
         .collect()

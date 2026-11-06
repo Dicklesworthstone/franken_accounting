@@ -174,8 +174,10 @@ impl Procedure for PeriodEndTiming {
         _book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let window = i32::try_from(self.params.get_u32("window_days")?)
-            .map_err(|_| LanternError::Overflow("window_days"))?;
+        let window = i64::from(
+            i32::try_from(self.params.get_u32("window_days")?)
+                .map_err(|_| LanternError::Overflow("window_days"))?,
+        );
         let mut population = 0u64;
         let mut hits = Vec::new();
         for e in snapshot.live_postings()? {
@@ -186,7 +188,8 @@ impl Procedure for PeriodEndTiming {
             population += 1;
             // A period's `end` is exclusive (fa-time PeriodDef), so its last
             // day is `end - 1`: an entry on the last day is 0 days from it.
-            let days_to_end = period.end.0 - 1 - e.entry.proposal.effective_date.0;
+            let days_to_end =
+                i64::from(period.end.0) - 1 - i64::from(e.entry.proposal.effective_date.0);
             if (0..window).contains(&days_to_end) {
                 hits.push((e.vid, e.period.clone(), days_to_end));
             }
