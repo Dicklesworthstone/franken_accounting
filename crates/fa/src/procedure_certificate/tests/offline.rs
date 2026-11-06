@@ -507,10 +507,8 @@ fn repaired_effective_cutoff_outputs_cannot_hide_reversals_future_entries_or_con
                                     .fixed(&entry.entry.entry_digest)
                                     .u64(entry.recorded_at.0);
                             });
-                            snapshot.inputs_digest = raw_digest(
-                                b"fa:lantern-inputs:v1",
-                                &inputs.finish().unwrap(),
-                            );
+                            snapshot.inputs_digest =
+                                raw_digest(b"fa:lantern-inputs:v1", &inputs.finish().unwrap());
                             let method = catalog::build(
                                 id,
                                 Params::defaults(id)?,
