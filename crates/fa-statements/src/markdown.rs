@@ -600,7 +600,10 @@ pub fn render_statement_ir(
     units: &[UnitFormatSpec],
 ) -> Result<StatementMarkdownIr, StatementError> {
     let def_digest = definition.digest()?;
-    if statement.definition_digest != def_digest || statement.definition_name != definition.name() {
+    if statement.definition_digest != def_digest
+        || statement.definition_name != definition.name()
+        || statement.definition_version != definition.version()
+    {
         return Err(StatementError::Input(
             "statement does not match supplied StatementDefinition".into(),
         ));
@@ -717,6 +720,10 @@ pub fn render_restatement_diff_ir(
     let def_digest = definition.digest()?;
     if originally_reported.definition_digest != def_digest
         || currently_stated.definition_digest != def_digest
+        || originally_reported.definition_name != definition.name()
+        || currently_stated.definition_name != definition.name()
+        || originally_reported.definition_version != definition.version()
+        || currently_stated.definition_version != definition.version()
     {
         return Err(StatementError::Input(
             "restatement diff requires both statements to share the same StatementDefinition"
@@ -1502,6 +1509,74 @@ mod tests {
         wrong.columns[0].periods = vec!["FY2026-P02".into()];
         assert!(exact.with_presentation(&[wrong]).is_err());
         assert_eq!(statement.canonical_bytes().unwrap(), source_bytes);
+    }
+
+    #[test]
+    fn statement_ir_refuses_contradictory_definition_identity() {
+        let (definition, statement) = sample_statement(10, 19_060, 3_540);
+        let units = [UnitFormatSpec {
+            unit_id: 1,
+            code: "USD".into(),
+            scale: 2,
+        }];
+        let valid = render_statement_ir(&statement, &definition, &units).unwrap();
+        assert_eq!(valid.definition_name, definition.name());
+        assert_eq!(valid.definition_version, definition.version());
+        assert_eq!(valid.definition_digest.0, definition.digest().unwrap());
+
+        for field in ["name", "version", "digest"] {
+            let mut changed = statement.clone();
+            match field {
+                "name" => changed.definition_name = "unrelated-statement".into(),
+                "version" => changed.definition_version = 0,
+                "digest" => changed.definition_digest = [0; 32],
+                _ => unreachable!(),
+            }
+            let error = render_statement_ir(&changed, &definition, &units).unwrap_err();
+            assert!(
+                error.to_string().contains("StatementDefinition"),
+                "{field}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn restatement_ir_refuses_contradictory_definition_identity_on_either_side() {
+        let (definition, original) = sample_statement(10, 19_060, 3_540);
+        let (_, restated) = sample_statement(25, 19_060, 4_000);
+        let units = [UnitFormatSpec {
+            unit_id: 1,
+            code: "USD".into(),
+            scale: 2,
+        }];
+        let valid = render_restatement_diff_ir(&original, &restated, &definition, &units).unwrap();
+        assert_eq!(valid.definition_name, definition.name());
+        assert_eq!(valid.definition_version, definition.version());
+        assert_eq!(valid.definition_digest.0, definition.digest().unwrap());
+
+        for change_original in [false, true] {
+            for field in ["name", "version", "digest"] {
+                let mut before = original.clone();
+                let mut after = restated.clone();
+                let changed = if change_original {
+                    &mut before
+                } else {
+                    &mut after
+                };
+                match field {
+                    "name" => changed.definition_name = "unrelated-statement".into(),
+                    "version" => changed.definition_version = 0,
+                    "digest" => changed.definition_digest = [0; 32],
+                    _ => unreachable!(),
+                }
+                let error =
+                    render_restatement_diff_ir(&before, &after, &definition, &units).unwrap_err();
+                assert!(
+                    error.to_string().contains("StatementDefinition"),
+                    "{field}, original={change_original}: {error}"
+                );
+            }
+        }
     }
 
     #[test]

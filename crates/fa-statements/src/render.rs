@@ -382,6 +382,82 @@ pub fn render_semantic_diff_html(
     Ok(html.into_bytes())
 }
 
+fn svg_layout_error() -> StatementError {
+    StatementError::Input("SVG table geometry has an invalid shape or integer range".into())
+}
+
+/// Declare a complete text run's extent, rather than relying on whichever
+/// generic monospace font the viewer happens to select. SVG's textLength and
+/// spacingAndGlyphs make this same extent govern the rendered endpoints.
+fn svg_text_length(font: &Font, text: &str, size: i64) -> Result<i64, StatementError> {
+    if text.chars().any(|ch| {
+        !(matches!(ch, '\t' | '\n' | '\r') || ch >= ' ') || matches!(ch, '\u{fffe}' | '\u{ffff}')
+    }) {
+        return Err(StatementError::Input(
+            "SVG text contains a character forbidden by XML 1.0; remove control characters from labels".into(),
+        ));
+    }
+    let advance = text.chars().try_fold(0_i128, |advance, ch| {
+        advance.checked_add(i128::from(font.advance_width(font.glyph_index(ch))))
+    });
+    let em = i128::from(font.units_per_em);
+    let length = advance
+        .and_then(|advance| advance.checked_mul(i128::from(size)))
+        .and_then(|length| length.checked_add(em.checked_sub(1)?))
+        .and_then(|length| length.checked_div(em))
+        .ok_or_else(svg_layout_error)?;
+    i64::try_from(length).map_err(|_| svg_layout_error())
+}
+
+fn svg_table_widths(table: &MarkdownTable, font: &Font) -> Result<Vec<i64>, StatementError> {
+    let count = table.headers.len();
+    if count == 0
+        || table.alignments.len() != count
+        || table.rows.iter().any(|row| row.cells.len() != count)
+    {
+        return Err(svg_layout_error());
+    }
+    let mut widths = vec![12_i64; count];
+    for cells in std::iter::once(table.headers.as_slice())
+        .chain(table.rows.iter().map(|row| row.cells.as_slice()))
+    {
+        for (width, text) in widths.iter_mut().zip(cells) {
+            *width = (*width).max(
+                svg_text_length(font, text, 12)?
+                    .checked_add(12)
+                    .ok_or_else(svg_layout_error)?,
+            );
+        }
+    }
+    Ok(widths)
+}
+
+fn svg_columns(widths: &[i64], page_width: i64) -> Result<Vec<(i64, i64)>, StatementError> {
+    let needed = widths
+        .iter()
+        .try_fold(48_i64, |sum, width| sum.checked_add(*width))
+        .ok_or_else(svg_layout_error)?;
+    let slack = page_width
+        .checked_sub(needed)
+        .filter(|slack| *slack >= 0)
+        .ok_or_else(svg_layout_error)?;
+    let count = i64::try_from(widths.len()).map_err(|_| svg_layout_error())?;
+    let extra = slack.checked_div(count).ok_or_else(svg_layout_error)?;
+    let remainder = slack.checked_rem(count).ok_or_else(svg_layout_error)?;
+    let mut left = 24_i64;
+    let mut columns = Vec::with_capacity(widths.len());
+    for (index, width) in widths.iter().enumerate() {
+        let index = i64::try_from(index).map_err(|_| svg_layout_error())?;
+        let width = width
+            .checked_add(extra)
+            .and_then(|width| width.checked_add(i64::from(index < remainder)))
+            .ok_or_else(svg_layout_error)?;
+        columns.push((left, width));
+        left = left.checked_add(width).ok_or_else(svg_layout_error)?;
+    }
+    Ok(columns)
+}
+
 /// Render a `StatementMarkdownIr` into a deterministic, zero-float SVG 1.1 vector document (`fa-cet`).
 pub fn render_svg(
     ir: &StatementMarkdownIr,
@@ -390,9 +466,48 @@ pub fn render_svg(
     let ir_digest = hex_bytes(&ir.digest()?.0);
     let created_iso = format_utc_epoch_iso8601(creation_epoch_secs);
 
-    let total_rows: usize = ir.tables.iter().map(|t| t.rows.len() + 3).sum();
-    let width: i64 = 960;
-    let height: i64 = 120 + (total_rows as i64) * 28;
+    let font = Font::parse_static(fmd_font::bundled::CM_TYPEWRITER)
+        .map_err(|error| StatementError::Input(format!("SVG font: {error:?}")))?;
+    let title = format!(
+        "Statement: {} (v{}, known_at={})",
+        ir.definition_name, ir.definition_version, ir.known_at
+    );
+    let layouts: Vec<_> = ir
+        .tables
+        .iter()
+        .map(|table| svg_table_widths(table, &font))
+        .collect::<Result<_, _>>()?;
+    let mut width = 960_i64.max(
+        svg_text_length(&font, &title, 16)?
+            .checked_add(48)
+            .ok_or_else(svg_layout_error)?,
+    );
+    for (table, widths) in ir.tables.iter().zip(&layouts) {
+        width = width.max(
+            widths
+                .iter()
+                .try_fold(48_i64, |sum, width| sum.checked_add(*width))
+                .ok_or_else(svg_layout_error)?,
+        );
+        let caption = format!("Unit: {} (scale={})", table.unit_code, table.unit_scale);
+        width = width.max(
+            svg_text_length(&font, &caption, 13)?
+                .checked_add(48)
+                .ok_or_else(svg_layout_error)?,
+        );
+    }
+    let total_rows = ir
+        .tables
+        .iter()
+        .try_fold(0_usize, |sum, table| {
+            sum.checked_add(table.rows.len().checked_add(3)?)
+        })
+        .ok_or_else(svg_layout_error)?;
+    let height = i64::try_from(total_rows)
+        .ok()
+        .and_then(|rows| rows.checked_mul(28))
+        .and_then(|rows| rows.checked_add(120))
+        .ok_or_else(svg_layout_error)?;
 
     let mut svg = String::new();
     svg.push_str(&format!(
@@ -403,36 +518,33 @@ pub fn render_svg(
     ));
     svg.push_str("  <rect x=\"0\" y=\"0\" width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>\n");
     svg.push_str(&format!(
-        "  <text x=\"24\" y=\"36\" font-family=\"monospace\" font-size=\"16\" font-weight=\"bold\">Statement: {} (v{}, known_at={})</text>\n",
-        escape_html(&ir.definition_name),
-        ir.definition_version,
-        ir.known_at
+        "  <text x=\"24\" y=\"36\" font-family=\"monospace\" font-size=\"16\" font-weight=\"bold\" textLength=\"{}\" lengthAdjust=\"spacingAndGlyphs\">{}</text>\n",
+        svg_text_length(&font, &title, 16)?,
+        escape_html(&title),
     ));
 
     let mut y: i64 = 72;
-    for table in &ir.tables {
+    for (table, widths) in ir.tables.iter().zip(&layouts) {
+        let caption = format!("Unit: {} (scale={})", table.unit_code, table.unit_scale);
         svg.push_str(&format!(
-            "  <text x=\"24\" y=\"{y}\" font-family=\"monospace\" font-size=\"13\" font-weight=\"bold\">Unit: {} (scale={})</text>\n",
-            escape_html(&table.unit_code),
-            table.unit_scale
+            "  <text x=\"24\" y=\"{y}\" font-family=\"monospace\" font-size=\"13\" font-weight=\"bold\" textLength=\"{}\" lengthAdjust=\"spacingAndGlyphs\">{}</text>\n",
+            svg_text_length(&font, &caption, 13)?,
+            escape_html(&caption),
         ));
         y += 24;
 
-        let col_count = table.headers.len().max(1) as i64;
-        let col_width = (width - 48) / col_count;
+        let columns = svg_columns(widths, width)?;
 
         for (idx, header) in table.headers.iter().enumerate() {
-            let align = table
-                .alignments
-                .get(idx)
-                .copied()
-                .unwrap_or(ColumnAlignment::Left);
+            let align = table.alignments[idx];
+            let (left, col_width) = columns[idx];
             let (x, anchor) = match align {
-                ColumnAlignment::Left => (24 + (idx as i64) * col_width, "start"),
-                ColumnAlignment::Right => (24 + ((idx as i64) + 1) * col_width - 12, "end"),
+                ColumnAlignment::Left => (left, "start"),
+                ColumnAlignment::Right => (left + col_width - 6, "end"),
             };
             svg.push_str(&format!(
-                "  <text x=\"{x}\" y=\"{y}\" text-anchor=\"{anchor}\" font-family=\"monospace\" font-size=\"12\" font-weight=\"bold\">{}</text>\n",
+                "  <text x=\"{x}\" y=\"{y}\" text-anchor=\"{anchor}\" font-family=\"monospace\" font-size=\"12\" font-weight=\"bold\" textLength=\"{}\" lengthAdjust=\"spacingAndGlyphs\">{}</text>\n",
+                svg_text_length(&font, header, 12)?,
                 escape_html(header)
             ));
         }
@@ -457,17 +569,15 @@ pub fn render_svg(
                 FootingRule::Single | FootingRule::Double => "bold",
             };
             for (idx, cell) in row.cells.iter().enumerate() {
-                let align = table
-                    .alignments
-                    .get(idx)
-                    .copied()
-                    .unwrap_or(ColumnAlignment::Left);
+                let align = table.alignments[idx];
+                let (left, col_width) = columns[idx];
                 let (x, anchor) = match align {
-                    ColumnAlignment::Left => (24 + (idx as i64) * col_width, "start"),
-                    ColumnAlignment::Right => (24 + ((idx as i64) + 1) * col_width - 12, "end"),
+                    ColumnAlignment::Left => (left, "start"),
+                    ColumnAlignment::Right => (left + col_width - 6, "end"),
                 };
                 svg.push_str(&format!(
-                    "  <text x=\"{x}\" y=\"{y}\" text-anchor=\"{anchor}\" font-family=\"monospace\" font-size=\"12\" font-weight=\"{weight}\">{}</text>\n",
+                    "  <text x=\"{x}\" y=\"{y}\" text-anchor=\"{anchor}\" font-family=\"monospace\" font-size=\"12\" font-weight=\"{weight}\" textLength=\"{}\" lengthAdjust=\"spacingAndGlyphs\">{}</text>\n",
+                    svg_text_length(&font, cell, 12)?,
                     escape_html(cell)
                 ));
             }
@@ -1713,6 +1823,125 @@ mod tests {
             code: "USD".into(),
             scale: 2,
         }]
+    }
+
+    #[test]
+    fn svg_comparatives_keep_amounts_and_labels_in_separate_columns() {
+        fn attribute<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+            let prefix = format!(" {name}=\"");
+            line.split_once(&prefix)?.1.split('"').next()
+        }
+        for large in [false, true] {
+            let revenue = if large { i128::MAX / 2 } else { 50_025 };
+            let (definition, mut statement) = sample_bs(10, revenue, 0);
+            if large {
+                let mut comparative = statement.columns[0].clone();
+                comparative.label = "Comparative".into();
+                statement.columns.push(comparative);
+                for line in &mut statement.lines {
+                    line.amounts.push(line.amounts[0]);
+                }
+            }
+            let ir = render_statement_ir(&statement, &definition, &sample_units()).unwrap();
+            let original = ir.canonical_bytes().unwrap();
+            let bytes = render_svg(&ir, 1_792_454_400).unwrap();
+            assert_eq!(bytes, render_svg(&ir, 1_792_454_400).unwrap());
+            assert_eq!(ir.canonical_bytes().unwrap(), original);
+            let svg = String::from_utf8(bytes).unwrap();
+            assert!(svg.contains(&format!(">{}</text>", ir.tables[0].rows[0].cells[2])));
+            let width = attribute(svg.lines().next().unwrap(), "width")
+                .unwrap()
+                .parse::<i64>()
+                .unwrap();
+            let mut rows = std::collections::BTreeMap::<i64, Vec<(i64, i64)>>::new();
+            for line in svg
+                .lines()
+                .filter(|line| line.trim_start().starts_with("<text "))
+            {
+                let text = line
+                    .split_once('>')
+                    .unwrap()
+                    .1
+                    .strip_suffix("</text>")
+                    .unwrap();
+                if text.is_empty() {
+                    continue;
+                }
+                // This fixture is ASCII; the bundled typewriter face has
+                // 1075-unit advances at 2048 units/em. This oracle reads
+                // the emitted coordinates rather than calling the layout.
+                assert!(text.is_ascii() && !text.contains('&'));
+                let size = attribute(line, "font-size")
+                    .unwrap()
+                    .parse::<i64>()
+                    .unwrap();
+                let intrinsic = (i64::try_from(text.len()).unwrap() * 1075 * size + 2047) / 2048;
+                let length = attribute(line, "textLength")
+                    .expect("SVG must declare its run extent independently of the viewer font")
+                    .parse::<i64>()
+                    .unwrap();
+                assert_eq!(attribute(line, "lengthAdjust"), Some("spacingAndGlyphs"));
+                assert_eq!(length, intrinsic);
+                let x = attribute(line, "x").unwrap().parse::<i64>().unwrap();
+                let y = attribute(line, "y").unwrap().parse::<i64>().unwrap();
+                let (left, right) = if attribute(line, "text-anchor") == Some("end") {
+                    (x - length, x)
+                } else {
+                    (x, x + length)
+                };
+                assert!(left >= 24 && right <= width - 24, "{line}");
+                rows.entry(y).or_default().push((left, right));
+            }
+            for cells in rows.values_mut() {
+                cells.sort_unstable();
+                for pair in cells.windows(2) {
+                    assert!(pair[0].1 + 6 <= pair[1].0, "SVG columns overlap: {pair:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn svg_refuses_mismatched_table_shapes_and_keeps_empty_tables() {
+        let (definition, statement) = sample_bs(10, 50_025, 12_005);
+        let ir = render_statement_ir(&statement, &definition, &sample_units()).unwrap();
+        let mut empty = ir.clone();
+        empty.tables[0].rows.clear();
+        let svg = String::from_utf8(render_svg(&empty, 1_792_454_400).unwrap()).unwrap();
+        assert!(svg.contains("FY2026-P03</text>"));
+        for kind in 0..3 {
+            let mut malformed = ir.clone();
+            let table = &mut malformed.tables[0];
+            match kind {
+                0 => table.headers.clear(),
+                1 => {
+                    table.alignments.pop();
+                }
+                _ => {
+                    table.rows[0].cells.pop();
+                }
+            }
+            assert!(matches!(
+                render_svg(&malformed, 1_792_454_400),
+                Err(StatementError::Input(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn svg_preserves_unicode_and_refuses_forbidden_xml_characters() {
+        let (definition, statement) = sample_bs(10, 50_025, 12_005);
+        let mut ir = render_statement_ir(&statement, &definition, &sample_units()).unwrap();
+        ir.tables[0].rows[0].cells[1] = "Label & <value> café".into();
+        let bytes = ir.canonical_bytes().unwrap();
+        let svg = String::from_utf8(render_svg(&ir, 1_792_454_400).unwrap()).unwrap();
+        assert!(svg.contains("Label &amp; &lt;value&gt; café</text>"));
+        assert_eq!(ir.canonical_bytes().unwrap(), bytes);
+        ir.tables[0].rows[0].cells[1] = "invalid\u{1}XML".into();
+        assert!(matches!(
+            render_svg(&ir, 1_792_454_400),
+            Err(StatementError::Input(_))
+        ));
     }
 
     #[test]
