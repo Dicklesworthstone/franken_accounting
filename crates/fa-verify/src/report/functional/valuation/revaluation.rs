@@ -257,10 +257,24 @@ impl Prepared<'_> {
         let mut schema = metadata::Schema::default();
         let mut declarations: Vec<Routes> = Vec::new();
         let mut posted = BTreeSet::new();
-        for &index in &self.order {
+        let mut publication = None;
+        for (position, &index) in self.order.iter().enumerate() {
             let envelope = &self.envelopes[index];
             if envelope.commit_seq > at {
                 break;
+            }
+            if publication != Some(envelope.commit_seq) {
+                // Publication is atomic. A newly dedicated account must also
+                // be unused by monetary siblings, whatever their identities
+                // or their order in the authenticated leaf stream.
+                let end = position
+                    + self.order[position..].partition_point(|other| {
+                        self.envelopes[*other].commit_seq == envelope.commit_seq
+                    });
+                for &member in &self.order[position..end] {
+                    posted.extend(self.legs[member].iter().map(|leg| leg.account));
+                }
+                publication = Some(envelope.commit_seq);
             }
             let info = &self.infos[&index];
             if let Some((kind, raw)) = info.schema {
@@ -323,7 +337,6 @@ impl Prepared<'_> {
                 }
                 schema.transition_period(calendar, code, from, to)?;
             }
-            posted.extend(self.legs[index].iter().map(|leg| leg.account));
         }
         Ok((schema, declarations))
     }
@@ -707,10 +720,14 @@ pub(super) fn prepare<'a>(
         bases,
         order,
     };
-    // Route controls after the final closing still cannot dedicate an
-    // account with existing posting history. Validate the entire retained
-    // route chronology, even when no later revaluation would observe it.
-    if !prepared.bases.is_empty()
+    // A dedicated account must be unused even before the first closing or
+    // after the final one. A route declaration requires the same complete
+    // chronology checks whether or not an adjustment ever used it.
+    let has_routes = prepared
+        .infos
+        .values()
+        .any(|info| matches!(info.schema, Some((14, _))));
+    if (!prepared.bases.is_empty() || has_routes)
         && let Some(&last) = prepared.order.last()
     {
         prepared.snapshot(envelopes[last].commit_seq)?;

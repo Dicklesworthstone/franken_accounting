@@ -868,6 +868,24 @@ fn add_secondary_route_accounts(records: &mut [Record]) {
     records[0] = schema_record(1, 1, &chart.buf);
 }
 
+fn additional_route_declaration(seq: u64, valuation: &str, key: &[u8]) -> Record {
+    let mut rows = vec![
+        (id("1000"), id("1290"), id("4700")),
+        (id("1100"), id(valuation), id("4800")),
+    ];
+    rows.sort_unstable();
+    let mut map = Writer::default();
+    map.fixed(b"FA-FX-ROUTES\0")
+        .u16(1)
+        .i32(0)
+        .u32(0)
+        .count(rows.len());
+    for (source, valuation, unrealized) in rows {
+        map.u128(source).u128(valuation).u128(unrealized);
+    }
+    control(seq, 1, 14, &map.buf, key)
+}
+
 #[test]
 fn allocated_settlement_cannot_use_another_sources_dedicated_valuation_as_cash() {
     let (mut records, mut rates, source, allocation) =
@@ -949,28 +967,148 @@ fn allocated_settlement_rejects_a_later_route_dedication_of_used_cash() {
     );
     records.push(settled.record);
     rates.push(quote);
-    let declare = |valuation: &str| {
-        let mut rows = vec![
-            (id("1000"), id("1290"), id("4700")),
-            (id("1100"), id(valuation), id("4800")),
-        ];
-        rows.sort_unstable();
-        let mut map = Writer::default();
-        map.fixed(b"FA-FX-ROUTES\0")
-            .u16(1)
-            .i32(0)
-            .u32(0)
-            .count(rows.len());
-        for (source, valuation, unrealized) in rows {
-            map.u128(source).u128(valuation).u128(unrealized);
-        }
-        control(11, 1, 14, &map.buf, b"route-after-cash-payment")
-    };
-    records.push(declare("1390"));
+    let (_, output) = replay_allocated(&records, &rates).unwrap();
+    records.push(additional_route_declaration(
+        11,
+        "1390",
+        b"route-after-cash-payment",
+    ));
     replay_allocated(&records, &rates).unwrap();
-    *records.last_mut().unwrap() = declare("1010");
+    *records.last_mut().unwrap() =
+        additional_route_declaration(11, "1010", b"route-after-cash-payment");
     assert!(
         replay_allocated(&records, &rates).is_err(),
         "a final route declaration cannot dedicate a leaf with any earlier cash posting, even without a later closing"
     );
+
+    // These are hostile, independently encoded offline histories, not a
+    // claim that the native route command admits monetary siblings.
+    let prefix = &records[..records.len() - 1];
+    let cash = prefix.last().unwrap();
+    let cash_identity = metadata::entry_info(&cash.bytes[..cash.len], &cash.envelope)
+        .unwrap()
+        .identity;
+    let selected = Selection::AsOf(58);
+    let docs = allocated_registries();
+    for identity_first in [true, false] {
+        for valuation in ["1390", "1010"] {
+            let declaration = (0..128)
+                .find_map(|nonce| {
+                    let key = format!("same-publication-route-{valuation}-{nonce}");
+                    let candidate = additional_route_declaration(10, valuation, key.as_bytes());
+                    let identity = metadata::entry_info(
+                        &candidate.bytes[..candidate.len],
+                        &candidate.envelope,
+                    )
+                    .unwrap()
+                    .identity;
+                    (identity != cash_identity && (identity < cash_identity) == identity_first)
+                        .then_some(candidate)
+                })
+                .expect("fixture supplies both route/payment identity orders");
+            for leaf_first in [true, false] {
+                let mut grouped = prefix.to_vec();
+                grouped.last_mut().unwrap().envelope.within_commit_ordinal = u32::from(leaf_first);
+                let mut declaration = declaration.clone();
+                declaration.envelope.within_commit_ordinal = u32::from(!leaf_first);
+                grouped.push(declaration);
+                grouped.sort_by_key(|record| record.envelope.position());
+                let (bundle, signed, pin) = pack_with_registries(
+                    &grouped,
+                    &selected,
+                    10,
+                    &book(&[]),
+                    &rates,
+                    &output,
+                    &docs,
+                );
+                let verified = verify_report_with_inputs(
+                    &bundle,
+                    &[],
+                    None,
+                    None,
+                    Some(&pin),
+                    None,
+                    |_, _| Ok(signed.clone()),
+                );
+                if valuation == "1390" {
+                    assert_eq!(replay_allocated(&grouped, &rates).unwrap().1, output);
+                    assert_eq!(verified.unwrap().output, output);
+                } else {
+                    for error in [
+                        replay_allocated(&grouped, &rates).unwrap_err(),
+                        verified.unwrap_err(),
+                    ] {
+                        assert_eq!(error.predicate, "functional_revaluation");
+                        assert!(error.detail.contains("newly dedicated valuation account"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn route_dedication_before_first_revaluation_checks_posting_history() {
+    let mut records = settlement_declarations();
+    add_secondary_route_accounts(&mut records);
+    let cash = [
+        TestLeg {
+            code: "1010",
+            debit: true,
+            unit: 0,
+            native: 10,
+            base: None,
+            entity: None,
+        },
+        TestLeg {
+            code: "7000",
+            debit: false,
+            unit: 0,
+            native: 10,
+            base: None,
+            entity: None,
+        },
+    ];
+    records.push(entry(
+        5,
+        1,
+        10,
+        b"cash-before-first-revaluation",
+        &cash,
+        None,
+        None,
+        None,
+    ));
+    records.push(additional_route_declaration(
+        6,
+        "1390",
+        b"unused-before-first-revaluation",
+    ));
+    assert!(records.iter().all(|record| record.envelope.class != 10));
+    let (expected, output) = replay_allocated(&records, &[]).unwrap();
+    assert_eq!(net(&expected, "1010"), 10);
+    assert_eq!(net(&expected, "7000"), -10);
+    let selected = Selection::AsOf(58);
+    let docs = allocated_registries();
+    let verify = |records: &[Record]| {
+        let (bundle, signed, pin) =
+            pack_with_registries(records, &selected, 6, &book(&[]), &[], &output, &docs);
+        verify_report_with_inputs(&bundle, &[], None, None, Some(&pin), None, |_, _| {
+            Ok(signed.clone())
+        })
+    };
+    let verified = verify(&records).unwrap();
+    assert_eq!(verified.functional_trial_balance, Some(expected));
+    assert_eq!(verified.output, output);
+
+    *records.last_mut().unwrap() =
+        additional_route_declaration(6, "1010", b"used-before-first-revaluation");
+    for error in [
+        replay_allocated(&records, &[]).unwrap_err(),
+        verify(&records).unwrap_err(),
+    ] {
+        assert_eq!(error.predicate, "functional_revaluation");
+        assert!(error.detail.contains("newly dedicated valuation account"));
+    }
 }
