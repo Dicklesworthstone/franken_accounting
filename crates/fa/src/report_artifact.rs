@@ -304,7 +304,9 @@ impl ReportArtifact {
             Artifact::CloseRunRehearsal(Box::new(crate::CloseRunRehearsalCertificate::decode(
                 bytes,
             )?))
-        } else if format == crate::QUERY_CERTIFICATE_FORMAT {
+        } else if format == crate::QUERY_CERTIFICATE_FORMAT
+            || format == crate::QUERY_CERTIFICATE_FORMAT_V2
+        {
             Artifact::Query(Box::new(crate::QueryCertificate::decode(bytes)?))
         } else if format == crate::cash_flow_policy::CASH_FLOW_POLICY_CERTIFICATE_FORMAT {
             let certificate = CashFlowPolicyCertificate::decode(bytes)?;

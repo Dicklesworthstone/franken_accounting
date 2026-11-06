@@ -4,21 +4,24 @@
 //!
 //! A certificate binds four things:
 //! - the profile statement, as written;
-//! - the substrate's `NativeResultCertificate` for the one native read the
-//!   profile compiled;
+//! - the substrate's `NativeResultCertificate` for each native read the
+//!   profile compiled (one in v1, both open_amount stages in v2);
 //! - a source `ReportCertificate`: the whole-book stock trial balance at the
 //!   same sequence, which binds the chart, calendar, periods, units and
 //!   journal prefix the read saw;
 //! - the canonical result ([`QueryRows::canonical_bytes`]).
 //!
 //! Replay replays the source and compiles the statement again; the profile
-//! must still emit exactly the certified native statement. It then replays
-//! the native read against the retained snapshot and recomputes the result,
-//! which must equal the certified bytes. A digest alone is never a replay.
+//! must still emit exactly the certified native statements. In v2 it also
+//! replays the source rows and folds historical open items to regenerate
+//! every named continuation parameter at the explicit effective cutoff. The
+//! complete parameter transcript must match its commitment before the second
+//! native read is replayed. The recomputed result must equal the certified
+//! bytes. A digest alone is never a replay.
 //!
 //! Producing one needs current whole-book read and produce authority, and
 //! replaying one needs whole-book read. Neither writes; retention is the
-//! certificate store's. This v1 binds a recorded sequence: a statement
+//! certificate store's. Both versions bind a recorded sequence: a statement
 //! selected by an instant is certified at the sequence it resolves to.
 
 use asupersync::fs::Vfs;
@@ -36,15 +39,17 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
 use super::{
-    QUERY_OUTPUT_FORMAT, QueryRows, budget, code, execute, period_bounds, profile_refusal,
-    result_of,
+    ExecutedQuery, QUERY_OUTPUT_FORMAT, QueryRows, budget, code, execute, period_bounds, pipeline,
+    profile_refusal, result_of,
 };
 use crate::{
     AsyncBook, BookError, Outcome, ReportCertificate, ReportSelection, TrialBalanceSelection,
 };
 
 pub const QUERY_CERTIFICATE_FORMAT: &[u8] = b"fa:query-certificate:v1";
+pub const QUERY_CERTIFICATE_FORMAT_V2: &[u8] = b"fa:query-certificate:v2";
 const DIGEST_DOMAIN: &[u8] = b"fa:query-certificate-digest:v1";
+const DIGEST_DOMAIN_V2: &[u8] = b"fa:query-certificate-digest:v2";
 const MAX_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_NATIVE_BYTES: usize = 1024 * 1024;
 
@@ -56,6 +61,7 @@ pub struct QueryCertificate {
     source: ReportCertificate,
     statement: String,
     native: NativeResultCertificate,
+    pipeline: Option<pipeline::Evidence>,
     output: Vec<u8>,
     digest: [u8; 32],
 }
@@ -86,8 +92,8 @@ fn invalid(why: impl Into<String>) -> Refusal {
         crate::certificate::code::CERTIFICATE_INVALID,
         exit::VERIFICATION,
         why,
-        "plan §15.5 / §13.6 (a query replays its native read and its exact result)",
-        "recreate the certificate with fa query --certify on the original book; keep its source trial balance and native read certificate",
+        "plan §15.5 / §13.6 (a query replays its native reads, derived inputs and exact result)",
+        "recreate the certificate with fa query --certify on the original book; keep its source trial balance and every native read certificate",
     )
 }
 
@@ -104,6 +110,11 @@ fn compiled(statement: &str, known_at: CommitSeq) -> Result<(Native, Option<Stri
             r.message
         ))
     })?;
+    if profiled.branch.is_some() {
+        return Err(invalid(
+            "a query certificate binds trunk, not a scenario or draft materialization",
+        ));
+    }
     match profiled.known_at {
         KnownAt::Head => {}
         KnownAt::Seq(seq) if seq == known_at.0 => {}
@@ -115,22 +126,17 @@ fn compiled(statement: &str, known_at: CommitSeq) -> Result<(Native, Option<Stri
         }
         KnownAt::Instant(_) => {
             return Err(invalid(
-                "a v1 query certificate binds a recorded sequence, not an instant",
+                "a query certificate binds a recorded sequence, not an instant",
             ));
         }
         KnownAt::Reported(_) => {
             return Err(invalid(
-                "a v1 query certificate binds a recorded sequence, not a restatement view",
+                "a query certificate binds a recorded sequence, not a restatement view",
             ));
         }
     }
     match profiled.selection {
-        Selection::Native(native) if native.open_amount().is_none() => {
-            Ok((native, profiled.period))
-        }
-        Selection::Native(_) => Err(invalid(
-            "a v1 query certificate cannot bind both native stages of a per-row procedure",
-        )),
+        Selection::Native(native) => Ok((native, profiled.period)),
         Selection::TrialBalance
         | Selection::ExplainBalance { .. }
         | Selection::Statement { .. }
@@ -181,6 +187,25 @@ fn output_tagged(output: &[u8]) -> bool {
 }
 
 impl QueryCertificate {
+    /// Ordinary reads retain their original v1 encoding. A two-stage
+    /// open_amount pipeline is v2; no v1 certificate is re-encoded as v2.
+    #[must_use]
+    pub fn format(&self) -> &'static [u8] {
+        if self.pipeline.is_some() {
+            QUERY_CERTIFICATE_FORMAT_V2
+        } else {
+            QUERY_CERTIFICATE_FORMAT
+        }
+    }
+
+    fn digest_domain(&self) -> &'static [u8] {
+        if self.pipeline.is_some() {
+            DIGEST_DOMAIN_V2
+        } else {
+            DIGEST_DOMAIN
+        }
+    }
+
     #[must_use]
     pub fn source_certificate(&self) -> &ReportCertificate {
         &self.source
@@ -192,9 +217,25 @@ impl QueryCertificate {
         &self.statement
     }
 
+    /// The final native read: the only read in v1, the continuation in v2.
     #[must_use]
     pub fn native(&self) -> &NativeResultCertificate {
         &self.native
+    }
+
+    /// The source native read of an open_amount pipeline, absent for v1.
+    #[must_use]
+    pub fn pipeline_source(&self) -> Option<&NativeResultCertificate> {
+        self.pipeline.as_ref().map(|evidence| &evidence.source)
+    }
+
+    /// Commitment to the complete named, typed continuation parameter
+    /// transcript, regenerated from the historical journal on every replay.
+    #[must_use]
+    pub fn parameters_digest(&self) -> Option<&[u8; 32]> {
+        self.pipeline
+            .as_ref()
+            .map(|evidence| &evidence.parameters_digest)
     }
 
     #[must_use]
@@ -234,20 +275,40 @@ impl QueryCertificate {
             )
         {
             return Err(invalid(
-                "a v1 query needs a sequence-selected trunk stock trial-balance source",
+                "a query needs a sequence-selected trunk stock trial-balance source",
             ));
         }
         let (native, _) = compiled(&self.statement, self.known_at())?;
+        let source_native = match (native.open_amount(), &self.pipeline) {
+            (None, None) => &self.native,
+            (Some(procedure), Some(evidence)) => {
+                if self.native.statement != procedure.statement(self.known_at().0)
+                    || self.native.plan.snapshot_seq != self.known_at()
+                    || self.native.database_identity != evidence.source.database_identity
+                    || self.native.snapshot_identity != evidence.source.snapshot_identity
+                {
+                    return Err(invalid(
+                        "the pipeline continuation is not the compiled second stage at the source snapshot",
+                    ));
+                }
+                &evidence.source
+            }
+            _ => {
+                return Err(invalid(
+                    "a pipeline needs exactly two native stages in a v2 query certificate; v1 holds exactly one ordinary read",
+                ));
+            }
+        };
         // A period range's native read binds its days, which a replay checks
         // against the book's periods at the certified sequence.
         let compiles = if native.period_range() {
             native
-                .bound_period_range(&self.native.statement, self.known_at().0)
+                .bound_period_range(&source_native.statement, self.known_at().0)
                 .is_some()
         } else {
-            self.native.statement == native.statement(self.known_at().0)
+            source_native.statement == native.statement(self.known_at().0)
         };
-        if self.native.plan.snapshot_seq != self.known_at() || !compiles {
+        if source_native.plan.snapshot_seq != self.known_at() || !compiles {
             return Err(invalid(
                 "the native read is not the one the statement compiles to at the certified sequence",
             ));
@@ -263,13 +324,26 @@ impl QueryCertificate {
         if native.len() > MAX_NATIVE_BYTES {
             return Err(invalid("the native read certificate exceeds 1 MiB"));
         }
+        let pipeline_source = self
+            .pipeline
+            .as_ref()
+            .map(|evidence| evidence.source.canonical_bytes());
+        if pipeline_source
+            .as_ref()
+            .is_some_and(|source| source.len() > MAX_NATIVE_BYTES)
+        {
+            return Err(invalid("the pipeline source certificate exceeds 1 MiB"));
+        }
         let size = [
             4,
-            QUERY_CERTIFICATE_FORMAT.len(),
+            self.format().len(),
             4,
             source.len(),
             4,
             self.statement.len(),
+            pipeline_source
+                .as_ref()
+                .map_or(0, |source| 4 + source.len() + 32),
             4,
             native.len(),
             4,
@@ -283,11 +357,11 @@ impl QueryCertificate {
             return Err(invalid("query certificate exceeds the 64 MiB format limit"));
         }
         let mut w = Writer::with_capacity(size);
-        w.bytes(QUERY_CERTIFICATE_FORMAT)
-            .bytes(&source)
-            .str(&self.statement)
-            .bytes(&native)
-            .bytes(&self.output);
+        w.bytes(self.format()).bytes(&source).str(&self.statement);
+        if let Some((source, evidence)) = pipeline_source.as_ref().zip(self.pipeline.as_ref()) {
+            w.bytes(source).fixed(&evidence.parameters_digest);
+        }
+        w.bytes(&native).bytes(&self.output);
         w.finish().map_err(|e| invalid(e.to_string()))
     }
 
@@ -295,16 +369,18 @@ impl QueryCertificate {
         source: ReportCertificate,
         statement: String,
         native: NativeResultCertificate,
+        pipeline: Option<pipeline::Evidence>,
         output: Vec<u8>,
     ) -> Result<Self, Refusal> {
         let mut value = Self {
             source,
             statement,
             native,
+            pipeline,
             output,
             digest: [0; 32],
         };
-        value.digest = domain_digest(DIGEST_DOMAIN, &[&value.body_bytes()?]);
+        value.digest = domain_digest(value.digest_domain(), &[&value.body_bytes()?]);
         Ok(value)
     }
 
@@ -312,7 +388,7 @@ impl QueryCertificate {
     /// integrity; only replay checks the retained history and the result.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
         let mut body = self.body_bytes()?;
-        if domain_digest(DIGEST_DOMAIN, &[&body]) != self.digest {
+        if domain_digest(self.digest_domain(), &[&body]) != self.digest {
             return Err(invalid("query certificate content digest does not match"));
         }
         body.extend_from_slice(&self.digest);
@@ -327,9 +403,8 @@ impl QueryCertificate {
             let malformed =
                 |error: DecodeError| invalid(format!("malformed query certificate: {error}"));
             let mut r = Reader::new(bytes);
-            if r.bytes(64, "query certificate format").map_err(malformed)?
-                != QUERY_CERTIFICATE_FORMAT
-            {
+            let format = r.bytes(64, "query certificate format").map_err(malformed)?;
+            if format != QUERY_CERTIFICATE_FORMAT && format != QUERY_CERTIFICATE_FORMAT_V2 {
                 return Err(invalid("unsupported query certificate format"));
             }
             let source = ReportCertificate::decode(
@@ -340,6 +415,24 @@ impl QueryCertificate {
                 .str(fa_query::MAX_STATEMENT_BYTES, "query statement")
                 .map_err(malformed)?
                 .to_string();
+            let pipeline = if format == QUERY_CERTIFICATE_FORMAT_V2 {
+                let source = NativeResultCertificate::decode(
+                    r.bytes(MAX_NATIVE_BYTES, "pipeline source read certificate")
+                        .map_err(malformed)?,
+                )
+                .map_err(|error| {
+                    invalid(format!("malformed pipeline source certificate: {error}"))
+                })?;
+                let parameters_digest = r
+                    .fixed("pipeline parameter commitment")
+                    .map_err(malformed)?;
+                Some(pipeline::Evidence {
+                    source,
+                    parameters_digest,
+                })
+            } else {
+                None
+            };
             let native = NativeResultCertificate::decode(
                 r.bytes(MAX_NATIVE_BYTES, "native read certificate")
                     .map_err(malformed)?,
@@ -355,6 +448,7 @@ impl QueryCertificate {
                 source,
                 statement,
                 native,
+                pipeline,
                 output,
                 digest,
             })
@@ -416,6 +510,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(profiled) => profiled,
             Err(refusal) => return Ok(Err(profile_refusal(&refusal))),
         };
+        if profiled.branch.is_some() {
+            return Ok(Err(Refusal::new(
+                code::QUERY_PROFILE,
+                exit::REFUSAL,
+                "a query certificate binds trunk, not a scenario or draft materialization",
+                super::CITE,
+                "run the branch query without --certify; certify the committed trunk query separately",
+            )));
+        }
         let Selection::Native(native) = profiled.selection else {
             return Ok(Err(Refusal::new(
                 code::QUERY_PROFILE,
@@ -425,15 +528,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "fa query \"CALL fa.trial_balance FOR PERIOD '<code>'\" --certify, which is fa tb --certify (likewise fa explain balance, fa statement and fa open-items)",
             )));
         };
-        if native.open_amount().is_some() {
-            return Ok(Err(Refusal::new(
-                code::QUERY_PROFILE,
-                exit::REFUSAL,
-                "a per-row procedure has two native stages and is not a v1 query certificate",
-                super::CITE,
-                "run the pipeline without --certify; certify the historical aging or open-items report separately",
-            )));
-        }
         let requested = match profiled.known_at {
             KnownAt::Head => None,
             KnownAt::Seq(seq) => Some(CommitSeq(seq)),
@@ -471,7 +565,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Ok(source) => source.certificate,
                 Err(refusal) => return Ok(Err(refusal)),
             };
-        let (rows, native_certificate) = match self.query(cx, |db, book| {
+        let ExecutedQuery {
+            rows,
+            native: native_certificate,
+            pipeline,
+        } = match self.query(cx, |db, book| {
             execute(
                 db,
                 &cx.query(),
@@ -490,18 +588,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )));
         }
         let output = rows.canonical_bytes().map_err(encoding)?;
-        let certificate =
-            match QueryCertificate::seal(source, statement.to_string(), native_certificate, output)
-            {
-                Ok(certificate) => certificate,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
+        let certificate = match QueryCertificate::seal(
+            source,
+            statement.to_string(),
+            native_certificate,
+            pipeline,
+            output,
+        ) {
+            Ok(certificate) => certificate,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         cx.query().checkpoint().map_err(BookError::Context)?;
         Ok(Ok(CertifiedQuery { rows, certificate }))
     }
 
-    /// Replay the source trial balance, then the native read against the
-    /// retained snapshot, and recompute the result: it must equal the
+    /// Replay the source trial balance, then each native read against the
+    /// retained snapshot, regenerating a pipeline's parameters from the
+    /// historical journal. The recomputed result must equal the
     /// certified bytes. A later write never moves it; current authority
     /// cannot be taken from the certificate.
     pub fn replay_query(
@@ -534,6 +637,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             // A period range replays bound with the days it spans at the
             // certified sequence, which its native read must carry.
             let mut native = native.clone();
+            let source_native = certificate
+                .pipeline_source()
+                .unwrap_or(&certificate.native);
             if let Some(code) = period.as_deref() {
                 match period_bounds(db, book, code, seq)? {
                     Err(refusal) => {
@@ -543,7 +649,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                         ))));
                     }
                     Ok((start, end)) if native.period_range() => {
-                        if native.bound_period_range(&certificate.native.statement, seq.0)
+                        if native.bound_period_range(&source_native.statement, seq.0)
                             != Some((start.0, end.0))
                         {
                             return Ok(Err(invalid(format!(
@@ -555,6 +661,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     }
                     Ok(_) => {}
                 }
+            }
+            if let Some(evidence) = &certificate.pipeline {
+                return Ok(pipeline::replay(
+                    db,
+                    &cx.query(),
+                    book,
+                    &native,
+                    seq,
+                    evidence,
+                    &certificate.native,
+                )?
+                .map_err(|refusal| invalid(format!(
+                    "the certified pipeline does not replay: {}",
+                    refusal.message
+                ))));
             }
             let result = match db.replay(
                 &cx.query(),
@@ -620,7 +741,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             let head = db.frontier().map_err(KernelError::from)?;
             execute(db, &cx.query(), book, &native, head, period.as_deref())
         })? {
-            Ok((rows, _)) => rows,
+            Ok(executed) => executed.rows,
             Err(refusal) => return Ok(Err(refusal)),
         };
         let checked_at = current.known_at;
@@ -636,6 +757,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }))
     }
 }
+
+#[cfg(test)]
+mod pipeline_tests;
 
 #[cfg(test)]
 mod tests {

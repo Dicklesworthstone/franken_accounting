@@ -1198,32 +1198,81 @@ fn per_row_open_amount_uses_the_existing_query_authority_boundary() {
     let rows = f.rows(&["--token", &reader, "query", statement]);
     assert_eq!(rows, json::parse(r#"[["1000","5",21]]"#).unwrap());
 
-    let (scoped, _) = f.issue("pipeline-scoped", &["--account", "1000"]);
+    let (scoped, _) = f.issue_ops(
+        "pipeline-scoped",
+        &["read", "produce"],
+        &["--account", "1000"],
+    );
     for statement in [statement.to_string(), statement.replace("'1000'", "'4000'")] {
-        let (exit, event) = f.run(&["--token", &scoped, "query", &statement]);
-        assert_eq!(exit, 7, "{event:?}");
-        assert_eq!(text(data(&event), "refusal_id"), "FA-REF-011");
-        assert!(text(data(&event), "message").contains("reaches the whole book"));
-        assert_eq!(
-            event.get("book"),
-            Some(&Json::Null),
-            "scope denied before book open"
-        );
-        assert_eq!(event.get("coordinate"), Some(&Json::Null));
+        for (query, certify) in [
+            (statement.clone(), false),
+            (statement.clone(), true),
+            (format!("EXPLAIN (CERTIFICATE) {statement}"), false),
+        ] {
+            let mut args = vec!["--token", scoped.as_str(), "query", query.as_str()];
+            if certify {
+                args.push("--certify");
+            }
+            let (exit, event) = f.run(&args);
+            assert_eq!(exit, 7, "{event:?}");
+            assert_eq!(text(data(&event), "refusal_id"), "FA-REF-011");
+            assert!(text(data(&event), "message").contains("reaches the whole book"));
+            assert_eq!(
+                event.get("book"),
+                Some(&Json::Null),
+                "scope denied before book open"
+            );
+            assert_eq!(event.get("coordinate"), Some(&Json::Null));
+        }
     }
 
-    let (exit, event) = f.run(&["--token", &reader, "query", statement, "--certify"]);
-    assert_eq!(exit, 3, "{event:?}");
-    assert_eq!(text(data(&event), "refusal_id"), "FA-REF-188");
-    assert!(text(data(&event), "message").contains("two native stages"));
-    let (exit, event) = f.run(&[
-        "--token",
-        &reader,
-        "query",
-        &format!("EXPLAIN (CERTIFICATE) {statement}"),
-    ]);
-    assert_eq!(exit, 3, "{event:?}");
-    assert_eq!(text(data(&event), "refusal_id"), "FA-REF-188");
+    let (read_only, _) = f.issue("pipeline-read-only", &[]);
+    assert_eq!(f.rows(&["--token", &read_only, "query", statement]), rows);
+    for (query, certify) in [
+        (statement.to_string(), true),
+        (format!("EXPLAIN (CERTIFICATE) {statement}"), false),
+    ] {
+        let mut args = vec!["--token", read_only.as_str(), "query", query.as_str()];
+        if certify {
+            args.push("--certify");
+        }
+        let (exit, event) = f.run(&args);
+        assert_eq!(exit, 7, "{event:?}");
+        assert!(text(data(&event), "message").contains("produce"));
+        assert_eq!(event.get("book"), Some(&Json::Null));
+        assert_eq!(event.get("coordinate"), Some(&Json::Null));
+
+        // A certificate emits two events; the single-event fixture runner
+        // remains appropriate for the authority refusals above.
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fa"));
+        command
+            .current_dir(&f.dir)
+            .args(["--book", "book", "--token", &reader, "query", &query]);
+        if certify {
+            command.arg("--certify");
+        }
+        let output = command
+            .arg("--json")
+            .env_remove("FA_BOOK")
+            .env_remove("FA_TOKEN")
+            .output()
+            .expect("certify pipeline");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(output.status.success(), "{stdout}\n{:?}", output.stderr);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), 2, "{stdout}");
+        for line in &lines {
+            fa_cli::verbs::registry().unwrap().check_line(line).unwrap();
+        }
+        let certified = json::parse(lines[0]).unwrap();
+        let certificate = json::parse(lines[1]).unwrap();
+        assert_eq!(text(&certified, "event"), "query_rows");
+        assert_eq!(data(&certified).get("rows"), Some(&rows));
+        assert_eq!(text(&certificate, "event"), "report_certificate");
+        let oid = text(data(&certificate), "oid");
+        let replayed = f.ok(&["--token", &reader, "replay", &format!("C:{oid}")]);
+        assert_eq!(data(&replayed), data(&certified));
+    }
 }
 
 /// A pinned auditor reads a complete historical ledger prefix under current

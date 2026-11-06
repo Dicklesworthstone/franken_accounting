@@ -19,15 +19,15 @@ fn cap(ops: &[&str]) -> Capability {
     Capability::embedded(PRINCIPAL, ops).unwrap()
 }
 
-pub(super) struct Fixture {
-    pub(super) book: Book,
+pub(in crate::query) struct Fixture {
+    pub(in crate::query) book: Book,
     evidence: EvidenceRef,
-    pub(super) usd: UnitId,
+    pub(in crate::query) usd: UnitId,
     eur: UnitId,
 }
 
 impl Fixture {
-    pub(super) fn new() -> Self {
+    pub(in crate::query) fn new() -> Self {
         let units = UnitRegistry::embedded().unwrap();
         let usd = units.lookup("USD").unwrap();
         let eur = units.lookup("EUR").unwrap();
@@ -97,7 +97,7 @@ impl Fixture {
         }
     }
 
-    pub(super) fn proposal(
+    pub(in crate::query) fn proposal(
         &self,
         key: &str,
         date: &str,
@@ -147,7 +147,7 @@ impl Fixture {
         }
     }
 
-    pub(super) fn post(&mut self, proposal: EntryPayload) -> EntryRef {
+    pub(in crate::query) fn post(&mut self, proposal: EntryPayload) -> EntryRef {
         self.book
             .post(PostRequest {
                 proposal,
@@ -314,13 +314,37 @@ fn native_pipeline_preserves_exact_units_and_refuses_unsupported_certification()
         ]
     );
     let statement = "MATCH (l:Leg) CALL fa.open_amount(l) YIELD open, age_days RETURN open EFFECTIVE AT '2026-03-31'";
-    let refusal = f
+    let certified = f
         .book
         .certify_query(PRINCIPAL, &cap(&["read", "produce"]), statement)
         .unwrap()
-        .unwrap_err();
-    assert_eq!(refusal.code, code::QUERY_PROFILE);
-    assert!(refusal.message.contains("two native stages"));
+        .unwrap();
+    assert_eq!(
+        certified.certificate.format(),
+        crate::QUERY_CERTIFICATE_FORMAT_V2
+    );
+    assert!(certified.certificate.pipeline_source().is_some());
+    assert!(certified.certificate.parameters_digest().is_some());
+    assert_eq!(
+        f.book
+            .replay_query(PRINCIPAL, &cap(&["read"]), &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        certified.rows
+    );
+    for branch in ["scenario:forecast", "draft:forecast"] {
+        let refusal = f
+            .book
+            .certify_query(
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                &format!("{statement} AT BRANCH '{branch}'"),
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, code::QUERY_PROFILE);
+        assert!(refusal.message.contains("trunk"));
+    }
     let denied = f
         .book
         .certify_query(PRINCIPAL, &cap(&["produce"]), statement)
