@@ -270,6 +270,82 @@ fn suspense_aging_keeps_known_only_reversals_after_the_last_live_posting_date() 
     assert_eq!(h.db.frontier().unwrap(), before);
 }
 
+#[test]
+fn suspense_aging_accepts_full_u32_threshold_and_wide_day_arithmetic() {
+    use fa_lantern::jet::SuspenseAging;
+
+    let mut h = suspense_harness();
+    let original = h.post(&Spec::simple(day(2026, 3, 15), "1000", "4000", 10_000));
+    let before = h.db.frontier().unwrap();
+    let snapshot = Snapshot::read(
+        &h.db,
+        &h.ctx().query(),
+        &h.book,
+        None,
+        Some(day(2026, 3, 31)),
+    )
+    .unwrap();
+    let procedure = |max_age| {
+        SuspenseAging::with(
+            Params::defaults(SuspenseAging::ID)
+                .unwrap()
+                .set("max_age_days", max_age)
+                .unwrap(),
+        )
+    };
+    let ordinary = run_over(&snapshot, &h.book, &procedure(7)).unwrap();
+    assert_eq!(ordinary.findings.len(), 1);
+    assert_eq!(
+        ordinary.findings[0].statistic,
+        Statistic::count("age_days", 16, 1)
+    );
+    assert!(
+        run_over(&snapshot, &h.book, &procedure(4_294_967_295))
+            .unwrap()
+            .findings
+            .is_empty()
+    );
+    for invalid in [-1, 4_294_967_296] {
+        assert!(matches!(
+            run_over(&snapshot, &h.book, &procedure(invalid)),
+            Err(LanternError::Parameter { .. })
+        ));
+    }
+
+    // Arithmetic-only snapshot perturbation of the real posting above.
+    // Recorded times stay authentic, but the altered civil dates/periods
+    // are not a claim of extreme-date kernel admission or certification.
+    let mut wide = snapshot.clone();
+    wide.coordinate.effective_through = Some(DateDay(i32::MAX));
+    let entry = wide.entries.iter_mut().find(|e| e.vid == original).unwrap();
+    entry.entry.proposal.effective_date = DateDay(i32::MIN);
+    entry.entry = entry.entry.proposal.clone().seal(Vec::new(), None).unwrap();
+    assert!(
+        run_over(&wide, &h.book, &procedure(4_294_967_295))
+            .unwrap()
+            .findings
+            .is_empty(),
+        "age equal to the threshold is not over-age"
+    );
+    let one_over = run_over(&wide, &h.book, &procedure(4_294_967_294)).unwrap();
+    assert_eq!(one_over.findings.len(), 1);
+    assert_eq!(
+        one_over.findings[0].statistic,
+        Statistic::count("age_days", 4_294_967_295, 1)
+    );
+    assert_eq!(one_over.findings[0].severity, Severity::Medium);
+
+    wide.coordinate.effective_through = Some(DateDay(0));
+    let across_i32 = run_over(&wide, &h.book, &procedure(2_147_483_647)).unwrap();
+    assert_eq!(across_i32.findings.len(), 1);
+    assert_eq!(
+        across_i32.findings[0].statistic,
+        Statistic::count("age_days", 2_147_483_648, 1)
+    );
+    assert_eq!(across_i32.findings[0].severity, Severity::Medium);
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
 /// One native entry can open two units on the same suspense account. Equal
 /// mantissas and ages must remain distinguishable, and applying USD cannot
 /// clear the JPY item from that entry.

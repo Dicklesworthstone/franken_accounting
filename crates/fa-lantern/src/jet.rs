@@ -1054,8 +1054,7 @@ impl Procedure for SuspenseAging {
         _book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let max_age = i32::try_from(self.params.get_u32("max_age_days")?)
-            .map_err(|_| LanternError::Overflow("max_age_days"))?;
+        let max_age = i64::from(self.params.get_u32("max_age_days")?);
         let suspense_vids = snapshot.role_population(Self::ID)?;
         let live = snapshot.live_postings_through(snapshot.coordinate.effective_through)?;
         let population = live.len() as u64;
@@ -1120,10 +1119,9 @@ impl Procedure for SuspenseAging {
         let mut out = Vec::new();
         for ((acct_vid, unit), (net, oldest, entry_vids)) in balances {
             work.compare(1)?;
-            let age = as_of
-                .0
-                .checked_sub(oldest.0)
-                .ok_or(LanternError::Overflow("suspense age"))?;
+            // The full difference of two i32 day coordinates and twice a
+            // registered u32 threshold both fit exactly in i64.
+            let age = i64::from(as_of.0) - i64::from(oldest.0);
             if age > max_age {
                 let mut cites = vec![Cite::Account(acct_vid)];
                 cites.extend(suspense_entry_cites(entry_vids));
