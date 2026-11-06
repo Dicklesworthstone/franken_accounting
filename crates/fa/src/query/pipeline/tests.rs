@@ -19,15 +19,15 @@ fn cap(ops: &[&str]) -> Capability {
     Capability::embedded(PRINCIPAL, ops).unwrap()
 }
 
-pub(in crate::query) struct Fixture {
-    pub(in crate::query) book: Book,
+pub(super) struct Fixture {
+    pub(super) book: Book,
     evidence: EvidenceRef,
-    pub(in crate::query) usd: UnitId,
+    pub(super) usd: UnitId,
     eur: UnitId,
 }
 
 impl Fixture {
-    pub(in crate::query) fn new() -> Self {
+    pub(super) fn new() -> Self {
         let units = UnitRegistry::embedded().unwrap();
         let usd = units.lookup("USD").unwrap();
         let eur = units.lookup("EUR").unwrap();
@@ -97,7 +97,7 @@ impl Fixture {
         }
     }
 
-    pub(in crate::query) fn proposal(
+    pub(super) fn proposal(
         &self,
         key: &str,
         date: &str,
@@ -147,7 +147,7 @@ impl Fixture {
         }
     }
 
-    pub(in crate::query) fn post(&mut self, proposal: EntryPayload) -> EntryRef {
+    pub(super) fn post(&mut self, proposal: EntryPayload) -> EntryRef {
         self.book
             .post(PostRequest {
                 proposal,
@@ -321,7 +321,7 @@ fn native_pipeline_preserves_exact_units_and_refuses_unsupported_certification()
         .unwrap();
     assert_eq!(
         certified.certificate.format(),
-        crate::QUERY_CERTIFICATE_FORMAT_V2
+        crate::query::QUERY_CERTIFICATE_FORMAT_V2
     );
     assert!(certified.certificate.pipeline_source().is_some());
     assert!(certified.certificate.parameters_digest().is_some());
