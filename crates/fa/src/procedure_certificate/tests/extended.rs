@@ -39,6 +39,167 @@ fn party(f: &mut Fixture, code: &str, bank: &str) -> VId {
 }
 
 #[test]
+fn layering_v3_keeps_the_actual_v2_registry_and_native_algorithm_replayable() {
+    let mut f = Fixture::new(126);
+    let (ab, _) = f.post(1, "1000", "1010", 100, false);
+    let (cd, _) = f.post(1, "1020", "6000", 100, false);
+    let (bc, _) = f.post(1, "1010", "1020", 100, false);
+    let mut request = f.request("graph.layering", ab);
+    request.effective_through = None;
+    let current = f.certify(&request).certificate;
+    assert_eq!(current.report.version, 3);
+    assert!(current.report.findings.is_empty());
+    request.version = Some(2);
+    let legacy = f.certify(&request).certificate;
+    assert_eq!(legacy.report.version, 2);
+    assert_eq!(legacy.report.findings.len(), 1);
+    assert_eq!(
+        legacy.report.findings[0].statistic,
+        Statistic {
+            name: "layered_mantissa".into(),
+            value: 100,
+            scale: 2,
+            population: 3
+        }
+    );
+    let entries = |report: &ProcedureRun| {
+        report.findings[0]
+            .cites
+            .iter()
+            .filter_map(|cite| {
+                if let Cite::Entry(vid) = cite {
+                    Some(*vid)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(entries(&legacy.report), vec![ab, bc, cd]);
+    // Frozen from the b1afca58 native producer's actual retained v2
+    // certificate, before this registry edit; never regenerated from v3.
+    assert_eq!(
+        legacy.registry,
+        [
+            0x10, 0x3d, 0xab, 0x0f, 0xd1, 0x46, 0xb9, 0x49, 0xf5, 0x27, 0x4e, 0x3e, 0x01, 0xfa,
+            0xba, 0x0e, 0x5d, 0x05, 0xc7, 0xb1, 0xf3, 0x4d, 0x03, 0x60, 0x2e, 0xe8, 0x4c, 0xda,
+            0xd5, 0x73, 0xef, 0x74,
+        ]
+    );
+    let decoded = ProcedureCertificate::decode(&legacy.canonical_bytes().unwrap()).unwrap();
+    let (later_cd, _) = f.post(1, "1020", "6000", 100, false);
+    let after = f.head();
+    let replayed = f
+        .book
+        .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
+        .unwrap()
+        .unwrap();
+    assert_eq!(replayed, legacy.report);
+    let mut positive = f.request("graph.layering", ab);
+    positive.effective_through = None;
+    let report = f.certify(&positive).certificate.report;
+    assert_eq!(report.version, 3);
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(entries(&report), vec![ab, bc, later_cd]);
+    assert_eq!(report.findings[0].statistic.population, 4);
+
+    // Repair the public outer digest: version/registry confusion must be
+    // rejected by the declared algorithm law, not a stale checksum.
+    for (mut confused, registry) in [
+        (current, legacy.registry),
+        (legacy, registry_digest().unwrap()),
+    ] {
+        confused.registry = registry;
+        confused.digest = domain_digest(CERTIFICATE_DOMAIN, &[&confused.body().unwrap()]);
+        let decoded = ProcedureCertificate::decode(&confused.canonical_bytes().unwrap()).unwrap();
+        let refusal = f
+            .book
+            .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+        assert!(
+            refusal
+                .message
+                .contains("does not declare this algorithm version")
+        );
+    }
+    assert_eq!(f.head(), after);
+}
+
+#[test]
+fn pre_layering_registry_keeps_unchanged_jet_versions_and_portable_documents() {
+    let mut f = Fixture::new(127);
+    f.assign_role("1000", "suspense");
+    let (source, _) = f.post(1, "1000", "1010", 100, false);
+    let before = f.head();
+    for version in [1, 2] {
+        let mut request = f.request("jet.round_amounts", source);
+        request.version = Some(version);
+        if version == 1 {
+            request.effective_through = None;
+        }
+        let mut certificate = f.certify(&request).certificate;
+        let document = layering_v2_registry_document(version == 1).unwrap();
+        certificate.registry = registry_digest_with_procedures(document.clone()).unwrap();
+        certificate.digest = domain_digest(CERTIFICATE_DOMAIN, &[&certificate.body().unwrap()]);
+        let decoded =
+            ProcedureCertificate::decode(&certificate.canonical_bytes().unwrap()).unwrap();
+        assert_eq!(
+            canonical_registry_document(&decoded.registry).unwrap(),
+            Some(document)
+        );
+        decoded.check_offline_profile().unwrap();
+        let replayed = f
+            .book
+            .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed, certificate.report);
+        let text =
+            fa_registry::procedures::layering_v2_registry_text(PROCEDURE_REGISTRIES[0].1).unwrap();
+        let text = if version == 1 {
+            retained_jet_registry_text(&text).unwrap()
+        } else {
+            text
+        };
+        certificate.registry = domain_digest(
+            b"fa:procedure-registry:v1",
+            &[text.as_bytes(), PROCEDURE_REGISTRIES[1].1.as_bytes()],
+        );
+        certificate.digest = domain_digest(CERTIFICATE_DOMAIN, &[&certificate.body().unwrap()]);
+        let raw = ProcedureCertificate::decode(&certificate.canonical_bytes().unwrap()).unwrap();
+        assert!(raw.check_offline_profile().is_err());
+        assert_eq!(
+            f.book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &raw)
+                .unwrap()
+                .unwrap(),
+            certificate.report
+        );
+    }
+    let mut confused = f
+        .certify(&f.request("jet.suspense_aging", source))
+        .certificate;
+    assert_eq!(confused.report.version, 3);
+    confused.registry = retained_registry_digest().unwrap();
+    confused.digest = domain_digest(CERTIFICATE_DOMAIN, &[&confused.body().unwrap()]);
+    let confused = ProcedureCertificate::decode(&confused.canonical_bytes().unwrap()).unwrap();
+    let refusal = f
+        .book
+        .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &confused)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+    assert!(
+        refusal
+            .message
+            .contains("does not declare this algorithm version")
+    );
+    assert_eq!(f.head(), before);
+}
+
+#[test]
 fn all_additional_procedures_round_trip_with_complete_native_populations() {
     let mut f = Fixture::new(91);
     // The role-selected procedures (fa-kxc4) need their roles held.

@@ -339,9 +339,13 @@ fn registry_digest() -> Result<[u8; 32], Refusal> {
 }
 
 fn retained_registry_document() -> Result<Vec<u8>, Refusal> {
-    fa_registry::procedures::legacy_v1_document()
+    let jet = fa_registry::procedures::legacy_v1_document()
+        .map_err(|error| invalid(format!("retained JET registry: {error}")))?;
+    let layering = fa_registry::procedures::layering_v2_document(jet)
+        .map_err(|error| invalid(format!("retained layering registry: {error}")))?;
+    fa_registry::procedures::suspense_v2_document(layering)
         .map(|document| document.canonical_bytes())
-        .map_err(|error| invalid(format!("retained procedure registry: {error}")))
+        .map_err(|error| invalid(format!("published procedure registry: {error}")))
 }
 
 /// Exact canonical closure immediately before the two JET window laws became
@@ -402,7 +406,11 @@ fn legacy_registry_digest() -> [u8; 32] {
 /// semantic revision. The inverse is restricted to the two complete row
 /// prefixes we changed; unknown layouts or versions are never guessed.
 fn retained_legacy_registry_digest() -> Result<[u8; 32], Refusal> {
-    let procedures = retained_jet_registry_text(PROCEDURE_REGISTRIES[0].1)?;
+    let previous = fa_registry::procedures::layering_v2_registry_text(PROCEDURE_REGISTRIES[0].1)
+        .map_err(|error| invalid(format!("retained layering registry: {error}")))?;
+    let jet = retained_jet_registry_text(&previous)?;
+    let procedures = fa_registry::procedures::suspense_v2_registry_text(&jet)
+        .map_err(|error| invalid(format!("published raw procedure registry: {error}")))?;
     Ok(domain_digest(
         b"fa:procedure-registry:v1",
         &[procedures.as_bytes(), PROCEDURE_REGISTRIES[1].1.as_bytes()],
@@ -439,29 +447,25 @@ fn retained_jet_registry_text(text: &str) -> Result<String, Refusal> {
 
 /// Only these four audited registry epochs are executable. Their algorithm
 /// identities are checked separately, so an old commitment cannot authorize v3.
-fn registry_versions(registry: &[u8; 32]) -> Result<Option<(u16, u16)>, Refusal> {
-    for (jet, layering) in [(2, 3), (1, 3), (2, 2), (1, 2)] {
-        let canonical = if layering == 3 {
-            if jet == 2 {
-                registry_digest()?
-            } else {
-                retained_registry_digest()?
-            }
+fn registry_versions(registry: &[u8; 32]) -> Result<Option<(u16, u16, u16)>, Refusal> {
+    for (jet, layering, suspense) in [(2, 3, 3), (2, 2, 3), (1, 2, 3), (1, 2, 2)] {
+        let canonical = if suspense == 2 {
+            retained_registry_digest()?
+        } else if layering == 3 {
+            registry_digest()?
         } else {
             registry_digest_with_procedures(layering_v2_registry_document(jet == 1)?)?
         };
         if registry == &canonical {
-            return Ok(Some((jet, layering)));
+            return Ok(Some((jet, layering, suspense)));
         }
     }
     // Canonical epochs do not depend on the stricter raw-text layout inverse.
-    for (jet, layering) in [(2, 3), (1, 3), (2, 2), (1, 2)] {
-        let raw = if layering == 3 {
-            if jet == 2 {
-                legacy_registry_digest()
-            } else {
-                retained_legacy_registry_digest()?
-            }
+    for (jet, layering, suspense) in [(2, 3, 3), (2, 2, 3), (1, 2, 3), (1, 2, 2)] {
+        let raw = if suspense == 2 {
+            retained_legacy_registry_digest()?
+        } else if layering == 3 {
+            legacy_registry_digest()
         } else {
             let text =
                 fa_registry::procedures::layering_v2_registry_text(PROCEDURE_REGISTRIES[0].1)
@@ -477,7 +481,7 @@ fn registry_versions(registry: &[u8; 32]) -> Result<Option<(u16, u16)>, Refusal>
             )
         };
         if registry == &raw {
-            return Ok(Some((jet, layering)));
+            return Ok(Some((jet, layering, suspense)));
         }
     }
     Ok(None)
@@ -1036,7 +1040,9 @@ impl ProcedureCertificate {
             ));
         }
         let current = registry_digest()?;
-        let Some((jet_version, layering_version)) = registry_versions(&self.registry)? else {
+        let Some((jet_version, layering_version, suspense_version)) =
+            registry_versions(&self.registry)?
+        else {
             return Err(crate::certificate::registry_unavailable(
                 "procedure certificate",
                 &self.registry,
@@ -1047,6 +1053,7 @@ impl ProcedureCertificate {
         let declared_version = match self.report.procedure.as_str() {
             "jet.round_amounts" | "jet.period_end_timing" => Some(jet_version),
             "graph.layering" | "graph.party_layering" => Some(layering_version),
+            "jet.suspense_aging" => Some(suspense_version),
             _ => None,
         };
         if declared_version.is_some_and(|version| version != self.report.version) {

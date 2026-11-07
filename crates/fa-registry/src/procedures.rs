@@ -11,6 +11,10 @@ use crate::{RegistryError, invalid, load, req_int, req_str};
 const PROCEDURES: &str = include_str!("../../../registries/procedures.toml");
 const R: &str = "procedures.toml";
 const LAYERING_V3_SUMMARY_SUFFIX: &str = " Version 3 advances each hop in effective/recorded/entry-identity order; version 2 could revisit an earlier recorded transfer on the same effective day.";
+const SUSPENSE_V3_SUMMARY: &str = "Accounts holding the `suspense` role with nonzero open-item residuals older than max_age_days, folded from immutable settlements and reversal lineage. Fully cleared items do not contribute age or citations; offsetting unapplied items remain open even when their net is zero. The date is the coordinate's effective date, or the latest live posting date when omitted. Refused when the role is unassigned or an effective cutoff splits a settlement/reversal. Version 2 aged an account's first-ever posting; version 1 guessed accounts from names.";
+const SUSPENSE_V2_SUMMARY: &str = "Accounts holding the `suspense` account role (registries/account_roles.toml, assigned with fa chart role) that retain a non-zero balance or uncleared postings older than max_age_days as of the coordinate's effective date. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens.";
+const SUSPENSE_V3_COMPLEXITY: &str =
+    "O((entries + legs + applications) log (entries + legs + applications))";
 
 /// The canonical registry closure preceding the two effective-window JET
 /// algorithms. Durable certificates and authored case references may retain
@@ -118,6 +122,71 @@ pub fn layering_v2_registry_text(text: &str) -> Result<String, RegistryError> {
         return Err(invalid(
             R,
             "retained raw and canonical layering registries disagree",
+        ));
+    }
+    Ok(retained)
+}
+
+/// The published JET-v1 registry also preceded suspense's open-item algorithm.
+/// Restore only its audited version, complexity and summary; no other edit is
+/// erased. This retains registry content, not an alias for the old algorithm.
+pub fn suspense_v2_document(
+    mut doc: crate::toml::Document,
+) -> Result<crate::toml::Document, RegistryError> {
+    let row = doc
+        .arrays
+        .get_mut("procedure")
+        .and_then(|rows| {
+            rows.iter_mut().find(|row| {
+                row.get("id").and_then(crate::toml::Value::as_str) == Some("jet.suspense_aging")
+            })
+        })
+        .ok_or_else(|| invalid(R, "missing retained suspense row"))?;
+    if row.get("version").and_then(crate::toml::Value::as_int) != Some(3)
+        || req_str(R, row, "summary")? != SUSPENSE_V3_SUMMARY
+        || req_str(R, row, "complexity")? != SUSPENSE_V3_COMPLEXITY
+    {
+        return Err(invalid(R, "unrecognized suspense registry revision"));
+    }
+    row.insert("version".into(), crate::toml::Value::Int(2));
+    row.insert(
+        "summary".into(),
+        crate::toml::Value::Str(SUSPENSE_V2_SUMMARY.into()),
+    );
+    row.insert(
+        "complexity".into(),
+        crate::toml::Value::Str("O(legs log legs)".into()),
+    );
+    Ok(doc)
+}
+
+/// Exact raw-text counterpart of the published suspense-v2 registry.
+pub fn suspense_v2_registry_text(text: &str) -> Result<String, RegistryError> {
+    let expected = suspense_v2_document(load(R, text)?)?.canonical_bytes();
+    let mut retained = text.to_string();
+    for (current, previous) in [
+        (
+            "[[procedure]]\nid = \"jet.suspense_aging\"\nversion = 3\n".to_string(),
+            "[[procedure]]\nid = \"jet.suspense_aging\"\nversion = 2\n".to_string(),
+        ),
+        (
+            format!("summary = \"{SUSPENSE_V3_SUMMARY}\"\n"),
+            format!("summary = \"{SUSPENSE_V2_SUMMARY}\"\n"),
+        ),
+        (
+            format!("complexity = \"{SUSPENSE_V3_COMPLEXITY}\"\n"),
+            "complexity = \"O(legs log legs)\"\n".to_string(),
+        ),
+    ] {
+        if retained.matches(&current).count() != 1 {
+            return Err(invalid(R, "unavailable raw suspense registry revision"));
+        }
+        retained = retained.replacen(&current, &previous, 1);
+    }
+    if load(R, &retained)?.canonical_bytes() != expected {
+        return Err(invalid(
+            R,
+            "retained raw and canonical suspense registries disagree",
         ));
     }
     Ok(retained)
@@ -458,6 +527,34 @@ impl Procedures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_layering_rows_preserve_layout_independence_and_unrelated_changes() {
+        let before = layering_v2_document(load(R, PROCEDURES).unwrap()).unwrap();
+        let layout = PROCEDURES.replace("\nversion = 3\n", "\n# layout only\nversion = 3\n");
+        assert_eq!(
+            layering_v2_document(load(R, &layout).unwrap()).unwrap(),
+            before
+        );
+        // Raw commitments require their exact earlier layout, independently
+        // of the canonical reconstruction above.
+        assert!(layering_v2_registry_text(&layout).is_err());
+        assert_eq!(
+            load(R, &layering_v2_registry_text(PROCEDURES).unwrap()).unwrap(),
+            before
+        );
+        let mut unrelated = load(R, PROCEDURES).unwrap();
+        unrelated.arrays.get_mut("procedure").unwrap()[0]
+            .insert("evidence".into(), crate::toml::Value::Str("changed".into()));
+        assert_ne!(layering_v2_document(unrelated).unwrap(), before);
+        let future = PROCEDURES.replacen(
+            "id = \"graph.layering\"\nversion = 3",
+            "id = \"graph.layering\"\nversion = 4",
+            1,
+        );
+        assert!(layering_v2_document(load(R, &future).unwrap()).is_err());
+        assert!(layering_v2_registry_text(&future).is_err());
+    }
 
     const MINIMAL: &str = r#"
 schema_version = 1
