@@ -1279,13 +1279,13 @@ meaning = "Minimum share of the scope's directed PAID volume a party takes part 
 
 [[procedure]]
 id = "graph.layering"
-version = 2
+version = 3
 claim = "statistical"
 evidence = "FA-EVID-L35"
 tie_break = "entry_vid"
 complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
 calibration = "uncalibrated"
-summary = "Multi-hop pass-through chains of at least min_hops directed transfers within window_days through intermediary accounts that forward at least min_passthrough_bps of the incoming transfer without round-trip closure, backed by fnx DiGraph traversal and a CGSE witness. Version 2 skips a start account only when fewer accounts than a chain needs (min_hops + 1) are reachable from it; version 1 skipped on the shortest-path depth, so one direct transfer to a later account of a chain hid the whole chain."
+summary = "Multi-hop pass-through chains of at least min_hops directed transfers within window_days through intermediary accounts that forward at least min_passthrough_bps of the incoming transfer without round-trip closure, backed by fnx DiGraph traversal and a CGSE witness. Version 2 skips a start account only when fewer accounts than a chain needs (min_hops + 1) are reachable from it; version 1 skipped on the shortest-path depth, so one direct transfer to a later account of a chain hid the whole chain. Version 3 advances each hop in effective/recorded/entry-identity order; version 2 could revisit an earlier recorded transfer on the same effective day."
 
 [[parameter]]
 procedure = "graph.layering"
@@ -1307,13 +1307,13 @@ meaning = "Minimum basis points of incoming transfer forwarded at each intermedi
 
 [[procedure]]
 id = "graph.party_layering"
-version = 2
+version = 3
 claim = "statistical"
 evidence = "FA-EVID-L66"
 tie_break = "entry_vid"
 complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
 calibration = "uncalibrated"
-summary = "graph.layering over the party-level PAID projection (plan §4.1 PAID, §11.4; fa-b6xs): each balanced (unit, legal entity) partition of a live posting allocated from its credit legs' parties to its debit legs' parties under the registered largest-remainder law, a leg naming no single party being the book's, self-flows dropped. Flags multi-hop pass-through chains of at least min_hops transfers within window_days through intermediary parties that forward at least min_passthrough_bps, with a CGSE witness, naming the parties. It sees a counterparty chain that runs through one clearing account, which the account-level graph cannot. Version 2 skips a start party only when fewer parties than a chain needs are reachable from it, as graph.layering v2 does."
+summary = "graph.layering over the party-level PAID projection (plan §4.1 PAID, §11.4; fa-b6xs): each balanced (unit, legal entity) partition of a live posting allocated from its credit legs' parties to its debit legs' parties under the registered largest-remainder law, a leg naming no single party being the book's, self-flows dropped. Flags multi-hop pass-through chains of at least min_hops transfers within window_days through intermediary parties that forward at least min_passthrough_bps, with a CGSE witness, naming the parties. It sees a counterparty chain that runs through one clearing account, which the account-level graph cannot. Version 2 skips a start party only when fewer parties than a chain needs are reachable from it, as graph.layering v2 does. Version 3 advances each hop in effective/recorded/entry-identity order; version 2 could revisit an earlier recorded transfer on the same effective day."
 
 [[parameter]]
 procedure = "graph.party_layering"

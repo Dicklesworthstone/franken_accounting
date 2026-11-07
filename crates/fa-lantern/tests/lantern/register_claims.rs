@@ -220,7 +220,11 @@ fn attested_baselines_preserve_entities_and_every_distinct_attestation() {
             ]
         );
         assert!(run.findings[0].narrative.contains("entity ALPHA"));
-        witness::determinism(&snapshot, &h.book, procedure.as_ref()).unwrap();
+        assert!(
+            witness::determinism(&snapshot, &h.book, procedure.as_ref())
+                .unwrap()
+                .deterministic()
+        );
     }
 }
 
@@ -291,7 +295,11 @@ fn attested_gross_periods_keep_each_day_across_reversal_chains() {
                 Cite::Entry(VId(96_012)),
             ]
         );
-        witness::determinism(&snapshot, &h.book, procedure.as_ref()).unwrap();
+        assert!(
+            witness::determinism(&snapshot, &h.book, procedure.as_ref())
+                .unwrap()
+                .deterministic()
+        );
     }
     // A report cutoff selects claims; it cannot make a January 20 baseline
     // masquerade as a January 10 claim by truncating that claim's fold.
@@ -570,7 +578,11 @@ fn original_lineage_fallback_stays_separate_and_respects_entity_and_report_day()
     snapshot.coordinate.effective_through = Some(day(2026, 1, 10));
     let earlier = run_over(&snapshot, &h.book, &procedure).unwrap();
     assert!(earlier.findings.is_empty(), "{:?}", earlier.findings);
-    witness::determinism(&snapshot, &h.book, &procedure).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
 }
 
 #[test]

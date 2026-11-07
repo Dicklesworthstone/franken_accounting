@@ -249,8 +249,7 @@ impl Procedure for ThresholdSplitting {
                 message: "must be positive and strictly below threshold".into(),
             });
         }
-        let window_days = i32::try_from(self.params.get_u32("window_days")?)
-            .map_err(|_| LanternError::Overflow("window_days"))?;
+        let window_days = i64::from(self.params.get_u32("window_days")?);
         let min_count = self.params.get_u32("min_count")? as usize;
         if min_count < 2 {
             return Err(LanternError::Parameter {
@@ -339,7 +338,9 @@ impl Procedure for ThresholdSplitting {
                 let mut j = i;
                 let mut sum = 0i128;
                 let mut vids = Vec::new();
-                while j < list.len() && (list[j].0.0 - start_date.0) <= window_days {
+                while j < list.len()
+                    && i64::from(list[j].0.0) - i64::from(start_date.0) <= window_days
+                {
                     sum = sum
                         .checked_add(list[j].1)
                         .ok_or(LanternError::Overflow("split window sum"))?;

@@ -9,6 +9,153 @@ use fa_lantern::graph::{Layering, PartyLayering};
 use fa_lantern::projection::{BOOK_NODE, paid, party_flow_legs};
 use fa_model::{EntryClass, PARTY_DIMENSION};
 
+#[test]
+fn native_party_layering_advances_each_same_day_hop_and_preserves_version_two() {
+    for (order, current_finds_chain, retained_finds_chain) in [
+        ([(0, 1), (1, 2), (2, 3)], true, true),
+        ([(0, 1), (2, 3), (1, 2)], false, true),
+        ([(1, 2), (0, 1), (2, 3)], false, false),
+    ] {
+        let mut h = harness();
+        let mut values = Vec::new();
+        for code in ["ORDER-A", "ORDER-B", "ORDER-C", "ORDER-D"] {
+            let ctx = h.ctx();
+            let name = h.seal(code);
+            let description = h.seal("native party layering chronology control");
+            let spec = fa_model::PartySpec {
+                code: code.into(),
+                kind: fa_model::PartyKind::Counterparty,
+                name,
+                identifiers: Vec::new(),
+                external_ids: Vec::new(),
+            };
+            h.runtime
+                .block_on(create_party(
+                    &mut h.db,
+                    &ctx,
+                    &h.book,
+                    &spec,
+                    PREPARER,
+                    day(2026, 1, 5),
+                    code.as_bytes(),
+                    description,
+                    &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+                ))
+                .unwrap()
+                .unwrap();
+            values.push(fa_model::party_value_vid(h.book.book_id, code));
+        }
+        let mut posted = BTreeMap::new();
+        for (from, to) in order {
+            let mut proposal = h.proposal(&Spec::simple(day(2026, 1, 5), "1010", "1010", 10_000));
+            proposal.legs[0]
+                .dimension_set
+                .push((PARTY_DIMENSION, values[to]));
+            proposal.legs[1]
+                .dimension_set
+                .push((PARTY_DIMENSION, values[from]));
+            let ctx = h.ctx();
+            let request = PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: Capability::embedded(PREPARER, &["post"]).unwrap(),
+            };
+            let result = h
+                .runtime
+                .block_on(post(&mut h.db, &ctx, &h.book, request))
+                .unwrap()
+                .unwrap();
+            let Posted::Committed {
+                entry_ref,
+                recorded_at,
+                ..
+            } = result
+            else {
+                panic!("a fresh native party transfer must commit")
+            };
+            h.posted.push((entry_ref.vid, recorded_at));
+            posted.insert(from, (entry_ref.vid, recorded_at));
+        }
+        assert!(h.posted.windows(2).all(|pair| pair[0].1 < pair[1].1));
+        let path: Vec<_> = [0, 1, 2].into_iter().map(|from| posted[&from]).collect();
+        assert_eq!(
+            path.windows(2).all(|pair| pair[0].1 < pair[1].1),
+            current_finds_chain
+        );
+        let before = h.db.frontier().unwrap();
+        let snapshot = h.snapshot();
+        // These native entries all use the same account; only PAID has a path.
+        assert!(
+            run_over(&snapshot, &h.book, &Layering::new().unwrap())
+                .unwrap()
+                .findings
+                .is_empty()
+        );
+        for (version, expected) in [(2, retained_finds_chain), (3, current_finds_chain)] {
+            let procedure = fa_lantern::catalog::build_version(
+                PartyLayering::ID,
+                version,
+                Params::defaults(PartyLayering::ID).unwrap(),
+                fa_lantern::catalog::Inputs::default(),
+            )
+            .unwrap();
+            let result = run_over(&snapshot, &h.book, procedure.as_ref()).unwrap();
+            assert_eq!(result.version, version);
+            assert_eq!(result.findings.len(), usize::from(expected));
+            if expected {
+                let finding = &result.findings[0];
+                assert_eq!(finding.version, version);
+                assert_eq!(finding.severity, Severity::High);
+                assert_eq!(
+                    finding.statistic,
+                    Statistic {
+                        name: "layered_mantissa".into(),
+                        value: 10_000,
+                        scale: 2,
+                        population: 3,
+                    }
+                );
+                assert!(
+                    finding
+                        .narrative
+                        .contains("ORDER-A -> ORDER-B -> ORDER-C -> ORDER-D")
+                );
+                let cites: Vec<_> = finding
+                    .cites
+                    .iter()
+                    .filter_map(|cite| {
+                        if let Cite::Entry(vid) = cite {
+                            Some(*vid)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(cites, path.iter().map(|(vid, _)| *vid).collect::<Vec<_>>());
+                h.assert_cites_resolve(&result);
+            }
+            assert!(
+                witness::determinism(&snapshot, &h.book, procedure.as_ref())
+                    .unwrap()
+                    .deterministic()
+            );
+        }
+        for unsupported in [1, 4] {
+            assert!(matches!(
+                fa_lantern::catalog::build_version(
+                    PartyLayering::ID,
+                    unsupported,
+                    Params::defaults(PartyLayering::ID).unwrap(),
+                    fa_lantern::catalog::Inputs::default(),
+                ),
+                Err(LanternError::Version { .. })
+            ));
+        }
+        assert_eq!(h.db.frontier().unwrap(), before);
+    }
+}
+
 /// Registers a party in the snapshot: its vid and its dimension value.
 fn party(h: &Harness, snapshot: &mut Snapshot, code: &str) -> (VId, VId) {
     let party = fa_model::party_vid(h.book.book_id, code);
@@ -229,7 +376,11 @@ fn a_counterparty_chain_through_one_clearing_account_is_found_through_parties() 
         })
         .collect();
     assert_eq!(cited, vec![ab_vid, bc_vid, cd_vid]);
-    witness::determinism(&snapshot, &h.book, &PartyLayering::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &PartyLayering::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     // Planted: a last hop forwarding under 85% leaves a two-hop chain, below
     // min_hops, and nothing is flagged; the PAID digest moves with it.
@@ -311,7 +462,11 @@ fn a_counterparty_cycle_through_one_clearing_account_is_found_through_parties() 
         })
         .collect();
     assert_eq!(cited, vec![ab_vid, bc_vid, ca_vid]);
-    witness::determinism(&snapshot, &h.book, &PartyCircularFlows::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &PartyCircularFlows::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     let mut leaky = snapshot.clone();
     for leg in &mut leaky.entries[2].entry.proposal.legs {

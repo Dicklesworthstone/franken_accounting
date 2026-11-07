@@ -1126,6 +1126,13 @@ pub fn bind_version(id: &str, version: u16) -> Result<Row, LanternError> {
         row.effective_through = fa_registry::procedures::EffectiveThrough::NotTaken;
         return Ok(row);
     }
+    if version == 2
+        && row.version == 3
+        && matches!(id, graph::Layering::ID | graph::PartyLayering::ID)
+    {
+        row.version = 2;
+        return Ok(row);
+    }
     Err(LanternError::Version {
         procedure: row.id,
         code: version,

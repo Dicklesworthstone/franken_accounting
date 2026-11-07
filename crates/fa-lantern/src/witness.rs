@@ -10,6 +10,7 @@ use fa_journal::genesis::BookContext;
 use crate::{LanternError, Procedure, ProcedureRun, Snapshot, run_over};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use = "check deterministic() or inspect the individual comparisons"]
 pub struct Witness {
     pub procedure: String,
     pub digest: [u8; 32],
@@ -47,6 +48,8 @@ fn statistics(run: &ProcedureRun) -> Vec<(u8, String, i128, u8, u64)> {
 }
 
 /// Witness `procedure` over `snapshot`.
+/// Successful computation can report failed comparisons; callers must inspect
+/// the returned verdict rather than treating an Ok result as determinism.
 pub fn determinism(
     snapshot: &Snapshot,
     book: &BookContext,

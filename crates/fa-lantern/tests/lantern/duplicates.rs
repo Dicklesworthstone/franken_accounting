@@ -36,6 +36,111 @@ fn with(name: &str, value: i128) -> Near {
 }
 
 #[test]
+fn duplicate_day_windows_accept_u32_limits_and_widen_before_subtraction() {
+    for (id, later_amount) in [(SameSameDifferent::ID, 100_000), (Near::ID, 100_001)] {
+        let mut h = harness();
+        let a = invoice(
+            &mut h,
+            day(2026, 1, 10),
+            "6000",
+            100_000,
+            "Invoice 1043 Acme Supplies",
+        );
+        let b = invoice(
+            &mut h,
+            day(2026, 1, 11),
+            "6000",
+            later_amount,
+            "Invoice 1043 Acme Supplies",
+        );
+        let before = h.db.frontier().unwrap();
+        let snapshot = h.snapshot();
+        let procedure = |window| {
+            fa_lantern::catalog::build(
+                id,
+                Params::defaults(id)
+                    .unwrap()
+                    .set("window_days", window)
+                    .unwrap(),
+                fa_lantern::catalog::Inputs::default(),
+            )
+            .unwrap()
+        };
+        for (window, expected) in [(0, false), (1, true), (4_294_967_295, true)] {
+            let result = run_over(&snapshot, &h.book, procedure(window).as_ref()).unwrap();
+            assert_eq!(result.findings.len(), usize::from(expected), "{id}");
+            if expected {
+                assert_eq!(
+                    result.findings[0].cites,
+                    vec![Cite::Entry(a), Cite::Entry(b)]
+                );
+                assert_eq!(result.findings[0].severity, Severity::Low);
+                assert_eq!(result.findings[0].statistic.population, 2);
+                if id == SameSameDifferent::ID {
+                    assert_eq!(
+                        result.findings[0].statistic,
+                        Statistic::count("days_apart", 1, 2)
+                    );
+                } else {
+                    assert_eq!(
+                        result.findings[0].statistic,
+                        Statistic::count("similarity_pct", 100, 2)
+                    );
+                }
+            }
+        }
+        for invalid in [-1, 4_294_967_296] {
+            assert!(matches!(
+                run_over(&snapshot, &h.book, procedure(invalid).as_ref()),
+                Err(LanternError::Parameter { .. })
+            ));
+        }
+        assert!(
+            determinism(&snapshot, &h.book, procedure(4_294_967_295).as_ref())
+                .unwrap()
+                .deterministic()
+        );
+
+        // Preserve the actual recorded sequences; only these arithmetic
+        // snapshots' civil dates change, without an admission/certificate claim.
+        let mut wide = snapshot.clone();
+        wide.coordinate.effective_through = None;
+        for entry in &mut wide.entries {
+            if entry.vid == a {
+                entry.entry.proposal.effective_date = DateDay(i32::MIN);
+            } else if entry.vid == b {
+                entry.entry.proposal.effective_date = DateDay(i32::MAX);
+            }
+        }
+        let result = run_over(&wide, &h.book, procedure(4_294_967_295).as_ref()).unwrap();
+        assert_eq!(result.findings.len(), 1, "{id}");
+        assert_eq!(
+            result.findings[0].cites,
+            vec![Cite::Entry(a), Cite::Entry(b)]
+        );
+        if id == SameSameDifferent::ID {
+            assert_eq!(
+                result.findings[0].statistic,
+                Statistic::count("days_apart", 4_294_967_295, 2)
+            );
+        } else {
+            assert!(
+                result.findings[0]
+                    .narrative
+                    .contains("4294967295 day(s) apart")
+            );
+        }
+        assert!(
+            run_over(&wide, &h.book, procedure(4_294_967_294).as_ref())
+                .unwrap()
+                .findings
+                .is_empty()
+        );
+        assert_eq!(h.db.frontier().unwrap(), before);
+    }
+}
+
+#[test]
 fn near_duplicates_pair_amounts_inside_tolerance_with_similar_descriptions() {
     let mut h = harness();
     let a = invoice(

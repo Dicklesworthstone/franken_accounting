@@ -127,7 +127,7 @@ fn charge<E>(
 pub(crate) fn find<E>(
     edges: &[Edge],
     max_hops: usize,
-    window_days: i32,
+    window_days: i64,
     max_steps: u64,
     checkpoint: &mut dyn FnMut() -> Result<(), E>,
 ) -> Result<Cycles, Error<E>> {
@@ -167,7 +167,7 @@ pub(crate) fn find<E>(
             accounts: BTreeSet::from([origin.from, origin.to]),
             entries: BTreeSet::from([origin.entry]),
             max_hops,
-            window_days: i64::from(window_days),
+            window_days,
             steps: &mut steps,
             max_steps,
             checkpoint,
@@ -196,7 +196,13 @@ mod tests {
         window_days: i32,
         max_steps: u64,
     ) -> Result<Cycles, Error<core::convert::Infallible>> {
-        super::find(edges, max_hops, window_days, max_steps, &mut || Ok(()))
+        super::find(
+            edges,
+            max_hops,
+            i64::from(window_days),
+            max_steps,
+            &mut || Ok(()),
+        )
     }
 
     fn edge(entry: u128, from: u128, to: u128, day: i32) -> Edge {
@@ -301,6 +307,20 @@ mod tests {
         assert!(find(&edges, 2, i32::MAX, 1000).unwrap().paths.is_empty());
         edges[1].day = i32::MIN + 1;
         assert_eq!(find(&edges, 2, 1, 1000).unwrap().paths.len(), 1);
+    }
+
+    #[test]
+    fn full_u32_window_includes_the_entire_civil_day_span() {
+        // Pure graph arithmetic inputs, not journal admission at extreme dates.
+        let edges = [edge(1, 10, 20, i32::MIN), edge(2, 20, 10, i32::MAX)];
+        let run = |window| {
+            super::find(&edges, 2, window, 1000, &mut || {
+                Ok::<(), core::convert::Infallible>(())
+            })
+            .unwrap()
+        };
+        assert_eq!(run(i64::from(u32::MAX)).paths, vec![vec![0, 1]]);
+        assert!(run(i64::from(u32::MAX) - 1).paths.is_empty());
     }
 
     #[test]

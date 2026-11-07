@@ -447,8 +447,7 @@ impl Procedure for SameSameDifferent {
         _book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let window = i32::try_from(self.params.get_u32("window_days")?)
-            .map_err(|_| LanternError::Overflow("window_days"))?;
+        let window = i64::from(self.params.get_u32("window_days")?);
         // `(effective day, recorded sequence, entry)` per leg multiset.
         let mut groups: BTreeMap<LegMultiset, Vec<(i32, u64, VId)>> = BTreeMap::new();
         let mut population = 0u64;
@@ -489,7 +488,7 @@ impl Procedure for SameSameDifferent {
                     continue;
                 };
                 work.compare(1)?;
-                let apart = day - list[i].0;
+                let apart = i64::from(day) - i64::from(list[i].0);
                 if apart > window {
                     continue;
                 }
@@ -622,8 +621,7 @@ impl Procedure for Near {
         book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let window = i32::try_from(self.params.get_u32("window_days")?)
-            .map_err(|_| LanternError::Overflow("window_days"))?;
+        let window = i64::from(self.params.get_u32("window_days")?);
         let tolerance = self.params.get_u32("tolerance_bp")?;
         if u128::from(tolerance) > BP {
             return Err(LanternError::Parameter {
@@ -700,7 +698,7 @@ impl Procedure for Near {
             list.sort_unstable_by_key(|n| (n.day, n.recorded, n.vid));
             for (i, earlier) in list.iter().enumerate() {
                 for (examined, later) in list[i + 1..].iter().enumerate() {
-                    if later.day - earlier.day > window {
+                    if i64::from(later.day) - i64::from(earlier.day) > window {
                         break;
                     }
                     if examined as u64 == MAX_NEAR_CANDIDATES {
@@ -730,7 +728,7 @@ impl Procedure for Near {
                     {
                         continue;
                     }
-                    let apart = later.day - earlier.day;
+                    let apart = i64::from(later.day) - i64::from(earlier.day);
                     out.push(finding(
                         Self::ID,
                         Severity::Low,

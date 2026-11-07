@@ -4003,7 +4003,11 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
             .iter()
             .any(|f| f.cites.contains(&Cite::Entry(VId(90_004))))
     );
-    witness::determinism(&snapshot, &h.book, &UnusualPreparers::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &UnusualPreparers::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     // 3. jet.manual_vs_rule
     let mvr = run_over(&snapshot, &h.book, &ManualVsRule::new().unwrap()).unwrap();
@@ -4012,26 +4016,42 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
             .iter()
             .any(|f| f.cites.contains(&Cite::Entry(VId(90_004))))
     );
-    witness::determinism(&snapshot, &h.book, &ManualVsRule::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &ManualVsRule::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     // 4. jet.large_round_reversals
     let lrr = run_over(&snapshot, &h.book, &LargeRoundReversals::new().unwrap()).unwrap();
     assert_eq!(lrr.findings.len(), 1);
     assert!(lrr.findings[0].cites.contains(&Cite::Entry(VId(90_005))));
     assert!(lrr.findings[0].cites.contains(&Cite::Entry(VId(90_006))));
-    witness::determinism(&snapshot, &h.book, &LargeRoundReversals::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &LargeRoundReversals::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     // 5. jet.suspense_aging
     let sa = run_over(&snapshot, &h.book, &SuspenseAging::new().unwrap()).unwrap();
     assert_eq!(sa.findings.len(), 1);
     assert!(sa.findings[0].cites.contains(&Cite::Account(susp_vid)));
-    witness::determinism(&snapshot, &h.book, &SuspenseAging::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &SuspenseAging::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     // 6. jet.intercompany_unmatched
     let icu = run_over(&snapshot, &h.book, &IntercompanyUnmatched::new().unwrap()).unwrap();
     assert_eq!(icu.findings.len(), 1);
     assert!(icu.findings[0].cites.contains(&Cite::Entry(VId(90_008))));
-    witness::determinism(&snapshot, &h.book, &IntercompanyUnmatched::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &IntercompanyUnmatched::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
     // An unmatched intercompany net of exactly i128::MIN (two credits of
     // 2^126) is a typed overflow, not a panic in its magnitude.
     let mut extreme = snapshot.clone();
@@ -4074,7 +4094,11 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
     )
     .unwrap();
     assert_eq!(sd.findings.len(), 1);
-    witness::determinism(&snapshot, &h.book, &SecondDigit::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &SecondDigit::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
     let naive_sd: u64 = naive::second_digit_counts_for(&naive_rows, Some(usd.0), true)
         .iter()
         .sum();
@@ -4092,7 +4116,11 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
     )
     .unwrap();
     assert_eq!(ftd.findings.len(), 1);
-    witness::determinism(&snapshot, &h.book, &FirstTwoDigits::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &FirstTwoDigits::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
     let naive_ftd: u64 = naive::first_two_digits_counts_for(&naive_rows, Some(usd.0), true)
         .iter()
         .sum();
@@ -4101,7 +4129,11 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
     // 8. numbers.relative_size_factor & oracle
     let rsf = run_over(&snapshot, &h.book, &RelativeSizeFactor::new().unwrap()).unwrap();
     assert!(!rsf.findings.is_empty());
-    witness::determinism(&snapshot, &h.book, &RelativeSizeFactor::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &RelativeSizeFactor::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
     let oracle_rsf = naive::relative_size_factor_by_account(&naive_rows, 3, 50_000);
     assert_eq!(oracle_rsf.len(), 1);
     assert_eq!(oracle_rsf[0].0, "6000");
@@ -4111,7 +4143,11 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
     assert_eq!(ts.findings.len(), 1);
     assert!(ts.findings[0].cites.contains(&Cite::Entry(VId(90_009))));
     assert!(ts.findings[0].cites.contains(&Cite::Entry(VId(90_010))));
-    witness::determinism(&snapshot, &h.book, &ThresholdSplitting::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &ThresholdSplitting::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 }
 
 #[test]
@@ -4285,38 +4321,62 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
     let cf = run_over(&snapshot, &h.book, &CircularFlows::new().unwrap()).unwrap();
     assert!(!cf.findings.is_empty());
     assert!(cf.findings[0].narrative.contains("cgse_witness="));
-    witness::determinism(&snapshot, &h.book, &CircularFlows::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &CircularFlows::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     // 2. graph.layering
     let lay = run_over(&snapshot, &h.book, &Layering::new().unwrap()).unwrap();
     assert!(!lay.findings.is_empty());
     assert!(lay.findings[0].narrative.contains("cgse_witness="));
-    witness::determinism(&snapshot, &h.book, &Layering::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &Layering::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     // 3. graph.communities
     let comm = run_over(&snapshot, &h.book, &Communities::new().unwrap()).unwrap();
     assert!(!comm.findings.is_empty());
     assert!(comm.findings[0].narrative.contains("cgse_witness="));
-    witness::determinism(&snapshot, &h.book, &Communities::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &Communities::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     // 4. graph.related_party_exposure
     let rpe = run_over(&snapshot, &h.book, &RelatedPartyExposure::new().unwrap()).unwrap();
     assert_eq!(rpe.findings.len(), 1);
     assert!(rpe.findings[0].cites.contains(&Cite::Entry(VId(91_001))));
     assert!(rpe.findings[0].narrative.contains("cgse_witness="));
-    witness::determinism(&snapshot, &h.book, &RelatedPartyExposure::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &RelatedPartyExposure::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     // 5. graph.shell_signature
     let ss = run_over(&snapshot, &h.book, &ShellSignature::new().unwrap()).unwrap();
     assert!(!ss.findings.is_empty());
     assert!(ss.findings[0].narrative.contains("cgse_witness="));
-    witness::determinism(&snapshot, &h.book, &ShellSignature::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &ShellSignature::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     // 6. graph.concentration
     let conc = run_over(&snapshot, &h.book, &Concentration::new().unwrap()).unwrap();
     assert!(!conc.findings.is_empty());
     assert!(conc.findings[0].narrative.contains("cgse_witness="));
-    witness::determinism(&snapshot, &h.book, &Concentration::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &Concentration::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     // 7. graph.identity_resolution
     let ir = run_over(&snapshot, &h.book, &IdentityResolution::new().unwrap()).unwrap();
@@ -4324,7 +4384,122 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
     assert!(ir.findings[0].cites.contains(&Cite::Principal(p_aff1)));
     assert!(ir.findings[0].cites.contains(&Cite::Principal(p_aff2)));
     assert!(ir.findings[0].narrative.contains("cgse_witness="));
-    witness::determinism(&snapshot, &h.book, &IdentityResolution::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &IdentityResolution::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
+}
+
+#[test]
+fn inventory_aging_preserves_native_thresholds_and_exact_wide_day_severity() {
+    use fa_lantern::aging::InventoryAging;
+
+    let mut h = harness();
+    let ctx = h.ctx();
+    let spec = AccountRoleSpec {
+        account: h.account("1000"),
+        role: "inventory".into(),
+        assigned: true,
+    };
+    let description = h.seal("native inventory duration control");
+    h.runtime
+        .block_on(record_account_role(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &spec,
+            PREPARER,
+            b"inventory-duration-role",
+            description,
+            &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    let entry = h.post(&Spec::simple(day(2026, 1, 1), "1000", "4000", 10_000));
+    let before = h.db.frontier().unwrap();
+    let snapshot = h.snapshot();
+    let procedure = |threshold| {
+        InventoryAging::with(
+            Params::defaults(InventoryAging::ID)
+                .unwrap()
+                .set("stale_days", threshold)
+                .unwrap(),
+        )
+    };
+    let expected = Statistic {
+        name: "stale_inventory_balance".into(),
+        value: 10_000,
+        scale: 2,
+        population: 1,
+    };
+    // Jan 1 through Apr 30 is 119 civil days. The threshold is strict,
+    // while high severity begins at twice the threshold, inclusively.
+    for (threshold, severity) in [
+        (59, Some(Severity::High)),
+        (60, Some(Severity::Medium)),
+        (118, Some(Severity::Medium)),
+        (119, None),
+        (4_294_967_295, None),
+    ] {
+        let result = run_over(&snapshot, &h.book, &procedure(threshold)).unwrap();
+        assert_eq!(result.findings.len(), usize::from(severity.is_some()));
+        if let Some(severity) = severity {
+            assert_eq!(result.findings[0].severity, severity);
+            assert_eq!(result.findings[0].statistic, expected);
+            assert!(result.findings[0].narrative.contains("119 day(s)"));
+            assert!(
+                result.findings[0]
+                    .cites
+                    .contains(&Cite::Account(h.account("1000")))
+            );
+            assert!(
+                result.findings[0]
+                    .cites
+                    .contains(&Cite::Leg { entry, ordinal: 0 })
+            );
+            h.assert_cites_resolve(&result);
+        }
+    }
+    assert!(
+        witness::determinism(&snapshot, &h.book, &procedure(60))
+            .unwrap()
+            .deterministic()
+    );
+
+    // Date-only perturbations test the arithmetic domain, not admission of
+    // extreme dates or validity of the resulting posting certificate.
+    let mut wide = snapshot.clone();
+    wide.coordinate.effective_through = Some(DateDay(i32::MAX));
+    wide.entries
+        .iter_mut()
+        .find(|item| item.vid == entry)
+        .unwrap()
+        .entry
+        .proposal
+        .effective_date = DateDay(i32::MIN);
+    wide.fold_roles().unwrap();
+    for (threshold, severity) in [
+        (2_147_483_647, Some(Severity::High)),
+        (2_147_483_648, Some(Severity::Medium)),
+        (4_294_967_294, Some(Severity::Medium)),
+        (4_294_967_295, None),
+    ] {
+        let result = run_over(&wide, &h.book, &procedure(threshold)).unwrap();
+        assert_eq!(result.findings.len(), usize::from(severity.is_some()));
+        if let Some(severity) = severity {
+            assert_eq!(result.findings[0].severity, severity);
+            assert_eq!(result.findings[0].statistic, expected);
+            assert!(result.findings[0].narrative.contains("4294967295 day(s)"));
+        }
+    }
+    for invalid in [-1, 0, 4_294_967_296] {
+        assert!(matches!(
+            run_over(&snapshot, &h.book, &procedure(invalid)),
+            Err(LanternError::Parameter { name, .. }) if name == "stale_days"
+        ));
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
 }
 
 #[test]
@@ -4775,11 +4950,83 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     let r_ic = run_over(&snapshot, &h.book, &ReconIntercompany::new().unwrap()).unwrap();
     assert_eq!(r_ic.findings.len(), 1);
     assert_eq!(r_ic.findings[0].severity, Severity::Critical);
-    witness::determinism(&snapshot, &h.book, &ReconIntercompany::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &ReconIntercompany::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     let r_lap = run_over(&snapshot, &h.book, &ReconLapping::new().unwrap()).unwrap();
     assert_eq!(r_lap.findings.len(), 1);
-    witness::determinism(&snapshot, &h.book, &ReconLapping::new().unwrap()).unwrap();
+    assert_eq!(r_lap.findings[0].severity, Severity::High);
+    assert_eq!(
+        r_lap.findings[0].statistic,
+        Statistic::count("settlement_delay_days", 5, 3)
+    );
+    let lapping = |window| {
+        ReconLapping::with(
+            Params::defaults(ReconLapping::ID)
+                .unwrap()
+                .set("window_days", window)
+                .unwrap(),
+        )
+    };
+    for (window, count) in [(2, 0), (3, 1), (4_294_967_295, 1)] {
+        let result = run_over(&snapshot, &h.book, &lapping(window)).unwrap();
+        assert_eq!(result.findings.len(), count);
+        if count == 1 {
+            assert_eq!(result.findings, r_lap.findings);
+        }
+    }
+    // This existing hostile snapshot is not a native admission fixture.
+    // Keep only the planted wave and role controls, then span all DateDay
+    // values to check both window comparisons and the reported delay.
+    let mut wide_lap = snapshot.clone();
+    wide_lap.coordinate.effective_through = Some(DateDay(i32::MAX));
+    wide_lap.entries.retain(|entry| {
+        [VId(92_002), VId(92_003), VId(92_004)].contains(&entry.vid)
+            || entry.entry.proposal.class == EntryClass::SCHEMA_CONTROL
+    });
+    for (vid, date) in [
+        (VId(92_002), i32::MIN),
+        (VId(92_003), 0),
+        (VId(92_004), i32::MAX),
+    ] {
+        wide_lap
+            .entries
+            .iter_mut()
+            .find(|entry| entry.vid == vid)
+            .unwrap()
+            .entry
+            .proposal
+            .effective_date = DateDay(date);
+    }
+    wide_lap.fold_roles().unwrap();
+    assert!(
+        run_over(&wide_lap, &h.book, &lapping(2_147_483_647))
+            .unwrap()
+            .findings
+            .is_empty()
+    );
+    let wide_result = run_over(&wide_lap, &h.book, &lapping(4_294_967_295)).unwrap();
+    assert_eq!(wide_result.findings.len(), 1);
+    assert_eq!(wide_result.findings[0].severity, Severity::High);
+    assert_eq!(wide_result.findings[0].cites, r_lap.findings[0].cites);
+    assert_eq!(
+        wide_result.findings[0].statistic,
+        Statistic::count("settlement_delay_days", 4_294_967_295, 3)
+    );
+    for invalid in [-1, 0, 4_294_967_296] {
+        assert!(matches!(
+            run_over(&snapshot, &h.book, &lapping(invalid)),
+            Err(LanternError::Parameter { name, .. }) if name == "window_days"
+        ));
+    }
+    assert!(
+        witness::determinism(&snapshot, &h.book, &ReconLapping::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     let r_b2b = run_over(
         &snapshot,
@@ -4789,12 +5036,15 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     .unwrap();
     assert_eq!(r_b2b.findings.len(), 1);
     assert_eq!(r_b2b.findings[0].severity, Severity::Critical);
-    witness::determinism(
-        &snapshot,
-        &h.book,
-        &ReconAttestedRegisterCompare::new().unwrap(),
-    )
-    .unwrap();
+    assert!(
+        witness::determinism(
+            &snapshot,
+            &h.book,
+            &ReconAttestedRegisterCompare::new().unwrap(),
+        )
+        .unwrap()
+        .deterministic()
+    );
 
     let r_ul = run_over(&snapshot, &h.book, &UnrecordedLiabilities::new().unwrap()).unwrap();
     assert!(!r_ul.findings.is_empty());
@@ -4803,7 +5053,11 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
             .iter()
             .any(|f| f.cites.contains(&Cite::Entry(VId(92_005))))
     );
-    witness::determinism(&snapshot, &h.book, &UnrecordedLiabilities::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &UnrecordedLiabilities::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     let r_sub = run_over(&snapshot, &h.book, &SubsequentEvents::new().unwrap()).unwrap();
     assert!(!r_sub.findings.is_empty());
@@ -4813,7 +5067,11 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
             .iter()
             .any(|f| f.cites.contains(&Cite::Entry(VId(92_006))))
     );
-    witness::determinism(&snapshot, &h.book, &SubsequentEvents::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &SubsequentEvents::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     let r_pmc = run_over(&snapshot, &h.book, &PartyMasterChanges::new().unwrap()).unwrap();
     assert!(!r_pmc.findings.is_empty());
@@ -4823,7 +5081,11 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
             .iter()
             .any(|f| f.cites.contains(&Cite::Entry(VId(92_007))))
     );
-    witness::determinism(&snapshot, &h.book, &PartyMasterChanges::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &PartyMasterChanges::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     let r_pg = run_over(&snapshot, &h.book, &PayrollGhost::new().unwrap()).unwrap();
     assert!(!r_pg.findings.is_empty());
@@ -4832,17 +5094,29 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
             .iter()
             .any(|f| f.cites.contains(&Cite::Entry(VId(92_008))))
     );
-    witness::determinism(&snapshot, &h.book, &PayrollGhost::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &PayrollGhost::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     let r_cap = run_over(&snapshot, &h.book, &ExpenseCapitalization::new().unwrap()).unwrap();
     assert_eq!(r_cap.findings.len(), 1);
     assert!(r_cap.findings[0].cites.contains(&Cite::Entry(VId(92_009))));
-    witness::determinism(&snapshot, &h.book, &ExpenseCapitalization::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &ExpenseCapitalization::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     let r_inv = run_over(&snapshot, &h.book, &InventoryAging::new().unwrap()).unwrap();
     assert_eq!(r_inv.findings.len(), 1);
     assert!(r_inv.findings[0].cites.contains(&Cite::Account(inv_vid)));
-    witness::determinism(&snapshot, &h.book, &InventoryAging::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &InventoryAging::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
     // A reversal dated after the as-of day did not exist on it: the stale
     // position on Apr 30 is reported all the same.
     let mut reversed_later = snapshot.clone();
@@ -4898,11 +5172,19 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     let r_rev = run_over(&snapshot, &h.book, &ReversalPatterns::new().unwrap()).unwrap();
     assert_eq!(r_rev.findings.len(), 1);
     assert!(r_rev.findings[0].cites.contains(&Cite::Entry(VId(92_006))));
-    witness::determinism(&snapshot, &h.book, &ReversalPatterns::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &ReversalPatterns::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     let r_cc = run_over(&snapshot, &h.book, &ConfirmCoverage::new().unwrap()).unwrap();
     assert!(!r_cc.findings.is_empty());
-    witness::determinism(&snapshot, &h.book, &ConfirmCoverage::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &ConfirmCoverage::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 }
 
 /// A native Replace publishes two successors of one target. A later Replace
@@ -5125,7 +5407,11 @@ fn events_subsequent_closed_boundary_is_the_latest_transition_never_an_opened_pe
             "January {label}: the Adjusting entry effective 2026-02-05 must be reported iff January is a closed boundary"
         );
         if expected {
-            witness::determinism(&snapshot, &h.book, &SubsequentEvents::new().unwrap()).unwrap();
+            assert!(
+                witness::determinism(&snapshot, &h.book, &SubsequentEvents::new().unwrap())
+                    .unwrap()
+                    .deterministic()
+            );
         }
     }
 }
@@ -6798,7 +7084,11 @@ fn assertion_drift_cites_the_attestation_and_only_the_later_entries_that_move_it
         "{}",
         f.narrative
     );
-    witness::determinism(&snapshot, &h.book, &AssertionDrift::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &AssertionDrift::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 
     // Once the later entry is gone the cell holds again: no finding.
     snapshot.entries.retain(|e| e.vid != VId(1_002));
@@ -7112,7 +7402,11 @@ mod assertion_drift_period_tests {
                 Cite::Entry(VId(94_002)),
             ]
         );
-        witness::determinism(&snapshot, &h.book, &procedure).unwrap();
+        assert!(
+            witness::determinism(&snapshot, &h.book, &procedure)
+                .unwrap()
+                .deterministic()
+        );
     }
 
     #[test]
@@ -7159,7 +7453,11 @@ mod assertion_drift_period_tests {
             Some(&Cite::Entry(VId(94_012)))
         );
         assert!(!wrong.findings[0].cites.contains(&Cite::Entry(VId(94_013))));
-        witness::determinism(&snapshot, &h.book, &procedure).unwrap();
+        assert!(
+            witness::determinism(&snapshot, &h.book, &procedure)
+                .unwrap()
+                .deterministic()
+        );
     }
 
     #[test]
@@ -7251,7 +7549,11 @@ mod assertion_drift_period_tests {
             Some(&Cite::Entry(VId(94_025)))
         );
         assert_eq!(wrong.findings[0].cites.len(), 4);
-        witness::determinism(&snapshot, &h.book, &procedure).unwrap();
+        assert!(
+            witness::determinism(&snapshot, &h.book, &procedure)
+                .unwrap()
+                .deterministic()
+        );
     }
 
     #[test]
@@ -7636,7 +7938,11 @@ fn a_direct_transfer_does_not_hide_a_layering_chain() {
         "{:?}",
         with_shortcut.findings
     );
-    witness::determinism(&snapshot, &h.book, &Layering::new().unwrap()).unwrap();
+    assert!(
+        witness::determinism(&snapshot, &h.book, &Layering::new().unwrap())
+            .unwrap()
+            .deterministic()
+    );
 }
 
 mod party_master_changes_scaling {

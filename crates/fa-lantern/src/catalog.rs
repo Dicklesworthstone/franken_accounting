@@ -208,6 +208,8 @@ pub fn build_version(
     match (id, version) {
         (RoundAmounts::ID, 1) => Ok(Box::new(RoundAmounts::with_version(params, 1))),
         (PeriodEndTiming::ID, 1) => Ok(Box::new(PeriodEndTiming::with_version(params, 1))),
+        (Layering::ID, 2) => Ok(Box::new(Layering::with_version(params, 2))),
+        (PartyLayering::ID, 2) => Ok(Box::new(PartyLayering::with_version(params, 2))),
         _ => build(id, params, inputs),
     }
 }

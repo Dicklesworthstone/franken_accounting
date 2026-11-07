@@ -41,8 +41,8 @@ fn finding(
     }
 }
 
-fn days(params: &Params, name: &'static str) -> Result<i32, LanternError> {
-    i32::try_from(params.get_u32(name)?).map_err(|_| LanternError::Overflow(name))
+fn days(params: &Params, name: &'static str) -> Result<i64, LanternError> {
+    Ok(i64::from(params.get_u32(name)?))
 }
 
 /// Whether `account` is an asset account of the snapshot's chart.
@@ -231,7 +231,7 @@ impl Procedure for RoundTrips {
                 };
                 work.compare(1)?;
                 let gap = i64::from(r.effective_date.0) - i64::from(o.effective_date.0);
-                if !(0..=i64::from(window_days)).contains(&gap) {
+                if !(0..=window_days).contains(&gap) {
                     continue;
                 }
                 used[i] = true;
@@ -245,7 +245,7 @@ impl Procedure for RoundTrips {
                 let near_end = [out_days, back_days]
                     .iter()
                     .flatten()
-                    .any(|d| (0..=i64::from(period_end_days)).contains(d));
+                    .any(|d| (0..=period_end_days).contains(d));
                 let severity = if near_end {
                     Severity::High
                 } else {
@@ -278,8 +278,8 @@ fn multi_round_trips(
     snapshot: &Snapshot,
     book: &BookContext,
     work: &mut Meter<'_>,
-    window_days: i32,
-    period_end_days: i32,
+    window_days: i64,
+    period_end_days: i64,
     max_hops: usize,
     max_steps: u64,
 ) -> Result<Vec<Finding>, LanternError> {
@@ -344,7 +344,7 @@ fn multi_round_trips(
         ]
         .iter()
         .flatten()
-        .any(|d| (0..=i64::from(period_end_days)).contains(d));
+        .any(|d| (0..=period_end_days).contains(d));
         let mut cites = Vec::with_capacity(path.len() * 2);
         for index in &path {
             cites.push(Cite::Entry(sources[*index].leg.entry));
@@ -398,7 +398,7 @@ impl Structuring {
 struct Rule {
     threshold: i128,
     floor: i128,
-    window_days: i32,
+    window_days: i64,
     min_count: usize,
     currency: u16,
 }
@@ -553,7 +553,7 @@ impl Procedure for Structuring {
             for l in group {
                 if let Some(last) = chain.last()
                     && i64::from(l.effective_date.0) - i64::from(last.effective_date.0)
-                        > i64::from(rule.window_days)
+                        > rule.window_days
                 {
                     rule.report(&mut out, &chain, key, candidates, scale)?;
                     chain.clear();
@@ -1163,7 +1163,7 @@ fn circular_flows(
                                 && l.effective_date.0 >= cur_day
                                 && (i64::from(l.effective_date.0)
                                     - i64::from(first.effective_date.0))
-                                    <= i64::from(window_days)
+                                    <= window_days
                                 && l.entry != scc_legs[last_idx].entry
                         })
                     {
@@ -1187,7 +1187,7 @@ fn circular_flows(
                             && !visited_accts.contains(&l.to)
                             && l.effective_date.0 >= cur_day
                             && (i64::from(l.effective_date.0) - i64::from(first.effective_date.0))
-                                <= i64::from(window_days)
+                                <= window_days
                             && amount_share_bps(
                                 l.mantissa.min(min_flow),
                                 first.mantissa,
@@ -1269,17 +1269,20 @@ fn circular_flows(
 /// `graph.layering`: multi-hop pass-through chains (`>= min_hops`) within
 /// `window_days` where each intermediary forwards at least `min_passthrough_bps`
 /// without closing a cycle, backed by `fnx` DiGraph traversal and CGSE witness.
+/// Version 3 advances after every accepted temporal hop; version 2 retains
+/// its original same-day search for historical certificate replay.
 pub struct Layering {
     params: Params,
+    version: u16,
 }
-crate::jet::procedure_boilerplate!(Layering, "graph.layering");
+crate::jet::procedure_boilerplate!(Layering, "graph.layering", 3);
 
 impl Procedure for Layering {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        self.version
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1311,15 +1314,16 @@ impl Procedure for Layering {
 /// drops.
 pub struct PartyLayering {
     params: Params,
+    version: u16,
 }
-crate::jet::procedure_boilerplate!(PartyLayering, "graph.party_layering");
+crate::jet::procedure_boilerplate!(PartyLayering, "graph.party_layering", 3);
 
 impl Procedure for PartyLayering {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        self.version
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1430,16 +1434,26 @@ fn layering(
             let mut cur_day = first.effective_date.0;
             let mut prev_amt = first.mantissa;
             let mut min_amt = first.mantissa;
+            let mut last_idx = start_idx;
             while chain.len() < 8 {
                 work.compare(1)?;
                 let mut next_opt = None;
-                for (idx, l) in legs.iter().enumerate().skip(start_idx + 1) {
+                // The sorted legs carry the effective/recorded/identity
+                // order. A later hop cannot consume an earlier same-day
+                // transfer. Keep the old search only for explicit v2 runs.
+                let next_start = if procedure.1 == 2 {
+                    start_idx + 1
+                } else {
+                    last_idx + 1
+                };
+                for (idx, l) in legs.iter().enumerate().skip(next_start) {
                     if !used[idx]
                         && !chain.contains(&idx)
                         && l.from == cur_acct
                         && !visited.contains(&l.to)
                         && l.effective_date.0 >= cur_day
-                        && (l.effective_date.0 - first.effective_date.0) <= window_days
+                        && (i64::from(l.effective_date.0) - i64::from(first.effective_date.0))
+                            <= window_days
                         && l.mantissa <= prev_amt
                         && amount_share_bps(l.mantissa, prev_amt, passthrough)? >= min_pass_bps
                     {
@@ -1449,6 +1463,7 @@ fn layering(
                 }
                 if let Some((next_idx, next_leg)) = next_opt {
                     chain.push(next_idx);
+                    last_idx = next_idx;
                     visited.insert(next_leg.to);
                     cur_acct = next_leg.to;
                     cur_day = next_leg.effective_date.0;

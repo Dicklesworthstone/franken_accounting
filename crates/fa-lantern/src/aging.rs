@@ -201,7 +201,7 @@ impl Procedure for InventoryAging {
         book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let stale_days = self.params.get_u32("stale_days")?;
+        let stale_days = i64::from(self.params.get_u32("stale_days")?);
         if stale_days == 0 {
             return Err(LanternError::Parameter {
                 procedure: Self::ID.into(),
@@ -281,7 +281,7 @@ impl Procedure for InventoryAging {
             let Some(ref_date) = pos.latest_credit.or(pos.earliest_debit) else {
                 continue;
             };
-            let days_stale = (as_of.0 - ref_date.0).max(0) as u32;
+            let days_stale = (i64::from(as_of.0) - i64::from(ref_date.0)).max(0);
             if days_stale > stale_days {
                 pos.debit_legs.sort_unstable();
                 let mut cites = vec![Cite::Account(acct_vid)];
@@ -293,7 +293,7 @@ impl Procedure for InventoryAging {
                     .get(&acct_vid)
                     .map_or("?", |a| a.code.as_str());
                 let scale = crate::unit_scale(book, unit_id)?;
-                let severity = if days_stale >= stale_days.saturating_mul(2) {
+                let severity = if days_stale >= stale_days * 2 {
                     Severity::High
                 } else {
                     Severity::Medium

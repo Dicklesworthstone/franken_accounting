@@ -415,7 +415,16 @@ fn suspense_aging_names_each_native_unit_and_clears_only_the_applied_unit() {
 
     let usd = h.usd;
     let jpy = h.book.units.lookup("JPY").unwrap();
-    assert_eq!((usd.0, jpy.0), (840, 392));
+    // Native IDs are registration indexes; ISO codes are separate metadata.
+    assert_eq!((usd.0, jpy.0), (0, 3));
+    assert_eq!(
+        h.book.units.get(usd).unwrap().kind,
+        fa_money::UnitKind::Currency { iso4217: 840 }
+    );
+    assert_eq!(
+        h.book.units.get(jpy).unwrap().kind,
+        fa_money::UnitKind::Currency { iso4217: 392 }
+    );
     let mut proposal = h.proposal(&Spec::simple(day(2026, 1, 1), "1090", "4090", 10_000));
     proposal.legs.extend([
         LegPayload::simple(Side::Debit, h.account("1090"), Amount::new(jpy, 10_000)),
@@ -447,13 +456,13 @@ fn suspense_aging_names_each_native_unit_and_clears_only_the_applied_unit() {
         result
             .findings
             .iter()
-            .any(|f| f.narrative.contains("unit 840 "))
+            .any(|f| f.narrative.contains("unit 0 "))
     );
     assert!(
         result
             .findings
             .iter()
-            .any(|f| f.narrative.contains("unit 392 "))
+            .any(|f| f.narrative.contains("unit 3 "))
     );
     assert_ne!(
         result.findings[0].canonical_bytes().unwrap(),
@@ -486,7 +495,7 @@ fn suspense_aging_names_each_native_unit_and_clears_only_the_applied_unit() {
     .unwrap();
     let remaining = run_over(&cleared, &h.book, &procedure).unwrap();
     assert_eq!(remaining.findings.len(), 1);
-    assert!(remaining.findings[0].narrative.contains("unit 392 "));
+    assert!(remaining.findings[0].narrative.contains("unit 3 "));
     assert_eq!(
         remaining.findings[0].statistic,
         Statistic::count("age_days", 89, 2)
@@ -1018,6 +1027,138 @@ fn retained_jet_versions_refuse_unknown_algorithms_without_fallback() {
 }
 
 #[test]
+fn period_end_timing_accepts_the_full_u32_window_for_both_versions() {
+    let mut h = harness();
+    let posted = h.post(&Spec::simple(day(2026, 3, 15), "6000", "1000", 100));
+    let before = h.db.frontier().unwrap();
+    let snapshot = h.snapshot();
+    for version in [1, 2] {
+        for (window, expected) in [(0, false), (16, false), (17, true), (u32::MAX, true)] {
+            let procedure = fa_lantern::catalog::build_version(
+                PeriodEndTiming::ID,
+                version,
+                Params::defaults(PeriodEndTiming::ID)
+                    .unwrap()
+                    .set("window_days", i128::from(window))
+                    .unwrap(),
+                fa_lantern::catalog::Inputs::default(),
+            )
+            .unwrap();
+            let result = run_over(&snapshot, &h.book, procedure.as_ref()).unwrap();
+            assert_eq!(result.version, version);
+            assert_eq!(
+                flagged(&result),
+                if expected { vec![posted] } else { vec![] }
+            );
+            if expected {
+                assert_eq!(
+                    result.findings[0].statistic,
+                    Statistic::count("days_to_period_end", 16, 1)
+                );
+                assert_eq!(result.findings[0].severity, Severity::Low);
+                assert_eq!(
+                    result.findings[0].cites,
+                    vec![
+                        Cite::Entry(posted),
+                        Cite::Period(h.period_code(day(2026, 3, 15)))
+                    ]
+                );
+            }
+        }
+        for invalid in [-1, 4_294_967_296] {
+            let procedure = fa_lantern::catalog::build_version(
+                PeriodEndTiming::ID,
+                version,
+                Params::defaults(PeriodEndTiming::ID)
+                    .unwrap()
+                    .set("window_days", invalid)
+                    .unwrap(),
+                fa_lantern::catalog::Inputs::default(),
+            )
+            .unwrap();
+            assert!(matches!(
+                run_over(&snapshot, &h.book, procedure.as_ref()),
+                Err(LanternError::Parameter { .. })
+            ));
+        }
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn large_round_reversals_accepts_u32_windows_and_widens_day_subtraction() {
+    use fa_lantern::jet::LargeRoundReversals;
+
+    let mut h = harness();
+    let original = h.post(&Spec::simple(day(2026, 1, 30), "6000", "1000", 500_000));
+    let reversal = reverse_at(&mut h, original, day(2026, 2, 3));
+    let before = h.db.frontier().unwrap();
+    let snapshot = h.snapshot();
+    let procedure = |window| {
+        LargeRoundReversals::with(
+            Params::defaults(LargeRoundReversals::ID)
+                .unwrap()
+                .set("window_days", window)
+                .unwrap(),
+        )
+    };
+    let mut cited_entries = [original, reversal];
+    cited_entries.sort_unstable();
+    let cites: Vec<_> = cited_entries.into_iter().map(Cite::Entry).collect();
+    for (window, expected) in [(0, false), (3, false), (4, true), (4_294_967_295, true)] {
+        let result = run_over(&snapshot, &h.book, &procedure(window)).unwrap();
+        assert_eq!(result.findings.len(), usize::from(expected));
+        if expected {
+            assert_eq!(
+                result.findings[0].statistic,
+                Statistic::count("days_to_reversal", 4, snapshot.entries.len() as u64)
+            );
+            assert_eq!(result.findings[0].cites, cites);
+            assert_eq!(result.findings[0].severity, Severity::High);
+        }
+    }
+    for invalid in [-1, 4_294_967_296] {
+        assert!(matches!(
+            run_over(&snapshot, &h.book, &procedure(invalid)),
+            Err(LanternError::Parameter { .. })
+        ));
+    }
+    assert!(
+        witness::determinism(&snapshot, &h.book, &procedure(4_294_967_295))
+            .unwrap()
+            .deterministic()
+    );
+
+    // These are arithmetic inputs derived from the admitted pair above,
+    // not claims of kernel admission or certification at extreme dates.
+    for (original_day, reversal_day, window, expected) in [
+        (i32::MIN, i32::MAX, 4_294_967_295, Some(4_294_967_295)),
+        (i32::MIN, i32::MAX, 4_294_967_294, None),
+        (i32::MIN, 0, 2_147_483_648, Some(2_147_483_648)),
+        (i32::MAX, i32::MIN, 4_294_967_295, None),
+    ] {
+        let mut wide = snapshot.clone();
+        for entry in &mut wide.entries {
+            if entry.vid == original {
+                entry.entry.proposal.effective_date = DateDay(original_day);
+            } else if entry.vid == reversal {
+                entry.entry.proposal.effective_date = DateDay(reversal_day);
+            }
+        }
+        let result = run_over(&wide, &h.book, &procedure(window)).unwrap();
+        assert_eq!(result.findings.len(), usize::from(expected.is_some()));
+        if let Some(days) = expected {
+            assert_eq!(
+                result.findings[0].statistic,
+                Statistic::count("days_to_reversal", days, snapshot.entries.len() as u64)
+            );
+            assert_eq!(result.findings[0].cites, cites);
+        }
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
 fn period_end_timing_widens_civil_day_distances_before_comparing_the_window() {
     let mut h = harness();
     let posted = h.post(&Spec::simple(day(2026, 3, 15), "6000", "1000", 100));
@@ -1101,6 +1242,30 @@ fn period_end_timing_widens_civil_day_distances_before_comparing_the_window() {
             naive::period_end_timing(&rows, window),
             if expected.is_some() { vec![0] } else { vec![] }
         );
+    }
+
+    // Keep the independent i32 oracle cases above intact; the procedure's
+    // registered u32 domain also includes a 4_294_967_294-day distance.
+    let mut wide = source;
+    wide.entries[0].entry.proposal.effective_date = DateDay(i32::MIN);
+    let period = wide.periods.get_mut(&wide.entries[0].period).unwrap();
+    period.start = DateDay(i32::MIN);
+    period.end = DateDay(i32::MAX);
+    for (window, expected) in [(4_294_967_294, false), (4_294_967_295, true)] {
+        let procedure = PeriodEndTiming::with(
+            Params::defaults(PeriodEndTiming::ID)
+                .unwrap()
+                .set("window_days", window)
+                .unwrap(),
+        );
+        let result = run_over(&wide, &h.book, &procedure).unwrap();
+        assert_eq!(result.findings.len(), usize::from(expected));
+        if expected {
+            assert_eq!(
+                result.findings[0].statistic,
+                Statistic::count("days_to_period_end", 4_294_967_294, 1)
+            );
+        }
     }
 }
 

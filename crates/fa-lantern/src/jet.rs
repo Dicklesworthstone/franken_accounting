@@ -206,10 +206,7 @@ impl Procedure for PeriodEndTiming {
         _book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let window = i64::from(
-            i32::try_from(self.params.get_u32("window_days")?)
-                .map_err(|_| LanternError::Overflow("window_days"))?,
-        );
+        let window = i64::from(self.params.get_u32("window_days")?);
         let mut population = 0u64;
         let mut hits = Vec::new();
         let through = if self.version == 1 {
@@ -946,8 +943,7 @@ impl Procedure for LargeRoundReversals {
         let factor = 10i128
             .checked_pow(power)
             .ok_or(LanternError::Overflow("round factor"))?;
-        let window = i32::try_from(self.params.get_u32("window_days")?)
-            .map_err(|_| LanternError::Overflow("window_days"))?;
+        let window = i64::from(self.params.get_u32("window_days")?);
         let mut by_vid: BTreeMap<VId, &crate::snapshot::SnapshotEntry> = BTreeMap::new();
         for e in &snapshot.entries {
             work.entry()?;
@@ -970,8 +966,8 @@ impl Procedure for LargeRoundReversals {
                 if orig.period.is_empty() || rev.period.is_empty() || orig.period == rev.period {
                     continue;
                 }
-                let days =
-                    rev.entry.proposal.effective_date.0 - orig.entry.proposal.effective_date.0;
+                let days = i64::from(rev.entry.proposal.effective_date.0)
+                    - i64::from(orig.entry.proposal.effective_date.0);
                 if !(0..=window).contains(&days) {
                     continue;
                 }
@@ -1054,6 +1050,12 @@ impl Procedure for SuspenseAging {
         _book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
+        struct OpenBalance {
+            net: i128,
+            oldest: fa_time::DateDay,
+            entry_vids: Vec<(fa_time::DateDay, VId)>,
+        }
+
         let max_age = i64::from(self.params.get_u32("max_age_days")?);
         let suspense_vids = snapshot.role_population(Self::ID)?;
         let live = snapshot.live_postings_through(snapshot.coordinate.effective_through)?;
@@ -1092,32 +1094,39 @@ impl Procedure for SuspenseAging {
             None,
             snapshot.coordinate.effective_through,
         )?;
-        let mut balances: BTreeMap<
-            (VId, u32),
-            (i128, fa_time::DateDay, Vec<(fa_time::DateDay, VId)>),
-        > = BTreeMap::new();
+        let mut balances: BTreeMap<(VId, u32), OpenBalance> = BTreeMap::new();
         for item in items {
             work.leg()?;
             if item.open == 0 || !suspense_vids.contains(&item.account) {
                 continue;
             }
             let signed = signed_leg(item.side, item.open)?;
-            let entry = balances.entry((item.account, item.unit_id)).or_insert((
-                0,
-                item.effective_date,
-                Vec::new(),
-            ));
-            entry.0 = entry
-                .0
+            let entry = balances
+                .entry((item.account, item.unit_id))
+                .or_insert(OpenBalance {
+                    net: 0,
+                    oldest: item.effective_date,
+                    entry_vids: Vec::new(),
+                });
+            entry.net = entry
+                .net
                 .checked_add(signed)
                 .ok_or(LanternError::Overflow("suspense open balance"))?;
-            if item.effective_date < entry.1 {
-                entry.1 = item.effective_date;
+            if item.effective_date < entry.oldest {
+                entry.oldest = item.effective_date;
             }
-            entry.2.push((item.effective_date, item.entry));
+            entry.entry_vids.push((item.effective_date, item.entry));
         }
         let mut out = Vec::new();
-        for ((acct_vid, unit), (net, oldest, entry_vids)) in balances {
+        for (
+            (acct_vid, unit),
+            OpenBalance {
+                net,
+                oldest,
+                entry_vids,
+            },
+        ) in balances
+        {
             work.compare(1)?;
             // The full difference of two i32 day coordinates and twice a
             // registered u32 threshold both fit exactly in i64.

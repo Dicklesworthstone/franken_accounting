@@ -214,7 +214,7 @@ impl Procedure for ReconLapping {
         _book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let window_days = self.params.get_u32("window_days")?;
+        let window_days = i64::from(self.params.get_u32("window_days")?);
         if window_days == 0 {
             return Err(LanternError::Parameter {
                 procedure: Self::ID.into(),
@@ -288,7 +288,7 @@ impl Procedure for ReconLapping {
                 }
                 let a = movs[i];
                 for j in (i + 1)..movs.len() {
-                    if (movs[j].date.0 - a.date.0) > window_days as i32 {
+                    if i64::from(movs[j].date.0) - i64::from(a.date.0) > window_days {
                         break;
                     }
                     if movs[j].side != Side::Credit || movs[j].party == a.party {
@@ -296,7 +296,7 @@ impl Procedure for ReconLapping {
                     }
                     let b = movs[j];
                     for mov_k in movs.iter().skip(j + 1) {
-                        if (mov_k.date.0 - b.date.0) > window_days as i32 {
+                        if i64::from(mov_k.date.0) - i64::from(b.date.0) > window_days {
                             break;
                         }
                         if mov_k.side == Side::Credit
@@ -306,7 +306,8 @@ impl Procedure for ReconLapping {
                         {
                             let triple = (a.entry, b.entry, mov_k.entry);
                             if seen_triples.insert(triple) {
-                                let delay_days = (mov_k.date.0 - a.date.0).max(1) as u64;
+                                let delay_days =
+                                    (i64::from(mov_k.date.0) - i64::from(a.date.0)).max(1) as u64;
                                 let mut cites = vec![
                                     Cite::Account(*acct_vid),
                                     Cite::Entry(a.entry),
