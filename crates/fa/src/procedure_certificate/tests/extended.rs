@@ -473,6 +473,18 @@ fn ponzi_motif_certifies_native_inputs_and_replays_after_backdated_subscription(
             .exit,
         exit::VERIFICATION
     );
+    let mut forged = decoded.clone();
+    forged.report.findings[0].statistic.value = 12_001;
+    // Every checksum and the output encoding agree; only recomputing the
+    // ratio from the certified native inputs exposes this false result.
+    super::offline::reseal(&mut forged);
+    let refusal = f
+        .book
+        .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &forged)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.exit, exit::VERIFICATION);
+    assert!(refusal.message.contains("does not replay exactly"));
     assert_eq!(
         f.book
             .certify_procedure(&cx, PRINCIPAL, &cap(&["read"]), &request)
@@ -837,6 +849,7 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
         ("payroll.ghost", "payroll"),
         ("confirm.coverage", "cash or receivable"),
         ("solvency.cash_flow_test", "cash"),
+        ("graph.ponzi_motif", "cash"),
         ("lookback.preferences", "cash"),
         ("ponzi.net_investment", "cash"),
         ("distribution.rising_tide", "cash"),
@@ -871,6 +884,7 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
         // netting moved aging.inventory to version 3; cash-overdraft netting
         // and a shared cash/liability cutoff moved the cash-flow screen to 5.
         let version = match id {
+            "graph.ponzi_motif" => 1,
             "lookback.preferences" => 4,
             "aging.inventory" | "jet.suspense_aging" => 3,
             "solvency.cash_flow_test" => 5,

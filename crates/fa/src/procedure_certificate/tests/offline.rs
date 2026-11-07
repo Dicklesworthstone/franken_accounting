@@ -206,7 +206,7 @@ fn replace_certificate(bundle: &[u8], certificate: &ProcedureCertificate) -> Vec
     w.finish().unwrap()
 }
 
-fn reseal(certificate: &mut ProcedureCertificate) {
+pub(super) fn reseal(certificate: &mut ProcedureCertificate) {
     let run = &mut certificate.report;
     let mut parameters = Writer::new();
     parameters.str(&run.procedure).u16(run.version);
