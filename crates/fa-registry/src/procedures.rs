@@ -10,6 +10,7 @@ use crate::{RegistryError, invalid, load, req_int, req_str};
 
 const PROCEDURES: &str = include_str!("../../../registries/procedures.toml");
 const R: &str = "procedures.toml";
+const LAYERING_V3_SUMMARY_SUFFIX: &str = " Version 3 advances each hop in effective/recorded/entry-identity order; version 2 could revisit an earlier recorded transfer on the same effective day.";
 
 /// The canonical registry closure preceding the two effective-window JET
 /// algorithms. Durable certificates and authored case references may retain
@@ -45,6 +46,79 @@ pub fn legacy_v1_document_from_text(text: &str) -> Result<crate::toml::Document,
         }
     }
     Ok(doc)
+}
+
+/// Restore only the two layering rows, independently of comments and layout.
+/// This composes with the separately retained JET registry revision.
+pub fn layering_v2_document(
+    mut doc: crate::toml::Document,
+) -> Result<crate::toml::Document, RegistryError> {
+    let rows = doc
+        .arrays
+        .get_mut("procedure")
+        .ok_or_else(|| invalid(R, "missing procedure rows"))?;
+    for id in ["graph.layering", "graph.party_layering"] {
+        let row = rows
+            .iter_mut()
+            .find(|row| row.get("id").and_then(crate::toml::Value::as_str) == Some(id))
+            .ok_or_else(|| invalid(R, format!("missing retained procedure {id}")))?;
+        let summary = req_str(R, row, "summary")?
+            .strip_suffix(LAYERING_V3_SUMMARY_SUFFIX)
+            .ok_or_else(|| invalid(R, format!("unrecognized layering revision for {id}")))?
+            .to_string();
+        if row.get("version").and_then(crate::toml::Value::as_int) != Some(3) {
+            return Err(invalid(R, format!("unavailable layering version for {id}")));
+        }
+        row.insert("version".into(), crate::toml::Value::Int(2));
+        row.insert("summary".into(), crate::toml::Value::Str(summary));
+    }
+    Ok(doc)
+}
+
+/// Restore the exact two-row registry revision before layering gained its
+/// recorded-order law. Other registry edits stay bound by the returned text.
+/// Raw-text certificates need the original bytes as well as canonical content.
+pub fn layering_v2_registry_text(text: &str) -> Result<String, RegistryError> {
+    let doc = load(R, text)?;
+    let rows = doc
+        .arrays
+        .get("procedure")
+        .ok_or_else(|| invalid(R, "missing procedure rows"))?;
+    let mut retained = text.to_string();
+    for id in ["graph.layering", "graph.party_layering"] {
+        let row = rows
+            .iter()
+            .find(|row| row.get("id").and_then(crate::toml::Value::as_str) == Some(id))
+            .ok_or_else(|| invalid(R, format!("missing retained procedure {id}")))?;
+        let summary = req_str(R, row, "summary")?;
+        let previous = summary
+            .strip_suffix(LAYERING_V3_SUMMARY_SUFFIX)
+            .ok_or_else(|| invalid(R, format!("unrecognized layering revision for {id}")))?;
+        let current_prefix = format!("[[procedure]]\nid = \"{id}\"\nversion = 3\n");
+        let current_summary = format!("summary = \"{summary}\"\n");
+        if row.get("version").and_then(crate::toml::Value::as_int) != Some(3)
+            || retained.matches(&current_prefix).count() != 1
+            || retained.matches(&current_summary).count() != 1
+        {
+            return Err(invalid(R, format!("unavailable layering registry revision for {id}")));
+        }
+        retained = retained.replacen(
+            &current_prefix,
+            &format!("[[procedure]]\nid = \"{id}\"\nversion = 2\n"),
+            1,
+        );
+        retained = retained.replacen(
+            &current_summary,
+            &format!("summary = \"{previous}\"\n"),
+            1,
+        );
+    }
+    if load(R, &retained)?.canonical_bytes()
+        != layering_v2_document(load(R, text)?)?.canonical_bytes()
+    {
+        return Err(invalid(R, "retained raw and canonical layering registries disagree"));
+    }
+    Ok(retained)
 }
 
 /// The claim class of a procedure's output (plan §11.9, doctrine 12).
