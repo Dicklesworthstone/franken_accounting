@@ -419,6 +419,28 @@ fn ponzi_motif_certifies_native_inputs_and_replays_after_backdated_subscription(
             .unwrap(),
         ProcedureCertificateStatus::Current { checked_at } if checked_at == before
     ));
+    // The producer's body() already rejects these corruptions. Forge their
+    // raw framing so a stale outer checksum cannot explain the refusal.
+    let rehash = |certificate: &mut ProcedureCertificate| {
+        let mut wire = Writer::new();
+        wire.bytes(certificate.format())
+            .bytes(&certificate.source.canonical_bytes().unwrap())
+            .bytes(&certificate.approvals.canonical_bytes());
+        wire.list(&certificate.extended_inputs, |w, input| {
+            w.bytes(&input.canonical_bytes());
+        });
+        wire.fixed(&certificate.registry)
+            .u128(certificate.producer.0)
+            .fixed(&certificate.capability_commitment)
+            .bytes(&certificate.output);
+        let mut bytes = wire.finish().unwrap();
+        certificate.digest = domain_digest(CERTIFICATE_DOMAIN, &[&bytes]);
+        bytes.extend_from_slice(&certificate.digest);
+        assert_eq!(
+            ProcedureCertificate::decode(&bytes).unwrap_err().exit,
+            exit::VERIFICATION
+        );
+    };
     for omit_party in [true, false] {
         let mut damaged = decoded.clone();
         if omit_party {
@@ -430,7 +452,7 @@ fn ponzi_motif_certifies_native_inputs_and_replays_after_backdated_subscription(
             // not a substitute for the required Party input either.
             damaged.extended_inputs[1] = damaged.extended_inputs[0].clone();
         }
-        damaged.digest = domain_digest(CERTIFICATE_DOMAIN, &[&damaged.body().unwrap()]);
+        rehash(&mut damaged);
         let refusal = f
             .book
             .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &damaged)
@@ -442,7 +464,7 @@ fn ponzi_motif_certifies_native_inputs_and_replays_after_backdated_subscription(
     let mut damaged = decoded.clone();
     let last = damaged.output.len() - 1;
     damaged.output[last] ^= 1;
-    damaged.digest = domain_digest(CERTIFICATE_DOMAIN, &[&damaged.body().unwrap()]);
+    rehash(&mut damaged);
     assert_eq!(
         f.book
             .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &damaged)
