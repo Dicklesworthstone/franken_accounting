@@ -466,9 +466,12 @@ fn retained_jet_registry_text(text: &str) -> Result<String, Refusal> {
     Ok(procedures)
 }
 
+// Epoch order: JET, layering, suspense, preferences, fraudulent transfer.
+type ProcedureEpochVersions = (u16, u16, u16, u16, u16);
+
 /// Only these five audited epochs are executable, with algorithm identities
 /// checked separately. Unpublished mixed combinations are never inferred.
-fn registry_versions(registry: &[u8; 32]) -> Result<Option<(u16, u16, u16, u16, u16)>, Refusal> {
+fn registry_versions(registry: &[u8; 32]) -> Result<Option<ProcedureEpochVersions>, Refusal> {
     let epochs = [
         (2, 3, 3, 4, 2),
         (2, 3, 3, 3, 1),

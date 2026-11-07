@@ -2493,6 +2493,7 @@ impl Procedure for LookbackPreferences {
 /// 2. Transfer while balance-sheet insolvent,
 /// 3. Absence of corroborating evidence (`evidence` empty),
 /// 4. Manual/concealed or round-amount outflow.
+///
 /// Version 2 subtracts the full u32 lookbacks before clipping the civil day;
 /// explicit version 1 retains its original signed narrowing for replay.
 pub struct LookbackFraudulentTransfer {
