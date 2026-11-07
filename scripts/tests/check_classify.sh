@@ -356,7 +356,62 @@ check_summary_matches_the_proof_verifier() {
     gate_fail "check_summary_matches_the_proof_verifier — exit $rc with $pass/$fail/$unrun passed/failed/unrun: stdout '$(cat "$out.out")', stderr '$(cat "$out.err")' (want $want)"
     return 1
   done
-  gate_pass "check_summary_matches_the_proof_verifier (green, failed, unrun, unrun under exit 0, no assertions)"
+  # Exercise the actual initialization, including its installed signal traps.
+  # These children run outside Git and signal only themselves, never the gate
+  # running this selftest or a real worker.
+  local signal_dir="$base/summary-signals"
+  mkdir -p "$signal_dir"
+  python3 - "$SOURCE_ROOT" "$signal_dir" <<'PY'
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+root, directory = map(pathlib.Path, sys.argv[1:])
+source = (root / "scripts/check.sh").read_text()
+start = source.index("check_summary() {")
+end = source.index("# run_step <label>", start)
+probe = directory / "probe.sh"
+probe.write_text(
+    'set -u\n. "$1/scripts/lib/gate_verdict.sh"\n'
+    + source[start:end]
+    + '\ngate_pass completed-before-interrupt\n'
+    + 'if [ "$2" = normal ]; then\n  gate_verdict\n'
+    + 'else\n  kill -s "$2" "$BASHPID"\n  exit 0\nfi\n'
+)
+environment = os.environ.copy()
+environment.pop("CHECK_RESUME_FROM", None)
+environment["FGDB_LANDING_LEASE"] = "0"
+results = []
+for mode, expected_rc in (("normal", 0), ("INT", 130), ("TERM", 143)):
+    argv = ["bash", str(probe), str(root), mode]
+    result = subprocess.run(
+        argv, cwd=directory, env=environment, capture_output=True, text=True, timeout=10
+    )
+    (directory / f"{mode}.argv.json").write_text(json.dumps(argv) + "\n")
+    (directory / f"{mode}.stdout").write_text(result.stdout)
+    (directory / f"{mode}.stderr").write_text(result.stderr)
+    (directory / f"{mode}.exit").write_text(f"{result.returncode}\n")
+    results.append((mode, expected_rc, result))
+for mode, expected_rc, result in results:
+    out, err = result.stdout.splitlines(), result.stderr.splitlines()
+    assert result.returncode == expected_rc, (mode, result.returncode, expected_rc)
+    if mode == "normal":
+        assert out.count("ALL GATES GREEN") == 1 and "QUALITY GATE RED" not in out, out
+        assert not err, err
+    else:
+        assert out.count("QUALITY GATE RED") == 1, out
+        assert err == ["QUALITY GATE RED"], err
+        assert "ALL GATES GREEN" not in out, out
+        assert any(line.startswith("FAIL ") for line in out), out
+PY
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    gate_fail "check_summary_matches_the_proof_verifier — signal controls failed; see $signal_dir"
+    return 1
+  fi
+  gate_pass "check_summary_matches_the_proof_verifier (green, failed, unrun, unrun under exit 0, no assertions, INT, TERM)"
 }
 
 # The ubs step scans each package directory (scripts/ubs_scan.sh). A fake

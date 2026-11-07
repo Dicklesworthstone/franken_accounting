@@ -561,13 +561,25 @@ fn foreign_spot_group_records_partial_relief_separately_from_complete_payment_le
     assert_eq!(item.applied_base, Amount::new(h.usd, 70));
     assert_eq!(item.open_base, Amount::new(h.usd, 0));
     assert!(h.book.verify_fx_conversions(&cx, None).unwrap().is_green());
-    let h = h.reopen();
+    let mut h = h.reopen();
     assert_eq!(h.open(posted.entry_ref(), 2), 10);
+    let before = h.head();
+    let cx = h.cx();
+    let verification = Capability::embedded(PRINCIPAL, &["read", "verify"]).unwrap();
     assert!(
-        h.book
-            .verify_fx_conversions(&h.cx(), None)
+        h.runtime
+            .block_on(
+                h.book
+                    .verify_fx_conversions_with_history(&cx, &verification, None,)
+            )
+            .unwrap()
             .unwrap()
             .is_green()
+    );
+    assert_eq!(
+        h.head(),
+        before,
+        "loading and verifying history cannot post"
     );
 }
 

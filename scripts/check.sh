@@ -204,6 +204,10 @@ check_summary() {
 }
 
 gate_init "check.sh" check_summary
+# Preserve the signal status for the EXIT summary instead of the last command's
+# successful status when an unfinished step is interrupted.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 if [ -n "${CHECK_RESUME_FROM:-}" ]; then
   if ! bash "$ROOT/scripts/local_proof_verify.sh" --repository "$ROOT" --for-resume "$CHECK_RESUME_FROM" \
       >"$LOG_DIR/resume-verification.log"; then
