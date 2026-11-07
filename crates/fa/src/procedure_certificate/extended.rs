@@ -35,6 +35,8 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("graph.layering", 3),
     // fa-b6xs: reads live postings and the REA parties this closure binds.
     ("graph.party_layering", 3),
+    // Cohorts use the journaled cash/capital roles and the certified parties.
+    ("graph.ponzi_motif", 1),
     // Version 3 screens only Louvain communities, without component unions.
     ("graph.communities", 3),
     // fa-b6xs: reads live postings and the REA parties this closure binds.

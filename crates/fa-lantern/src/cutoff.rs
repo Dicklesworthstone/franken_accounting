@@ -3177,8 +3177,7 @@ impl Procedure for PonziMotif {
                 message: "must be >= 1".into(),
             });
         }
-        let window =
-            i32::try_from(window_days).map_err(|_| LanternError::Overflow("window_days"))?;
+        let window = i64::from(window_days);
         let min_coverage_bps = i128::from(self.params.get_u32("min_coverage_bps")?);
         if min_coverage_bps == 0 {
             return Err(LanternError::Parameter {
@@ -3269,13 +3268,13 @@ impl Procedure for PonziMotif {
                 .and_modify(|d| *d = (*d).min(day))
                 .or_insert(day);
         }
-        let window_of = |unit: u32, day: DateDay| -> Option<i32> {
+        let window_of = |unit: u32, day: DateDay| -> Option<i64> {
             let origin = *start.get(&unit)?;
-            (day >= origin).then(|| (day.0 - origin.0) / window)
+            (day >= origin).then(|| (i64::from(day.0) - i64::from(origin.0)) / window)
         };
 
         let population = movements.len() as u64;
-        let mut windows: BTreeMap<(u32, i32), MotifWindow> = BTreeMap::new();
+        let mut windows: BTreeMap<(u32, i64), MotifWindow> = BTreeMap::new();
         for m in &movements {
             work.compare(1)?;
             let Some(&joined) = first.get(&(m.party, m.unit)) else {
@@ -3323,8 +3322,15 @@ impl Procedure for PonziMotif {
                 Severity::Medium
             };
             let origin = start.get(&unit).copied().unwrap_or(DateDay(0));
-            let from = DateDay(origin.0 + k * window);
-            let through = DateDay(from.0 + window - 1);
+            // k comes from a nonnegative span between two i32 days, so
+            // k * window fits u32 and this start cannot exceed its entry's day.
+            // Only the end of the last representable window may exceed DateDay.
+            let from_wide = i64::from(origin.0) + k * window;
+            let from = DateDay(
+                i32::try_from(from_wide)
+                    .map_err(|_| LanternError::Overflow("motif window start"))?,
+            );
+            let through = DateDay(i32::try_from(from_wide + window - 1).unwrap_or(i32::MAX));
             let mut cites: Vec<Cite> = w
                 .redemption_entries
                 .iter()
