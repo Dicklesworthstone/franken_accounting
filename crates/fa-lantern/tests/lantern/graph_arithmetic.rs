@@ -4,10 +4,7 @@
 use super::*;
 use fa_lantern::graph::{Communities, Concentration, RelatedPartyExposure, ShellSignature};
 
-#[test]
-fn native_lapping_windows_keep_successful_v2_results_and_version_the_wide_fix() {
-    use fa_lantern::cutoff::ReconLapping;
-
+fn lapping_harness() -> (Harness, [VId; 2]) {
     let mut h = harness();
     let ctx = h.ctx();
     let role = AccountRoleSpec {
@@ -55,45 +52,59 @@ fn native_lapping_windows_keep_successful_v2_results_and_version_the_wide_fix() 
             .unwrap();
         parties.push(fa_model::party_value_vid(h.book.book_id, code));
     }
+    (h, [parties[0], parties[1]])
+}
+
+fn post_lapping_movement(h: &mut Harness, date: u8, debit: &str, credit: &str, party: VId) -> VId {
+    let ctx = h.ctx();
+    let mut proposal = h.proposal(&Spec::simple(day(2026, 1, date), debit, credit, 50_000));
+    for leg in &mut proposal.legs {
+        if leg.account_ref == h.account("1200") {
+            leg.dimension_set.push((fa_model::PARTY_DIMENSION, party));
+        }
+    }
+    let request = PostRequest {
+        proposal,
+        approvals: Vec::new(),
+        plan_certificate: None,
+        capability: Capability::embedded(PREPARER, &["post"]).unwrap(),
+    };
+    let Posted::Committed {
+        entry_ref,
+        recorded_at,
+        ..
+    } = h
+        .runtime
+        .block_on(post(&mut h.db, &ctx, &h.book, request))
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("a fresh native lapping movement must commit")
+    };
+    h.posted.push((entry_ref.vid, recorded_at));
+    entry_ref.vid
+}
+
+#[test]
+fn native_lapping_windows_keep_successful_v2_results_and_version_the_wide_fix() {
+    use fa_lantern::cutoff::ReconLapping;
+
+    let (mut h, parties) = lapping_harness();
     let mut entries = Vec::new();
     for (date, debit, credit, party) in [
         (10, "1200", "4000", parties[0]),
         (12, "1000", "1200", parties[1]),
         (15, "1000", "1200", parties[0]),
     ] {
-        let mut proposal = h.proposal(&Spec::simple(day(2026, 1, date), debit, credit, 50_000));
-        for leg in &mut proposal.legs {
-            if leg.account_ref == h.account("1200") {
-                leg.dimension_set.push((fa_model::PARTY_DIMENSION, party));
-            }
-        }
-        let request = PostRequest {
-            proposal,
-            approvals: Vec::new(),
-            plan_certificate: None,
-            capability: Capability::embedded(PREPARER, &["post"]).unwrap(),
-        };
-        let Posted::Committed {
-            entry_ref,
-            recorded_at,
-            ..
-        } = h
-            .runtime
-            .block_on(post(&mut h.db, &ctx, &h.book, request))
-            .unwrap()
-            .unwrap()
-        else {
-            panic!("a fresh native lapping movement must commit")
-        };
-        h.posted.push((entry_ref.vid, recorded_at));
-        entries.push(entry_ref.vid);
+        entries.push(post_lapping_movement(&mut h, date, debit, credit, party));
     }
     let before = h.db.frontier().unwrap();
     let snapshot = h.snapshot();
     let current = run_over(&snapshot, &h.book, &ReconLapping::new().unwrap()).unwrap();
-    assert_eq!(current.version, 3);
+    assert_eq!(current.version, 4);
     assert_eq!(current.findings.len(), 1);
-    assert_eq!(current.findings[0].version, 3);
+    assert_eq!(current.findings[0].version, 4);
+    assert_eq!(current.work.comparisons, 10);
     assert_eq!(current.findings[0].severity, Severity::High);
     assert_eq!(
         current.findings[0].statistic,
@@ -111,7 +122,7 @@ fn native_lapping_windows_keep_successful_v2_results_and_version_the_wide_fix() 
         (2_147_483_648, 1, 0),
         (4_294_967_295, 1, 0),
     ] {
-        for (version, count) in [(2, retained_count), (3, current_count)] {
+        for (version, count) in [(2, retained_count), (3, current_count), (4, current_count)] {
             let procedure = fa_lantern::catalog::build_version(
                 ReconLapping::ID,
                 version,
@@ -125,6 +136,7 @@ fn native_lapping_windows_keep_successful_v2_results_and_version_the_wide_fix() 
             let result = run_over(&snapshot, &h.book, procedure.as_ref()).unwrap();
             assert_eq!(result.version, version);
             assert_eq!(result.findings.len(), count);
+            assert_eq!(result.work.comparisons, if version == 4 { 10 } else { 3 });
             if count == 1 {
                 let mut expected = current.findings[0].clone();
                 expected.version = version;
@@ -137,7 +149,7 @@ fn native_lapping_windows_keep_successful_v2_results_and_version_the_wide_fix() 
             );
         }
     }
-    for unavailable in [1, 4] {
+    for unavailable in [1, 5] {
         assert!(matches!(
             fa_lantern::bind_version(ReconLapping::ID, unavailable),
             Err(LanternError::Version { .. })
@@ -147,6 +159,122 @@ fn native_lapping_windows_keep_successful_v2_results_and_version_the_wide_fix() 
         h.db.frontier().unwrap(),
         before,
         "read-only lapping cannot post"
+    );
+}
+
+#[test]
+fn native_lapping_index_counts_candidates_and_stops_without_partial_findings() {
+    use fa_lantern::cutoff::ReconLapping;
+
+    let (mut h, parties) = lapping_harness();
+    for _ in 0..16 {
+        post_lapping_movement(&mut h, 10, "1200", "4000", parties[0]);
+    }
+    for _ in 0..16 {
+        post_lapping_movement(&mut h, 11, "1000", "1200", parties[1]);
+    }
+    let before = h.db.frontier().unwrap();
+    let unmatched = h.snapshot();
+    let build = |version| {
+        fa_lantern::catalog::build_version(
+            ReconLapping::ID,
+            version,
+            Params::defaults(ReconLapping::ID).unwrap(),
+            fa_lantern::catalog::Inputs::default(),
+        )
+        .unwrap()
+    };
+    // These real posted streams used to do 16*16*15/2 unreported k-visits.
+    // With no matching A credit, v4 builds the index and skips each invoice.
+    for version in [2, 3, 4] {
+        let run = run_over(&unmatched, &h.book, build(version).as_ref()).unwrap();
+        assert!(run.findings.is_empty());
+        assert_eq!(run.work.comparisons, if version == 4 { 64 } else { 32 });
+        assert!(
+            run.work.within_registered_bound(
+                &fa_lantern::bind_version(ReconLapping::ID, version)
+                    .unwrap()
+                    .complexity,
+                &unmatched
+            )
+        );
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    post_lapping_movement(&mut h, 12, "1000", "1200", parties[0]);
+    let before = h.db.frontier().unwrap();
+    let snapshot = h.snapshot();
+    let current = run_over(&snapshot, &h.book, build(4).as_ref()).unwrap();
+    assert_eq!(current.findings.len(), 256);
+    assert_eq!(current.work.comparisons, 970);
+    assert!(current.work.within_registered_bound(
+        &fa_lantern::bind(ReconLapping::ID).unwrap().complexity,
+        &snapshot
+    ));
+    for finding in &current.findings {
+        assert_eq!(
+            finding.statistic,
+            Statistic::count("settlement_delay_days", 2, 33)
+        );
+    }
+    for version in [2, 3] {
+        let mut retained = run_over(&snapshot, &h.book, build(version).as_ref()).unwrap();
+        assert_eq!(retained.work.comparisons, 33);
+        for finding in &mut retained.findings {
+            finding.version = 4;
+        }
+        assert_eq!(retained.findings, current.findings);
+    }
+    let limited =
+        fa_lantern::run_over_metered(&snapshot, &h.book, build(4).as_ref(), Some(1_000), None)
+            .unwrap_err();
+    assert!(matches!(
+        limited,
+        LanternError::BudgetExhausted {
+            used: 1_001,
+            budget: 1_000,
+            ..
+        }
+    ));
+
+    struct CancelAtThird(std::cell::Cell<usize>);
+    impl fa_lantern::Cancellation for CancelAtThird {
+        fn cancelled(&self) -> bool {
+            let checks = self.0.get() + 1;
+            self.0.set(checks);
+            checks >= 3
+        }
+    }
+    for version in [2, 3, 4] {
+        let cancelled = CancelAtThird(std::cell::Cell::new(0));
+        let error = fa_lantern::run_over_metered(
+            &snapshot,
+            &h.book,
+            build(version).as_ref(),
+            None,
+            Some(&cancelled),
+        )
+        .unwrap_err();
+        let LanternError::Cancelled { used, .. } = error else {
+            panic!("expected cancellation: {error:?}")
+        };
+        if version == 4 {
+            assert_eq!(used, 1 + fa_lantern::CANCELLATION_INTERVAL);
+        } else {
+            assert_eq!(used, current.work.entries + current.work.legs + 1);
+        }
+        assert_eq!(cancelled.0.get(), 3);
+    }
+    assert!(
+        witness::determinism(&snapshot, &h.book, build(4).as_ref())
+            .unwrap()
+            .deterministic()
+    );
+    h.assert_cites_resolve(&current);
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        before,
+        "bounded/cancelled screens never publish"
     );
 }
 

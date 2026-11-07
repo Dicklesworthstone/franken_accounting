@@ -4957,9 +4957,9 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     );
 
     let r_lap = run_over(&snapshot, &h.book, &ReconLapping::new().unwrap()).unwrap();
-    assert_eq!(r_lap.version, 3);
+    assert_eq!(r_lap.version, 4);
     assert_eq!(r_lap.findings.len(), 1);
-    assert_eq!(r_lap.findings[0].version, 3);
+    assert_eq!(r_lap.findings[0].version, 4);
     assert_eq!(r_lap.findings[0].severity, Severity::High);
     assert_eq!(
         r_lap.findings[0].statistic,
