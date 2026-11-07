@@ -558,7 +558,7 @@ cas_moves = 0
 edges_written = 0
 vertices_written = 0
 transactions = 0
-complexity_witness = "1 snapshot frontier read + O(legs) deterministic scan under stripped Cx (0 writes)"
+complexity_witness = "1 snapshot frontier read + deterministic snapshot/projection preparation + the selected procedure version's registered complexity bound in procedures.toml, including metered candidate searches, under stripped Cx (0 writes)"
 
 # ---- Registered Native Operation Extensions -------------------------------
 

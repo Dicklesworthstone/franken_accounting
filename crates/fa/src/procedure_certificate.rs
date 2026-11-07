@@ -383,6 +383,8 @@ fn registry_digest_for_run(procedure: &str, version: u16) -> Result<[u8; 32], Re
         registry_digest_with_procedures(legacy_lookback_registry_document()?)
     } else if procedure == "recon.lapping" && version == 2 {
         registry_digest_with_procedures(pre_lapping_registry_document()?.canonical_bytes())
+    } else if procedure == "recon.lapping" && version == 3 {
+        registry_digest_with_procedures(pre_lapping_metering_registry_document()?.canonical_bytes())
     } else {
         registry_digest()
     }
@@ -425,6 +427,19 @@ fn pre_lapping_registry_document() -> Result<fa_registry::toml::Document, Refusa
 fn pre_lapping_registry_text() -> Result<String, Refusal> {
     fa_registry::procedures::lapping_v2_registry_text(PROCEDURE_REGISTRIES[0].1)
         .map_err(|error| invalid(format!("retained raw lapping registry: {error}")))
+}
+
+/// Version 3's full-width arithmetic with its original certified work counters.
+fn pre_lapping_metering_registry_document() -> Result<fa_registry::toml::Document, Refusal> {
+    let document = fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
+        .map_err(|error| invalid(format!("procedure registry: {error}")))?;
+    fa_registry::procedures::lapping_v3_document(document)
+        .map_err(|error| invalid(format!("retained lapping v3 registry: {error}")))
+}
+
+fn pre_lapping_metering_registry_text() -> Result<String, Refusal> {
+    fa_registry::procedures::lapping_v3_registry_text(PROCEDURE_REGISTRIES[0].1)
+        .map_err(|error| invalid(format!("retained raw lapping v3 registry: {error}")))
 }
 
 /// The v1 raw-text closure, accepted only from certificates retained before
@@ -484,10 +499,11 @@ fn retained_jet_registry_text(text: &str) -> Result<String, Refusal> {
 // Epoch order: JET, layering, suspense, preferences, fraudulent transfer, lapping.
 type ProcedureEpochVersions = (u16, u16, u16, u16, u16, u16);
 
-/// Only these six audited epochs are executable, with algorithm identities
+/// Only these seven audited epochs are executable, with algorithm identities
 /// checked separately. Unpublished mixed combinations are never inferred.
 fn registry_versions(registry: &[u8; 32]) -> Result<Option<ProcedureEpochVersions>, Refusal> {
     let epochs = [
+        (2, 3, 3, 4, 2, 4),
         (2, 3, 3, 4, 2, 3),
         (2, 3, 3, 4, 2, 2),
         (2, 3, 3, 3, 1, 2),
@@ -496,8 +512,12 @@ fn registry_versions(registry: &[u8; 32]) -> Result<Option<ProcedureEpochVersion
         (1, 2, 2, 3, 1, 2),
     ];
     for (jet, layering, suspense, preference, fraud, lapping) in epochs {
-        let canonical = if lapping == 3 {
+        let canonical = if lapping == 4 {
             registry_digest()?
+        } else if lapping == 3 {
+            registry_digest_with_procedures(
+                pre_lapping_metering_registry_document()?.canonical_bytes(),
+            )?
         } else if preference == 4 {
             registry_digest_with_procedures(pre_lapping_registry_document()?.canonical_bytes())?
         } else if suspense == 2 {
@@ -513,8 +533,16 @@ fn registry_versions(registry: &[u8; 32]) -> Result<Option<ProcedureEpochVersion
     }
     // Canonical epochs do not depend on the stricter raw-text layout inverse.
     for (jet, layering, suspense, preference, fraud, lapping) in epochs {
-        let raw = if lapping == 3 {
+        let raw = if lapping == 4 {
             legacy_registry_digest()
+        } else if lapping == 3 {
+            domain_digest(
+                b"fa:procedure-registry:v1",
+                &[
+                    pre_lapping_metering_registry_text()?.as_bytes(),
+                    PROCEDURE_REGISTRIES[1].1.as_bytes(),
+                ],
+            )
         } else if preference == 4 {
             domain_digest(
                 b"fa:procedure-registry:v1",
@@ -555,6 +583,10 @@ fn canonical_registry_document(registry: &[u8; 32]) -> Result<Option<Vec<u8>>, R
         return fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
             .map(|document| Some(document.canonical_bytes()))
             .map_err(|error| invalid(format!("procedure registry: {error}")));
+    }
+    let metering = pre_lapping_metering_registry_document()?.canonical_bytes();
+    if registry == &registry_digest_with_procedures(metering.clone())? {
+        return Ok(Some(metering));
     }
     let lapping = pre_lapping_registry_document()?.canonical_bytes();
     if registry == &registry_digest_with_procedures(lapping.clone())? {

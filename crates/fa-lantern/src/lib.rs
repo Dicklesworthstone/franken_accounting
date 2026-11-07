@@ -787,6 +787,21 @@ impl Work {
             .saturating_mul(u64::from((n + 1).ilog2().max(1)))
             .saturating_mul(4);
         match complexity {
+            // recon.lapping v4 indexes credit positions, visits each outer
+            // movement and searches at most once per later candidate. Each
+            // binary search takes at most floor(log2(legs)) + 1 comparisons,
+            // plus the j visit and a possible selected-credit comparison.
+            // The separate ordering term covers stream/party preparation.
+            "O((legs + parties) log (legs + parties) + legs^2 log legs)" => Some(Self {
+                entries,
+                legs,
+                comparisons: n_log_n
+                    .saturating_add(legs.saturating_mul(2))
+                    .saturating_add(
+                        legs.saturating_mul(legs)
+                            .saturating_mul(u64::from(legs.max(1).ilog2()) + 3),
+                    ),
+            }),
             "O((reconciliations + references) log (reconciliations + references))" => {
                 let states = snapshot.bank_reconciliations.as_ref()?;
                 let closes = states.len() as u64;
@@ -1135,11 +1150,14 @@ pub fn bind_version(id: &str, version: u16) -> Result<Row, LanternError> {
     }
     if matches!(
         (id, version, row.version),
-        (cutoff::LookbackPreferences::ID, 3, 4)
-            | (cutoff::LookbackFraudulentTransfer::ID, 1, 2)
-            | (cutoff::ReconLapping::ID, 2, 3)
+        (cutoff::LookbackPreferences::ID, 3, 4) | (cutoff::LookbackFraudulentTransfer::ID, 1, 2)
     ) {
         row.version = version;
+        return Ok(row);
+    }
+    if id == cutoff::ReconLapping::ID && matches!(version, 2 | 3) && row.version == 4 {
+        row.version = version;
+        row.complexity = "O(legs log legs)".into();
         return Ok(row);
     }
     Err(LanternError::Version {

@@ -4,6 +4,30 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-07 — lapping searches escaped work and cancellation accounting
+
+Source review found that the lapping v2/v3 nested settlement search charged
+only its outer movement loop. With `a` party-A debits followed on the next
+day by `b` unmatched party-B credits, it visited
+`a * b * (b - 1) / 2` inner candidates without charging them or checking
+cancellation there. This is a source-level cubic counterexample to the
+registered `O(legs log legs)` bound, not a measured performance result.
+The general operation-cost witness also incorrectly described every
+procedure as a linear scan.
+
+Version 4 indexes credits by party and amount within each account/unit
+stream, then searches for the first settlement strictly after the
+intervening credit's day. Index construction, outer movements, candidate
+visits and binary-search probes are metered. The registered bound includes
+the worst-case quadratic number of candidate searches and their logarithmic
+lookup cost. Versions 2 and 3 retain their successful findings and work
+transcripts, with cancellation checks added inside their original scans.
+The actual retained v3 registry `209f235e…b545` remains separately bound;
+relabeling its work as v4 would break durable certificate replay.
+Native regression execution and full repository qualification must be
+recorded separately; this source repair is not a benchmark win or a
+completed capacity qualification.
+
 ## 2026-11-07 — unversioned lapping arithmetic broke saved v2 replay
 
 The earlier duration repair widened `recon.lapping` windows without changing

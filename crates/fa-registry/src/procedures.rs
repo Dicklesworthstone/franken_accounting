@@ -17,12 +17,112 @@ const SUSPENSE_V3_COMPLEXITY: &str =
     "O((entries + legs + applications) log (entries + legs + applications))";
 const LOOKBACK_WINDOW_SUMMARY_SUFFIX: &str = " Window arithmetic preserves the full u32 domain; older versions narrowed civil-day windows to signed i32.";
 const LAPPING_V3_SUMMARY_SUFFIX: &str = " Version 3 preserves the full u32 window and widens day subtraction; version 2 retains its signed window arithmetic.";
+const LAPPING_V4_SUMMARY_SUFFIX: &str = " Version 4 indexes matching settlements and meters candidate searches; versions 2 and 3 retain their historical work transcripts.";
+const LAPPING_V4_COMPLEXITY: &str = "O((legs + parties) log (legs + parties) + legs^2 log legs)";
+
+/// Restore the exact row before indexed, fully metered lapping execution.
+pub fn lapping_v3_document(
+    mut doc: crate::toml::Document,
+) -> Result<crate::toml::Document, RegistryError> {
+    let row = doc
+        .arrays
+        .get_mut("procedure")
+        .and_then(|rows| {
+            rows.iter_mut().find(|row| {
+                row.get("id").and_then(crate::toml::Value::as_str) == Some("recon.lapping")
+            })
+        })
+        .ok_or_else(|| invalid(R, "missing retained lapping row"))?;
+    if row.get("version").and_then(crate::toml::Value::as_int) != Some(4)
+        || req_str(R, row, "complexity")? != LAPPING_V4_COMPLEXITY
+    {
+        return Err(invalid(R, "unavailable metered lapping revision"));
+    }
+    let summary = req_str(R, row, "summary")?
+        .strip_suffix(LAPPING_V4_SUMMARY_SUFFIX)
+        .ok_or_else(|| invalid(R, "unrecognized metered lapping revision"))?
+        .to_string();
+    row.insert("version".into(), crate::toml::Value::Int(3));
+    row.insert(
+        "complexity".into(),
+        crate::toml::Value::Str("O(legs log legs)".into()),
+    );
+    row.insert("summary".into(), crate::toml::Value::Str(summary));
+    Ok(doc)
+}
+
+/// Preserve the published raw-text row without changing another procedure
+/// that happens to share its complexity expression.
+pub fn lapping_v3_registry_text(text: &str) -> Result<String, RegistryError> {
+    let doc = load(R, text)?;
+    let expected = lapping_v3_document(doc.clone())?.canonical_bytes();
+    let row = doc
+        .arrays
+        .get("procedure")
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("id").and_then(crate::toml::Value::as_str) == Some("recon.lapping")
+            })
+        })
+        .ok_or_else(|| invalid(R, "missing retained lapping row"))?;
+    let summary = req_str(R, row, "summary")?;
+    let old_summary = summary
+        .strip_suffix(LAPPING_V4_SUMMARY_SUFFIX)
+        .ok_or_else(|| invalid(R, "unrecognized metered lapping revision"))?;
+    let prefix = "[[procedure]]\nid = \"recon.lapping\"\nversion = 4\n";
+    if text.matches(prefix).count() != 1 {
+        return Err(invalid(R, "unavailable raw metered lapping revision"));
+    }
+    let start = text
+        .find(prefix)
+        .ok_or_else(|| invalid(R, "missing raw lapping row"))?;
+    let tail = &text[start + prefix.len()..];
+    let end = tail
+        .find("\n[[")
+        .map_or(text.len(), |offset| start + prefix.len() + offset);
+    let block = &text[start..end];
+    let complexity = format!("complexity = \"{LAPPING_V4_COMPLEXITY}\"\n");
+    let summary_line = format!("summary = \"{summary}\"\n");
+    if block.matches(&complexity).count() != 1 || block.matches(&summary_line).count() != 1 {
+        return Err(invalid(R, "unavailable raw metered lapping fields"));
+    }
+    let restored = block
+        .replacen(
+            prefix,
+            "[[procedure]]\nid = \"recon.lapping\"\nversion = 3\n",
+            1,
+        )
+        .replacen(&complexity, "complexity = \"O(legs log legs)\"\n", 1)
+        .replacen(&summary_line, &format!("summary = \"{old_summary}\"\n"), 1);
+    let retained = format!("{}{restored}{}", &text[..start], &text[end..]);
+    if load(R, &retained)?.canonical_bytes() != expected {
+        return Err(invalid(
+            R,
+            "retained raw and canonical lapping v3 registries disagree",
+        ));
+    }
+    Ok(retained)
+}
 
 /// Restore only the published lapping-v2 row. Other registry content stays
 /// bound, including the separately retained JET, layering and lookback epochs.
 pub fn lapping_v2_document(
     mut doc: crate::toml::Document,
 ) -> Result<crate::toml::Document, RegistryError> {
+    if doc
+        .arrays
+        .get("procedure")
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("id").and_then(crate::toml::Value::as_str) == Some("recon.lapping")
+            })
+        })
+        .and_then(|row| row.get("version"))
+        .and_then(crate::toml::Value::as_int)
+        == Some(4)
+    {
+        doc = lapping_v3_document(doc)?;
+    }
     let row = doc
         .arrays
         .get_mut("procedure")
@@ -46,6 +146,23 @@ pub fn lapping_v2_document(
 
 /// Raw certificates require the original text as well as canonical content.
 pub fn lapping_v2_registry_text(text: &str) -> Result<String, RegistryError> {
+    let initial = load(R, text)?;
+    let version = initial
+        .arrays
+        .get("procedure")
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("id").and_then(crate::toml::Value::as_str) == Some("recon.lapping")
+            })
+        })
+        .and_then(|row| row.get("version"))
+        .and_then(crate::toml::Value::as_int);
+    let text = if version == Some(4) {
+        lapping_v3_registry_text(text)?
+    } else {
+        text.to_string()
+    };
+    let text = text.as_str();
     let doc = load(R, text)?;
     let expected = lapping_v2_document(doc.clone())?.canonical_bytes();
     let row = doc
@@ -688,8 +805,8 @@ mod tests {
                 .ends_with(LAPPING_V3_SUMMARY_SUFFIX)
         );
         let layout = PROCEDURES.replace(
-            "id = \"recon.lapping\"\nversion = 3",
-            "id = \"recon.lapping\"\n# layout only\nversion = 3",
+            "id = \"recon.lapping\"\nversion = 4",
+            "id = \"recon.lapping\"\n# layout only\nversion = 4",
         );
         assert_eq!(
             lapping_v2_document(load(R, &layout).unwrap()).unwrap(),
@@ -701,14 +818,67 @@ mod tests {
             .insert("evidence".into(), crate::toml::Value::Str("changed".into()));
         assert_ne!(lapping_v2_document(unrelated).unwrap(), before);
         let future = PROCEDURES.replace(
-            "id = \"recon.lapping\"\nversion = 3",
             "id = \"recon.lapping\"\nversion = 4",
+            "id = \"recon.lapping\"\nversion = 5",
         );
         assert!(lapping_v2_document(load(R, &future).unwrap()).is_err());
         assert!(lapping_v2_registry_text(&future).is_err());
         let unknown = PROCEDURES.replace(LAPPING_V3_SUMMARY_SUFFIX, " unknown lapping law");
         assert!(lapping_v2_document(load(R, &unknown).unwrap()).is_err());
         assert!(lapping_v2_registry_text(&unknown).is_err());
+    }
+
+    #[test]
+    fn retained_lapping_v3_keeps_its_real_complexity_and_shared_class_rows() {
+        let before = lapping_v3_document(load(R, PROCEDURES).unwrap()).unwrap();
+        let raw = lapping_v3_registry_text(PROCEDURES).unwrap();
+        assert_eq!(load(R, &raw).unwrap(), before);
+        let row = before.arrays["procedure"]
+            .iter()
+            .find(|row| row.get("id").and_then(crate::toml::Value::as_str) == Some("recon.lapping"))
+            .unwrap();
+        assert_eq!(
+            row.get("version").and_then(crate::toml::Value::as_int),
+            Some(3)
+        );
+        assert_eq!(req_str(R, row, "complexity").unwrap(), "O(legs log legs)");
+        assert!(
+            req_str(R, row, "summary")
+                .unwrap()
+                .ends_with(LAPPING_V3_SUMMARY_SUFFIX)
+        );
+        assert_eq!(
+            lapping_v2_document(before).unwrap(),
+            lapping_v2_document(load(R, PROCEDURES).unwrap()).unwrap()
+        );
+        let class_line = format!("complexity = \"{LAPPING_V4_COMPLEXITY}\"");
+        let shared = PROCEDURES.replacen("complexity = \"O(legs)\"", &class_line, 1);
+        assert_eq!(shared.matches(&class_line).count(), 2);
+        let shared_retained = lapping_v3_registry_text(&shared).unwrap();
+        assert_eq!(shared_retained.matches(&class_line).count(), 1);
+        assert_eq!(
+            load(R, &shared_retained).unwrap(),
+            lapping_v3_document(load(R, &shared).unwrap()).unwrap()
+        );
+        let layout = PROCEDURES.replace(
+            "id = \"recon.lapping\"\nversion = 4",
+            "id = \"recon.lapping\"\n# layout only\nversion = 4",
+        );
+        assert!(lapping_v3_document(load(R, &layout).unwrap()).is_ok());
+        assert!(lapping_v3_registry_text(&layout).is_err());
+        let future = PROCEDURES.replace(
+            "id = \"recon.lapping\"\nversion = 4",
+            "id = \"recon.lapping\"\nversion = 5",
+        );
+        assert!(lapping_v3_document(load(R, &future).unwrap()).is_err());
+        assert!(lapping_v3_registry_text(&future).is_err());
+        for changed in [
+            PROCEDURES.replace(LAPPING_V4_SUMMARY_SUFFIX, " unknown metering law"),
+            PROCEDURES.replace(LAPPING_V4_COMPLEXITY, "O(legs)"),
+        ] {
+            assert!(lapping_v3_document(load(R, &changed).unwrap()).is_err());
+            assert!(lapping_v3_registry_text(&changed).is_err());
+        }
     }
 
     #[test]

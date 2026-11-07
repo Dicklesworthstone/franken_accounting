@@ -373,10 +373,11 @@ fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
     let mut request = f.request("recon.lapping", source);
     request.effective_through = None;
     let ordinary = f.certify(&request).certificate;
-    assert_eq!(ordinary.report.version, 3);
+    assert_eq!(ordinary.report.version, 4);
+    assert_eq!(ordinary.report.work.comparisons, 10);
     assert_eq!(ordinary.report.findings.len(), 1);
     let finding = &ordinary.report.findings[0];
-    assert_eq!(finding.version, 3);
+    assert_eq!(finding.version, 4);
     assert_eq!(finding.severity, Severity::High);
     assert_eq!(
         finding.statistic,
@@ -397,10 +398,38 @@ fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
     assert_eq!(old_ordinary.report.findings[0].version, 2);
     assert_eq!(old_ordinary.report.findings[0].statistic, finding.statistic);
     assert_eq!(old_ordinary.report.findings[0].cites, finding.cites);
+    assert_eq!(old_ordinary.report.work.comparisons, 3);
+    request.version = Some(3);
+    let old_wide_ordinary = f.certify(&request).certificate;
+    assert_eq!(old_wide_ordinary.report.version, 3);
+    assert_eq!(old_wide_ordinary.report.work, old_ordinary.report.work);
+    assert_eq!(
+        old_wide_ordinary.report.findings[0].statistic,
+        finding.statistic
+    );
+    assert_eq!(old_wide_ordinary.report.findings[0].cites, finding.cites);
     request.parameters = request
         .parameters
         .set("window_days", i128::from(u32::MAX))
         .unwrap();
+    let old_wide = f.certify(&request).certificate;
+    assert_eq!(old_wide.report.findings, old_wide_ordinary.report.findings);
+    assert_eq!(old_wide.report.work, old_wide_ordinary.report.work);
+    // Extracted from an actual retained v3 native certificate, independently
+    // of this revision's inverse and producer; never regenerated for v4.
+    assert_eq!(
+        old_wide.registry,
+        [
+            0x20, 0x9f, 0x23, 0x5e, 0x5c, 0x85, 0xec, 0x54, 0xc4, 0xa5, 0x52, 0x3a, 0xc8, 0xaf,
+            0x58, 0x85, 0xc3, 0xad, 0x82, 0xdd, 0xe6, 0xcd, 0x9d, 0x68, 0x93, 0x33, 0x48, 0xcd,
+            0x78, 0x7f, 0xb5, 0x45,
+        ]
+    );
+    assert_eq!(
+        registry_versions(&old_wide.registry).unwrap(),
+        Some((2, 3, 3, 4, 2, 3))
+    );
+    request.version = Some(2);
     let legacy = f.certify(&request).certificate;
     assert_eq!(legacy.report.version, 2);
     assert!(legacy.report.findings.is_empty());
@@ -419,9 +448,15 @@ fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
     );
     request.version = None;
     let current = f.certify(&request).certificate;
-    assert_eq!(current.report.version, 3);
+    assert_eq!(current.report.version, 4);
+    assert_eq!(current.report.work, ordinary.report.work);
     assert_eq!(current.report.findings, ordinary.report.findings);
     assert_ne!(current.registry, legacy.registry);
+    assert_ne!(current.registry, old_wide.registry);
+    assert_eq!(
+        registry_versions(&current.registry).unwrap(),
+        Some((2, 3, 3, 4, 2, 4))
+    );
     // Extracted independently from both actual native certificates in the
     // preserved 6a1e62d3/b1afca58 control, not regenerated from this producer.
     let original_registry = [
@@ -432,7 +467,15 @@ fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
     let mut original = legacy.clone();
     original.registry = original_registry;
     super::offline::reseal(&mut original);
-    for certificate in [&ordinary, &old_ordinary, &current, &legacy, &original] {
+    for certificate in [
+        &ordinary,
+        &old_ordinary,
+        &old_wide_ordinary,
+        &old_wide,
+        &current,
+        &legacy,
+        &original,
+    ] {
         let decoded =
             ProcedureCertificate::decode(&certificate.canonical_bytes().unwrap()).unwrap();
         assert_eq!(decoded.supplemental_inputs().len(), 6);
@@ -459,9 +502,30 @@ fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
         .unwrap_err();
     assert_eq!(refusal.exit, exit::VERIFICATION);
     assert!(refusal.message.contains("does not replay exactly"));
+    // Findings agree across v3/v4; an enclosing checksum is not evidence
+    // that their different recorded work transcripts are interchangeable.
+    for (mut wrong_work, work) in [
+        (old_wide.clone(), current.report.work),
+        (current.clone(), old_wide.report.work),
+    ] {
+        wrong_work.report.work = work;
+        super::offline::reseal(&mut wrong_work);
+        let decoded = ProcedureCertificate::decode(&wrong_work.canonical_bytes().unwrap()).unwrap();
+        let refusal = f
+            .book
+            .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &decoded)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.exit, exit::VERIFICATION);
+        assert!(refusal.message.contains("does not replay exactly"));
+    }
     for (mut confused, registry) in [
         (current.clone(), legacy.registry),
         (legacy.clone(), current.registry),
+        (old_wide.clone(), current.registry),
+        (current.clone(), old_wide.registry),
+        (old_wide.clone(), legacy.registry),
+        (legacy.clone(), old_wide.registry),
     ] {
         confused.registry = registry;
         confused.digest = domain_digest(CERTIFICATE_DOMAIN, &[&confused.body().unwrap()]);
@@ -481,13 +545,15 @@ fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
     );
     f.post(7, "1000", "6000", 100, false);
     let after = f.head();
-    assert_eq!(
-        f.book
-            .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &original)
-            .unwrap()
-            .unwrap(),
-        original.report
-    );
+    for certificate in [&original, &old_wide, &current] {
+        assert_eq!(
+            f.book
+                .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), certificate)
+                .unwrap()
+                .unwrap(),
+            certificate.report
+        );
+    }
     assert_eq!(f.head(), after);
 }
 
@@ -1072,8 +1138,8 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
         // and a shared cash/liability cutoff moved the cash-flow screen to 5.
         let version = match id {
             "graph.ponzi_motif" => 1,
-            "lookback.preferences" => 4,
-            "aging.inventory" | "jet.suspense_aging" | "recon.lapping" => 3,
+            "lookback.preferences" | "recon.lapping" => 4,
+            "aging.inventory" | "jet.suspense_aging" => 3,
             "solvency.cash_flow_test" => 5,
             "ponzi.net_investment" => 5,
             "distribution.rising_tide" | "distribution.pro_rata" => 4,

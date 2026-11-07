@@ -195,11 +195,14 @@ impl Procedure for ReconIntercompany {
 /// version 1 guessed from code and name tokens (fa-kxc4).
 /// Version 3 preserves the full u32 window; explicit version 2 retains
 /// its signed window arithmetic for historical certificate replay.
+/// Version 4 indexes matching settlements and charges every candidate visit;
+/// versions 2/3 retain their work transcripts while still observing
+/// cancellation inside their nested scans.
 pub struct ReconLapping {
     params: Params,
     version: u16,
 }
-procedure_boilerplate!(ReconLapping, "recon.lapping", 3);
+procedure_boilerplate!(ReconLapping, "recon.lapping", 4);
 
 impl Procedure for ReconLapping {
     fn id(&self) -> &'static str {
@@ -298,6 +301,18 @@ impl Procedure for ReconLapping {
         let mut out = Vec::new();
         let mut seen_triples: BTreeSet<(VId, VId, VId)> = BTreeSet::new();
         for ((acct_vid, _unit_id), movs) in &streams {
+            let mut credits: BTreeMap<(VId, i128), Vec<usize>> = BTreeMap::new();
+            if self.version == 4 {
+                for (index, movement) in movs.iter().enumerate() {
+                    work.compare(1)?;
+                    if movement.side == Side::Credit {
+                        credits
+                            .entry((movement.party, movement.mag))
+                            .or_default()
+                            .push(index);
+                    }
+                }
+            }
             // Look for lapping wave:
             // 1) Party A debit (invoice) at index i
             // 2) Party B (B != A) credit (cash receipt) at index j > i within window_days
@@ -308,7 +323,16 @@ impl Procedure for ReconLapping {
                     continue;
                 }
                 let a = movs[i];
+                let matching = credits.get(&(a.party, a.mag));
+                if self.version == 4 && matching.is_none() {
+                    continue;
+                }
                 for j in (i + 1)..movs.len() {
+                    if self.version == 4 {
+                        work.compare(1)?;
+                    } else {
+                        work.checkpoint()?;
+                    }
                     if gap(movs[j].date, a.date)? > window {
                         break;
                     }
@@ -316,40 +340,70 @@ impl Procedure for ReconLapping {
                         continue;
                     }
                     let b = movs[j];
-                    for mov_k in movs.iter().skip(j + 1) {
-                        if gap(mov_k.date, b.date)? > window {
-                            break;
-                        }
-                        if mov_k.side == Side::Credit
-                            && mov_k.party == a.party
-                            && mov_k.date > b.date
-                            && mov_k.mag == a.mag
-                        {
-                            let triple = (a.entry, b.entry, mov_k.entry);
-                            if seen_triples.insert(triple) {
-                                let delay_days = gap(mov_k.date, a.date)?.max(1) as u64;
-                                let mut cites = vec![
-                                    Cite::Account(*acct_vid),
-                                    Cite::Entry(a.entry),
-                                    Cite::Entry(b.entry),
-                                    Cite::Entry(mov_k.entry),
-                                ];
-                                cites.dedup();
-                                let code = snapshot
-                                    .accounts
-                                    .get(acct_vid)
-                                    .map_or("?", |ac| ac.code.as_str());
-                                out.push(finding(
-                                    Self::ID,
-                                    Severity::High,
-                                    Statistic::count("settlement_delay_days", delay_days, population),
-                                    cites,
-                                    format!(
-                                        "control account {code}: party open item settled {delay_days} day(s) after creation following an intervening credit from another party"
-                                    ),
-                                ));
+                    let settlement = if let Some(matching) = matching {
+                        // The stream and each index are ordered by effective
+                        // day then entry identity. The first credit after B's
+                        // day is also after j and is exactly the first k the
+                        // original scan could accept, including same-day ties.
+                        let (mut low, mut high) = (0, matching.len());
+                        while low < high {
+                            work.compare(1)?;
+                            let middle = low + (high - low) / 2;
+                            if movs[matching[middle]].date <= b.date {
+                                low = middle + 1;
+                            } else {
+                                high = middle;
                             }
-                            break;
+                        }
+                        if let Some(&index) = matching.get(low) {
+                            work.compare(1)?;
+                            let movement = &movs[index];
+                            (gap(movement.date, b.date)? <= window).then_some(movement)
+                        } else {
+                            None
+                        }
+                    } else {
+                        let mut settlement = None;
+                        for movement in movs.iter().skip(j + 1) {
+                            work.checkpoint()?;
+                            if gap(movement.date, b.date)? > window {
+                                break;
+                            }
+                            if movement.side == Side::Credit
+                                && movement.party == a.party
+                                && movement.date > b.date
+                                && movement.mag == a.mag
+                            {
+                                settlement = Some(movement);
+                                break;
+                            }
+                        }
+                        settlement
+                    };
+                    if let Some(mov_k) = settlement {
+                        let triple = (a.entry, b.entry, mov_k.entry);
+                        if seen_triples.insert(triple) {
+                            let delay_days = gap(mov_k.date, a.date)?.max(1) as u64;
+                            let mut cites = vec![
+                                Cite::Account(*acct_vid),
+                                Cite::Entry(a.entry),
+                                Cite::Entry(b.entry),
+                                Cite::Entry(mov_k.entry),
+                            ];
+                            cites.dedup();
+                            let code = snapshot
+                                .accounts
+                                .get(acct_vid)
+                                .map_or("?", |ac| ac.code.as_str());
+                            out.push(finding(
+                                Self::ID,
+                                Severity::High,
+                                Statistic::count("settlement_delay_days", delay_days, population),
+                                cites,
+                                format!(
+                                    "control account {code}: party open item settled {delay_days} day(s) after creation following an intervening credit from another party"
+                                ),
+                            ));
                         }
                     }
                 }
