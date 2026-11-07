@@ -6745,6 +6745,33 @@ fn fa_y4v_solvency_lookback_ponzi_distribution_and_damages_procedures() {
             .deterministic()
     );
 
+    // A wide baseline still contains Jan 10's actual 30-day observation.
+    // The retained signed cast made MAX become -1, emptied the baseline,
+    // and incorrectly removed the 35_000 ordinary-course defense.
+    let wide_baseline = Params::defaults(LookbackPreferences::ID)
+        .unwrap()
+        .set("baseline_days", i128::from(u32::MAX))
+        .unwrap();
+    let current_baseline = LookbackPreferences::with(wide_baseline.clone());
+    let wide_pref = run_over(&snapshot, &h.book, &current_baseline).unwrap();
+    assert_eq!(wide_pref.findings, r_pref.findings);
+    let retained_baseline = fa_lantern::catalog::build_version(
+        LookbackPreferences::ID,
+        3,
+        wide_baseline,
+        fa_lantern::catalog::Inputs::default(),
+    )
+    .unwrap();
+    let retained_pref = run_over(&snapshot, &h.book, retained_baseline.as_ref()).unwrap();
+    let retained_vendor = retained_pref
+        .findings
+        .iter()
+        .find(|finding| finding.narrative.contains("VEND-PREF"))
+        .expect("retained vendor exposure");
+    assert_eq!(retained_vendor.version, 3);
+    assert_eq!(retained_vendor.statistic.value, 95_000);
+    assert!(retained_vendor.narrative.contains("c2_ordinary_course=0"));
+
     // 4. Fraudulent transfer lookback (§548 & UVTA)
     let ft_proc = LookbackFraudulentTransfer::new().unwrap();
     let r_ft = run_over(&snapshot, &h.book, &ft_proc).unwrap();

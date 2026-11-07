@@ -2022,18 +2022,47 @@ fn is_insider_at(snapshot: &Snapshot, party_vid: VId, as_of: DateDay) -> bool {
 /// target keeping its own invoice date, and reports a transfer no one
 /// creditor's legs account for as `unresolved_attribution` ([`attribution`],
 /// fa-6l8g); version 2 gave every party an entry named the entry's whole
-/// cash and one shared invoice date.
+/// cash and one shared invoice date. Version 4 preserves full u32 lookbacks
+/// and widens invoice-day subtraction; explicit version 3 retains its arithmetic.
 pub struct LookbackPreferences {
     params: Params,
+    version: u16,
 }
-procedure_boilerplate!(LookbackPreferences, "lookback.preferences");
+procedure_boilerplate!(LookbackPreferences, "lookback.preferences", 4);
+
+/// Subtract the complete duration before clipping the resulting civil day.
+/// Every input day is at most i32::MAX and days is nonnegative, so conversion
+/// can fail only below i32::MIN, where no earlier representable entry exists.
+fn lookback_start(day: DateDay, days: u32) -> DateDay {
+    DateDay(i32::try_from(i64::from(day.0) - i64::from(days)).unwrap_or(i32::MIN))
+}
+
+#[cfg(test)]
+#[test]
+fn lookback_start_preserves_full_duration_before_clipping_the_day() {
+    // Pure arithmetic controls, not extreme-date posting-admission evidence.
+    for (day, days, expected) in [
+        (30, 0, 30),
+        (30, 90, -60),
+        (i32::MAX, 1, 2_147_483_646),
+        (i32::MAX, 2_147_483_648, -1),
+        (i32::MAX, u32::MAX, i32::MIN),
+        (0, 2_147_483_648, i32::MIN),
+        (0, u32::MAX, i32::MIN),
+        (i32::MIN + 2, 2, i32::MIN),
+        (i32::MIN + 2, 3, i32::MIN),
+        (i32::MIN, 1, i32::MIN),
+    ] {
+        assert_eq!(lookback_start(DateDay(day), days), DateDay(expected));
+    }
+}
 
 impl Procedure for LookbackPreferences {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        3
+        self.version
     }
     fn params(&self) -> &Params {
         &self.params
@@ -2133,11 +2162,15 @@ impl Procedure for LookbackPreferences {
         // Payments no one creditor's own legs account for, inside the widest
         // (insider) lookback, per unit: they leave the exposure of every
         // creditor they name incomplete.
-        let widest_start = DateDay(
-            petition_date
-                .0
-                .saturating_sub(i32::try_from(insider_window_days).unwrap_or(i32::MAX)),
-        );
+        let widest_start = if self.version == 3 {
+            DateDay(
+                petition_date
+                    .0
+                    .saturating_sub(i32::try_from(insider_window_days).unwrap_or(i32::MAX)),
+            )
+        } else {
+            lookback_start(petition_date, insider_window_days)
+        };
         let mut unresolved: BTreeMap<u32, Unresolved> = BTreeMap::new();
         let mut population = 0u64;
         let scope =
@@ -2253,7 +2286,13 @@ impl Procedure for LookbackPreferences {
                                 vid: e.vid,
                                 kind: CreditorEventKind::Payment {
                                     amount,
-                                    days_to_pay: invoice.map(|d| i128::from((eff.0 - d.0).max(0))),
+                                    days_to_pay: invoice.map(|d| {
+                                        if self.version == 3 {
+                                            i128::from((eff.0 - d.0).max(0))
+                                        } else {
+                                            i128::from((i64::from(eff.0) - i64::from(d.0)).max(0))
+                                        }
+                                    }),
                                 },
                                 accounts: part.accounts.clone(),
                             });
@@ -2311,8 +2350,16 @@ impl Procedure for LookbackPreferences {
             } else {
                 window_days
             };
-            let pref_start = DateDay(petition_date.0.saturating_sub(lookback as i32));
-            let base_start = DateDay(pref_start.0.saturating_sub(baseline_days as i32));
+            let (pref_start, base_start) = if self.version == 3 {
+                let pref_start = DateDay(petition_date.0.saturating_sub(lookback as i32));
+                (
+                    pref_start,
+                    DateDay(pref_start.0.saturating_sub(baseline_days as i32)),
+                )
+            } else {
+                let pref_start = lookback_start(petition_date, lookback);
+                (pref_start, lookback_start(pref_start, baseline_days))
+            };
 
             // Compute baseline average days-to-pay in [base_start, pref_start)
             let mut base_sum = 0i128;
@@ -2431,6 +2478,9 @@ impl Procedure for LookbackPreferences {
                 "the exposure of each creditor named is incomplete",
             ));
         }
+        for finding in &mut out {
+            finding.version = self.version;
+        }
         Ok(out)
     }
 }
@@ -2443,17 +2493,24 @@ impl Procedure for LookbackPreferences {
 /// 2. Transfer while balance-sheet insolvent,
 /// 3. Absence of corroborating evidence (`evidence` empty),
 /// 4. Manual/concealed or round-amount outflow.
+/// Version 2 subtracts the full u32 lookbacks before clipping the civil day;
+/// explicit version 1 retains its original signed narrowing for replay.
 pub struct LookbackFraudulentTransfer {
     params: Params,
+    version: u16,
 }
-procedure_boilerplate!(LookbackFraudulentTransfer, "lookback.fraudulent_transfer");
+procedure_boilerplate!(
+    LookbackFraudulentTransfer,
+    "lookback.fraudulent_transfer",
+    2
+);
 
 impl Procedure for LookbackFraudulentTransfer {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        self.version
     }
     fn params(&self) -> &Params {
         &self.params
@@ -2494,8 +2551,17 @@ impl Procedure for LookbackFraudulentTransfer {
                 .max()
                 .unwrap_or(DateDay(0))
         });
-        let uvta_start = DateDay(petition_date.0.saturating_sub(uvta_days as i32));
-        let s548_start = DateDay(petition_date.0.saturating_sub(s548_days as i32));
+        let (uvta_start, s548_start) = if self.version == 1 {
+            (
+                DateDay(petition_date.0.saturating_sub(uvta_days as i32)),
+                DateDay(petition_date.0.saturating_sub(s548_days as i32)),
+            )
+        } else {
+            (
+                lookback_start(petition_date, uvta_days),
+                lookback_start(petition_date, s548_days),
+            )
+        };
 
         let (pval_to_party, _) = party_lookup_tables(snapshot);
         let mut running_assets: BTreeMap<u32, i128> = BTreeMap::new();
@@ -2638,6 +2704,9 @@ impl Procedure for LookbackFraudulentTransfer {
                     ),
                 ));
             }
+        }
+        for finding in &mut out {
+            finding.version = self.version;
         }
         Ok(out)
     }

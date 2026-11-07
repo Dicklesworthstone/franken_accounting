@@ -4,6 +4,93 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-07 — lookback window narrowing and retained-parameter error class
+
+The source-bound `a9fc8093` CLI produced a planted outflow finding at the
+ordinary preference/fraud windows, but no finding at the same recorded and
+effective coordinate when both applicable windows were `u32::MAX`. Positive
+statistics were exactly 100000 mantissa, scale 2: preference population 1,
+fraud population 2. Casting the registered unsigned durations to `i32`
+turned them negative. Both empty results were genuinely certified and
+replayed; their immutable native inputs and old certificates are retained in
+`preference-window-control-0r60iets` and `lookback-window-control-vqxb0wz7`.
+These are synthetic technical controls, not conclusions about actual conduct.
+The repair declares preference v4 and fraudulent-transfer v2, with exact
+wide duration arithmetic and explicit v3/v1 replay. The preceding registry
+`ef30c8aa…5a14` and all four earlier epochs remain separately bound; original
+registry pins and old results are preserved. Execution of the repaired
+controls and the full native suite must be recorded separately.
+
+Source review also found a retained-parameter error path: checksum-valid
+out-of-domain values passed certificate construction but propagated the
+procedure's `Parameter` error as a new-request usage failure. Native replay
+now maps only that error to the existing certificate-verification refusal;
+ordinary request, cancellation and other error handling remain unchanged.
+The added regression repairs all enclosing checksums before replay, checks
+the valid positive paths and distinguishes usage 2 from verification 8.
+Compilation does not establish execution of that regression.
+
+## 2026-11-07 — layering hop order and historical registry replay
+
+The source-bound CLI `b1afca58` produced a three-hop layering-v2 finding
+whose native recorded sequences were `[23, 27, 25]`; the chronological
+control produced `[23, 25, 27]`. All postings had the same effective day.
+The shared search restarted after the first edge instead of advancing after
+the last accepted edge. The account and party procedures now declare v3's
+recorded-order policy; explicit v2 retains the original search and output.
+Recorded order is a technical predicate, not proof of real-world causation.
+The actual v2 certificate and native inputs remain in
+`layering-recorded-order-v69o7xz2` under the session's retained artifacts.
+
+The review also exposed registry replay debt from the earlier suspense-v3
+change. The same CLI refused the genuine retained community-v3 certificate
+`e72785d54d42edbfa65e795394ca88cdcfd22e9551daab2fc8d202ae9f705ac7`
+with `FA-REF-159`, exit 4: its published registry `2665c098…2783` differed
+from the executable's `103dab0f…ef74`. This was a replay regression for an
+unchanged algorithm. The old producer's successful replay and the failed
+newer replay are both retained; the latter is
+`window-positive-renewed-0117/published-03-before-existing-refusal.*`.
+
+The repair reconstructs four exact historical registry revisions, preserving
+the existing `2665c098…2783` canonical and `ac6da881…2bab` raw-text pins.
+It restores only the audited JET window, layering and suspense row changes;
+other edits remain in the commitment. Native replay checks the registry's
+declared algorithm version, including refusing suspense-v3 under a registry
+that declares v2. An unavailable historical algorithm remains unavailable.
+Canonical reconstruction is independent of the stricter raw-text layout.
+
+These are observed before-controls and an implemented repair awaiting final
+qualification. New Rust regressions, exact-tree gates and repaired-binary
+replay are separate required checks; no golden pin or gate was weakened.
+
+The first native facade run executed 759 tests: 739 passed and 20 failed.
+The new layering/history tests and the unchanged published-registry pins
+passed. Sixteen offline producer tests stopped at Notary's version-1-only
+framing boundary before reaching the existing version-2 independent
+verifier. Three historical-version mutation tests exposed a usage-level
+binder error where a malformed certificate requires a verification refusal.
+One reopened settlement test called the resident-history verifier without
+loading the retained history. The repairs connect the existing v2 framing
+and authorized history-loading paths; existing assertions remain required.
+
+The owned full-gate driver was interrupted after those failures. Its actual
+process result was signal termination (`-15`), although its exit hook printed
+`ALL GATES GREEN` after the four completed step records. That banner is
+invalid: the native failures remain in the raw logs and unfinished checks
+are UNRUN. No proof was published. The final child was recovered through
+RCH's supported API, and all 31 claims were acknowledged and source-released
+before further edits. The driver now explicitly maps INT and TERM to exits
+130 and 143 before its EXIT summary runs. The existing classification test
+executes that actual initialization: ordinary completion stays 0/GREEN,
+while both interruptions emit RED and an anchored FAIL without a green
+banner. All eleven classification checks pass. The same regression rejects
+the original initialization at INT `-2` versus the required 130; the old
+normal/INT/TERM outputs remain retained. No additional run is admitted by
+this gate fix, and its shared library, steps, budgets and ordinary completion
+are unchanged. It corrects the summary and exit status, not child retirement
+or the outstanding native-test qualification. The old interrupted run and
+its passing subset still cannot authorize publication or closure.
+
 ## 2026-11-05 — interrupted proof retained a log that changed after finalization
 
 The `a44bc511` shared-slot full-gate attempt recorded global check and Clippy

@@ -5,6 +5,181 @@ use super::*;
 use fa_lantern::graph::{Communities, Concentration, RelatedPartyExposure, ShellSignature};
 
 #[test]
+fn native_lookbacks_preserve_full_u32_windows_and_retained_versions() {
+    use fa_lantern::cutoff::{LookbackFraudulentTransfer, LookbackPreferences};
+
+    let mut h = harness();
+    let ctx = h.ctx();
+    let role = AccountRoleSpec {
+        account: h.account("1000"),
+        role: "cash".into(),
+        assigned: true,
+    };
+    let description = h.seal("native lookback window role");
+    h.runtime
+        .block_on(record_account_role(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &role,
+            PREPARER,
+            b"lookback-window-role",
+            description,
+            &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    let name = h.seal("native lookback creditor");
+    let description = h.seal("native lookback window party");
+    let party = fa_model::PartySpec {
+        code: "WINDOW-CREDITOR".into(),
+        kind: fa_model::PartyKind::Counterparty,
+        name,
+        identifiers: Vec::new(),
+        external_ids: Vec::new(),
+    };
+    h.runtime
+        .block_on(create_party(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &party,
+            PREPARER,
+            day(2026, 3, 20),
+            b"lookback-window-party",
+            description,
+            &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    let mut proposal = h.proposal(&Spec::simple(day(2026, 3, 20), "6000", "1000", 100_000));
+    let value = fa_model::party_value_vid(h.book.book_id, &party.code);
+    for leg in &mut proposal.legs {
+        leg.dimension_set.push((fa_model::PARTY_DIMENSION, value));
+    }
+    let request = PostRequest {
+        proposal,
+        approvals: Vec::new(),
+        plan_certificate: None,
+        capability: Capability::embedded(PREPARER, &["post"]).unwrap(),
+    };
+    let Posted::Committed {
+        entry_ref,
+        recorded_at,
+        ..
+    } = h
+        .runtime
+        .block_on(post(&mut h.db, &ctx, &h.book, request))
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("a fresh native lookback payment must commit")
+    };
+    h.posted.push((entry_ref.vid, recorded_at));
+    let before = h.db.frontier().unwrap();
+    let snapshot = h.snapshot();
+    for (id, current, retained, windows, statistic) in [
+        (
+            LookbackPreferences::ID,
+            4,
+            3,
+            ["window_days", "insider_window_days"],
+            "net_preference_exposure",
+        ),
+        (
+            LookbackFraudulentTransfer::ID,
+            2,
+            1,
+            ["section_548_days", "uvta_days"],
+            "fraudulent_transfer_amount",
+        ),
+    ] {
+        let defaults = Params::defaults(id).unwrap();
+        let ordinary = fa_lantern::catalog::build_version(
+            id,
+            current,
+            defaults.clone(),
+            fa_lantern::catalog::Inputs::default(),
+        )
+        .unwrap();
+        let normal = run_over(&snapshot, &h.book, ordinary.as_ref()).unwrap();
+        assert_eq!(normal.version, current);
+        assert_eq!(normal.findings.len(), 1, "{id}");
+        let expected = &normal.findings[0];
+        assert_eq!(expected.version, current);
+        assert_eq!(expected.severity, Severity::High);
+        assert_eq!(expected.statistic.name, statistic);
+        assert_eq!(expected.statistic.value, 100_000);
+        assert_eq!(expected.statistic.scale, 2);
+        assert_eq!(expected.statistic.population, 1);
+        assert!(expected.cites.contains(&Cite::Entry(entry_ref.vid)));
+        for duration in [
+            i128::from(i32::MAX),
+            i128::from(i32::MAX) + 1,
+            i128::from(u32::MAX),
+        ] {
+            let params = defaults
+                .clone()
+                .set(windows[0], duration)
+                .unwrap()
+                .set(windows[1], duration)
+                .unwrap();
+            for version in [current, retained] {
+                let procedure = fa_lantern::catalog::build_version(
+                    id,
+                    version,
+                    params.clone(),
+                    fa_lantern::catalog::Inputs::default(),
+                )
+                .unwrap();
+                let result = run_over(&snapshot, &h.book, procedure.as_ref()).unwrap();
+                assert_eq!(result.version, version);
+                if version == retained && duration > i128::from(i32::MAX) {
+                    assert!(result.findings.is_empty(), "{id} v{version}: {duration}");
+                } else {
+                    let mut finding = expected.clone();
+                    finding.version = version;
+                    assert_eq!(
+                        result.findings,
+                        vec![finding],
+                        "{id} v{version}: {duration}"
+                    );
+                }
+                assert!(
+                    witness::determinism(&snapshot, &h.book, procedure.as_ref())
+                        .unwrap()
+                        .deterministic()
+                );
+            }
+        }
+        for invalid in [-1, 0, i128::from(u32::MAX) + 1] {
+            let procedure = fa_lantern::catalog::build_version(
+                id,
+                current,
+                defaults.clone().set(windows[0], invalid).unwrap(),
+                fa_lantern::catalog::Inputs::default(),
+            )
+            .unwrap();
+            assert!(matches!(
+                run_over(&snapshot, &h.book, procedure.as_ref()),
+                Err(LanternError::Parameter { .. })
+            ));
+        }
+        for unavailable in [retained - 1, current + 1] {
+            assert!(matches!(
+                fa_lantern::bind_version(id, unavailable),
+                Err(LanternError::Version { .. })
+            ));
+        }
+    }
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        before,
+        "read-only lookbacks cannot post"
+    );
+}
+
+#[test]
 fn native_layering_advances_each_same_day_hop_and_preserves_version_two() {
     use fa_lantern::graph::Layering;
 

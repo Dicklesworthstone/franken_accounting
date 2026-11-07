@@ -1133,6 +1133,13 @@ pub fn bind_version(id: &str, version: u16) -> Result<Row, LanternError> {
         row.version = 2;
         return Ok(row);
     }
+    if matches!(
+        (id, version, row.version),
+        (cutoff::LookbackPreferences::ID, 3, 4) | (cutoff::LookbackFraudulentTransfer::ID, 1, 2)
+    ) {
+        row.version = version;
+        return Ok(row);
+    }
     Err(LanternError::Version {
         procedure: row.id,
         code: version,

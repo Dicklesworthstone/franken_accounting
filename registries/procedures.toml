@@ -1628,13 +1628,13 @@ meaning = "Forward liquidity horizon in civil days for maturing payables and obl
 
 [[procedure]]
 id = "lookback.preferences"
-version = 3
+version = 4
 claim = "statistical"
 evidence = "FA-EVID-L54"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Avoidable preference lookback (11 U.S.C. 547(b)-(c)): identifies transfers (credits to accounts holding the `cash` account role (registries/account_roles.toml, assigned with fa chart role)) to creditors within 90 days (or 365 days for insiders under 11 U.S.C. 101(31) via RELATED_TO/OWNS/CONTROLS) and computes 547(c)(1) contemporaneous-exchange, 547(c)(2) ordinary-course, and 547(c)(4) subsequent-new-value defenses to report net preference exposure per creditor. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens. Version 3 (fa-6l8g) pays each creditor only through its own obligation legs within each (unit, legal entity) partition of an entry (or the one party the cash legs name when no obligation leg names one), dates each settlement target by its own invoice, and reports a transfer no one creditor's legs account for as an unresolved_attribution finding that marks the exposure of each creditor it names attribution=incomplete; version 2 gave every party an entry named the entry's whole cash."
+summary = "Avoidable preference lookback (11 U.S.C. 547(b)-(c)): identifies transfers (credits to accounts holding the `cash` account role (registries/account_roles.toml, assigned with fa chart role)) to creditors within 90 days (or 365 days for insiders under 11 U.S.C. 101(31) via RELATED_TO/OWNS/CONTROLS) and computes 547(c)(1) contemporaneous-exchange, 547(c)(2) ordinary-course, and 547(c)(4) subsequent-new-value defenses to report net preference exposure per creditor. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens. Version 3 (fa-6l8g) pays each creditor only through its own obligation legs within each (unit, legal entity) partition of an entry (or the one party the cash legs name when no obligation leg names one), dates each settlement target by its own invoice, and reports a transfer no one creditor's legs account for as an unresolved_attribution finding that marks the exposure of each creditor it names attribution=incomplete; version 2 gave every party an entry named the entry's whole cash. Window arithmetic preserves the full u32 domain; older versions narrowed civil-day windows to signed i32."
 effective_through = "optional"
 
 [[parameter]]
@@ -1669,13 +1669,13 @@ meaning = "Maximum civil days between obligation creation and settlement for the
 
 [[procedure]]
 id = "lookback.fraudulent_transfer"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L55"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Constructive and actual fraudulent transfer lookback (11 U.S.C. 548 two-year window and UVTA section 9 four-year window): scans asset outflows for badges of fraud (insider transferee via RELATED_TO, transfer while balance-sheet insolvent, absence of corroborated reasonably-equivalent-value evidence, and manual/round-amount concealment)."
+summary = "Constructive and actual fraudulent transfer lookback (11 U.S.C. 548 two-year window and UVTA section 9 four-year window): scans asset outflows for badges of fraud (insider transferee via RELATED_TO, transfer while balance-sheet insolvent, absence of corroborated reasonably-equivalent-value evidence, and manual/round-amount concealment). Window arithmetic preserves the full u32 domain; older versions narrowed civil-day windows to signed i32."
 effective_through = "optional"
 
 [[parameter]]

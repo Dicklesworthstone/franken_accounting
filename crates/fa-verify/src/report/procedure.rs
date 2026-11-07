@@ -213,7 +213,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let id = text(&mut question, 128, "procedure.id")?;
     let (evidence, parameter, bound) = match id {
         "jet.round_amounts" => ("FA-EVID-L01", "round_power", 30),
-        "jet.period_end_timing" => ("FA-EVID-L02", "window_days", i32::MAX as u32),
+        "jet.period_end_timing" => ("FA-EVID-L02", "window_days", u32::MAX),
         _ => {
             return Err(failed(
                 "procedure_profile",

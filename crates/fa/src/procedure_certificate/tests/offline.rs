@@ -258,6 +258,72 @@ fn reseal(certificate: &mut ProcedureCertificate) {
     );
 }
 
+#[test]
+fn native_replay_classifies_invalid_retained_parameters_as_verification() {
+    let mut f = Fixture::new(127);
+    let (source, _) = f.post(31, "3000", "1000", 100_000, false);
+    let head = f.head();
+    for (id, parameter, invalid_values) in [
+        (
+            "jet.round_amounts",
+            "round_power",
+            vec![-1, 31, i128::from(u32::MAX) + 1],
+        ),
+        (
+            "jet.period_end_timing",
+            "window_days",
+            vec![-1, i128::from(u32::MAX) + 1],
+        ),
+    ] {
+        let request = f.request(id, source);
+        let certified = f.certify(&request);
+        assert_eq!(
+            f.book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.report,
+            "valid native replay: {id}"
+        );
+        for value in invalid_values {
+            let mut fresh_request = request.clone();
+            fresh_request.parameters = fresh_request.parameters.set(parameter, value).unwrap();
+            let usage = f
+                .book
+                .certify_procedure(
+                    &f.cx(),
+                    PRINCIPAL,
+                    &cap(&["read", "produce"]),
+                    &fresh_request,
+                )
+                .expect_err("a new invalid request is still a caller error");
+            assert_eq!(usage.exit(), exit::USAGE, "new {id}: {value}");
+            assert!(matches!(
+                usage,
+                BookError::Lantern(fa_lantern::LanternError::Parameter { name, .. })
+                    if name == parameter
+            ));
+
+            let mut forged = certified.certificate.clone();
+            assert_eq!(forged.report.parameters[0].0, parameter);
+            forged.report.parameters[0].1 = value;
+            // Repair every enclosing checksum: the rejection must come
+            // from executing the retained parameters, not integrity framing.
+            reseal(&mut forged);
+            let decoded = ProcedureCertificate::decode(&forged.canonical_bytes().unwrap()).unwrap();
+            let refusal = f
+                .book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
+                .expect("invalid retained parameters are a typed verification refusal")
+                .unwrap_err();
+            assert_eq!(refusal.exit, exit::VERIFICATION, "retained {id}: {value}");
+            assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+            assert!(refusal.message.contains(parameter));
+            assert_eq!(f.head(), head, "neither path may publish");
+        }
+    }
+}
+
 fn cutoff_request(f: &Fixture, procedure: &str, through: Option<u8>) -> ProcedureRequest {
     let mut request = ProcedureRequest::new(procedure, catalog::Inputs::default()).unwrap();
     request.known_at = Some(f.head());
@@ -1637,6 +1703,11 @@ fn period_end_timing_replays_zero_nondefault_windows_and_empty_findings() {
         (1, vec![last]),
         (3, vec![boundary, last]),
         (i128::from(i32::MAX), vec![early, outside, boundary, last]),
+        (
+            i128::from(i32::MAX) + 1,
+            vec![early, outside, boundary, last],
+        ),
+        (i128::from(u32::MAX), vec![early, outside, boundary, last]),
     ] {
         let certified = f.certify(&timing_request(&f, window));
         let produced = produce(&mut f, &certified.certificate);
@@ -1747,6 +1818,7 @@ fn repaired_period_end_outputs_cannot_omit_or_forge_findings_periods_or_decision
     }
     for variant in [
         "negative window",
+        "altered legal window",
         "oversized window",
         "wrong parameter",
         "wrong evidence",
@@ -1754,17 +1826,29 @@ fn repaired_period_end_outputs_cannot_omit_or_forge_findings_periods_or_decision
         let mut forged = certified.certificate.clone();
         match variant {
             "negative window" => forged.report.parameters[0].1 = -1,
-            "oversized window" => forged.report.parameters[0].1 = i128::from(i32::MAX) + 1,
+            // This original forgery is in the registered domain, but its
+            // retained findings and decision card still describe window 3.
+            "altered legal window" => forged.report.parameters[0].1 = i128::from(i32::MAX) + 1,
+            "oversized window" => forged.report.parameters[0].1 = i128::from(u32::MAX) + 1,
             "wrong parameter" => forged.report.parameters[0].0 = "round_power".into(),
             "wrong evidence" => forged.report.evidence = "FA-EVID-L01".into(),
             _ => unreachable!(),
         }
         reseal(&mut forged);
         let bundle = replace_certificate(&produced.bundle.bytes, &forged);
-        assert!(
-            verify_report_expected(&bundle, &[key], None, None, Some(forged.digest())).is_err(),
-            "{variant}"
-        );
+        let checked = verify_report_expected(&bundle, &[key], None, None, Some(forged.digest()));
+        assert!(checked.is_err(), "{variant}");
+        if matches!(variant, "altered legal window" | "oversized window") {
+            assert_eq!(
+                checked.unwrap_err().predicate,
+                if variant == "altered legal window" {
+                    "procedure_recomputation"
+                } else {
+                    "procedure_profile"
+                },
+                "{variant}"
+            );
+        }
     }
 }
 

@@ -67,9 +67,9 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     // Version 3 judges each position as of the effective date (fa-gebi, fa-ti99).
     ("solvency.balance_sheet_test", 3),
     ("solvency.cash_flow_test", 5),
-    // fa-6l8g: version 3 attributes party cash through each party's own legs.
-    ("lookback.preferences", 3),
-    ("lookback.fraudulent_transfer", 1),
+    // Full registered u32 civil-day windows, with prior algorithms retained.
+    ("lookback.preferences", 4),
+    ("lookback.fraudulent_transfer", 2),
     ("ponzi.net_investment", 5),
     ("distribution.rising_tide", 4),
     ("distribution.pro_rata", 4),
@@ -92,6 +92,8 @@ pub(super) fn supported(id: &str, version: u16) -> bool {
         || matches!(
             (id, version),
             ("graph.layering" | "graph.party_layering", 2)
+                | ("lookback.preferences", 3)
+                | ("lookback.fraudulent_transfer", 1)
         )
 }
 

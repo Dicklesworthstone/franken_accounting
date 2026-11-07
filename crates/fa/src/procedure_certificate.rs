@@ -344,6 +344,7 @@ fn retained_registry_document() -> Result<Vec<u8>, Refusal> {
     let layering = fa_registry::procedures::layering_v2_document(jet)
         .map_err(|error| invalid(format!("retained layering registry: {error}")))?;
     fa_registry::procedures::suspense_v2_document(layering)
+        .and_then(fa_registry::procedures::legacy_lookback_document)
         .map(|document| document.canonical_bytes())
         .map_err(|error| invalid(format!("published procedure registry: {error}")))
 }
@@ -374,6 +375,11 @@ fn registry_digest_for_run(procedure: &str, version: u16) -> Result<[u8; 32], Re
         retained_registry_digest()
     } else if version == 2 && matches!(procedure, "graph.layering" | "graph.party_layering") {
         registry_digest_with_procedures(layering_v2_registry_document(false)?)
+    } else if matches!(
+        (procedure, version),
+        ("lookback.preferences", 3) | ("lookback.fraudulent_transfer", 1)
+    ) {
+        registry_digest_with_procedures(legacy_lookback_registry_document()?)
     } else {
         registry_digest()
     }
@@ -388,8 +394,22 @@ fn layering_v2_registry_document(legacy_jet: bool) -> Result<Vec<u8>, Refusal> {
             .map_err(|error| invalid(format!("retained layering registry: {error}")))?
     };
     fa_registry::procedures::layering_v2_document(document)
+        .and_then(fa_registry::procedures::legacy_lookback_document)
         .map(|document| document.canonical_bytes())
         .map_err(|error| invalid(format!("retained layering registry: {error}")))
+}
+
+fn legacy_lookback_registry_document() -> Result<Vec<u8>, Refusal> {
+    let document = fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
+        .map_err(|error| invalid(format!("procedure registry: {error}")))?;
+    fa_registry::procedures::legacy_lookback_document(document)
+        .map(|document| document.canonical_bytes())
+        .map_err(|error| invalid(format!("retained lookback registry: {error}")))
+}
+
+fn legacy_lookback_registry_text() -> Result<String, Refusal> {
+    fa_registry::procedures::legacy_lookback_registry_text(PROCEDURE_REGISTRIES[0].1)
+        .map_err(|error| invalid(format!("retained raw lookback registry: {error}")))
 }
 
 /// The v1 raw-text closure, accepted only from certificates retained before
@@ -406,7 +426,8 @@ fn legacy_registry_digest() -> [u8; 32] {
 /// semantic revision. The inverse is restricted to the two complete row
 /// prefixes we changed; unknown layouts or versions are never guessed.
 fn retained_legacy_registry_digest() -> Result<[u8; 32], Refusal> {
-    let previous = fa_registry::procedures::layering_v2_registry_text(PROCEDURE_REGISTRIES[0].1)
+    let lookback = legacy_lookback_registry_text()?;
+    let previous = fa_registry::procedures::layering_v2_registry_text(&lookback)
         .map_err(|error| invalid(format!("retained layering registry: {error}")))?;
     let jet = retained_jet_registry_text(&previous)?;
     let procedures = fa_registry::procedures::suspense_v2_registry_text(&jet)
@@ -445,31 +466,44 @@ fn retained_jet_registry_text(text: &str) -> Result<String, Refusal> {
     Ok(procedures)
 }
 
-/// Only these four audited registry epochs are executable. Their algorithm
-/// identities are checked separately, so an old commitment cannot authorize v3.
-fn registry_versions(registry: &[u8; 32]) -> Result<Option<(u16, u16, u16)>, Refusal> {
-    for (jet, layering, suspense) in [(2, 3, 3), (2, 2, 3), (1, 2, 3), (1, 2, 2)] {
-        let canonical = if suspense == 2 {
+/// Only these five audited epochs are executable, with algorithm identities
+/// checked separately. Unpublished mixed combinations are never inferred.
+fn registry_versions(registry: &[u8; 32]) -> Result<Option<(u16, u16, u16, u16, u16)>, Refusal> {
+    let epochs = [
+        (2, 3, 3, 4, 2),
+        (2, 3, 3, 3, 1),
+        (2, 2, 3, 3, 1),
+        (1, 2, 3, 3, 1),
+        (1, 2, 2, 3, 1),
+    ];
+    for (jet, layering, suspense, preference, fraud) in epochs {
+        let canonical = if preference == 4 {
+            registry_digest()?
+        } else if suspense == 2 {
             retained_registry_digest()?
         } else if layering == 3 {
-            registry_digest()?
+            registry_digest_with_procedures(legacy_lookback_registry_document()?)?
         } else {
             registry_digest_with_procedures(layering_v2_registry_document(jet == 1)?)?
         };
         if registry == &canonical {
-            return Ok(Some((jet, layering, suspense)));
+            return Ok(Some((jet, layering, suspense, preference, fraud)));
         }
     }
     // Canonical epochs do not depend on the stricter raw-text layout inverse.
-    for (jet, layering, suspense) in [(2, 3, 3), (2, 2, 3), (1, 2, 3), (1, 2, 2)] {
-        let raw = if suspense == 2 {
-            retained_legacy_registry_digest()?
-        } else if layering == 3 {
+    for (jet, layering, suspense, preference, fraud) in epochs {
+        let raw = if preference == 4 {
             legacy_registry_digest()
+        } else if suspense == 2 {
+            retained_legacy_registry_digest()?
         } else {
-            let text =
-                fa_registry::procedures::layering_v2_registry_text(PROCEDURE_REGISTRIES[0].1)
-                    .map_err(|error| invalid(format!("retained layering registry: {error}")))?;
+            let text = legacy_lookback_registry_text()?;
+            let text = if layering == 2 {
+                fa_registry::procedures::layering_v2_registry_text(&text)
+                    .map_err(|error| invalid(format!("retained layering registry: {error}")))?
+            } else {
+                text
+            };
             let text = if jet == 1 {
                 retained_jet_registry_text(&text)?
             } else {
@@ -481,7 +515,7 @@ fn registry_versions(registry: &[u8; 32]) -> Result<Option<(u16, u16, u16)>, Ref
             )
         };
         if registry == &raw {
-            return Ok(Some((jet, layering, suspense)));
+            return Ok(Some((jet, layering, suspense, preference, fraud)));
         }
     }
     Ok(None)
@@ -492,6 +526,10 @@ fn canonical_registry_document(registry: &[u8; 32]) -> Result<Option<Vec<u8>>, R
         return fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
             .map(|document| Some(document.canonical_bytes()))
             .map_err(|error| invalid(format!("procedure registry: {error}")));
+    }
+    let lookback = legacy_lookback_registry_document()?;
+    if registry == &registry_digest_with_procedures(lookback.clone())? {
+        return Ok(Some(lookback));
     }
     let jet = retained_registry_document()?;
     if registry == &registry_digest_with_procedures(jet.clone())? {
@@ -1040,8 +1078,13 @@ impl ProcedureCertificate {
             ));
         }
         let current = registry_digest()?;
-        let Some((jet_version, layering_version, suspense_version)) =
-            registry_versions(&self.registry)?
+        let Some((
+            jet_version,
+            layering_version,
+            suspense_version,
+            preference_version,
+            fraud_version,
+        )) = registry_versions(&self.registry)?
         else {
             return Err(crate::certificate::registry_unavailable(
                 "procedure certificate",
@@ -1054,6 +1097,8 @@ impl ProcedureCertificate {
             "jet.round_amounts" | "jet.period_end_timing" => Some(jet_version),
             "graph.layering" | "graph.party_layering" => Some(layering_version),
             "jet.suspense_aging" => Some(suspense_version),
+            "lookback.preferences" => Some(preference_version),
+            "lookback.fraudulent_transfer" => Some(fraud_version),
             _ => None,
         };
         if declared_version.is_some_and(|version| version != self.report.version) {
@@ -1064,8 +1109,14 @@ impl ProcedureCertificate {
         let mut request = ProcedureRequest::new(&self.report.procedure, catalog::Inputs::default())
             .map_err(lantern_error)?;
         request.version = Some(self.report.version);
-        let row = fa_lantern::bind_version(&self.report.procedure, self.report.version)
-            .map_err(lantern_error)?;
+        let row = fa_lantern::bind_version(&self.report.procedure, self.report.version).map_err(
+            |error| match error {
+                fa_lantern::LanternError::Version { .. } => {
+                    invalid("procedure identity, claim, evidence or full parameter set has changed")
+                }
+                other => lantern_error(other),
+            },
+        )?;
         if row.version != self.report.version
             || row.claim != self.report.claim
             || row.evidence != self.report.evidence
@@ -1660,13 +1711,22 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
             // A replay re-executes the certified run under the caller's
             // cancellation; its work is the certificate's, never budgeted.
-            let report = fa_lantern::run_over_metered(
+            let report = match fa_lantern::run_over_metered(
                 &snapshot,
                 book,
                 built.as_ref(),
                 None,
                 Some(&cx.query()),
-            )?;
+            ) {
+                Ok(report) => report,
+                // These parameters came from the retained artifact, not
+                // from a new request. A domain violation is a verification
+                // failure even when construction deferred it until run().
+                Err(error @ fa_lantern::LanternError::Parameter { .. }) => {
+                    return Ok(Err(lantern_error(error)));
+                }
+                Err(error) => return Err(error.into()),
+            };
             let actual = match encode_run(&report) {
                 Ok(b) => b,
                 Err(r) => return Ok(Err(r)),

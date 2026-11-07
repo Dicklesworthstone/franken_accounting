@@ -15,6 +15,82 @@ const SUSPENSE_V3_SUMMARY: &str = "Accounts holding the `suspense` role with non
 const SUSPENSE_V2_SUMMARY: &str = "Accounts holding the `suspense` account role (registries/account_roles.toml, assigned with fa chart role) that retain a non-zero balance or uncleared postings older than max_age_days as of the coordinate's effective date. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens.";
 const SUSPENSE_V3_COMPLEXITY: &str =
     "O((entries + legs + applications) log (entries + legs + applications))";
+const LOOKBACK_WINDOW_SUMMARY_SUFFIX: &str = " Window arithmetic preserves the full u32 domain; older versions narrowed civil-day windows to signed i32.";
+
+/// Restore only the audited preference-v3 and fraudulent-transfer-v1 rows.
+/// Their algorithms remain separately versioned; registry reconstruction
+/// never makes an old commitment authorize the corrected window arithmetic.
+pub fn legacy_lookback_document(
+    mut doc: crate::toml::Document,
+) -> Result<crate::toml::Document, RegistryError> {
+    let rows = doc
+        .arrays
+        .get_mut("procedure")
+        .ok_or_else(|| invalid(R, "missing procedure rows"))?;
+    for (id, current, previous) in [
+        ("lookback.preferences", 4, 3),
+        ("lookback.fraudulent_transfer", 2, 1),
+    ] {
+        let row = rows
+            .iter_mut()
+            .find(|row| row.get("id").and_then(crate::toml::Value::as_str) == Some(id))
+            .ok_or_else(|| invalid(R, format!("missing retained procedure {id}")))?;
+        if row.get("version").and_then(crate::toml::Value::as_int) != Some(current) {
+            return Err(invalid(R, format!("unavailable lookback version for {id}")));
+        }
+        let summary = req_str(R, row, "summary")?
+            .strip_suffix(LOOKBACK_WINDOW_SUMMARY_SUFFIX)
+            .ok_or_else(|| invalid(R, format!("unrecognized lookback revision for {id}")))?
+            .to_string();
+        row.insert("version".into(), crate::toml::Value::Int(previous));
+        row.insert("summary".into(), crate::toml::Value::Str(summary));
+    }
+    Ok(doc)
+}
+
+/// Raw certificates additionally require the exact earlier text layout.
+pub fn legacy_lookback_registry_text(text: &str) -> Result<String, RegistryError> {
+    let doc = load(R, text)?;
+    let rows = doc
+        .arrays
+        .get("procedure")
+        .ok_or_else(|| invalid(R, "missing procedure rows"))?;
+    let mut retained = text.to_string();
+    for (id, current, previous) in [
+        ("lookback.preferences", 4, 3),
+        ("lookback.fraudulent_transfer", 2, 1),
+    ] {
+        let row = rows
+            .iter()
+            .find(|row| row.get("id").and_then(crate::toml::Value::as_str) == Some(id))
+            .ok_or_else(|| invalid(R, format!("missing retained procedure {id}")))?;
+        let summary = req_str(R, row, "summary")?;
+        let old_summary = summary
+            .strip_suffix(LOOKBACK_WINDOW_SUMMARY_SUFFIX)
+            .ok_or_else(|| invalid(R, format!("unrecognized lookback revision for {id}")))?;
+        let prefix = format!("[[procedure]]\nid = \"{id}\"\nversion = {current}\n");
+        let summary_line = format!("summary = \"{summary}\"\n");
+        if retained.matches(&prefix).count() != 1 || retained.matches(&summary_line).count() != 1 {
+            return Err(invalid(
+                R,
+                format!("unavailable raw lookback revision for {id}"),
+            ));
+        }
+        retained = retained.replacen(
+            &prefix,
+            &format!("[[procedure]]\nid = \"{id}\"\nversion = {previous}\n"),
+            1,
+        );
+        retained = retained.replacen(&summary_line, &format!("summary = \"{old_summary}\"\n"), 1);
+    }
+    if load(R, &retained)?.canonical_bytes() != legacy_lookback_document(doc)?.canonical_bytes() {
+        return Err(invalid(
+            R,
+            "retained raw and canonical lookback registries disagree",
+        ));
+    }
+    Ok(retained)
+}
 
 /// The canonical registry closure preceding the two effective-window JET
 /// algorithms. Durable certificates and authored case references may retain
@@ -554,6 +630,53 @@ mod tests {
         );
         assert!(layering_v2_document(load(R, &future).unwrap()).is_err());
         assert!(layering_v2_registry_text(&future).is_err());
+    }
+
+    #[test]
+    fn retained_lookback_rows_bind_exact_versions_and_preserve_other_inputs() {
+        let before = legacy_lookback_document(load(R, PROCEDURES).unwrap()).unwrap();
+        let raw = legacy_lookback_registry_text(PROCEDURES).unwrap();
+        assert_eq!(load(R, &raw).unwrap(), before);
+        for (id, expected) in [
+            ("lookback.preferences", 3),
+            ("lookback.fraudulent_transfer", 1),
+        ] {
+            let row = before.arrays["procedure"]
+                .iter()
+                .find(|row| row.get("id").and_then(crate::toml::Value::as_str) == Some(id))
+                .unwrap();
+            assert_eq!(
+                row.get("version").and_then(crate::toml::Value::as_int),
+                Some(expected)
+            );
+        }
+        let layout = PROCEDURES.replace(
+            "id = \"lookback.preferences\"\nversion = 4",
+            "id = \"lookback.preferences\"\n# layout only\nversion = 4",
+        );
+        assert_eq!(
+            legacy_lookback_document(load(R, &layout).unwrap()).unwrap(),
+            before
+        );
+        assert!(legacy_lookback_registry_text(&layout).is_err());
+        let mut unrelated = load(R, PROCEDURES).unwrap();
+        unrelated.arrays.get_mut("procedure").unwrap()[0]
+            .insert("evidence".into(), crate::toml::Value::Str("changed".into()));
+        assert_ne!(legacy_lookback_document(unrelated).unwrap(), before);
+        for (id, current, future) in [
+            ("lookback.preferences", 4, 5),
+            ("lookback.fraudulent_transfer", 2, 3),
+        ] {
+            let future = PROCEDURES.replace(
+                &format!("id = \"{id}\"\nversion = {current}"),
+                &format!("id = \"{id}\"\nversion = {future}"),
+            );
+            assert!(legacy_lookback_document(load(R, &future).unwrap()).is_err());
+            assert!(legacy_lookback_registry_text(&future).is_err());
+        }
+        let unknown = PROCEDURES.replace(LOOKBACK_WINDOW_SUMMARY_SUFFIX, " unknown window law");
+        assert!(legacy_lookback_document(load(R, &unknown).unwrap()).is_err());
+        assert!(legacy_lookback_registry_text(&unknown).is_err());
     }
 
     const MINIMAL: &str = r#"

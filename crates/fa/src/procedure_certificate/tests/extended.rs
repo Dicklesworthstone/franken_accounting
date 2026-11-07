@@ -128,6 +128,109 @@ fn layering_v3_keeps_the_actual_v2_registry_and_native_algorithm_replayable() {
 }
 
 #[test]
+fn lookback_versions_keep_the_real_prior_registry_and_native_replay() {
+    let mut f = Fixture::new(128);
+    let (source, _) = f.post(31, "6000", "1000", 100_000, false);
+    let before = f.head();
+    let mut request = f.request("lookback.fraudulent_transfer", source);
+    request.parameters = request
+        .parameters
+        .set("section_548_days", i128::from(u32::MAX))
+        .unwrap()
+        .set("uvta_days", i128::from(u32::MAX))
+        .unwrap();
+    let current = f.certify(&request).certificate;
+    assert_eq!(current.report.version, 2);
+    assert_eq!(current.report.findings.len(), 1);
+    assert_eq!(current.report.findings[0].statistic.value, 100_000);
+    assert_eq!(current.report.findings[0].severity, Severity::High);
+    request.version = Some(1);
+    let legacy = f.certify(&request).certificate;
+    assert_eq!(legacy.report.version, 1);
+    assert!(legacy.report.findings.is_empty());
+    // Extracted from both real pre-change P3/F1 certificates, not regenerated.
+    let expected = [
+        0xef, 0x30, 0xc8, 0xaa, 0x8a, 0x96, 0x6b, 0x65, 0x8c, 0x60, 0x4b, 0x02, 0x37, 0x47, 0x94,
+        0x8e, 0xff, 0xb8, 0x20, 0x92, 0x76, 0x69, 0x41, 0xd0, 0x9a, 0x1b, 0x09, 0x7d, 0x75, 0xa5,
+        0x5a, 0x14,
+    ];
+    assert_eq!(legacy.registry, expected);
+    assert_eq!(registry_versions(&expected).unwrap(), Some((2, 3, 3, 3, 1)));
+    assert_ne!(current.registry, expected);
+    let mut mixed = fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1).unwrap();
+    let historical = fa_registry::toml::parse(&legacy_lookback_registry_text().unwrap()).unwrap();
+    let fraud = historical.arrays["procedure"]
+        .iter()
+        .find(|row| {
+            row.get("id").and_then(fa_registry::toml::Value::as_str)
+                == Some("lookback.fraudulent_transfer")
+        })
+        .unwrap()
+        .clone();
+    let current_fraud = mixed
+        .arrays
+        .get_mut("procedure")
+        .unwrap()
+        .iter_mut()
+        .find(|row| {
+            row.get("id").and_then(fa_registry::toml::Value::as_str)
+                == Some("lookback.fraudulent_transfer")
+        })
+        .unwrap();
+    *current_fraud = fraud;
+    let mixed = registry_digest_with_procedures(mixed.canonical_bytes()).unwrap();
+    assert_eq!(
+        registry_versions(&mixed).unwrap(),
+        None,
+        "P4/F1 was never published"
+    );
+    for certificate in [&current, &legacy] {
+        let decoded =
+            ProcedureCertificate::decode(&certificate.canonical_bytes().unwrap()).unwrap();
+        assert_eq!(
+            f.book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
+                .unwrap()
+                .unwrap(),
+            certificate.report,
+        );
+    }
+    // A positive legacy run also needs legacy finding identities, not today's
+    // registry version supplied by the common finding constructor.
+    request.parameters = Params::defaults("lookback.fraudulent_transfer").unwrap();
+    let positive = f.certify(&request).certificate;
+    assert_eq!(positive.report.findings.len(), 1);
+    assert_eq!(positive.report.findings[0].version, 1);
+    assert_eq!(positive.report.findings[0].statistic.value, 100_000);
+    assert_eq!(
+        f.book
+            .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &positive)
+            .unwrap()
+            .unwrap(),
+        positive.report,
+    );
+    for (mut confused, registry) in [
+        (current, legacy.registry),
+        (legacy, registry_digest().unwrap()),
+    ] {
+        confused.registry = registry;
+        confused.digest = domain_digest(CERTIFICATE_DOMAIN, &[&confused.body().unwrap()]);
+        let refusal = confused.request().unwrap_err();
+        assert_eq!(refusal.exit, exit::VERIFICATION);
+        assert!(
+            refusal
+                .message
+                .contains("does not declare this algorithm version")
+        );
+    }
+    assert_eq!(
+        f.head(),
+        before,
+        "certification and all replay paths are read-only"
+    );
+}
+
+#[test]
 fn pre_layering_registry_keeps_unchanged_jet_versions_and_portable_documents() {
     let mut f = Fixture::new(127);
     f.assign_role("1000", "suspense");
@@ -156,8 +259,10 @@ fn pre_layering_registry_keeps_unchanged_jet_versions_and_portable_documents() {
             .unwrap()
             .unwrap();
         assert_eq!(replayed, certificate.report);
-        let text =
-            fa_registry::procedures::layering_v2_registry_text(PROCEDURE_REGISTRIES[0].1).unwrap();
+        let text = fa_registry::procedures::layering_v2_registry_text(
+            &legacy_lookback_registry_text().unwrap(),
+        )
+        .unwrap();
         let text = if version == 1 {
             retained_jet_registry_text(&text).unwrap()
         } else {
@@ -523,12 +628,14 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
     f.assign_procedure_roles();
     for (id, _) in selected {
         let certified = f.certify(&f.request(id, source));
-        // fa-6l8g moved the party-attributing procedures to version 3, and
+        // fa-6l8g moved the party-attributing procedures to version 3;
+        // full-u32 lookback arithmetic moved preferences to version 4, and
         // fa-yugf.83 the investor-population ones on to version 4. As-of
         // netting moved aging.inventory to version 3; cash-overdraft netting
         // and a shared cash/liability cutoff moved the cash-flow screen to 5.
         let version = match id {
-            "lookback.preferences" | "aging.inventory" | "jet.suspense_aging" => 3,
+            "lookback.preferences" => 4,
+            "aging.inventory" | "jet.suspense_aging" => 3,
             "solvency.cash_flow_test" => 5,
             "ponzi.net_investment" => 5,
             "distribution.rising_tide" | "distribution.pro_rata" => 4,
