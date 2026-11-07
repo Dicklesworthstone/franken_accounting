@@ -202,12 +202,95 @@ fn ponzi_motif_flags_new_money_funding_earlier_investors() {
     let r = run_over(&snapshot, &h.book, &PonziMotif::new().unwrap()).unwrap();
     assert!(r.findings.is_empty(), "{:?}", r.findings);
 
+    // Wider windows also hold every subscription in the first cohort. The
+    // complete registered u32 domain is a duration, not a signed civil day.
+    for window in [
+        i128::from(i32::MAX),
+        i128::from(i32::MAX) + 1,
+        i128::from(u32::MAX),
+    ] {
+        let wide = run_over(&snapshot, &h.book, &with("window_days", window)).unwrap();
+        assert!(
+            wide.findings.is_empty(),
+            "window {window}: {:?}",
+            wide.findings
+        );
+        assert_eq!(wide.work, r.work);
+    }
+
     // Out-of-range parameters are refused, never clamped.
     for name in ["window_days", "min_coverage_bps"] {
-        let refused = run_over(&snapshot, &h.book, &with(name, 0));
+        for invalid in [-1, 0, i128::from(u32::MAX) + 1] {
+            let refused = run_over(&snapshot, &h.book, &with(name, invalid));
+            assert!(
+                matches!(&refused, Err(LanternError::Parameter { name: n, .. }) if n == name),
+                "{name}={invalid}: {refused:?}"
+            );
+        }
+    }
+}
+
+/// These constructed snapshots isolate arithmetic over the entire DateDay
+/// domain. They do not establish kernel or calendar admission at extreme dates.
+#[test]
+fn constructed_ponzi_motif_windows_widen_spans_and_clip_only_the_final_day() {
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = None;
+    let a = investor(&h, &mut snapshot, "BOUNDARY-OLD");
+    let b = investor(&h, &mut snapshot, "BOUNDARY-NEW");
+    let ordinary = day(2026, 1, 5);
+    let mut old = movement(&mut h, 811, ordinary, "1000", "2000", 100_000, &[a]);
+    let mut new = movement(&mut h, 812, ordinary, "1000", "2000", 100_000, &[b]);
+    let mut paid = movement(&mut h, 813, ordinary, "2000", "1000", 100_000, &[a]);
+    old.entry.proposal.effective_date = DateDay(i32::MIN);
+    new.entry.proposal.effective_date = DateDay(i32::MAX);
+    paid.entry.proposal.effective_date = DateDay(i32::MAX);
+    snapshot.entries = vec![old, new, paid];
+    snapshot.entries.extend([
+        role_entry(&h, h.account("1000"), "cash", CommitSeq(900)),
+        role_entry(&h, h.account("2000"), "investor_capital", CommitSeq(901)),
+    ]);
+    snapshot.fold_roles().unwrap();
+
+    for (window, index, first_day) in [
+        (1_u32, 4_294_967_295_i64, i32::MAX),
+        (2_147_483_647, 2, i32::MAX - 1),
+        (2_147_483_648, 1, 0),
+        (4_294_967_295, 1, i32::MAX),
+    ] {
+        let procedure = with("window_days", i128::from(window));
+        let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+        assert_eq!(result.findings.len(), 1, "window {window}");
+        let finding = &result.findings[0];
+        assert_eq!(finding.version, 1);
+        assert_eq!(finding.severity, Severity::High);
+        assert_eq!(
+            finding.statistic,
+            Statistic {
+                name: "new_money_to_redemptions_bps".into(),
+                value: 10_000,
+                scale: 0,
+                population: 3,
+            }
+        );
+        assert_eq!(
+            finding.cites,
+            vec![Cite::Entry(VId(813)), Cite::Entry(VId(812))]
+        );
         assert!(
-            matches!(&refused, Err(LanternError::Parameter { name: n, .. }) if n == name),
-            "{name}: {refused:?}"
+            finding.narrative.starts_with(&format!(
+                "window {index} ({}..={}, unit ",
+                DateDay(first_day),
+                DateDay(i32::MAX)
+            )),
+            "{}",
+            finding.narrative
+        );
+        assert!(
+            determinism(&snapshot, &h.book, &procedure)
+                .unwrap()
+                .deterministic()
         );
     }
 }

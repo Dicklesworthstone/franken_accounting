@@ -305,6 +305,221 @@ fn pre_layering_registry_keeps_unchanged_jet_versions_and_portable_documents() {
 }
 
 #[test]
+fn ponzi_motif_certifies_native_inputs_and_replays_after_backdated_subscription() {
+    let mut f = Fixture::new(129);
+    f.assign_role("1000", "cash");
+    party(&mut f, "MOTIF-A", "motif-bank-a");
+    party(&mut f, "MOTIF-B", "motif-bank-b");
+    // This anonymous funding is a real posted proposal template, not an
+    // investor movement. Each named movement below is admitted separately.
+    let (source, _) = f.post(1, "3000", "1000", 1, false);
+    let post = |f: &mut Fixture, date, from: &str, to: &str, amount, investor: &str, key: &[u8]| {
+        let cx = f.cx();
+        let (template, _) = f.book.read_entry(&cx, source).unwrap().unwrap();
+        let mut proposal = template.proposal;
+        proposal.effective_date = day(date);
+        proposal.idempotency_key = key.to_vec();
+        proposal.description = f
+            .book
+            .seal_text(&cx, "Synthetic investor movement for native replay")
+            .unwrap();
+        proposal.legs = vec![
+            LegPayload::simple(Side::Credit, f.id(from), Amount::new(f.unit, amount)),
+            LegPayload::simple(Side::Debit, f.id(to), Amount::new(f.unit, amount)),
+        ];
+        for leg in &mut proposal.legs {
+            if leg.account_ref != f.id("1000") {
+                leg.dimension_set.push((
+                    fa_model::PARTY_DIMENSION,
+                    fa_model::party_value_vid(f.book.context().book_id, investor),
+                ));
+            }
+        }
+        proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+        match f
+            .runtime
+            .block_on(f.book.post(
+                &cx,
+                PostRequest {
+                    proposal,
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: cap(&["post"]),
+                },
+            ))
+            .unwrap()
+            .unwrap()
+        {
+            Posted::Committed { entry_ref, .. } => entry_ref.vid,
+            other => panic!("fresh investor posting: {other:?}"),
+        }
+    };
+    post(&mut f, 1, "3000", "1000", 100_000, "MOTIF-A", b"motif-a-in");
+    let new_money = post(&mut f, 9, "3000", "1000", 60_000, "MOTIF-B", b"motif-b-in");
+    let payout = post(
+        &mut f,
+        10,
+        "1000",
+        "6000",
+        50_000,
+        "MOTIF-A",
+        b"motif-a-paid",
+    );
+    let cx = f.cx();
+    let before = f.head();
+    let mut request = f.request("graph.ponzi_motif", source);
+    request.parameters = request.parameters.set("window_days", 7).unwrap();
+    let built = request.build().unwrap();
+    let plain = f
+        .book
+        .run_procedure(
+            &cx,
+            built.as_ref(),
+            request.known_at,
+            request.effective_through,
+            request.budget,
+        )
+        .unwrap();
+    let certified = f.certify(&request);
+    assert_eq!(certified.report, plain);
+    assert_eq!(certified.report.version, 1);
+    assert_eq!(certified.report.findings.len(), 1);
+    let finding = &certified.report.findings[0];
+    assert_eq!(finding.severity, Severity::High);
+    assert_eq!(
+        finding.statistic,
+        Statistic {
+            name: "new_money_to_redemptions_bps".into(),
+            value: 12_000,
+            scale: 0,
+            population: 3,
+        }
+    );
+    assert_eq!(
+        finding.cites,
+        vec![Cite::Entry(payout), Cite::Entry(new_money)]
+    );
+    assert_eq!(
+        certified.certificate.format(),
+        EXTENDED_PROCEDURE_CERTIFICATE_FORMAT
+    );
+    assert_eq!(certified.certificate.supplemental_inputs().len(), 6);
+    let decoded =
+        ProcedureCertificate::decode(&certified.certificate.canonical_bytes().unwrap()).unwrap();
+    assert_eq!(
+        ReportArtifact::decode(&decoded.canonical_bytes().unwrap())
+            .unwrap()
+            .family(),
+        ReportArtifactFamily::Procedure
+    );
+    assert!(matches!(
+        f.book
+            .procedure_certificate_status(&cx, PRINCIPAL, &cap(&["read"]), &decoded)
+            .unwrap()
+            .unwrap(),
+        ProcedureCertificateStatus::Current { checked_at } if checked_at == before
+    ));
+    for omit_party in [true, false] {
+        let mut damaged = decoded.clone();
+        if omit_party {
+            // Removing the Party population must fail even with a fresh
+            // outer checksum. The omitted population cannot be inferred.
+            damaged.extended_inputs.remove(1);
+        } else {
+            // A different certified population from the same snapshot is
+            // not a substitute for the required Party input either.
+            damaged.extended_inputs[1] = damaged.extended_inputs[0].clone();
+        }
+        damaged.digest = domain_digest(CERTIFICATE_DOMAIN, &[&damaged.body().unwrap()]);
+        let refusal = f
+            .book
+            .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &damaged)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.exit, exit::VERIFICATION);
+        assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+    }
+    let mut damaged = decoded.clone();
+    let last = damaged.output.len() - 1;
+    damaged.output[last] ^= 1;
+    damaged.digest = domain_digest(CERTIFICATE_DOMAIN, &[&damaged.body().unwrap()]);
+    assert_eq!(
+        f.book
+            .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &damaged)
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        exit::VERIFICATION
+    );
+    assert_eq!(
+        f.book
+            .certify_procedure(&cx, PRINCIPAL, &cap(&["read"]), &request)
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        exit::SAFETY
+    );
+    assert_eq!(
+        f.book
+            .replay_procedure(&cx, PRINCIPAL, &cap(&["produce"]), &decoded)
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        exit::SAFETY
+    );
+    request.parameters = request
+        .parameters
+        .set("window_days", i128::from(u32::MAX))
+        .unwrap();
+    let wide = f.certify(&request);
+    assert!(wide.report.findings.is_empty());
+    assert_eq!(
+        f.book
+            .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &wide.certificate)
+            .unwrap()
+            .unwrap(),
+        wide.report
+    );
+    assert_eq!(
+        f.head(),
+        before,
+        "read, certification and refusals never publish"
+    );
+
+    post(
+        &mut f,
+        9,
+        "3000",
+        "1000",
+        10_000,
+        "MOTIF-B",
+        b"motif-backdated",
+    );
+    let after = f.head();
+    assert_eq!(
+        f.book
+            .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &decoded)
+            .unwrap()
+            .unwrap(),
+        certified.report
+    );
+    let status = f
+        .book
+        .procedure_certificate_status(&cx, PRINCIPAL, &cap(&["read"]), &decoded)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        status,
+        ProcedureCertificateStatus::Changed { checked_at, current }
+            if checked_at == after
+                && current.findings.len() == 1
+                && current.findings[0].statistic.value == 14_000
+                && current.findings[0].statistic.population == 4
+    ));
+    assert_eq!(f.head(), after);
+}
+
+#[test]
 fn all_additional_procedures_round_trip_with_complete_native_populations() {
     let mut f = Fixture::new(91);
     // The role-selected procedures (fa-kxc4) need their roles held.
@@ -314,7 +529,7 @@ fn all_additional_procedures_round_trip_with_complete_native_populations() {
     f.post(3, "1010", "1020", 60, false);
     f.post(4, "1020", "6000", 10, false);
     let before = f.head();
-    assert_eq!(EXTENDED_CERTIFIABLE_PROCEDURES.len(), 43);
+    assert_eq!(EXTENDED_CERTIFIABLE_PROCEDURES.len(), 44);
     let mut saved = Vec::new();
     for &(id, version) in EXTENDED_CERTIFIABLE_PROCEDURES {
         assert!(!supported(id, version), "the legacy closure is unchanged");
