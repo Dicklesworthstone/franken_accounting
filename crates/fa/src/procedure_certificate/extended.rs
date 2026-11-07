@@ -89,7 +89,10 @@ pub(super) const COUNT: usize = INPUTS.len();
 
 pub(super) fn supported(id: &str, version: u16) -> bool {
     EXTENDED_CERTIFIABLE_PROCEDURES.contains(&(id, version))
-        || matches!((id, version), ("graph.layering" | "graph.party_layering", 2))
+        || matches!(
+            (id, version),
+            ("graph.layering" | "graph.party_layering", 2)
+        )
 }
 
 /// Previously registered certifiable identities with this six-part closure.

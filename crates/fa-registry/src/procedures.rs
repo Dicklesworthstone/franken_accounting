@@ -100,23 +100,25 @@ pub fn layering_v2_registry_text(text: &str) -> Result<String, RegistryError> {
             || retained.matches(&current_prefix).count() != 1
             || retained.matches(&current_summary).count() != 1
         {
-            return Err(invalid(R, format!("unavailable layering registry revision for {id}")));
+            return Err(invalid(
+                R,
+                format!("unavailable layering registry revision for {id}"),
+            ));
         }
         retained = retained.replacen(
             &current_prefix,
             &format!("[[procedure]]\nid = \"{id}\"\nversion = 2\n"),
             1,
         );
-        retained = retained.replacen(
-            &current_summary,
-            &format!("summary = \"{previous}\"\n"),
-            1,
-        );
+        retained = retained.replacen(&current_summary, &format!("summary = \"{previous}\"\n"), 1);
     }
     if load(R, &retained)?.canonical_bytes()
         != layering_v2_document(load(R, text)?)?.canonical_bytes()
     {
-        return Err(invalid(R, "retained raw and canonical layering registries disagree"));
+        return Err(invalid(
+            R,
+            "retained raw and canonical layering registries disagree",
+        ));
     }
     Ok(retained)
 }

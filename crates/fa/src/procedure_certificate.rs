@@ -457,12 +457,24 @@ fn registry_versions(registry: &[u8; 32]) -> Result<Option<(u16, u16)>, Refusal>
     // Canonical epochs do not depend on the stricter raw-text layout inverse.
     for (jet, layering) in [(2, 3), (1, 3), (2, 2), (1, 2)] {
         let raw = if layering == 3 {
-            if jet == 2 { legacy_registry_digest() } else { retained_legacy_registry_digest()? }
+            if jet == 2 {
+                legacy_registry_digest()
+            } else {
+                retained_legacy_registry_digest()?
+            }
         } else {
-            let text = fa_registry::procedures::layering_v2_registry_text(PROCEDURE_REGISTRIES[0].1)
-                .map_err(|error| invalid(format!("retained layering registry: {error}")))?;
-            let text = if jet == 1 { retained_jet_registry_text(&text)? } else { text };
-            domain_digest(b"fa:procedure-registry:v1", &[text.as_bytes(), PROCEDURE_REGISTRIES[1].1.as_bytes()])
+            let text =
+                fa_registry::procedures::layering_v2_registry_text(PROCEDURE_REGISTRIES[0].1)
+                    .map_err(|error| invalid(format!("retained layering registry: {error}")))?;
+            let text = if jet == 1 {
+                retained_jet_registry_text(&text)?
+            } else {
+                text
+            };
+            domain_digest(
+                b"fa:procedure-registry:v1",
+                &[text.as_bytes(), PROCEDURE_REGISTRIES[1].1.as_bytes()],
+            )
         };
         if registry == &raw {
             return Ok(Some((jet, layering)));
