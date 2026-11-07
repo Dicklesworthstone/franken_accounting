@@ -55,7 +55,13 @@ fn lapping_harness() -> (Harness, [VId; 2]) {
     (h, [parties[0], parties[1]])
 }
 
-fn post_lapping_movement(h: &mut Harness, date: u8, debit: &str, credit: &str, party: VId) -> VId {
+fn post_lapping_movement(
+    h: &mut Harness,
+    date: u8,
+    debit: &'static str,
+    credit: &'static str,
+    party: VId,
+) -> VId {
     let ctx = h.ctx();
     let mut proposal = h.proposal(&Spec::simple(day(2026, 1, date), debit, credit, 50_000));
     for leg in &mut proposal.legs {
