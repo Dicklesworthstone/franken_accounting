@@ -95,6 +95,10 @@ fn direct_procedure_certificates_replay_and_verify_without_recording_findings() 
         let plain = ok(&fixture.book, &arguments);
         assert_eq!(integer(&plain, "finding_count"), 1);
         assert_eq!(
+            text(get(&plain, "coordinate"), "effective"),
+            "through:2026-03-30"
+        );
+        assert_eq!(
             fixture.head(),
             before,
             "plain procedure runs remain read-only"
@@ -107,6 +111,7 @@ fn direct_procedure_certificates_replay_and_verify_without_recording_findings() 
         }
         let (report, metadata) = certified(&fixture, &arguments);
         assert_eq!(report.get("data"), plain.get("data"));
+        assert_eq!(report.get("coordinate"), plain.get("coordinate"));
         assert_eq!(text(&metadata, "output_format"), "fa:procedure-output:v1");
         assert_eq!(integer(&metadata, "known_at"), i128::from(known_at));
         let encoded = bytes(&metadata);
@@ -173,6 +178,7 @@ fn direct_procedure_certificates_replay_and_verify_without_recording_findings() 
             let replayed = ok(&fixture.book, &["replay", source]);
             assert_eq!(text(&replayed, "event"), "procedure_run");
             assert_eq!(replayed.get("data"), report.get("data"));
+            assert_eq!(replayed.get("coordinate"), report.get("coordinate"));
             assert_eq!(replayed.get("certificate"), report.get("certificate"));
         }
         assert_eq!(

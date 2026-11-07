@@ -24120,13 +24120,11 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                 .transpose()?;
             let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
             out.known_at(run.coordinate.known_at);
-            if artifact.is_some() {
-                out.effective(
-                    run.coordinate
-                        .effective_through
-                        .map_or_else(|| "all".into(), |day| format!("through:{}", day.render())),
-                );
-            }
+            out.effective(
+                run.coordinate
+                    .effective_through
+                    .map_or_else(|| "all".into(), |day| format!("through:{}", day.render())),
+            );
             // Human mode prints one finding per line; robot mode carries
             // them in the event alone (stdout is one JSON object a line).
             for f in run.findings.iter().filter(|_| !out.json) {
