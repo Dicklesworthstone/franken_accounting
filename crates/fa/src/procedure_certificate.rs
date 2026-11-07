@@ -348,7 +348,10 @@ fn retained_registry_document() -> Result<Vec<u8>, Refusal> {
 /// v2. Other rows and the foundation remain bound, including for certificates
 /// of unchanged procedures retained across this registry revision.
 fn retained_registry_digest() -> Result<[u8; 32], Refusal> {
-    let procedures = retained_registry_document()?;
+    registry_digest_with_procedures(retained_registry_document()?)
+}
+
+fn registry_digest_with_procedures(procedures: Vec<u8>) -> Result<[u8; 32], Refusal> {
     let foundations = fa_registry::toml::parse(include_str!("../../../franken-stack.lock"))
         .map_err(|error| invalid(format!("foundation registry: {error}")))?
         .canonical_bytes();
@@ -365,9 +368,24 @@ fn retained_registry_digest() -> Result<[u8; 32], Refusal> {
 fn registry_digest_for_run(procedure: &str, version: u16) -> Result<[u8; 32], Refusal> {
     if version == 1 && matches!(procedure, "jet.round_amounts" | "jet.period_end_timing") {
         retained_registry_digest()
+    } else if version == 2 && matches!(procedure, "graph.layering" | "graph.party_layering") {
+        registry_digest_with_procedures(layering_v2_registry_document(false)?)
     } else {
         registry_digest()
     }
+}
+
+fn layering_v2_registry_document(legacy_jet: bool) -> Result<Vec<u8>, Refusal> {
+    let document = if legacy_jet {
+        fa_registry::procedures::legacy_v1_document()
+            .map_err(|error| invalid(format!("retained JET/layering registry: {error}")))?
+    } else {
+        fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
+            .map_err(|error| invalid(format!("retained layering registry: {error}")))?
+    };
+    fa_registry::procedures::layering_v2_document(document)
+        .map(|document| document.canonical_bytes())
+        .map_err(|error| invalid(format!("retained layering registry: {error}")))
 }
 
 /// The v1 raw-text closure, accepted only from certificates retained before
@@ -384,7 +402,15 @@ fn legacy_registry_digest() -> [u8; 32] {
 /// semantic revision. The inverse is restricted to the two complete row
 /// prefixes we changed; unknown layouts or versions are never guessed.
 fn retained_legacy_registry_digest() -> Result<[u8; 32], Refusal> {
-    let mut procedures = PROCEDURE_REGISTRIES[0].1.to_string();
+    let procedures = retained_jet_registry_text(PROCEDURE_REGISTRIES[0].1)?;
+    Ok(domain_digest(
+        b"fa:procedure-registry:v1",
+        &[procedures.as_bytes(), PROCEDURE_REGISTRIES[1].1.as_bytes()],
+    ))
+}
+
+fn retained_jet_registry_text(text: &str) -> Result<String, Refusal> {
+    let mut procedures = text.to_string();
     for id in ["jet.round_amounts", "jet.period_end_timing"] {
         let current = format!(
             "[[procedure]]\nid = \"{id}\"\nversion = 2\neffective_through = \"optional\"\n"
@@ -400,15 +426,68 @@ fn retained_legacy_registry_digest() -> Result<[u8; 32], Refusal> {
     let reconstructed = fa_registry::toml::parse(&procedures)
         .map_err(|error| invalid(format!("retained raw procedure registry: {error}")))?
         .canonical_bytes();
-    if reconstructed != retained_registry_document()? {
+    let expected = fa_registry::procedures::legacy_v1_document_from_text(text)
+        .map_err(|error| invalid(format!("retained procedure registry: {error}")))?
+        .canonical_bytes();
+    if reconstructed != expected {
         return Err(invalid(
             "the retained raw and canonical procedure registries disagree",
         ));
     }
-    Ok(domain_digest(
-        b"fa:procedure-registry:v1",
-        &[procedures.as_bytes(), PROCEDURE_REGISTRIES[1].1.as_bytes()],
-    ))
+    Ok(procedures)
+}
+
+/// Only these four audited registry epochs are executable. Their algorithm
+/// identities are checked separately, so an old commitment cannot authorize v3.
+fn registry_versions(registry: &[u8; 32]) -> Result<Option<(u16, u16)>, Refusal> {
+    for (jet, layering) in [(2, 3), (1, 3), (2, 2), (1, 2)] {
+        let canonical = if layering == 3 {
+            if jet == 2 {
+                registry_digest()?
+            } else {
+                retained_registry_digest()?
+            }
+        } else {
+            registry_digest_with_procedures(layering_v2_registry_document(jet == 1)?)?
+        };
+        if registry == &canonical {
+            return Ok(Some((jet, layering)));
+        }
+    }
+    // Canonical epochs do not depend on the stricter raw-text layout inverse.
+    for (jet, layering) in [(2, 3), (1, 3), (2, 2), (1, 2)] {
+        let raw = if layering == 3 {
+            if jet == 2 { legacy_registry_digest() } else { retained_legacy_registry_digest()? }
+        } else {
+            let text = fa_registry::procedures::layering_v2_registry_text(PROCEDURE_REGISTRIES[0].1)
+                .map_err(|error| invalid(format!("retained layering registry: {error}")))?;
+            let text = if jet == 1 { retained_jet_registry_text(&text)? } else { text };
+            domain_digest(b"fa:procedure-registry:v1", &[text.as_bytes(), PROCEDURE_REGISTRIES[1].1.as_bytes()])
+        };
+        if registry == &raw {
+            return Ok(Some((jet, layering)));
+        }
+    }
+    Ok(None)
+}
+
+fn canonical_registry_document(registry: &[u8; 32]) -> Result<Option<Vec<u8>>, Refusal> {
+    if registry == &registry_digest()? {
+        return fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
+            .map(|document| Some(document.canonical_bytes()))
+            .map_err(|error| invalid(format!("procedure registry: {error}")));
+    }
+    let jet = retained_registry_document()?;
+    if registry == &registry_digest_with_procedures(jet.clone())? {
+        return Ok(Some(jet));
+    }
+    for legacy_jet in [false, true] {
+        let document = layering_v2_registry_document(legacy_jet)?;
+        if registry == &registry_digest_with_procedures(document.clone())? {
+            return Ok(Some(document));
+        }
+    }
+    Ok(None)
 }
 fn approval_statement(at: CommitSeq) -> String {
     format!(
@@ -682,7 +761,10 @@ impl ProcedureCertificate {
                 "portable procedures support only jet.round_amounts and jet.period_end_timing v1 without a cutoff, or v2 with an optional cutoff, and no input handles",
             ));
         }
-        if self.registry != registry_digest_for_run(&self.report.procedure, self.report.version)? {
+        if canonical_registry_document(&self.registry)?.is_none()
+            || registry_versions(&self.registry)?.map(|versions| versions.0)
+                != Some(self.report.version)
+        {
             return Err(offline_unsupported(
                 "portable procedures require their version's original canonical procedure registry closure; legacy raw-text commitments cannot be substituted",
             ));
@@ -716,14 +798,9 @@ impl ProcedureCertificate {
                 "the native source and procedure certificate require different foundation registries",
             ));
         }
-        let procedures = if self.registry == retained_registry_digest()? {
-            retained_registry_document()?
-        } else {
-            canonical(
-                "procedures",
-                include_str!("../../../registries/procedures.toml"),
-            )?
-        };
+        let procedures = canonical_registry_document(&self.registry)?.ok_or_else(|| {
+            offline_unsupported("portable procedure registry content is unavailable")
+        })?;
         native.push(("procedures".into(), procedures));
         native.push((
             "sod_policy".into(),
@@ -947,35 +1024,23 @@ impl ProcedureCertificate {
             ));
         }
         let current = registry_digest()?;
-        let retained = retained_registry_digest()?;
-        if self.registry != current
-            && self.registry != retained
-            && self.registry != legacy_registry_digest()
-            && self.registry != retained_legacy_registry_digest()?
-        {
+        let Some((jet_version, layering_version)) = registry_versions(&self.registry)? else {
             return Err(crate::certificate::registry_unavailable(
                 "procedure certificate",
                 &self.registry,
                 &current,
                 PROCEDURE_REGISTRIES,
             ));
-        }
-        if matches!(
-            self.report.procedure.as_str(),
-            "jet.round_amounts" | "jet.period_end_timing"
-        ) {
-            let declared = match self.report.version {
-                1 => {
-                    self.registry == retained || self.registry == retained_legacy_registry_digest()?
-                }
-                2 => self.registry == current || self.registry == legacy_registry_digest(),
-                _ => false,
-            };
-            if !declared {
-                return Err(invalid(
-                    "procedure registry does not declare this algorithm version",
-                ));
-            }
+        };
+        let declared_version = match self.report.procedure.as_str() {
+            "jet.round_amounts" | "jet.period_end_timing" => Some(jet_version),
+            "graph.layering" | "graph.party_layering" => Some(layering_version),
+            _ => None,
+        };
+        if declared_version.is_some_and(|version| version != self.report.version) {
+            return Err(invalid(
+                "procedure registry does not declare this algorithm version",
+            ));
         }
         let mut request = ProcedureRequest::new(&self.report.procedure, catalog::Inputs::default())
             .map_err(lantern_error)?;

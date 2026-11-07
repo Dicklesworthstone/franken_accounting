@@ -31,10 +31,10 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("graph.circular_flows", 2),
     // fa-b6xs: reads live postings and the REA parties this closure binds.
     ("graph.party_circular_flows", 2),
-    // Version 2 prunes a start node by the nodes reachable from it.
-    ("graph.layering", 2),
+    // Version 3 also advances each hop in the recorded temporal order.
+    ("graph.layering", 3),
     // fa-b6xs: reads live postings and the REA parties this closure binds.
-    ("graph.party_layering", 2),
+    ("graph.party_layering", 3),
     // Version 3 screens only Louvain communities, without component unions.
     ("graph.communities", 3),
     // fa-b6xs: reads live postings and the REA parties this closure binds.
@@ -89,6 +89,7 @@ pub(super) const COUNT: usize = INPUTS.len();
 
 pub(super) fn supported(id: &str, version: u16) -> bool {
     EXTENDED_CERTIFIABLE_PROCEDURES.contains(&(id, version))
+        || matches!((id, version), ("graph.layering" | "graph.party_layering", 2))
 }
 
 /// Previously registered certifiable identities with this six-part closure.
@@ -117,8 +118,10 @@ const RETAINED_CLOSURES: &[(&str, u16)] = &[
     ("graph.communities", 1),
     ("graph.communities", 2),
     ("graph.layering", 1),
+    ("graph.layering", 2),
     ("graph.party_circular_flows", 1),
     ("graph.party_layering", 1),
+    ("graph.party_layering", 2),
     ("graph.related_party_exposure", 1),
     ("graph.shell_signature", 1),
     ("jet.intercompany_unmatched", 1),
