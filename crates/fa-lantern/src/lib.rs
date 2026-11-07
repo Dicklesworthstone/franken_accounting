@@ -1135,7 +1135,9 @@ pub fn bind_version(id: &str, version: u16) -> Result<Row, LanternError> {
     }
     if matches!(
         (id, version, row.version),
-        (cutoff::LookbackPreferences::ID, 3, 4) | (cutoff::LookbackFraudulentTransfer::ID, 1, 2)
+        (cutoff::LookbackPreferences::ID, 3, 4)
+            | (cutoff::LookbackFraudulentTransfer::ID, 1, 2)
+            | (cutoff::ReconLapping::ID, 2, 3)
     ) {
         row.version = version;
         return Ok(row);

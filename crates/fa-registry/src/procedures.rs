@@ -16,6 +16,71 @@ const SUSPENSE_V2_SUMMARY: &str = "Accounts holding the `suspense` account role 
 const SUSPENSE_V3_COMPLEXITY: &str =
     "O((entries + legs + applications) log (entries + legs + applications))";
 const LOOKBACK_WINDOW_SUMMARY_SUFFIX: &str = " Window arithmetic preserves the full u32 domain; older versions narrowed civil-day windows to signed i32.";
+const LAPPING_V3_SUMMARY_SUFFIX: &str = " Version 3 preserves the full u32 window and widens day subtraction; version 2 retains its signed window arithmetic.";
+
+/// Restore only the published lapping-v2 row. Other registry content stays
+/// bound, including the separately retained JET, layering and lookback epochs.
+pub fn lapping_v2_document(
+    mut doc: crate::toml::Document,
+) -> Result<crate::toml::Document, RegistryError> {
+    let row = doc
+        .arrays
+        .get_mut("procedure")
+        .and_then(|rows| {
+            rows.iter_mut().find(|row| {
+                row.get("id").and_then(crate::toml::Value::as_str) == Some("recon.lapping")
+            })
+        })
+        .ok_or_else(|| invalid(R, "missing retained lapping row"))?;
+    if row.get("version").and_then(crate::toml::Value::as_int) != Some(3) {
+        return Err(invalid(R, "unavailable lapping registry version"));
+    }
+    let summary = req_str(R, row, "summary")?
+        .strip_suffix(LAPPING_V3_SUMMARY_SUFFIX)
+        .ok_or_else(|| invalid(R, "unrecognized lapping registry revision"))?
+        .to_string();
+    row.insert("version".into(), crate::toml::Value::Int(2));
+    row.insert("summary".into(), crate::toml::Value::Str(summary));
+    Ok(doc)
+}
+
+/// Raw certificates require the original text as well as canonical content.
+pub fn lapping_v2_registry_text(text: &str) -> Result<String, RegistryError> {
+    let doc = load(R, text)?;
+    let expected = lapping_v2_document(doc.clone())?.canonical_bytes();
+    let row = doc
+        .arrays
+        .get("procedure")
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("id").and_then(crate::toml::Value::as_str) == Some("recon.lapping")
+            })
+        })
+        .ok_or_else(|| invalid(R, "missing retained lapping row"))?;
+    let summary = req_str(R, row, "summary")?;
+    let old_summary = summary
+        .strip_suffix(LAPPING_V3_SUMMARY_SUFFIX)
+        .ok_or_else(|| invalid(R, "unrecognized lapping registry revision"))?;
+    let prefix = "[[procedure]]\nid = \"recon.lapping\"\nversion = 3\n";
+    let summary_line = format!("summary = \"{summary}\"\n");
+    if text.matches(prefix).count() != 1 || text.matches(&summary_line).count() != 1 {
+        return Err(invalid(R, "unavailable raw lapping registry revision"));
+    }
+    let retained = text
+        .replacen(
+            prefix,
+            "[[procedure]]\nid = \"recon.lapping\"\nversion = 2\n",
+            1,
+        )
+        .replacen(&summary_line, &format!("summary = \"{old_summary}\"\n"), 1);
+    if load(R, &retained)?.canonical_bytes() != expected {
+        return Err(invalid(
+            R,
+            "retained raw and canonical lapping registries disagree",
+        ));
+    }
+    Ok(retained)
+}
 
 /// Restore only the audited preference-v3 and fraudulent-transfer-v1 rows.
 /// Their algorithms remain separately versioned; registry reconstruction
@@ -603,6 +668,48 @@ impl Procedures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_lapping_row_binds_exact_version_and_preserves_other_inputs() {
+        let before = lapping_v2_document(load(R, PROCEDURES).unwrap()).unwrap();
+        let raw = lapping_v2_registry_text(PROCEDURES).unwrap();
+        assert_eq!(load(R, &raw).unwrap(), before);
+        let row = before.arrays["procedure"]
+            .iter()
+            .find(|row| row.get("id").and_then(crate::toml::Value::as_str) == Some("recon.lapping"))
+            .unwrap();
+        assert_eq!(
+            row.get("version").and_then(crate::toml::Value::as_int),
+            Some(2)
+        );
+        assert!(
+            !req_str(R, row, "summary")
+                .unwrap()
+                .ends_with(LAPPING_V3_SUMMARY_SUFFIX)
+        );
+        let layout = PROCEDURES.replace(
+            "id = \"recon.lapping\"\nversion = 3",
+            "id = \"recon.lapping\"\n# layout only\nversion = 3",
+        );
+        assert_eq!(
+            lapping_v2_document(load(R, &layout).unwrap()).unwrap(),
+            before
+        );
+        assert!(lapping_v2_registry_text(&layout).is_err());
+        let mut unrelated = load(R, PROCEDURES).unwrap();
+        unrelated.arrays.get_mut("procedure").unwrap()[0]
+            .insert("evidence".into(), crate::toml::Value::Str("changed".into()));
+        assert_ne!(lapping_v2_document(unrelated).unwrap(), before);
+        let future = PROCEDURES.replace(
+            "id = \"recon.lapping\"\nversion = 3",
+            "id = \"recon.lapping\"\nversion = 4",
+        );
+        assert!(lapping_v2_document(load(R, &future).unwrap()).is_err());
+        assert!(lapping_v2_registry_text(&future).is_err());
+        let unknown = PROCEDURES.replace(LAPPING_V3_SUMMARY_SUFFIX, " unknown lapping law");
+        assert!(lapping_v2_document(load(R, &unknown).unwrap()).is_err());
+        assert!(lapping_v2_registry_text(&unknown).is_err());
+    }
 
     #[test]
     fn retained_layering_rows_preserve_layout_independence_and_unrelated_changes() {

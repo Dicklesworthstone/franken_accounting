@@ -340,6 +340,7 @@ fn registry_digest() -> Result<[u8; 32], Refusal> {
 
 fn retained_registry_document() -> Result<Vec<u8>, Refusal> {
     let jet = fa_registry::procedures::legacy_v1_document()
+        .and_then(fa_registry::procedures::lapping_v2_document)
         .map_err(|error| invalid(format!("retained JET registry: {error}")))?;
     let layering = fa_registry::procedures::layering_v2_document(jet)
         .map_err(|error| invalid(format!("retained layering registry: {error}")))?;
@@ -380,6 +381,8 @@ fn registry_digest_for_run(procedure: &str, version: u16) -> Result<[u8; 32], Re
         ("lookback.preferences", 3) | ("lookback.fraudulent_transfer", 1)
     ) {
         registry_digest_with_procedures(legacy_lookback_registry_document()?)
+    } else if procedure == "recon.lapping" && version == 2 {
+        registry_digest_with_procedures(pre_lapping_registry_document()?.canonical_bytes())
     } else {
         registry_digest()
     }
@@ -393,23 +396,35 @@ fn layering_v2_registry_document(legacy_jet: bool) -> Result<Vec<u8>, Refusal> {
         fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
             .map_err(|error| invalid(format!("retained layering registry: {error}")))?
     };
-    fa_registry::procedures::layering_v2_document(document)
+    fa_registry::procedures::lapping_v2_document(document)
+        .and_then(fa_registry::procedures::layering_v2_document)
         .and_then(fa_registry::procedures::legacy_lookback_document)
         .map(|document| document.canonical_bytes())
         .map_err(|error| invalid(format!("retained layering registry: {error}")))
 }
 
 fn legacy_lookback_registry_document() -> Result<Vec<u8>, Refusal> {
-    let document = fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
-        .map_err(|error| invalid(format!("procedure registry: {error}")))?;
+    let document = pre_lapping_registry_document()?;
     fa_registry::procedures::legacy_lookback_document(document)
         .map(|document| document.canonical_bytes())
         .map_err(|error| invalid(format!("retained lookback registry: {error}")))
 }
 
 fn legacy_lookback_registry_text() -> Result<String, Refusal> {
-    fa_registry::procedures::legacy_lookback_registry_text(PROCEDURE_REGISTRIES[0].1)
+    fa_registry::procedures::legacy_lookback_registry_text(&pre_lapping_registry_text()?)
         .map_err(|error| invalid(format!("retained raw lookback registry: {error}")))
+}
+
+fn pre_lapping_registry_document() -> Result<fa_registry::toml::Document, Refusal> {
+    let document = fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
+        .map_err(|error| invalid(format!("procedure registry: {error}")))?;
+    fa_registry::procedures::lapping_v2_document(document)
+        .map_err(|error| invalid(format!("retained lapping registry: {error}")))
+}
+
+fn pre_lapping_registry_text() -> Result<String, Refusal> {
+    fa_registry::procedures::lapping_v2_registry_text(PROCEDURE_REGISTRIES[0].1)
+        .map_err(|error| invalid(format!("retained raw lapping registry: {error}")))
 }
 
 /// The v1 raw-text closure, accepted only from certificates retained before
@@ -466,22 +481,25 @@ fn retained_jet_registry_text(text: &str) -> Result<String, Refusal> {
     Ok(procedures)
 }
 
-// Epoch order: JET, layering, suspense, preferences, fraudulent transfer.
-type ProcedureEpochVersions = (u16, u16, u16, u16, u16);
+// Epoch order: JET, layering, suspense, preferences, fraudulent transfer, lapping.
+type ProcedureEpochVersions = (u16, u16, u16, u16, u16, u16);
 
-/// Only these five audited epochs are executable, with algorithm identities
+/// Only these six audited epochs are executable, with algorithm identities
 /// checked separately. Unpublished mixed combinations are never inferred.
 fn registry_versions(registry: &[u8; 32]) -> Result<Option<ProcedureEpochVersions>, Refusal> {
     let epochs = [
-        (2, 3, 3, 4, 2),
-        (2, 3, 3, 3, 1),
-        (2, 2, 3, 3, 1),
-        (1, 2, 3, 3, 1),
-        (1, 2, 2, 3, 1),
+        (2, 3, 3, 4, 2, 3),
+        (2, 3, 3, 4, 2, 2),
+        (2, 3, 3, 3, 1, 2),
+        (2, 2, 3, 3, 1, 2),
+        (1, 2, 3, 3, 1, 2),
+        (1, 2, 2, 3, 1, 2),
     ];
-    for (jet, layering, suspense, preference, fraud) in epochs {
-        let canonical = if preference == 4 {
+    for (jet, layering, suspense, preference, fraud, lapping) in epochs {
+        let canonical = if lapping == 3 {
             registry_digest()?
+        } else if preference == 4 {
+            registry_digest_with_procedures(pre_lapping_registry_document()?.canonical_bytes())?
         } else if suspense == 2 {
             retained_registry_digest()?
         } else if layering == 3 {
@@ -490,13 +508,21 @@ fn registry_versions(registry: &[u8; 32]) -> Result<Option<ProcedureEpochVersion
             registry_digest_with_procedures(layering_v2_registry_document(jet == 1)?)?
         };
         if registry == &canonical {
-            return Ok(Some((jet, layering, suspense, preference, fraud)));
+            return Ok(Some((jet, layering, suspense, preference, fraud, lapping)));
         }
     }
     // Canonical epochs do not depend on the stricter raw-text layout inverse.
-    for (jet, layering, suspense, preference, fraud) in epochs {
-        let raw = if preference == 4 {
+    for (jet, layering, suspense, preference, fraud, lapping) in epochs {
+        let raw = if lapping == 3 {
             legacy_registry_digest()
+        } else if preference == 4 {
+            domain_digest(
+                b"fa:procedure-registry:v1",
+                &[
+                    pre_lapping_registry_text()?.as_bytes(),
+                    PROCEDURE_REGISTRIES[1].1.as_bytes(),
+                ],
+            )
         } else if suspense == 2 {
             retained_legacy_registry_digest()?
         } else {
@@ -518,7 +544,7 @@ fn registry_versions(registry: &[u8; 32]) -> Result<Option<ProcedureEpochVersion
             )
         };
         if registry == &raw {
-            return Ok(Some((jet, layering, suspense, preference, fraud)));
+            return Ok(Some((jet, layering, suspense, preference, fraud, lapping)));
         }
     }
     Ok(None)
@@ -529,6 +555,10 @@ fn canonical_registry_document(registry: &[u8; 32]) -> Result<Option<Vec<u8>>, R
         return fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
             .map(|document| Some(document.canonical_bytes()))
             .map_err(|error| invalid(format!("procedure registry: {error}")));
+    }
+    let lapping = pre_lapping_registry_document()?.canonical_bytes();
+    if registry == &registry_digest_with_procedures(lapping.clone())? {
+        return Ok(Some(lapping));
     }
     let lookback = legacy_lookback_registry_document()?;
     if registry == &registry_digest_with_procedures(lookback.clone())? {
@@ -1087,6 +1117,7 @@ impl ProcedureCertificate {
             suspense_version,
             preference_version,
             fraud_version,
+            lapping_version,
         )) = registry_versions(&self.registry)?
         else {
             return Err(crate::certificate::registry_unavailable(
@@ -1102,6 +1133,7 @@ impl ProcedureCertificate {
             "jet.suspense_aging" => Some(suspense_version),
             "lookback.preferences" => Some(preference_version),
             "lookback.fraudulent_transfer" => Some(fraud_version),
+            "recon.lapping" => Some(lapping_version),
             _ => None,
         };
         if declared_version.is_some_and(|version| version != self.report.version) {

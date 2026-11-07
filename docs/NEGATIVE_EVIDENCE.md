@@ -4,6 +4,31 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-07 — unversioned lapping arithmetic broke saved v2 replay
+
+The earlier duration repair widened `recon.lapping` windows without changing
+its v2 identity. Unlike checked narrowing in other procedures, the former
+`u32 as i32` cast returned a successful empty result for `u32::MAX` on an
+ordinary planted lapping wave. The widened implementation returned a finding.
+This was missed in the initial compatibility review.
+
+Preserved native CLIs `6a1e62d3` and `b1afca58` confirmed the regression on one
+private synthetic book: ordinary runs were identical (High, delay 5 days,
+population 3); maximum-window results were empty versus positive. Both
+six-input v2 certificates carried the exact registry `103dab0f…ef74`, both
+self-replayed, and both cross-replays failed with exit 8 and an exact-output
+mismatch. Artifacts remain in `lapping-replay-control-nezoufrq`: 23 actual
+calls, 20 zero exits, two expected replay failures, and one retained usage-2
+probe mistake (an unsupported cutoff), corrected without repeating postings.
+All 228 original book files and both executable hashes remained unchanged.
+These are synthetic technical controls, not conclusions about actual conduct.
+
+The repair gives full-width arithmetic version 3 and retains the original
+successful v2 behavior. The earlier registry epochs and literal pins remain
+bound. A coherent positive result mislabeled as old v2 remains invalid;
+preserving contradictory outputs under one identity would conceal the defect.
+Native regression and final-source qualification must be recorded separately.
+
 ## 2026-11-07 — lookback window narrowing and retained-parameter error class
 
 The source-bound `a9fc8093` CLI produced a planted outflow finding at the

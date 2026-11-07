@@ -4957,7 +4957,9 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     );
 
     let r_lap = run_over(&snapshot, &h.book, &ReconLapping::new().unwrap()).unwrap();
+    assert_eq!(r_lap.version, 3);
     assert_eq!(r_lap.findings.len(), 1);
+    assert_eq!(r_lap.findings[0].version, 3);
     assert_eq!(r_lap.findings[0].severity, Severity::High);
     assert_eq!(
         r_lap.findings[0].statistic,
@@ -5002,6 +5004,20 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
             .effective_date = DateDay(date);
     }
     wide_lap.fold_roles().unwrap();
+    let retained_lapping = fa_lantern::catalog::build_version(
+        ReconLapping::ID,
+        2,
+        Params::defaults(ReconLapping::ID)
+            .unwrap()
+            .set("window_days", i128::from(u32::MAX))
+            .unwrap(),
+        fa_lantern::catalog::Inputs::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        run_over(&wide_lap, &h.book, retained_lapping.as_ref()),
+        Err(LanternError::Overflow("lapping day span"))
+    ));
     assert!(
         run_over(&wide_lap, &h.book, &lapping(2_147_483_647))
             .unwrap()

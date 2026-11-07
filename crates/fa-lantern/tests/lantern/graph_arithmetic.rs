@@ -5,6 +5,152 @@ use super::*;
 use fa_lantern::graph::{Communities, Concentration, RelatedPartyExposure, ShellSignature};
 
 #[test]
+fn native_lapping_windows_keep_successful_v2_results_and_version_the_wide_fix() {
+    use fa_lantern::cutoff::ReconLapping;
+
+    let mut h = harness();
+    let ctx = h.ctx();
+    let role = AccountRoleSpec {
+        account: h.account("1200"),
+        role: "receivable".into(),
+        assigned: true,
+    };
+    let description = h.seal("native lapping compatibility role");
+    h.runtime
+        .block_on(record_account_role(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &role,
+            PREPARER,
+            b"lapping-version-role",
+            description,
+            &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    let mut parties = Vec::new();
+    for code in ["REPLAY-LAP-A", "REPLAY-LAP-B"] {
+        let spec = fa_model::PartySpec {
+            code: code.into(),
+            kind: fa_model::PartyKind::Counterparty,
+            name: h.seal(code),
+            identifiers: Vec::new(),
+            external_ids: Vec::new(),
+        };
+        let description = h.seal("native lapping compatibility party");
+        h.runtime
+            .block_on(create_party(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                &spec,
+                PREPARER,
+                day(2026, 1, 5),
+                code.as_bytes(),
+                description,
+                &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+            ))
+            .unwrap()
+            .unwrap();
+        parties.push(fa_model::party_value_vid(h.book.book_id, code));
+    }
+    let mut entries = Vec::new();
+    for (date, debit, credit, party) in [
+        (10, "1200", "4000", parties[0]),
+        (12, "1000", "1200", parties[1]),
+        (15, "1000", "1200", parties[0]),
+    ] {
+        let mut proposal = h.proposal(&Spec::simple(day(2026, 1, date), debit, credit, 50_000));
+        for leg in &mut proposal.legs {
+            if leg.account_ref == h.account("1200") {
+                leg.dimension_set.push((fa_model::PARTY_DIMENSION, party));
+            }
+        }
+        let request = PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PREPARER, &["post"]).unwrap(),
+        };
+        let Posted::Committed {
+            entry_ref,
+            recorded_at,
+            ..
+        } = h
+            .runtime
+            .block_on(post(&mut h.db, &ctx, &h.book, request))
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("a fresh native lapping movement must commit")
+        };
+        h.posted.push((entry_ref.vid, recorded_at));
+        entries.push(entry_ref.vid);
+    }
+    let before = h.db.frontier().unwrap();
+    let snapshot = h.snapshot();
+    let current = run_over(&snapshot, &h.book, &ReconLapping::new().unwrap()).unwrap();
+    assert_eq!(current.version, 3);
+    assert_eq!(current.findings.len(), 1);
+    assert_eq!(current.findings[0].version, 3);
+    assert_eq!(current.findings[0].severity, Severity::High);
+    assert_eq!(
+        current.findings[0].statistic,
+        Statistic::count("settlement_delay_days", 5, 3)
+    );
+    let mut cites = vec![Cite::Account(h.account("1200"))];
+    cites.extend(entries.into_iter().map(Cite::Entry));
+    assert_eq!(current.findings[0].cites, cites);
+    h.assert_cites_resolve(&current);
+    for (window, current_count, retained_count) in [
+        (2, 0, 0),
+        (3, 1, 1),
+        (10, 1, 1),
+        (2_147_483_647, 1, 1),
+        (2_147_483_648, 1, 0),
+        (4_294_967_295, 1, 0),
+    ] {
+        for (version, count) in [(2, retained_count), (3, current_count)] {
+            let procedure = fa_lantern::catalog::build_version(
+                ReconLapping::ID,
+                version,
+                Params::defaults(ReconLapping::ID)
+                    .unwrap()
+                    .set("window_days", window)
+                    .unwrap(),
+                fa_lantern::catalog::Inputs::default(),
+            )
+            .unwrap();
+            let result = run_over(&snapshot, &h.book, procedure.as_ref()).unwrap();
+            assert_eq!(result.version, version);
+            assert_eq!(result.findings.len(), count);
+            if count == 1 {
+                let mut expected = current.findings[0].clone();
+                expected.version = version;
+                assert_eq!(result.findings, vec![expected]);
+            }
+            assert!(
+                witness::determinism(&snapshot, &h.book, procedure.as_ref())
+                    .unwrap()
+                    .deterministic()
+            );
+        }
+    }
+    for unavailable in [1, 4] {
+        assert!(matches!(
+            fa_lantern::bind_version(ReconLapping::ID, unavailable),
+            Err(LanternError::Version { .. })
+        ));
+    }
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        before,
+        "read-only lapping cannot post"
+    );
+}
+
+#[test]
 fn native_lookbacks_preserve_full_u32_windows_and_retained_versions() {
     use fa_lantern::cutoff::{LookbackFraudulentTransfer, LookbackPreferences};
 

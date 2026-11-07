@@ -193,17 +193,20 @@ impl Procedure for ReconIntercompany {
 /// within `window_days` of party A's open item while party A's settlement is
 /// delayed and applied after party B's receipt. Version 2 selects by role;
 /// version 1 guessed from code and name tokens (fa-kxc4).
+/// Version 3 preserves the full u32 window; explicit version 2 retains
+/// its signed window arithmetic for historical certificate replay.
 pub struct ReconLapping {
     params: Params,
+    version: u16,
 }
-procedure_boilerplate!(ReconLapping, "recon.lapping");
+procedure_boilerplate!(ReconLapping, "recon.lapping", 3);
 
 impl Procedure for ReconLapping {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        self.version
     }
     fn params(&self) -> &Params {
         &self.params
@@ -214,7 +217,7 @@ impl Procedure for ReconLapping {
         _book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let window_days = i64::from(self.params.get_u32("window_days")?);
+        let window_days = self.params.get_u32("window_days")?;
         if window_days == 0 {
             return Err(LanternError::Parameter {
                 procedure: Self::ID.into(),
@@ -222,6 +225,24 @@ impl Procedure for ReconLapping {
                 message: "must be >= 1".into(),
             });
         }
+        let window = if self.version == 2 {
+            i64::from(window_days as i32)
+        } else {
+            i64::from(window_days)
+        };
+        let gap = |later: DateDay, earlier: DateDay| -> Result<i64, LanternError> {
+            if self.version == 2 {
+                // Preserve every successful historical i32 subtraction.
+                // Previously panicking spans have no saved result to replay.
+                later
+                    .0
+                    .checked_sub(earlier.0)
+                    .map(i64::from)
+                    .ok_or(LanternError::Overflow("lapping day span"))
+            } else {
+                Ok(i64::from(later.0) - i64::from(earlier.0))
+            }
+        };
 
         let controls = snapshot.role_population(Self::ID)?;
         let mut pval_to_party: BTreeMap<VId, VId> = BTreeMap::new();
@@ -288,7 +309,7 @@ impl Procedure for ReconLapping {
                 }
                 let a = movs[i];
                 for j in (i + 1)..movs.len() {
-                    if i64::from(movs[j].date.0) - i64::from(a.date.0) > window_days {
+                    if gap(movs[j].date, a.date)? > window {
                         break;
                     }
                     if movs[j].side != Side::Credit || movs[j].party == a.party {
@@ -296,7 +317,7 @@ impl Procedure for ReconLapping {
                     }
                     let b = movs[j];
                     for mov_k in movs.iter().skip(j + 1) {
-                        if i64::from(mov_k.date.0) - i64::from(b.date.0) > window_days {
+                        if gap(mov_k.date, b.date)? > window {
                             break;
                         }
                         if mov_k.side == Side::Credit
@@ -306,8 +327,7 @@ impl Procedure for ReconLapping {
                         {
                             let triple = (a.entry, b.entry, mov_k.entry);
                             if seen_triples.insert(triple) {
-                                let delay_days =
-                                    (i64::from(mov_k.date.0) - i64::from(a.date.0)).max(1) as u64;
+                                let delay_days = gap(mov_k.date, a.date)?.max(1) as u64;
                                 let mut cites = vec![
                                     Cite::Account(*acct_vid),
                                     Cite::Entry(a.entry),
@@ -334,6 +354,9 @@ impl Procedure for ReconLapping {
                     }
                 }
             }
+        }
+        for finding in &mut out {
+            finding.version = self.version;
         }
         Ok(out)
     }

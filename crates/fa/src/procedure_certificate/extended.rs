@@ -50,7 +50,7 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("graph.party_concentration", 1),
     ("graph.identity_resolution", 1),
     ("recon.intercompany", 2),
-    ("recon.lapping", 2),
+    ("recon.lapping", 3),
     // Version 2 preserves each declared-entity cell and effective cutoff.
     ("recon.attested_register_compare", 2),
     // Version 2 folds gross period activity, as RegisterEquals does.
@@ -96,6 +96,7 @@ pub(super) fn supported(id: &str, version: u16) -> bool {
             ("graph.layering" | "graph.party_layering", 2)
                 | ("lookback.preferences", 3)
                 | ("lookback.fraudulent_transfer", 1)
+                | ("recon.lapping", 2)
         )
 }
 
@@ -147,6 +148,7 @@ const RETAINED_CLOSURES: &[(&str, u16)] = &[
     ("recon.book_to_book", 1),
     ("recon.intercompany", 1),
     ("recon.lapping", 1),
+    ("recon.lapping", 2),
     ("reversal.patterns", 1),
     ("solvency.balance_sheet_test", 1),
     ("solvency.balance_sheet_test", 2),

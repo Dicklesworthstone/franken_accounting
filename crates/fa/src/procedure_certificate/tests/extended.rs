@@ -155,7 +155,10 @@ fn lookback_versions_keep_the_real_prior_registry_and_native_replay() {
         0x5a, 0x14,
     ];
     assert_eq!(legacy.registry, expected);
-    assert_eq!(registry_versions(&expected).unwrap(), Some((2, 3, 3, 3, 1)));
+    assert_eq!(
+        registry_versions(&expected).unwrap(),
+        Some((2, 3, 3, 3, 1, 2))
+    );
     assert_ne!(current.registry, expected);
     let mut mixed = fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1).unwrap();
     let historical = fa_registry::toml::parse(&legacy_lookback_registry_text().unwrap()).unwrap();
@@ -302,6 +305,190 @@ fn pre_layering_registry_keeps_unchanged_jet_versions_and_portable_documents() {
             .contains("does not declare this algorithm version")
     );
     assert_eq!(f.head(), before);
+}
+
+#[test]
+fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
+    let mut f = Fixture::new(130);
+    f.assign_role("1010", "receivable");
+    party(&mut f, "LAPPING-A", "lapping-a");
+    party(&mut f, "LAPPING-B", "lapping-b");
+    let (source, _) = f.post(1, "3000", "1000", 1, false);
+    let post = |f: &mut Fixture, date, from: &str, to: &str, investor: &str, key: &[u8]| {
+        let cx = f.cx();
+        let (template, _) = f.book.read_entry(&cx, source).unwrap().unwrap();
+        let mut proposal = template.proposal;
+        proposal.effective_date = day(date);
+        proposal.idempotency_key = key.to_vec();
+        proposal.description = f
+            .book
+            .seal_text(
+                &cx,
+                "Explicitly synthetic native lapping compatibility control",
+            )
+            .unwrap();
+        proposal.legs = vec![
+            LegPayload::simple(Side::Credit, f.id(from), Amount::new(f.unit, 10_000)),
+            LegPayload::simple(Side::Debit, f.id(to), Amount::new(f.unit, 10_000)),
+        ];
+        for leg in &mut proposal.legs {
+            if leg.account_ref == f.id("1010") {
+                leg.dimension_set.push((
+                    fa_model::PARTY_DIMENSION,
+                    fa_model::party_value_vid(f.book.context().book_id, investor),
+                ));
+            }
+        }
+        proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+        match f
+            .runtime
+            .block_on(f.book.post(
+                &cx,
+                PostRequest {
+                    proposal,
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: cap(&["post"]),
+                },
+            ))
+            .unwrap()
+            .unwrap()
+        {
+            Posted::Committed { entry_ref, .. } => entry_ref.vid,
+            other => panic!("fresh lapping posting: {other:?}"),
+        }
+    };
+    let invoice = post(&mut f, 1, "3000", "1010", "LAPPING-A", b"lapping-invoice");
+    let other = post(&mut f, 3, "1010", "1000", "LAPPING-B", b"lapping-other");
+    let settled = post(
+        &mut f,
+        6,
+        "1010",
+        "1000",
+        "LAPPING-A",
+        b"lapping-settlement",
+    );
+    let before = f.head();
+    let cx = f.cx();
+    let mut request = f.request("recon.lapping", source);
+    request.effective_through = None;
+    let ordinary = f.certify(&request).certificate;
+    assert_eq!(ordinary.report.version, 3);
+    assert_eq!(ordinary.report.findings.len(), 1);
+    let finding = &ordinary.report.findings[0];
+    assert_eq!(finding.version, 3);
+    assert_eq!(finding.severity, Severity::High);
+    assert_eq!(
+        finding.statistic,
+        Statistic::count("settlement_delay_days", 5, 3)
+    );
+    assert_eq!(
+        finding.cites,
+        vec![
+            Cite::Account(f.id("1010")),
+            Cite::Entry(invoice),
+            Cite::Entry(other),
+            Cite::Entry(settled)
+        ]
+    );
+    request.version = Some(2);
+    let old_ordinary = f.certify(&request).certificate;
+    assert_eq!(old_ordinary.report.findings.len(), 1);
+    assert_eq!(old_ordinary.report.findings[0].version, 2);
+    assert_eq!(old_ordinary.report.findings[0].statistic, finding.statistic);
+    assert_eq!(old_ordinary.report.findings[0].cites, finding.cites);
+    request.parameters = request
+        .parameters
+        .set("window_days", i128::from(u32::MAX))
+        .unwrap();
+    let legacy = f.certify(&request).certificate;
+    assert_eq!(legacy.report.version, 2);
+    assert!(legacy.report.findings.is_empty());
+    // Actual P4/F2 native certificate commitment before the lapping revision.
+    assert_eq!(
+        legacy.registry,
+        [
+            0xe7, 0x4d, 0xa5, 0x15, 0xc2, 0xc0, 0xf3, 0xf7, 0x8d, 0x08, 0x34, 0x53, 0x81, 0xf9,
+            0xd9, 0xce, 0x2f, 0xbc, 0x75, 0x4d, 0xf7, 0xa1, 0xd2, 0xb0, 0x0f, 0x28, 0xd3, 0x42,
+            0x83, 0xc0, 0x83, 0xa1,
+        ]
+    );
+    assert_eq!(
+        registry_versions(&legacy.registry).unwrap(),
+        Some((2, 3, 3, 4, 2, 2))
+    );
+    request.version = None;
+    let current = f.certify(&request).certificate;
+    assert_eq!(current.report.version, 3);
+    assert_eq!(current.report.findings, ordinary.report.findings);
+    assert_ne!(current.registry, legacy.registry);
+    // Extracted independently from both actual native certificates in the
+    // preserved 6a1e62d3/b1afca58 control, not regenerated from this producer.
+    let original_registry = [
+        0x10, 0x3d, 0xab, 0x0f, 0xd1, 0x46, 0xb9, 0x49, 0xf5, 0x27, 0x4e, 0x3e, 0x01, 0xfa, 0xba,
+        0x0e, 0x5d, 0x05, 0xc7, 0xb1, 0xf3, 0x4d, 0x03, 0x60, 0x2e, 0xe8, 0x4c, 0xda, 0xd5, 0x73,
+        0xef, 0x74,
+    ];
+    let mut original = legacy.clone();
+    original.registry = original_registry;
+    super::offline::reseal(&mut original);
+    for certificate in [&ordinary, &old_ordinary, &current, &legacy, &original] {
+        let decoded =
+            ProcedureCertificate::decode(&certificate.canonical_bytes().unwrap()).unwrap();
+        assert_eq!(decoded.supplemental_inputs().len(), 6);
+        assert_eq!(
+            f.book
+                .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &decoded)
+                .unwrap()
+                .unwrap(),
+            certificate.report
+        );
+    }
+    // The intermediate widened producer emitted a false v2 identity under
+    // this exact old registry. Keep that coherent counterexample rejected.
+    let mut mistagged = original.clone();
+    mistagged.report.findings = current.report.findings.clone();
+    for finding in &mut mistagged.report.findings {
+        finding.version = 2;
+    }
+    super::offline::reseal(&mut mistagged);
+    let refusal = f
+        .book
+        .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &mistagged)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.exit, exit::VERIFICATION);
+    assert!(refusal.message.contains("does not replay exactly"));
+    for (mut confused, registry) in [
+        (current.clone(), legacy.registry),
+        (legacy.clone(), current.registry),
+    ] {
+        confused.registry = registry;
+        confused.digest = domain_digest(CERTIFICATE_DOMAIN, &[&confused.body().unwrap()]);
+        let decoded = ProcedureCertificate::decode(&confused.canonical_bytes().unwrap()).unwrap();
+        let refusal = decoded.request().unwrap_err();
+        assert_eq!(refusal.exit, exit::VERIFICATION);
+        assert!(
+            refusal
+                .message
+                .contains("does not declare this algorithm version")
+        );
+    }
+    assert_eq!(
+        f.head(),
+        before,
+        "certification, replay and refusals do not write"
+    );
+    f.post(7, "1000", "6000", 100, false);
+    let after = f.head();
+    assert_eq!(
+        f.book
+            .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &original)
+            .unwrap()
+            .unwrap(),
+        original.report
+    );
+    assert_eq!(f.head(), after);
 }
 
 #[test]
@@ -886,7 +1073,7 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
         let version = match id {
             "graph.ponzi_motif" => 1,
             "lookback.preferences" => 4,
-            "aging.inventory" | "jet.suspense_aging" => 3,
+            "aging.inventory" | "jet.suspense_aging" | "recon.lapping" => 3,
             "solvency.cash_flow_test" => 5,
             "ponzi.net_investment" => 5,
             "distribution.rising_tide" | "distribution.pro_rata" => 4,
