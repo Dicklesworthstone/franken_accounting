@@ -370,7 +370,14 @@ impl Coverage {
     }
 }
 
-fn original<V: Vfs + Clone>(db: &Database<V>, row: &VertexRow) -> Result<bool, KernelError> {
+/// Whether `row` is still its immutable creation record. Native
+/// `created_at` starts the current content version, not necessarily the
+/// vertex's lifetime. The preceding snapshot detects even an exact
+/// restoration after a rewrite; both checks are historical point reads.
+pub(crate) fn original<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+) -> Result<bool, KernelError> {
     let Some(before) = row.created_at.0.checked_sub(1).map(CommitSeq) else {
         return Ok(false);
     };

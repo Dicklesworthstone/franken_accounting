@@ -5,7 +5,9 @@
 //! envelope — together with the approver, the profile and capability
 //! commitment it acted under, the op it exercised, the book, and the
 //! security policy epoch current when it was recorded. Its recorded
-//! sequence is its vertex's `created_at`.
+//! sequence is its vertex's `created_at` only after the kernel verifies
+//! that the row is its unchanged creation record: the native field is a
+//! version start and also advances when a stored record is rewritten.
 //!
 //! Subset of the Appendix A row, stated: `effects_digest` and
 //! `target_coordinate` are not carried yet. Rule-generated effects do not

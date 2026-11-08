@@ -135,6 +135,12 @@ pub fn approval_records<V: asupersync::fs::Vfs + Clone>(
                     vid.0
                 ))
             })?;
+        if !crate::outcome::original(db, &row)? {
+            return Err(KernelError::Corrupt(format!(
+                "approval {:032x} is not its immutable creation record",
+                vid.0
+            )));
+        }
         let Some(CanonicalScalar::Bytes(bytes)) = prop(&row, property::FA_PAYLOAD) else {
             return Err(KernelError::Corrupt(format!(
                 "approval {:032x} carries no _fa_payload bytes",
@@ -338,8 +344,9 @@ struct WitnessedApprovals {
 /// current when it is consumed. Later rotation neither invalidates a valid
 /// approval nor changes the signer's identity. Native registration and
 /// approval creation verify the signatures through the injected verifier;
-/// consumption checks their retained scheme/generation/key binding. It does
-/// not independently re-run Ed25519 verification (owned above this layer).
+/// consumption requires unchanged creation rows and checks their retained
+/// scheme/generation/key binding. It does not independently re-run Ed25519
+/// verification (owned above this layer).
 fn approval_signing_key<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
@@ -348,8 +355,9 @@ fn approval_signing_key<V: asupersync::fs::Vfs + Clone>(
     signature: Option<&PrincipalSignature>,
     recorded_at: CommitSeq,
 ) -> Outcome<Option<[u8; 32]>> {
-    let keys =
-        crate::principal_key::chain(book, approval.principal, |vid| Ok(txn.vertex(db, vid)?))?;
+    let keys = crate::principal_key::chain(db, book, approval.principal, |vid| {
+        Ok(txn.vertex(db, vid)?)
+    })?;
     let at_recording = keys
         .iter()
         .rfind(|generation| generation.recorded_at <= recorded_at);
@@ -395,9 +403,9 @@ fn authorize_signing_keys<V: asupersync::fs::Vfs + Clone>(
     }
     let mut excluded = BTreeMap::new();
     for principal in preparers.collect::<BTreeSet<_>>() {
-        for generation in
-            crate::principal_key::chain(book, principal, |vid| Ok(txn.vertex(db, vid)?))?
-        {
+        for generation in crate::principal_key::chain(db, book, principal, |vid| {
+            Ok(txn.vertex(db, vid)?)
+        })? {
             excluded.entry(generation.key.key_id()).or_insert(principal);
         }
     }
@@ -423,6 +431,19 @@ fn approval_lineages<V: asupersync::fs::Vfs + Clone>(
         }
     }
     Ok(Some(read))
+}
+
+fn rewritten_approval(vid: VId) -> Refusal {
+    Refusal::new(
+        code::APPROVAL_SIGNATURE,
+        exit::SAFETY,
+        format!(
+            "approval {:032x} is not its immutable creation record; its body, signature or recording sequence was rewritten",
+            vid.0
+        ),
+        "plan §14.2 (recorded approval authority) and §14.5 (non-repudiation)",
+        "restore the book from verified immutable history; do not rewrite or re-sign a retained approval in place",
+    )
 }
 
 /// Witness every cited approval inside `txn`: each binds `proposal_digest`,
@@ -485,6 +506,12 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
             epoch,
         ) {
             return Ok(Err(refusal(&d)));
+        }
+        // A native row's created_at advances on every rewrite. Only an
+        // unchanged creation row may supply the approval's recording time
+        // or the signature/body whose admission was already verified.
+        if !crate::outcome::original(db, &row)? {
+            return Ok(Err(rewritten_approval(cited.approval_vid)));
         }
         match approval_signing_key(txn, db, book, &approval, signature.as_ref(), row.created_at)? {
             Ok(Some(key)) => signers.push((approval.principal, key)),
@@ -726,8 +753,9 @@ async fn record_approval_with_class<V: asupersync::fs::Vfs + Clone>(
     let digest = approval
         .digest()
         .map_err(|e| KernelError::Model(e.into()))?;
-    let keys =
-        crate::principal_key::chain(book, approval.principal, |vid| Ok(txn.vertex(db, vid)?))?;
+    let keys = crate::principal_key::chain(db, book, approval.principal, |vid| {
+        Ok(txn.vertex(db, vid)?)
+    })?;
     let signature_check = match (keys.last(), &signed) {
         (None, None) => Ok(()),
         (None, Some(_)) => Err(KeyError::NoKey),
@@ -760,10 +788,14 @@ async fn record_approval_with_class<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(match prop(&row, property::FA_PAYLOAD) {
             Some(CanonicalScalar::Bytes(b)) if b.as_slice() == bytes.as_slice() => {
-                Ok(Approved::AlreadyRecorded {
-                    approval: handle,
-                    recorded_at: row.created_at,
-                })
+                if crate::outcome::original(db, &row)? {
+                    Ok(Approved::AlreadyRecorded {
+                        approval: handle,
+                        recorded_at: row.created_at,
+                    })
+                } else {
+                    Err(rewritten_approval(vid))
+                }
             }
             _ => Err(Refusal::new(
                 code::IDEMPOTENCY_CONFLICT,

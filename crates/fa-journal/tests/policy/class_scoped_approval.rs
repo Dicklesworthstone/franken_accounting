@@ -2,7 +2,9 @@
 //! consumption, including signed records retained by an earlier writer.
 
 use super::*;
-use fa_journal::principal_key::{PrincipalKeyRequest, read_principal_keys, register_principal_key};
+use fa_journal::principal_key::{
+    PrincipalKeyRequest, principal_key_vid, read_principal_keys, register_principal_key,
+};
 use fa_journal::refusal::code;
 use fa_policy::principal_key::{SCHEME_ED25519, approval_message, key_id};
 use fa_policy::{Approval, PrincipalKey, PrincipalSignature, SignatureVerifier};
@@ -460,6 +462,98 @@ fn approval_consumption_uses_the_key_at_recording_and_preserves_legacy_unsigned(
 }
 
 #[test]
+fn original_approval_and_key_records_remain_usable_after_durable_reopen() {
+    let mut h = harness();
+    let ctx = h.ctx();
+    let keys = DatabaseKeys::new([197; 32], DatabaseSecurityNamespaceId([198; 32]), [199; 32]);
+    let vfs = ctx.commit().with_restriction(MemVfs::new).unwrap();
+    h.db = h
+        .runtime
+        .block_on(Database::create_with_vfs(
+            &ctx.commit(),
+            vfs.clone(),
+            vfs.database_dir(),
+            keys.clone(),
+        ))
+        .unwrap();
+    let spec = BookSpec {
+        book_id: h.book.book_id,
+        name: "Durable approval authority".into(),
+        base_unit: h.usd,
+        calendar: h.book.calendar.clone(),
+        time_zone_policy: None,
+        entities: Vec::new(),
+        opening_date: None,
+    };
+    h.runtime
+        .block_on(create_book(
+            &mut h.db,
+            &ctx,
+            &spec,
+            &h.book.units,
+            &h.book.symbols,
+        ))
+        .unwrap();
+    register_fixture_key(&mut h, ALICE, [200; 32]);
+    let original_chain = read_principal_keys(&h.db, &h.book, ALICE).unwrap();
+    let proposal = h.activation(PREPARER, b"durable-approved-policy");
+    let capability = human(ALICE, &["approve"]);
+    let signature = signature_for(&h, &capability, &proposal);
+    let approved = record_fixture_signature(&mut h, capability.clone(), &proposal, signature)
+        .unwrap();
+    let independent = h
+        .approve(BOB, proposal.proposal_digest().unwrap())
+        .unwrap()
+        .approval();
+    let empty = h
+        .runtime
+        .block_on(Database::open_memory(&ctx.commit(), keys.clone()))
+        .unwrap();
+    drop(std::mem::replace(&mut h.db, empty));
+    h.db = h
+        .runtime
+        .block_on(Database::open_with_vfs(
+            &ctx.commit(),
+            vfs.clone(),
+            vfs.database_dir(),
+            keys,
+        ))
+        .unwrap();
+    assert!(matches!(
+        h.db.delta_since(CommitSeq(0)),
+        Err(fgdb::ReadError::DeltaCursorRetired { .. })
+    ));
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    assert_eq!(
+        read_principal_keys(&h.db, &h.book, ALICE).unwrap(),
+        original_chain
+    );
+    assert!(
+        fa_journal::policy::approval_records(&h.db, &[approved.approval().approval_vid])
+            .unwrap()
+            .contains_key(&approved.approval().approval_vid)
+    );
+    let retry = record_fixture_signature(&mut h, capability, &proposal, signature).unwrap();
+    assert!(matches!(retry, Approved::AlreadyRecorded { .. }));
+    assert_eq!(retry.recorded_at(), approved.recorded_at());
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+    // Point-history checks must not require materializing the delta window.
+    assert!(matches!(
+        h.db.delta_since(CommitSeq(0)),
+        Err(fgdb::ReadError::DeltaCursorRetired { .. })
+    ));
+    register_fixture_key(&mut h, ALICE, [201; 32]);
+    h.activate(
+        proposal,
+        human(PREPARER, &["rule_change"]),
+        vec![approved.approval(), independent],
+    )
+    .expect("an original approval survives reopen and a subsequent key rotation");
+}
+
+#[test]
 fn a_changed_approval_signature_is_refused_before_recording() {
     let mut h = harness();
     register_fixture_key(&mut h, ALICE, [190; 32]);
@@ -488,7 +582,7 @@ fn a_changed_approval_signature_is_refused_before_recording() {
 
 #[test]
 fn retained_approval_signature_metadata_must_match_its_recorded_key() {
-    for field in ["scheme", "generation", "key", "unsigned"] {
+    for field in ["scheme", "generation", "key", "signature", "body", "unsigned"] {
         let mut h = harness();
         register_fixture_key(&mut h, ALICE, [191; 32]);
         let proposal = h.proposal(PREPARER, 500, field.as_bytes(), EntryClass::ORIGINAL);
@@ -502,20 +596,22 @@ fn retained_approval_signature_metadata_must_match_its_recorded_key() {
         else {
             panic!("fixture approval payload");
         };
-        let (body, signature) = Approval::decode_record(bytes.as_slice()).unwrap();
+        let (mut body, signature) = Approval::decode_record(bytes.as_slice()).unwrap();
         let mut changed = signature.unwrap();
-        // A later real key gives the planted generation/key alias a valid
-        // current registration; it was not valid at this approval's birth.
-        register_fixture_key(&mut h, ALICE, [192; 32]);
         match field {
             "scheme" => changed.scheme = 99,
             "generation" => {
+                // A later real key makes the rewritten generation valid
+                // at the new version start, but not at this approval's birth.
+                register_fixture_key(&mut h, ALICE, [192; 32]);
                 changed.generation = 1;
                 changed.key_id = key_id(&[192; 32]);
                 changed.bytes =
                     fixture_signature(&[192; 32], &approval_message(&body.digest().unwrap()));
             }
             "key" => changed.key_id = key_id(&[193; 32]),
+            "signature" => changed.bytes[0] ^= 1,
+            "body" => body.role = 1,
             "unsigned" => {}
             _ => unreachable!(),
         }
@@ -528,10 +624,25 @@ fn retained_approval_signature_metadata_must_match_its_recorded_key() {
             property::FA_PAYLOAD,
             Some(CanonicalScalar::bytes(rewritten).unwrap()),
         );
+        // Keep the body mirror coherent too: the guard must detect a
+        // rewritten record, not merely a stale digest property.
+        corruption.set_vertex_property(
+            approval.approval_vid,
+            property::FA_DIGEST,
+            Some(CanonicalScalar::bytes(body.digest().unwrap().to_vec()).unwrap()),
+        );
         let ctx = h.ctx();
         h.runtime
             .block_on(h.db.write(&ctx.commit(), corruption))
             .unwrap();
+        assert!(
+            h.db.vertex(approval.approval_vid)
+                .unwrap()
+                .unwrap()
+                .created_at
+                > row.created_at,
+            "the native version start advances on {field} rewrite"
+        );
         let before = h.db.frontier().unwrap();
         let rows = h.db.vertices().unwrap();
         let refused = h
@@ -544,5 +655,192 @@ fn retained_approval_signature_metadata_must_match_its_recorded_key() {
         );
         assert_eq!(h.db.frontier().unwrap(), before, "{field}");
         assert_eq!(h.db.vertices().unwrap(), rows, "{field}");
+    }
+}
+
+#[test]
+fn restoring_approval_bytes_does_not_restore_admitted_authority_or_retry_identity() {
+    for signed in [false, true] {
+        let mut h = harness();
+        if signed {
+            register_fixture_key(&mut h, ALICE, [194; 32]);
+        }
+        let proposal = h.proposal(PREPARER, 500, b"restored-approval", EntryClass::ORIGINAL);
+        let capability = human(ALICE, &["approve"]);
+        let signature = signed.then(|| signature_for(&h, &capability, &proposal));
+        let approval = match signature {
+            Some(signature) => {
+                record_fixture_signature(&mut h, capability.clone(), &proposal, signature)
+            }
+            None => approve_payload(&mut h, capability.clone(), &proposal),
+        }
+        .unwrap()
+        .approval();
+        let original = h.db.vertex(approval.approval_vid).unwrap().unwrap();
+        let Some(CanonicalScalar::Bytes(bytes)) = original
+            .props
+            .iter()
+            .find(|(key, _)| *key == property::FA_PAYLOAD)
+            .map(|(_, value)| value)
+        else {
+            panic!("fixture approval payload");
+        };
+        let (mut body, retained_signature) = Approval::decode_record(bytes.as_slice()).unwrap();
+        body.role = 1;
+        let mut changed = WriteBatch::new(relation::IN_BOOK);
+        changed.set_vertex_property(
+            approval.approval_vid,
+            property::FA_PAYLOAD,
+            Some(
+                CanonicalScalar::bytes(body.record_bytes(retained_signature.as_ref()).unwrap())
+                    .unwrap(),
+            ),
+        );
+        let ctx = h.ctx();
+        h.runtime
+            .block_on(h.db.write(&ctx.commit(), changed))
+            .unwrap();
+        let mut restore = WriteBatch::new(relation::IN_BOOK);
+        for (key, value) in &original.props {
+            restore.set_vertex_property(approval.approval_vid, *key, Some(value.clone()));
+        }
+        h.runtime
+            .block_on(h.db.write(&ctx.commit(), restore))
+            .unwrap();
+        let restored = h.db.vertex(approval.approval_vid).unwrap().unwrap();
+        assert_eq!(restored.props, original.props);
+        assert!(restored.created_at > original.created_at);
+        assert!(
+            h.db.vertex_at(approval.approval_vid, CommitSeq(restored.created_at.0 - 1))
+                .unwrap()
+                .is_some()
+        );
+        let before = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+
+        let retry = match signature {
+            Some(signature) => {
+                record_fixture_signature(&mut h, capability, &proposal, signature)
+            }
+            None => approve_payload(&mut h, capability, &proposal),
+        }
+        .unwrap_err();
+        assert_eq!(
+            (retry.code, retry.exit),
+            (code::APPROVAL_SIGNATURE, exit::SAFETY)
+        );
+        assert!(retry.message.contains("immutable creation"), "{retry}");
+        let refused = h
+            .post(proposal, human(PREPARER, &["post"]), vec![approval])
+            .unwrap_err();
+        assert_eq!(
+            (refused.code, refused.exit),
+            (code::APPROVAL_SIGNATURE, exit::SAFETY)
+        );
+        assert!(matches!(
+            fa_journal::policy::approval_records(&h.db, &[approval.approval_vid]),
+            Err(KernelError::Corrupt(message)) if message.contains("immutable creation")
+        ));
+        assert_eq!(h.db.frontier().unwrap(), before);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+}
+
+#[test]
+fn rewritten_or_restored_key_records_cannot_authorize_new_signatures() {
+    for field in ["public_key", "possession"] {
+        let mut h = harness();
+        register_fixture_key(&mut h, ALICE, [195; 32]);
+        let key_vid = principal_key_vid(h.book.book_id, ALICE, 0);
+        let original = h.db.vertex(key_vid).unwrap().unwrap();
+        let (entry, _) = read_entry(&h.db, key_vid).unwrap().unwrap();
+        let mut key = fa_journal::principal_key::key_of(&entry.proposal).unwrap();
+        match field {
+            "public_key" => {
+                key.public_key = [196; 32];
+                key.possession = fixture_signature(&key.public_key, &key.message());
+            }
+            "possession" => key.possession[0] ^= 1,
+            _ => unreachable!(),
+        }
+        let mut payload = entry.proposal.clone();
+        payload.control = Some(ControlPayload::SchemaChange {
+            kind: fa_journal::principal_key::SCHEMA_CHANGE_PRINCIPAL_KEY,
+            canonical_bytes: key.canonical_bytes().unwrap(),
+        });
+        payload.origin = EntryOrigin::Control {
+            control_kind: fa_model::ControlKind::PRINCIPAL_KEY,
+            spec_body_digest: key.key_id(),
+        };
+        let forged = payload.seal(entry.approvals, entry.plan_certificate).unwrap();
+        let forged_props = fa_model::entry_mirrors(&forged).unwrap();
+        let proposal = h.proposal(PREPARER, 500, field.as_bytes(), EntryClass::ORIGINAL);
+        let capability = human(ALICE, &["approve"]);
+        let body = Approval::by(
+            &capability,
+            Op::Approve,
+            h.book.book_id,
+            proposal.proposal_digest().unwrap(),
+            security_policy_epoch(&h.db).unwrap(),
+            0,
+        )
+        .unwrap()
+        .unwrap();
+        let signature = PrincipalSignature {
+            scheme: SCHEME_ED25519,
+            generation: 0,
+            key_id: key.key_id(),
+            bytes: fixture_signature(&key.public_key, &approval_message(&body.digest().unwrap())),
+        };
+        let ctx = h.ctx();
+        for (state, props) in [
+            ("rewritten", forged_props),
+            ("restored", original.props.clone()),
+        ] {
+            let mut corruption = WriteBatch::new(relation::IN_BOOK);
+            for (property, value) in props {
+                corruption.set_vertex_property(key_vid, property, Some(value));
+            }
+            h.runtime
+                .block_on(h.db.write(&ctx.commit(), corruption))
+                .unwrap();
+            let current = h.db.vertex(key_vid).unwrap().unwrap();
+            assert!(current.created_at > original.created_at);
+            if state == "restored" {
+                assert_eq!(current.props, original.props);
+            }
+            let before = h.db.frontier().unwrap();
+            let rows = h.db.vertices().unwrap();
+            assert!(
+                matches!(
+                    read_principal_keys(&h.db, &h.book, ALICE),
+                    Err(KernelError::Corrupt(message)) if message.contains("immutable creation")
+                ),
+                "{field} {state}"
+            );
+            let result = h
+                .runtime
+                .block_on(fa_journal::policy::record_signed_approval_for(
+                    &mut h.db,
+                    &ctx,
+                    &h.book,
+                    capability.clone(),
+                    &proposal,
+                    0,
+                    Some(fa_journal::policy::SignedBy {
+                        signature,
+                        verifier: &FixtureVerifier,
+                    }),
+                ));
+            assert!(
+                matches!(
+                    result,
+                    Err(KernelError::Corrupt(message)) if message.contains("immutable creation")
+                ),
+                "{field} {state}"
+            );
+            assert_eq!(h.db.frontier().unwrap(), before);
+            assert_eq!(h.db.vertices().unwrap(), rows);
+        }
     }
 }

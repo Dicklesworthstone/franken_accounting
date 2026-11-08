@@ -1273,6 +1273,7 @@ pub(crate) async fn commit_attestation_in_case<V: asupersync::fs::Vfs + Clone>(
     // The principal's key chain is read in this transaction: a concurrent
     // rotation conflicts (first committer wins).
     let signature = match crate::principal_key::attestation_signature(
+        db,
         book,
         attestation.principal,
         &signed_digest,

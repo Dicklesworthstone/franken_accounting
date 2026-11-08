@@ -102,7 +102,10 @@ fn corrupt(what: String) -> KernelError {
 /// read of the database or of a transaction, which records the witness).
 /// Each identity is the dedicated principal-key-generation domain, never
 /// the user-key Entry domain; this writer only stores inline key controls.
-pub(crate) fn chain(
+/// An unchanged creation row binds the admitted key and its original
+/// recording sequence: native `created_at` alone is only a version start.
+pub(crate) fn chain<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     principal: VId,
     mut read: impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
@@ -113,6 +116,12 @@ pub(crate) fn chain(
         let Some(row) = read(vid)? else {
             break;
         };
+        if !crate::outcome::original(db, &row)? {
+            return Err(corrupt(format!(
+                "principal key record {:032x} is not its immutable creation record",
+                vid.0
+            )));
+        }
         let (entry, recorded_at) = crate::post::entry_of(&row)?;
         let key = key_of(&entry.proposal).ok_or_else(|| {
             corrupt(format!(
@@ -145,7 +154,7 @@ pub fn read_principal_keys<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     principal: VId,
 ) -> Result<Vec<KeyGeneration>, KernelError> {
-    chain(book, principal, |vid| Ok(db.vertex(vid)?))
+    chain(db, book, principal, |vid| Ok(db.vertex(vid)?))
 }
 
 /// The signature `principal`'s attestation of `signed_digest` carries,
@@ -156,14 +165,15 @@ pub fn read_principal_keys<V: asupersync::fs::Vfs + Clone>(
 /// - a registered key: `signer` must hold the current generation's key, and
 ///   signs [`fa_policy::principal_key::attestation_message`] of the digest;
 /// - otherwise FA-REF-206.
-pub(crate) fn attestation_signature(
+pub(crate) fn attestation_signature<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     principal: VId,
     signed_digest: &[u8; 32],
     signer: Option<&dyn PrincipalSigner>,
     read: impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
 ) -> Result<Result<Option<PrincipalSignature>, Refusal>, KernelError> {
-    let chain = chain(book, principal, read)?;
+    let chain = chain(db, book, principal, read)?;
     let refuse = |why: String| Ok(Err(attestation_refusal(why)));
     match (chain.last(), signer) {
         (None, None) => Ok(Ok(None)),
@@ -361,7 +371,7 @@ pub async fn register_principal_key<V: asupersync::fs::Vfs + Clone>(
             }),
         );
     }
-    let current = chain(book, principal, |v| Ok(txn.vertex(db, v)?))?;
+    let current = chain(db, book, principal, |v| Ok(txn.vertex(db, v)?))?;
     let generations = u32::try_from(current.len())
         .map_err(|_| corrupt("a principal key chain beyond u32".into()))?;
     if let Err(error) = req.key.check(

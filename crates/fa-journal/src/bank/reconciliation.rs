@@ -1081,6 +1081,7 @@ pub fn prepare_bank_reconciliation_with_outstanding<V: Vfs + Clone>(
     };
     // A keyed reconciler signs; its key chain is read in this transaction.
     let signature = match crate::principal_key::attestation_signature(
+        db,
         book,
         capability.holder(),
         &attestation.signed_digest()?,
