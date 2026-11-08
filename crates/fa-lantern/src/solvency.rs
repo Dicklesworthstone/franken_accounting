@@ -137,9 +137,10 @@ pub struct DeclaredCommitment {
     pub due_date: DateDay,
     pub amount: Amount,
     pub entity: Option<VId>,
-    /// When `Some((entry, ordinal))`, this commitment represents the scheduled
-    /// payment of an already-booked liability leg and is never counted a second
-    /// time on top of that liability leg.
+    /// When `Some((entry, ordinal))`, this commitment must match the unit,
+    /// entity, and exact remaining contractual amount due on `due_date` for
+    /// that booked liability leg. The matching installment is counted once;
+    /// commitments for distinct due dates of the same leg are allowed.
     pub settles_entry: Option<(VId, u16)>,
     pub evidence_refs: Vec<EvidenceRef>,
 }
@@ -733,6 +734,10 @@ pub fn evaluate_cash_flow_solvency(
     }
 
     let mut accum_by_scope: BTreeMap<(u32, Option<VId>), ScopeAccum> = BTreeMap::new();
+    // Retain the exact contractual remainder at every due date, including
+    // dates beyond this horizon. A linked commitment can duplicate only the
+    // payment that this schedule actually represents after settlement relief.
+    let mut remaining_installments: BTreeMap<(VId, u16, DateDay), i128> = BTreeMap::new();
 
     for (&(entry_vid, ordinal), ob) in &scheduled_by_leg {
         work.compare(1)?;
@@ -842,6 +847,10 @@ pub fn evaluate_cash_flow_solvency(
                     if remaining == 0 {
                         continue;
                     }
+                    let due = remaining_installments
+                        .entry((entry_vid, ordinal, inst.due_date))
+                        .or_default();
+                    *due = amount_sum(*due, remaining, "remaining installments by due date")?;
                     if inst.due_date <= horizon_end {
                         acc.maturing_obligations = amount_sum(
                             acc.maturing_obligations,
@@ -866,10 +875,11 @@ pub fn evaluate_cash_flow_solvency(
         }
     }
 
-    // 3. Process declared commitments (each counted once; commitments linked via
-    // `settles_entry` to an already-scheduled liability leg do not double-count).
+    // 3. Process declared commitments. A linked commitment is a duplicate only
+    // after it matches one exact remaining contractual payment, not merely a
+    // liability leg that happens to appear in the schedule.
     let mut seen_commitments: BTreeSet<&str> = BTreeSet::new();
-    let mut seen_settled_legs: BTreeSet<(VId, u16)> = BTreeSet::new();
+    let mut seen_settled_installments: BTreeSet<(VId, u16, DateDay)> = BTreeSet::new();
     for c in &schedule.commitments {
         work.compare(1)?;
         if c.commitment_id.trim().is_empty() || !seen_commitments.insert(c.commitment_id.as_str()) {
@@ -917,21 +927,70 @@ pub fn evaluate_cash_flow_solvency(
         acc.docs.extend(doc_oids);
 
         if let Some(target_leg) = c.settles_entry {
-            if !seen_settled_legs.insert(target_leg) {
+            let Some(obligation) = scheduled_by_leg.get(&target_leg) else {
                 return Err(LanternError::Parameter {
                     procedure: procedure.into(),
                     name: "commitments".into(),
                     message: format!(
-                        "multiple commitments target the same liability leg ({:032x}, {})",
-                        target_leg.0.0, target_leg.1
+                        "commitment `{}` targets unknown or unscheduled liability leg ({:032x}, {})",
+                        c.commitment_id, target_leg.0.0, target_leg.1
+                    ),
+                });
+            };
+            if c.amount.unit != obligation.unit || c.entity != obligation.entity {
+                return Err(LanternError::Parameter {
+                    procedure: procedure.into(),
+                    name: "commitments".into(),
+                    message: format!(
+                        "commitment `{}` unit/entity do not match scheduled liability leg ({:032x}, {})",
+                        c.commitment_id, target_leg.0.0, target_leg.1
                     ),
                 });
             }
-            if scheduled_by_leg.contains_key(&target_leg) {
-                // Already counted via the scheduled liability leg's remaining
-                // installments; do not double-count.
-                continue;
+            if obligation.status != ObligationStatus::Contractual {
+                return Err(LanternError::Parameter {
+                    procedure: procedure.into(),
+                    name: "commitments".into(),
+                    message: format!(
+                        "commitment `{}` targets a non-contractual liability leg ({:032x}, {})",
+                        c.commitment_id, target_leg.0.0, target_leg.1
+                    ),
+                });
             }
+            let installment = (target_leg.0, target_leg.1, c.due_date);
+            let Some(&remaining) = remaining_installments.get(&installment) else {
+                return Err(LanternError::Parameter {
+                    procedure: procedure.into(),
+                    name: "commitments".into(),
+                    message: format!(
+                        "commitment `{}` has no remaining contractual installment on {} for liability leg ({:032x}, {})",
+                        c.commitment_id, c.due_date, target_leg.0.0, target_leg.1
+                    ),
+                });
+            };
+            if c.amount.mantissa != remaining {
+                return Err(LanternError::Parameter {
+                    procedure: procedure.into(),
+                    name: "commitments".into(),
+                    message: format!(
+                        "commitment `{}` amount {} does not equal remaining contractual amount {remaining} due on {} for liability leg ({:032x}, {})",
+                        c.commitment_id, c.amount.mantissa, c.due_date, target_leg.0.0, target_leg.1
+                    ),
+                });
+            }
+            if !seen_settled_installments.insert(installment) {
+                return Err(LanternError::Parameter {
+                    procedure: procedure.into(),
+                    name: "commitments".into(),
+                    message: format!(
+                        "multiple commitments target the same installment on {} for liability leg ({:032x}, {})",
+                        c.due_date, target_leg.0.0, target_leg.1
+                    ),
+                });
+            }
+            // This exact payment is already included among the liability's
+            // maturing or deferred installments; do not count it again.
+            continue;
         }
         if c.due_date <= horizon_end {
             acc.maturing_commitments = amount_sum(
@@ -4576,4 +4635,295 @@ fn balance_sheet_reads_no_valuation_posted_after_the_as_of_day() {
         .map(|v| v.valuation_id.as_str())
         .collect();
     assert_eq!(ids, ["VAL-APR"]);
+}
+
+#[cfg(test)]
+fn linked_commitment_fixture() -> (Snapshot, BookContext, AuthenticatedObligationSchedule) {
+    let as_of = day(2026, 4, 30);
+    let (mut snapshot, book, cash, payable, document) = test_fixture(as_of);
+    let usd = book.units.lookup("USD").unwrap();
+    let expense = account_vid(book.book_id, "6000");
+    let legs = vec![
+        LegPayload::simple(Side::Debit, cash, Amount::new(usd, 200)),
+        LegPayload::simple(Side::Debit, expense, Amount::new(usd, 150)),
+        LegPayload::simple(Side::Credit, payable, Amount::new(usd, 350)),
+    ];
+    let terms = InlineObligationTerms::to_extension_for_legs(
+        &[InlineObligationTerms {
+            ordinal: 2,
+            status: ObligationStatus::Contractual,
+            installments: vec![
+                ObligationInstallment {
+                    due_date: day(2026, 5, 10),
+                    amount: 160,
+                },
+                ObligationInstallment {
+                    due_date: day(2026, 6, 15),
+                    amount: 190,
+                },
+            ],
+        }],
+        &legs,
+    )
+    .unwrap();
+    let invoice = make_posting(
+        &book,
+        VId(20),
+        day(2026, 4, 1),
+        EntryClass::ORIGINAL,
+        legs,
+        vec![terms],
+        document,
+    );
+    let target = EntryRef {
+        vid: invoice.vid,
+        entry_digest: invoice.entry.entry_digest,
+    };
+    snapshot.entries.push(invoice);
+    let mut payment = LegPayload::simple(Side::Debit, payable, Amount::new(usd, 100));
+    payment.settles.push(Settlement {
+        target,
+        ordinal: 2,
+        amount: Amount::new(usd, 100),
+    });
+    snapshot.entries.push(make_posting(
+        &book,
+        VId(21),
+        day(2026, 4, 20),
+        EntryClass::ORIGINAL,
+        vec![
+            payment,
+            LegPayload::simple(Side::Credit, cash, Amount::new(usd, 100)),
+        ],
+        Vec::new(),
+        document,
+    ));
+    let mut schedule = schedule_from_inline_extensions(
+        crate::cutoff::SolvencyCashFlowTest::ID,
+        &snapshot,
+        as_of,
+    )
+    .unwrap()
+    .unwrap();
+    for (id, due_date, amount, settles_entry) in [
+        ("INVOICE-MAY", day(2026, 5, 10), 60, Some((VId(20), 2))),
+        ("INVOICE-JUNE", day(2026, 6, 15), 190, Some((VId(20), 2))),
+        ("RENT", day(2026, 5, 20), 70, None),
+    ] {
+        schedule.commitments.push(DeclaredCommitment {
+            commitment_id: id.into(),
+            due_date,
+            amount: Amount::new(usd, amount),
+            entity: None,
+            settles_entry,
+            evidence_refs: schedule.obligations[0].evidence_refs.clone(),
+        });
+    }
+    (snapshot, book, schedule)
+}
+
+#[cfg(test)]
+#[test]
+fn linked_commitments_match_remaining_installments_across_the_horizon() {
+    let (snapshot, book, schedule) = linked_commitment_fixture();
+    let usd = book.units.lookup("USD").unwrap();
+    let procedure = crate::cutoff::SolvencyCashFlowTest::ID;
+    let evaluate = |schedule: &AuthenticatedObligationSchedule, horizon_days| {
+        let mut meter = Meter::new(procedure, None, None);
+        evaluate_cash_flow_solvency(
+            procedure,
+            &snapshot,
+            &book,
+            horizon_days,
+            schedule,
+            &mut meter,
+        )
+    };
+
+    // The same debt has two distinct payment commitments. May's original
+    // 160 installment has 60 left after the payment; June's 190 is deferred.
+    // Only the separately declared rent adds another 70 to the amount due.
+    for horizon_days in [30, 60] {
+        let report = evaluate(&schedule, horizon_days).unwrap();
+        assert_eq!(report.units.len(), 1);
+        let unit = &report.units[&(usd.0, None)];
+        assert_eq!(unit.liquid_cash, 100);
+        assert_eq!(unit.maturing_commitments, 70);
+        let (maturing, deferred, shortfall) = if horizon_days == 30 {
+            (60, 190, 30)
+        } else {
+            (250, 0, 220)
+        };
+        assert_eq!(unit.maturing_obligations, maturing);
+        assert_eq!(unit.deferred_obligations, deferred);
+        assert_eq!(unit.shortfall, shortfall);
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].statistic.value, shortfall);
+    }
+
+    // Explicit schedules may already state the remaining amounts. Relief
+    // must not be applied to May's 60 a second time.
+    let mut remaining = schedule.clone();
+    remaining.obligations[0].installments[0].amount = 60;
+    let report = evaluate(&remaining, 30).unwrap();
+    let unit = &report.units[&(usd.0, None)];
+    assert_eq!(unit.maturing_obligations, 60);
+    assert_eq!(unit.deferred_obligations, 190);
+    assert_eq!(unit.maturing_commitments, 70);
+    assert_eq!(unit.shortfall, 30);
+
+    // An explicit schedule can split the same due date over several rows.
+    // Match the aggregate remaining payment, irrespective of row order.
+    for may_amounts in [[110, 50], [50, 110]] {
+        let mut split = schedule.clone();
+        split.obligations[0].installments = vec![
+            ObligationInstallment {
+                due_date: day(2026, 6, 15),
+                amount: 190,
+            },
+            ObligationInstallment {
+                due_date: day(2026, 5, 10),
+                amount: may_amounts[0],
+            },
+            ObligationInstallment {
+                due_date: day(2026, 5, 10),
+                amount: may_amounts[1],
+            },
+        ];
+        let report = evaluate(&split, 30).unwrap();
+        let unit = &report.units[&(usd.0, None)];
+        assert_eq!(unit.maturing_obligations, 60);
+        assert_eq!(unit.deferred_obligations, 190);
+        assert_eq!(unit.maturing_commitments, 70);
+        assert_eq!(unit.shortfall, 30);
+    }
+
+    let mut duplicate = schedule.clone();
+    let mut repeated = duplicate.commitments[0].clone();
+    repeated.commitment_id = "SECOND-MAY-PAYMENT".into();
+    duplicate.commitments.push(repeated);
+    assert!(matches!(
+        evaluate(&duplicate, 30),
+        Err(LanternError::Parameter { name, message, .. })
+            if name == "commitments" && message.contains("same installment")
+    ));
+}
+
+#[cfg(test)]
+#[test]
+fn linked_commitments_refuse_unmatched_or_inconsistent_liabilities() {
+    let (mut snapshot, book, schedule) = linked_commitment_fixture();
+    let usd = book.units.lookup("USD").unwrap();
+    let eur = book.units.lookup("EUR").unwrap();
+    let procedure = crate::cutoff::SolvencyCashFlowTest::ID;
+    let evaluate = |snapshot: &Snapshot, schedule: &AuthenticatedObligationSchedule| {
+        let mut meter = Meter::new(procedure, None, None);
+        evaluate_cash_flow_solvency(procedure, snapshot, &book, 30, schedule, &mut meter)
+    };
+    let mut cases = Vec::new();
+    let mut wrong_unit = schedule.clone();
+    wrong_unit.commitments[0].amount = Amount::new(eur, 60);
+    cases.push(("wrong unit", wrong_unit, "unit/entity"));
+    let mut wrong_entity = schedule.clone();
+    wrong_entity.commitments[0].entity = Some(VId(70));
+    cases.push(("wrong entity", wrong_entity, "unit/entity"));
+    for amount in [59, 61, 160] {
+        let mut wrong_amount = schedule.clone();
+        wrong_amount.commitments[0].amount = Amount::new(usd, amount);
+        cases.push((
+            "wrong remaining amount",
+            wrong_amount,
+            "does not equal remaining",
+        ));
+    }
+    for due_date in [day(2026, 4, 15), day(2026, 5, 11), day(2026, 6, 16)] {
+        let mut wrong_date = schedule.clone();
+        wrong_date.commitments[0].due_date = due_date;
+        cases.push((
+            "wrong due date",
+            wrong_date,
+            "no remaining contractual installment",
+        ));
+    }
+    // Moving June's payment into the May horizon must not make the newly
+    // declared outflow disappear behind the still-deferred liability.
+    let mut accelerated = schedule.clone();
+    accelerated.commitments[1].due_date = day(2026, 5, 15);
+    cases.push((
+        "accelerated deferred payment",
+        accelerated,
+        "no remaining contractual installment",
+    ));
+    for target in [(VId(999), 2), (VId(20), 1)] {
+        let mut unmatched = schedule.clone();
+        unmatched.commitments[0].settles_entry = Some(target);
+        cases.push((
+            "unknown entry or wrong ordinal",
+            unmatched,
+            "unknown or unscheduled",
+        ));
+    }
+    let mut disputed = schedule.clone();
+    disputed.obligations[0].status = ObligationStatus::Disputed { reason_code: 1 };
+    disputed.obligations[0].installments.clear();
+    cases.push(("disputed liability", disputed, "non-contractual"));
+    // Validate a repeated target before deciding that its payment was already
+    // represented: a conflicting second amount is not a harmless duplicate.
+    let mut conflict = schedule.clone();
+    let mut conflicting = conflict.commitments[0].clone();
+    conflicting.commitment_id = "CONFLICTING-MAY-PAYMENT".into();
+    conflicting.amount = Amount::new(usd, 61);
+    conflict.commitments.push(conflicting);
+    cases.push((
+        "conflicting duplicate",
+        conflict,
+        "does not equal remaining",
+    ));
+
+    for (case, invalid, expected) in cases {
+        match evaluate(&snapshot, &invalid) {
+            Err(LanternError::Parameter { name, message, .. }) => {
+                assert_eq!(name, "commitments", "{case}: {message}");
+                assert!(message.contains(expected), "{case}: {message}");
+            }
+            other => panic!("{case} must refuse the linked commitment: {other:?}"),
+        }
+    }
+
+    // A fully paid liability remains a known scheduled leg, but there is no
+    // outstanding installment that a new commitment can safely duplicate.
+    let invoice = snapshot
+        .entries
+        .iter()
+        .find(|entry| entry.vid == VId(20))
+        .unwrap();
+    let payable = schedule.obligations[0].account;
+    let cash = account_vid(book.book_id, "1000");
+    let document = schedule.obligations[0].evidence_refs[0].document_oid;
+    let mut final_payment = LegPayload::simple(Side::Debit, payable, Amount::new(usd, 250));
+    final_payment.settles.push(Settlement {
+        target: EntryRef {
+            vid: invoice.vid,
+            entry_digest: invoice.entry.entry_digest,
+        },
+        ordinal: 2,
+        amount: Amount::new(usd, 250),
+    });
+    snapshot.entries.push(make_posting(
+        &book,
+        VId(22),
+        day(2026, 4, 29),
+        EntryClass::ORIGINAL,
+        vec![
+            final_payment,
+            LegPayload::simple(Side::Credit, cash, Amount::new(usd, 250)),
+        ],
+        Vec::new(),
+        document,
+    ));
+    assert!(matches!(
+        evaluate(&snapshot, &schedule),
+        Err(LanternError::Parameter { name, message, .. })
+            if name == "commitments" && message.contains("no remaining contractual installment")
+    ));
 }
