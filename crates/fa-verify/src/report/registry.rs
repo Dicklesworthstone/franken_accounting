@@ -538,18 +538,31 @@ pub(super) fn verify_procedure(
             "selected procedure must occur exactly once in its registry",
         ));
     };
+    let benford = matches!(
+        profile,
+        super::procedure::VerifiedProcedureParameters::FirstDigit { .. }
+    );
     if integer(row, "version")? != i128::from(version)
-        || match version {
-            1 => row.contains_key("effective_through"),
-            2 => string(row, "effective_through")? != "optional",
-            _ => true,
+        || if profile.supports_cutoff(version) {
+            string(row, "effective_through")? != "optional"
+        } else {
+            row.contains_key("effective_through")
         }
         || string(row, "claim")? != "statistical"
         || string(row, "evidence")? != profile.evidence()
-        || string(row, "tie_break")? != "entry_vid"
+        || string(row, "tie_break")? != if benford { "none" } else { "entry_vid" }
         || string(row, "complexity")? != profile.complexity()
-        || string(row, "calibration")? != "corpus"
-        || string(row, "artifact")? != "FA-ART-CAL-01"
+        || string(row, "calibration")?
+            != if benford {
+                "uncalibrated"
+            } else {
+                "corpus"
+            }
+        || if benford {
+            row.contains_key("artifact")
+        } else {
+            string(row, "artifact")? != "FA-ART-CAL-01"
+        }
     {
         return Err(invalid("unsupported procedure registry semantics"));
     }
@@ -557,17 +570,20 @@ pub(super) fn verify_procedure(
         .iter()
         .filter(|row| matches!(row.get("procedure"), Some(Value::Text(id)) if id == profile.id()))
         .collect();
-    if let Some((name, _)) = profile.parameter() {
-        let [parameter] = parameters.as_slice() else {
-            return Err(invalid(
-                "selected procedure must declare exactly one parameter",
-            ));
-        };
-        if string(parameter, "name")? != name || integer(parameter, "default")? != 3 {
-            return Err(invalid("unsupported procedure parameter registry"));
-        }
-    } else if !parameters.is_empty() {
-        return Err(invalid("exact duplicates must declare no parameters"));
+    let mut declared = parameters
+        .iter()
+        .map(|row| Ok((string(row, "name")?, integer(row, "default")?)))
+        .collect::<Result<Vec<_>, ReportError>>()?;
+    declared.sort_unstable();
+    if declared.iter().copied().ne(
+        profile
+            .parameter_defaults()
+            .iter()
+            .map(|&(name, value)| (name, i128::from(value))),
+    ) {
+        return Err(invalid(
+            "unsupported procedure parameter inventory or defaults",
+        ));
     }
     // A future input declaration cannot be silently ignored under v1.
     if procedures.arrays.iter().any(|(name, rows)| {
@@ -583,14 +599,31 @@ pub(super) fn verify_procedure(
     }
     let units = document(inputs[2].1)?;
     let mut unit_scales = BTreeMap::new();
+    let mut unit_currencies = BTreeMap::new();
     for row in rows(&units, "unit")? {
+        let id = u32::try_from(integer(row, "id")?).map_err(|_| invalid("invalid unit id"))?;
         unit_scales.insert(
-            u32::try_from(integer(row, "id")?).map_err(|_| invalid("invalid unit id"))?,
+            id,
             u8::try_from(integer(row, "scale")?).map_err(|_| invalid("invalid unit scale"))?,
         );
+        if benford {
+            if string(row, "kind")? == "currency" {
+                let iso = u16::try_from(integer(row, "iso4217")?)
+                    .ok()
+                    .filter(|iso| (1..=999).contains(iso))
+                    .ok_or_else(|| invalid("Benford currency has no valid ISO 4217 identity"))?;
+                unit_currencies.insert(id, iso);
+            } else if row.contains_key("iso4217") {
+                return Err(invalid(
+                    "a Benford noncurrency unit cannot carry a currency identity",
+                ));
+            }
+        }
     }
     Ok(super::procedure::Registry {
         unit_scales,
+        unit_currencies,
+        account_types: BTreeMap::new(),
         policy_oid: procedure_policy_oid(&document(inputs[5].1)?)?,
     })
 }

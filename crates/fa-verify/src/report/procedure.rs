@@ -1,10 +1,12 @@
-//! Independent, exact replay of round-amount, period-end and exact-duplicate procedures.
+//! Independent replay of JET, exact-duplicate and first-digit Benford procedures.
 //!
 //! The complete journal prefix supplies the population; native read witnesses
 //! and the producer's findings supply no arithmetic or period metadata. These
 //! profiles accept `jet.round_amounts` and `jet.period_end_timing` v1 without an
 //! effective-date cutoff, and v2 with an optional inclusive cutoff. Exact
-//! duplicates v1 uses the all-date population and no parameters. No profile
+//! duplicates v1 uses the all-date population and no parameters. First-digit
+//! Benford v2 selects one currency, side and optional account type from the
+//! all-date population, with exact fixed-point statistics. No profile
 //! accepts input handles. The cutoff selects postings before reversal liveness
 //! while the input commitment retains every visible entry at the frontier.
 //! Replacement identities require a later authenticated reversal, replacement,
@@ -19,6 +21,8 @@ use super::{MAX_REPORT_BUNDLE_BYTES, ReportError, failed, text};
 use crate::blake3::hash_parts;
 use crate::codec::{Reader, Writer};
 
+mod benford;
+
 const FORMAT: &[u8] = b"fa:procedure-certificate:v1";
 const OUTPUT_FORMAT: &[u8] = b"fa:procedure-output:v1";
 const DIGEST_DOMAIN: &[u8] = b"fa:procedure-certificate-digest:v1";
@@ -30,9 +34,22 @@ const MAX_CITES: usize = 4096;
 /// This is a verifier result type, not a new certificate wire discriminant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VerifiedProcedureParameters {
-    RoundAmounts { round_power: u32 },
-    PeriodEndTiming { window_days: u32 },
+    RoundAmounts {
+        round_power: u32,
+    },
+    PeriodEndTiming {
+        window_days: u32,
+    },
     SameSameSame,
+    FirstDigit {
+        account_type: u32,
+        currency_iso4217: u32,
+        mad_acceptable: u32,
+        mad_close: u32,
+        mad_marginal: u32,
+        min_population: u32,
+        side: u32,
+    },
 }
 
 impl VerifiedProcedureParameters {
@@ -41,6 +58,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmounts { .. } => "jet.round_amounts",
             Self::PeriodEndTiming { .. } => "jet.period_end_timing",
             Self::SameSameSame => "duplicates.same_same_same",
+            Self::FirstDigit { .. } => "benford.first_digit",
         }
     }
 
@@ -49,15 +67,47 @@ impl VerifiedProcedureParameters {
             Self::RoundAmounts { .. } => "FA-EVID-L01",
             Self::PeriodEndTiming { .. } => "FA-EVID-L02",
             Self::SameSameSame => "FA-EVID-L07",
+            Self::FirstDigit { .. } => "FA-EVID-L10",
         }
     }
 
-    pub(crate) fn parameter(self) -> Option<(&'static str, u32)> {
+    /// Explicit bindings in the native contract's lexical name order.
+    pub(crate) fn parameters(self) -> Vec<(&'static str, u32)> {
         match self {
-            Self::RoundAmounts { round_power } => Some(("round_power", round_power)),
-            Self::PeriodEndTiming { window_days } => Some(("window_days", window_days)),
-            Self::SameSameSame => None,
+            Self::RoundAmounts { round_power } => vec![("round_power", round_power)],
+            Self::PeriodEndTiming { window_days } => vec![("window_days", window_days)],
+            Self::SameSameSame => Vec::new(),
+            Self::FirstDigit {
+                account_type,
+                currency_iso4217,
+                mad_acceptable,
+                mad_close,
+                mad_marginal,
+                min_population,
+                side,
+            } => vec![
+                ("account_type", account_type),
+                ("currency_iso4217", currency_iso4217),
+                ("mad_acceptable", mad_acceptable),
+                ("mad_close", mad_close),
+                ("mad_marginal", mad_marginal),
+                ("min_population", min_population),
+                ("side", side),
+            ],
         }
+    }
+
+    pub(super) fn parameter_defaults(self) -> &'static [(&'static str, u32)] {
+        match self {
+            Self::RoundAmounts { .. } => &[("round_power", 3)],
+            Self::PeriodEndTiming { .. } => &[("window_days", 3)],
+            Self::SameSameSame => &[],
+            Self::FirstDigit { .. } => &benford::DEFAULTS,
+        }
+    }
+
+    pub(super) fn supports_cutoff(self, version: u16) -> bool {
+        version == 2 && matches!(self, Self::RoundAmounts { .. } | Self::PeriodEndTiming { .. })
     }
 
     pub(crate) fn complexity(self) -> &'static str {
@@ -65,6 +115,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmounts { .. } => "O(legs)",
             Self::PeriodEndTiming { .. } => "O(entries)",
             Self::SameSameSame => "O(legs log legs)",
+            Self::FirstDigit { .. } => "O(legs)",
         }
     }
 }
@@ -82,7 +133,8 @@ pub(super) struct Certificate<'a> {
 }
 
 /// A supported statistic and the exact citations needed to reproduce it.
-/// Counts have scale zero. Timing distances use the authenticated exclusive
+/// Counts have scale zero; Benford's MAD and KS use nine decimal places and
+/// its chi-square uses six. Timing distances use the authenticated exclusive
 /// period end; they are not inferred from the producer's narrative.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifiedProcedureStatistic {
@@ -98,6 +150,17 @@ pub enum VerifiedProcedureStatistic {
         count: u64,
         entries: Vec<u128>,
     },
+    /// Below the requested minimum, only the population is scored.
+    FirstDigitPopulation {
+        counts: [u64; 9],
+    },
+    /// Chi-square is absent above its original exact-arithmetic population bound.
+    FirstDigitMad {
+        counts: [u64; 9],
+        mad_1e9: u64,
+        ks_1e9: u64,
+        chi_square_1e6: Option<u64>,
+    },
 }
 
 impl VerifiedProcedureStatistic {
@@ -106,6 +169,8 @@ impl VerifiedProcedureStatistic {
             Self::RoundLegs { .. } => "round_legs",
             Self::DaysToPeriodEnd { .. } => "days_to_period_end",
             Self::DuplicateEntries { .. } => "entries",
+            Self::FirstDigitPopulation { .. } => "population",
+            Self::FirstDigitMad { .. } => "mad",
         }
     }
 
@@ -114,16 +179,27 @@ impl VerifiedProcedureStatistic {
             Self::RoundLegs { ordinals } => ordinals.len() as u64,
             Self::DaysToPeriodEnd { days, .. } => u64::from(*days),
             Self::DuplicateEntries { count, .. } => *count,
+            Self::FirstDigitPopulation { counts } => counts.iter().sum(),
+            Self::FirstDigitMad { mad_1e9, .. } => *mad_1e9,
+        }
+    }
+
+    pub(crate) fn scale(&self) -> u8 {
+        if matches!(self, Self::FirstDigitMad { .. }) {
+            9
+        } else {
+            0
         }
     }
 }
 
-/// One independently reproduced finding. The entry citation precedes the
-/// statistic's ordered leg citations or its authenticated period citation.
+/// One independently reproduced finding. An entry citation, when present,
+/// precedes the statistic's ordered leg citations or authenticated period cite.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedProcedureFinding {
-    pub entry: u128,
-    /// The registered severity tag: 1 (Low) or 2 (Medium).
+    /// The primary entry citation, absent for population-wide digit statistics.
+    pub entry: Option<u128>,
+    /// The registered severity tag: 0 (Info), 1 (Low), 2 (Medium), or 3 (High).
     pub severity: u8,
     pub statistic: VerifiedProcedureStatistic,
     pub population: u64,
@@ -186,6 +262,9 @@ pub(super) struct Entry {
 
 pub(super) struct Registry {
     pub unit_scales: BTreeMap<u32, u8>,
+    pub unit_currencies: BTreeMap<u32, u16>,
+    /// From authenticated historical chart controls, populated after replay.
+    pub account_types: BTreeMap<u128, u8>,
     pub policy_oid: [u8; 32],
 }
 
@@ -237,16 +316,18 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "jet.round_amounts" => ("FA-EVID-L01", Some(("round_power", 30))),
         "jet.period_end_timing" => ("FA-EVID-L02", Some(("window_days", u32::MAX))),
         "duplicates.same_same_same" => ("FA-EVID-L07", None),
+        "benford.first_digit" => ("FA-EVID-L10", None),
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "only statistical jet.round_amounts and jet.period_end_timing v1/v2, and duplicates.same_same_same v1 are supported",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, exact duplicates v1, and first-digit Benford v2",
             ));
         }
     };
     let version = question.u16("procedure.version")?;
     if !matches!(version, 1 | 2)
         || (id == "duplicates.same_same_same" && version != 1)
+        || (id == "benford.first_digit" && version != 2)
         || question.u8("procedure.claim")? != 0
         || text(&mut question, 128, "procedure.evidence")? != evidence
     {
@@ -262,13 +343,15 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     } else {
         None
     };
-    if version == 1 && effective_through.is_some() {
+    if (version == 1 || id == "benford.first_digit") && effective_through.is_some() {
         return Err(failed(
             "procedure_profile",
-            "v1 procedure verification requires no effective-date cutoff",
+            "this procedure version does not support an effective-date cutoff",
         ));
     }
-    let parameters = if let Some((parameter, bound)) = parameter {
+    let parameters = if id == "benford.first_digit" {
+        benford::decode(&mut question)?
+    } else if let Some((parameter, bound)) = parameter {
         if question.count(1, 20, "procedure.parameters")? != 1
             || text(&mut question, 64, "procedure.parameter")? != parameter
         {
@@ -322,10 +405,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
 }
 
 fn parameters(w: &mut Writer, value: VerifiedProcedureParameters) {
-    if let Some((name, amount)) = value.parameter() {
-        w.count(1).bytes(name.as_bytes()).i128(i128::from(amount));
-    } else {
-        w.count(0);
+    let parameters = value.parameters();
+    w.count(parameters.len());
+    for (name, amount) in parameters {
+        w.bytes(name.as_bytes()).i128(i128::from(amount));
     }
 }
 
@@ -347,25 +430,34 @@ fn finding(
     value: &VerifiedProcedureFinding,
     profile: VerifiedProcedureParameters,
     version: u16,
-) {
+) -> Result<(), ReportError> {
     w.bytes(profile.id().as_bytes())
         .u16(version)
         .u8(value.severity)
         .bytes(value.statistic.name().as_bytes())
         .i128(i128::from(value.statistic.value()))
-        .u8(0)
+        .u8(value.statistic.scale())
         .u64(value.population);
     match &value.statistic {
         VerifiedProcedureStatistic::RoundLegs { ordinals } => {
-            w.count(ordinals.len() + 1).u8(1).u128(value.entry);
+            let entry = value.entry.ok_or_else(|| {
+                failed("procedure_recomputation", "round-leg finding lacks its entry")
+            })?;
+            w.count(ordinals.len() + 1).u8(1).u128(entry);
             for ordinal in ordinals {
-                w.u8(2).u128(value.entry).u16(*ordinal);
+                w.u8(2).u128(entry).u16(*ordinal);
             }
         }
         VerifiedProcedureStatistic::DaysToPeriodEnd { period, .. } => {
+            let entry = value.entry.ok_or_else(|| {
+                failed(
+                    "procedure_recomputation",
+                    "period-end finding lacks its entry",
+                )
+            })?;
             w.count(2)
                 .u8(1)
-                .u128(value.entry)
+                .u128(entry)
                 .u8(4)
                 .bytes(period.as_bytes());
         }
@@ -375,8 +467,13 @@ fn finding(
                 w.u8(1).u128(*entry);
             }
         }
+        VerifiedProcedureStatistic::FirstDigitPopulation { .. }
+        | VerifiedProcedureStatistic::FirstDigitMad { .. } => {
+            w.count(0);
+        }
     }
     w.bytes(value.narrative.as_bytes());
+    Ok(())
 }
 
 fn candidate(w: &mut Writer, action: &[u8], parameter: i128, score: i128) {
@@ -510,8 +607,8 @@ fn decision_card(
         .u64(population);
     parameters(&mut state, profile);
     let calibrated = population >= 100;
-    let parameter = profile.parameter();
-    let power = parameter.map_or(0, |(_, value)| i128::from(value));
+    let parameters = profile.parameters();
+    let power = parameters.first().map_or(0, |(_, value)| i128::from(*value));
     let mut w = Writer::default();
     w.fixed(b"FADC")
         .u16(1)
@@ -527,10 +624,10 @@ fn decision_card(
         power,
         if calibrated { 250 } else { 0 },
     );
-    w.count(if parameter.is_some() { 2 } else { 1 });
-    if let Some((parameter, _)) = parameter {
+    w.count(parameters.len() + 1);
+    for (parameter, value) in parameters {
         w.bytes(format!("param.{parameter}").as_bytes())
-            .i128(power)
+            .i128(i128::from(value))
             .u8(0);
     }
     w.bytes(b"population").i128(i128::from(population)).u8(0);
@@ -874,7 +971,7 @@ fn exact_duplicates(
         };
         group.members.truncate(MAX_CITES);
         findings.push(VerifiedProcedureFinding {
-            entry: group.members[0],
+            entry: Some(group.members[0]),
             severity: 2,
             statistic: VerifiedProcedureStatistic::DuplicateEntries {
                 count,
@@ -937,12 +1034,13 @@ fn recompute_version(
             .checked_pow(round_power)
             .ok_or_else(|| failed("procedure_arithmetic", "round factor overflow"))?,
         VerifiedProcedureParameters::PeriodEndTiming { .. }
-        | VerifiedProcedureParameters::SameSameSame => 1,
+        | VerifiedProcedureParameters::SameSameSame
+        | VerifiedProcedureParameters::FirstDigit { .. } => 1,
     };
     let mut live_entries = 0u64;
     let mut live_legs = 0u64;
     let mut comparisons = 0u64;
-    let mut duplicate_population = Vec::new();
+    let mut grouped_population = Vec::new();
     let mut findings = Vec::new();
     for entry in &entries {
         if entry.legs.is_empty()
@@ -986,7 +1084,7 @@ fn recompute_version(
                     None
                 } else {
                     Some(VerifiedProcedureFinding {
-                        entry: entry.identity,
+                        entry: Some(entry.identity),
                         severity: if round_legs.len() == entry.legs.len() {
                             2
                         } else {
@@ -1022,7 +1120,7 @@ fn recompute_version(
                         failed("procedure_arithmetic", "period-end distance exceeds u32")
                     })?;
                     Some(VerifiedProcedureFinding {
-                        entry: entry.identity,
+                        entry: Some(entry.identity),
                         severity: 1,
                         statistic: VerifiedProcedureStatistic::DaysToPeriodEnd {
                             period: period.code.clone(),
@@ -1035,8 +1133,9 @@ fn recompute_version(
                     })
                 }
             }
-            VerifiedProcedureParameters::SameSameSame => {
-                duplicate_population.push(entry);
+            VerifiedProcedureParameters::SameSameSame
+            | VerifiedProcedureParameters::FirstDigit { .. } => {
+                grouped_population.push(entry);
                 None
             }
         };
@@ -1051,29 +1150,41 @@ fn recompute_version(
         }
     }
     if profile == VerifiedProcedureParameters::SameSameSame {
-        (findings, live_legs, comparisons) = exact_duplicates(&entries, &duplicate_population)?;
+        (findings, live_legs, comparisons) = exact_duplicates(&entries, &grouped_population)?;
+    } else if matches!(profile, VerifiedProcedureParameters::FirstDigit { .. }) {
+        let (finding, legs) = benford::replay(profile, &grouped_population, registry)?;
+        findings.push(finding);
+        live_legs = legs;
     }
     let statistic_population = match profile {
-        VerifiedProcedureParameters::RoundAmounts { .. } => live_legs,
+        VerifiedProcedureParameters::RoundAmounts { .. } => Some(live_legs),
         VerifiedProcedureParameters::PeriodEndTiming { .. }
-        | VerifiedProcedureParameters::SameSameSame => live_entries,
+        | VerifiedProcedureParameters::SameSameSame => Some(live_entries),
+        VerifiedProcedureParameters::FirstDigit { .. } => None,
     };
-    for finding in &mut findings {
-        finding.population = statistic_population;
+    if let Some(population) = statistic_population {
+        for finding in &mut findings {
+            finding.population = population;
+        }
     }
-    // The first citation is always the unique entry identity. Canonical
-    // little-endian citation bytes, rather than numeric VId order, break ties.
+    // Entry findings have a unique first citation; population-wide Benford
+    // returns one finding with no citations. Little-endian entry bytes break
+    // ties between entry findings exactly as their canonical citation bytes do.
     findings.sort_by(|a, b| {
         b.severity
             .cmp(&a.severity)
             .then_with(|| b.statistic.value().cmp(&a.statistic.value()))
-            .then_with(|| a.entry.to_le_bytes().cmp(&b.entry.to_le_bytes()))
+            .then_with(|| {
+                a.entry
+                    .map(u128::to_le_bytes)
+                    .cmp(&b.entry.map(u128::to_le_bytes))
+            })
             .then_with(|| a.narrative.cmp(&b.narrative))
     });
     let mut encoded_findings = Writer::default();
     encoded_findings.count(findings.len());
     for value in &findings {
-        finding(&mut encoded_findings, value, profile, version);
+        finding(&mut encoded_findings, value, profile, version)?;
         if encoded_findings.buf.len() > MAX_OUTPUT {
             return Err(failed("bounded_input", "procedure findings exceed 32 MiB"));
         }
@@ -1148,6 +1259,8 @@ mod tests {
     fn registry() -> Registry {
         Registry {
             unit_scales: BTreeMap::from([(1, 2), (2, 0)]),
+            unit_currencies: BTreeMap::from([(1, 840), (2, 392)]),
+            account_types: BTreeMap::from([(0, 1), (1, 3)]),
             policy_oid: [7; 32],
         }
     }
@@ -1196,6 +1309,115 @@ mod tests {
             entry(4, 1, vec![(1, 0), (1, 0)]),
             entry(5, 17, Vec::new()),
         ]
+    }
+
+    #[test]
+    fn benford_selects_currency_side_account_type_and_live_whole_unit_magnitudes() {
+        let mut definitions = registry();
+        definitions.unit_scales.insert(3, 6);
+        definitions.account_types.insert(2, 5);
+        let mut expense = entry(2, 1, vec![(1, 999), (1, 999)]);
+        expense.leg_accounts[0].0 = 2;
+        let original = entry(8, 1, vec![(1, 6_000), (1, 6_000)]);
+        let mut undo = entry(9, 4, original.legs.clone());
+        undo.recorded_at = 2;
+        undo.supersession
+            .push((original.identity, original.digest, 1));
+        let entries = vec![
+            entry(1, 1, vec![(1, 100), (1, 200)]),
+            expense,
+            entry(3, 1, vec![(2, 7), (2, 7)]),
+            entry(4, 1, vec![(3, 9_000_000), (3, 9_000_000)]),
+            entry(5, 1, vec![(1, 99), (1, 99)]),
+            entry(6, 1, vec![(1, i128::MIN), (1, i128::MAX)]),
+            entry(7, 2, vec![(1, 5_000), (1, 5_000)]),
+            original,
+            undo,
+            entry(10, 17, Vec::new()),
+        ];
+        for (account_type, currency_iso4217, side, expected) in [
+            (0, 840, 0, [2, 0, 0, 0, 0, 0, 0, 0, 1]),
+            (0, 840, 1, [1, 1, 0, 0, 0, 0, 0, 0, 1]),
+            (5, 840, 0, [0, 0, 0, 0, 0, 0, 0, 0, 1]),
+            (5, 840, 1, [0; 9]),
+            (1, 392, 0, [0, 0, 0, 0, 0, 0, 1, 0, 0]),
+        ] {
+            let parameters = VerifiedProcedureParameters::FirstDigit {
+                account_type,
+                currency_iso4217,
+                side,
+                mad_acceptable: 12,
+                mad_close: 6,
+                mad_marginal: 15,
+                min_population: 1,
+            };
+            let (verified, output) = recompute_version(
+                [1; 16],
+                3,
+                2,
+                None,
+                parameters,
+                entries.clone(),
+                &definitions,
+            )
+            .unwrap();
+            assert_eq!(
+                (
+                    verified.population,
+                    verified.live_entries,
+                    verified.live_legs,
+                    verified.comparisons,
+                ),
+                (10, 6, 12, 0)
+            );
+            assert_eq!(verified.findings.len(), 1);
+            let finding = &verified.findings[0];
+            assert_eq!(finding.entry, None);
+            let observed = match finding.statistic {
+                VerifiedProcedureStatistic::FirstDigitPopulation { counts }
+                | VerifiedProcedureStatistic::FirstDigitMad { counts, .. } => counts,
+                _ => panic!("Benford statistic"),
+            };
+            assert_eq!(observed, expected);
+            assert_eq!(finding.population, expected.iter().sum::<u64>());
+            let mut reversed = entries.clone();
+            reversed.reverse();
+            assert_eq!(
+                recompute_version([1; 16], 3, 2, None, parameters, reversed, &definitions)
+                    .unwrap()
+                    .1,
+                output
+            );
+            if (account_type, currency_iso4217, side) == (5, 840, 0) {
+                let request = Certificate {
+                    source: &[],
+                    registry_digest: [0; 32],
+                    output: &output,
+                    digest: [0; 32],
+                    parameters,
+                    version: 2,
+                    book: [1; 16],
+                    known_at: 3,
+                    effective_through: None,
+                };
+                let mut changed = registry();
+                changed.unit_scales.insert(3, 6);
+                changed.account_types.insert(2, 1);
+                assert_eq!(
+                    replay(&request, [1; 16], 3, entries.clone(), &changed)
+                        .unwrap_err()
+                        .predicate,
+                    "procedure_recomputation"
+                );
+                changed.account_types.remove(&2);
+                assert_eq!(
+                    replay(&request, [1; 16], 3, entries.clone(), &changed)
+                        .unwrap_err()
+                        .predicate,
+                    "account_metadata"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1404,7 +1626,11 @@ mod tests {
                     let VerifiedProcedureStatistic::RoundLegs { ordinals } = &f.statistic else {
                         panic!("round-amount finding")
                     };
-                    (f.entry, f.severity, ordinals.clone())
+                    (
+                        f.entry.expect("round-amount entry"),
+                        f.severity,
+                        ordinals.clone(),
+                    )
                 })
                 .collect::<Vec<_>>(),
             vec![(256, 2, vec![0, 1]), (1, 2, vec![0, 1]), (2, 1, vec![0])]
@@ -1476,7 +1702,7 @@ mod tests {
             assert_eq!(verified.live_legs, 2 * u64::from(length % 2 == 0));
             assert_eq!(verified.findings.len(), usize::from(length % 2 == 0));
             if let Some(finding) = verified.findings.first() {
-                assert_eq!(finding.entry, 1000);
+                assert_eq!(finding.entry, Some(1000));
             }
         }
     }
@@ -1627,7 +1853,7 @@ mod tests {
                 assert_eq!(verified.live_entries, live_entries);
                 if through == 29 {
                     assert_eq!(verified.findings.len(), 1);
-                    assert_eq!(verified.findings[0].entry, replacement);
+                    assert_eq!(verified.findings[0].entry, Some(replacement));
                 }
             }
             let (legacy, _) = recompute([1; 16], 3, profile, entries.clone(), &registry()).unwrap();
@@ -1749,7 +1975,7 @@ mod tests {
                 verified
                     .findings
                     .iter()
-                    .map(|finding| finding.entry)
+                    .map(|finding| finding.entry.expect("entry-specific finding"))
                     .collect::<Vec<_>>(),
                 expected.into_iter().collect::<Vec<_>>()
             );
@@ -1884,7 +2110,7 @@ mod tests {
                     assert_eq!(period, "FY2026-P01");
                     assert_eq!(finding.severity, 1);
                     assert_eq!(finding.population, 4);
-                    (finding.entry, *days)
+                    (finding.entry.expect("period-end entry"), *days)
                 })
                 .collect();
             assert_eq!(observed, expected);
@@ -1919,7 +2145,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(verified.findings.len(), 1);
-        assert_eq!(verified.findings[0].entry, 2);
+        assert_eq!(verified.findings[0].entry, Some(2));
         assert_eq!(verified.findings[0].statistic.value(), 0);
     }
 

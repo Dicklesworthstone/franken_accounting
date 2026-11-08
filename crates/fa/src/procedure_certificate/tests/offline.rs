@@ -21,6 +21,16 @@ fn exact_duplicate_request(f: &Fixture) -> ProcedureRequest {
     request
 }
 
+fn benford_request(f: &Fixture, parameters: &[(&str, i128)]) -> ProcedureRequest {
+    let mut request =
+        ProcedureRequest::new("benford.first_digit", catalog::Inputs::default()).unwrap();
+    for &(name, value) in parameters {
+        request.parameters = request.parameters.set(name, value).unwrap();
+    }
+    request.known_at = Some(f.head());
+    request
+}
+
 fn produce(f: &mut Fixture, certificate: &ProcedureCertificate) -> crate::ProducedBundle {
     let cx = f.cx();
     f.runtime
@@ -262,6 +272,415 @@ pub(super) fn reseal(certificate: &mut ProcedureCertificate) {
         ProcedureCertificate::decode(&certificate.canonical_bytes().unwrap()).unwrap(),
         *certificate,
         "the negative must pass the producer's integrity-only decoder"
+    );
+}
+
+#[test]
+fn benford_replays_signed_currency_side_and_account_type_populations_across_corrections() {
+    use fa_verify::report::VerifiedProcedureStatistic;
+
+    let mut f = Fixture::new(135);
+    let (first, _) = f.post(5, "3000", "6000", 100, false);
+    f.post(6, "3000", "6000", 90_000, false);
+    f.post(7, "3000", "1000", 20_000, false);
+    f.post(8, "3000", "6000", 99, false);
+    let mut yen = template(&f, first, b"benford-yen", 9);
+    let jpy = f.book.context().units.lookup("JPY").unwrap();
+    for leg in &mut yen.legs {
+        leg.amount = Amount::new(jpy, 7);
+    }
+    yen.unit_totals = EntryPayload::fold_unit_totals(&yen.legs).unwrap();
+    post(&mut f, yen);
+    let cx = f.cx();
+    for (code, kind) in [("1100", AccountType::ASSET), ("3100", AccountType::EQUITY)] {
+        f.runtime
+            .block_on(f.book.open_account(
+                &cx,
+                &AccountSpec {
+                    code: code.into(),
+                    name: code.into(),
+                    account_type: kind.0,
+                    normal_balance: u8::from(kind == AccountType::EQUITY),
+                    is_leaf: true,
+                    unit_policy: UnitPolicy::AnyUnit,
+                    parent_code: None,
+                    limit: None,
+                },
+                day(1),
+                None,
+                PRINCIPAL,
+                day(1),
+                code.as_bytes(),
+                &cap(&["schema_change"]),
+            ))
+            .unwrap()
+            .unwrap();
+    }
+    let mut shares = template(&f, first, b"benford-shares", 9);
+    let share = f.book.context().units.lookup("SHARE").unwrap();
+    shares.legs = vec![
+        LegPayload::simple(Side::Debit, f.id("1100"), Amount::new(share, 9_000_000)),
+        LegPayload::simple(Side::Credit, f.id("3100"), Amount::new(share, 9_000_000)),
+    ];
+    shares.unit_totals = EntryPayload::fold_unit_totals(&shares.legs).unwrap();
+    post(&mut f, shares);
+
+    let mut cases = Vec::new();
+    for (name, settings, counts, scored) in [
+        (
+            "all USD debits",
+            vec![("min_population", 1)],
+            [1, 1, 0, 0, 0, 0, 0, 0, 1],
+            true,
+        ),
+        (
+            "expense",
+            vec![("min_population", 1), ("account_type", 5)],
+            [1, 0, 0, 0, 0, 0, 0, 0, 1],
+            true,
+        ),
+        (
+            "equity credits",
+            vec![("min_population", 1), ("account_type", 3), ("side", 1)],
+            [1, 1, 0, 0, 0, 0, 0, 0, 1],
+            true,
+        ),
+        (
+            "empty expense credits",
+            vec![("min_population", 1), ("account_type", 5), ("side", 1)],
+            [0; 9],
+            false,
+        ),
+        (
+            "JPY",
+            vec![("min_population", 1), ("currency_iso4217", 392)],
+            [0, 0, 0, 0, 0, 0, 1, 0, 0],
+            true,
+        ),
+        (
+            "below minimum",
+            Vec::new(),
+            [1, 1, 0, 0, 0, 0, 0, 0, 1],
+            false,
+        ),
+    ] {
+        let certified = f.certify(&benford_request(&f, &settings));
+        cases.push((name, certified, counts, scored));
+    }
+    let original_frontier = f.head();
+    let undo = reverse(&mut f, first, b"benford-undo", 10);
+    f.post(5, "3000", "6000", 40_000, false);
+    let expense = [("min_population", 1), ("account_type", 5)];
+    cases.push((
+        "corrected",
+        f.certify(&benford_request(&f, &expense)),
+        [0, 0, 0, 1, 0, 0, 0, 0, 1],
+        true,
+    ));
+    reverse(&mut f, undo, b"benford-restore", 11);
+    cases.push((
+        "restored",
+        f.certify(&benford_request(&f, &expense)),
+        [1, 0, 0, 1, 0, 0, 0, 0, 1],
+        true,
+    ));
+    let key = f.book.checkpoint_public_key();
+    for (name, certified, counts, scored) in cases {
+        assert_eq!(
+            f.book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.report,
+            "{name}"
+        );
+        let produced = produce(&mut f, &certified.certificate);
+        let result = verify(&produced, &certified.certificate, key);
+        assert!(result.checkpoint.checkpoint.through_seq > original_frontier.0);
+        let verified = result.procedure.unwrap();
+        assert_eq!(verified.live_entries, certified.report.work.entries, "{name}");
+        assert_eq!(verified.live_legs, certified.report.work.legs, "{name}");
+        assert_eq!(verified.comparisons, 0);
+        assert_eq!(verified.findings.len(), 1);
+        let finding = &verified.findings[0];
+        assert_eq!(finding.entry, None);
+        assert_eq!(finding.population, counts.iter().sum::<u64>(), "{name}");
+        match &finding.statistic {
+            VerifiedProcedureStatistic::FirstDigitMad { counts: actual, .. } => {
+                assert!(scored, "{name}");
+                assert_eq!(actual, &counts, "{name}");
+            }
+            VerifiedProcedureStatistic::FirstDigitPopulation { counts: actual } => {
+                assert!(!scored, "{name}");
+                assert_eq!(actual, &counts, "{name}");
+                assert_eq!(finding.severity, 0);
+                assert!(finding.narrative.ends_with("no conformity is claimed"));
+            }
+            other => panic!("unexpected Benford statistic: {other:?}"),
+        }
+        if name == "expense" {
+            let command = fa_verify::cli::run(
+                &[
+                    "report".into(),
+                    "benford.fab".into(),
+                    "--key".into(),
+                    key.iter().map(|byte| format!("{byte:02x}")).collect(),
+                    "--receipt".into(),
+                    "benford.receipt".into(),
+                    "--json".into(),
+                ],
+                &|path| match path {
+                    "benford.fab" => Ok(produced.bundle.bytes.clone()),
+                    "benford.receipt" => Ok(produced.receipt.clone()),
+                    _ => Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "unexpected input",
+                    )),
+                },
+            );
+            assert_eq!(command.exit, 0, "{}", command.stdout);
+            for expected in [
+                "\"entry\":null",
+                "\"account_type\":5",
+                "\"currency_iso4217\":840",
+                "\"side\":0",
+                "\"scale\":9",
+                "\"conformity_scored\":true",
+                "\"first_digit_counts\":[1,0,0,0,0,0,0,0,1]",
+            ] {
+                assert!(
+                    command.stdout.contains(expected),
+                    "{expected}: {}",
+                    command.stdout
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn benford_replays_a_scored_large_entry_and_all_parameter_decision_features() {
+    let mut f = Fixture::new(136);
+    let (source, _) = f.post(5, "3000", "6000", 99, false);
+    for _ in 1..100 {
+        f.post(5, "3000", "6000", 99, false);
+    }
+    let counts = [301, 176, 125, 97, 79, 67, 58, 51, 46];
+    let mut proposal = template(&f, source, b"benford-scored", 6);
+    proposal.legs.clear();
+    let mut total = 0i128;
+    for (index, count) in counts.into_iter().enumerate() {
+        let amount = (index as i128 + 1) * 100;
+        for _ in 0..count {
+            proposal.legs.push(LegPayload::simple(
+                Side::Debit,
+                f.id("6000"),
+                Amount::new(f.unit, amount),
+            ));
+            total += amount;
+        }
+    }
+    proposal.legs.push(LegPayload::simple(
+        Side::Credit,
+        f.id("3000"),
+        Amount::new(f.unit, total),
+    ));
+    proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+    post(&mut f, proposal);
+    let certified = f.certify(&benford_request(&f, &[("account_type", 5)]));
+    assert_eq!(
+        certified.report.work,
+        Work {
+            entries: 101,
+            legs: 1201,
+            comparisons: 0,
+        }
+    );
+    assert_eq!(certified.report.findings[0].statistic.population, 1000);
+    assert_eq!(certified.report.findings[0].statistic.value, 101_116);
+    assert_eq!(certified.report.findings[0].statistic.scale, 9);
+    assert_eq!(certified.report.findings[0].severity, Severity::Info);
+    assert!(certified.report.findings[0].cites.is_empty());
+    assert_eq!(
+        certified.report.decision_card.chosen.action,
+        "split_conformal_calibrated"
+    );
+    assert_eq!(certified.report.decision_card.chosen.parameter, 5);
+    assert_eq!(certified.report.decision_card.features.len(), 8);
+    let produced = produce(&mut f, &certified.certificate);
+    let result = verify(
+        &produced,
+        &certified.certificate,
+        f.book.checkpoint_public_key(),
+    );
+    assert_eq!(
+        result.procedure.unwrap().findings[0].statistic,
+        fa_verify::report::VerifiedProcedureStatistic::FirstDigitMad {
+            counts,
+            mad_1e9: 101_116,
+            ks_1e9: 242_510,
+            chi_square_1e6: Some(2_358),
+        }
+    );
+}
+
+#[test]
+fn benford_refuses_resealed_statistics_citations_parameters_and_unsupported_scope() {
+    let mut f = Fixture::new(137);
+    let (first, _) = f.post(5, "3000", "6000", 100, false);
+    f.post(5, "3000", "6000", 900, false);
+    f.post(5, "3000", "1000", 200, false);
+    let certified = f.certify(&benford_request(
+        &f,
+        &[("account_type", 5), ("min_population", 1)],
+    ));
+    let produced = produce(&mut f, &certified.certificate);
+    let key = f.book.checkpoint_public_key();
+    verify(&produced, &certified.certificate, key);
+    for variant in [
+        "mad",
+        "scale",
+        "sample count",
+        "histogram",
+        "KS",
+        "chi-square",
+        "severity",
+        "citation",
+        "work",
+        "decision",
+    ] {
+        let mut forged = certified.certificate.clone();
+        let run = &mut forged.report;
+        match variant {
+            "mad" => run.findings[0].statistic.value += 1,
+            "scale" => run.findings[0].statistic.scale = 0,
+            "sample count" => run.findings[0].statistic.population += 1,
+            "histogram" => {
+                run.findings[0].narrative =
+                    run.findings[0].narrative.replacen("counts [1", "counts [2", 1);
+            }
+            "KS" => {
+                run.findings[0].narrative =
+                    run.findings[0].narrative.replacen("KS ", "KS 1", 1);
+            }
+            "chi-square" => {
+                run.findings[0].narrative =
+                    run.findings[0].narrative.replacen("chi-square ", "chi-square 1", 1);
+            }
+            "severity" => run.findings[0].severity = Severity::Info,
+            "citation" => run.findings[0].cites.push(Cite::Entry(first)),
+            "work" => run.work.legs -= 1,
+            "decision" => {
+                run.decision_card
+                    .features
+                    .iter_mut()
+                    .find(|feature| feature.name == "param.account_type")
+                    .unwrap()
+                    .value = 1;
+            }
+            _ => unreachable!(),
+        }
+        reseal(&mut forged);
+        assert_ne!(forged.output, certified.certificate.output, "{variant}");
+        let changed = replace_certificate(&produced.bundle.bytes, &forged);
+        assert_eq!(
+            verify_report_expected(&changed, &[key], None, None, Some(forged.digest()))
+                .unwrap_err()
+                .predicate,
+            "procedure_recomputation",
+            "{variant}"
+        );
+    }
+    // These are valid alternate questions. Even with every public hash and
+    // recipient pin repaired, their old population/score/card cannot follow them.
+    for (name, value) in [
+        ("account_type", 1),
+        ("currency_iso4217", 392),
+        ("side", 1),
+        ("min_population", 500),
+        ("mad_close", 1000),
+        ("mad_acceptable", 1000),
+        ("mad_marginal", 1000),
+    ] {
+        let mut forged = certified.certificate.clone();
+        forged
+            .report
+            .parameters
+            .iter_mut()
+            .find(|(key, _)| key == name)
+            .unwrap()
+            .1 = value;
+        forged.check_offline_profile().unwrap();
+        reseal(&mut forged);
+        let changed = replace_certificate(&produced.bundle.bytes, &forged);
+        assert_eq!(
+            verify_report_expected(&changed, &[key], None, None, Some(forged.digest()))
+                .unwrap_err()
+                .predicate,
+            "procedure_recomputation",
+            "{name}"
+        );
+    }
+    for variant in [
+        "old version",
+        "cutoff",
+        "handle",
+        "account type",
+        "currency zero",
+        "currency bound",
+        "side",
+        "negative",
+        "overflow",
+        "missing parameter",
+        "unknown parameter",
+        "extra parameter",
+    ] {
+        let mut forged = certified.certificate.clone();
+        let run = &mut forged.report;
+        match variant {
+            "old version" => {
+                run.version = 1;
+                run.findings[0].version = 1;
+            }
+            "cutoff" => run.coordinate.effective_through = Some(day(5)),
+            "handle" => run.inputs.push(("account".into(), "6000".into())),
+            "account type" => run.parameters[0].1 = 9,
+            "currency zero" => run.parameters[1].1 = 0,
+            "currency bound" => run.parameters[1].1 = 1000,
+            "side" => run.parameters[6].1 = 2,
+            "negative" => run.parameters[3].1 = -1,
+            "overflow" => run.parameters[5].1 = i128::from(u32::MAX) + 1,
+            "missing parameter" => {
+                run.parameters.remove(0);
+            }
+            "unknown parameter" => run.parameters[6].0 = "window_days".into(),
+            "extra parameter" => run.parameters.push(("window_days".into(), 1)),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            forged.check_offline_profile().unwrap_err().code,
+            fa_notary::code::SCOPE_UNSUPPORTED,
+            "{variant}"
+        );
+        reseal(&mut forged);
+        let changed = replace_certificate(&produced.bundle.bytes, &forged);
+        let refused = verify_report_expected(&changed, &[key], None, None, Some(forged.digest()))
+            .unwrap_err();
+        assert!(
+            matches!(refused.predicate, "procedure_profile" | "canonical_encoding"),
+            "{variant}: {refused}"
+        );
+    }
+    assert!(verify_report_expected(&produced.bundle.bytes, &[key], None, None, None).is_err());
+    assert!(
+        verify_report_expected(
+            &produced.bundle.bytes,
+            &[],
+            None,
+            Some(&produced.receipt),
+            Some(certified.certificate.digest()),
+        )
+        .is_err()
     );
 }
 
@@ -794,7 +1213,7 @@ fn effective_cutoffs_replay_before_reversal_liveness_at_the_original_known_at() 
         assert_eq!(verified.procedure.as_ref().unwrap().live_entries, 1);
         assert_eq!(
             verified.procedure.as_ref().unwrap().findings[0].entry,
-            original.0
+            Some(original.0)
         );
 
         let mut input_digests = BTreeSet::new();
@@ -855,7 +1274,7 @@ fn effective_cutoffs_replay_before_reversal_liveness_at_the_original_known_at() 
                     procedure
                         .findings
                         .iter()
-                        .map(|finding| finding.entry)
+                        .map(|finding| finding.entry.expect("entry-specific finding"))
                         .collect::<BTreeSet<_>>(),
                     BTreeSet::from([original.0, future.0]),
                 );
@@ -1704,14 +2123,14 @@ fn corrected_and_paid_procedures_resolve_identity_at_known_at_before_filtering_d
             procedure
                 .findings
                 .iter()
-                .map(|finding| finding.entry)
+                .map(|finding| finding.entry.expect("entry-specific finding"))
                 .collect::<BTreeSet<_>>(),
             expected.into_iter().collect()
         );
         if through == 29 {
             // The signed later payment resolves the canonical VID while its
             // day-30 monetary effects remain outside this inclusive cutoff.
-            assert_eq!(procedure.findings[0].entry, corrected.0);
+            assert_eq!(procedure.findings[0].entry, Some(corrected.0));
             let historical = unresolved
                 .iter()
                 .find(|cert| cert.report.procedure == id)
@@ -1804,7 +2223,7 @@ fn corrected_procedures_replay_reversal_restoration_and_reject_rehashed_aliases(
             procedure
                 .findings
                 .iter()
-                .map(|finding| finding.entry)
+                .map(|finding| finding.entry.expect("entry-specific finding"))
                 .collect::<Vec<_>>(),
             expected
         );
@@ -1823,7 +2242,7 @@ fn corrected_procedures_replay_reversal_restoration_and_reject_rehashed_aliases(
             procedure
                 .findings
                 .iter()
-                .map(|finding| finding.entry)
+                .map(|finding| finding.entry.expect("entry-specific finding"))
                 .collect::<Vec<_>>(),
             expected
         );

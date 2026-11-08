@@ -1,6 +1,6 @@
 //! Portable native and dimension-filtered trial balances, statements, open
 //! items, summary accounts, balance explanations, aging, native subledger
-//! reconciliations, roll-forwards, round-amount, period-end and exact-duplicate procedures,
+//! reconciliations, roll-forwards, JET, exact-duplicate and first-digit Benford procedures,
 //! and direct cash flow over
 //! a payload-complete checkpoint.
 //!
@@ -45,7 +45,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, summary trial-balance, native-subledger reconciliation, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, v11/v12 custom statement, native statement-diff, v6/v7 one-book consolidation, jet.round_amounts/jet.period_end_timing v1/v2 or duplicates.same_same_same v1 procedure, effective-date aging, roll-forward, equity roll-forward or equity comparison, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, summary trial-balance, native-subledger reconciliation, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, v11/v12 custom statement, native statement-diff, v6/v7 one-book consolidation, JET round-amount/period-end v1/v2, exact duplicates v1 or first-digit Benford v2 procedure, effective-date aging, roll-forward, equity roll-forward or equity comparison, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -142,7 +142,7 @@ pub fn assemble(
 /// checks its definition and chart commitments without promoting the native
 /// approval or definition-object reads into separate membership proofs.
 /// The bounded jet.round_amounts and jet.period_end_timing v1/v2 profiles and
-/// duplicates.same_same_same v1 keep their outer procedure certificate and append
+/// exact duplicates v1 and first-digit Benford v2 keep their outer certificate and append
 /// procedures and sod_policy to the four native
 /// documents. Those definitions support independent reproduction of the
 /// findings, exact work and complete decision card. Version 1 takes no effective
@@ -236,7 +236,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, five including rounding_laws for custom statements, six including procedures and sod_policy for jet.round_amounts/jet.period_end_timing v1/v2 or duplicates.same_same_same v1, or six including control_payload and symbols for native subledger reconciliation",
+            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, five including rounding_laws for custom statements, six including procedures and sod_policy for JET round-amount/period-end v1/v2, exact duplicates v1 or first-digit Benford v2, or six including control_payload and symbols for native subledger reconciliation",
         )));
     }
     assemble_inner(
@@ -466,7 +466,7 @@ fn lots_certificate(certificate: &[u8]) -> bool {
     header().unwrap_or(false)
 }
 
-/// Route only the bounded round-amount, period-end and exact-duplicate profiles.
+/// Route only bounded JET, exact-duplicate and first-digit Benford profiles.
 /// This checks framing and selection; producer replay and the verifier authenticate
 /// the complete source, commitments and reproduced output.
 fn procedure_certificate(certificate: &[u8]) -> bool {
@@ -506,15 +506,19 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
         if output.bytes(64, "procedure output format")? != b"fa:procedure-output:v1" {
             return Ok(false);
         }
-        let (evidence, parameter) = match output.str(128, "procedure id")? {
+        let id = output.str(128, "procedure id")?;
+        let benford = id == "benford.first_digit";
+        let (evidence, parameter) = match id {
             "jet.round_amounts" => ("FA-EVID-L01", Some(("round_power", 30))),
             "jet.period_end_timing" => ("FA-EVID-L02", Some(("window_days", i128::from(u32::MAX)))),
             "duplicates.same_same_same" => ("FA-EVID-L07", None),
+            "benford.first_digit" => ("FA-EVID-L10", None),
             _ => return Ok(false),
         };
         let version = output.u16("procedure version")?;
         if !matches!(version, 1 | 2)
-            || (parameter.is_none() && version != 1)
+            || (benford && version != 2)
+            || (!benford && parameter.is_none() && version != 1)
             || output.u8("procedure claim")? != 0
             || output.str(128, "procedure evidence")? != evidence
             || output.fixed::<16>("procedure book")? != book
@@ -524,13 +528,33 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
         }
         match output.u8("procedure effective cutoff")? {
             0 => {}
-            1 if version == 2 => {
+            1 if version == 2 && !benford => {
                 output.i32("procedure effective cutoff")?;
             }
             _ => return Ok(false),
         }
         let count = output.u32("procedure parameters")?;
-        if let Some((parameter, bound)) = parameter {
+        if benford {
+            let bounds = [
+                ("account_type", 0, 8),
+                ("currency_iso4217", 1, 999),
+                ("mad_acceptable", 0, i128::from(u32::MAX)),
+                ("mad_close", 0, i128::from(u32::MAX)),
+                ("mad_marginal", 0, i128::from(u32::MAX)),
+                ("min_population", 0, i128::from(u32::MAX)),
+                ("side", 0, 1),
+            ];
+            if count as usize != bounds.len() {
+                return Ok(false);
+            }
+            for (name, low, high) in bounds {
+                if output.str(128, "procedure parameter")? != name
+                    || !(low..=high).contains(&output.i128("procedure parameter value")?)
+                {
+                    return Ok(false);
+                }
+            }
+        } else if let Some((parameter, bound)) = parameter {
             if count != 1 || output.str(128, "procedure parameter")? != parameter {
                 return Ok(false);
             }
@@ -1007,7 +1031,7 @@ fn assemble_inner(
                 || consolidation::profile(certificate, journal, known_at).is_some()))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, summary trial balance, native-subledger reconciliation, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v13 functional dimension trial balance, v11/v12 custom statement, v6/v7 one-book consolidation, jet.round_amounts/jet.period_end_timing v1/v2 or duplicates.same_same_same v1 procedure, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, equity roll-forward or equity comparison, direct, policy, split or indirect cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, summary trial balance, native-subledger reconciliation, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v13 functional dimension trial balance, v11/v12 custom statement, v6/v7 one-book consolidation, JET round-amount/period-end v1/v2, exact duplicates v1 or first-digit Benford v2 procedure, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, equity roll-forward or equity comparison, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()

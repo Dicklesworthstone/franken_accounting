@@ -2294,10 +2294,13 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
         ("claim", s("statistical")),
         ("evidence", s(report.parameters.evidence())),
     ];
-    if let Some((parameter, value)) = report.parameters.parameter() {
-        summary.push((parameter, n(u64::from(value))));
-    } else {
+    let parameters = report.parameters.parameters();
+    if parameters.is_empty() {
         summary.push(("comparisons", n(report.comparisons)));
+    } else {
+        for (parameter, value) in parameters {
+            summary.push((parameter, n(u64::from(value))));
+        }
     }
     summary.extend([
         ("population", n(report.population)),
@@ -2323,18 +2326,25 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
     )];
     for finding in &report.findings {
         let mut details = vec![
-            ("entry", s(format!("{:032x}", finding.entry))),
+            (
+                "entry",
+                finding
+                    .entry
+                    .map_or(Json::Null, |entry| s(format!("{entry:032x}"))),
+            ),
             (
                 "severity",
                 s(match finding.severity {
+                    0 => "info",
                     1 => "low",
                     2 => "medium",
+                    3 => "high",
                     _ => "unknown",
                 }),
             ),
             ("statistic", s(finding.statistic.name())),
             ("value", n(finding.statistic.value())),
-            ("scale", n(0)),
+            ("scale", n(u64::from(finding.statistic.scale()))),
             ("population", n(finding.population)),
         ];
         match &finding.statistic {
@@ -2362,6 +2372,27 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                             .collect(),
                     ),
                 ));
+            }
+            crate::report::VerifiedProcedureStatistic::FirstDigitPopulation { counts }
+            | crate::report::VerifiedProcedureStatistic::FirstDigitMad { counts, .. } => {
+                details.push((
+                    "first_digit_counts",
+                    Json::List(counts.iter().copied().map(n).collect()),
+                ));
+                let scored = matches!(
+                    finding.statistic,
+                    crate::report::VerifiedProcedureStatistic::FirstDigitMad { .. }
+                );
+                details.push(("conformity_scored", Json::Bool(scored)));
+                if let crate::report::VerifiedProcedureStatistic::FirstDigitMad {
+                    ks_1e9,
+                    chi_square_1e6,
+                    ..
+                } = &finding.statistic
+                {
+                    details.push(("ks_1e9", n(*ks_1e9)));
+                    details.push(("chi_square_1e6", chi_square_1e6.map_or(Json::Null, n)));
+                }
             }
         }
         details.push(("narrative", s(&finding.narrative)));

@@ -85,8 +85,8 @@
 //! Their exact source commitments never substitute rounded display amounts.
 //!
 //! ProcedureCertificate v1 additionally replays `jet.round_amounts` and
-//! `jet.period_end_timing` v1/v2 and `duplicates.same_same_same` v1 from the
-//! complete native history. Exact duplicates independently reconstruct the full
+//! `jet.period_end_timing` v1/v2, `duplicates.same_same_same` v1 and first-digit
+//! Benford v2 from the complete native history. Exact duplicates reconstruct the full
 //! leg multisets, effective dates and directed correction lineage. Authenticated
 //! period declarations supply the exclusive ends and period citations. The
 //! six-document closure binds native unit scales, procedure semantics and the
@@ -2216,8 +2216,18 @@ fn verify_report_with_native_subledger_input(
                 })
                 .collect::<Result<Vec<_>, ReportError>>()?;
             let definitions = procedure_registry
-                .as_ref()
+                .as_mut()
                 .ok_or_else(|| failed("registry_closure", "procedure registries are absent"))?;
+            if matches!(
+                request.parameters,
+                procedure::VerifiedProcedureParameters::FirstDigit { .. }
+            ) {
+                definitions.account_types = schema
+                    .accounts
+                    .iter()
+                    .map(|(&identity, account)| (identity, account.account_type))
+                    .collect();
+            }
             let (verified, output) =
                 procedure::replay(request, cert.book, cert.known_at, entries, definitions)?;
             (Some(verified), output)
