@@ -1442,10 +1442,8 @@ fn check_export_reread(
     for (format, again) in [
         (
             "beancount_v3",
-            fa_formats::beancount::read_beancount(
-                &fa_formats::beancount::write_beancount(journal),
-                &units,
-            ),
+            fa_formats::beancount::write_beancount(journal)
+                .and_then(|text| fa_formats::beancount::read_beancount(&text, &units)),
         ),
         (
             "hledger",
@@ -2358,7 +2356,8 @@ fn export_import_identity_on_fixture_books() {
         }
 
         // 3. beancount → parse_beancount_ledger → import into fresh Book → TB equality.
-        let bc_text = fa_formats::beancount::write_beancount(&journal);
+        let bc_text =
+            fa_formats::beancount::write_beancount(&journal).expect("write Beancount export");
         let bc_batch =
             fa_formats::legacy::parse_beancount_ledger(&bc_text, &units, &bc_account_map)
                 .expect("parse beancount export");

@@ -519,7 +519,7 @@ fn render_files(
         }],
         "beancount" => vec![ExportFile {
             name: "journal.beancount",
-            content: fa_formats::beancount::write_beancount(journal),
+            content: fa_formats::beancount::write_beancount(journal).map_err(written)?,
         }],
         "ndjson" => vec![ExportFile {
             name: "gl.ndjson",

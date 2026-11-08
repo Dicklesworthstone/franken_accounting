@@ -1,7 +1,7 @@
 //! Real exports carry arbitrary source descriptions and memos. Text must never
 //! turn into a second accounting instruction or lose exact retained evidence.
 use fa_formats::{
-    FormatAccount, FormatEntry, FormatError, FormatJournal, FormatLeg, UnitCatalog,
+    FormatAccount, FormatAssertion, FormatEntry, FormatError, FormatJournal, FormatLeg, UnitCatalog,
     beancount::{read_beancount, read_hledger, write_beancount, write_hledger},
     verify_round_trip_identity,
 };
@@ -60,7 +60,7 @@ fn beancount_preserves_multiline_source_text_without_creating_directives() {
         "  First line; reference\\n\nSecond line\t\"quoted\" ",
         Some("  Vendor\r\n  Expenses:A5000  999999.00 USD\n  Assets:A1000  -999999.00 USD  "),
     );
-    let text = write_beancount(&source);
+    let text = write_beancount(&source).unwrap();
     let restored = read_beancount(&text, &UnitCatalog::embedded().unwrap()).unwrap();
     verify_round_trip_identity("beancount-text", &source, &restored).unwrap();
     assert_eq!(restored.entries.len(), 1);
@@ -80,8 +80,11 @@ fn beancount_preserves_multiline_source_text_without_creating_directives() {
 fn beancount_preserves_empty_and_whitespace_only_memos() {
     for memo in ["", "   ", "\t", "line\\nwith\\\"literal"] {
         let source = journal("source", "payment", Some(memo));
-        let restored =
-            read_beancount(&write_beancount(&source), &UnitCatalog::embedded().unwrap()).unwrap();
+        let restored = read_beancount(
+            &write_beancount(&source).unwrap(),
+            &UnitCatalog::embedded().unwrap(),
+        )
+        .unwrap();
         verify_round_trip_identity("beancount-memo", &source, &restored).unwrap();
     }
 }
@@ -121,7 +124,10 @@ fn plaintext_account_names_and_entry_ids_remain_exact() {
     for (format, restored) in [
         (
             "beancount",
-            read_beancount(&write_beancount(&source), &UnitCatalog::embedded().unwrap()),
+            read_beancount(
+                &write_beancount(&source).unwrap(),
+                &UnitCatalog::embedded().unwrap(),
+            ),
         ),
         (
             "hledger",
@@ -151,7 +157,7 @@ fn beancount_opens_accounts_before_all_legacy_effective_dates() {
         vec![],
     )
     .unwrap();
-    let text = write_beancount(&source);
+    let text = write_beancount(&source).unwrap();
     assert_eq!(
         text.lines()
             .filter(|line| line.starts_with("1960-01-01 open "))
@@ -163,13 +169,126 @@ fn beancount_opens_accounts_before_all_legacy_effective_dates() {
 }
 
 #[test]
+fn beancount_date_boundaries_preserve_certificates_and_inclusive_assertions() {
+    let base = journal("Date boundaries", "payment", None);
+    let units = UnitCatalog::embedded().unwrap();
+    for (date, next_day) in [
+        ("0000-01-01", Some("0000-01-02")),
+        ("1969-12-31", Some("1970-01-01")),
+        ("9999-12-30", Some("9999-12-31")),
+        ("9999-12-31", None),
+    ] {
+        let day = DateDay::parse(date).unwrap();
+        let mut entries = base.entries.clone();
+        entries[0].effective_date = day;
+        let assertions = next_day
+            .map(|_| FormatAssertion {
+                account_code: "1000".into(),
+                as_of: day,
+                side: Side::Credit,
+                amount: Amount::new(UnitId(0), 1_234_567),
+                unit_code: "USD".into(),
+                unit_scale: 2,
+            })
+            .into_iter()
+            .collect();
+        let source = FormatJournal::new(
+            "Date boundaries", "USD", 2, day, 1, base.accounts.clone(), entries, assertions,
+        )
+        .unwrap();
+        let text = write_beancount(&source).unwrap();
+        if let Some(next_day) = next_day {
+            assert!(text.contains(&format!(
+                "{next_day} balance Assets:A1000 -12345.67 USD\n"
+            )));
+        }
+        let restored = read_beancount(&text, &units).unwrap();
+        assert_eq!(restored, source, "{date}");
+        verify_round_trip_identity("beancount-boundary", &source, &restored).unwrap();
+        assert_eq!(write_beancount(&restored).unwrap(), text);
+    }
+}
+
+#[test]
+fn beancount_writer_refuses_dates_outside_its_profile_and_assertion_overflow() {
+    let base = journal("Date boundaries", "payment", None);
+    let normal = base.coordinate.effective_through;
+    let last = DateDay::parse("9999-12-31").unwrap();
+    let after_last = DateDay::from_ymd(10000, 1, 1).unwrap();
+    let rebuild = |cutoff, effective, assertion_day: Option<DateDay>| {
+        let mut entries = base.entries.clone();
+        entries[0].effective_date = effective;
+        let assertions = assertion_day
+            .map(|as_of| FormatAssertion {
+                account_code: "1000".into(),
+                as_of,
+                side: Side::Credit,
+                amount: Amount::new(UnitId(0), 1_234_567),
+                unit_code: "USD".into(),
+                unit_scale: 2,
+            })
+            .into_iter()
+            .collect();
+        FormatJournal::new(
+            "Date boundaries", "USD", 2, cutoff, 1, base.accounts.clone(), entries, assertions,
+        )
+        .unwrap()
+    };
+    for (cutoff, effective, assertion, field) in [
+        (DateDay(i32::MIN), DateDay(i32::MIN), None, "selection cutoff"),
+        (DateDay(i32::MAX), DateDay(i32::MAX), None, "selection cutoff"),
+        (after_last, after_last, None, "selection cutoff"),
+        (last, DateDay(i32::MIN), None, "account opening"),
+        (last, after_last, None, "entry source-0001"),
+        (last, last, Some(last), "balance assertion for account 1000"),
+    ] {
+        let source = rebuild(cutoff, effective, assertion);
+        let error = write_beancount(&source).unwrap_err();
+        assert!(
+            matches!(&error, FormatError::Parse { format: "beancount_v3", detail }
+                if detail.contains(field) && detail.contains("YYYY-MM-DD profile")),
+            "{error:?}"
+        );
+    }
+    // The public extract constructor accepts raw assertion days. A malformed
+    // extract must return a typed error, rather than overflowing its next day.
+    let source = rebuild(normal, normal, Some(DateDay(i32::MAX)));
+    assert!(matches!(
+        write_beancount(&source),
+        Err(FormatError::Overflow { format: "beancount_v3", detail })
+            if detail.contains("next day of balance assertion for account 1000")
+    ));
+}
+
+#[test]
+fn beancount_open_directives_validate_their_dates() {
+    let source = journal("Opening dates", "payment", None);
+    let units = UnitCatalog::embedded().unwrap();
+    let text = write_beancount(&source).unwrap();
+    assert!(text.contains("1970-01-01 open "));
+    for date in ["0000-01-01", "1969-12-31", "2024-06-30"] {
+        let revised = text.replace("1970-01-01 open ", &format!("{date} open "));
+        let restored = read_beancount(&revised, &units).unwrap();
+        assert_eq!(restored, source);
+        verify_round_trip_identity("beancount-opening-date", &source, &restored).unwrap();
+    }
+    for date in ["2024-+1-+5", "10000-01-01", "-001-01-01", "2023-02-29", "0000-13-01"] {
+        let revised = text.replace("1970-01-01 open ", &format!("{date} open "));
+        assert!(matches!(
+            read_beancount(&revised, &units),
+            Err(FormatError::Parse { format: "beancount_v3", .. })
+        ));
+    }
+}
+
+#[test]
 fn beancount_memo_newlines_cannot_add_balanced_postings() {
     let source = journal(
         "Source book",
         "Vendor payment",
         Some("Vendor\n  Expenses:A5000  999999.00 USD\n  Assets:A1000  -999999.00 USD"),
     );
-    let text = write_beancount(&source);
+    let text = write_beancount(&source).unwrap();
     assert_eq!(
         text.lines()
             .filter(|line| line.starts_with("  Expenses:"))
@@ -211,7 +330,7 @@ fn hledger_account_names_cannot_override_declared_metadata() {
 fn plaintext_hex_metadata_refuses_corrupt_or_misattached_text() {
     let source = journal("Book", "Payment", None);
     let units = UnitCatalog::embedded().unwrap();
-    let bean = write_beancount(&source);
+    let bean = write_beancount(&source).unwrap();
     let posting = "  Expenses:A5000  12345.67 USD\n";
     for (label, replacement) in [
         (

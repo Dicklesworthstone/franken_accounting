@@ -1171,7 +1171,7 @@ fn build_golden_seeds() -> GoldenSeeds {
     let interop_exports = vec![
         fa_formats::saft::write_saft_xml(&journal).expect("golden SAF-T"),
         fa_formats::csv_gl::write_csv_gl(&journal),
-        fa_formats::beancount::write_beancount(&journal),
+        fa_formats::beancount::write_beancount(&journal).expect("golden Beancount"),
         fa_formats::beancount::write_hledger(&journal),
         fa_formats::csv_gl::write_ndjson_gl_stream(&journal).expect("golden NDJSON stream"),
         fa_formats::xbrl::write_format_journal_xbrl_xml(&journal).expect("golden XBRL"),
