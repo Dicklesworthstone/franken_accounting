@@ -294,8 +294,7 @@ fn beancount_assertion_magnitudes_keep_sign_zero_and_certificates() {
             )));
             let restored = read_beancount(&text, &units).unwrap();
             assert_eq!(restored, source);
-            verify_round_trip_identity("beancount-assertion-boundary", &source, &restored)
-                .unwrap();
+            verify_round_trip_identity("beancount-assertion-boundary", &source, &restored).unwrap();
             assert_eq!(write_beancount(&restored).unwrap(), text);
         }
     }
