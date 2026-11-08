@@ -15461,6 +15461,11 @@ fn policy_refusal_fixes_name_only_registered_verbs_and_flags() {
             rule: rule(),
             approver: VId(1),
         },
+        Denial::SharedSigningKey {
+            rule: rule(),
+            approver: VId(1),
+            other: VId(2),
+        },
         Denial::CasePreparer {
             rule: rule(),
             approver: VId(1),
@@ -15529,6 +15534,7 @@ fn policy_refusal_fixes_name_only_registered_verbs_and_flags() {
             | Denial::UnboundedUnit { .. }
             | Denial::SelfApproval { .. }
             | Denial::DuplicateApprover { .. }
+            | Denial::SharedSigningKey { .. }
             | Denial::CasePreparer { .. }
             | Denial::SharedSessionLineage { .. }
             | Denial::ApproverProfile { .. }

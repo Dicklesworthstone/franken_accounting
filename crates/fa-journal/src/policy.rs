@@ -42,7 +42,7 @@
 //! one, bind this proposal's digest, and pass SoD. A fabricated reference
 //! is a refusal, not a count.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use fa_model::limits::MAX_ISSUANCE_LINEAGE;
@@ -51,7 +51,7 @@ use fa_model::{
     ApprovalRef, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128,
     Oid, account_vid, entry_mirrors, entry_vid,
 };
-use fa_policy::principal_key::KeyError;
+use fa_policy::principal_key::{KeyError, SCHEME_ED25519};
 use fa_policy::{
     AccountScope, Approval, Approver, Capability, CapabilityError, Denial, Intent, Op, Party,
     PrincipalSignature, Reach, SignatureVerifier, Steward,
@@ -238,7 +238,7 @@ pub fn authorize_approvals_in<V: asupersync::fs::Vfs + Clone>(
     case_preparers: Option<&std::collections::BTreeSet<VId>>,
 ) -> Outcome<()> {
     let steward = steward()?;
-    let (witnessed, commitments) = match witness_approvals(
+    let witnessed = match witness_approvals(
         txn,
         db,
         book,
@@ -252,15 +252,35 @@ pub fn authorize_approvals_in<V: asupersync::fs::Vfs + Clone>(
     };
     let mut lineages = None;
     if steward.excludes(key, "session_lineage") {
-        lineages = approval_lineages(txn, db, book, &commitments)?;
+        lineages = approval_lineages(txn, db, book, &witnessed.commitments)?;
     }
     let witnesses = fa_policy::Witnessed {
         case_preparers,
         lineages: lineages.as_deref(),
     };
-    Ok(steward
-        .segregate_in(key, matrix_approvals, preparer, &witnessed, witnesses)
-        .map_err(|d| refusal(&d)))
+    if let Err(denial) = steward.segregate_in(
+        key,
+        matrix_approvals,
+        preparer,
+        &witnessed.approvers,
+        witnesses,
+    ) {
+        return Ok(Err(refusal(&denial)));
+    }
+    let excluded = case_preparers.filter(|_| steward.excludes(key, "case_preparer"));
+    let (rule, _) = steward.sod.requirement(key);
+    authorize_signing_keys(
+        txn,
+        db,
+        book,
+        &witnessed.signers,
+        rule,
+        std::iter::once(preparer.principal).chain(
+            excluded
+                .into_iter()
+                .flat_map(|principals| principals.iter().copied()),
+        ),
+    )
 }
 
 /// `session_lineage` alone over `approvals` under the posting rule `rule`
@@ -281,15 +301,110 @@ pub fn authorize_lineage<V: asupersync::fs::Vfs + Clone>(
     preparer: VId,
     case_preparers: &BTreeSet<VId>,
 ) -> Outcome<()> {
-    let (witnessed, commitments) =
+    let witnessed =
         match witness_approvals(txn, db, book, approvals, proposal_digest, epoch, None)? {
             Ok(read) => read,
             Err(r) => return Ok(Err(r)),
         };
-    let lineages = approval_lineages(txn, db, book, &commitments)?.unwrap_or_default();
+    let lineages = approval_lineages(txn, db, book, &witnessed.commitments)?.unwrap_or_default();
+    if let Err(denial) = fa_policy::sod::shared_lineage(
+        rule,
+        preparer,
+        &witnessed.approvers,
+        Some(case_preparers),
+        &lineages,
+    ) {
+        return Ok(Err(refusal(&denial)));
+    }
+    authorize_signing_keys(
+        txn,
+        db,
+        book,
+        &witnessed.signers,
+        rule,
+        std::iter::once(preparer).chain(case_preparers.iter().copied()),
+    )
+}
+
+/// Preserve both the principal and the cryptographic identity of every
+/// approval. Unsigned historical records have no signer identity to count.
+struct WitnessedApprovals {
+    approvers: Vec<Approver>,
+    commitments: Vec<[u8; 32]>,
+    signers: Vec<(VId, [u8; 32])>,
+}
+
+/// The registered key valid when this approval was recorded, not the key
+/// current when it is consumed. Later rotation neither invalidates a valid
+/// approval nor changes the signer's identity. Native registration and
+/// approval creation verify the signatures through the injected verifier;
+/// consumption checks their retained scheme/generation/key binding. It does
+/// not independently re-run Ed25519 verification (owned above this layer).
+fn approval_signing_key<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    approval: &Approval,
+    signature: Option<&PrincipalSignature>,
+    recorded_at: CommitSeq,
+) -> Outcome<Option<[u8; 32]>> {
+    let keys = crate::principal_key::chain(book, approval.principal, |vid| {
+        Ok(txn.vertex(db, vid)?)
+    })?;
+    let at_recording = keys
+        .iter()
+        .rfind(|generation| generation.recorded_at <= recorded_at);
+    let key = match (at_recording, signature) {
+        (None, None) => return Ok(Ok(None)),
+        (None, Some(_)) => Err(KeyError::NoKey),
+        (Some(_), None) => Err(KeyError::Unsigned),
+        (Some(current), Some(signature)) => {
+            if signature.scheme != SCHEME_ED25519 {
+                Err(KeyError::Scheme(signature.scheme))
+            } else if signature.generation != current.key.generation
+                || signature.key_id != current.key.key_id()
+            {
+                Err(KeyError::NotCurrent {
+                    generation: signature.generation,
+                    current: current.key.generation,
+                })
+            } else {
+                Ok(signature.key_id)
+            }
+        }
+    };
+    Ok(key
+        .map(Some)
+        .map_err(|error| crate::principal_key::key_refusal(&error, true)))
+}
+
+/// Resolve the policy's excluded preparers to their journaled public keys.
+/// All registered generations remain evidence of shared key possession:
+/// rotating a preparer's key cannot make an alias's old key independent.
+/// Every key-chain point read is a transaction witness. Legacy unsigned
+/// approvals retain their existing behavior and require no preparer-key reads.
+fn authorize_signing_keys<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    signers: &[(VId, [u8; 32])],
+    rule: &str,
+    preparers: impl Iterator<Item = VId>,
+) -> Outcome<()> {
+    if signers.is_empty() {
+        return Ok(Ok(()));
+    }
+    let mut excluded = BTreeMap::new();
+    for principal in preparers.collect::<BTreeSet<_>>() {
+        for generation in crate::principal_key::chain(book, principal, |vid| {
+            Ok(txn.vertex(db, vid)?)
+        })? {
+            excluded.entry(generation.key.key_id()).or_insert(principal);
+        }
+    }
     Ok(
-        fa_policy::sod::shared_lineage(rule, preparer, &witnessed, Some(case_preparers), &lineages)
-            .map_err(|d| refusal(&d)),
+        fa_policy::sod::independent_signing_keys(rule, signers, &excluded)
+            .map_err(|denial| refusal(&denial)),
     )
 }
 
@@ -313,8 +428,8 @@ fn approval_lineages<V: asupersync::fs::Vfs + Clone>(
 
 /// Witness every cited approval inside `txn`: each binds `proposal_digest`,
 /// names a recorded approval of this book whose identity matches its
-/// content, and was recorded under `epoch`. Returns the approvers and the
-/// capability commitment each approval was recorded under.
+/// content, and was recorded under `epoch`. Returns the approvers, their
+/// retained capability commitments and any registered signing-key identities.
 fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
@@ -323,9 +438,10 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
     proposal_digest: &[u8; 32],
     epoch: u64,
     class: Option<EntryClass>,
-) -> Outcome<(Vec<Approver>, Vec<[u8; 32]>)> {
+) -> Outcome<WitnessedApprovals> {
     let mut witnessed: Vec<Approver> = Vec::with_capacity(approvals.len());
     let mut commitments: Vec<[u8; 32]> = Vec::with_capacity(approvals.len());
+    let mut signers = Vec::with_capacity(approvals.len());
     for (index, cited) in approvals.iter().enumerate() {
         if &cited.approved_digest != proposal_digest {
             return Ok(Err(refusal(&Denial::ApprovalBinding { index })));
@@ -340,9 +456,9 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
         if !row.labels.contains(&label::APPROVAL) {
             return Ok(Err(refusal(&unknown)));
         }
-        let approval = match prop(&row, property::FA_PAYLOAD) {
+        let (approval, signature) = match prop(&row, property::FA_PAYLOAD) {
             Some(CanonicalScalar::Bytes(b)) => {
-                Approval::decode(b.as_slice()).map_err(|e| KernelError::Model(e.into()))?
+                Approval::decode_record(b.as_slice()).map_err(|e| KernelError::Model(e.into()))?
             }
             other => {
                 return Err(KernelError::Corrupt(format!(
@@ -371,6 +487,11 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
         ) {
             return Ok(Err(refusal(&d)));
         }
+        match approval_signing_key(txn, db, book, &approval, signature.as_ref(), row.created_at)? {
+            Ok(Some(key)) => signers.push((approval.principal, key)),
+            Ok(None) => {}
+            Err(refused) => return Ok(Err(refused)),
+        }
         // An approval recorded under an issued capability keeps that
         // capability's immutable class restriction, even when the approval
         // predates class-aware recording. Judge the actual proposal class
@@ -394,7 +515,11 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
         witnessed.push(Approver::from(&approval));
         commitments.push(approval.capability_commitment);
     }
-    Ok(Ok((witnessed, commitments)))
+    Ok(Ok(WitnessedApprovals {
+        approvers: witnessed,
+        commitments,
+        signers,
+    }))
 }
 
 /// Record one approval over a proposal digest.

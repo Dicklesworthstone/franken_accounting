@@ -9,6 +9,7 @@ fn retained_signed_approval(
     approved: &fa_journal::Approved,
     capability: &Capability,
     proposal: &EntryPayload,
+    generation: u32,
     public_key: &[u8; 32],
 ) {
     let vid = approved.approval().approval_vid;
@@ -32,7 +33,7 @@ fn retained_signed_approval(
     signature
         .check(
             &approval.digest().unwrap(),
-            0,
+            generation,
             public_key,
             &PRINCIPAL_SIGNATURES,
         )
@@ -120,7 +121,7 @@ fn payload_approvals_use_real_registered_keys_and_preserve_class_scope() {
         .approve_entry_signed(capability.clone(), &proposal, &key)
         .unwrap()
         .unwrap();
-    retained_signed_approval(&book, &approved, &capability, &proposal, &public_key);
+    retained_signed_approval(&book, &approved, &capability, &proposal, 0, &public_key);
     let approved_at = book.head().unwrap();
     let retry = book
         .approve_entry_signed(capability.clone(), &proposal, &key)
@@ -156,7 +157,7 @@ fn payload_approvals_use_real_registered_keys_and_preserve_class_scope() {
         .approve_entry(capability.clone(), &proposal)
         .unwrap()
         .unwrap();
-    retained_signed_approval(&book, &approved, &capability, &proposal, &public_key);
+    retained_signed_approval(&book, &approved, &capability, &proposal, 0, &public_key);
     book.post(PostRequest {
         capability: Capability::embedded(proposal.principal_ref, &["post"]).unwrap(),
         proposal,
@@ -165,4 +166,95 @@ fn payload_approvals_use_real_registered_keys_and_preserve_class_scope() {
     })
     .unwrap()
     .unwrap();
+}
+
+#[test]
+fn independently_valid_ed25519_signatures_do_not_make_a_shared_key_independent() {
+    for rotate_alias in [false, true] {
+        let (mut book, _, day, source) = certified_fixture();
+        let alice = VId(211);
+        let bob = VId(212);
+        let carol = VId(213);
+        let shared = fa_notary::SigningKey::from_seed(&[211; 32]);
+        let previous = fa_notary::SigningKey::from_seed(&[212; 32]);
+        let independent = fa_notary::SigningKey::from_seed(&[213; 32]);
+        let bob_initial = if rotate_alias { &previous } else { &shared };
+        for (principal, key) in [(alice, &shared), (bob, bob_initial), (carol, &independent)] {
+            book.register_principal_key(
+                Capability::embedded(principal, &["approve"]).unwrap(),
+                key,
+                None,
+                day,
+                format!("signer-key-{}", principal.0).as_bytes(),
+                "Register the approval's signing key",
+            )
+            .unwrap()
+            .unwrap();
+        }
+        if rotate_alias {
+            let rotated = book
+                .register_principal_key(
+                    Capability::embedded(bob, &["approve"]).unwrap(),
+                    &shared,
+                    Some(&previous),
+                    day,
+                    b"rotate-alias-to-shared-key",
+                    "Rotate the alias to the shared signing key",
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(rotated.generation, 1);
+        }
+        let mut proposal = book.read_entry(source).unwrap().unwrap().0.proposal;
+        proposal.idempotency_key = b"independent-ed25519-approvals".to_vec();
+        let mut approvals = Vec::new();
+        for (principal, key, generation) in [
+            (alice, &shared, 0),
+            (bob, &shared, u32::from(rotate_alias)),
+            (carol, &independent, 0),
+        ] {
+            let capability = Capability::embedded(principal, &["approve"]).unwrap();
+            let approved = book
+                .approve_entry_signed(capability.clone(), &proposal, key)
+                .unwrap()
+                .unwrap();
+            // Each signature verifies over its own principal's approval
+            // body. The shared-key failure is not an invalid-signature test.
+            retained_signed_approval(
+                &book,
+                &approved,
+                &capability,
+                &proposal,
+                generation,
+                &key.public_key(),
+            );
+            approvals.push(approved.approval());
+        }
+        let before = book.head().unwrap();
+        let capability = Capability::embedded(proposal.principal_ref, &["post"]).unwrap();
+        let refused = book
+            .post(PostRequest {
+                proposal: proposal.clone(),
+                approvals: vec![approvals[0], approvals[1]],
+                plan_certificate: None,
+                capability: capability.clone(),
+            })
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("FA-REF-008", 7));
+        assert!(refused.message.contains("same signing key"), "{refused}");
+        assert_eq!(book.head().unwrap(), before);
+
+        let posted = book
+            .post(PostRequest {
+                proposal,
+                approvals: vec![approvals[0], approvals[2]],
+                plan_certificate: None,
+                capability,
+            })
+            .unwrap()
+            .unwrap();
+        assert!(matches!(posted, Posted::Committed { .. }));
+        assert_eq!(book.head().unwrap().0, before.0 + 1);
+    }
 }

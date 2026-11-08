@@ -16,7 +16,7 @@ use crate::op::Op;
 /// Refusal codes. The kernel's `refusal::code` module and the reference
 /// oracle keep their own copies; tests assert they agree.
 pub mod code {
-    /// Segregation of duties: self-approval, a duplicate approver, an
+    /// Segregation of duties: self-approval, a duplicate or shared-key approver, an
     /// approver outside the rule's profiles or op, too few Human approvers
     /// of agent-prepared work, or an exclusion this slice cannot decide.
     pub const SOD: &str = "FA-REF-008";
@@ -89,6 +89,14 @@ pub enum Denial {
     DuplicateApprover {
         rule: String,
         approver: VId,
+    },
+    /// Distinct principal names do not establish independent approval when
+    /// their recorded signatures use the same key, or an approver uses a
+    /// key registered to a preparer excluded by the governing policy.
+    SharedSigningKey {
+        rule: String,
+        approver: VId,
+        other: VId,
     },
     /// The approver prepared an entry in the case the approved work belongs
     /// to (the `case_preparer` exclusion).
@@ -173,6 +181,7 @@ impl Denial {
             Self::CeilingExceeded { .. } | Self::UnboundedUnit { .. } => code::CEILING,
             Self::SelfApproval { .. }
             | Self::DuplicateApprover { .. }
+            | Self::SharedSigningKey { .. }
             | Self::CasePreparer { .. }
             | Self::SharedSessionLineage { .. }
             | Self::ApproverProfile { .. }
@@ -201,6 +210,7 @@ impl Denial {
             Self::UnboundedUnit { .. } => "unbounded_unit",
             Self::SelfApproval { .. } => "self_approval",
             Self::DuplicateApprover { .. } => "duplicate_approver",
+            Self::SharedSigningKey { .. } => "shared_signing_key",
             Self::CasePreparer { .. } => "case_preparer",
             Self::SharedSessionLineage { .. } => "session_lineage",
             Self::ApproverProfile { .. } => "approver_profile",
@@ -260,6 +270,12 @@ impl Denial {
             Self::DuplicateApprover { approver, .. } => format!(
                 "principal {:032x} approves more than once; approvers are distinct principals",
                 approver.0
+            ),
+            Self::SharedSigningKey {
+                approver, other, ..
+            } => format!(
+                "approver {:032x} uses the same signing key as principal {:032x}, a preparer or another approver of this work; different names do not establish independent approval",
+                approver.0, other.0
             ),
             Self::CasePreparer { approver, .. } => format!(
                 "principal {:032x} prepared an entry in this case and cannot approve its work",
@@ -342,6 +358,7 @@ impl Denial {
             }
             Self::SelfApproval { rule, .. }
             | Self::DuplicateApprover { rule, .. }
+            | Self::SharedSigningKey { rule, .. }
             | Self::CasePreparer { rule, .. }
             | Self::SharedSessionLineage { rule, .. }
             | Self::ApproverProfile { rule, .. }
@@ -389,6 +406,9 @@ impl Denial {
             }
             Self::SelfApproval { .. } | Self::DuplicateApprover { .. } => {
                 "collect the approval from a different principal, acting as the approver: `fa approve --proposal <digest> --as <approver> --json` over this proposal digest".into()
+            }
+            Self::SharedSigningKey { .. } => {
+                "collect an approval signed by an independent principal's registered key (`fa approve --proposal <digest> --as <approver> --sign-key <key-file> --json`); the key must be shared with neither a preparer nor another approver, regardless of principal names or key generations".into()
             }
             Self::CasePreparer { .. } => {
                 "collect the approval from a principal who planned none of the case's entries (`fa case approve <case> --dry-run` lists them as preparers)".into()

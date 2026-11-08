@@ -305,6 +305,35 @@ pub fn shared_lineage(
     Ok(())
 }
 
+/// Distinct cryptographic signers for a policy's witnessed approvals
+/// (plan §14.3–§14.5, fa-z46b). The kernel supplies only signed approvals
+/// whose key identity is bound to their principal's registered generation
+/// at recording, plus keys belonging to the policy's excluded preparers.
+/// Key IDs must be [`crate::principal_key::key_id`] of the actual public
+/// key, independent of the principal name and generation.
+///
+/// This does not promote legacy unsigned approvals to authenticated signers
+/// or replace the ordinary profile, count, principal and lineage checks.
+/// The native caller runs those checks too; this adds the exclusions that
+/// different principal names would otherwise evade.
+pub fn independent_signing_keys(
+    rule: &str,
+    signers: &[(VId, [u8; 32])],
+    excluded: &BTreeMap<[u8; 32], VId>,
+) -> Result<(), Denial> {
+    let mut counted = excluded.clone();
+    for (principal, key) in signers {
+        if let Some(other) = counted.insert(*key, *principal) {
+            return Err(Denial::SharedSigningKey {
+                rule: rule.to_string(),
+                approver: *principal,
+                other,
+            });
+        }
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Steward Authority Laws (`fa-s30`):
 // 1. Conserved rights (`held + available + spent == total`)
@@ -1555,6 +1584,45 @@ mod tests {
             profile: Profile::Human,
             op: Op::Approve,
         }
+    }
+
+    #[test]
+    fn signed_approval_independence_is_by_public_key_not_principal_name() {
+        let first = crate::principal_key::key_id(&[1; 32]);
+        let second = crate::principal_key::key_id(&[2; 32]);
+        let independent = [(VId(2), first), (VId(3), second)];
+        assert_eq!(
+            independent_signing_keys("dual-control", &independent, &BTreeMap::new()),
+            Ok(())
+        );
+        let shared = [(VId(2), first), (VId(3), first)];
+        let denial =
+            independent_signing_keys("dual-control", &shared, &BTreeMap::new()).unwrap_err();
+        assert_eq!(
+            denial,
+            Denial::SharedSigningKey {
+                rule: "dual-control".into(),
+                approver: VId(3),
+                other: VId(2),
+            }
+        );
+        assert_eq!(
+            (denial.code(), denial.kind()),
+            ("FA-REF-008", "shared_signing_key")
+        );
+        assert_eq!(denial.cite(), "sod_policy.toml#dual-control");
+        assert!(denial.fix().contains("independent principal"));
+        let excluded = BTreeMap::from([(first, PREP.principal)]);
+        assert_eq!(
+            independent_signing_keys("self-approval", &independent, &excluded),
+            Err(Denial::SharedSigningKey {
+                rule: "self-approval".into(),
+                approver: VId(2),
+                other: PREP.principal,
+            })
+        );
+        // No cryptographic identity is invented for legacy unsigned records.
+        assert_eq!(independent_signing_keys("legacy", &[], &excluded), Ok(()));
     }
 
     #[test]
