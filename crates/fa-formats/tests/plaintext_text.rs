@@ -1,7 +1,8 @@
 //! Real exports carry arbitrary source descriptions and memos. Text must never
 //! turn into a second accounting instruction or lose exact retained evidence.
 use fa_formats::{
-    FormatAccount, FormatAssertion, FormatEntry, FormatError, FormatJournal, FormatLeg, UnitCatalog,
+    FormatAccount, FormatAssertion, FormatEntry, FormatError, FormatJournal, FormatLeg,
+    UnitCatalog,
     beancount::{read_beancount, read_hledger, write_beancount, write_hledger},
     verify_round_trip_identity,
 };
@@ -193,14 +194,19 @@ fn beancount_date_boundaries_preserve_certificates_and_inclusive_assertions() {
             .into_iter()
             .collect();
         let source = FormatJournal::new(
-            "Date boundaries", "USD", 2, day, 1, base.accounts.clone(), entries, assertions,
+            "Date boundaries",
+            "USD",
+            2,
+            day,
+            1,
+            base.accounts.clone(),
+            entries,
+            assertions,
         )
         .unwrap();
         let text = write_beancount(&source).unwrap();
         if let Some(next_day) = next_day {
-            assert!(text.contains(&format!(
-                "{next_day} balance Assets:A1000 -12345.67 USD\n"
-            )));
+            assert!(text.contains(&format!("{next_day} balance Assets:A1000 -12345.67 USD\n")));
         }
         let restored = read_beancount(&text, &units).unwrap();
         assert_eq!(restored, source, "{date}");
@@ -230,13 +236,30 @@ fn beancount_writer_refuses_dates_outside_its_profile_and_assertion_overflow() {
             .into_iter()
             .collect();
         FormatJournal::new(
-            "Date boundaries", "USD", 2, cutoff, 1, base.accounts.clone(), entries, assertions,
+            "Date boundaries",
+            "USD",
+            2,
+            cutoff,
+            1,
+            base.accounts.clone(),
+            entries,
+            assertions,
         )
         .unwrap()
     };
     for (cutoff, effective, assertion, field) in [
-        (DateDay(i32::MIN), DateDay(i32::MIN), None, "selection cutoff"),
-        (DateDay(i32::MAX), DateDay(i32::MAX), None, "selection cutoff"),
+        (
+            DateDay(i32::MIN),
+            DateDay(i32::MIN),
+            None,
+            "selection cutoff",
+        ),
+        (
+            DateDay(i32::MAX),
+            DateDay(i32::MAX),
+            None,
+            "selection cutoff",
+        ),
         (after_last, after_last, None, "selection cutoff"),
         (last, DateDay(i32::MIN), None, "account opening"),
         (last, after_last, None, "entry source-0001"),
@@ -272,11 +295,20 @@ fn beancount_open_directives_validate_their_dates() {
         assert_eq!(restored, source);
         verify_round_trip_identity("beancount-opening-date", &source, &restored).unwrap();
     }
-    for date in ["2024-+1-+5", "10000-01-01", "-001-01-01", "2023-02-29", "0000-13-01"] {
+    for date in [
+        "2024-+1-+5",
+        "10000-01-01",
+        "-001-01-01",
+        "2023-02-29",
+        "0000-13-01",
+    ] {
         let revised = text.replace("1970-01-01 open ", &format!("{date} open "));
         assert!(matches!(
             read_beancount(&revised, &units),
-            Err(FormatError::Parse { format: "beancount_v3", .. })
+            Err(FormatError::Parse {
+                format: "beancount_v3",
+                ..
+            })
         ));
     }
 }
