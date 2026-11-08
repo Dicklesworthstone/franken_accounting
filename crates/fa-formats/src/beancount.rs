@@ -173,10 +173,7 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
     out.push('\n');
 
     for entry in &journal.entries {
-        let date_str = beancount_date(
-            entry.effective_date,
-            &format!("entry {}", entry.entry_id),
-        )?;
+        let date_str = beancount_date(entry.effective_date, &format!("entry {}", entry.entry_id))?;
         out.push_str(&format!(
             "{date_str} * \"{}\"\n",
             escape_quotes(&entry.description)
@@ -219,15 +216,18 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
     for asrt in &journal.assertions {
         // Beancount checks balance at the start of the assertion date, so an
         // inclusive as-of assertion on day D is emitted on D + 1.
-        let bc_day = DateDay(asrt.as_of.0.checked_add(1).ok_or_else(|| {
-            FormatError::Overflow {
-                format: "beancount_v3",
-                detail: format!(
-                    "next day of balance assertion for account {}",
-                    asrt.account_code
-                ),
-            }
-        })?);
+        let bc_day = DateDay(
+            asrt.as_of
+                .0
+                .checked_add(1)
+                .ok_or_else(|| FormatError::Overflow {
+                    format: "beancount_v3",
+                    detail: format!(
+                        "next day of balance assertion for account {}",
+                        asrt.account_code
+                    ),
+                })?,
+        );
         let date_str = beancount_date(
             bc_day,
             &format!("balance assertion for account {}", asrt.account_code),
@@ -329,6 +329,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
         // Top-level directive starts with YYYY-MM-DD
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
         if tokens.len() >= 3 && tokens[1] == "open" {
+            parse_date_iso(FMT, tokens[0])?;
             let bc_acct = tokens[2];
             let mut code = from_beancount_account_name(bc_acct)?;
             let mut name = code.clone();
