@@ -953,24 +953,22 @@ pub fn verify_round_trip_identity(
 
 /// Format an exact `i128` mantissa at `scale` decimal places without floats.
 pub fn format_exact_decimal(mantissa: i128, scale: u8) -> String {
-    let neg = mantissa < 0;
-    let abs = mantissa.unsigned_abs();
-    if scale == 0 {
-        return if neg {
-            format!("-{abs}")
+    let mut text = mantissa.unsigned_abs().to_string();
+    let scale = usize::from(scale);
+    if scale > 0 {
+        if scale >= text.len() {
+            let mut padded = String::from("0.");
+            padded.extend(std::iter::repeat_n('0', scale - text.len()));
+            padded.push_str(&text);
+            text = padded;
         } else {
-            abs.to_string()
-        };
+            text.insert(text.len() - scale, '.');
+        }
     }
-    let divisor = 10u128.pow(u32::from(scale));
-    let whole = abs / divisor;
-    let frac = abs % divisor;
-    let width = usize::from(scale);
-    if neg {
-        format!("-{whole}.{frac:0width$}")
-    } else {
-        format!("{whole}.{frac:0width$}")
+    if mantissa < 0 {
+        text.insert(0, '-');
     }
+    text
 }
 
 /// Parse a decimal token into an exact `i128` mantissa at `scale` decimal

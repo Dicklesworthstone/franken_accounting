@@ -193,11 +193,12 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
                 .copied()
                 .unwrap_or(AccountType::ASSET);
             let bc_acct = to_beancount_account_name(acct_ty, &leg.account_code);
-            let signed_mantissa = match leg.side {
-                Side::Debit => leg.amount.mantissa,
-                Side::Credit => -leg.amount.mantissa,
-            };
-            let amt_str = format_exact_decimal(signed_mantissa, leg.unit_scale);
+            let amt_str = beancount_amount(
+                leg.amount,
+                leg.side,
+                leg.unit_scale,
+                &format!("entry {} leg on {}", entry.entry_id, leg.account_code),
+            )?;
             out.push_str(&format!(
                 "  {bc_acct}  {amt_str} {}{}",
                 leg.unit_code,
@@ -237,11 +238,12 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
             .copied()
             .unwrap_or(AccountType::ASSET);
         let bc_acct = to_beancount_account_name(acct_ty, &asrt.account_code);
-        let signed = match asrt.side {
-            Side::Debit => asrt.amount.mantissa,
-            Side::Credit => -asrt.amount.mantissa,
-        };
-        let amt_str = format_exact_decimal(signed, asrt.unit_scale);
+        let amt_str = beancount_amount(
+            asrt.amount,
+            asrt.side,
+            asrt.unit_scale,
+            &format!("balance assertion for account {}", asrt.account_code),
+        )?;
         out.push_str(&format!(
             "{date_str} balance {bc_acct} {amt_str} {}\n",
             asrt.unit_code
@@ -249,6 +251,31 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
     }
 
     Ok(out)
+}
+
+fn beancount_amount(
+    amount: Amount,
+    side: Side,
+    scale: u8,
+    context: &str,
+) -> Result<String, FormatError> {
+    let magnitude = amount.as_leg(side).map_err(|error| FormatError::Parse {
+        format: "beancount_v3",
+        detail: format!("{context}: {error}"),
+    })?;
+    let signed = match side {
+        Side::Debit => magnitude,
+        Side::Credit => magnitude.checked_neg().map_err(|_| FormatError::Overflow {
+            format: "beancount_v3",
+            detail: format!("signed amount for {context}"),
+        })?,
+    };
+    let mut text = format_exact_decimal(signed.mantissa, scale);
+    // The numeric value alone cannot retain the certified side of zero.
+    if side == Side::Credit && magnitude.is_zero() {
+        text.insert(0, '-');
+    }
+    Ok(text)
 }
 
 fn beancount_date(day: DateDay, context: &str) -> Result<String, FormatError> {
@@ -375,10 +402,16 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
                         unit: unit_code.clone(),
                     })?;
             let signed = parse_exact_decimal(FMT, amt_tok, unit_scale)?;
-            let (side, mag) = if signed >= 0 {
+            let (side, mag) = if signed > 0 || (signed == 0 && !amt_tok.starts_with('-')) {
                 (Side::Debit, signed)
             } else {
-                (Side::Credit, -signed)
+                (
+                    Side::Credit,
+                    signed.checked_neg().ok_or_else(|| FormatError::Overflow {
+                        format: FMT,
+                        detail: format!("balance assertion magnitude for account {acct_code}"),
+                    })?,
+                )
             };
             assertions.push(FormatAssertion {
                 account_code: acct_code,

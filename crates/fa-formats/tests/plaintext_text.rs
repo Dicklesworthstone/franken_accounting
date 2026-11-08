@@ -4,7 +4,7 @@ use fa_formats::{
     FormatAccount, FormatAssertion, FormatEntry, FormatError, FormatJournal, FormatLeg,
     UnitCatalog,
     beancount::{read_beancount, read_hledger, write_beancount, write_hledger},
-    verify_round_trip_identity,
+    format_exact_decimal, verify_round_trip_identity,
 };
 use fa_model::{AccountType, EntryClass};
 use fa_money::{Amount, Side, UnitId};
@@ -212,6 +212,138 @@ fn beancount_date_boundaries_preserve_certificates_and_inclusive_assertions() {
         assert_eq!(restored, source, "{date}");
         verify_round_trip_identity("beancount-boundary", &source, &restored).unwrap();
         assert_eq!(write_beancount(&restored).unwrap(), text);
+    }
+}
+
+#[test]
+fn exact_decimal_formatting_preserves_extrema_at_every_public_scale() {
+    assert_eq!(
+        format_exact_decimal(i128::MIN, 38),
+        "-1.70141183460469231731687303715884105728"
+    );
+    assert_eq!(
+        format_exact_decimal(i128::MAX, 39),
+        "0.170141183460469231731687303715884105727"
+    );
+    // This exercises the text formatter's u8 domain. Registered units still
+    // have their own scale law; no new unit or posting scale is admitted.
+    for scale in 0..=u8::MAX {
+        for mantissa in [i128::MIN, -1, 0, 1, i128::MAX] {
+            let text = format_exact_decimal(mantissa, scale);
+            assert_eq!(text.starts_with('-'), mantissa < 0, "{text}");
+            let unsigned = text.strip_prefix('-').unwrap_or(&text);
+            let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+            assert!(!whole.is_empty(), "{text}");
+            assert_eq!(fraction.len(), usize::from(scale), "{text}");
+            assert_eq!(unsigned.contains('.'), scale > 0, "{text}");
+            let digits = format!("{whole}{fraction}");
+            assert_eq!(
+                digits.parse::<u128>().unwrap(),
+                mantissa.unsigned_abs(),
+                "mantissa={mantissa}, scale={scale}, text={text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn beancount_assertion_magnitudes_keep_sign_zero_and_certificates() {
+    let base = journal("Assertion boundaries", "exact amount", None);
+    let units = UnitCatalog::embedded().unwrap();
+    for side in [Side::Debit, Side::Credit] {
+        for (magnitude, decimal) in [
+            (0, "0.00"),
+            (1, "0.01"),
+            (i128::MAX, "1701411834604692317316873037158841057.27"),
+        ] {
+            let mut entries = if magnitude == 0 {
+                Vec::new()
+            } else {
+                base.entries.clone()
+            };
+            for entry in &mut entries {
+                for leg in &mut entry.legs {
+                    leg.amount.mantissa = magnitude;
+                }
+            }
+            let (account_code, account, sign) = match side {
+                Side::Debit => ("5000", "Expenses:A5000", ""),
+                Side::Credit => ("1000", "Assets:A1000", "-"),
+            };
+            let source = FormatJournal::new(
+                "Assertion boundaries",
+                "USD",
+                2,
+                base.coordinate.effective_through,
+                1,
+                base.accounts.clone(),
+                entries,
+                vec![FormatAssertion {
+                    account_code: account_code.into(),
+                    as_of: base.coordinate.effective_through,
+                    side,
+                    amount: Amount::new(UnitId(0), magnitude),
+                    unit_code: "USD".into(),
+                    unit_scale: 2,
+                }],
+            )
+            .unwrap();
+            let text = write_beancount(&source).unwrap();
+            assert!(text.contains(&format!(
+                "2024-07-01 balance {account} {sign}{decimal} USD\n"
+            )));
+            let restored = read_beancount(&text, &units).unwrap();
+            assert_eq!(restored, source);
+            verify_round_trip_identity("beancount-assertion-boundary", &source, &restored)
+                .unwrap();
+            assert_eq!(write_beancount(&restored).unwrap(), text);
+        }
+    }
+}
+
+#[test]
+fn beancount_writer_refuses_negative_public_amount_magnitudes() {
+    let base = journal("Invalid assertion", "payment", None);
+    for side in [Side::Debit, Side::Credit] {
+        for magnitude in [-1, i128::MIN] {
+            // The public constructor currently folds the postings without
+            // validating assertion magnitudes. The writer must still refuse.
+            let source = FormatJournal::new(
+                "Invalid assertion",
+                "USD",
+                2,
+                base.coordinate.effective_through,
+                1,
+                base.accounts.clone(),
+                base.entries.clone(),
+                vec![FormatAssertion {
+                    account_code: "1000".into(),
+                    as_of: base.coordinate.effective_through,
+                    side,
+                    amount: Amount::new(UnitId(0), magnitude),
+                    unit_code: "USD".into(),
+                    unit_scale: 2,
+                }],
+            )
+            .unwrap();
+            assert!(matches!(
+                write_beancount(&source),
+                Err(FormatError::Parse { format: "beancount_v3", detail })
+                    if detail.contains("balance assertion for account 1000")
+                        && detail.contains("negative")
+            ));
+        }
+    }
+    // A malformed public struct must not reach unchecked credit negation,
+    // even though the validating constructor would reject these legs.
+    for index in [0, 1] {
+        let mut malformed = base.clone();
+        malformed.entries[0].legs[index].amount.mantissa = i128::MIN;
+        assert!(matches!(
+            write_beancount(&malformed),
+            Err(FormatError::Parse { format: "beancount_v3", detail })
+                if detail.contains("entry source-0001 leg on") && detail.contains("negative")
+        ));
     }
 }
 
