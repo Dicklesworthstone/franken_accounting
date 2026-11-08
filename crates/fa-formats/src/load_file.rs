@@ -216,28 +216,7 @@ pub fn write_concordance_dat(records: &[LoadFileRecord]) -> Result<String, Forma
     out.push('\n');
     for rec in records {
         validate_bates_range(rec, "concordance_dat_v1")?;
-        if rec
-            .exhibit_labels
-            .iter()
-            .any(|label| label.is_empty() || label.contains(';'))
-        {
-            return Err(FormatError::Parse {
-                format: "concordance_dat_v1",
-                detail: format!(
-                    "exhibit labels on {} must be nonempty and contain no semicolon",
-                    rec.doc_id
-                ),
-            });
-        }
-        if rec.redaction_contract.as_deref() == Some("") {
-            return Err(FormatError::Parse {
-                format: "concordance_dat_v1",
-                detail: format!(
-                    "empty redaction contract on {} cannot be distinguished from no contract",
-                    rec.doc_id
-                ),
-            });
-        }
+        validate_metadata(rec, "concordance_dat_v1")?;
         let beg = rec.bates.beg_bates();
         let end = rec.bates.end_bates();
         let pg = rec.bates.page_count.to_string();
@@ -267,6 +246,33 @@ pub fn write_concordance_dat(records: &[LoadFileRecord]) -> Result<String, Forma
         out.push('\n');
     }
     Ok(out)
+}
+
+// Both DAT and EDRM encode these fields as the same flat strings.
+fn validate_metadata(rec: &LoadFileRecord, format: &'static str) -> Result<(), FormatError> {
+    if rec
+        .exhibit_labels
+        .iter()
+        .any(|label| label.is_empty() || label.contains(';'))
+    {
+        return Err(FormatError::Parse {
+            format,
+            detail: format!(
+                "exhibit labels on {} must be nonempty and contain no semicolon",
+                rec.doc_id
+            ),
+        });
+    }
+    if rec.redaction_contract.as_deref() == Some("") {
+        return Err(FormatError::Parse {
+            format,
+            detail: format!(
+                "empty redaction contract on {} cannot be distinguished from no contract",
+                rec.doc_id
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn validate_bates_range(rec: &LoadFileRecord, format: &'static str) -> Result<(), FormatError> {
@@ -487,6 +493,7 @@ pub fn write_edrm_xml(
     xml.push_str("    <Documents>\n");
     for rec in records {
         validate_bates_range(rec, "edrm_xml_v1")?;
+        validate_metadata(rec, "edrm_xml_v1")?;
         let beg = rec.bates.beg_bates();
         let end = rec.bates.end_bates();
         let contract = rec.redaction_contract.as_deref().unwrap_or("");
@@ -623,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn concordance_dat_preserves_supported_text_and_refuses_lossy_fields() {
+    fn load_file_metadata_preserves_supported_text_and_refuses_lossy_fields() {
         let mut recs = sample_records();
         recs[0].doc_id = "  Source, \"账簿\"; document  ".into();
         recs[0].exhibit_labels = vec!["Px-12".into(), "  Δ exhibit  ".into()];
@@ -631,6 +638,9 @@ mod tests {
         let dat = write_concordance_dat(&recs).expect("supported DAT text");
         assert_eq!(parse_concordance_dat(&dat).unwrap(), recs);
         assert_eq!(dat.lines().count(), recs.len() + 1);
+        let digest = "cc".repeat(32);
+        let xml = write_edrm_xml("BATCH-01", "MATTER-2026-A", &digest, &recs).unwrap();
+        assert!(xml.contains("<Field Name=\"Exhibits\" Value=\"Px-12;  Δ exhibit  \"/>"));
 
         for forbidden in [CONCORDANCE_QUOTE, CONCORDANCE_DELIM, '\r', '\n'] {
             for field in 0..11 {
@@ -674,6 +684,13 @@ mod tests {
                 ),
                 "ambiguous exhibit labels {labels:?}"
             );
+            assert!(matches!(
+                write_edrm_xml("BATCH-01", "MATTER-2026-A", &digest, &bad),
+                Err(FormatError::Parse {
+                    format: "edrm_xml_v1",
+                    ..
+                })
+            ));
         }
         recs[0].redaction_contract = Some(String::new());
         assert!(matches!(
@@ -683,10 +700,21 @@ mod tests {
                 ..
             })
         ));
+        assert!(matches!(
+            write_edrm_xml("BATCH-01", "MATTER-2026-A", &digest, &recs),
+            Err(FormatError::Parse {
+                format: "edrm_xml_v1",
+                ..
+            })
+        ));
         recs[0].redaction_contract = Some("  retained contract  ".into());
         assert_eq!(
             parse_concordance_dat(&write_concordance_dat(&recs).unwrap()).unwrap(),
             recs
+        );
+        let xml = write_edrm_xml("BATCH-01", "MATTER-2026-A", &digest, &recs).unwrap();
+        assert!(
+            xml.contains("<Field Name=\"RedactionContract\" Value=\"  retained contract  \"/>")
         );
     }
 
