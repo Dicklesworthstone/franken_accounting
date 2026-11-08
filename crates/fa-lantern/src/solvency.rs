@@ -331,7 +331,7 @@ fn validate_evidence_refs(
     }
     let mut oids = Vec::with_capacity(refs.len());
     for ev in refs {
-        if !snapshot.documents.is_empty() && !snapshot.documents.contains_key(&ev.document_oid) {
+        if !snapshot.documents.contains_key(&ev.document_oid) {
             return Err(LanternError::Parameter {
                 procedure: procedure.into(),
                 name: "evidence_refs".into(),
@@ -342,9 +342,50 @@ fn validate_evidence_refs(
                 ),
             });
         }
+        if fa_journal::evidence::document_oid(snapshot.coordinate.book_id, &ev.doc_commit)
+            != ev.document_oid
+        {
+            return Err(LanternError::Parameter {
+                procedure: procedure.into(),
+                name: "evidence_refs".into(),
+                message: format!(
+                    "{what} document commitment does not match its book-scoped document locator"
+                ),
+            });
+        }
         oids.push(ev.document_oid);
     }
     Ok(oids)
+}
+
+/// A solvency finding must retain its complete accounting basis. Reaching the
+/// citation limit is a scope refusal, never permission to omit the entries or
+/// documents that explain a reported shortfall.
+fn cash_flow_citations(
+    procedure: &str,
+    accounts: BTreeSet<VId>,
+    entries: BTreeSet<VId>,
+    documents: &[Oid],
+) -> Result<Vec<Cite>, LanternError> {
+    let needed = accounts
+        .len()
+        .saturating_add(entries.len())
+        .saturating_add(documents.len());
+    if needed > MAX_CITES {
+        return Err(LanternError::Parameter {
+            procedure: procedure.into(),
+            name: "scope".into(),
+            message: format!(
+                "the complete cash-flow solvency basis exceeds {MAX_CITES} citations; narrow the recorded/effective scope; no contributing account, entry, or schedule document is omitted"
+            ),
+        });
+    }
+    Ok(accounts
+        .into_iter()
+        .map(Cite::Account)
+        .chain(entries.into_iter().map(Cite::Entry))
+        .chain(documents.iter().copied().map(Cite::Document))
+        .collect())
 }
 
 /// Extract an `AuthenticatedObligationSchedule` from inline
@@ -391,14 +432,6 @@ pub fn schedule_from_inline_extensions(
                     continue;
                 }
                 let entity = crate::projection::scoped_entity(&scope, leg)?;
-                let mut evidence_refs = e.entry.proposal.evidence.clone();
-                if evidence_refs.is_empty() {
-                    evidence_refs.push(EvidenceRef {
-                        document_oid: Oid(e.entry.entry_digest),
-                        doc_commit: e.entry.entry_digest,
-                        role: 1,
-                    });
-                }
                 obligations.push(ScheduledObligation {
                     entry: e.vid,
                     ordinal: item.ordinal,
@@ -407,7 +440,7 @@ pub fn schedule_from_inline_extensions(
                     entity,
                     status: item.status,
                     installments: item.installments,
-                    evidence_refs,
+                    evidence_refs: e.entry.proposal.evidence.clone(),
                 });
             }
         }
@@ -927,6 +960,30 @@ pub fn evaluate_cash_flow_solvency(
                 message: format!("expected inflow `{}` amount must be > 0", inf.inflow_id),
             });
         }
+        if let Some(filter_u) = schedule.unit_filter
+            && inf.amount.unit != filter_u
+        {
+            return Err(LanternError::Parameter {
+                procedure: procedure.into(),
+                name: "expected_inflows".into(),
+                message: format!(
+                    "expected inflow `{}` unit {} is outside unit_filter {}",
+                    inf.inflow_id, inf.amount.unit.0, filter_u.0
+                ),
+            });
+        }
+        if let Some(filter_e) = schedule.entity_filter
+            && inf.entity != Some(filter_e)
+        {
+            return Err(LanternError::Parameter {
+                procedure: procedure.into(),
+                name: "expected_inflows".into(),
+                message: format!(
+                    "expected inflow `{}` entity {:?} is outside entity_filter {:?}",
+                    inf.inflow_id, inf.entity, filter_e
+                ),
+            });
+        }
         let doc_oids =
             validate_evidence_refs(procedure, snapshot, "expected inflow", &inf.evidence_refs)?;
         let key = (inf.amount.unit.0, inf.entity);
@@ -1004,24 +1061,12 @@ pub fn evaluate_cash_flow_solvency(
         };
 
         if shortfall > 0 {
-            let mut cites: Vec<Cite> = scope_accounts
-                .remove(&key)
-                .unwrap_or_default()
-                .into_iter()
-                .map(Cite::Account)
-                .collect();
-            if let Some(entries) = scope_entries.remove(&key) {
-                for evid in entries {
-                    if cites.len() < MAX_CITES {
-                        cites.push(Cite::Entry(evid));
-                    }
-                }
-            }
-            for doc_oid in &closure_documents {
-                if cites.len() < MAX_CITES {
-                    cites.push(Cite::Document(*doc_oid));
-                }
-            }
+            let cites = cash_flow_citations(
+                procedure,
+                scope_accounts.remove(&key).unwrap_or_default(),
+                scope_entries.remove(&key).unwrap_or_default(),
+                &closure_documents,
+            )?;
             let scale = crate::unit_scale(book, unit_id)?;
             findings.push(finding(
                 procedure,
@@ -1179,19 +1224,12 @@ pub(crate) fn run_unscheduled_book_screen(
             let shortfall = book_liabilities
                 .checked_sub(liquid_cash)
                 .ok_or(LanternError::Overflow("cash_flow_test shortfall"))?;
-            let mut cites: Vec<Cite> = unit_accts
-                .remove(&unit_id)
-                .unwrap_or_default()
-                .into_iter()
-                .map(Cite::Account)
-                .collect();
-            if let Some(entries) = unit_entries.remove(&unit_id) {
-                for evid in entries {
-                    if cites.len() < MAX_CITES {
-                        cites.push(Cite::Entry(evid));
-                    }
-                }
-            }
+            let cites = cash_flow_citations(
+                procedure,
+                unit_accts.remove(&unit_id).unwrap_or_default(),
+                unit_entries.remove(&unit_id).unwrap_or_default(),
+                &[],
+            )?;
             let scale = crate::unit_scale(book, unit_id)?;
             out.push(finding(
                 procedure,
@@ -1423,14 +1461,7 @@ pub fn valuation_schedule_from_inline_extensions(
             any_inline = true;
             caller_principal = e.entry.proposal.principal_ref;
             let decoded = InlineValuationTerms::decode_list(bytes)?;
-            let mut evidence_refs = e.entry.proposal.evidence.clone();
-            if evidence_refs.is_empty() {
-                evidence_refs.push(EvidenceRef {
-                    document_oid: Oid(e.entry.entry_digest),
-                    doc_commit: e.entry.entry_digest,
-                    role: 1,
-                });
-            }
+            let evidence_refs = e.entry.proposal.evidence.clone();
             for item in decoded {
                 if item.valuation_id.trim().is_empty() {
                     return Err(LanternError::Parameter {
@@ -2315,7 +2346,7 @@ fn test_fixture(as_of: DateDay) -> (Snapshot, BookContext, VId, VId, Oid) {
         approvals: Vec::new(),
     };
 
-    let doc_oid = Oid([0x99; 32]);
+    let doc_oid = fa_journal::evidence::document_oid(book_id, &[0xaa; 32]);
     let mut documents = BTreeMap::new();
     documents.insert(
         doc_oid,
@@ -3320,6 +3351,286 @@ fn settlements_and_commitments_are_counted_once() {
 
 #[cfg(test)]
 #[test]
+fn cash_flow_expected_inflows_respect_the_schedule_scope() {
+    let as_of = day(2026, 4, 30);
+    let (snapshot, book, _, _, document) = test_fixture(as_of);
+    let usd = book.units.lookup("USD").unwrap();
+    let eur = book.units.lookup("EUR").unwrap();
+    let entity = VId(70);
+    let evidence = EvidenceRef {
+        document_oid: document,
+        doc_commit: [0xaa; 32],
+        role: 1,
+    };
+    let schedule = AuthenticatedObligationSchedule {
+        schema_version: SCHEDULE_SCHEMA_VERSION,
+        book_id: book.book_id,
+        known_at: snapshot.coordinate.known_at,
+        as_of,
+        unit_filter: Some(usd),
+        entity_filter: Some(entity),
+        obligations: Vec::new(),
+        commitments: vec![DeclaredCommitment {
+            commitment_id: "RENT".into(),
+            due_date: day(2026, 5, 10),
+            amount: Amount::new(usd, 100),
+            entity: Some(entity),
+            settles_entry: None,
+            evidence_refs: vec![evidence],
+        }],
+        expected_inflows: vec![ExpectedInflow {
+            inflow_id: "RECEIPT".into(),
+            due_date: day(2026, 5, 10),
+            amount: Amount::new(usd, 60),
+            entity: Some(entity),
+            evidence_refs: vec![evidence],
+        }],
+    };
+    let procedure = crate::cutoff::SolvencyCashFlowTest::ID;
+    let evaluate = |schedule: &AuthenticatedObligationSchedule| {
+        let mut meter = Meter::new(procedure, None, None);
+        evaluate_cash_flow_solvency(procedure, &snapshot, &book, 30, schedule, &mut meter)
+    };
+    let report = evaluate(&schedule).unwrap();
+    assert_eq!(report.units.len(), 1);
+    let unit = &report.units[&(usd.0, Some(entity))];
+    assert_eq!(unit.expected_inflows, 60);
+    assert_eq!(unit.shortfall, 40);
+    assert_eq!(unit.closure_documents, vec![document]);
+
+    // Neither a different currency nor an unnamed/different entity may add a
+    // second result outside the requested scope. Validate even an inflow whose
+    // due date lies beyond the horizon, as for commitments and obligations.
+    for due_date in [day(2026, 5, 10), day(2026, 6, 10)] {
+        let mut wrong_unit = schedule.clone();
+        wrong_unit.expected_inflows[0].amount = Amount::new(eur, 60);
+        wrong_unit.expected_inflows[0].due_date = due_date;
+        assert!(matches!(
+            evaluate(&wrong_unit),
+            Err(LanternError::Parameter { name, message, .. })
+                if name == "expected_inflows" && message.contains("unit_filter")
+        ));
+        for wrong_entity in [None, Some(VId(71))] {
+            let mut wrong_scope = schedule.clone();
+            wrong_scope.expected_inflows[0].entity = wrong_entity;
+            wrong_scope.expected_inflows[0].due_date = due_date;
+            assert!(matches!(
+                evaluate(&wrong_scope),
+                Err(LanternError::Parameter { name, message, .. })
+                    if name == "expected_inflows" && message.contains("entity_filter")
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn solvency_schedules_require_retained_documents_even_without_postings() {
+    let as_of = day(2026, 4, 30);
+    let (mut snapshot, book, cash, _, document) = test_fixture(as_of);
+    let usd = book.units.lookup("USD").unwrap();
+    let evidence = EvidenceRef {
+        document_oid: document,
+        doc_commit: [0xaa; 32],
+        role: 1,
+    };
+    let mut cash_schedule = AuthenticatedObligationSchedule {
+        schema_version: SCHEDULE_SCHEMA_VERSION,
+        book_id: book.book_id,
+        known_at: snapshot.coordinate.known_at,
+        as_of,
+        unit_filter: None,
+        entity_filter: None,
+        obligations: Vec::new(),
+        commitments: vec![DeclaredCommitment {
+            commitment_id: "OFF-LEDGER".into(),
+            due_date: as_of,
+            amount: Amount::new(usd, 100),
+            entity: None,
+            settles_entry: None,
+            evidence_refs: vec![evidence],
+        }],
+        expected_inflows: Vec::new(),
+    };
+    let cash_procedure = crate::cutoff::SolvencyCashFlowTest::ID;
+    let evaluate_cash = |snapshot: &Snapshot, schedule: &AuthenticatedObligationSchedule| {
+        let mut meter = Meter::new(cash_procedure, None, None);
+        evaluate_cash_flow_solvency(cash_procedure, snapshot, &book, 30, schedule, &mut meter)
+    };
+    let report = evaluate_cash(&snapshot, &cash_schedule).unwrap();
+    assert_eq!(report.units[&(usd.0, None)].shortfall, 100);
+    let mut wrong_commitment = cash_schedule.clone();
+    wrong_commitment.commitments[0].evidence_refs[0].doc_commit = [0xbb; 32];
+    assert!(matches!(
+        evaluate_cash(&snapshot, &wrong_commitment),
+        Err(LanternError::Parameter { name, message, .. })
+            if name == "evidence_refs" && message.contains("commitment")
+    ));
+    let retained = snapshot.documents.clone();
+    snapshot.documents.clear();
+    assert!(matches!(
+        evaluate_cash(&snapshot, &cash_schedule),
+        Err(LanternError::Parameter { name, .. }) if name == "evidence_refs"
+    ));
+
+    cash_schedule.commitments.clear();
+    cash_schedule.expected_inflows.push(ExpectedInflow {
+        inflow_id: "OFF-LEDGER-RECEIPT".into(),
+        due_date: as_of,
+        amount: Amount::new(usd, 100),
+        entity: None,
+        evidence_refs: vec![evidence],
+    });
+    assert!(matches!(
+        evaluate_cash(&snapshot, &cash_schedule),
+        Err(LanternError::Parameter { name, .. }) if name == "evidence_refs"
+    ));
+    snapshot.documents = retained;
+    let report = evaluate_cash(&snapshot, &cash_schedule).unwrap();
+    assert_eq!(report.units[&(usd.0, None)].expected_inflows, 100);
+
+    let valuation_schedule = AuthenticatedValuationSchedule {
+        schema_version: SCHEDULE_SCHEMA_VERSION,
+        book_id: book.book_id,
+        known_at: snapshot.coordinate.known_at,
+        as_of,
+        caller_principal: VId(7),
+        unit_filter: None,
+        entity_filter: None,
+        valuations: vec![DeclaredValuationInput {
+            valuation_id: "CASH-VALUATION".into(),
+            subject: ValuationSubject::Account(cash),
+            entity: None,
+            unit: usd,
+            basis_law: ValuationBasisLaw::SignedDelta,
+            applicability: ValuationApplicabilityLaw::ExactAsOf {
+                effective_date: as_of,
+            },
+            signed_amount: 100,
+            recorded_at: CommitSeq(20),
+            authority: VId(7),
+            supersedes: None,
+            evidence_refs: vec![evidence],
+        }],
+    };
+    let balance_procedure = crate::cutoff::SolvencyBalanceSheetTest::ID;
+    let evaluate_balance = |snapshot: &Snapshot| {
+        let mut meter = Meter::new(balance_procedure, None, None);
+        evaluate_balance_sheet_solvency(
+            balance_procedure,
+            snapshot,
+            &book,
+            0,
+            &valuation_schedule,
+            &mut meter,
+        )
+    };
+    let report = evaluate_balance(&snapshot).unwrap();
+    assert_eq!(report.units[&(usd.0, None)].valued_asset_basis, 100);
+    snapshot.documents.clear();
+    assert!(matches!(
+        evaluate_balance(&snapshot),
+        Err(LanternError::Parameter { name, .. }) if name == "evidence_refs"
+    ));
+}
+
+#[cfg(test)]
+#[test]
+fn cash_flow_findings_never_truncate_their_accounting_basis() {
+    let as_of = day(2026, 4, 30);
+    let (mut snapshot, book, _, payable, document) = test_fixture(as_of);
+    let usd = book.units.lookup("USD").unwrap();
+    let expense = account_vid(book.book_id, "6000");
+    // All generated entries are known at the snapshot and owe one unit. The
+    // scheduled finding must cite the payable account, every entry, and the
+    // schedule document. The unscheduled screen needs no schedule document.
+    snapshot.coordinate.known_at = CommitSeq(u64::try_from(MAX_CITES).unwrap() + 10);
+    let mut schedule = AuthenticatedObligationSchedule {
+        schema_version: SCHEDULE_SCHEMA_VERSION,
+        book_id: book.book_id,
+        known_at: snapshot.coordinate.known_at,
+        as_of,
+        unit_filter: None,
+        entity_filter: None,
+        obligations: Vec::new(),
+        commitments: Vec::new(),
+        expected_inflows: Vec::new(),
+    };
+    let procedure = crate::cutoff::SolvencyCashFlowTest::ID;
+    for count in 1..=MAX_CITES {
+        let vid = VId(u128::try_from(count + 10).unwrap());
+        snapshot.entries.push(make_posting(
+            &book,
+            vid,
+            as_of,
+            EntryClass::ORIGINAL,
+            vec![
+                LegPayload::simple(Side::Debit, expense, Amount::new(usd, 1)),
+                LegPayload::simple(Side::Credit, payable, Amount::new(usd, 1)),
+            ],
+            Vec::new(),
+            document,
+        ));
+        schedule.obligations.push(ScheduledObligation {
+            entry: vid,
+            ordinal: 1,
+            account: payable,
+            unit: usd,
+            entity: None,
+            status: ObligationStatus::Contractual,
+            installments: vec![ObligationInstallment {
+                due_date: as_of,
+                amount: 1,
+            }],
+            evidence_refs: vec![EvidenceRef {
+                document_oid: document,
+                doc_commit: [0xaa; 32],
+                role: 1,
+            }],
+        });
+        if count < MAX_CITES - 3 {
+            continue;
+        }
+        let mut meter = Meter::new(procedure, None, None);
+        let scheduled = evaluate_cash_flow_solvency(
+            procedure,
+            &snapshot,
+            &book,
+            30,
+            &schedule,
+            &mut meter,
+        )
+        .map(|report| report.findings);
+        let mut meter = Meter::new(procedure, None, None);
+        let unscheduled = run_unscheduled_book_screen(procedure, &snapshot, &book, 30, &mut meter);
+        for (result, needed, has_document) in [
+            (scheduled, count + 2, true),
+            (unscheduled, count + 1, false),
+        ] {
+            if needed > MAX_CITES {
+                assert!(matches!(
+                    result,
+                    Err(LanternError::Parameter { name, message, .. })
+                        if name == "scope" && message.contains("no contributing")
+                ));
+                continue;
+            }
+            let findings = result.unwrap();
+            assert_eq!(findings.len(), 1);
+            let finding = &findings[0];
+            assert_eq!(finding.statistic.value, i128::try_from(count).unwrap());
+            assert_eq!(finding.cites.len(), needed);
+            assert!(finding.cites.contains(&Cite::Account(payable)));
+            assert_eq!(finding.cites.contains(&Cite::Document(document)), has_document);
+            for entry in snapshot.entries.iter().filter(|entry| entry.posts()) {
+                assert!(finding.cites.contains(&Cite::Entry(entry.vid)));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
 fn horizon_day_arithmetic_is_checked() {
     let apr30 = day(2026, 4, 30);
     let may30 = day(2026, 5, 30);
@@ -3680,7 +3991,7 @@ fn explicit_valuation_inputs_are_visible_applicable_and_cited() {
     let usd = book.units.lookup("USD").unwrap();
     let eur = book.units.lookup("EUR").unwrap();
 
-    let doc2_oid = Oid([0x88; 32]);
+    let doc2_oid = fa_journal::evidence::document_oid(book.book_id, &[0xbb; 32]);
     snapshot.documents.insert(
         doc2_oid,
         crate::snapshot::SnapshotDocument {
