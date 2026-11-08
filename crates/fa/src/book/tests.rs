@@ -6185,6 +6185,188 @@ fn bundles_judge_current_integrity_reach_before_selecting_historical_states() {
 }
 
 #[test]
+fn production_format_refusals_assign_no_bates_and_preserve_the_journal() {
+    let (mut book, _, day, _) = certified_fixture();
+    let principal = VId(1);
+    let producer = Capability::embedded(principal, &["read", "produce"]).unwrap();
+    let key = fa_notary::SigningKey::from_seed(&[233; 32]);
+    book.register_principal_key(
+        Capability::embedded(principal, &["approve"]).unwrap(),
+        &key,
+        None,
+        day,
+        b"production-format-key",
+        "Register the production formatter test's attesting principal",
+    )
+    .unwrap()
+    .unwrap();
+    book.sign_with_principal_key(key);
+    let document = book.documents(None).unwrap().unwrap()[0].oid;
+    let documents = vec![fa_journal::ProducedDocument {
+        document,
+        pages: None,
+        designation: None,
+    }];
+    let claims = crate::PrivilegeClaims::default();
+    for (index, (matter, prefix, label, message)) in [
+        (
+            "matter,with-comma",
+            "CASE",
+            None,
+            "cannot be represented exactly",
+        ),
+        (
+            "comma-prefix",
+            "CASE,",
+            None,
+            "cannot be represented exactly",
+        ),
+        (
+            "matterþwith-thorn",
+            "CASE",
+            None,
+            "cannot be represented exactly",
+        ),
+        (
+            "ambiguous-exhibit",
+            "CASE",
+            Some("A;B"),
+            "cannot be represented exactly",
+        ),
+        (
+            "forward-path-prefix",
+            "../../escape",
+            None,
+            "path separator",
+        ),
+        ("backward-path-prefix", "..\\escape", None, "path separator"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // These are admitted journal objects. Format-specific refusals belong
+        // to production preflight, before its irreversible Bates assignment.
+        book.open_production(
+            producer.clone(),
+            fa_journal::ProductionProfile {
+                book_id: book.context().book_id,
+                matter: matter.into(),
+                bates_prefix: prefix.into(),
+                first_bates: 41,
+                load_file_format: 1,
+                protective_order: None,
+            },
+            day,
+            format!("format-profile-{index}").as_bytes(),
+        )
+        .unwrap()
+        .unwrap();
+        if let Some(label) = label {
+            book.mark_exhibit(producer.clone(), matter, document, label)
+                .unwrap()
+                .unwrap();
+        }
+        let before = book.head().unwrap();
+        let profile = book.production(matter).unwrap().unwrap();
+        assert_eq!(profile.next_bates, 41);
+        assert!(profile.ranges.is_empty());
+        let refusal = book
+            .produce_volume(
+                &producer,
+                matter,
+                documents.clone(),
+                &claims,
+                "VOL001",
+                day,
+                format!("format-refusal-{index}").as_bytes(),
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-100", 2));
+        assert!(refusal.message.contains(message), "{matter}: {refusal:?}");
+        assert_eq!(book.head().unwrap(), before, "{matter}");
+        assert_eq!(
+            book.production(matter).unwrap().unwrap(),
+            profile,
+            "{matter}"
+        );
+        assert!(book.document_bates_ranges(&document).unwrap().is_empty());
+    }
+
+    // Direct journal production is independent of delivery. Rendering its
+    // already assigned ranges must also refuse an escaping native filename.
+    for matter in ["forward-path-prefix", "backward-path-prefix"] {
+        let produced = book
+            .produce(
+                producer.clone(),
+                matter,
+                documents.clone(),
+                day,
+                format!("direct-{matter}").as_bytes(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(produced.ranges[0].range.start, 41);
+        let before = book.head().unwrap();
+        let refusal = book
+            .production_volume(&producer, &produced, &claims, "VOL001")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-100", 2));
+        assert!(refusal.message.contains("path separator"));
+        assert_eq!(book.head().unwrap(), before);
+    }
+
+    book.open_production(
+        producer.clone(),
+        fa_journal::ProductionProfile {
+            book_id: book.context().book_id,
+            matter: "representable-matter".into(),
+            bates_prefix: "CASE".into(),
+            first_bates: 41,
+            load_file_format: 1,
+            protective_order: None,
+        },
+        day,
+        b"format-positive-profile",
+    )
+    .unwrap()
+    .unwrap();
+    book.mark_exhibit(producer.clone(), "representable-matter", document, "Px-12")
+        .unwrap()
+        .unwrap();
+    let before = book.head().unwrap();
+    let (produced, rendered) = book
+        .produce_volume(
+            &producer,
+            "representable-matter",
+            documents,
+            &claims,
+            "VOL001",
+            day,
+            b"format-positive-volume",
+        )
+        .unwrap()
+        .unwrap();
+    assert!(book.head().unwrap() > before);
+    assert_eq!(rendered.records[0].bates.start_number, 41);
+    assert!(produced.next_bates > 41);
+    assert!(!rendered.natives.is_empty());
+    assert_eq!(
+        fa_formats::load_file::parse_concordance_dat(rendered.dat.as_ref().unwrap()).unwrap(),
+        rendered.records
+    );
+    let before = book.head().unwrap();
+    assert_eq!(
+        book.production_volume(&producer, &produced, &claims, "VOL001")
+            .unwrap()
+            .unwrap(),
+        rendered
+    );
+    assert_eq!(book.head().unwrap(), before);
+}
+
+#[test]
 fn production_volumes_judge_scope_and_current_authority_before_matter_reads() {
     let (mut book, _, day, _) = certified_fixture();
     let principal = VId(1);

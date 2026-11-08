@@ -171,7 +171,7 @@ pub struct LoadFileRecord {
     pub native_path: String,
 }
 
-const DAT_HEADERS: &[&str] = &[
+const DAT_HEADERS: [&str; 16] = [
     "DOCID",
     "BEGBATES",
     "ENDBATES",
@@ -190,19 +190,37 @@ const DAT_HEADERS: &[&str] = &[
     "NATIVEPATH",
 ];
 
-fn format_dat_row(cols: &[&str]) -> Result<String, FormatError> {
+/// Check that a Concordance field can be written without changing its text.
+/// Production callers can use this before assigning any Bates numbers.
+pub fn validate_concordance_field(field: &str, value: &str) -> Result<(), FormatError> {
+    if value.contains([CONCORDANCE_QUOTE, CONCORDANCE_DELIM, '\r', '\n']) {
+        return Err(FormatError::Parse {
+            format: "concordance_dat_v1",
+            detail: format!("{field} contains a reserved DAT character"),
+        });
+    }
+    Ok(())
+}
+
+/// Check an unquoted Opticon field for column delimiters and line breaks.
+pub fn validate_opticon_field(field: &str, value: &str) -> Result<(), FormatError> {
+    if value.contains([',', '\r', '\n']) {
+        return Err(FormatError::Parse {
+            format: "opticon_opt_v1",
+            detail: format!("{field} contains a comma or line break"),
+        });
+    }
+    Ok(())
+}
+
+fn format_dat_row(cols: &[&str; 16]) -> Result<String, FormatError> {
     let mut line = String::new();
     for (idx, col) in cols.iter().enumerate() {
         if idx > 0 {
             line.push(CONCORDANCE_DELIM);
         }
         line.push(CONCORDANCE_QUOTE);
-        if col.contains([CONCORDANCE_QUOTE, CONCORDANCE_DELIM, '\r', '\n']) {
-            return Err(FormatError::Parse {
-                format: "concordance_dat_v1",
-                detail: format!("column {} contains a reserved DAT character", idx + 1),
-            });
-        }
+        validate_concordance_field(DAT_HEADERS[idx], col)?;
         line.push_str(col);
         line.push(CONCORDANCE_QUOTE);
     }
@@ -212,11 +230,16 @@ fn format_dat_row(cols: &[&str]) -> Result<String, FormatError> {
 /// Render a deterministic Concordance `.dat` load file (`concordance_dat_v1`).
 /// Refuse text the format cannot retain exactly rather than replacing it.
 pub fn write_concordance_dat(records: &[LoadFileRecord]) -> Result<String, FormatError> {
-    let mut out = format_dat_row(DAT_HEADERS)?;
+    let mut out = format_dat_row(&DAT_HEADERS)?;
     out.push('\n');
     for rec in records {
         validate_bates_range(rec, "concordance_dat_v1")?;
-        validate_metadata(rec, "concordance_dat_v1")?;
+        validate_load_metadata(
+            "concordance_dat_v1",
+            &rec.doc_id,
+            &rec.exhibit_labels,
+            rec.redaction_contract.as_deref(),
+        )?;
         let beg = rec.bates.beg_bates();
         let end = rec.bates.end_bates();
         let pg = rec.bates.page_count.to_string();
@@ -248,27 +271,30 @@ pub fn write_concordance_dat(records: &[LoadFileRecord]) -> Result<String, Forma
     Ok(out)
 }
 
-// Both DAT and EDRM encode these fields as the same flat strings.
-fn validate_metadata(rec: &LoadFileRecord, format: &'static str) -> Result<(), FormatError> {
-    if rec
-        .exhibit_labels
+/// Check the flat exhibit-list and optional-contract encodings shared by DAT
+/// and EDRM. `document` identifies the actual source document or load-file row.
+pub fn validate_load_metadata(
+    format: &'static str,
+    document: &str,
+    exhibit_labels: &[String],
+    redaction_contract: Option<&str>,
+) -> Result<(), FormatError> {
+    if exhibit_labels
         .iter()
         .any(|label| label.is_empty() || label.contains(';'))
     {
         return Err(FormatError::Parse {
             format,
             detail: format!(
-                "exhibit labels on {} must be nonempty and contain no semicolon",
-                rec.doc_id
+                "exhibit labels on {document} must be nonempty and contain no semicolon"
             ),
         });
     }
-    if rec.redaction_contract.as_deref() == Some("") {
+    if redaction_contract == Some("") {
         return Err(FormatError::Parse {
             format,
             detail: format!(
-                "empty redaction contract on {} cannot be distinguished from no contract",
-                rec.doc_id
+                "empty redaction contract on {document} cannot be distinguished from no contract"
             ),
         });
     }
@@ -414,12 +440,13 @@ pub fn parse_concordance_dat(input: &str) -> Result<Vec<LoadFileRecord>, FormatE
 
 /// Render a deterministic Opticon `.opt` page cross-reference load file (`opticon_opt_v1`).
 pub fn write_opticon_opt(volume: &str, records: &[LoadFileRecord]) -> Result<String, FormatError> {
-    if volume.trim().is_empty() || volume.contains([',', '\r', '\n']) {
+    if volume.trim().is_empty() {
         return Err(FormatError::Parse {
             format: "opticon_opt_v1",
             detail: format!("invalid volume label {volume:?}"),
         });
     }
+    validate_opticon_field("volume label", volume)?;
     let mut out = String::new();
     for rec in records {
         validate_bates_range(rec, "opticon_opt_v1")?;
@@ -427,12 +454,7 @@ pub fn write_opticon_opt(volume: &str, records: &[LoadFileRecord]) -> Result<Str
             ("Bates prefix", &rec.bates.prefix),
             ("matter", &rec.bates.matter_id),
         ] {
-            if value.contains([',', '\r', '\n']) {
-                return Err(FormatError::Parse {
-                    format: "opticon_opt_v1",
-                    detail: format!("{field} on {} contains a comma or line break", rec.doc_id),
-                });
-            }
+            validate_opticon_field(field, value)?;
         }
         for page_offset in 0..rec.bates.page_count {
             let page_num = rec.bates.start_number + page_offset;
@@ -493,7 +515,12 @@ pub fn write_edrm_xml(
     xml.push_str("    <Documents>\n");
     for rec in records {
         validate_bates_range(rec, "edrm_xml_v1")?;
-        validate_metadata(rec, "edrm_xml_v1")?;
+        validate_load_metadata(
+            "edrm_xml_v1",
+            &rec.doc_id,
+            &rec.exhibit_labels,
+            rec.redaction_contract.as_deref(),
+        )?;
         let beg = rec.bates.beg_bates();
         let end = rec.bates.end_bates();
         let contract = rec.redaction_contract.as_deref().unwrap_or("");

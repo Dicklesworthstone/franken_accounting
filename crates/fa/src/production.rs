@@ -144,6 +144,14 @@ fn format_failure(e: fa_formats::FormatError) -> BookError {
     BookError::Kernel(KernelError::Corrupt(format!("production load file: {e}")))
 }
 
+fn format_refusal(error: fa_formats::FormatError) -> Refusal {
+    usage(
+        format!("production load-file metadata cannot be represented exactly: {error}"),
+        "plan §13.2 (lossless load-file metadata; validate before assigning Bates numbers)",
+        "inspect `fa production list --json`; use a production profile and exhibit metadata representable by its load-file formats before retrying",
+    )
+}
+
 fn usage(message: String, cite: &str, fix: &str) -> Refusal {
     Refusal::new(code::STRUCTURE, exit::USAGE, message, cite, fix)
 }
@@ -160,6 +168,18 @@ fn volume_label(volume: &str) -> Result<(), Refusal> {
             format!("`{volume}` is not an Opticon volume label"),
             "opticon_opt_v1 (a volume label names the delivery: no commas or line breaks)",
             "pass --volume with 1..=64 ASCII letters, digits, '-', '_' or '.', for example VOL001",
+        ));
+    }
+    Ok(())
+}
+
+/// A Bates prefix becomes part of each native file's single filename.
+fn native_prefix(prefix: &str) -> Result<(), Refusal> {
+    if prefix.contains(['/', '\\']) {
+        return Err(usage(
+            format!("Bates prefix `{prefix}` contains a native-file path separator"),
+            "plan §13.2 (production native files stay inside their delivery volume)",
+            "use a production profile whose Bates prefix contains neither '/' nor '\\'",
         ));
     }
     Ok(())
@@ -320,20 +340,86 @@ impl Book {
         if let Err(refusal) = volume_label(volume) {
             return Ok(Err(refusal));
         }
-        let mut redacted = BTreeSet::new();
-        for d in documents {
-            match self.read_document_for(capability, &d.document)? {
-                Err(refusal) => return Ok(Err(refusal)),
-                Ok(read) if withheld_chunks(&read) > 0 => {
-                    redacted.insert(d.document);
-                }
-                Ok(_) => {}
-            }
+        if let Err(refusal) = native_prefix(&view.profile.bates_prefix) {
+            return Ok(Err(refusal));
         }
+        let dat_opt = matches!(view.profile.load_file_format, 1 | 3);
+        let metadata_format = if dat_opt {
+            "concordance_dat_v1"
+        } else {
+            "edrm_xml_v1"
+        };
+        let policy = EvidencePolicy::embedded()?;
+        let contracts = RedactionContracts::embedded()?;
         let held = match self.held_documents()? {
-            Ok(held) => held.into_keys().collect(),
+            Ok(held) => held,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        let mut redacted = BTreeSet::new();
+        for d in documents {
+            let read = match self.read_document_for(capability, &d.document)? {
+                Err(refusal) => return Ok(Err(refusal)),
+                Ok(read) => read,
+            };
+            if withheld_chunks(&read) > 0 {
+                redacted.insert(d.document);
+            }
+            let Some(summary) = held.get(&d.document) else {
+                return Err(BookError::Kernel(KernelError::Corrupt(format!(
+                    "readable production document {} is absent from its inventory",
+                    hex(&d.document.0)
+                ))));
+            };
+            let document_kind = policy
+                .kind_by_tag(summary.kind)
+                .map_or_else(|| summary.kind.to_string(), |kind| kind.name.clone());
+            let contract = match &read {
+                DocumentRead::Full(_) => None,
+                DocumentRead::Redacted(view) => Some(
+                    contracts
+                        .get(view.contract)
+                        .map_or_else(|| view.contract.to_string(), |c| c.name.clone()),
+                ),
+            };
+            let labels: Vec<String> = view
+                .exhibits
+                .iter()
+                .filter(|exhibit| exhibit.document == d.document)
+                .map(|exhibit| exhibit.label.clone())
+                .collect();
+            let representable = (|| {
+                if dat_opt {
+                    // Other DAT text is generated from these components,
+                    // numbers, commitments or fixed path extensions.
+                    for (field, value) in [
+                        ("matter", view.profile.matter.as_str()),
+                        ("Bates prefix", view.profile.bates_prefix.as_str()),
+                        ("document kind", document_kind.as_str()),
+                        ("MIME type", summary.mime.as_str()),
+                    ] {
+                        load_file::validate_concordance_field(field, value)?;
+                    }
+                    load_file::validate_opticon_field("matter", &view.profile.matter)?;
+                    load_file::validate_opticon_field("Bates prefix", &view.profile.bates_prefix)?;
+                    if let Some(contract) = &contract {
+                        load_file::validate_concordance_field("redaction contract", contract)?;
+                    }
+                    for label in &labels {
+                        load_file::validate_concordance_field("exhibit label", label)?;
+                    }
+                }
+                load_file::validate_load_metadata(
+                    metadata_format,
+                    &hex(&d.document.0),
+                    &labels,
+                    contract.as_deref(),
+                )
+            })();
+            if let Err(error) = representable {
+                return Ok(Err(format_refusal(error)));
+            }
+        }
+        let held = held.into_keys().collect();
         let named = documents.iter().map(|d| d.document).collect();
         if let Err(refusal) = check_claims(claims, &held, &named, &redacted) {
             return Ok(Err(refusal));
@@ -531,6 +617,9 @@ impl Book {
         }
         let profile = &produced.profile;
         if let Err(refusal) = volume_label(volume) {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = native_prefix(&profile.bates_prefix) {
             return Ok(Err(refusal));
         }
         let policy = EvidencePolicy::embedded()?;
