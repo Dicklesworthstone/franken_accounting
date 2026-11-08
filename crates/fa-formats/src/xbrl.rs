@@ -90,15 +90,22 @@ fn equity_error(detail: impl Into<String>) -> FormatError {
 fn coordinate_comment(xml: &str) -> Result<&str, FormatError> {
     // Book names are escaped text, not physical-line delimiters. Preserve
     // their embedded newlines in the existing certificate encoding.
-    let mut comments = xml.match_indices("<!-- fa:xbrl-coordinate ");
-    let (start, _) = comments
-        .next()
-        .ok_or_else(|| equity_error("missing fa:xbrl-coordinate certificate comment"))?;
-    if comments.next().is_some() {
-        return Err(equity_error(
-            "multiple fa:xbrl-coordinate certificate comments",
-        ));
+    let mut start = None;
+    let mut line_start = 0;
+    for raw_line in xml.split_inclusive('\n') {
+        let line = raw_line.trim_start();
+        if line.starts_with("<!-- fa:xbrl-coordinate ") {
+            if start.is_some() {
+                return Err(equity_error(
+                    "multiple fa:xbrl-coordinate certificate comments",
+                ));
+            }
+            start = Some(line_start + raw_line.len() - line.len());
+        }
+        line_start += raw_line.len();
     }
+    let start =
+        start.ok_or_else(|| equity_error("missing fa:xbrl-coordinate certificate comment"))?;
     let end = xml[start..]
         .find("-->")
         .ok_or_else(|| equity_error("unterminated fa:xbrl-coordinate certificate comment"))?;
@@ -1020,11 +1027,28 @@ pub fn write_xbrl_instance_xml(instance: &XbrlInstance) -> String {
 /// back into an [`XbrlInstance`] using the in-house XML parser (zero third-party crates).
 pub fn read_xbrl_instance_xml(xml: &str) -> Result<XbrlInstance, FormatError> {
     let identifier_open = "<xbrli:identifier scheme=\"http://frankenaccounting.org/entity\">";
-    let entity_identifier = xml
-        .split_once(identifier_open)
-        .and_then(|(_, rest)| rest.split_once("</xbrli:identifier>"))
-        .map(|(inner, _)| xml_unescape(inner))
-        .unwrap_or_default();
+    let mut entity_identifier = String::new();
+    let mut line_start = 0;
+    for raw_line in xml.split_inclusive('\n') {
+        let line = raw_line.trim_start();
+        if line.starts_with(identifier_open) {
+            // Keep the opening-tag boundary of our writer's profile: an
+            // inline XML comment containing a tag is not the entity. Only
+            // its text may continue across physical lines.
+            let text_start = line_start + raw_line.len() - line.len() + identifier_open.len();
+            let (inner, _) = xml[text_start..]
+                .split_once("</xbrli:identifier>")
+                .ok_or_else(|| FormatError::Parse {
+                    format: "xbrl_gl_instance_v1",
+                    detail: "unterminated XBRL entity identifier".into(),
+                })?;
+            entity_identifier = xml_unescape(inner);
+            if !entity_identifier.is_empty() {
+                break;
+            }
+        }
+        line_start += raw_line.len();
+    }
     let mut period_start: Option<String> = None;
     let mut period_end = String::new();
     let mut saw_end_date = false;

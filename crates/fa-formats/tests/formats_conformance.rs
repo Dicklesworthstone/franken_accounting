@@ -388,6 +388,13 @@ fn beancount_and_hledger_balance_differential_and_one_minor_unit_mutation_negati
 #[test]
 fn saft_and_xbrl_keep_text_whitespace_exactly() {
     let units = UnitCatalog::embedded().expect("units.toml");
+    for inline in [
+        "prefix <!-- fa:xbrl-coordinate x -->",
+        "<!-- wrapper <!-- fa:xbrl-coordinate x --> -->",
+    ] {
+        assert!(fa_formats::xbrl::read_xbrl_equity_attribution(inline).is_err());
+        assert!(fa_formats::xbrl::read_xbrl_income_attribution(inline).is_err());
+    }
     for book_name in [
         "  Acme  ",
         "\tAcme & <Co> \"suite\"\t",
@@ -439,6 +446,19 @@ fn saft_and_xbrl_keep_text_whitespace_exactly() {
                 .iter()
                 .all(|row| row.passed && row.delta_mantissa == 0)
         );
+
+        let commented = xbrl.replacen(
+            '\n',
+            "\n<!-- <xbrli:identifier scheme=\"http://frankenaccounting.org/entity\">spoof</xbrli:identifier> -->\n",
+            1,
+        );
+        assert_eq!(
+            read_xbrl_instance_xml(&commented)
+                .unwrap()
+                .entity_identifier,
+            book_name
+        );
+        assert!(verify_format_journal_xbrl_xml(&commented).is_err());
 
         let start = xbrl.find("<!-- fa:xbrl-coordinate ").unwrap();
         let end = start + xbrl[start..].find("-->").unwrap() + 3;
