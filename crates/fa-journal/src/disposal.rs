@@ -7,8 +7,9 @@
 //! guarded: a newly acquired earlier FIFO layer cannot escape an old plan.
 //!
 //! This profile handles debit-normal asset lots with native quantities and
-//! cost in the book's functional unit. Dimensions and foreign-valued layers
-//! need their own partition/valuation contract and are refused. Reversals
+//! cost in the book's functional unit. Each disposal selects one complete
+//! dimension set; quantity and cost never cross those partitions. Foreign-valued
+//! layers still require their own valuation contract. Reversals
 //! restore the recorded applications, never a newly priced disposal.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,6 +38,9 @@ use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LotDisposalRequest {
     pub account: VId,
+    /// Exact acquisition partition, never a partial filter. Empty selects only
+    /// dimensionless lots and retains the original v1 basis encoding.
+    pub dimensions: Vec<(u32, VId)>,
     pub quantity: Amount,
     pub quantity_offset_account: VId,
     pub cost_offset_account: VId,
@@ -274,6 +278,7 @@ fn prepare_lot_disposal_with_admission<V: Vfs + Clone>(
         };
         let mut basis = LotDisposalBasis {
             account: request.account,
+            dimensions: request.dimensions.clone(),
             quantity: request.quantity,
             quantity_offset_account: request.quantity_offset_account,
             cost_offset_account: request.cost_offset_account,
@@ -478,24 +483,21 @@ fn acquisition_shape(
     }
     if proposal.base_totals.is_some()
         || legs.iter().any(|leg| {
-            leg.side != Side::Debit
-                || !leg.settles.is_empty()
-                || !leg.dimension_set.is_empty()
-                || leg.base_amount.is_some()
+            leg.side != Side::Debit || !leg.settles.is_empty() || leg.base_amount.is_some()
         })
     {
         return Err(invalid(
-            "credits, applications, dimensions and foreign-valued adjustments on a governed lot account require its supported source-bound disposal law",
+            "credits, applications and foreign-valued adjustments on a governed lot account require its supported source-bound disposal law",
         ));
     }
-    let quantities = legs.iter().filter(|leg| leg.amount.unit != base).count();
-    let costs = legs.len() - quantities;
-    if quantities == 0 || quantities != costs {
-        return Err(invalid(
-            "a governed lot acquisition needs one native quantity debit and one base-cost debit per layer",
-        ));
-    }
+    let mut counts: BTreeMap<&[(u32, VId)], (usize, usize)> = BTreeMap::new();
     for leg in legs {
+        let (quantities, costs) = counts.entry(&leg.dimension_set).or_default();
+        if leg.amount.unit == base {
+            *costs += 1;
+        } else {
+            *quantities += 1;
+        }
         if leg.amount.unit != base
             && book.units.get(leg.amount.unit).is_none_or(|unit| {
                 matches!(unit.kind, UnitKind::Currency { .. }) || unit.allows_single_sided()
@@ -505,6 +507,14 @@ fn acquisition_shape(
                 "lot quantities must be registered balanced noncurrency units",
             ));
         }
+    }
+    if counts
+        .values()
+        .any(|(quantities, costs)| *quantities == 0 || quantities != costs)
+    {
+        return Err(invalid(
+            "a governed lot acquisition needs one native quantity debit and one base-cost debit per layer with identical complete dimensions",
+        ));
     }
     Ok(())
 }
@@ -535,20 +545,36 @@ fn derive<V: Vfs + Clone>(
     cx.query()
         .checkpoint()
         .map_err(WriteTxnError::Interrupted)?;
+    if basis.dimensions.len() > fa_model::limits::MAX_DIMENSIONS_PER_LEG
+        || !fa_model::canon::strictly_ascending(&basis.dimensions, |(dimension, _)| *dimension)
+    {
+        return Ok(Err(invalid(
+            "a lot partition requires a bounded complete dimension set strictly ordered by dimension id",
+        )));
+    }
     let Some(spec) = crate::genesis::read_book_spec_at(db, basis.known_at)? else {
         return Err(KernelError::Corrupt(
             "lot disposal has no retained book".into(),
         ));
     };
-    if spec.entities.len() > 1
-        || basis.quantity.unit == spec.base_unit
+    if basis.quantity.unit == spec.base_unit
         || basis.quantity.mantissa <= 0
         || book.units.get(basis.quantity.unit).is_none_or(|unit| {
             matches!(unit.kind, UnitKind::Currency { .. }) || unit.allows_single_sided()
         })
     {
         return Ok(Err(invalid(
-            "this lot profile requires a positive balanced noncurrency quantity in a single-entity book",
+            "this lot profile requires a positive balanced noncurrency quantity",
+        )));
+    }
+    if spec.entities.len() > 1
+        && !basis
+            .dimensions
+            .iter()
+            .any(|(dimension, _)| *dimension == fa_model::LEGAL_ENTITY_DIMENSION)
+    {
+        return Ok(Err(invalid(
+            "a lot disposal in a multi-entity book must select its exact legal-entity dimension",
         )));
     }
     if basis.account == basis.quantity_offset_account || basis.account == basis.cost_offset_account
@@ -694,6 +720,9 @@ fn derive<V: Vfs + Clone>(
             Amount::new(spec.base_unit, outcome.total_relieved_cost),
         ));
     }
+    for leg in &mut legs {
+        leg.dimension_set = basis.dimensions.clone();
+    }
     // A selected live-label population cannot prove that an acquisition or
     // another immutable Entry was not retired, relabeled or rewritten. Keep
     // ordered request/law refusals above, but authenticate the complete exact
@@ -720,6 +749,12 @@ struct LotHistory {
     /// reversed applications and their undos. Equal balances alone must not
     /// make changed history equivalent to a retained disposal review.
     sources: Vec<(EntryRef, CommitSeq)>,
+}
+
+#[derive(Default)]
+struct AcquisitionPartition {
+    quantities: Vec<(u16, UnitId, i128)>,
+    costs: Vec<(u16, i128)>,
 }
 
 /// Each reversal suffix is evaluated once. A long reversal ancestry must
@@ -885,14 +920,17 @@ fn fold_lots(
                     || leg.account_ref != basis.account
                     || target_leg.amount.unit != application.amount.unit
                     || leg.amount.unit != application.amount.unit
+                    || target_leg.dimension_set != leg.dimension_set
                     || target_leg.side == leg.side
                     || application.amount.mantissa <= 0
                 {
                     return Err(KernelError::Corrupt(
-                        "invalid lot application identity, unit, account or side".into(),
+                        "invalid lot application identity, unit, account, dimensions or side".into(),
                     ));
                 }
-                if entry.proposal.effective_date > effective {
+                if target_leg.dimension_set == basis.dimensions
+                    && entry.proposal.effective_date > effective
+                {
                     return Ok(Err(invalid(
                         "disposal precedes a retained application on its lot account",
                     )));
@@ -921,7 +959,11 @@ fn fold_lots(
             .collect();
         // An undo after the requested effective date also changes the open
         // population. Never silently backdate through that recorded effect.
-        if !account_legs.is_empty() && entry.proposal.effective_date > effective {
+        if account_legs
+            .iter()
+            .any(|(_, leg)| leg.dimension_set == basis.dimensions)
+            && entry.proposal.effective_date > effective
+        {
             return Ok(Err(invalid(
                 "disposal precedes an acquisition, application or undo on its lot account",
             )));
@@ -929,15 +971,11 @@ fn fold_lots(
         if !entry.proposal.class.carries_open_items() {
             continue;
         }
-        let mut quantities = Vec::new();
-        let mut costs = Vec::new();
+        let mut partitions: BTreeMap<&[(u32, VId)], AcquisitionPartition> = BTreeMap::new();
         for (ordinal, leg) in account_legs {
-            if !leg.dimension_set.is_empty()
-                || leg.base_amount.is_some()
-                || entry.proposal.base_totals.is_some()
-            {
+            if leg.base_amount.is_some() || entry.proposal.base_totals.is_some() {
                 return Ok(Err(invalid(
-                    "this lot profile cannot pool dimensioned or foreign-valued historical layers",
+                    "this lot profile cannot pool foreign-valued historical layers",
                 )));
             }
             if !leg.settles.is_empty() {
@@ -966,33 +1004,39 @@ fn fold_lots(
                 .ok_or_else(|| {
                     KernelError::Corrupt("lot applications exceed acquisition".into())
                 })?;
+            let partition = partitions.entry(&leg.dimension_set).or_default();
             if leg.amount.unit == base {
-                costs.push((ordinal, open));
+                partition.costs.push((ordinal, open));
             } else {
-                quantities.push((ordinal, leg.amount.unit, open));
+                partition.quantities.push((ordinal, leg.amount.unit, open));
             }
         }
-        if quantities.len() != costs.len() {
-            return Ok(Err(invalid(
-                "historical acquisition does not pair each quantity leg with one base-cost leg",
-            )));
-        }
-        for ((qty_ordinal, unit, open_quantity), (cost_ordinal, open_cost)) in
-            quantities.into_iter().zip(costs)
-        {
-            if unit != basis.quantity.unit || (open_quantity == 0 && open_cost == 0) {
+        for (dimensions, partition) in partitions {
+            if partition.quantities.len() != partition.costs.len() {
+                return Ok(Err(invalid(
+                    "historical acquisition does not pair each quantity leg with one base-cost leg in the same complete dimension set",
+                )));
+            }
+            if dimensions != basis.dimensions.as_slice() {
                 continue;
             }
-            candidates.push(LotCandidate {
-                entry_id: vid.0,
-                qty_ordinal,
-                cost_ordinal,
-                effective_day: entry.proposal.effective_date.0,
-                recorded_seq: recorded.0,
-                open_quantity,
-                open_cost,
-            });
-            digests.insert(*vid, entry.entry_digest);
+            for ((qty_ordinal, unit, open_quantity), (cost_ordinal, open_cost)) in
+                partition.quantities.into_iter().zip(partition.costs)
+            {
+                if unit != basis.quantity.unit || (open_quantity == 0 && open_cost == 0) {
+                    continue;
+                }
+                candidates.push(LotCandidate {
+                    entry_id: vid.0,
+                    qty_ordinal,
+                    cost_ordinal,
+                    effective_day: entry.proposal.effective_date.0,
+                    recorded_seq: recorded.0,
+                    open_quantity,
+                    open_cost,
+                });
+                digests.insert(*vid, entry.entry_digest);
+            }
         }
     }
     Ok(Ok(LotHistory {

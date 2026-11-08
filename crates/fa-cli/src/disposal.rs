@@ -19,7 +19,7 @@ use crate::cli::{
 };
 use crate::json::{Json, obj, s};
 
-const DISPOSE_USAGE: &str = "fa dispose --account 1400 --quantity \"3 SHARE\" --quantity-offset 1490 --cost-offset 5100 --date YYYY-MM-DD --key disposal-1 --evidence D:<oid> [--dry-run | --review-only | --review-out <new-file>]";
+const DISPOSE_USAGE: &str = "fa dispose --account 1400 --quantity \"3 SHARE\" --quantity-offset 1490 --cost-offset 5100 --date YYYY-MM-DD --key disposal-1 --evidence D:<oid> [--dimension KIND:VALUE]... [--dry-run | --review-only | --review-out <new-file>]";
 const POLICY_USAGE: &str = "fa chart lot-policy set --account 1400 --law FIFO|LIFO|SpecificId|WeightedAverage --regime US-GAAP|US-TAX|IFRS --date YYYY-MM-DD --key lot-policy-1 [--review-only | --review-out <new-file>]";
 
 const BATCH_REVIEW_USAGE: &str = "prepare each disposal with --review-only at the same book prefix, then use batch members {\"review\":\"<bytes hex>\",\"review_digest\":\"<review_digest>\"}; only inline unchanged disposal reviews are accepted";
@@ -145,7 +145,7 @@ fn options(args: &Args, flags: &[&str], switches: &[&str]) -> Result<(), Fail> {
         if values.len() > 1
             && !matches!(
                 name.as_str(),
-                "--target" | "--evidence" | "--approval" | "--grant"
+                "--target" | "--evidence" | "--approval" | "--grant" | "--dimension"
             )
         {
             return Err(usage(
@@ -574,6 +574,7 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--description",
             "--evidence",
             "--target",
+            "--dimension",
             "--review",
             "--digest",
             "--review-out",
@@ -607,6 +608,7 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "--description",
                 "--evidence",
                 "--target",
+                "--dimension",
             ]
             .iter()
             .any(|name| args.flag(name).is_some())
@@ -663,6 +665,7 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let book_id = book.context().book_id;
         let request = LotDisposalPostRequest {
             account: account_vid(book_id, required(args, "--account")?),
+            dimensions: crate::lots::dimensions(args, book_id)?,
             quantity,
             quantity_offset_account: account_vid(book_id, required(args, "--quantity-offset")?),
             cost_offset_account: account_vid(book_id, required(args, "--cost-offset")?),
@@ -707,6 +710,7 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ),
                     ("amount", s(render_amount(leg.amount, units)?)),
                     ("applications", Json::Int(leg.settles.len() as i128)),
+                    ("dimensions", crate::cli::plan_dimensions_json(&leg.dimension_set)),
                 ]))
             })
             .collect::<Result<Vec<_>, Fail>>()?;
@@ -724,6 +728,7 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("regime", s(basis.regime.as_str())),
                 ("rounding_law", s(basis.rounding_law.name())),
                 ("quantity", s(render_amount(basis.quantity, units)?)),
+                ("dimensions", crate::cli::plan_dimensions_json(&basis.dimensions)),
                 ("policy_entry", s(format!("{:032x}", basis.policy.vid.0))),
                 ("policy_digest", s(hex(&basis.policy.entry_digest))),
                 ("legs", Json::Arr(legs)),

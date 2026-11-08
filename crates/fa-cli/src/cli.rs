@@ -20530,6 +20530,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "--regime",
                     "--rounding-law",
                     "--target",
+                    "--dimension",
                 ]
                 .iter()
                 .any(|flag| args.flag(flag).is_some())
@@ -20631,6 +20632,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 let plan = report
                     .plan_disposal(&fa::LotDisposalRequest {
                         quantity,
+                        dimensions: crate::lots::dimensions(args, book.context().book_id)?,
                         law,
                         regime,
                         rounding_law,
@@ -20725,6 +20727,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .collect::<Result<_, Fail>>()?;
                 Some(obj(vec![
                     ("law", s(plan.law.name())),
+                    ("dimensions", plan_dimensions_json(&plan.dimensions)),
                     ("regime", s(plan.regime.as_str())),
                     ("rounding_law", s(plan.rounding_law.name())),
                     (
@@ -20743,9 +20746,10 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     || args.flag("--regime").is_some()
                     || args.flag("--rounding-law").is_some()
                     || !args.flag_all("--target").is_empty()
+                    || !args.flag_all("--dimension").is_empty()
                 {
                     return Err(usage(
-                        "--law, --regime, --rounding-law, and --target require --relieve <amount>",
+                        "--law, --regime, --rounding-law, --target, and --dimension require --relieve <amount>",
                         "fa gl lots --account 1400 --relieve \"10.00000000 BTC\" --law FIFO --book <dir>",
                     ));
                 }

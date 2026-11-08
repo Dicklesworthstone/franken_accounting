@@ -20,6 +20,7 @@ struct Fixture {
     quantity_offset: VId,
     cost_offset: VId,
     share: UnitId,
+    dimensions: [Vec<(u32, VId)>; 2],
     acquisitions: [EntryRef; 2],
 }
 
@@ -34,7 +35,58 @@ fn posting(proposal: EntryPayload) -> PostRequest {
 
 impl Fixture {
     fn new(law: LotLaw) -> Self {
-        let mut h = harness();
+        Self::configured(harness(), law, [Vec::new(), Vec::new()])
+    }
+
+    fn dimensioned(law: LotLaw) -> Self {
+        let mut h = harness_with_entities(
+            ["north", "south"]
+                .map(|code| LegalEntitySpec {
+                    code: code.into(),
+                    name: code.into(),
+                    functional_unit: UnitId(0),
+                })
+                .to_vec(),
+        );
+        let dimensions = ["north", "south"].map(|code| {
+            let spec = fa_journal::dimension::DimensionValueSpec {
+                dimension: "cost_center".into(),
+                code: code.into(),
+                name: code.into(),
+                parent: None,
+                valid_from: None,
+                valid_to: None,
+            };
+            let cx = h.ctx();
+            let description = h.statement("Declare lot cost center", 93);
+            let value = h
+                .runtime
+                .block_on(fa_journal::dimension::create_dimension_value(
+                    &mut h.db,
+                    &cx,
+                    &h.book,
+                    &spec,
+                    PRINCIPAL,
+                    format!("lot-cost-center-{code}").as_bytes(),
+                    description,
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+                ))
+                .unwrap()
+                .unwrap()
+                .value
+                .vid;
+            vec![
+                (
+                    fa_model::LEGAL_ENTITY_DIMENSION,
+                    fa_model::entity_value_vid(h.book.book_id, code),
+                ),
+                (2, value),
+            ]
+        });
+        Self::configured(h, law, dimensions)
+    }
+
+    fn configured(mut h: Harness, law: LotLaw, dimensions: [Vec<(u32, VId)>; 2]) -> Self {
         let share = h.book.units.lookup("SHARE").unwrap();
         let accounts = [
             ("1400", fa_model::AccountType::ASSET, 0, UnitPolicy::AnyUnit),
@@ -111,26 +163,30 @@ impl Fixture {
             ))
             .unwrap()
             .unwrap();
-        let acquisitions =
-            [(b"lot-one".as_slice(), 100), (b"lot-two".as_slice(), 20)].map(|(key, cost)| {
-                let proposal = h.proposal(
-                    vec![
-                        LegPayload::simple(Side::Debit, inventory, Amount::new(share, 10)),
-                        LegPayload::simple(Side::Credit, quantity_offset, Amount::new(share, 10)),
-                        LegPayload::simple(Side::Debit, inventory, Amount::new(h.usd, cost)),
-                        LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, cost)),
-                    ],
-                    key,
-                    EntryClass::ORIGINAL,
-                );
-                h.post(posting(proposal)).unwrap().entry_ref()
-            });
+        let acquisitions = [
+            (b"lot-one".as_slice(), 100, &dimensions[0]),
+            (b"lot-two".as_slice(), 20, &dimensions[1]),
+        ]
+        .map(|(key, cost, dimensions)| {
+            let mut legs = vec![
+                LegPayload::simple(Side::Debit, inventory, Amount::new(share, 10)),
+                LegPayload::simple(Side::Credit, quantity_offset, Amount::new(share, 10)),
+                LegPayload::simple(Side::Debit, inventory, Amount::new(h.usd, cost)),
+                LegPayload::simple(Side::Credit, h.cash, Amount::new(h.usd, cost)),
+            ];
+            for leg in &mut legs {
+                leg.dimension_set = dimensions.clone();
+            }
+            let proposal = h.proposal(legs, key, EntryClass::ORIGINAL);
+            h.post(posting(proposal)).unwrap().entry_ref()
+        });
         Self {
             h,
             inventory,
             quantity_offset,
             cost_offset,
             share,
+            dimensions,
             acquisitions,
         }
     }
@@ -138,6 +194,7 @@ impl Fixture {
     fn request(&self, quantity: i128) -> LotDisposalRequest {
         LotDisposalRequest {
             account: self.inventory,
+            dimensions: self.dimensions[0].clone(),
             quantity: Amount::new(self.share, quantity),
             quantity_offset_account: self.quantity_offset,
             cost_offset_account: self.cost_offset,
@@ -166,7 +223,7 @@ impl Fixture {
     }
 
     fn buy(&mut self, key: &[u8], quantity: i128, cost: i128) -> EntryRef {
-        let proposal = self.h.proposal(
+        let mut proposal = self.h.proposal(
             vec![
                 LegPayload::simple(
                     Side::Debit,
@@ -184,6 +241,9 @@ impl Fixture {
             key,
             EntryClass::ORIGINAL,
         );
+        for leg in &mut proposal.legs {
+            leg.dimension_set = self.dimensions[0].clone();
+        }
         self.h.post(posting(proposal)).unwrap().entry_ref()
     }
 }
@@ -1152,4 +1212,134 @@ fn lot_relief_matches_reference_over_generated_histories() {
             }
         }
     }
+}
+
+#[test]
+fn dimensioned_lot_relief_keeps_entities_and_cost_centers_separate_through_undo_and_retry() {
+    for law in [LotLaw::Fifo, LotLaw::WeightedAverage, LotLaw::SpecificId] {
+        let mut f = Fixture::dimensioned(law);
+        let mut first = f.request(6);
+        if law == LotLaw::SpecificId {
+            first.specific_ids = vec![(f.acquisitions[0], 0)];
+        }
+        let before = f.h.db.frontier().unwrap();
+        let prepared = f.prepare_request(&first, b"north-disposal").unwrap();
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+        assert_eq!(prepared.outcome().total_relieved_cost, 60);
+        assert!(
+            prepared
+                .proposal()
+                .legs
+                .iter()
+                .all(|leg| leg.dimension_set == f.dimensions[0])
+        );
+        let posted = f.h.post(posting(prepared.proposal().clone())).unwrap();
+        assert_eq!(f.h.applied_to(f.acquisitions[0].vid, 0), 6);
+        assert_eq!(f.h.applied_to(f.acquisitions[0].vid, 2), 60);
+        assert_eq!(f.h.applied_to(f.acquisitions[1].vid, 0), 0);
+        assert_eq!(f.h.applied_to(f.acquisitions[1].vid, 2), 0);
+
+        let mut second = f.request(6);
+        second.dimensions = f.dimensions[1].clone();
+        if law == LotLaw::SpecificId {
+            second.specific_ids = vec![(f.acquisitions[1], 0)];
+        }
+        let south = f.prepare_request(&second, b"south-disposal").unwrap();
+        assert_eq!(south.outcome().total_relieved_cost, 12);
+        f.h.post(posting(south.into_proposal())).unwrap();
+        assert_eq!(f.h.applied_to(f.acquisitions[1].vid, 0), 6);
+        assert_eq!(f.h.applied_to(f.acquisitions[1].vid, 2), 12);
+
+        let at = f.h.db.frontier().unwrap();
+        let retry = f.prepare_request(&first, b"north-disposal").unwrap();
+        assert_eq!(retry, prepared);
+        assert_eq!(
+            f.h.post(posting(retry.into_proposal())).unwrap().entry_ref(),
+            posted.entry_ref(),
+        );
+        assert_eq!(f.h.db.frontier().unwrap(), at);
+        let reversal = undo(prepared.proposal(), posted.entry_ref(), b"undo-north-disposal");
+        f.h.post(posting(reversal)).unwrap();
+        assert_eq!(f.h.applied_to(f.acquisitions[0].vid, 0), 0);
+        assert_eq!(f.h.applied_to(f.acquisitions[0].vid, 2), 0);
+        assert_eq!(f.h.applied_to(f.acquisitions[1].vid, 0), 6);
+        assert_eq!(f.h.applied_to(f.acquisitions[1].vid, 2), 12);
+        assert_eq!(
+            f.prepare_request(&first, b"north-after-undo")
+                .unwrap()
+                .outcome()
+                .total_relieved_cost,
+            60,
+        );
+        let mut partial = first;
+        partial.dimensions.truncate(1);
+        assert!(f.prepare_request(&partial, b"partial-partition").is_err());
+        partial.dimensions.clear();
+        assert!(f.prepare_request(&partial, b"unqualified-partition").is_err());
+    }
+}
+
+#[test]
+fn dimensioned_acquisitions_pair_costs_by_partition_and_refuse_cross_partition_sources() {
+    let mut f = Fixture::dimensioned(LotLaw::SpecificId);
+    let mut legs = vec![
+        LegPayload::simple(Side::Debit, f.inventory, Amount::new(f.share, 2)),
+        LegPayload::simple(Side::Credit, f.quantity_offset, Amount::new(f.share, 2)),
+        LegPayload::simple(Side::Debit, f.inventory, Amount::new(f.share, 3)),
+        LegPayload::simple(Side::Credit, f.quantity_offset, Amount::new(f.share, 3)),
+        // The south cost deliberately precedes the north cost.
+        LegPayload::simple(Side::Debit, f.inventory, Amount::new(f.h.usd, 90)),
+        LegPayload::simple(Side::Credit, f.h.cash, Amount::new(f.h.usd, 90)),
+        LegPayload::simple(Side::Debit, f.inventory, Amount::new(f.h.usd, 10)),
+        LegPayload::simple(Side::Credit, f.h.cash, Amount::new(f.h.usd, 10)),
+    ];
+    for (leg, partition) in legs.iter_mut().zip([0, 0, 1, 1, 1, 1, 0, 0]) {
+        leg.dimension_set = f.dimensions[partition].clone();
+    }
+    let acquisition = f.h.proposal(legs, b"mixed-acquisition", EntryClass::ORIGINAL);
+    let mut mismatched = acquisition.clone();
+    mismatched.idempotency_key = b"mismatched-acquisition".to_vec();
+    // Preserve the legal entity and every monetary balance. Only the cost
+    // center differs, so ordinary balance law cannot establish the pairing.
+    for leg in &mut mismatched.legs[6..8] {
+        leg.dimension_set[1] = f.dimensions[1][1];
+    }
+    let before = f.h.db.frontier().unwrap();
+    let refusal = f.h.post(posting(mismatched)).unwrap_err();
+    assert_eq!(refusal.code, fa_journal::refusal::code::SETTLE_SHAPE);
+    assert!(refusal.message.contains("identical complete dimensions"));
+    assert_eq!(f.h.db.frontier().unwrap(), before);
+    let acquired = f.h.post(posting(acquisition)).unwrap().entry_ref();
+
+    let mut request = f.request(1);
+    request.specific_ids = vec![(acquired, 0)];
+    let prepared = f.prepare_request(&request, b"mixed-north-relief").unwrap();
+    assert_eq!(prepared.outcome().total_relieved_cost, 5);
+    assert_eq!(prepared.proposal().legs[2].settles[0].ordinal, 6);
+    let mut cross_partition = request.clone();
+    cross_partition.specific_ids[0].1 = 2;
+    let at = f.h.db.frontier().unwrap();
+    assert!(
+        f.prepare_request(&cross_partition, b"wrong-selected-partition")
+            .is_err()
+    );
+    let mut forged = prepared.proposal().clone();
+    for leg in &mut forged.legs {
+        leg.dimension_set = f.dimensions[1].clone();
+    }
+    assert!(f.h.post(posting(forged)).is_err());
+    assert_eq!(f.h.db.frontier().unwrap(), at);
+    assert_eq!(f.h.applied_to(acquired.vid, 0), 0);
+    assert_eq!(f.h.applied_to(acquired.vid, 6), 0);
+    f.h.post(posting(prepared.into_proposal())).unwrap();
+    assert_eq!(f.h.applied_to(acquired.vid, 0), 1);
+    assert_eq!(f.h.applied_to(acquired.vid, 6), 5);
+    assert_eq!(f.h.applied_to(acquired.vid, 2), 0);
+    assert_eq!(f.h.applied_to(acquired.vid, 4), 0);
+
+    request.dimensions = f.dimensions[1].clone();
+    request.specific_ids[0].1 = 2;
+    let south = f.prepare_request(&request, b"mixed-south-relief").unwrap();
+    assert_eq!(south.outcome().total_relieved_cost, 30);
+    assert_eq!(south.proposal().legs[2].settles[0].ordinal, 4);
 }

@@ -565,6 +565,7 @@ pub(crate) fn fold<V: Vfs + Clone, B: Vfs + Clone>(
             account_code: account.code,
             account_name: account.name,
             base_unit: base,
+            dimensioned: false,
             lots,
         }))
     })

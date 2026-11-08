@@ -4158,6 +4158,7 @@ fn lots_fifo_lifo_wac_specific_id_reversal_and_reference_differential() {
         let plan = report
             .plan_disposal(&LotDisposalRequest {
                 quantity: Amount::new(share, 150_000),
+                dimensions: Vec::new(),
                 law,
                 regime: AccountingRegime::UsGaap,
                 rounding_law: RoundingLaw::HalfEven,
@@ -4200,6 +4201,7 @@ fn lots_fifo_lifo_wac_specific_id_reversal_and_reference_differential() {
     let ifrs_err = report
         .plan_disposal(&LotDisposalRequest {
             quantity: Amount::new(share, 50_000),
+            dimensions: Vec::new(),
             law: LotLaw::Lifo,
             regime: AccountingRegime::Ifrs,
             rounding_law: RoundingLaw::HalfEven,
@@ -4232,6 +4234,7 @@ fn lots_fifo_lifo_wac_specific_id_reversal_and_reference_differential() {
     let over_err = report
         .plan_disposal(&LotDisposalRequest {
             quantity: Amount::new(share, 250_000),
+            dimensions: Vec::new(),
             law: LotLaw::Fifo,
             regime: AccountingRegime::UsGaap,
             rounding_law: RoundingLaw::HalfEven,
@@ -4313,6 +4316,7 @@ fn lots_fifo_lifo_wac_specific_id_reversal_and_reference_differential() {
     let fifo_plan = report
         .plan_disposal(&LotDisposalRequest {
             quantity: Amount::new(share, 150_000),
+            dimensions: Vec::new(),
             law: LotLaw::Fifo,
             regime: AccountingRegime::UsGaap,
             rounding_law: RoundingLaw::HalfEven,

@@ -63,6 +63,7 @@ fn historical_report() -> LotsReport {
         account_code: "inventory".into(),
         account_name: "Inventory".into(),
         base_unit: UnitId(1),
+        dimensioned: false,
         lots: fold_lots_from_open_items(&items, &digests, UnitId(1)).unwrap(),
     }
 }
@@ -73,6 +74,7 @@ fn weighted_average_planner_keeps_residual_cost_and_independent_settlement_vecto
     let plan = report
         .plan_disposal(&LotDisposalRequest {
             quantity: Amount::new(UnitId(2), 10),
+            dimensions: Vec::new(),
             law: LotLaw::WeightedAverage,
             regime: AccountingRegime::Ifrs,
             rounding_law: RoundingLaw::HalfEven,
@@ -98,6 +100,7 @@ fn weighted_average_planner_keeps_residual_cost_and_independent_settlement_vecto
 fn switching_away_from_pooled_cost_cannot_hide_the_residual_layer() {
     let result = historical_report().plan_disposal(&LotDisposalRequest {
         quantity: Amount::new(UnitId(2), 10),
+        dimensions: Vec::new(),
         law: LotLaw::Fifo,
         regime: AccountingRegime::UsGaap,
         rounding_law: RoundingLaw::HalfEven,
@@ -134,4 +137,75 @@ fn cost_only_relief_and_its_reversal_remain_visible_in_the_lot_history() {
         assert_eq!(cost_only.cost.mantissa, 40);
         assert_eq!(cost_only.live, live);
     }
+}
+
+#[test]
+fn lot_partitions_pair_reordered_costs_and_plan_only_the_complete_dimension_set() {
+    let north = vec![(1, VId(11)), (2, VId(21))];
+    let south = vec![(1, VId(12)), (2, VId(22))];
+    let items = vec![
+        item(1, 0, 2, 10, vec![]),
+        item(1, 1, 2, 10, vec![]),
+        // Cost ordinals deliberately cross the quantity ordering.
+        item(1, 2, 1, 20, vec![]),
+        item(1, 3, 1, 100, vec![]),
+    ];
+    let digests = BTreeMap::from([(VId(1), [1; 32])]);
+    let dimensions = BTreeMap::from([
+        ((VId(1), 0), north.clone()),
+        ((VId(1), 1), south.clone()),
+        ((VId(1), 2), south.clone()),
+        ((VId(1), 3), north.clone()),
+    ]);
+    let lots = fold_lots_from_open_items_with_dimensions(
+        &items,
+        &digests,
+        UnitId(1),
+        &dimensions,
+    )
+    .unwrap();
+    assert_eq!(lots.len(), 2);
+    assert_eq!((lots[0].qty_ordinal, lots[0].cost_ordinal), (0, 3));
+    assert_eq!((lots[1].qty_ordinal, lots[1].cost_ordinal), (1, 2));
+    assert_eq!(lots[0].dimensions, north);
+    assert_eq!(lots[1].dimensions, south);
+    let mut report = historical_report();
+    report.lots = lots;
+    report.dimensioned = true;
+    for (partition, expected) in [(north.clone(), 60), (south.clone(), 12)] {
+        for law in [LotLaw::Fifo, LotLaw::WeightedAverage] {
+            let request = LotDisposalRequest {
+                quantity: Amount::new(UnitId(2), 6),
+                dimensions: partition.clone(),
+                law,
+                regime: AccountingRegime::UsGaap,
+                rounding_law: RoundingLaw::HalfEven,
+                targets: vec![],
+            };
+            let plan = report.plan_disposal(&request).unwrap();
+            assert_eq!(plan.total_cost, Amount::new(UnitId(1), expected));
+            assert_eq!(plan.dimensions, partition);
+            let mut partial = request.clone();
+            partial.dimensions.truncate(1);
+            assert!(report.plan_disposal(&partial).is_err());
+            let mut over = request;
+            over.quantity.mantissa = 11;
+            assert!(matches!(
+                report.plan_disposal(&over),
+                Err(LotError::OverRelief { .. })
+            ));
+        }
+    }
+    let mut missing = dimensions.clone();
+    missing.remove(&(VId(1), 3));
+    assert!(
+        fold_lots_from_open_items_with_dimensions(&items, &digests, UnitId(1), &missing)
+            .is_err()
+    );
+    let mut wrong = dimensions;
+    wrong.insert((VId(1), 3), south);
+    assert!(
+        fold_lots_from_open_items_with_dimensions(&items, &digests, UnitId(1), &wrong)
+            .is_err()
+    );
 }

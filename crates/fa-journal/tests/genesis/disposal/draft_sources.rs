@@ -53,6 +53,60 @@ impl Fixture {
 }
 
 #[test]
+fn dimensioned_draft_disposal_promotes_exact_relief_and_keeps_complete_source_guards() {
+    for stale in [false, true] {
+        let mut f = Fixture::dimensioned(LotLaw::Fifo);
+        let name = "dimensioned-lot-review";
+        let planner = f.confined_disposal_planner(name, 6, 60);
+        f.h.open_draft(planner.clone(), name).unwrap();
+        let source = f.draft_disposal_source(&planner, name);
+        let mut request = f.request(6);
+        request.dimensions = f.dimensions[1].clone();
+        let prepared = f
+            .prepare_confined_disposal(&source, &request, b"south-draft-disposal")
+            .unwrap();
+        assert_eq!(prepared.outcome().total_relieved_cost, 12);
+        let proposal = prepared.into_proposal();
+        assert!(
+            proposal
+                .legs
+                .iter()
+                .all(|leg| leg.dimension_set == request.dimensions)
+        );
+        let planned = f.h.plan_draft(planner, name, proposal.clone()).unwrap();
+        let reviewed = planned.plan.as_ref().unwrap().members()[0].entry.clone();
+        let entry = entry_vid(
+            f.h.book.book_id,
+            &AGENT.0.to_le_bytes(),
+            b"south-draft-disposal",
+        );
+        if stale {
+            // Even another partition on this lot account remains part of
+            // the retained complete source. Do not weaken the draft guard.
+            f.buy(b"north-after-draft-review", 2, 20);
+        }
+        let at = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let result = f.h.promote(f.h.approver_capability(), name);
+        if stale {
+            let refusal = result.unwrap_err();
+            assert_eq!(refusal.code, code::PLAN_INVALIDATED);
+            assert_eq!(f.h.db.frontier().unwrap(), at);
+            assert_eq!(f.h.db.vertices().unwrap(), rows);
+            assert!(read_entry(&f.h.db, entry).unwrap().is_none());
+        } else {
+            let promoted = result.unwrap();
+            assert_eq!(promoted.entries, vec![reviewed.entry_ref(entry)]);
+            assert_eq!(read_entry(&f.h.db, entry).unwrap().unwrap().0, reviewed);
+            assert_eq!(f.h.applied_to(f.acquisitions[1].vid, 0), 6);
+            assert_eq!(f.h.applied_to(f.acquisitions[1].vid, 2), 12);
+        }
+        assert_eq!(f.h.applied_to(f.acquisitions[0].vid, 0), 0);
+        assert_eq!(f.h.applied_to(f.acquisitions[0].vid, 2), 0);
+    }
+}
+
+#[test]
 fn post_only_draft_disposal_matches_literal_relief_and_promotes_exact_effects() {
     for (law, expected_cost) in [(LotLaw::Fifo, 104), (LotLaw::SpecificId, 40)] {
         let mut f = Fixture::new(law);

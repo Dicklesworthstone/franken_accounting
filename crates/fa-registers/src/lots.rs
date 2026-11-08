@@ -54,6 +54,7 @@ pub struct LotItem {
     pub qty_ordinal: u16,
     pub cost_ordinal: u16,
     pub account: VId,
+    pub dimensions: Vec<(u32, VId)>,
     pub side: Side,
     pub effective_date: DateDay,
     pub recorded_at: CommitSeq,
@@ -76,6 +77,9 @@ pub struct LotsReport {
     pub account_code: String,
     pub account_name: String,
     pub base_unit: UnitId,
+    /// True if any visible selected-account history has dimensions, including
+    /// reversed, exhausted and later-effective layers outside this schedule.
+    pub dimensioned: bool,
     pub lots: Vec<LotItem>,
 }
 
@@ -83,6 +87,8 @@ pub struct LotsReport {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LotDisposalRequest {
     pub quantity: Amount,
+    /// Exact full acquisition partition. Empty selects dimensionless lots.
+    pub dimensions: Vec<(u32, VId)>,
     pub law: LotLaw,
     pub regime: AccountingRegime,
     pub rounding_law: RoundingLaw,
@@ -112,6 +118,7 @@ pub struct LotDisposalPlan {
     pub known_at: CommitSeq,
     pub effective_through: Option<DateDay>,
     pub account: VId,
+    pub dimensions: Vec<(u32, VId)>,
     pub law: LotLaw,
     pub regime: AccountingRegime,
     pub rounding_law: RoundingLaw,
@@ -169,12 +176,20 @@ impl LotsReport {
 
     /// Plan a disposal of `request.quantity` against the open lots of this report.
     pub fn plan_disposal(&self, request: &LotDisposalRequest) -> Result<LotDisposalPlan, LotError> {
+        if request.dimensions.len() > fa_model::limits::MAX_DIMENSIONS_PER_LEG
+            || !fa_model::canon::strictly_ascending(&request.dimensions, |(dimension, _)| *dimension)
+        {
+            return Err(LotError::InvalidCandidate(
+                "the disposal dimension set must be bounded and strictly ordered".into(),
+            ));
+        }
         let qty_unit = request.quantity.unit;
         let candidates: Vec<LotCandidate> = self
             .lots
             .iter()
             .filter(|lot| {
                 lot.original_quantity.unit == qty_unit
+                    && lot.dimensions == request.dimensions
                     && (lot.open_quantity.mantissa > 0 || lot.open_cost.mantissa > 0)
             })
             .map(|lot| LotCandidate {
@@ -238,6 +253,7 @@ impl LotsReport {
             known_at: self.known_at,
             effective_through: self.effective_through,
             account: self.account,
+            dimensions: request.dimensions.clone(),
             law: outcome.law,
             regime: outcome.regime,
             rounding_law: outcome.rounding_law,
@@ -282,11 +298,26 @@ pub fn lots<V: asupersync::fs::Vfs + Clone>(
         None => open_items(db, book, Some(account), Some(seq))?,
     };
     let entries = entries_at(db, book, seq)?;
+    let mut dimensions = BTreeMap::new();
+    let mut dimensioned = false;
+    for (vid, entry, _) in &entries {
+        for (ordinal, leg) in entry.proposal.legs.iter().enumerate() {
+            if leg.account_ref != account {
+                continue;
+            }
+            let ordinal = u16::try_from(ordinal).map_err(|_| {
+                RegisterError::InvalidSelection("lot source ordinal exceeds u16".into())
+            })?;
+            dimensioned |= !leg.dimension_set.is_empty();
+            dimensions.insert((*vid, ordinal), leg.dimension_set.clone());
+        }
+    }
     let digests: BTreeMap<VId, [u8; 32]> = entries
         .into_iter()
         .map(|(vid, entry, _)| (vid, entry.entry_digest))
         .collect();
-    let lots = fold_lots_from_open_items(&items, &digests, base_unit)?;
+    let lots =
+        fold_lots_from_open_items_with_dimensions(&items, &digests, base_unit, &dimensions)?;
     Ok(LotsReport {
         book_id: book.book_id,
         known_at: seq,
@@ -295,26 +326,61 @@ pub fn lots<V: asupersync::fs::Vfs + Clone>(
         account_code: account_row.code,
         account_name: account_row.name,
         base_unit,
+        dimensioned,
         lots,
     })
 }
 
-/// Pure fold of `LotItem`s from open-item legs on an `AnyUnit` account.
+/// Legacy dimensionless fold for in-memory callers without retained legs.
+/// Native reports use the complete dimension-aware source map below.
 pub fn fold_lots_from_open_items(
     items: &[OpenItem],
     entry_digests: &BTreeMap<VId, [u8; 32]>,
     base_unit: UnitId,
 ) -> Result<Vec<LotItem>, RegisterError> {
-    let mut by_entry: BTreeMap<VId, Vec<&OpenItem>> = BTreeMap::new();
+    let dimensions = items
+        .iter()
+        .map(|item| ((item.entry, item.ordinal), Vec::new()))
+        .collect();
+    fold_lots_from_open_items_with_dimensions(items, entry_digests, base_unit, &dimensions)
+}
+
+/// Pair quantity and cost only within the exact acquisition dimension set.
+/// Every open-item coordinate must have an authenticated source-map value;
+/// absence never means a dimensionless leg.
+pub fn fold_lots_from_open_items_with_dimensions(
+    items: &[OpenItem],
+    entry_digests: &BTreeMap<VId, [u8; 32]>,
+    base_unit: UnitId,
+    dimensions: &BTreeMap<(VId, u16), Vec<(u32, VId)>>,
+) -> Result<Vec<LotItem>, RegisterError> {
+    type Partition<'a> = (VId, VId, &'a [(u32, VId)]);
+    let mut by_partition: BTreeMap<Partition<'_>, Vec<&OpenItem>> = BTreeMap::new();
     for item in items {
+        let values = dimensions.get(&(item.entry, item.ordinal)).ok_or_else(|| {
+            RegisterError::InvalidSelection(format!(
+                "lot source dimensions are absent for entry {:032x} leg {}",
+                item.entry.0, item.ordinal,
+            ))
+        })?;
+        if values.len() > fa_model::limits::MAX_DIMENSIONS_PER_LEG
+            || !fa_model::canon::strictly_ascending(values, |(dimension, _)| *dimension)
+        {
+            return Err(RegisterError::InvalidSelection(
+                "lot source dimensions must be bounded and strictly ordered".into(),
+            ));
+        }
         // Acquiring legs do not settle prior legs (`applied_out == 0`).
         if item.applied_out == 0 {
-            by_entry.entry(item.entry).or_default().push(item);
+            by_partition
+                .entry((item.entry, item.account, values))
+                .or_default()
+                .push(item);
         }
     }
 
     let mut lots = Vec::new();
-    for (entry_vid, mut legs) in by_entry {
+    for ((entry_vid, _, dimensions), mut legs) in by_partition {
         legs.sort_by_key(|l| l.ordinal);
         let qty_legs: Vec<&OpenItem> = legs
             .iter()
@@ -331,7 +397,7 @@ pub fn fold_lots_from_open_items(
             .collect();
         if qty_legs.len() != cost_legs.len() {
             return Err(RegisterError::InvalidSelection(format!(
-                "entry {:032x} has {} non-base quantity leg(s) and {} base-unit cost leg(s) on the lot account; each acquiring quantity leg requires a paired base-unit cost leg",
+                "entry {:032x} has {} non-base quantity leg(s) and {} base-unit cost leg(s) in one lot partition; each acquiring quantity leg requires a paired base-unit cost leg with identical dimensions",
                 entry_vid.0,
                 qty_legs.len(),
                 cost_legs.len()
@@ -404,6 +470,7 @@ pub fn fold_lots_from_open_items(
                 qty_ordinal: qty_leg.ordinal,
                 cost_ordinal: cost_leg.ordinal,
                 account: qty_leg.account,
+                dimensions: dimensions.to_vec(),
                 side: qty_leg.side,
                 effective_date: qty_leg.effective_date,
                 recorded_at: qty_leg.recorded_at,

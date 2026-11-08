@@ -1,10 +1,38 @@
 //! Shared presentation for live and replayed native lot schedules.
 
 use fa::{Book, LotsReport};
+use fa_model::{Id128, dimension_kind, dimension_value_vid};
 use fa_money::Side;
+use fgdb_types::VId;
 
-use crate::cli::{Fail, Out, hex, registered_unit_code, render_amount};
+use crate::args::Args;
+use crate::cli::{Fail, Out, hex, plan_dimensions_json, registered_unit_code, render_amount, usage};
 use crate::json::{Json, obj, s};
+
+/// An exact lot partition, never a subtree or a partial-dimension filter.
+/// The posting kernel authenticates each selected identity and its valid time.
+pub(crate) fn dimensions(args: &Args, book: Id128) -> Result<Vec<(u32, VId)>, Fail> {
+    const EXAMPLE: &str = "--dimension legal_entity:PARENT --dimension cost_center:WAREHOUSE";
+    let mut selected = std::collections::BTreeMap::new();
+    for raw in args.flag_all("--dimension") {
+        let (code, value) = raw.split_once(':').filter(|(_, value)| !value.is_empty())
+            .ok_or_else(|| usage("--dimension requires KIND:VALUE", EXAMPLE))?;
+        let id = match code {
+            fa_model::LEGAL_ENTITY_DIMENSION_CODE => fa_model::LEGAL_ENTITY_DIMENSION,
+            fa_model::PARTY_DIMENSION_CODE => fa_model::PARTY_DIMENSION,
+            other => dimension_kind(other)
+                .map(|kind| kind.id)
+                .ok_or_else(|| usage(format!("unknown lot dimension `{other}`"), EXAMPLE))?,
+        };
+        if selected.insert(id, dimension_value_vid(book, code, value)).is_some() {
+            return Err(usage("an exact lot partition names each dimension once", EXAMPLE));
+        }
+    }
+    if selected.len() > fa_model::limits::MAX_DIMENSIONS_PER_LEG {
+        return Err(usage("the lot partition exceeds the dimension bound", EXAMPLE));
+    }
+    Ok(selected.into_iter().collect())
+}
 
 pub(crate) fn render(
     out: &Out,
@@ -52,6 +80,7 @@ pub(crate) fn render(
                 ("entry_digest", s(hex(&lot.entry_digest))),
                 ("qty_ordinal", Json::Int(i128::from(lot.qty_ordinal))),
                 ("cost_ordinal", Json::Int(i128::from(lot.cost_ordinal))),
+                ("dimensions", plan_dimensions_json(&lot.dimensions)),
                 (
                     "side",
                     s(match lot.side {

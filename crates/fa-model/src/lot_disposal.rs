@@ -14,6 +14,7 @@ use crate::{DecodeError, EncodeError, EntryRef, Reader, Writer};
 
 pub const LOT_POLICY_FORMAT: &[u8] = b"fa:lot-policy:v1";
 pub const LOT_DISPOSAL_FORMAT: &[u8] = b"fa:lot-disposal:v1";
+pub const DIMENSIONED_LOT_DISPOSAL_FORMAT: &[u8] = b"fa:lot-disposal:v2";
 /// One disposal's targets fit its ordinary per-leg settlement bound.
 pub const MAX_SPECIFIC_LOTS: usize = crate::limits::MAX_SETTLES_PER_LEG;
 
@@ -82,6 +83,8 @@ impl LotPolicy {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LotDisposalBasis {
     pub account: VId,
+    /// Exact acquisition partition; an empty set selects dimensionless lots.
+    pub dimensions: Vec<(u32, VId)>,
     pub quantity: Amount,
     pub quantity_offset_account: VId,
     pub cost_offset_account: VId,
@@ -97,7 +100,12 @@ pub struct LotDisposalBasis {
 impl LotDisposalBasis {
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
         let mut w = Writer::new();
-        w.bytes(LOT_DISPOSAL_FORMAT)
+        let format = if self.dimensions.is_empty() {
+            LOT_DISPOSAL_FORMAT
+        } else {
+            DIMENSIONED_LOT_DISPOSAL_FORMAT
+        };
+        w.bytes(format)
             .u128(self.account.0)
             .u32(self.quantity.unit.0)
             .i128(self.quantity.mantissa)
@@ -110,14 +118,22 @@ impl LotDisposalBasis {
             .u128(self.policy.vid.0)
             .fixed(&self.policy.entry_digest);
         write_laws(&mut w, self.law, self.regime, self.rounding_law);
+        if !self.dimensions.is_empty() {
+            w.list(&self.dimensions, |w, (dimension, value)| {
+                w.u32(*dimension).u128(value.0);
+            });
+        }
         w.finish()
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut r = Reader::new(bytes);
-        if bytes.len() > crate::limits::MAX_EXTENSION_BYTES
-            || r.bytes(64, "lot_disposal.format")? != LOT_DISPOSAL_FORMAT
-        {
+        if bytes.len() > crate::limits::MAX_EXTENSION_BYTES {
+            return Err(r.invalid("lot_disposal.format"));
+        }
+        let format = r.bytes(64, "lot_disposal.format")?;
+        let dimensioned = format == DIMENSIONED_LOT_DISPOSAL_FORMAT;
+        if format != LOT_DISPOSAL_FORMAT && !dimensioned {
             return Err(r.invalid("lot_disposal.format"));
         }
         let account = VId(r.u128("lot_disposal.account")?);
@@ -142,6 +158,26 @@ impl LotDisposalBasis {
             entry_digest: r.fixed("lot_disposal.policy_digest")?,
         };
         let (law, regime, rounding_law) = read_laws(&mut r)?;
+        let dimensions = if dimensioned {
+            let dimensions = r.list(
+                crate::limits::MAX_DIMENSIONS_PER_LEG,
+                "lot_disposal.dimensions",
+                |r| {
+                    Ok((
+                        r.u32("lot_disposal.dimension")?,
+                        VId(r.u128("lot_disposal.dimension_value")?),
+                    ))
+                },
+            )?;
+            if dimensions.is_empty()
+                || !crate::canon::strictly_ascending(&dimensions, |(dimension, _)| *dimension)
+            {
+                return Err(r.invalid("lot_disposal.dimensions"));
+            }
+            dimensions
+        } else {
+            Vec::new()
+        };
         let unique: BTreeSet<_> = specific_ids
             .iter()
             .map(|(entry, ordinal)| (entry.vid, *ordinal))
@@ -159,6 +195,7 @@ impl LotDisposalBasis {
         r.finish()?;
         Ok(Self {
             account,
+            dimensions,
             quantity,
             quantity_offset_account,
             cost_offset_account,
@@ -179,6 +216,7 @@ mod tests {
     fn basis() -> LotDisposalBasis {
         LotDisposalBasis {
             account: VId(10),
+            dimensions: Vec::new(),
             quantity: Amount::new(UnitId(2), 37),
             quantity_offset_account: VId(11),
             cost_offset_account: VId(12),
@@ -223,6 +261,55 @@ mod tests {
         let mut wrong_version = bytes;
         *wrong_version.last_mut().unwrap() = 1;
         assert!(LotDisposalBasis::decode(&wrong_version).is_err());
+    }
+
+    #[test]
+    fn dimensioned_basis_preserves_legacy_bytes_and_has_one_canonical_partition() {
+        // Retained v1 fixture, independently laid out before dimensions were
+        // added. Empty selectors must never change historical proposal bytes.
+        let legacy_hex = concat!(
+            "1200000066613a6c6f742d646973706f73616c3a76310a0000000000000000000000000000000200",
+            "0000250000000000000000000000000000000b0000000000000000000000000000000c0000000000",
+            "00000000000000000000010000003200000000000000000000000000000004040404040404040404",
+            "04040404040404040404040404040404040404040404000050000000000000001400000000000000",
+            "00000000000000000505050505050505050505050505050505050505050505050505050505050505",
+            "030001000003000100",
+        );
+        let legacy: Vec<_> = (0..legacy_hex.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&legacy_hex[index..index + 2], 16).unwrap())
+            .collect();
+        assert_eq!(basis().encode().unwrap(), legacy);
+        assert_eq!(LotDisposalBasis::decode(&legacy).unwrap(), basis());
+
+        let mut selected = basis();
+        selected.dimensions = vec![(1, VId(91)), (2, VId(92))];
+        let bytes = selected.encode().unwrap();
+        assert_eq!(LotDisposalBasis::decode(&bytes).unwrap(), selected);
+        assert_ne!(bytes, legacy);
+        for end in 0..bytes.len() {
+            assert!(LotDisposalBasis::decode(&bytes[..end]).is_err());
+        }
+        let mut empty_v2 = legacy.clone();
+        empty_v2[4 + LOT_DISPOSAL_FORMAT.len() - 1] = b'2';
+        empty_v2.extend_from_slice(&0_u32.to_le_bytes());
+        assert!(LotDisposalBasis::decode(&empty_v2).is_err());
+        for dimensions in [
+            vec![(2, VId(92)), (1, VId(91))],
+            vec![(1, VId(91)), (1, VId(92))],
+        ] {
+            selected.dimensions = dimensions;
+            assert!(LotDisposalBasis::decode(&selected.encode().unwrap()).is_err());
+        }
+        selected.dimensions = (1..=crate::limits::MAX_DIMENSIONS_PER_LEG)
+            .map(|kind| (u32::try_from(kind).unwrap(), VId(kind as u128)))
+            .collect();
+        assert_eq!(
+            LotDisposalBasis::decode(&selected.encode().unwrap()).unwrap(),
+            selected,
+        );
+        selected.dimensions.push((65, VId(65)));
+        assert!(LotDisposalBasis::decode(&selected.encode().unwrap()).is_err());
     }
 
     #[test]
