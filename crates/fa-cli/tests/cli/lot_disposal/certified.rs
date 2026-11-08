@@ -49,7 +49,10 @@ fn certify(
     let digest = fa_verify::blake3::hex(certificate.digest());
     assert_eq!(text(&receipt, "oid"), digest);
     assert_eq!(text(&receipt, "file"), path);
-    assert_eq!(text(&receipt, "output_format"), "fa:lots:v1");
+    assert_eq!(
+        text(&receipt, "output_format"),
+        if certificate.dimensioned() { "fa:lots:v2" } else { "fa:lots:v1" }
+    );
     assert_eq!(text(&receipt, "bytes"), fa_verify::blake3::hex(&bytes));
     assert_eq!(field(lines[0], "certificate"), Some(digest.as_str()));
     assert_eq!(field(lines[1], "certificate"), Some(digest.as_str()));
@@ -571,5 +574,95 @@ fn certification_refuses_advisory_relief_and_unbound_report_selectors() -> std::
         "60.00 USD"
     );
     assert_eq!(frontier(&book), before);
+    Ok(())
+}
+
+#[test]
+fn attributed_disposal_review_and_retained_schedule_preserve_exact_partition()
+-> std::io::Result<()> {
+    let (dir, book, evidence) = setup("FIFO")?;
+    for (center, cost) in [("WAREHOUSE", "32.00"), ("SHOP", "72.00")] {
+        ok(
+            &book,
+            "create lot cost center",
+            &["dimension", "add", "cost_center", center, "--name", center, "--json"],
+        );
+        let intent = write(
+            &dir,
+            &format!("acquire-{center}.json"),
+            &format!(r#"{{
+                "effective_date":"2026-03-12","idempotency_key":"acquire-{center}",
+                "legs":[
+                    {{"side":"debit","account":"1400","amount":"8.000000 SHARE","dimensions":{{"cost_center":"{center}"}}}},
+                    {{"side":"credit","account":"1499","amount":"8.000000 SHARE","dimensions":{{"cost_center":"{center}"}}}},
+                    {{"side":"debit","account":"1400","amount":"{cost} USD","dimensions":{{"cost_center":"{center}"}}}},
+                    {{"side":"credit","account":"1000","amount":"{cost} USD","dimensions":{{"cost_center":"{center}"}}}}
+                ]
+            }}"#),
+        );
+        ok(&book, "acquire attributed inventory", &[
+            "post", "--intent", &intent, "--evidence", &evidence, "--json",
+        ]);
+    }
+    let before = frontier(&book);
+    let review_path = dir.join("attributed.review").display().to_string();
+    let review = doc(&ok(&book, "review one exact lot partition", &[
+        "dispose", "--account", "1400", "--quantity", "3.000000 SHARE",
+        "--quantity-offset", "1499", "--cost-offset", "5100",
+        "--dimension", "cost_center:WAREHOUSE", "--date", "2026-03-15",
+        "--key", "warehouse-disposal", "--evidence", &evidence,
+        "--review-out", &review_path, "--json",
+    ]));
+    let partition = arr(&review, "dimensions");
+    assert_eq!(partition.len(), 1);
+    assert!(arr(&review, "legs").iter().all(|leg| arr(leg, "dimensions") == partition));
+    assert_eq!(
+        arr(&review, "legs").iter().filter(|leg| text(leg, "amount") == "12.00 USD").count(),
+        2,
+        "the selected warehouse's four-dollar cost must not pool with the shop or dimensionless lots",
+    );
+    assert_eq!(frontier(&book), before);
+    for (dimension, expected_cost) in [(Some("cost_center:WAREHOUSE"), "12.00 USD"), (None, "30.00 USD")] {
+        let mut args = vec!["gl", "lots", "--account", "1400", "--relieve", "3.000000 SHARE", "--law", "FIFO", "--json"];
+        if let Some(dimension) = dimension {
+            args.extend(["--dimension", dimension]);
+        }
+        let report = doc(&ok(&book, "preview an exact partition", &args));
+        assert_eq!(text(report.get("disposal_plan").unwrap(), "total_cost"), expected_cost);
+    }
+    let (code, out, err) = run(&book, "reject an overridden retained partition", &[
+        "dispose", "--review", &review_path, "--digest", text(&review, "review_digest"),
+        "--dimension", "cost_center:SHOP", "--json",
+    ]);
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert_eq!(frontier(&book), before);
+    let posted = ok(&book, "publish attributed cost relief", &[
+        "dispose", "--review", &review_path, "--digest", text(&review, "review_digest"), "--json",
+    ]);
+    assert_eq!(field(&posted, "event"), Some("posted"));
+    let after = frontier(&book);
+    let repeated = ok(&book, "retry attributed relief", &[
+        "dispose", "--review", &review_path, "--digest", text(&review, "review_digest"), "--json",
+    ]);
+    assert_eq!(field(&repeated, "event"), Some("recorded"));
+    assert_eq!(frontier(&book), after);
+    let Json::Int(at) = after else { panic!("integer frontier") };
+    let saved = certify(&book, &dir, "attributed", None, &at.to_string())?;
+    assert!(saved.certificate.dimensioned());
+    let lots = arr(&saved.report, "lots");
+    assert_eq!(lots.len(), 4);
+    let warehouse = lots.iter().find(|lot| text(lot, "original_cost") == "32.00 USD").unwrap();
+    assert_eq!(arr(warehouse, "dimensions"), partition);
+    assert_eq!(text(warehouse, "open_quantity"), "5.000000 SHARE");
+    assert_eq!(text(warehouse, "open_cost"), "20.00 USD");
+    let shop = lots.iter().find(|lot| text(lot, "original_cost") == "72.00 USD").unwrap();
+    assert_ne!(arr(shop, "dimensions"), partition);
+    assert_eq!(text(shop, "open_quantity"), "8.000000 SHARE");
+    assert_eq!(text(shop, "open_cost"), "72.00 USD");
+    replay(&book, &dir, "attributed", &saved)?;
+    let empty = certify(&book, &dir, "before-acquisitions", Some("2026-03-01"), &at.to_string())?;
+    assert!(empty.certificate.dimensioned(), "complete history fixes the profile before filtering");
+    assert!(arr(&empty.report, "lots").is_empty());
+    replay(&book, &dir, "attributed-empty", &empty)?;
     Ok(())
 }

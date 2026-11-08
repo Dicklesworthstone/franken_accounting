@@ -2717,7 +2717,11 @@ fn lots_checks(report: &crate::report::VerifiedLots) -> Vec<Check> {
             ),
             (
                 "acquisition_pairing",
-                s("one native quantity debit and one base-cost debit per acquisition"),
+                s(if report.dimensioned {
+                    "quantity and base-cost debits paired by ordinal within each complete dimension set"
+                } else {
+                    "one native quantity debit and one base-cost debit per acquisition"
+                }),
             ),
             ("cost_flow_law_admission", s("not_judged")),
             ("book_genesis", s("not_judged")),
@@ -2727,8 +2731,14 @@ fn lots_checks(report: &crate::report::VerifiedLots) -> Vec<Check> {
             ),
         ],
     )];
+    if report.dimensioned {
+        checks[0].detail.push(("dimensioned", Json::Bool(true)));
+        checks[0]
+            .detail
+            .push(("dimension_partition", s("exact_complete_set")));
+    }
     for lot in &report.lots {
-        checks.push(Check::pass(
+        let mut row = Check::pass(
             "lot_row",
             "recomputation",
             vec![
@@ -2756,7 +2766,24 @@ fn lots_checks(report: &crate::report::VerifiedLots) -> Vec<Check> {
                 ("open_cost", s(lot.open_cost.mantissa.to_string())),
                 ("reliefs", n(lot.relieves.len() as u64)),
             ],
-        ));
+        );
+        if report.dimensioned {
+            row.detail.push((
+                "dimensions",
+                Json::List(
+                    lot.dimensions
+                        .iter()
+                        .map(|(kind, value)| {
+                            Json::Obj(vec![
+                                ("kind", n(u64::from(*kind))),
+                                ("value", s(format!("{value:032x}"))),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ));
+        }
+        checks.push(row);
         for relief in &lot.relieves {
             checks.push(Check::pass(
                 "lot_relief",
@@ -6768,6 +6795,7 @@ mod tests {
             account_code: "1400".into(),
             account_name: "Inventory".into(),
             base_unit: 0,
+            dimensioned: false,
             source_certificate_digest: [5; 32],
             lots: vec![VerifiedLot {
                 entry: 11,
@@ -6775,6 +6803,7 @@ mod tests {
                 qty_ordinal: 0,
                 cost_ordinal: 2,
                 account: 7,
+                dimensions: Vec::new(),
                 debit: true,
                 effective_date: 10,
                 recorded_at: 3,
@@ -6818,6 +6847,22 @@ mod tests {
                 output.stdout
             );
         }
+        assert!(!output.stdout.contains("\"dimensions\""));
+        let mut attributed = schedule;
+        attributed.dimensioned = true;
+        attributed.lots[0].dimensions = vec![(2, 101), (4, 401)];
+        let output = report("report", true, &lots_checks(&attributed));
+        for expected in [
+            "\"dimensioned\":true",
+            "\"dimension_partition\":\"exact_complete_set\"",
+            "\"dimensions\":[{\"kind\":2,\"value\":\"00000000000000000000000000000065\"},{\"kind\":4,\"value\":\"00000000000000000000000000000191\"}]",
+        ] {
+            assert!(output.stdout.contains(expected), "{}", output.stdout);
+        }
+        attributed.lots.clear();
+        let empty = report("report", true, &lots_checks(&attributed));
+        assert!(empty.stdout.contains("\"dimensioned\":true"));
+        assert!(empty.stdout.contains("\"lots\":0"));
     }
 
     /// A tampered artifact, an untrusted key, or a question the proof does

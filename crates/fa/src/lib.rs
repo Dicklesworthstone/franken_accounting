@@ -315,7 +315,8 @@ pub use indirect_cash_flow::{
 pub use intake::IntakeAction;
 pub use ledger_diff::{LedgerDiff, RecordedEntry, TrialBalanceChange};
 pub use lots_certificate::{
-    CertifiedLots, LOTS_CERTIFICATE_FORMAT, LOTS_OUTPUT_FORMAT, LotsCertificate, LotsRequest,
+    CertifiedLots, LOTS_CERTIFICATE_FORMAT, LOTS_CERTIFICATE_FORMAT_V2, LOTS_OUTPUT_FORMAT,
+    LOTS_OUTPUT_FORMAT_V2, LotsCertificate, LotsRequest,
     MAX_LOTS_CERTIFICATE_BYTES, MAX_LOTS_ROWS, lots_output_bytes,
 };
 pub use outcome_recovery::{OutcomeRebuild, OutcomeRebuildPreview, PreparedOutcomeRebuild};

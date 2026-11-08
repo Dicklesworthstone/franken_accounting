@@ -10,7 +10,7 @@ use fa_model::{
     EntryOrigin, EntryPayload, EntryRef, EvidenceRef, LegPayload, Oid, Settlement, Supersession,
     SupersessionKind, account_vid,
 };
-use fa_money::UnitRegistry;
+use fa_money::{AccountingRegime, LotLaw, RoundingLaw, UnitRegistry};
 use fa_time::{FiscalCalendar, PeriodTransition};
 use fgdb::MemVfs;
 use std::path::Path;
@@ -139,6 +139,31 @@ impl Harness {
     }
     fn id(&self, code: &str) -> VId {
         account_vid(BOOK, code)
+    }
+    fn dimension(&mut self, kind: &str, code: &str) -> (u32, VId) {
+        let spec = fa_journal::dimension::DimensionValueSpec {
+            dimension: kind.into(),
+            code: code.into(),
+            name: code.into(),
+            parent: None,
+            valid_from: None,
+            valid_to: None,
+        };
+        let cx = self.cx();
+        self.runtime
+            .block_on(self.book.create_dimension_value(
+                &cx,
+                &spec,
+                PRINCIPAL,
+                format!("{kind}:{code}").as_bytes(),
+                &cap(&["schema_change"]),
+            ))
+            .unwrap()
+            .unwrap();
+        (
+            fa_model::dimension_kind(kind).unwrap().id,
+            fa_model::dimension_value_vid(BOOK, kind, code),
+        )
     }
     fn leg(&self, side: Side, code: &str, unit: UnitId, value: i128) -> LegPayload {
         LegPayload::simple(side, self.id(code), Amount::new(unit, value))
@@ -278,6 +303,29 @@ impl Harness {
     fn replay(&self, certificate: &LotsCertificate) -> LotsReport {
         self.book
             .replay_lots(&self.cx(), PRINCIPAL, &cap(&["read"]), certificate)
+            .unwrap()
+            .unwrap()
+    }
+    fn portable(&mut self, certificate: &LotsCertificate) -> crate::ProducedBundle {
+        let cx = self.cx();
+        let checkpoint = self
+            .runtime
+            .block_on(self.book.checkpoint(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read", "produce", "witness"]),
+            ))
+            .unwrap()
+            .unwrap();
+        self.runtime
+            .block_on(self.book.produce_lots_bundle(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                Some(checkpoint.checkpoint.checkpoint.body.state_oid),
+                certificate,
+            ))
+            .unwrap()
             .unwrap()
             .unwrap()
     }
@@ -830,4 +878,288 @@ fn portable_bundle_recomputes_real_native_cost_only_reliefs_independently() {
         .is_err(),
         "generic verification supplies no independently selected base currency"
     );
+}
+
+fn independently_verify(
+    h: &Harness,
+    certified: &CertifiedLots,
+    produced: &crate::ProducedBundle,
+) -> fa_verify::report::VerifiedReport {
+    let key = h.book.checkpoint_public_key();
+    let anchor = fa_verify::verify_checkpoint(&produced.checkpoint.bytes, &[key]).unwrap();
+    fa_verify::report::verify_lots_report_expected(
+        &produced.bundle.bytes,
+        &[key],
+        Some(&anchor.checkpoint),
+        Some(&produced.receipt),
+        h.usd.0,
+        Some(certified.certificate.digest()),
+    )
+    .unwrap()
+}
+
+fn replace_lot_certificate(bundle: &[u8], replacement: &LotsCertificate) -> Vec<u8> {
+    let mut reader = Reader::new(bundle);
+    let format = reader.bytes(64, "bundle format").unwrap();
+    let major = reader.u16("major").unwrap();
+    let minor = reader.u16("minor").unwrap();
+    let original = reader
+        .bytes(MAX_LOTS_CERTIFICATE_BYTES, "certificate")
+        .unwrap();
+    let remainder = &bundle[4 + format.len() + 2 + 2 + 4 + original.len()..];
+    let mut writer = Writer::new();
+    writer
+        .bytes(format)
+        .u16(major)
+        .u16(minor)
+        .bytes(&replacement.canonical_bytes().unwrap())
+        .fixed(remainder);
+    writer.finish().unwrap()
+}
+
+#[test]
+fn portable_dimensioned_lots_follow_native_disposal_and_exact_partition_pairing() {
+    let mut h = Harness::new();
+    let center = h.dimension("cost_center", "shared");
+    let project_a = h.dimension("project", "A");
+    let project_b = h.dimension("project", "B");
+    let dimensions_a = vec![center, project_a];
+    let dimensions_b = vec![center, project_b];
+    let cx = h.cx();
+    let policy = crate::LotPolicyRequest {
+        principal: PRINCIPAL,
+        policy: crate::LotPolicy {
+            account: h.id("inventory"),
+            law: LotLaw::Fifo,
+            regime: AccountingRegime::UsGaap,
+            rounding_law: RoundingLaw::HalfEven,
+        },
+        effective_date: day("2026-03-01"),
+        idempotency_key: b"partition-policy".to_vec(),
+        description: h.book.seal_text(&cx, "partition policy").unwrap(),
+        approvals: Vec::new(),
+    };
+    h.runtime
+        .block_on(h.book.set_lot_policy(
+            &cx,
+            policy,
+            &cap(&["read", "schema_change"]),
+        ))
+        .unwrap()
+        .unwrap();
+    let mut legs = Vec::new();
+    for (unit, value, dimensions) in [
+        (h.qty, 2, &dimensions_a),
+        (h.qty, 3, &dimensions_b),
+        (h.qty, 4, &dimensions_a),
+        (h.usd, 900, &dimensions_b),
+        (h.usd, 100, &dimensions_a),
+        (h.usd, 400, &dimensions_a),
+    ] {
+        let offset = if unit == h.qty {
+            "quantity-offset"
+        } else {
+            "cash"
+        };
+        for (side, account) in [(Side::Debit, "inventory"), (Side::Credit, offset)] {
+            let mut leg = h.leg(side, account, unit, value);
+            leg.dimension_set = dimensions.clone();
+            legs.push(leg);
+        }
+    }
+    let acquired = h.publish(h.proposal("partitioned-acquisition", "2026-03-02", legs));
+    let request = crate::LotDisposalPostRequest {
+        account: h.id("inventory"),
+        dimensions: dimensions_a.clone(),
+        quantity: Amount::new(h.qty, 3),
+        quantity_offset_account: h.id("quantity-offset"),
+        cost_offset_account: h.id("expense"),
+        specific_ids: Vec::new(),
+    };
+    let template = h.proposal("partitioned-disposal", "2026-03-10", Vec::new());
+    let prepared = h
+        .runtime
+        .block_on(h.book.prepare_lot_disposal(
+            &cx,
+            &cap(&["read", "post"]),
+            &request,
+            template,
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(
+        prepared
+            .proposal()
+            .legs
+            .iter()
+            .all(|leg| leg.dimension_set == dimensions_a)
+    );
+    let disposed = h
+        .runtime
+        .block_on(h.book.post(
+            &cx,
+            PostRequest {
+                proposal: prepared.into_proposal(),
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap(&["read", "post"]),
+            },
+        ))
+        .unwrap()
+        .unwrap()
+        .entry_ref();
+    let certified = h.certify(&h.request(None));
+    assert!(certified.report.dimensioned);
+    assert!(certified.certificate.dimensioned());
+    assert_eq!(h.replay(&certified.certificate), certified.report);
+    let produced = h.portable(&certified.certificate);
+    let verified = independently_verify(&h, &certified, &produced);
+    assert_eq!(verified.output, certified.certificate.output());
+    let lots = verified.lots.unwrap();
+    assert!(lots.dimensioned);
+    assert_eq!(lots.lots.len(), 3);
+    assert_eq!(
+        lots.lots
+            .iter()
+            .map(|lot| (
+                lot.qty_ordinal,
+                lot.cost_ordinal,
+                lot.open_quantity.mantissa,
+                lot.open_cost.mantissa,
+            ))
+            .collect::<Vec<_>>(),
+        [(0, 8, 0, 0), (2, 6, 3, 900), (4, 10, 3, 300)]
+    );
+    for (index, dimensions) in [&dimensions_a, &dimensions_b, &dimensions_a]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(lots.lots[index].entry, acquired.vid.0);
+        assert_eq!(lots.lots[index].entry_digest, acquired.entry_digest);
+        assert_eq!(
+            lots.lots[index].dimensions,
+            dimensions
+                .iter()
+                .map(|(kind, value)| (*kind, value.0))
+                .collect::<Vec<_>>()
+        );
+    }
+    assert_eq!(lots.lots[0].relieves[0].disposal_entry, disposed.vid.0);
+    assert_eq!(lots.lots[2].relieves[0].quantity.mantissa, 1);
+    assert_eq!(lots.lots[2].relieves[0].cost.mantissa, 100);
+    assert!(lots.lots[1].relieves.is_empty());
+
+    let key = h.book.checkpoint_public_key();
+    let anchor = fa_verify::verify_checkpoint(&produced.checkpoint.bytes, &[key]).unwrap();
+    for change in ["partial", "other-project", "cost-pair", "missing-layer"] {
+        let mut report = certified.report.clone();
+        match change {
+            "partial" => {
+                report.lots[0].dimensions.pop();
+            }
+            "other-project" => report.lots[0].dimensions = dimensions_b.clone(),
+            "cost-pair" => {
+                report.lots[0].cost_ordinal = 6;
+                report.lots[0].original_cost.mantissa = 900;
+                report.lots[0].open_cost.mantissa = 800;
+            }
+            _ => {
+                report.lots.pop();
+            }
+        }
+        let forged = LotsCertificate::seal(
+            certified.certificate.source.clone(),
+            &report,
+            PRINCIPAL,
+            certified.certificate.capability_commitment,
+        )
+        .unwrap();
+        assert!(LotsCertificate::decode(&forged.canonical_bytes().unwrap()).is_ok());
+        assert!(
+            h.book
+                .replay_lots(&cx, PRINCIPAL, &cap(&["read"]), &forged)
+                .unwrap()
+                .is_err(),
+            "native replay: {change}"
+        );
+        let replaced = replace_lot_certificate(&produced.bundle.bytes, &forged);
+        let refusal = fa_verify::report::verify_lots_report_expected(
+            &replaced,
+            &[key],
+            Some(&anchor.checkpoint),
+            None,
+            h.usd.0,
+            Some(forged.digest()),
+        )
+        .unwrap_err();
+        assert_eq!(refusal.predicate, "lots_recomputation", "{change}");
+    }
+}
+
+#[test]
+fn dimensioned_empty_cutoff_keeps_v2_and_historical_dimensionless_prefix_keeps_v1() {
+    let mut h = Harness::new();
+    let dimensions = vec![h.dimension("cost_center", "north")];
+    let before = h.head();
+    let mut legs = h.acquisition_legs("inventory", 2, 120);
+    for leg in &mut legs {
+        leg.dimension_set = dimensions.clone();
+    }
+    let acquired = h.publish(h.proposal("later-attributed-lot", "2026-03-20", legs));
+    h.reverse("undo-attributed-lot", "2026-03-25", acquired);
+    let current = h.certify(&h.request(Some("2026-03-10")));
+    assert!(current.report.dimensioned);
+    assert!(current.report.lots.is_empty());
+    assert_eq!(
+        Reader::new(current.certificate.output())
+            .bytes(64, "output")
+            .unwrap(),
+        LOTS_OUTPUT_FORMAT_V2
+    );
+    let produced = h.portable(&current.certificate);
+    let verified = independently_verify(&h, &current, &produced);
+    assert!(verified.lots.as_ref().unwrap().dimensioned);
+    assert!(verified.lots.unwrap().lots.is_empty());
+    let mut historical_request = h.request(Some("2026-03-10"));
+    historical_request.known_at = Some(before);
+    let historical = h.certify(&historical_request);
+    assert!(!historical.report.dimensioned);
+    assert_eq!(
+        Reader::new(historical.certificate.output())
+            .bytes(64, "output")
+            .unwrap(),
+        LOTS_OUTPUT_FORMAT
+    );
+    let historical_bundle = h.portable(&historical.certificate);
+    let legacy = independently_verify(&h, &historical, &historical_bundle);
+    assert!(!legacy.lots.unwrap().dimensioned);
+
+    let key = h.book.checkpoint_public_key();
+    let anchor = fa_verify::verify_checkpoint(&produced.checkpoint.bytes, &[key]).unwrap();
+    let mut downgraded = current.report.clone();
+    downgraded.dimensioned = false;
+    let forged = LotsCertificate::seal(
+        current.certificate.source.clone(),
+        &downgraded,
+        PRINCIPAL,
+        current.certificate.capability_commitment,
+    )
+    .unwrap();
+    assert!(LotsCertificate::decode(&forged.canonical_bytes().unwrap()).is_ok());
+    assert!(
+        h.book
+            .replay_lots(&h.cx(), PRINCIPAL, &cap(&["read"]), &forged)
+            .unwrap()
+            .is_err()
+    );
+    let refusal = fa_verify::report::verify_lots_report_expected(
+        &replace_lot_certificate(&produced.bundle.bytes, &forged),
+        &[key],
+        Some(&anchor.checkpoint),
+        None,
+        h.usd.0,
+        Some(forged.digest()),
+    )
+    .unwrap_err();
+    assert_eq!(refusal.predicate, "lots_profile");
 }

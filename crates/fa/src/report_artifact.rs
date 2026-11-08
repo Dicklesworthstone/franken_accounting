@@ -246,7 +246,9 @@ impl ReportArtifact {
             Artifact::Summary(Box::new(SummaryCertificate::decode(bytes)?))
         } else if format == crate::AGING_CERTIFICATE_FORMAT {
             Artifact::Aging(Box::new(AgingCertificate::decode(bytes)?))
-        } else if format == crate::LOTS_CERTIFICATE_FORMAT {
+        } else if format == crate::LOTS_CERTIFICATE_FORMAT
+            || format == crate::LOTS_CERTIFICATE_FORMAT_V2
+        {
             Artifact::Lots(Box::new(crate::LotsCertificate::decode(bytes)?))
         } else if format == crate::DUE_DATE_AGING_CERTIFICATE_FORMAT {
             Artifact::DueDateAging(Box::new(DueDateAgingCertificate::decode(bytes)?))

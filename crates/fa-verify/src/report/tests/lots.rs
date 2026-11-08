@@ -343,6 +343,7 @@ fn expected(fixture: &Fixture, known_at: u64, cutoff: Option<i32>) -> VerifiedLo
             qty_ordinal: 0,
             cost_ordinal: 2,
             account: account_id("1000"),
+            dimensions: Vec::new(),
             debit: true,
             effective_date: day,
             recorded_at: seq,
@@ -363,6 +364,7 @@ fn expected(fixture: &Fixture, known_at: u64, cutoff: Option<i32>) -> VerifiedLo
         account_code: "1000".into(),
         account_name: "Inventory".into(),
         base_unit: BASE,
+        dimensioned: false,
         source_certificate_digest: [0; 32],
         lots,
     }
@@ -371,10 +373,14 @@ fn expected(fixture: &Fixture, known_at: u64, cutoff: Option<i32>) -> VerifiedLo
 fn output_bytes(report: &VerifiedLots) -> Vec<u8> {
     // This fixture encoder deliberately does not call the replay encoder.
     let mut out = Writer::default();
-    out.bytes(b"fa:lots:v1")
-        .fixed(&report.book_id)
-        .u64(report.known_at)
-        .u8(u8::from(report.effective_through.is_some()));
+    out.bytes(if report.dimensioned {
+        b"fa:lots:v2"
+    } else {
+        b"fa:lots:v1"
+    })
+    .fixed(&report.book_id)
+    .u64(report.known_at)
+    .u8(u8::from(report.effective_through.is_some()));
     if let Some(cutoff) = report.effective_through {
         out.i32(cutoff);
     }
@@ -388,8 +394,14 @@ fn output_bytes(report: &VerifiedLots) -> Vec<u8> {
             .fixed(&lot.entry_digest)
             .u16(lot.qty_ordinal)
             .u16(lot.cost_ordinal)
-            .u128(lot.account)
-            .u8(u8::from(!lot.debit))
+            .u128(lot.account);
+        if report.dimensioned {
+            out.count(lot.dimensions.len());
+            for (kind, value) in &lot.dimensions {
+                out.u32(*kind).u128(*value);
+            }
+        }
+        out.u8(u8::from(!lot.debit))
             .i32(lot.effective_date)
             .u64(lot.recorded_at);
         for value in [
@@ -425,6 +437,18 @@ fn output_bytes(report: &VerifiedLots) -> Vec<u8> {
 }
 
 fn wrap(native: &[u8], base_unit: u32, cutoff: Option<i32>, output: &[u8]) -> (Vec<u8>, [u8; 32]) {
+    let dimensioned =
+        Reader::new(output).bytes(64, "output format").unwrap() == b"fa:lots:v2";
+    wrap_version(native, base_unit, cutoff, output, dimensioned)
+}
+
+fn wrap_version(
+    native: &[u8],
+    base_unit: u32,
+    cutoff: Option<i32>,
+    output: &[u8],
+    dimensioned: bool,
+) -> (Vec<u8>, [u8; 32]) {
     let mut r = Reader::new(native);
     assert_eq!(r.bytes(64, "format").unwrap(), REPORT_BUNDLE_FORMAT);
     assert_eq!(r.u16("major").unwrap(), 2);
@@ -433,7 +457,11 @@ fn wrap(native: &[u8], base_unit: u32, cutoff: Option<i32>, output: &[u8]) -> (V
     let remainder = &native[native.len() - r.remaining()..];
     let mut outer = Writer::default();
     outer
-        .bytes(b"fa:lots-certificate:v1")
+        .bytes(if dimensioned {
+            b"fa:lots-certificate:v2"
+        } else {
+            b"fa:lots-certificate:v1"
+        })
         .u128(PRINCIPAL)
         .fixed(&[7; 32])
         .bytes(source)
@@ -444,7 +472,11 @@ fn wrap(native: &[u8], base_unit: u32, cutoff: Option<i32>, output: &[u8]) -> (V
     }
     outer.bytes(output);
     let digest = hash_parts(
-        b"fa:lots-certificate-digest:v1",
+        if dimensioned {
+            b"fa:lots-certificate-digest:v2"
+        } else {
+            b"fa:lots-certificate-digest:v1"
+        },
         &[&(outer.buf.len() as u32).to_le_bytes(), &outer.buf],
     );
     outer.fixed(&digest);
@@ -687,6 +719,7 @@ fn empty(known_at: u64, cutoff: Option<i32>) -> VerifiedLots {
         account_code: "1000".into(),
         account_name: "Inventory".into(),
         base_unit: BASE,
+        dimensioned: false,
         source_certificate_digest: [0; 32],
         lots: vec![],
     }
@@ -790,7 +823,7 @@ fn bare_cost_acquisitions_and_partly_applied_credits_cannot_disappear_from_certi
 }
 
 #[test]
-fn selected_history_dimensions_and_ineligible_units_are_refused_even_before_effective_cutoff() {
+fn unpaired_dimension_history_and_ineligible_units_are_refused_even_before_effective_cutoff() {
     for (unit, dimensions) in [(2, false), (11, false), (QUANTITY, true)] {
         let mut records = chart();
         let mut legs = acquisition(10, 100);
@@ -860,6 +893,7 @@ fn dimensions_on_another_account_do_not_narrow_the_selected_native_lot_profile()
         qty_ordinal: 0,
         cost_ordinal: 2,
         account: account_id("1000"),
+        dimensions: Vec::new(),
         debit: true,
         effective_date: 10,
         recorded_at: 3,
@@ -878,5 +912,301 @@ fn dimensions_on_another_account_do_not_narrow_the_selected_native_lot_profile()
             .unwrap()
             .lots,
         expected.lots
+    );
+}
+
+const PARTITION_A: &[(u32, u128)] = &[(2, 101), (4, 401)];
+const PARTITION_B: &[(u32, u128)] = &[(2, 101), (4, 402)];
+
+struct PartitionFixture {
+    records: Vec<Record>,
+    acquisition: u128,
+    disposal: u128,
+}
+
+fn partition_fixture() -> PartitionFixture {
+    let mut records = chart();
+    let mut legs = Vec::new();
+    // Cost ordinals deliberately interleave the two partitions. A partial
+    // cost-center match would wrongly pair quantity ordinal 0 with cost 6.
+    for (unit, value, dimensions) in [
+        (QUANTITY, 2, PARTITION_A),
+        (QUANTITY, 3, PARTITION_B),
+        (QUANTITY, 4, PARTITION_A),
+        (BASE, 900, PARTITION_B),
+        (BASE, 100, PARTITION_A),
+        (BASE, 400, PARTITION_A),
+    ] {
+        for (code, debit) in [("1000", true), ("3000", false)] {
+            let mut value_leg = leg(code, debit, value);
+            value_leg.unit = unit;
+            value_leg.dimensions = dimensions.to_vec();
+            legs.push(value_leg);
+        }
+    }
+    let (purchase, acquisition) = posting(1, 3, b"partition-purchase", &legs, None, None);
+    let mut disposal_legs = vec![
+        quantity("1000", false, 2),
+        quantity("3000", true, 2),
+        leg("1000", false, 100),
+        leg("3000", true, 100),
+    ];
+    for leg in &mut disposal_legs {
+        leg.dimensions = PARTITION_A.to_vec();
+    }
+    disposal_legs[0]
+        .settles
+        .push(target(&purchase, acquisition, 0, QUANTITY, 2));
+    disposal_legs[2]
+        .settles
+        .push(target(&purchase, acquisition, 8, BASE, 100));
+    let (sale, disposal) = dated(
+        posting(1, 4, b"partition-sale", &disposal_legs, None, None),
+        20,
+    );
+    let (undo, _) = dated(
+        reverse(&sale, disposal, 5, b"partition-undo", &disposal_legs),
+        30,
+    );
+    records.extend([purchase, sale, undo]);
+    PartitionFixture {
+        records,
+        acquisition,
+        disposal,
+    }
+}
+
+fn partition_source(fixture: &PartitionFixture, known_at: u64) -> VerifiedOpenItems {
+    let mut items = Vec::new();
+    if known_at >= 3 {
+        for (ordinal, unit, original, disposal_ordinal) in [
+            (0, QUANTITY, 2, Some(0)),
+            (2, QUANTITY, 3, None),
+            (4, QUANTITY, 4, None),
+            (6, BASE, 900, None),
+            (8, BASE, 100, Some(2)),
+            (10, BASE, 400, None),
+        ] {
+            let applied = if known_at == 4 && disposal_ordinal.is_some() {
+                original
+            } else {
+                0
+            };
+            let applications = match (known_at >= 4, disposal_ordinal) {
+                (true, Some(ordinal)) => {
+                    vec![history(fixture.disposal, ordinal, original, 4, known_at == 4)]
+                }
+                _ => Vec::new(),
+            };
+            let mut value = item(
+                fixture.acquisition,
+                ordinal,
+                "1000",
+                true,
+                3,
+                original,
+                applied,
+                0,
+                original - applied,
+                applications,
+            );
+            value.unit_id = unit;
+            items.push(value);
+        }
+    }
+    if known_at == 4 {
+        for (ordinal, unit, original) in [(0, QUANTITY, 2), (2, BASE, 100)] {
+            let mut value = item(
+                fixture.disposal,
+                ordinal,
+                "1000",
+                false,
+                4,
+                original,
+                0,
+                original,
+                0,
+                vec![],
+            );
+            value.unit_id = unit;
+            value.effective_date = 20;
+            items.push(value);
+        }
+    }
+    source(items)
+}
+
+fn partition_expected(
+    fixture: &PartitionFixture,
+    known_at: u64,
+    cutoff: Option<i32>,
+) -> VerifiedLots {
+    let mut report = empty(known_at, cutoff);
+    report.dimensioned = known_at >= 3;
+    let effective = match cutoff {
+        None | Some(30..) => 5,
+        Some(20..=29) => 4,
+        Some(10..=19) => 3,
+        Some(..=9) => 2,
+    };
+    let selected = known_at.min(effective);
+    if selected < 3 {
+        return report;
+    }
+    for (qty_ordinal, cost_ordinal, quantity, cost, dimensions) in [
+        (0, 8, 2, 100, PARTITION_A),
+        (2, 6, 3, 900, PARTITION_B),
+        (4, 10, 4, 400, PARTITION_A),
+    ] {
+        let applied = qty_ordinal == 0 && selected == 4;
+        report.lots.push(VerifiedLot {
+            entry: fixture.acquisition,
+            entry_digest: fixture.records[2].envelope.record_digest,
+            qty_ordinal,
+            cost_ordinal,
+            account: account_id("1000"),
+            dimensions: dimensions.to_vec(),
+            debit: true,
+            effective_date: 10,
+            recorded_at: 3,
+            original_quantity: amount(QUANTITY, quantity),
+            relieved_quantity: amount(QUANTITY, if applied { quantity } else { 0 }),
+            open_quantity: amount(QUANTITY, if applied { 0 } else { quantity }),
+            original_cost: amount(BASE, cost),
+            relieved_cost: amount(BASE, if applied { cost } else { 0 }),
+            open_cost: amount(BASE, if applied { 0 } else { cost }),
+            relieves: if qty_ordinal == 0 && selected >= 4 {
+                vec![VerifiedLotRelief {
+                    disposal_entry: fixture.disposal,
+                    qty_ordinal: Some(0),
+                    cost_ordinal: Some(2),
+                    quantity: amount(QUANTITY, 2),
+                    cost: amount(BASE, 100),
+                    recorded_at: 4,
+                    live: applied,
+                }]
+            } else {
+                Vec::new()
+            },
+        });
+    }
+    report
+}
+
+#[test]
+fn dimensioned_lots_pair_exact_full_sets_and_restore_reliefs_before_cutoff() {
+    let fixture = partition_fixture();
+    for known_at in 2..=5 {
+        for cutoff in [None, Some(0), Some(15), Some(25), Some(35)] {
+            let expected = partition_expected(&fixture, known_at, cutoff);
+            let verified = custom(
+                &fixture.records,
+                &partition_source(&fixture, known_at),
+                &expected,
+                BASE,
+            )
+            .unwrap_or_else(|error| panic!("known_at={known_at} cutoff={cutoff:?}: {error}"));
+            assert_eq!(verified.output, output_bytes(&expected));
+            let actual = verified.lots.unwrap();
+            assert_eq!(actual.dimensioned, known_at >= 3);
+            assert_eq!(actual.lots, expected.lots);
+            if known_at >= 3 && cutoff == Some(0) {
+                assert!(actual.lots.is_empty());
+                assert!(actual.dimensioned, "empty cutoff retains the v2 scope");
+            }
+        }
+    }
+}
+
+#[test]
+fn resealed_dimension_sets_and_pairing_cannot_reassign_lot_costs() {
+    let fixture = partition_fixture();
+    let expected = partition_expected(&fixture, 5, None);
+    type Mutation = fn(&mut VerifiedLots);
+    let changes: [(&str, Mutation); 7] = [
+        ("missing dimension", |value| {
+            value.lots[0].dimensions.pop();
+        }),
+        ("other project", |value| {
+            value.lots[0].dimensions[1].1 = PARTITION_B[1].1;
+        }),
+        ("erased partition", |value| {
+            value.lots[0].dimensions.clear();
+        }),
+        ("noncanonical order", |value| {
+            value.lots[0].dimensions.reverse();
+        }),
+        ("other partition cost", |value| {
+            value.lots[0].cost_ordinal = 6;
+            value.lots[0].original_cost.mantissa = 900;
+            value.lots[0].open_cost.mantissa = 900;
+        }),
+        ("missing paired layer", |value| {
+            value.lots.pop();
+        }),
+        ("restoration erased", |value| {
+            value.lots[0].relieves[0].live = true;
+        }),
+    ];
+    for (name, mutate) in changes {
+        let mut forged = expected.clone();
+        mutate(&mut forged);
+        assert_eq!(
+            custom(&fixture.records, &partition_source(&fixture, 5), &forged, BASE)
+                .expect_err(name)
+                .predicate,
+            "lots_recomputation",
+            "{name}"
+        );
+    }
+    for (known_at, dimensioned) in [(2, true), (5, false)] {
+        let mut wrong_version = partition_expected(&fixture, known_at, Some(0));
+        wrong_version.dimensioned = dimensioned;
+        assert_eq!(
+            custom(
+                &fixture.records,
+                &partition_source(&fixture, known_at),
+                &wrong_version,
+                BASE,
+            )
+            .unwrap_err()
+            .predicate,
+            "lots_profile",
+            "version is derived from history even when no output row survives"
+        );
+    }
+}
+
+#[test]
+fn dimensioned_lot_application_cannot_consume_another_complete_partition() {
+    let fixture = partition_fixture();
+    let purchase = &fixture.records[2];
+    let mut legs = vec![
+        quantity("1000", false, 2),
+        quantity("3000", true, 2),
+        leg("1000", false, 100),
+        leg("3000", true, 100),
+    ];
+    for leg in &mut legs {
+        leg.dimensions = PARTITION_B.to_vec();
+    }
+    legs[0]
+        .settles
+        .push(target(purchase, fixture.acquisition, 0, QUANTITY, 2));
+    legs[2]
+        .settles
+        .push(target(purchase, fixture.acquisition, 8, BASE, 100));
+    let (forged, _) = posting(1, 4, b"cross-partition-disposal", &legs, None, None);
+    let mut records = fixture.records;
+    records.truncate(3);
+    records.push(forged);
+    let mut expected = empty(4, Some(0));
+    expected.dimensioned = true;
+    assert_eq!(
+        custom(&records, &source(vec![]), &expected, BASE)
+            .unwrap_err()
+            .predicate,
+        "application_target",
+        "a repaired prefix and an empty cutoff cannot conceal cross-partition relief"
     );
 }

@@ -438,7 +438,8 @@ fn due_date_aging_certificate(certificate: &[u8]) -> bool {
 fn lots_certificate(certificate: &[u8]) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
-        if reader.bytes(64, "lots format")? != b"fa:lots-certificate:v1" {
+        let format = reader.bytes(64, "lots format")?;
+        if format != b"fa:lots-certificate:v1" && format != b"fa:lots-certificate:v2" {
             return Ok(false);
         }
         reader.u128("lots producer")?;
@@ -1201,6 +1202,51 @@ mod format_tests {
             .bytes(&aging.finish().unwrap())
             .bytes(control);
         outer.finish().unwrap()
+    }
+
+    #[test]
+    fn lot_v2_routing_retains_selected_trunk_open_item_source_requirements() {
+        let source = |branch: [u8; 16], selector: u8, selected: u8| {
+            let mut writer = Writer::new();
+            writer
+                .fixed(b"fa:report-certificate:v3")
+                .str("fa-fold-over-prefix")
+                .str("embedded-owner")
+                .str("fa:open-items:v1")
+                .fixed(&[3; 16])
+                .fixed(&branch)
+                .u64(9)
+                .u8(selector)
+                .u8(selected)
+                .u128(7);
+            writer.finish().unwrap()
+        };
+        let wrap = |version: u8, source: &[u8]| {
+            let mut writer = Writer::new();
+            writer
+                .bytes(format!("fa:lots-certificate:v{version}").as_bytes())
+                .u128(7)
+                .fixed(&[9; 32])
+                .bytes(source);
+            writer.finish().unwrap()
+        };
+        let valid = source([0; 16], 1, 1);
+        for version in [1, 2] {
+            assert!(lots_certificate(&wrap(version, &valid)));
+            for wrong in [
+                source([1; 16], 1, 1),
+                source([0; 16], 0, 1),
+                source([0; 16], 1, 0),
+                native_header(1, "fa:open-items:v1", 1),
+            ] {
+                assert!(!lots_certificate(&wrap(version, &wrong)));
+            }
+            let truncated = wrap(version, &valid);
+            assert!(!lots_certificate(&truncated[..truncated.len() - 1]));
+        }
+        for version in [0, 3, 10, 20] {
+            assert!(!lots_certificate(&wrap(version, &valid)));
+        }
     }
 
     #[test]

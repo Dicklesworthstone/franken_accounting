@@ -14,13 +14,18 @@ use crate::envelope::{LeafEnvelope, Leg, proposal_leg_details};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub(super) const CERTIFICATE_FORMAT: &[u8] = b"fa:lots-certificate:v1";
+pub(super) const CERTIFICATE_FORMAT_V2: &[u8] = b"fa:lots-certificate:v2";
 pub(super) const OUTPUT_FORMAT: &[u8] = b"fa:lots:v1";
+pub(super) const OUTPUT_FORMAT_V2: &[u8] = b"fa:lots:v2";
 pub(super) const DIGEST_DOMAIN: &[u8] = b"fa:lots-certificate-digest:v1";
+pub(super) const DIGEST_DOMAIN_V2: &[u8] = b"fa:lots-certificate-digest:v2";
+const MAX_DIMENSIONS_PER_LEG: usize = 64;
 
 pub(super) struct Certificate<'a> {
     pub source: &'a [u8],
     pub base_unit: u32,
     pub effective_through: Option<i32>,
+    pub dimensioned: bool,
     pub output: &'a [u8],
     pub digest: [u8; 32],
 }
@@ -50,6 +55,8 @@ pub struct VerifiedLot {
     pub qty_ordinal: u16,
     pub cost_ordinal: u16,
     pub account: u128,
+    /// The complete acquisition-leg partition, never a partial selector.
+    pub dimensions: Vec<(u32, u128)>,
     pub debit: bool,
     pub effective_date: i32,
     pub recorded_at: u64,
@@ -72,13 +79,19 @@ pub struct VerifiedLots {
     pub account_name: String,
     /// An explicit recipient-checked premise, not an authenticated genesis fact.
     pub base_unit: u32,
+    /// Derived from all visible selected-account history before the cutoff.
+    pub dimensioned: bool,
     pub source_certificate_digest: [u8; 32],
     pub lots: Vec<VerifiedLot>,
 }
 
 pub(super) fn recognizes(bytes: &[u8]) -> bool {
-    bytes.starts_with(&(CERTIFICATE_FORMAT.len() as u32).to_le_bytes())
-        && bytes.get(4..4 + CERTIFICATE_FORMAT.len()) == Some(CERTIFICATE_FORMAT)
+    [CERTIFICATE_FORMAT, CERTIFICATE_FORMAT_V2]
+        .into_iter()
+        .any(|format| {
+            bytes.starts_with(&(format.len() as u32).to_le_bytes())
+                && bytes.get(4..4 + format.len()) == Some(format)
+        })
 }
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
@@ -86,12 +99,16 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         return Err(failed("bounded_input", "lot certificate exceeds 64 MiB"));
     }
     let mut r = Reader::new(bytes);
-    if r.bytes(64, "lots.format")? != CERTIFICATE_FORMAT {
-        return Err(failed(
-            "supported_report",
-            "unsupported lot certificate format",
-        ));
-    }
+    let dimensioned = match r.bytes(64, "lots.format")? {
+        CERTIFICATE_FORMAT => false,
+        CERTIFICATE_FORMAT_V2 => true,
+        _ => {
+            return Err(failed(
+                "supported_report",
+                "unsupported lot certificate format",
+            ));
+        }
+    };
     r.u128("lots.producer")?;
     r.fixed::<32>("lots.capability_commitment")?;
     let source = r.bytes(MAX_REPORT_BUNDLE_BYTES, "lots.source")?;
@@ -105,7 +122,12 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let digest = r.fixed("lots.digest")?;
     r.finish("lot certificate")?;
     let body = &bytes[..bytes.len() - 32];
-    if hash_parts(DIGEST_DOMAIN, &[&(body.len() as u32).to_le_bytes(), body]) != digest {
+    let domain = if dimensioned {
+        DIGEST_DOMAIN_V2
+    } else {
+        DIGEST_DOMAIN
+    };
+    if hash_parts(domain, &[&(body.len() as u32).to_le_bytes(), body]) != digest {
         return Err(failed(
             "certificate_digest",
             "lot certificate bytes differ from their commitment",
@@ -115,9 +137,16 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         source,
         base_unit,
         effective_through,
+        dimensioned,
         output,
         digest,
     })
+}
+
+pub(super) struct History {
+    digests: BTreeMap<u128, [u8; 32]>,
+    dimensions: BTreeMap<(u128, u16), Vec<(u32, u128)>>,
+    dimensioned: bool,
 }
 
 /// Check the entire visible account history, before any effective cutoff.
@@ -134,14 +163,18 @@ pub(super) fn check_history(
     legs: &[Vec<Leg>],
     records: &[(usize, &[u8])],
     visible_migrations: &BTreeSet<u64>,
-) -> Result<BTreeMap<u128, [u8; 32]>, ReportError> {
+) -> Result<History, ReportError> {
     if !units.currencies.contains(&base_unit) {
         return Err(failed(
             "lots_profile",
             "lot cost base must be a registered currency",
         ));
     }
-    let mut digests = BTreeMap::new();
+    let mut history = History {
+        digests: BTreeMap::new(),
+        dimensions: BTreeMap::new(),
+        dimensioned: false,
+    };
     for (&index, info) in infos {
         if envelopes[index].class == 12 && !visible_migrations.contains(&(index as u64)) {
             continue;
@@ -156,16 +189,24 @@ pub(super) fn check_history(
         }
         let (length, bytes) = records[index];
         let details = proposal_leg_details(&bytes[..length])?;
-        let mut acquisitions = 0usize;
-        let mut applications = 0usize;
-        let mut quantities = 0usize;
-        let mut costs = 0usize;
+        // Counts are per complete dimension set. Two values of the same
+        // parent dimension never authorize pooling their quantity or cost.
+        let mut partitions: BTreeMap<Vec<(u32, u128)>, (usize, usize, usize)> =
+            BTreeMap::new();
         for (ordinal, leg) in &selected {
             let detail = &details[*ordinal];
-            if !detail.dimensions.is_empty() || detail.base_amount.is_some() {
+            if detail.base_amount.is_some() {
                 return Err(failed(
                     "lots_profile",
-                    "lot schedules require dimensionless native-cost account history",
+                    "lot schedules require native-cost account history",
+                ));
+            }
+            if detail.dimensions.len() > MAX_DIMENSIONS_PER_LEG
+                || detail.dimensions.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+            {
+                return Err(failed(
+                    "lots_profile",
+                    "lot dimensions must be bounded and strictly ordered by kind",
                 ));
             }
             if leg.unit != base_unit && !units.quantities.contains(&leg.unit) {
@@ -174,15 +215,26 @@ pub(super) fn check_history(
                     "lot quantities must be registered balanced noncurrency units",
                 ));
             }
+            let ordinal = u16::try_from(*ordinal)
+                .map_err(|_| failed("bounded_input", "lot leg ordinal exceeds u16"))?;
+            history.dimensioned |= !detail.dimensions.is_empty();
+            if history
+                .dimensions
+                .insert((info.identity, ordinal), detail.dimensions.clone())
+                .is_some()
+            {
+                return Err(failed("entry_identity", "duplicate lot leg identity"));
+            }
             if envelopes[index].class == 4 {
                 // The complete OpenItems source checks exact reversal shape
                 // and target lineage; restoration never reprices old relief.
                 continue;
             }
+            let (quantities, costs, applications) =
+                partitions.entry(detail.dimensions.clone()).or_default();
             if leg.debit && detail.settlements.is_empty() {
-                acquisitions += 1;
                 if leg.unit == base_unit {
-                    costs += 1;
+                    *costs += 1;
                     if leg.mantissa < 0 {
                         return Err(failed(
                             "lots_profile",
@@ -190,7 +242,7 @@ pub(super) fn check_history(
                         ));
                     }
                 } else {
-                    quantities += 1;
+                    *quantities += 1;
                     if leg.mantissa <= 0 {
                         return Err(failed(
                             "lots_profile",
@@ -199,7 +251,7 @@ pub(super) fn check_history(
                     }
                 }
             } else if !leg.debit && !detail.settlements.is_empty() && leg.mantissa > 0 {
-                applications += 1;
+                *applications += 1;
                 let amount = detail
                     .settlements
                     .iter()
@@ -221,23 +273,28 @@ pub(super) fn check_history(
                 ));
             }
         }
-        if envelopes[index].class != 4
-            && !((acquisitions == 2 && quantities == 1 && costs == 1 && applications == 0)
-                || (acquisitions == 0 && applications == selected.len()))
-        {
-            return Err(failed(
-                "lots_profile",
-                "each acquisition must have exactly one quantity debit and one base-cost debit; applying entries cannot also acquire lots",
-            ));
+        for (dimensions, (quantities, costs, applications)) in partitions {
+            let acquisition = quantities > 0
+                && quantities == costs
+                && applications == 0
+                && (!dimensions.is_empty() || quantities == 1);
+            let application = quantities == 0 && costs == 0 && applications > 0;
+            if !acquisition && !application {
+                return Err(failed(
+                    "lots_profile",
+                    "each full dimension partition must contain paired acquisition debits or fully applied credits; dimensionless acquisitions require one pair",
+                ));
+            }
         }
-        if digests
+        if history
+            .digests
             .insert(info.identity, envelopes[index].record_digest)
             .is_some()
         {
             return Err(failed("entry_identity", "duplicate lot entry identity"));
         }
     }
-    Ok(digests)
+    Ok(history)
 }
 
 fn amount(unit: u32, mantissa: i128) -> VerifiedLotAmount {
@@ -280,8 +337,14 @@ pub(super) fn replay(
     known_at: u64,
     source_certificate_digest: [u8; 32],
     snapshot: VerifiedOpenItems,
-    digests: &BTreeMap<u128, [u8; 32]>,
+    history: &History,
 ) -> Result<(VerifiedLots, Vec<u8>), ReportError> {
+    if certificate.dimensioned != history.dimensioned {
+        return Err(failed(
+            "lots_profile",
+            "lot certificate version must match the complete visible account history",
+        ));
+    }
     let account = snapshot.account_filter.ok_or_else(|| {
         failed(
             "lots_profile",
@@ -308,7 +371,8 @@ pub(super) fn replay(
     if snapshot.items.len() > MAX_ROWS {
         return Err(failed("bounded_input", "lot source exceeds the item bound"));
     }
-    let mut by_entry: BTreeMap<u128, Vec<&VerifiedOpenItem>> = BTreeMap::new();
+    let mut by_partition: BTreeMap<(u128, Vec<(u32, u128)>), Vec<&VerifiedOpenItem>> =
+        BTreeMap::new();
     let mut application_count = 0usize;
     for item in &snapshot.items {
         validate_item(item)?;
@@ -322,8 +386,20 @@ pub(super) fn replay(
             .checked_add(item.applications.len())
             .filter(|count| *count <= MAX_ROWS)
             .ok_or_else(|| failed("bounded_input", "lot source exceeds the application bound"))?;
+        let dimensions = history
+            .dimensions
+            .get(&(item.entry, item.ordinal))
+            .ok_or_else(|| {
+                failed(
+                    "entry_identity",
+                    "lot source leg has no authenticated dimension set",
+                )
+            })?;
         if item.applied_out == 0 {
-            by_entry.entry(item.entry).or_default().push(item);
+            by_partition
+                .entry((item.entry, dimensions.clone()))
+                .or_default()
+                .push(item);
         } else if item.debit
             || item.applied_out != item.original
             || item.open != 0
@@ -343,117 +419,131 @@ pub(super) fn replay(
             .ok_or_else(|| failed("bounded_input", "lot metadata length overflow"))?,
         1,
     )?;
-    let mut output_size = bounded(header, by_entry.len(), 205)?;
-    let mut lots = Vec::with_capacity(by_entry.len());
-    for (entry, items) in by_entry {
-        if items.len() != 2 || items.iter().any(|item| !item.debit) {
+    let mut output_size = header;
+    let mut lots = Vec::with_capacity(by_partition.len());
+    for ((entry, dimensions), mut items) in by_partition {
+        if items.iter().any(|item| !item.debit) {
             return Err(failed(
                 "lots_profile",
-                "an acquisition is not exactly one debit quantity/cost pair",
+                "an acquisition partition contains a non-debit source leg",
             ));
         }
-        let quantity = items
+        items.sort_by_key(|item| item.ordinal);
+        let quantities: Vec<_> = items
             .iter()
-            .find(|item| item.unit_id != certificate.base_unit)
-            .copied();
-        let cost = items
+            .filter(|item| item.unit_id != certificate.base_unit)
+            .copied()
+            .collect();
+        let costs: Vec<_> = items
             .iter()
-            .find(|item| item.unit_id == certificate.base_unit)
-            .copied();
-        let (Some(quantity), Some(cost)) = (quantity, cost) else {
-            return Err(failed(
-                "lots_profile",
-                "an acquisition omits its quantity or base-cost leg",
-            ));
-        };
-        if quantity.original <= 0
-            || quantity.effective_date != cost.effective_date
-            || quantity.recorded_at != cost.recorded_at
+            .filter(|item| item.unit_id == certificate.base_unit)
+            .copied()
+            .collect();
+        if quantities.is_empty()
+            || quantities.len() != costs.len()
+            || (dimensions.is_empty() && quantities.len() != 1)
         {
             return Err(failed(
                 "lots_profile",
-                "quantity/cost acquisition coordinates disagree",
+                "an acquisition partition does not pair quantity and base-cost legs canonically",
             ));
         }
-        let entry_digest = *digests.get(&entry).ok_or_else(|| {
-            failed(
-                "entry_identity",
-                "lot acquisition has no authenticated record digest",
-            )
-        })?;
-        let mut cost_applications: BTreeMap<(u128, u64, bool), VecDeque<&VerifiedApplication>> =
-            BTreeMap::new();
-        for application in &cost.applications {
-            cost_applications
-                .entry((application.entry, application.recorded_at, application.live))
-                .or_default()
-                .push_back(application);
-        }
-        let mut relieves =
-            Vec::with_capacity(quantity.applications.len() + cost.applications.len());
-        for application in &quantity.applications {
-            let matched = cost_applications
-                .get_mut(&(application.entry, application.recorded_at, application.live))
-                .and_then(VecDeque::pop_front);
-            relieves.push(VerifiedLotRelief {
-                disposal_entry: application.entry,
-                qty_ordinal: Some(application.ordinal),
-                cost_ordinal: matched.map(|value| value.ordinal),
-                quantity: amount(quantity.unit_id, application.amount),
-                cost: amount(
-                    certificate.base_unit,
-                    matched.map_or(0, |value| value.amount),
-                ),
-                recorded_at: application.recorded_at,
-                live: application.live,
-            });
-        }
-        for ((disposal_entry, recorded_at, live), applications) in cost_applications {
-            for application in applications {
+        for (quantity, cost) in quantities.into_iter().zip(costs) {
+            if quantity.original <= 0
+                || quantity.effective_date != cost.effective_date
+                || quantity.recorded_at != cost.recorded_at
+            {
+                return Err(failed(
+                    "lots_profile",
+                    "quantity/cost acquisition coordinates disagree",
+                ));
+            }
+            let entry_digest = *history.digests.get(&entry).ok_or_else(|| {
+                failed(
+                    "entry_identity",
+                    "lot acquisition has no authenticated record digest",
+                )
+            })?;
+            let mut cost_applications: BTreeMap<(u128, u64, bool), VecDeque<&VerifiedApplication>> =
+                BTreeMap::new();
+            for application in &cost.applications {
+                cost_applications
+                    .entry((application.entry, application.recorded_at, application.live))
+                    .or_default()
+                    .push_back(application);
+            }
+            let mut relieves =
+                Vec::with_capacity(quantity.applications.len() + cost.applications.len());
+            for application in &quantity.applications {
+                let matched = cost_applications
+                    .get_mut(&(application.entry, application.recorded_at, application.live))
+                    .and_then(VecDeque::pop_front);
                 relieves.push(VerifiedLotRelief {
-                    disposal_entry,
-                    qty_ordinal: None,
-                    cost_ordinal: Some(application.ordinal),
-                    quantity: amount(quantity.unit_id, 0),
-                    cost: amount(certificate.base_unit, application.amount),
-                    recorded_at,
-                    live,
+                    disposal_entry: application.entry,
+                    qty_ordinal: Some(application.ordinal),
+                    cost_ordinal: matched.map(|value| value.ordinal),
+                    quantity: amount(quantity.unit_id, application.amount),
+                    cost: amount(
+                        certificate.base_unit,
+                        matched.map_or(0, |value| value.amount),
+                    ),
+                    recorded_at: application.recorded_at,
+                    live: application.live,
                 });
             }
+            for ((disposal_entry, recorded_at, live), applications) in cost_applications {
+                for application in applications {
+                    relieves.push(VerifiedLotRelief {
+                        disposal_entry,
+                        qty_ordinal: None,
+                        cost_ordinal: Some(application.ordinal),
+                        quantity: amount(quantity.unit_id, 0),
+                        cost: amount(certificate.base_unit, application.amount),
+                        recorded_at,
+                        live,
+                    });
+                }
+            }
+            relieves.sort_by_key(|relief| {
+                (
+                    relief.recorded_at,
+                    relief.disposal_entry,
+                    relief.qty_ordinal,
+                    relief.cost_ordinal,
+                )
+            });
+            output_size = bounded(output_size, 1, 205)?;
+            if history.dimensioned {
+                output_size = bounded(output_size, 1, 4)?;
+                output_size = bounded(output_size, dimensions.len(), 20)?;
+            }
+            for relief in &relieves {
+                output_size = bounded(
+                    output_size,
+                    1,
+                    67 + usize::from(relief.qty_ordinal.is_some()) * 2
+                        + usize::from(relief.cost_ordinal.is_some()) * 2,
+                )?;
+            }
+            lots.push(VerifiedLot {
+                entry,
+                entry_digest,
+                qty_ordinal: quantity.ordinal,
+                cost_ordinal: cost.ordinal,
+                account,
+                dimensions: dimensions.clone(),
+                debit: true,
+                effective_date: quantity.effective_date,
+                recorded_at: quantity.recorded_at,
+                original_quantity: amount(quantity.unit_id, quantity.original),
+                relieved_quantity: amount(quantity.unit_id, quantity.applied),
+                open_quantity: amount(quantity.unit_id, quantity.open),
+                original_cost: amount(certificate.base_unit, cost.original),
+                relieved_cost: amount(certificate.base_unit, cost.applied),
+                open_cost: amount(certificate.base_unit, cost.open),
+                relieves,
+            });
         }
-        relieves.sort_by_key(|relief| {
-            (
-                relief.recorded_at,
-                relief.disposal_entry,
-                relief.qty_ordinal,
-                relief.cost_ordinal,
-            )
-        });
-        for relief in &relieves {
-            output_size = bounded(
-                output_size,
-                1,
-                67 + usize::from(relief.qty_ordinal.is_some()) * 2
-                    + usize::from(relief.cost_ordinal.is_some()) * 2,
-            )?;
-        }
-        lots.push(VerifiedLot {
-            entry,
-            entry_digest,
-            qty_ordinal: quantity.ordinal,
-            cost_ordinal: cost.ordinal,
-            account,
-            debit: true,
-            effective_date: quantity.effective_date,
-            recorded_at: quantity.recorded_at,
-            original_quantity: amount(quantity.unit_id, quantity.original),
-            relieved_quantity: amount(quantity.unit_id, quantity.applied),
-            open_quantity: amount(quantity.unit_id, quantity.open),
-            original_cost: amount(certificate.base_unit, cost.original),
-            relieved_cost: amount(certificate.base_unit, cost.applied),
-            open_cost: amount(certificate.base_unit, cost.open),
-            relieves,
-        });
     }
     lots.sort_by_key(|lot| {
         (
@@ -471,6 +561,7 @@ pub(super) fn replay(
         account_code: row.code.clone(),
         account_name: row.name.clone(),
         base_unit: certificate.base_unit,
+        dimensioned: history.dimensioned,
         source_certificate_digest,
         lots,
     };
@@ -503,10 +594,14 @@ fn write_ordinal(w: &mut Writer, ordinal: Option<u16>) {
 
 fn encode(report: &VerifiedLots) -> Vec<u8> {
     let mut w = Writer::default();
-    w.bytes(OUTPUT_FORMAT)
-        .fixed(&report.book_id)
-        .u64(report.known_at)
-        .u8(u8::from(report.effective_through.is_some()));
+    w.bytes(if report.dimensioned {
+        OUTPUT_FORMAT_V2
+    } else {
+        OUTPUT_FORMAT
+    })
+    .fixed(&report.book_id)
+    .u64(report.known_at)
+    .u8(u8::from(report.effective_through.is_some()));
     if let Some(cutoff) = report.effective_through {
         w.i32(cutoff);
     }
@@ -520,8 +615,14 @@ fn encode(report: &VerifiedLots) -> Vec<u8> {
             .fixed(&lot.entry_digest)
             .u16(lot.qty_ordinal)
             .u16(lot.cost_ordinal)
-            .u128(lot.account)
-            .u8(u8::from(!lot.debit))
+            .u128(lot.account);
+        if report.dimensioned {
+            w.count(lot.dimensions.len());
+            for (kind, value) in &lot.dimensions {
+                w.u32(*kind).u128(*value);
+            }
+        }
+        w.u8(u8::from(!lot.debit))
             .i32(lot.effective_date)
             .u64(lot.recorded_at);
         for value in [

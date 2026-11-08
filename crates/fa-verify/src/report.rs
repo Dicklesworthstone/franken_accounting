@@ -2243,7 +2243,7 @@ fn verify_report_with_native_subledger_input(
             let units_profile = lot_units
                 .as_ref()
                 .ok_or_else(|| failed("registry_closure", "lot unit definitions are absent"))?;
-            let digests = lots::check_history(
+            let history = lots::check_history(
                 account,
                 request.base_unit,
                 units_profile,
@@ -2280,7 +2280,7 @@ fn verify_report_with_native_subledger_input(
                 cert.known_at,
                 cert.digest,
                 snapshot,
-                &digests,
+                &history,
             )?;
             return Ok(VerifiedReport {
                 scope: "recomputation",

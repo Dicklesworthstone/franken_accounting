@@ -25,7 +25,10 @@ use crate::{
 
 pub const LOTS_CERTIFICATE_FORMAT: &[u8] = b"fa:lots-certificate:v1";
 pub const LOTS_OUTPUT_FORMAT: &[u8] = b"fa:lots:v1";
+pub const LOTS_CERTIFICATE_FORMAT_V2: &[u8] = b"fa:lots-certificate:v2";
+pub const LOTS_OUTPUT_FORMAT_V2: &[u8] = b"fa:lots:v2";
 const DIGEST_DOMAIN: &[u8] = b"fa:lots-certificate-digest:v1";
+const DIGEST_DOMAIN_V2: &[u8] = b"fa:lots-certificate-digest:v2";
 pub const MAX_LOTS_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_LOTS_ROWS: usize = 1 << 20;
 
@@ -40,6 +43,7 @@ pub struct LotsRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LotsCertificate {
     source: ReportCertificate,
+    dimensioned: bool,
     base_unit: UnitId,
     effective_through: Option<DateDay>,
     producer: VId,
@@ -69,8 +73,8 @@ fn invalid_request(message: impl Into<String>) -> Refusal {
         fa_journal::refusal::code::STRUCTURE,
         exit::USAGE,
         message,
-        "plan §6.5 (the initial certified native-cost lot profile)",
-        "certify a debit-normal AnyUnit Asset leaf with dimensionless native-cost history: each acquisition has exactly one quantity debit and one base-currency cost debit, and disposal credits are fully applied; other supported postings remain available in the ordinary advisory lot report",
+        "plan §6.5 (certified native-cost lot partitions)",
+        "certify a debit-normal AnyUnit Asset leaf with native-cost history: each exact dimension partition pairs quantity debits with base-currency cost debits in ordinal order, and disposal credits are fully applied within their source partition",
     )
 }
 
@@ -113,9 +117,17 @@ pub fn lots_output_bytes(report: &LotsReport) -> Result<Vec<u8>, Refusal> {
     if report.lots.len() > MAX_LOTS_ROWS {
         return Err(invalid("lot schedule exceeds its row bound"));
     }
+    if !report.dimensioned && report.lots.iter().any(|lot| !lot.dimensions.is_empty()) {
+        return Err(invalid("a dimensionless lot schedule contains an attributed layer"));
+    }
+    let format = if report.dimensioned {
+        LOTS_OUTPUT_FORMAT_V2
+    } else {
+        LOTS_OUTPUT_FORMAT
+    };
     let mut size = bounded([
         4,
-        LOTS_OUTPUT_FORMAT.len(),
+        format.len(),
         16,
         8,
         1,
@@ -137,6 +149,14 @@ pub fn lots_output_bytes(report: &LotsReport) -> Result<Vec<u8>, Refusal> {
             return Err(invalid("lot schedule exceeds its complete relief bound"));
         }
         size = bounded([size, 205])?;
+        if lot.dimensions.len() > fa_model::limits::MAX_DIMENSIONS_PER_LEG
+            || lot.dimensions.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+        {
+            return Err(invalid("lot dimensions must be bounded and strictly sorted"));
+        }
+        if report.dimensioned {
+            size = bounded([size, 4, lot.dimensions.len() * 20])?;
+        }
         for relief in &lot.relieves {
             size = bounded([
                 size,
@@ -147,7 +167,7 @@ pub fn lots_output_bytes(report: &LotsReport) -> Result<Vec<u8>, Refusal> {
         }
     }
     let mut w = Writer::with_capacity(size);
-    w.bytes(LOTS_OUTPUT_FORMAT)
+    w.bytes(format)
         .fixed(&report.book_id.0)
         .u64(report.known_at.0)
         .opt(report.effective_through.as_ref(), |w, day| {
@@ -162,13 +182,18 @@ pub fn lots_output_bytes(report: &LotsReport) -> Result<Vec<u8>, Refusal> {
                 .fixed(&lot.entry_digest)
                 .u16(lot.qty_ordinal)
                 .u16(lot.cost_ordinal)
-                .u128(lot.account.0)
-                .u8(match lot.side {
-                    Side::Debit => 0,
-                    Side::Credit => 1,
-                })
-                .i32(lot.effective_date.0)
-                .u64(lot.recorded_at.0);
+                .u128(lot.account.0);
+            if report.dimensioned {
+                w.list(&lot.dimensions, |w, (kind, value)| {
+                    w.u32(*kind).u128(value.0);
+                });
+            }
+            w.u8(match lot.side {
+                Side::Debit => 0,
+                Side::Credit => 1,
+            })
+            .i32(lot.effective_date.0)
+            .u64(lot.recorded_at.0);
             for value in [
                 lot.original_quantity,
                 lot.relieved_quantity,
@@ -202,6 +227,27 @@ pub fn lots_output_bytes(report: &LotsReport) -> Result<Vec<u8>, Refusal> {
 }
 
 impl LotsCertificate {
+    #[must_use]
+    pub fn dimensioned(&self) -> bool {
+        self.dimensioned
+    }
+
+    fn format(&self) -> &'static [u8] {
+        if self.dimensioned {
+            LOTS_CERTIFICATE_FORMAT_V2
+        } else {
+            LOTS_CERTIFICATE_FORMAT
+        }
+    }
+
+    fn digest_domain(&self) -> &'static [u8] {
+        if self.dimensioned {
+            DIGEST_DOMAIN_V2
+        } else {
+            DIGEST_DOMAIN
+        }
+    }
+
     #[must_use]
     pub fn source(&self) -> &ReportCertificate {
         &self.source
@@ -237,6 +283,21 @@ impl LotsCertificate {
 
     fn body_bytes(&self) -> Result<Vec<u8>, Refusal> {
         source_account(&self.source)?;
+        let expected = if self.dimensioned {
+            LOTS_OUTPUT_FORMAT_V2
+        } else {
+            LOTS_OUTPUT_FORMAT
+        };
+        let mut output = Reader::new(&self.output);
+        if output
+            .bytes(64, "lots output format")
+            .map_err(|e| invalid(e.to_string()))?
+            != expected
+        {
+            return Err(invalid(
+                "lot certificate and output use different attribution versions",
+            ));
+        }
         let source = self
             .source
             .canonical_bytes()
@@ -249,7 +310,7 @@ impl LotsCertificate {
         }
         let size = bounded([
             4,
-            LOTS_CERTIFICATE_FORMAT.len(),
+            self.format().len(),
             16,
             32,
             4,
@@ -262,7 +323,7 @@ impl LotsCertificate {
             32,
         ])?;
         let mut w = Writer::with_capacity(size);
-        w.bytes(LOTS_CERTIFICATE_FORMAT)
+        w.bytes(self.format())
             .u128(self.producer.0)
             .fixed(&self.capability_commitment)
             .bytes(&source)
@@ -290,6 +351,7 @@ impl LotsCertificate {
         }
         let mut value = Self {
             source,
+            dimensioned: report.dimensioned,
             base_unit: report.base_unit,
             effective_through: report.effective_through,
             producer,
@@ -297,7 +359,7 @@ impl LotsCertificate {
             output: lots_output_bytes(report)?,
             digest: [0; 32],
         };
-        value.digest = domain_digest(DIGEST_DOMAIN, &[&value.body_bytes()?]);
+        value.digest = domain_digest(value.digest_domain(), &[&value.body_bytes()?]);
         Ok(value)
     }
 
@@ -305,7 +367,7 @@ impl LotsCertificate {
     /// must still replay. This unsigned object is not a disposal-law proof.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
         let mut bytes = self.body_bytes()?;
-        if domain_digest(DIGEST_DOMAIN, &[&bytes]) != self.digest {
+        if domain_digest(self.digest_domain(), &[&bytes]) != self.digest {
             return Err(invalid("lot certificate digest mismatch"));
         }
         bytes.extend_from_slice(&self.digest);
@@ -316,9 +378,14 @@ impl LotsCertificate {
         bounded([bytes.len()])?;
         let malformed = |e: DecodeError| invalid(format!("malformed lot certificate: {e}"));
         let mut r = Reader::new(bytes);
-        if r.bytes(64, "lots format").map_err(malformed)? != LOTS_CERTIFICATE_FORMAT {
+        let format = r.bytes(64, "lots format").map_err(malformed)?;
+        let dimensioned = if format == LOTS_CERTIFICATE_FORMAT_V2 {
+            true
+        } else if format == LOTS_CERTIFICATE_FORMAT {
+            false
+        } else {
             return Err(invalid("unsupported lot certificate format"));
-        }
+        };
         let producer = VId(r.u128("lots producer").map_err(malformed)?);
         let capability_commitment = r.fixed("lots capability").map_err(malformed)?;
         let source = ReportCertificate::decode(
@@ -337,6 +404,7 @@ impl LotsCertificate {
         r.finish().map_err(malformed)?;
         let value = Self {
             source,
+            dimensioned,
             base_unit,
             effective_through,
             producer,
@@ -414,6 +482,7 @@ fn supported_history(
             "the retained base unit is not a registered currency",
         ));
     }
+    let sources: BTreeMap<_, _> = entries.iter().map(|(vid, entry, _)| (*vid, entry)).collect();
     for (vid, entry, _) in entries {
         let legs: Vec<_> = entry
             .proposal
@@ -425,11 +494,28 @@ fn supported_history(
             continue;
         }
         for leg in &legs {
-            if !leg.dimension_set.is_empty() || leg.base_amount.is_some() {
+            if leg.base_amount.is_some() {
                 return Err(invalid_request(format!(
-                    "entry {:032x} has dimensions or foreign-valued legs on the selected lot account",
+                    "entry {:032x} has foreign-valued legs on the selected lot account",
                     vid.0
                 )));
+            }
+            for settlement in &leg.settles {
+                let source = sources.get(&settlement.target.vid).filter(|source| {
+                    source.entry_digest == settlement.target.entry_digest
+                });
+                let source_leg = source.and_then(|source| {
+                    source.proposal.legs.get(usize::from(settlement.ordinal))
+                });
+                if source_leg.is_none_or(|source| {
+                    source.account_ref != leg.account_ref
+                        || source.amount.unit != leg.amount.unit
+                        || source.dimension_set != leg.dimension_set
+                }) {
+                    return Err(invalid_request(
+                        "lot relief must target the same authenticated account, unit and exact dimension partition",
+                    ));
+                }
             }
             if leg.amount.unit != base
                 && book.units.get(leg.amount.unit).is_none_or(|u| {
@@ -444,43 +530,50 @@ fn supported_history(
         if entry.proposal.class == EntryClass::REVERSAL {
             continue;
         }
-        if legs
-            .iter()
-            .all(|leg| leg.side == Side::Debit && leg.settles.is_empty())
-        {
-            let quantity: Vec<_> = legs.iter().filter(|leg| leg.amount.unit != base).collect();
-            let cost: Vec<_> = legs.iter().filter(|leg| leg.amount.unit == base).collect();
-            if quantity.len() != 1
-                || cost.len() != 1
-                || quantity[0].amount.mantissa <= 0
-                || cost[0].amount.mantissa < 0
+        let mut partitions: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for leg in legs {
+            partitions.entry(&leg.dimension_set).or_default().push(leg);
+        }
+        for (dimensions, legs) in &partitions {
+            if legs
+                .iter()
+                .all(|leg| leg.side == Side::Debit && leg.settles.is_empty())
             {
-                return Err(invalid_request(format!(
-                    "entry {:032x} does not have exactly one quantity debit and one base-cost debit; multiple acquisition pairs are outside this certificate profile",
-                    vid.0
-                )));
-            }
-        } else if legs.iter().all(|leg| leg.side == Side::Credit) {
-            for leg in legs {
-                let applied = leg
-                    .settles
-                    .iter()
-                    .try_fold(0i128, |sum, settlement| {
-                        sum.checked_add(settlement.amount.mantissa)
-                    })
-                    .ok_or_else(|| invalid_request("lot application sum overflow"))?;
-                if leg.amount.mantissa <= 0 || applied != leg.amount.mantissa {
+                let quantity: Vec<_> = legs.iter().filter(|leg| leg.amount.unit != base).collect();
+                let cost: Vec<_> = legs.iter().filter(|leg| leg.amount.unit == base).collect();
+                if quantity.is_empty()
+                    || quantity.len() != cost.len()
+                    || (dimensions.is_empty() && quantity.len() != 1)
+                    || quantity.iter().any(|leg| leg.amount.mantissa <= 0)
+                    || cost.iter().any(|leg| leg.amount.mantissa < 0)
+                {
                     return Err(invalid_request(format!(
-                        "entry {:032x} contains an unbound or partially applied credit on the selected lot account",
+                        "entry {:032x} does not pair every quantity debit with a base-cost debit in the same exact dimension partition",
                         vid.0
                     )));
                 }
+            } else if legs.iter().all(|leg| leg.side == Side::Credit) {
+                for leg in legs {
+                    let applied = leg
+                        .settles
+                        .iter()
+                        .try_fold(0i128, |sum, settlement| {
+                            sum.checked_add(settlement.amount.mantissa)
+                        })
+                        .ok_or_else(|| invalid_request("lot application sum overflow"))?;
+                    if leg.amount.mantissa <= 0 || applied != leg.amount.mantissa {
+                        return Err(invalid_request(format!(
+                            "entry {:032x} contains an unbound or partially applied credit on the selected lot account",
+                            vid.0
+                        )));
+                    }
+                }
+            } else {
+                return Err(invalid_request(format!(
+                    "entry {:032x} mixes acquisition and application sides in one lot dimension partition",
+                    vid.0
+                )));
             }
-        } else {
-            return Err(invalid_request(format!(
-                "entry {:032x} mixes acquisition and application sides on the selected lot account",
-                vid.0
-            )));
         }
     }
     Ok(())
@@ -527,6 +620,19 @@ pub(crate) fn fold<V: Vfs + Clone, B: Vfs + Clone>(
             .iter()
             .map(|(vid, entry, _)| (*vid, entry.entry_digest))
             .collect();
+        let dimensions: BTreeMap<_, _> = entries
+            .iter()
+            .flat_map(|(vid, entry, _)| {
+                entry.proposal.legs.iter().enumerate().map(move |(ordinal, leg)| {
+                    ((*vid, ordinal as u16), leg.dimension_set.clone())
+                })
+            })
+            .collect();
+        let dimensioned = entries.iter().any(|(_, entry, _)| {
+            entry.proposal.legs.iter().any(|leg| {
+                leg.account_ref == request.account && !leg.dimension_set.is_empty()
+            })
+        });
         let items = match request.effective_through {
             Some(day) => fa_registers::open_items::history::open_items_as_of(
                 db,
@@ -550,7 +656,12 @@ pub(crate) fn fold<V: Vfs + Clone, B: Vfs + Clone>(
                 "a lot acquisition has no authenticated entry digest",
             )));
         }
-        let lots = match fa_registers::lots::fold_lots_from_open_items(&items, &digests, base) {
+        let lots = match fa_registers::lots::fold_lots_from_open_items_with_dimensions(
+            &items,
+            &digests,
+            base,
+            &dimensions,
+        ) {
             Ok(lots) => lots,
             Err(fa_registers::RegisterError::InvalidSelection(message)) => {
                 return Ok(Err(invalid_request(message)));
@@ -565,7 +676,7 @@ pub(crate) fn fold<V: Vfs + Clone, B: Vfs + Clone>(
             account_code: account.code,
             account_name: account.name,
             base_unit: base,
-            dimensioned: false,
+            dimensioned,
             lots,
         }))
     })
@@ -715,7 +826,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(output) => output,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        if report.base_unit != certificate.base_unit || output != certificate.output {
+        if report.base_unit != certificate.base_unit
+            || report.dimensioned != certificate.dimensioned
+            || output != certificate.output
+        {
             return Ok(Err(invalid(
                 "the historical lot schedule or book currency differs from the certificate",
             )));

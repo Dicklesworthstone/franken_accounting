@@ -20776,7 +20776,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     out,
                     args,
                     artifact,
-                    "fa:lots:v1",
+                    if report.dimensioned { "fa:lots:v2" } else { "fa:lots:v1" },
                     &bytes,
                     &retained,
                     &notary::lots_expectation_json(expected),
