@@ -386,6 +386,76 @@ fn beancount_and_hledger_balance_differential_and_one_minor_unit_mutation_negati
 }
 
 #[test]
+fn saft_and_xbrl_keep_text_whitespace_exactly() {
+    let units = UnitCatalog::embedded().expect("units.toml");
+    for book_name in [
+        "  Acme  ",
+        "\tAcme & <Co> \"suite\"\t",
+        "\nAcme\r\nBooks\n",
+        "\u{a0}Acme\u{2003}",
+    ] {
+        let mut source = sample_multi_unit_journal();
+        source.accounts[0].name = "\t Asset & \"cash\" \n".into();
+        source.entries[0].description = "\t description & <tag> \"quoted\" '\n".into();
+        source.entries[0].migrated_from = Some(" \tLEGACY & item\n ".into());
+        source.entries[0].legs[0].memo = Some("  memo text\t\n ".into());
+        // Construct a certificate for the new input, never alter a written
+        // artifact's digest to make a lossy read appear to match.
+        let journal = FormatJournal::new(
+            book_name,
+            &source.coordinate.base_unit_code,
+            source.coordinate.base_unit_scale,
+            source.coordinate.effective_through,
+            source.coordinate.known_at_seq,
+            source.accounts,
+            source.entries,
+            source.assertions,
+        )
+        .unwrap();
+
+        let saft = write_saft_xml(&journal).unwrap();
+        let parsed = read_saft_xml(&saft, &units).unwrap();
+        assert_eq!(parsed, journal, "SAF-T text for {book_name:?}");
+        assert_eq!(write_saft_xml(&parsed).unwrap(), saft);
+        verify_round_trip_identity("oecd_saft_v2", &journal, &parsed).unwrap();
+        let changed = saft.replacen("<Memo>  memo text\t\n </Memo>", "<Memo>memo text</Memo>", 1);
+        assert_ne!(changed, saft);
+        assert!(matches!(
+            read_saft_xml(&changed, &units),
+            Err(FormatError::CertificateMismatch { .. })
+        ));
+
+        // XBRL carries the book identifier and coordinate, not the complete
+        // journal's descriptions and memos. Do not claim their reconstruction.
+        let xbrl = write_format_journal_xbrl_xml(&journal).unwrap();
+        let instance = read_xbrl_instance_xml(&xbrl).unwrap();
+        assert_eq!(instance.entity_identifier, book_name);
+        let (coordinate, report) = verify_format_journal_xbrl_xml(&xbrl).unwrap();
+        assert_eq!(coordinate, journal.coordinate);
+        assert!(report.passed());
+
+        let start = xbrl.find("<!-- fa:xbrl-coordinate ").unwrap();
+        let end = start + xbrl[start..].find("-->").unwrap() + 3;
+        let duplicated = format!("{xbrl}{}\n", &xbrl[start..end]);
+        let error = verify_format_journal_xbrl_xml(&duplicated).unwrap_err();
+        assert!(matches!(error, FormatError::Parse { ref detail, .. }
+            if detail.contains("multiple fa:xbrl-coordinate")));
+        let unterminated = xbrl.replacen(" -->\n", "\n", 1);
+        assert_ne!(unterminated, xbrl);
+        assert!(verify_format_journal_xbrl_xml(&unterminated).is_err());
+
+        if book_name == "  Acme  " {
+            let changed = xbrl.replacen("book_name=\"  Acme  \"", "book_name=\"Acme\"", 1);
+            assert_ne!(changed, xbrl);
+            assert!(matches!(
+                verify_format_journal_xbrl_xml(&changed),
+                Err(FormatError::CertificateMismatch { .. })
+            ));
+        }
+    }
+}
+
+#[test]
 fn aicpa_ads_and_oecd_saft_and_csv_gl_round_trip_identity_and_dropped_leg_negative() {
     let units = UnitCatalog::embedded().expect("units.toml");
     let journal = sample_multi_unit_journal();

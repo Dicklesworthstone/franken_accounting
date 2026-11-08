@@ -88,10 +88,10 @@ fn equity_error(detail: impl Into<String>) -> FormatError {
 }
 
 fn coordinate_comment(xml: &str) -> Result<&str, FormatError> {
-    let mut comments = xml
-        .lines()
-        .filter(|line| line.trim().starts_with("<!-- fa:xbrl-coordinate "));
-    let comment = comments
+    // Book names are escaped text, not physical-line delimiters. Preserve
+    // their embedded newlines in the existing certificate encoding.
+    let mut comments = xml.match_indices("<!-- fa:xbrl-coordinate ");
+    let (start, _) = comments
         .next()
         .ok_or_else(|| equity_error("missing fa:xbrl-coordinate certificate comment"))?;
     if comments.next().is_some() {
@@ -99,7 +99,10 @@ fn coordinate_comment(xml: &str) -> Result<&str, FormatError> {
             "multiple fa:xbrl-coordinate certificate comments",
         ));
     }
-    Ok(comment)
+    let end = xml[start..]
+        .find("-->")
+        .ok_or_else(|| equity_error("unterminated fa:xbrl-coordinate certificate comment"))?;
+    Ok(&xml[start..start + end + 3])
 }
 
 /// Read the export's declared equity profile. This is content, not authority:
@@ -1016,7 +1019,12 @@ pub fn write_xbrl_instance_xml(instance: &XbrlInstance) -> String {
 /// Read an XBRL 2.1 instance XML document emitted by [`write_xbrl_instance_xml`]
 /// back into an [`XbrlInstance`] using the in-house XML parser (zero third-party crates).
 pub fn read_xbrl_instance_xml(xml: &str) -> Result<XbrlInstance, FormatError> {
-    let mut entity_identifier = String::new();
+    let identifier_open = "<xbrli:identifier scheme=\"http://frankenaccounting.org/entity\">";
+    let entity_identifier = xml
+        .split_once(identifier_open)
+        .and_then(|(_, rest)| rest.split_once("</xbrli:identifier>"))
+        .map(|(inner, _)| xml_unescape(inner))
+        .unwrap_or_default();
     let mut period_start: Option<String> = None;
     let mut period_end = String::new();
     let mut saw_end_date = false;
@@ -1024,15 +1032,7 @@ pub fn read_xbrl_instance_xml(xml: &str) -> Result<XbrlInstance, FormatError> {
 
     for raw_line in xml.lines() {
         let line = raw_line.trim();
-        if let Some(rest) =
-            line.strip_prefix("<xbrli:identifier scheme=\"http://frankenaccounting.org/entity\">")
-        {
-            if let Some(inner) = rest.strip_suffix("</xbrli:identifier>")
-                && entity_identifier.is_empty()
-            {
-                entity_identifier = xml_unescape(inner);
-            }
-        } else if let Some(rest) = line.strip_prefix("<xbrli:startDate>") {
+        if let Some(rest) = line.strip_prefix("<xbrli:startDate>") {
             if let Some(inner) = rest.strip_suffix("</xbrli:startDate>")
                 && period_start.is_none()
             {
@@ -1897,11 +1897,8 @@ pub fn verify_format_journal_xbrl_xml(
     })?;
     let report = validate_calculation_linkbase_detailed(&instance, &linkbase, Some(&schema))?;
 
-    let stripped_xml: String = xml
-        .lines()
-        .filter(|l| !l.trim().starts_with("<!-- fa:xbrl-coordinate "))
-        .map(|l| format!("{l}\n"))
-        .collect();
+    let comment_line = coordinate_comment(xml)?;
+    let stripped_xml = xml.replacen(&format!("{comment_line}\n"), "", 1);
     if write_xbrl_instance_xml(&instance) != stripped_xml {
         return Err(FormatError::Parse {
             format: "xbrl_gl_instance_v1",
@@ -1909,7 +1906,6 @@ pub fn verify_format_journal_xbrl_xml(
         });
     }
 
-    let comment_line = coordinate_comment(xml)?;
     let attr = |name: &str| -> Result<String, FormatError> {
         extract_xml_attr(comment_line, name)
             .map(xml_unescape)

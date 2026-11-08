@@ -542,8 +542,7 @@ pub(crate) fn xml_escape(s: &str) -> String {
 }
 
 pub(crate) fn xml_unescape(s: &str) -> String {
-    s.trim()
-        .replace("&quot;", "\"")
+    s.replace("&quot;", "\"")
         .replace("&apos;", "'")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
