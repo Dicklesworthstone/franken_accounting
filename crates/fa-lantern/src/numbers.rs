@@ -332,22 +332,25 @@ impl Procedure for ThresholdSplitting {
             if list.len() < min_count {
                 continue;
             }
-            let mut i = 0;
+            // Candidate amounts are positive. Keep the whole date window's
+            // sum while advancing either boundary only forwards; restarting
+            // the scan at every failed anchor made negative runs quadratic.
+            // Retain the original greedy full-window groups and work record.
+            let (mut i, mut j, mut sum) = (0, 0, 0i128);
             while i < list.len() {
+                work.checkpoint()?;
                 let start_date = list[i].0;
-                let mut j = i;
-                let mut sum = 0i128;
-                let mut vids = Vec::new();
                 while j < list.len()
                     && i64::from(list[j].0.0) - i64::from(start_date.0) <= window_days
                 {
+                    work.checkpoint()?;
                     sum = sum
                         .checked_add(list[j].1)
                         .ok_or(LanternError::Overflow("split window sum"))?;
-                    vids.push(list[j].2);
                     j += 1;
                 }
-                if vids.len() >= min_count && sum >= threshold {
+                if j - i >= min_count && sum >= threshold {
+                    let mut vids: Vec<_> = list[i..j].iter().map(|item| item.2).collect();
                     vids.sort_unstable();
                     vids.dedup();
                     out.push(finding(
@@ -366,7 +369,11 @@ impl Procedure for ThresholdSplitting {
                         ),
                     ));
                     i = j;
+                    sum = 0;
                 } else {
+                    sum = sum
+                        .checked_sub(list[i].1)
+                        .ok_or(LanternError::Overflow("split window sum"))?;
                     i += 1;
                 }
             }

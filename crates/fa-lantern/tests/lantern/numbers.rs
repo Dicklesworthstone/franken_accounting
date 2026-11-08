@@ -87,6 +87,195 @@ fn threshold_splitting_accepts_u32_windows_and_widens_day_subtraction() {
 }
 
 #[test]
+fn threshold_splitting_preserves_greedy_windows_and_exact_work() {
+    use fa_lantern::numbers::ThresholdSplitting;
+
+    let mut h = harness();
+    let entries: Vec<_> = [
+        (1, 1),
+        (2, 4),
+        (3, 4),
+        (4, 4),
+        (6, 2),
+        (7, 3),
+        (8, 6),
+        (9, 3),
+    ]
+    .into_iter()
+    .map(|(date, amount)| h.post(&Spec::simple(day(2026, 1, date), "6000", "1000", amount)))
+    .collect();
+    let before = h.db.frontier().unwrap();
+    let snapshot = h.snapshot();
+    let procedure = ThresholdSplitting::with(
+        Params::defaults(ThresholdSplitting::ID)
+            .unwrap()
+            .set("floor", 1)
+            .unwrap()
+            .set("threshold", 10)
+            .unwrap()
+            .set("window_days", 2)
+            .unwrap(),
+    );
+    let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+    assert_eq!(result.version, 1);
+    assert_eq!(result.findings.len(), 2);
+    // The first window totals only 9. Advancing one anchor then takes the
+    // ENTIRE next window, followed by a disjoint full-window group.
+    for (finding, (members, total)) in result
+        .findings
+        .iter()
+        .zip([(&entries[1..4], 12), (&entries[4..7], 11)])
+    {
+        let mut members = members.to_vec();
+        members.sort_unstable();
+        assert_eq!(
+            finding.cites,
+            members.into_iter().map(Cite::Entry).collect::<Vec<_>>()
+        );
+        assert_eq!(finding.severity, Severity::High);
+        assert_eq!(finding.version, 1);
+        assert_eq!(
+            finding.statistic,
+            Statistic {
+                name: "split_total".into(),
+                value: total,
+                scale: 2,
+                population: 8,
+            }
+        );
+    }
+    assert_eq!(
+        result.work,
+        fa_lantern::Work {
+            entries: 8,
+            legs: 16,
+            comparisons: 8,
+        }
+    );
+    assert_eq!(
+        fa_lantern::run_over_metered(&snapshot, &h.book, &procedure, Some(32), None).unwrap(),
+        result,
+        "the historical exact work budget retains the full output"
+    );
+    assert!(matches!(
+        fa_lantern::run_over_metered(&snapshot, &h.book, &procedure, Some(31), None),
+        Err(LanternError::BudgetExhausted {
+            used: 32,
+            budget: 31,
+            ..
+        })
+    ));
+    h.assert_cites_resolve(&result);
+    assert!(
+        determinism(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn threshold_splitting_refuses_overflow_and_cancels_unmatched_windows() {
+    use fa_lantern::numbers::ThresholdSplitting;
+
+    let mut h = harness();
+    let entries: Vec<_> = (0..64)
+        .map(|_| h.post(&Spec::simple(day(2026, 1, 10), "6000", "1000", 1)))
+        .collect();
+    let before = h.db.frontier().unwrap();
+    let snapshot = h.snapshot();
+    let params = Params::defaults(ThresholdSplitting::ID)
+        .unwrap()
+        .set("floor", 1)
+        .unwrap();
+    let procedure = ThresholdSplitting::with(params.clone());
+    struct Polls {
+        count: std::cell::Cell<usize>,
+        cancel_at: Option<usize>,
+    }
+    impl fa_lantern::Cancellation for Polls {
+        fn cancelled(&self) -> bool {
+            let count = self.count.get() + 1;
+            self.count.set(count);
+            self.cancel_at.is_some_and(|limit| count >= limit)
+        }
+    }
+    // The same native population and bulk work, but no window search. This
+    // measures runner boundary checks rather than guessing their number.
+    let baseline = Polls {
+        count: std::cell::Cell::new(0),
+        cancel_at: None,
+    };
+    let skipped = ThresholdSplitting::with(params.clone().set("min_count", 65).unwrap());
+    let skipped =
+        fa_lantern::run_over_metered(&snapshot, &h.book, &skipped, None, Some(&baseline)).unwrap();
+    assert!(skipped.findings.is_empty());
+    assert_eq!(
+        skipped.work,
+        fa_lantern::Work {
+            entries: 64,
+            legs: 128,
+            comparisons: 64
+        }
+    );
+    assert_eq!(baseline.count.get(), 4);
+    let polls = Polls {
+        count: std::cell::Cell::new(0),
+        cancel_at: None,
+    };
+    let result =
+        fa_lantern::run_over_metered(&snapshot, &h.book, &procedure, None, Some(&polls)).unwrap();
+    assert!(result.findings.is_empty());
+    assert_eq!(result.work, skipped.work);
+    assert!(polls.count.get() > baseline.count.get());
+    assert!(polls.count.get() <= baseline.count.get() + 2 * entries.len());
+    let cancelled = Polls {
+        count: std::cell::Cell::new(0),
+        cancel_at: Some(baseline.count.get() + 1),
+    };
+    let error =
+        fa_lantern::run_over_metered(&snapshot, &h.book, &procedure, None, Some(&cancelled))
+            .unwrap_err();
+    assert!(matches!(error, LanternError::Cancelled { used: 256, .. }));
+    assert_eq!(cancelled.count.get(), baseline.count.get() + 1);
+
+    // Arithmetic-only variants of genuine postings, not a claim that the
+    // kernel admits these extreme cumulative balances. Separate windows
+    // must not overflow merely because a whole-series prefix sum would.
+    let mut extreme = snapshot.clone();
+    extreme
+        .entries
+        .retain(|entry| entries[..2].contains(&entry.vid));
+    for entry in &mut extreme.entries {
+        let proposal = &mut entry.entry.proposal;
+        for leg in &mut proposal.legs {
+            leg.amount.mantissa = i128::MAX - 1;
+        }
+        proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+        proposal.effective_date = if entry.vid == entries[0] {
+            day(2026, 1, 10)
+        } else {
+            day(2026, 1, 20)
+        };
+    }
+    let procedure = ThresholdSplitting::with(params.set("threshold", i128::MAX).unwrap());
+    assert!(
+        run_over(&extreme, &h.book, &procedure)
+            .unwrap()
+            .findings
+            .is_empty()
+    );
+    for entry in &mut extreme.entries {
+        entry.entry.proposal.effective_date = day(2026, 1, 10);
+    }
+    assert!(matches!(
+        run_over(&extreme, &h.book, &procedure),
+        Err(LanternError::Overflow("split window sum"))
+    ));
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
 fn round_amount_density_flags_the_account_whose_round_share_stands_out() {
     let mut h = harness();
     // Rent: 10 of its 20 legs are multiples of 100.00. Utilities: 2 of 40.
