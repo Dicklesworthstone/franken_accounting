@@ -356,8 +356,9 @@ pub use roll_forward::{
 };
 pub use scenario::{
     CertifiedScenarioDiff, LEGACY_SCENARIO_DIFF_CERTIFICATE_FORMAT,
-    SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT, ScenarioBook, ScenarioDiff,
-    ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
+    NATIVE_ORIGINAL_ADDITIVE_METHOD, SCENARIO_DIFF_CERTIFICATE_FORMAT,
+    SCENARIO_DIFF_OUTPUT_FORMAT, SCENARIO_MATH_BUNDLE_FORMAT, ScenarioBook, ScenarioDiff,
+    ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun, scenario_math_request,
 };
 pub use search::{SearchResults, SearchVerification, document_search_text};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};

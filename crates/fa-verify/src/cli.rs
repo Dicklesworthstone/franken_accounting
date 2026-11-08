@@ -18,6 +18,9 @@
 //!                                                a document's public commitment from its bytes
 //!   bundle       <bundle> --key K... [--receipt R]
 //!                                                an evidence bundle, every predicate graded
+//!   scenario     <bundle> --key K... --scenario-request Q [--receipt R] [--expect H]
+//!                                                conditional additive scenario mathematics;
+//!                                                historical admission and native markers unjudged
 //!   report       <bundle> --key K... [--units N,N,... | --base-unit N] [--view detail]
 //!                                                a native report or supported statistical procedure;
 //!                                                legacy statement units come from the recipient
@@ -53,6 +56,7 @@
 
 mod access_log;
 mod native_subledger;
+mod scenario;
 
 use crate::ads::{AdsReport, verify_ads};
 use crate::blake3::hex;
@@ -114,6 +118,9 @@ commands:
   doc-commit   <document> --kind N [--expect H] a document's public commitment from its bytes
   bundle       <bundle> --key K... [--receipt R]
                                                 an evidence bundle (.fab), every predicate graded
+  scenario     <bundle> --key K... --scenario-request Q [--receipt R] [--expect H]
+                                                conditional additive scenario mathematics;
+                                                historical admission and native markers unjudged
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,... | --base-unit N | --equity-diff-request Q] [--view detail]
                [--subledger CODE --control-account A --through D --known-at N]
@@ -176,6 +183,13 @@ options:
   --base-unit N  required only for lot schedules: your expected numeric cost unit ID.
                  This premise does not prove Book genesis or disposal-law admission.
                  It cannot be combined with --units or used for another report family.
+  --scenario-request Q  scenario: independently retained canonical scenario question.
+                 Fixes book, scenario, fork, exact Plan prefix, start date, periods, activity,
+                 assumptions and native-original-additive:v1. Requires a trusted --key plus
+                 either a signed outer --receipt or independent --expect certificate pin. Only native,
+                 dimensionless additive Original effects are interpreted; hypothetical
+                 entries are assumed effects, never committed trunk members. Historical
+                 planner admission, native-marker membership and economic truth are unjudged.
   --equity-diff-request Q  report: independently retained canonical equity comparison question.
                  Fixes both recorded frontiers, dates, label, units and owner-account roles;
                  required even when --expect or --receipt authenticates the outer certificate.
@@ -206,7 +220,7 @@ expectations) and the document and redacted-view commands: fa-verify --help.
 exit codes: 0 verified · 2 usage · 5 file I/O · 8 verification failed
 ";
 
-const COMMANDS: [&str; 13] = [
+const COMMANDS: [&str; 14] = [
     "access-log",
     "state",
     "checkpoint",
@@ -218,12 +232,13 @@ const COMMANDS: [&str; 13] = [
     "doc-commit",
     "bundle",
     "report",
+    "scenario",
     "ads",
     "saft",
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 30] = [
+const VALUE_FLAGS: [&str; 31] = [
     "--state",
     "--book",
     "--branch",
@@ -249,6 +264,7 @@ const VALUE_FLAGS: [&str; 30] = [
     "--units",
     "--base-unit",
     "--equity-diff-request",
+    "--scenario-request",
     "--view",
     "--subledger",
     "--control-account",
@@ -313,6 +329,13 @@ fn admitted(command: &str) -> &'static [&'static str] {
             "--control-account",
             "--through",
             "--known-at",
+        ],
+        "scenario" => &[
+            "--key",
+            "--receipt",
+            "--checkpoint",
+            "--expect",
+            "--scenario-request",
         ],
         _ => &[],
     }
@@ -1113,6 +1136,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
     args.admitted_by(cmd)?;
     match cmd {
         "access-log" => access_log::run(args, read),
+        "scenario" => scenario::run(args, read),
         "state" => {
             let bytes = load(read, subject(args, "a state file")?, args.hex)?;
             Ok(vec![match verify_state(&bytes) {

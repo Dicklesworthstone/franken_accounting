@@ -350,7 +350,12 @@ impl ScenarioDiffCertificate {
 
 /// Current authority before any read: read (and produce, to certify or
 /// retain), the whole book in reach.
-fn authorize(book: &Book, principal: VId, capability: &Capability, produce: bool) -> Outcome<()> {
+pub(super) fn authorize(
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+    produce: bool,
+) -> Outcome<()> {
     if let Err(refusal) = book.read_scope(principal, capability)? {
         return Ok(Err(refusal));
     }
@@ -594,6 +599,10 @@ impl Book {
 #[cfg(test)]
 #[path = "certificate/replay_tests.rs"]
 mod replay_tests;
+
+#[cfg(test)]
+#[path = "certificate/portable_tests.rs"]
+mod portable_tests;
 
 #[cfg(test)]
 mod tests {

@@ -5770,6 +5770,18 @@ impl Book {
         )))
     }
 
+    pub(crate) fn finish_scenario_math_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        prepared: crate::scenario::portable::PreparedScenarioMath,
+    ) -> Outcome<ProducedBundle> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.finish_scenario_math_bundle(
+            &purposes, principal, capability, prepared,
+        ))
+    }
+
     /// Export a summary trial balance for independent offline replay. The
     /// complete signed prefix and original registry closure authenticate its
     /// historical chart, leaf drilldown, selected roots and uncovered coverage.

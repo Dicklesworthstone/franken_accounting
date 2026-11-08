@@ -73,6 +73,7 @@ pub mod migration_balance;
 pub(crate) mod principal_keys;
 pub mod proof;
 pub mod report;
+pub use report::scenario as scenario_report;
 pub mod saft;
 pub mod scope;
 pub mod sha512;

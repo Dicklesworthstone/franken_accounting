@@ -117,6 +117,7 @@ mod procedure;
 mod reconciliation;
 mod registry;
 mod roll_forward;
+pub mod scenario;
 mod statement;
 mod statement_diff;
 mod statement_trace;

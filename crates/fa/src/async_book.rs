@@ -6319,6 +6319,41 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })))
     }
 
+    pub(crate) fn finish_scenario_math_bundle(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        prepared: crate::scenario::portable::PreparedScenarioMath,
+    ) -> Outcome<ProducedBundle> {
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
+            .and_then(|()| {
+                fa_policy::require(
+                    capability,
+                    fa_policy::Op::Produce,
+                    "producing conditional scenario mathematics",
+                )
+            })
+            .and_then(|()| {
+                fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
+            })
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let at = match self.query(cx, |db, book| {
+            Ok(fa_journal::policy::current_at(db, book, capability)?
+                .map(|current| current.at()))
+        })? {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let commitment = capability
+            .commitment()
+            .map_err(|error| KernelError::Corrupt(format!("capability commitment: {error}")))?;
+        Ok(Ok(prepared.sign(principal, at, commitment, &self.signer)?))
+    }
+
     /// Produce an evidence bundle against the journaled state `state`
     /// (default: the latest) and its detached production receipt
     /// ([`crate::Book::produce_bundle`] states the contract). `produce`

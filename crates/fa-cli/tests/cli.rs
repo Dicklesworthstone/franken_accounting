@@ -23,6 +23,8 @@ mod part370;
 mod principal_key;
 #[path = "cli/proportional_post.rs"]
 mod proportional_post;
+#[path = "cli/scenario_math.rs"]
+mod scenario_math;
 
 /// The one event a non-zero exit emits (plan Appendix D).
 const ERROR_EVENTS: &[&str] = &["error"];

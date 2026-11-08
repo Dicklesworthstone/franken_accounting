@@ -23,7 +23,7 @@ use crate::json::{Json, obj, s};
 
 const FORK_EXAMPLE: &str = "fa scenario fork but-for-breach --from 2025-07-01 [--at HEAD|<seq>] [--evidence <oid>]... --json";
 const DIFF_EXAMPLE: &str =
-    "fa scenario diff but-for-breach --period FY2025-P12 [--activity] --json";
+    "fa scenario diff but-for-breach --period FY2025-P12 [--activity] [--certify --request-out <new-file>] --json";
 
 pub(crate) fn scenario_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
@@ -429,7 +429,19 @@ fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let activity = args.switch("--activity");
     let who = ctx.principal(args);
     // Certifying publishes a retained certificate: read and produce.
-    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let request_output = args.flag("--request-out");
+    if args.flag_all("--request-out").len() > 1
+        || request_output.is_some_and(|path| path.is_empty() || path == "-")
+        || request_output.is_some_and(|path| args.flag("--certificate-out") == Some(path))
+    {
+        return Err(usage(
+            "--request-out names one new file distinct from --certificate-out",
+            DIFF_EXAMPLE,
+        ));
+    }
+    let certify = args.switch("--certify")
+        || args.flag("--certificate-out").is_some()
+        || request_output.is_some();
     let ops: &[&str] = if certify {
         &["read", "produce"]
     } else {
@@ -456,6 +468,16 @@ fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let retained = book.retain_scenario_diff(who, &cap, &certified.certificate)??;
     let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
     let bytes = artifact.canonical_bytes()?;
+    if let Some(path) = request_output {
+        let question = fa::scenario_math_request(book.context().book_id, &certified.report)?;
+        crate::cli::write_new_output_file(
+            &ctx.files,
+            path,
+            &question,
+            "scenario verification request",
+            "--request-out",
+        )?;
+    }
     if let Some(path) = args.flag("--certificate-out") {
         crate::cli::write_new_output_file(
             &ctx.files,

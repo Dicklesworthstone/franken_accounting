@@ -921,8 +921,8 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         ctx.books.open(args)?
     };
-    let request = bundle_request(&scope_args, args, &book, BUNDLE_EXAMPLE)?;
-    let scope_name = if report_source.is_some() {
+    let mut request = bundle_request(&scope_args, args, &book, BUNDLE_EXAMPLE)?;
+    let mut scope_name = if report_source.is_some() {
         "report"
     } else {
         match &request.scope {
@@ -937,6 +937,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mut report_base_unit = None;
     let mut equity_diff_request = false;
     let mut native_subledger_request = None;
+    let mut scenario_math = false;
     let produced = if let Some(source) = report_source {
         let bytes = crate::notary::read_certificate_bytes(
             &book,
@@ -970,6 +971,19 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         // question and must never become the recipient's --expect value.
         report_digest = Some(hex(artifact.digest()));
         match artifact.family() {
+            fa::ReportArtifactFamily::ScenarioDiff => {
+                let certificate = fa::ScenarioDiffCertificate::decode(&bytes)?;
+                let produced = book.produce_scenario_math_bundle(
+                    principal,
+                    &capability,
+                    state,
+                    &certificate,
+                )??;
+                scenario_math = true;
+                scope_name = "conditional_additive_scenario_math";
+                request.inline_documents = true;
+                produced
+            }
             fa::ReportArtifactFamily::NativeSubledger => {
                 let expected = crate::notary::native_subledger_bundle_expectation(
                     args,
@@ -1238,7 +1252,9 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let public_key = hex(&book.checkpoint_public_key());
     ctx.out.at_book(&book)?;
     let digest = hex(&produced.bundle.digest);
-    let verifier = if report_source.is_some() {
+    let verifier = if scenario_math {
+        "scenario"
+    } else if report_source.is_some() {
         "report"
     } else {
         "bundle"
@@ -1260,6 +1276,9 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     if equity_diff_request {
         verify.push_str(" --equity-diff-request <independently-retained-request-file>");
+    }
+    if scenario_math {
+        verify.push_str(" --scenario-request <independently-retained-request-file>");
     }
     if let Some(expected) = &native_subledger_request {
         let known_at = expected.known_at.ok_or_else(|| {
@@ -1286,7 +1305,9 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .join(",")
         ));
     }
-    let unit_premise = if native_subledger_request.is_some() {
+    let unit_premise = if scenario_math {
+        "\nSupply the canonical question retained with scenario diff --request-out before delivery. This profile recomputes additive assumed effects over the authenticated fork and exact evidence. Historical planner admission, native marker membership and economic truth are not judged; hypothetical entries are not trunk journal members."
+    } else if native_subledger_request.is_some() {
         "\nRetain the subledger code, control account, civil-day cutoff and recorded prefix independently. These flags reproduce the supplied --expect question; compare them with the recipient's original request before verification."
     } else if equity_diff_request {
         "\nSelect the canonical equity request retained when the comparison was requested (--request-out or verification_request_hex); the delivered bundle cannot choose the recipient's expected frontiers, units, dates or owner-account roles."
