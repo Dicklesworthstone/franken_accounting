@@ -228,7 +228,30 @@ fn preference_batch_preserves_creditor_margins() {
         b[0].2
     );
     for f in &r.findings {
-        assert_eq!(f.version, 3);
+        assert_eq!(f.version, 4);
+    }
+
+    // Version 4 widens window arithmetic; ordinary dates retain version 3's
+    // exact creditor margins, citations and attribution narrative.
+    let retained = fa_lantern::catalog::build_version(
+        LookbackPreferences::ID,
+        3,
+        Params::defaults(LookbackPreferences::ID)
+            .unwrap()
+            .set("contemporaneous_days", 5)
+            .unwrap(),
+        fa_lantern::catalog::Inputs::default(),
+    )
+    .unwrap();
+    let retained = run_over(&snapshot, &h.book, retained.as_ref()).unwrap();
+    assert_eq!(retained.findings.len(), 2);
+    assert_eq!(of(&retained.findings, "VEND-A")[0].1, 10_000);
+    assert_eq!(of(&retained.findings, "VEND-B")[0].1, 20_000);
+    for (old, current) in retained.findings.iter().zip(&r.findings) {
+        assert_eq!(old.version, 3);
+        let mut expected = current.clone();
+        expected.version = 3;
+        assert_eq!(old, &expected);
     }
 
     // Each invoice keeps its own date: paid on Apr 15, B's (Feb 20) is 54

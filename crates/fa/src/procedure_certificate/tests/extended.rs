@@ -129,8 +129,10 @@ fn layering_v3_keeps_the_actual_v2_registry_and_native_algorithm_replayable() {
 
 #[test]
 fn lookback_versions_keep_the_real_prior_registry_and_native_replay() {
-    let mut f = Fixture::new(128);
-    let (source, _) = f.post(31, "6000", "1000", 100_000, false);
+    let mut f = Fixture::new(131);
+    // `post` credits the source and debits the destination: this must be
+    // an asset outflow, not an expense reversal that brings cash in.
+    let (source, _) = f.post(31, "1000", "6000", 100_000, false);
     let before = f.head();
     let mut request = f.request("lookback.fraudulent_transfer", source);
     request.parameters = request
@@ -139,6 +141,32 @@ fn lookback_versions_keep_the_real_prior_registry_and_native_replay() {
         .unwrap()
         .set("uvta_days", i128::from(u32::MAX))
         .unwrap();
+
+    // Preserve the original cash-inflow fixture as a real negative in its
+    // own book. A wider window must not turn an asset receipt into outflow.
+    let mut inflow = Fixture::new(128);
+    let (receipt, _) = inflow.post(31, "6000", "1000", 100_000, false);
+    let inflow_before = inflow.head();
+    let mut inflow_request = inflow.request("lookback.fraudulent_transfer", receipt);
+    inflow_request.parameters = request.parameters.clone();
+    let inflow_certificate = inflow.certify(&inflow_request).certificate;
+    assert_eq!(inflow_certificate.report.version, 2);
+    assert!(inflow_certificate.report.findings.is_empty());
+    assert_eq!(
+        inflow
+            .book
+            .replay_procedure(
+                &inflow.cx(),
+                PRINCIPAL,
+                &cap(&["read"]),
+                &inflow_certificate
+            )
+            .unwrap()
+            .unwrap(),
+        inflow_certificate.report,
+    );
+    assert_eq!(inflow.head(), inflow_before);
+
     let current = f.certify(&request).certificate;
     assert_eq!(current.report.version, 2);
     assert_eq!(current.report.findings.len(), 1);

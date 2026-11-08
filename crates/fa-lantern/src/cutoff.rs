@@ -2365,13 +2365,24 @@ impl Procedure for LookbackPreferences {
                                 vid: e.vid,
                                 kind: CreditorEventKind::Payment {
                                     amount,
-                                    days_to_pay: invoice.map(|d| {
-                                        if self.version == 3 {
-                                            i128::from((eff.0 - d.0).max(0))
-                                        } else {
-                                            i128::from((i64::from(eff.0) - i64::from(d.0)).max(0))
-                                        }
-                                    }),
+                                    days_to_pay: invoice
+                                        .map(|d| {
+                                            if self.version == 3 {
+                                                // Preserve successful retained arithmetic;
+                                                // overflowing spans previously panicked.
+                                                eff.0
+                                                    .checked_sub(d.0)
+                                                    .map(|days| i128::from(days.max(0)))
+                                                    .ok_or(LanternError::Overflow(
+                                                        "preference days-to-pay",
+                                                    ))
+                                            } else {
+                                                Ok(i128::from(
+                                                    (i64::from(eff.0) - i64::from(d.0)).max(0),
+                                                ))
+                                            }
+                                        })
+                                        .transpose()?,
                                 },
                                 accounts: part.accounts.clone(),
                             });

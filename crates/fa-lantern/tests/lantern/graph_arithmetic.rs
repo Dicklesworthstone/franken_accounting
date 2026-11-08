@@ -452,6 +452,62 @@ fn native_lookbacks_preserve_full_u32_windows_and_retained_versions() {
             ));
         }
     }
+    // These cloned snapshots exercise invoice-day arithmetic only. The
+    // journal-admitted payment and its original document date stay unchanged.
+    let boundary = day(2026, 3, 20).0.checked_sub(i32::MAX).unwrap();
+    let current = LookbackPreferences::new().unwrap();
+    let retained = fa_lantern::catalog::build_version(
+        LookbackPreferences::ID,
+        3,
+        Params::defaults(LookbackPreferences::ID).unwrap(),
+        fa_lantern::catalog::Inputs::default(),
+    )
+    .unwrap();
+    for (document_day, overflows) in [
+        (boundary, false),
+        (boundary.checked_sub(1).unwrap(), true),
+        (i32::MIN, true),
+    ] {
+        let mut wide = snapshot.clone();
+        wide.entries
+            .iter_mut()
+            .find(|entry| entry.vid == entry_ref.vid)
+            .unwrap()
+            .entry
+            .proposal
+            .document_date = Some(DateDay(document_day));
+        let report = run_over(&wide, &h.book, &current).unwrap();
+        assert_eq!(report.version, 4);
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].severity, Severity::High);
+        assert_eq!(
+            report.findings[0].statistic,
+            Statistic {
+                name: "net_preference_exposure".into(),
+                value: 100_000,
+                scale: 2,
+                population: 1,
+            }
+        );
+        assert!(
+            report.findings[0]
+                .cites
+                .contains(&Cite::Entry(entry_ref.vid))
+        );
+        let result = run_over(&wide, &h.book, retained.as_ref());
+        if overflows {
+            assert!(matches!(
+                result,
+                Err(LanternError::Overflow("preference days-to-pay"))
+            ));
+        } else {
+            let replay = result.unwrap();
+            let mut expected = report.findings[0].clone();
+            expected.version = 3;
+            assert_eq!(replay.version, 3);
+            assert_eq!(replay.findings, vec![expected]);
+        }
+    }
     assert_eq!(
         h.db.frontier().unwrap(),
         before,

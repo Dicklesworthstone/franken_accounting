@@ -4416,10 +4416,34 @@ fn phase_19_5b_fnx_graph_procedures_with_cgse_witnesses() {
 
     // 3. graph.communities
     let comm = run_over(&snapshot, &h.book, &Communities::new().unwrap()).unwrap();
-    assert!(!comm.findings.is_empty());
+    // The triangle plus tail is split into Louvain communities whose
+    // internal shares miss the threshold. Version 2's whole-component
+    // fallback incorrectly reported its unavoidable 100% internal share.
+    assert!(comm.findings.is_empty(), "{:?}", comm.findings);
+    // The isolated three-cycle is a real positive: all incident volume
+    // remains among its three accounts. Keep the other procedures' original
+    // four-entry fixture unchanged.
+    let mut community_snapshot = snapshot.clone();
+    community_snapshot.entries.truncate(3);
+    let comm = run_over(&community_snapshot, &h.book, &Communities::new().unwrap()).unwrap();
+    assert_eq!(comm.findings.len(), 1);
+    assert_eq!(comm.findings[0].version, 3);
+    assert_eq!(
+        comm.findings[0].statistic,
+        Statistic {
+            name: "internal_share_bps".into(),
+            value: 10_000,
+            scale: 0,
+            population: 3,
+        }
+    );
+    let mut expected_accounts = [h.account("1000"), h.account("1010"), h.account("1020")];
+    expected_accounts.sort();
+    let expected_cites: Vec<Cite> = expected_accounts.into_iter().map(Cite::Account).collect();
+    assert_eq!(comm.findings[0].cites, expected_cites);
     assert!(comm.findings[0].narrative.contains("cgse_witness="));
     assert!(
-        witness::determinism(&snapshot, &h.book, &Communities::new().unwrap())
+        witness::determinism(&community_snapshot, &h.book, &Communities::new().unwrap())
             .unwrap()
             .deterministic()
     );
@@ -7995,10 +8019,34 @@ fn role_populations_are_the_registered_role_consumers() {
         .collect();
     code.sort();
     assert_eq!(code, registered);
+    // Both forms explicitly describe account-role membership. Registry prose
+    // is part of retained certificate epochs, so validate its meaning without
+    // rewriting those epochs to enforce one English word order.
+    let describes_role = |summary: &str, role: &str| {
+        summary.contains(&format!("`{role}` account role"))
+            || summary.starts_with(&format!("Accounts holding the `{role}` role "))
+    };
+    for summary in [
+        "Accounts holding the `suspense` account role when assigned.",
+        "Accounts holding the `suspense` role with nonzero residuals.",
+    ] {
+        assert!(describes_role(summary, "suspense"), "{summary}");
+    }
+    for summary in [
+        "Accounts holding the `cash` account role when assigned.",
+        "Parties holding the `suspense` role with nonzero residuals.",
+        "Accounts guessed from suspense names.",
+        "Accounts holding the suspense role with nonzero residuals.",
+        "Accounts tagged `suspense` with nonzero residuals.",
+        "Accounts holding the `suspense` roleplay flag.",
+        "Use the `suspense` tag to identify accounts.",
+    ] {
+        assert!(!describes_role(summary, "suspense"), "{summary}");
+    }
     for (procedure, role) in fa_lantern::ROLE_POPULATIONS {
         let row = fa_lantern::bind(procedure).expect("registered");
         assert!(
-            row.summary.contains(&format!("`{role}` account role")),
+            describes_role(&row.summary, role),
             "{procedure}: {}",
             row.summary
         );
