@@ -535,6 +535,18 @@ pub(super) fn verify_history(
                 "allocated relief provenance requires SettlementAllocatedCarrying",
             ));
         }
+        if info.fx_settlement_terms.is_some()
+            && (!registry.settlement_terms
+                || entry
+                    .base
+                    .as_ref()
+                    .is_none_or(|claim| ![law_oid(4), law_oid(10)].contains(&claim.law)))
+        {
+            return Err(failed(
+                "functional_carrying",
+                "explicit FX differences require their retained v2 profile and a carrying settlement law",
+            ));
+        }
         if let Some(claim) = &entry.base {
             if envelope.class == 12 && claim.law != law_oid(1) {
                 return Err(failed(
@@ -686,6 +698,7 @@ pub(super) fn verify_history(
                 || legs[index].len() != legs[target].len()
                 || entry.base != original.base
                 || infos[&index].fx_settlement_basis != infos[&target].fx_settlement_basis
+                || infos[&index].fx_settlement_terms != infos[&target].fx_settlement_terms
             {
                 return Err(failed(
                     "functional_reversal",

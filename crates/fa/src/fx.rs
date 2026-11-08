@@ -24,8 +24,11 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::{AsyncBook, BookError, IntakeAction, Outcome};
 
+mod settlement_differences;
+
 pub use fa_journal::carrying::{
-    FxSettlementItem, FxSettlementRequest, MAX_FX_SETTLEMENT_ITEMS, PreparedFxSettlement,
+    FxSettlementDifference, FxSettlementItem, FxSettlementRequest,
+    FxSettlementWithDifferencesRequest, MAX_FX_SETTLEMENT_ITEMS, PreparedFxSettlement,
     PreparedFxSettlementGroup,
 };
 pub use fa_journal::fx::{FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms};

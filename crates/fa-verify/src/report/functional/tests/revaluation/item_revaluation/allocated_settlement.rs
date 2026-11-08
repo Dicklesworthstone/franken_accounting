@@ -254,6 +254,162 @@ fn mutate_release(record: &Record, change: impl FnOnce(&mut Vec<u8>)) -> Record 
     finish(w, record.envelope.commit_seq)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn with_release_and_terms(
+    seq: u64,
+    class: u16,
+    key: &[u8],
+    legs: &[AppliedLeg],
+    rate: &RateFixture,
+    basis: &[u8],
+    terms: &[u8],
+    reverses: Option<&Record>,
+) -> Record {
+    let original = application_entry(seq, class, 30, key, legs, (10, rate, None), reverses);
+    let mut raw = original.bytes[..original.len].to_vec();
+    raw[2..4].copy_from_slice(&10u16.to_le_bytes());
+    let mut w = Writer::default();
+    w.fixed(&raw).count(2).u16(37).bytes(basis).u16(42).bytes(terms);
+    finish(w, seq)
+}
+
+#[test]
+fn explicit_fx_terms_preserve_allocated_source_relief_and_exact_undo() {
+    for debit in [true, false] {
+        for (total, closing) in [(15, (3, 2)), (5, (1, 2))] {
+            let (mut records, mut rates, source, allocation) =
+                allocated_history(10, 10, total, (1, 1), closing, debit);
+            // Keep every source/route account definition identical, and add
+            // one separate base-currency expense for the declared charge.
+            let mut chart = Writer::default();
+            chart.count(8);
+            for (code, kind, unit) in [
+                ("1000", 1, 1i64),
+                ("1010", 1, 0),
+                ("1290", 1, 0),
+                ("1900", 1, -1),
+                ("3000", 3, 1),
+                ("4700", 4, 0),
+                ("7000", 4, 0),
+                ("8000", 5, 0),
+            ] {
+                chart
+                    .bytes(code.as_bytes())
+                    .bytes(code.as_bytes())
+                    .u8(kind)
+                    .u8(u8::from(matches!(kind, 2..=4)))
+                    .u8(1)
+                    .fixed(&unit.to_le_bytes())
+                    .u8(0);
+            }
+            records[0] = schema_record(1, 1, &chart.buf);
+            let quote = rate_fixture(2, 1, 4, 30);
+            records.push(intake(&quote, 9));
+            let mut member = component(
+                &source,
+                debit,
+                10,
+                10,
+                total,
+                20,
+                &records[3],
+                &[&allocation],
+            );
+            let cash = if debit { 19 } else { 21 };
+            let applying = !debit;
+            let mut legs = vec![member.legs[0].clone(), member.legs[1].clone()];
+            legs.extend([
+                leg("1010", !applying, 0, cash, cash),
+                leg("1900", applying, 0, cash, cash),
+                leg("7000", applying, 0, 10, 10),
+                leg("1900", !applying, 0, 10, 10),
+                leg("8000", true, 0, 1, 1),
+                leg("1900", false, 0, 1, 1),
+            ]);
+            legs.extend_from_slice(&member.legs[5..]);
+            member.legs = legs;
+            let paid = payment(10, 30, b"allocated-net-cash", &quote, &[member]);
+            let mut terms = Writer::default();
+            terms
+                .fixed(b"FA-FX-TERMS\0")
+                .u16(2)
+                .count(1)
+                .u16(0)
+                .count(1)
+                .u16(6)
+                .u8(4);
+            let honest = with_release_and_terms(
+                10,
+                1,
+                b"allocated-net-cash",
+                &paid.legs,
+                &quote,
+                &paid.basis,
+                &terms.buf,
+                None,
+            );
+            records.push(honest.clone());
+            rates.push(quote.clone());
+            let mut docs = allocated_registries();
+            docs[4].1 = registry::settlement_terms_fixture(&docs[4].1);
+            let inputs: Vec<_> = docs
+                .iter()
+                .map(|(name, body)| (name.as_str(), body.as_slice()))
+                .collect();
+            let definitions = registry::verify_functional(&inputs, &closure(&docs)).unwrap();
+            let replay = |records: &[Record]| {
+                replay_registry_fixture(
+                    records,
+                    Selection::AsOf(58),
+                    records.last().unwrap().envelope.commit_seq,
+                    &book(&[]),
+                    &rates,
+                    &[],
+                    &definitions,
+                )
+            };
+            let (report, _) = replay(&records).unwrap();
+            assert_eq!(net(&report, "1000"), 0);
+            assert_eq!(net(&report, "1290"), 0);
+            assert_eq!(net(&report, "4700"), 0);
+            assert_eq!(net(&report, "1010"), if debit { cash } else { -cash });
+            assert_eq!(net(&report, "7000"), if debit { -10 } else { 10 });
+            assert_eq!(net(&report, "8000"), 1);
+
+            let mut forged = paid.basis.clone();
+            forged[21] ^= 1; // authenticated carrying source, not a display field
+            *records.last_mut().unwrap() = with_release_and_terms(
+                10,
+                1,
+                b"allocated-net-cash",
+                &paid.legs,
+                &quote,
+                &forged,
+                &terms.buf,
+                None,
+            );
+            assert_eq!(replay(&records).unwrap_err().predicate, "functional_carrying");
+            *records.last_mut().unwrap() = honest.clone();
+            records.push(with_release_and_terms(
+                11,
+                4,
+                b"undo-allocated-net",
+                &swapped(&paid.legs),
+                &quote,
+                &paid.basis,
+                &terms.buf,
+                Some(&honest),
+            ));
+            let (restored, _) = replay(&records).unwrap();
+            let sign = if debit { 1 } else { -1 };
+            assert_eq!(net(&restored, "1000"), sign * 10);
+            assert_eq!(net(&restored, "1290"), sign * (total - 10));
+            assert_eq!(net(&restored, "1010"), 0);
+            assert_eq!(net(&restored, "8000"), 0);
+        }
+    }
+}
+
 #[test]
 fn allocated_settlement_relieves_positive_and_negative_carrying_and_takes_the_final_remainder() {
     for (target, close, first_total) in [(15, (3, 2), 4), (5, (1, 2), 2)] {

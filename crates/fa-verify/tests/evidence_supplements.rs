@@ -785,7 +785,7 @@ fn application_terms_proposal(minor: u16, invoice: Target) -> Vec<u8> {
 fn minor_nine_application_terms_preserve_target_identity_but_future_minors_refuse() {
     let (invoice, invoice_target) = posting(8, 3, 20_527, &[]);
     let (_, ordinary_target) = posting(7, 7, 20_527, &[]);
-    for minor in [9, 10] {
+    for minor in [9, 10, 11] {
         let receipt = supplement_fixture::proposal_record(
             application_terms_proposal(minor, invoice_target),
             7,
@@ -808,7 +808,7 @@ fn minor_nine_application_terms_preserve_target_identity_but_future_minors_refus
         let original = verify_evidence_prefix_for(&j.prefix, &j.checkpoint, &j.scope()).unwrap();
         let verified =
             verify_supplemented_evidence_prefix_for(&j.prefix, &j.checkpoint, &j.scope());
-        if minor == 9 {
+        if minor <= 10 {
             let verified = verified.unwrap();
             assert_eq!(verified.inventory, original);
             assert_eq!(verified.supplements.len(), 1);

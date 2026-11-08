@@ -4,6 +4,10 @@
 //! source and retrieval metadata do not authenticate a provider or a clock.
 //! Monetary proposals always use the ordinary independently verifying kernel.
 
+mod settlement_differences;
+
+pub(crate) use settlement_differences::review as settlement_difference_review;
+
 use std::collections::BTreeSet;
 
 use fa::{Book, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms};
@@ -470,7 +474,13 @@ fn settlement_intent(
     const FIX: &str = "supply pairs of functional-currency cash and one fully applied foreign control leg, with distinct target legs, and fx:{law: SettlementCarryingBasis | SettlementAllocatedCarrying, rates:[D:oid], conversion_account:<code>, realized_fx_account:<code>}; receipt/payment accept --fx-rate, --fx-law, --conversion and --realized-fx with exactly one --applies <vid>:<leg>=<foreign amount>";
     strict_object(
         fx,
-        &["law", "rates", "conversion_account", "realized_fx_account"],
+        &[
+            "law",
+            "rates",
+            "conversion_account",
+            "realized_fx_account",
+            "differences",
+        ],
         "intent.fx",
         FIX,
     )?;
@@ -503,6 +513,7 @@ fn settlement_intent(
         ));
     }
     let base_unit = book.spec()?.base_unit;
+    let differences = settlement_differences::parse(fx, pairs.len(), book, base_unit)?;
     let route = |field| {
         required_string(fx, field, "intent.fx", FIX)
             .map(|code| fa_model::account_vid(book.context().book_id, code))
@@ -511,7 +522,7 @@ fn settlement_intent(
     let realized_fx_account = route("realized_fx_account")?;
     let mut requests = Vec::new();
     let mut declared = Vec::new();
-    for pair in pairs {
+    for (pair, differences) in pairs.iter().zip(differences) {
         let applying_index = pair
             .iter()
             .position(|leg| !leg.settles.is_empty())
@@ -540,15 +551,18 @@ fn settlement_intent(
                 FIX,
             ));
         }
-        requests.push(fa::FxSettlementRequest {
-            target: application.target,
-            target_ordinal: application.ordinal,
-            amount: applying.amount,
-            settlement_amount: cash.amount,
-            settlement_account: cash.account_ref,
-            conversion_account,
-            realized_fx_account,
-            rate_document,
+        requests.push(fa::FxSettlementWithDifferencesRequest {
+            settlement: fa::FxSettlementRequest {
+                target: application.target,
+                target_ordinal: application.ordinal,
+                amount: applying.amount,
+                settlement_amount: cash.amount,
+                settlement_account: cash.account_ref,
+                conversion_account,
+                realized_fx_account,
+                rate_document,
+            },
+            differences,
         });
         declared.push((applying, cash));
     }
@@ -559,9 +573,14 @@ fn settlement_intent(
     // side effect of planning a payment. Ordinary callers keep their existing
     // Read-based source preparation.
     let mut result = if let Some(name) = draft.filter(|_| capability.branch().is_some()) {
-        book.prepare_fx_settlement_group_in_draft(capability, name, &requests, proposal)??
+        book.prepare_fx_settlement_group_with_differences_in_draft(
+            capability,
+            name,
+            &requests,
+            proposal,
+        )??
     } else {
-        book.prepare_fx_settlement_group(capability, &requests, proposal)??
+        book.prepare_fx_settlement_group_with_differences(capability, &requests, proposal)??
             .into_proposal()
     };
     if result

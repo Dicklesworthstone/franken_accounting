@@ -14,7 +14,15 @@
 //! adjustments never acquire an inferred allocation.
 
 mod allocated;
+pub(crate) mod differences;
 mod history;
+pub use differences::{
+    FxSettlementDifference, FxSettlementWithDifferencesRequest,
+    admit_draft_settlement_requests_with_differences,
+    prepare_fx_settlement_with_differences, prepare_fx_settlement_group_with_differences,
+    prepare_fx_settlement_with_differences_in_draft,
+    prepare_fx_settlement_group_with_differences_in_draft,
+};
 pub(crate) use allocated::ReleaseIndex as AllocatedReleaseIndex;
 pub(crate) use allocated::basis as allocated_basis;
 pub(crate) use allocated::covers_valuation_account;
@@ -1165,17 +1173,30 @@ pub fn admit_draft_settlement_requests<V: Vfs + Clone>(
     requests: &[FxSettlementRequest],
     template: &EntryPayload,
 ) -> Outcome<()> {
+    admit_draft_settlement_requests_inner(db, cx, book, admission, requests, &[], template)
+}
+
+fn admit_draft_settlement_requests_inner<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    admission: &crate::draft::DraftSourceAdmission,
+    requests: &[FxSettlementRequest],
+    differences: &[Vec<FxSettlementDifference>],
+    template: &EntryPayload,
+) -> Outcome<()> {
     cx.query().with_restriction(|| {
         if let Err(refusal) = admission.admit_proposal(db, book, template)? {
             return Ok(Err(refusal));
         }
         if let Err(refusal) = settlement_template(book, admission.capability(), template)
             .and_then(|()| settlement_requests(requests))
+            .and_then(|()| differences::validate_group_differences(requests, differences))
         {
             return Ok(Err(refusal));
         }
         let mut declared = template.clone();
-        for request in requests {
+        for (index, request) in requests.iter().enumerate() {
             if request.amount.mantissa <= 0 || request.settlement_amount.mantissa <= 0 {
                 return Ok(Err(invalid(
                     "FX settlement requires positive declared native and cash amounts",
@@ -1202,6 +1223,14 @@ pub fn admit_draft_settlement_requests<V: Vfs + Clone>(
                     request.settlement_amount,
                 ),
             ]);
+            if let Some(differences) = differences.get(index) {
+                for difference in differences {
+                    declared.legs.extend([
+                        LegPayload::simple(Side::Debit, difference.account, difference.amount),
+                        LegPayload::simple(Side::Credit, request.conversion_account, difference.amount),
+                    ]);
+                }
+            }
         }
         if let Err(refusal) = admission.admit_proposal(db, book, &declared)? {
             return Ok(Err(refusal));
@@ -1319,6 +1348,7 @@ pub fn prepare_fx_settlement_group_in_draft<V: Vfs + Clone>(
         admission.capability(),
         Some(admission),
         requests,
+        &[],
         template,
         budget,
     )? {
@@ -1350,6 +1380,7 @@ pub fn prepare_fx_settlement<V: Vfs + Clone>(
             capability,
             None,
             request,
+            &[],
             template,
             budget,
             Some(&mut audits),
@@ -1378,7 +1409,7 @@ pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
 ) -> Outcome<PreparedFxSettlementGroup> {
     prepare_fx_settlement_group_with_admission(
-        db, cx, book, capability, None, requests, template, budget,
+        db, cx, book, capability, None, requests, &[], template, budget,
     )
 }
 
@@ -1390,6 +1421,7 @@ fn prepare_fx_settlement_group_with_admission<V: Vfs + Clone>(
     capability: &Capability,
     draft: Option<&crate::draft::DraftSourceAdmission>,
     requests: &[FxSettlementRequest],
+    differences: &[Vec<FxSettlementDifference>],
     template: EntryPayload,
     budget: &mut ArithmeticBudget<'_, impl Sized>,
 ) -> Outcome<PreparedFxSettlementGroup> {
@@ -1400,14 +1432,16 @@ fn prepare_fx_settlement_group_with_admission<V: Vfs + Clone>(
     if let Err(refusal) = authorized {
         return Ok(Err(refusal));
     }
-    if let Err(refusal) = settlement_requests(requests) {
+    if let Err(refusal) = settlement_requests(requests)
+        .and_then(|()| differences::validate_group_differences(requests, differences))
+    {
         return Ok(Err(refusal));
     }
     let head = db.frontier()?;
     let mut proposal: Option<EntryPayload> = None;
     let mut items = Vec::with_capacity(requests.len());
     let mut audits = SuccessfulHistoryAudits::default();
-    for request in requests {
+    for (index, request) in requests.iter().enumerate() {
         let prepared = match cx.query().with_restriction(|| {
             prepare_fx_settlement_inner(
                 db,
@@ -1416,6 +1450,7 @@ fn prepare_fx_settlement_group_with_admission<V: Vfs + Clone>(
                 capability,
                 draft,
                 request,
+                differences.get(index).map_or(&[], Vec::as_slice),
                 template.clone(),
                 budget,
                 Some(&mut audits),
@@ -1435,6 +1470,9 @@ fn prepare_fx_settlement_group_with_admission<V: Vfs + Clone>(
         let end = start
             .checked_add(prepared.proposal.legs.len())
             .ok_or_else(|| KernelError::Corrupt("FX group leg count overflow".into()))?;
+        if end > fa_model::limits::MAX_LEGS_PER_ENTRY {
+            return Ok(Err(invalid("FX group exceeds the complete Entry leg bound")));
+        }
         items.push(FxSettlementItem {
             carrying: prepared.carrying,
             base_relief: prepared.base_relief,
@@ -1448,7 +1486,7 @@ fn prepare_fx_settlement_group_with_admission<V: Vfs + Clone>(
                         "FX component has no base totals".into(),
                     ));
                 };
-                let Some(next) = prepared.proposal.base_totals else {
+                let Some(next) = &prepared.proposal.base_totals else {
                     return Err(KernelError::Corrupt(
                         "FX component has no base totals".into(),
                     ));
@@ -1494,12 +1532,35 @@ fn prepare_fx_settlement_group_with_admission<V: Vfs + Clone>(
                         };
                     }
                     combined_basis.items.extend(next_basis.items);
-                    combined.extensions = vec![(
-                        fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION,
-                        combined_basis.canonical_bytes()?,
-                    )];
+                    let tag = fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION;
+                    let bytes = combined_basis.canonical_bytes()?;
+                    match combined.extensions.binary_search_by_key(&tag, |(tag, _)| *tag) {
+                        Ok(index) => combined.extensions[index].1 = bytes,
+                        Err(index) => combined.extensions.insert(index, (tag, bytes)),
+                    }
                 }
+                // Marker ordinals refer to the final immutable entry, including
+                // any allocated release tails and unmarked legacy components.
+                let mut combined_terms = combined.fx_settlement_terms()
+                    .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+                if let Some(mut next_terms) = prepared.proposal.fx_settlement_terms()
+                    .map_err(|error| KernelError::Corrupt(error.to_string()))?
+                {
+                    for component in &mut next_terms.components {
+                        if let Err(refusal) = differences::rebase(component, 0, start) {
+                            return Ok(Err(refusal));
+                        }
+                    }
+                    combined_terms.get_or_insert_with(|| fa_model::FxSettlementTerms { components: Vec::new() })
+                        .components.extend(next_terms.components);
+                }
+                combined.schema_minor = combined.schema_minor.max(prepared.proposal.schema_minor);
                 combined.legs.extend(prepared.proposal.legs);
+                if let Some(terms) = combined_terms {
+                    if let Err(error) = combined.set_fx_settlement_terms(&terms) {
+                        return Ok(Err(invalid(error)));
+                    }
+                }
             }
         }
     }
@@ -1580,6 +1641,7 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
     capability: &Capability,
     draft: Option<&crate::draft::DraftSourceAdmission>,
     request: &FxSettlementRequest,
+    differences: &[FxSettlementDifference],
     mut template: EntryPayload,
     budget: &mut ArithmeticBudget<'_, impl Sized>,
     audits: Option<&mut SuccessfulHistoryAudits>,
@@ -1591,7 +1653,9 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
     if let Err(refusal) = authorized {
         return Ok(Err(refusal));
     }
-    if let Err(refusal) = settlement_template(book, capability, &template) {
+    if let Err(refusal) = settlement_template(book, capability, &template)
+        .and_then(|()| differences::validate_request_differences(request, differences))
+    {
         return Ok(Err(refusal));
     }
     let head = db.frontier()?;
@@ -1738,7 +1802,7 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
         Ok(value) => value,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if converted != request.settlement_amount {
+    if differences.is_empty() && converted != request.settlement_amount {
         return Ok(Err(invalid(
             "declared cash amount does not equal the retained Settlement rate conversion; an unexplained difference is not a plug",
         )));
@@ -1760,6 +1824,16 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
         Ok(proposal) => proposal,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    if let Some(route) = carrying.valuation_route {
+        if differences.iter().any(|difference| {
+            difference.account == route.valuation_account || difference.account == route.unrealized_account
+        }) {
+            return Ok(Err(invalid("FX differences cannot post to allocated valuation or unrealized-FX destinations")));
+        }
+    }
+    if let Err(refusal) = differences::apply(&mut template, request, differences, historical_relief, converted) {
+        return Ok(Err(refusal));
+    }
     template.legs[0].settles = vec![Settlement {
         target: request.target,
         ordinal: request.target_ordinal,
@@ -1827,6 +1901,10 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
         Ok(ranges) => ranges,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let terms = match differences::bound_terms(proposal, &ranges) {
+        Ok(terms) => terms,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let mut audits = SuccessfulHistoryAudits::default();
     for range in ranges {
         if let Err(refusal) = validate_component(
@@ -1836,6 +1914,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
             proposal,
             at,
             range.start,
+            terms.as_ref().and_then(|terms| terms.component(range.start)),
             &proposal.legs[range],
             &mut audits,
         )? {
@@ -2082,6 +2161,7 @@ fn validate_component<V: Vfs + Clone>(
     proposal: &EntryPayload,
     at: CommitSeq,
     applying_ordinal: usize,
+    terms: Option<&fa_model::FxSettlementComponent>,
     legs: &[fa_model::LegPayload],
     audits: &mut SuccessfulHistoryAudits,
 ) -> Outcome<()> {
@@ -2150,6 +2230,13 @@ fn validate_component<V: Vfs + Clone>(
             if has_allocated_basis(proposal) { return Ok(Err(invalid("a legacy unallocated item cannot acquire a caller-authored valuation-release basis"))); }
             legs
         };
+        if let Some(terms) = terms {
+            let quoted = match differences::quoted_effects(legs, terms) {
+                Ok(value) => value,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            return Ok(differences::check_component(legs, terms, expected, quoted));
+        }
         // This law's complete effect vector is explicit and bounded. Merely
         // finding one plausible pair somewhere in arbitrary extra legs would
         // leave other foreign valuations unchecked.

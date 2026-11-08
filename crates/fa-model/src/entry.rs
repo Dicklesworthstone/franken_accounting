@@ -50,9 +50,10 @@ pub const SCHEMA_MAJOR: u16 = 1;
 /// case disclosures to their immutable Post and retained statement comparisons.
 /// Minor 8 admits the immutable reviewed CloseRun task graph. Minor 9 binds
 /// explicit base-unit receipt/payment differences to their complete legs.
+/// Minor 10 binds explicit net-cash differences on source-bound FX settlements.
 /// A writer may emit any minor ≤ this; bytes at a higher minor decode with
 /// their unknown extension tags preserved and skipped.
-pub const SCHEMA_MINOR: u16 = 9;
+pub const SCHEMA_MINOR: u16 = 10;
 /// The first minor whose layout carries the trailing extension block.
 pub const EXTENSIONS_MINOR: u16 = 1;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
@@ -278,6 +279,10 @@ pub const CLOSE_RUN_SCHEMA_MINOR: u16 = 8;
 /// legs of a base-unit receipt/payment; exact reversals preserve the marker.
 pub const APPLICATION_TERMS_EXTENSION: u16 = 41;
 pub const APPLICATION_TERMS_SCHEMA_MINOR: u16 = 9;
+/// Extension 42 opts affected source-bound FX settlement components into the
+/// version-2 complete net-cash and explicit difference-pair profile.
+pub const FX_SETTLEMENT_TERMS_EXTENSION: u16 = 42;
+pub const FX_SETTLEMENT_TERMS_SCHEMA_MINOR: u16 = 10;
 pub const PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR: u16 = 3;
 
 /// The immutable source-period claim of a prior-period adjustment.
@@ -354,6 +359,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     ASSET_CHARGE_EXTENSION,
     CLOSE_RUN_EXTENSION,
     APPLICATION_TERMS_EXTENSION,
+    FX_SETTLEMENT_TERMS_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1959,6 +1965,21 @@ impl EntryPayload {
             })?;
             terms.validate_shape(self.legs.len())?;
         }
+        if let Some((_, bytes)) = self.extensions.iter()
+            .find(|(tag, _)| *tag == FX_SETTLEMENT_TERMS_EXTENSION)
+        {
+            if self.schema_minor < FX_SETTLEMENT_TERMS_SCHEMA_MINOR
+                || !matches!(self.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL)
+                || (self.class != EntryClass::REVERSAL && !matches!(&self.origin, EntryOrigin::Intent { .. }))
+                || self.extensions.iter().any(|(tag, _)| *tag == APPLICATION_TERMS_EXTENSION)
+            {
+                return Err(invalid("extensions.fx_settlement_terms",
+                    "requires an Original/Adjusting Intent or exact Reversal at minor 10, without base-only application terms"));
+            }
+            let terms = crate::FxSettlementTerms::decode(bytes).map_err(|_| invalid(
+                "extensions.fx_settlement_terms", "requires canonical version-2 component and difference-pair bindings"))?;
+            terms.validate_shape(self.legs.len())?;
+        }
         if let Some((_, bytes)) = self
             .extensions
             .iter()
@@ -2664,6 +2685,23 @@ impl EntryPayload {
             .iter()
             .find(|(tag, _)| *tag == APPLICATION_TERMS_EXTENSION)
             .map(|(_, bytes)| crate::ApplicationTerms::decode(bytes).map_err(EntryError::from))
+            .transpose()
+    }
+
+    pub fn set_fx_settlement_terms(&mut self, terms: &crate::FxSettlementTerms) -> Result<(), EntryError> {
+        terms.validate_shape(self.legs.len())?;
+        let bytes = terms.encode()?;
+        self.schema_minor = self.schema_minor.max(FX_SETTLEMENT_TERMS_SCHEMA_MINOR);
+        match self.extensions.binary_search_by_key(&FX_SETTLEMENT_TERMS_EXTENSION, |(tag, _)| *tag) {
+            Ok(index) => self.extensions[index].1 = bytes,
+            Err(index) => self.extensions.insert(index, (FX_SETTLEMENT_TERMS_EXTENSION, bytes)),
+        }
+        Ok(())
+    }
+
+    pub fn fx_settlement_terms(&self) -> Result<Option<crate::FxSettlementTerms>, EntryError> {
+        self.extensions.iter().find(|(tag, _)| *tag == FX_SETTLEMENT_TERMS_EXTENSION)
+            .map(|(_, bytes)| crate::FxSettlementTerms::decode(bytes).map_err(EntryError::from))
             .transpose()
     }
 

@@ -845,6 +845,9 @@ pub(super) struct FunctionalRegistry {
     pub spot_carrying: bool,
     pub item_revaluation: bool,
     pub allocated_carrying: bool,
+    /// The exact retained extension-42 profile, independently interpreted.
+    /// Its absence preserves legacy carrying-settlement closures.
+    pub settlement_terms: bool,
 }
 
 /// Add an independently encoded additive row to the retained legacy fixture.
@@ -863,6 +866,66 @@ pub(super) fn item_law_fixture(bytes: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 pub(super) fn allocated_law_fixture(bytes: &[u8]) -> Vec<u8> {
     additional_fx_law_fixture(bytes, 10)
+}
+
+/// Independently encode the optional v2 profile without rewriting law rows.
+#[cfg(test)]
+pub(super) fn settlement_terms_fixture(bytes: &[u8]) -> Vec<u8> {
+    let mut r = Cursor {
+        bytes,
+        at: MAGIC.len(),
+    };
+    r.table().unwrap();
+    let tables_at = r.at;
+    assert_eq!(r.count(256, 16).unwrap(), 0);
+    fn text(out: &mut Vec<u8>, value: &str) {
+        out.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        out.extend_from_slice(value.as_bytes());
+    }
+    fn integers(out: &mut Vec<u8>, values: &[i128]) {
+        out.push(4);
+        out.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        for value in values {
+            out.push(2);
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    let mut result = bytes[..tables_at].to_vec();
+    result.extend_from_slice(&1_u64.to_le_bytes());
+    text(&mut result, "settlement_terms");
+    result.extend_from_slice(&8_u64.to_le_bytes());
+    text(&mut result, "carrying_laws");
+    integers(&mut result, &[4, 10]);
+    text(&mut result, "difference_kinds");
+    integers(&mut result, &[1, 3, 4]);
+    text(&mut result, "entry_extension");
+    result.push(2);
+    result.extend_from_slice(&42_i128.to_le_bytes());
+    text(&mut result, "layout");
+    result.push(1);
+    text(&mut result, "cash_fx_differences_paired");
+    text(&mut result, "minimum_entry_minor");
+    result.push(2);
+    result.extend_from_slice(&10_i128.to_le_bytes());
+    for (key, value) in [
+        (
+            "payment_equation",
+            "quote=cash+discount+writeoff-bank_charge",
+        ),
+        (
+            "receipt_equation",
+            "quote=cash+discount+writeoff+bank_charge",
+        ),
+    ] {
+        text(&mut result, key);
+        result.push(1);
+        text(&mut result, value);
+    }
+    text(&mut result, "version");
+    result.push(2);
+    result.extend_from_slice(&2_i128.to_le_bytes());
+    result.extend_from_slice(&bytes[r.at..]);
+    result
 }
 
 #[cfg(test)]
@@ -972,9 +1035,37 @@ fn text_array(row: &Table, key: &str) -> Result<Vec<String>, ReportError> {
         })
         .collect()
 }
+fn settlement_terms_profile(doc: &Document) -> Result<bool, ReportError> {
+    let Some(profile) = doc.tables.get("settlement_terms") else {
+        return Ok(false);
+    };
+    let integers = |key: &str, expected: &[i128]| {
+        matches!(profile.get(key), Some(Value::Array(values))
+            if values.len() == expected.len()
+                && values.iter().zip(expected).all(|(value, expected)|
+                    matches!(value, Value::Int(actual) if actual == expected)))
+    };
+    if profile.len() != 8
+        || integer(profile, "version")? != 2
+        || integer(profile, "entry_extension")? != 42
+        || integer(profile, "minimum_entry_minor")? != 10
+        || !integers("carrying_laws", &[4, 10])
+        || !integers("difference_kinds", &[1, 3, 4])
+        || string(profile, "layout")? != "cash_fx_differences_paired"
+        || string(profile, "receipt_equation")?
+            != "quote=cash+discount+writeoff+bank_charge"
+        || string(profile, "payment_equation")?
+            != "quote=cash+discount+writeoff-bank_charge"
+    {
+        return Err(invalid("unsupported explicit FX settlement terms profile"));
+    }
+    Ok(true)
+}
+
 fn functional_laws(doc: &Document) -> Result<(), ReportError> {
+    let terms = settlement_terms_profile(doc)?;
     if doc.root.len() != 4
-        || doc.named_tables != 0
+        || doc.named_tables != usize::from(terms)
         || doc.arrays.len() != 2
         || string(&doc.root, "ad_hoc_rate_admission")? != "forbidden"
         || string(&doc.root, "residual_bound_law")?
@@ -1222,6 +1313,7 @@ pub(super) fn verify_functional(
     definitions.allocated_carrying = rows(&docs[4], "law")?
         .iter()
         .any(|row| matches!(row.get("id"), Some(Value::Int(10))));
+    definitions.settlement_terms = settlement_terms_profile(&docs[4])?;
     Ok(definitions)
 }
 
@@ -1245,6 +1337,7 @@ fn functional_definitions(doc: &Document) -> Result<FunctionalRegistry, ReportEr
         spot_carrying: false,
         item_revaluation: false,
         allocated_carrying: false,
+        settlement_terms: false,
     })
 }
 

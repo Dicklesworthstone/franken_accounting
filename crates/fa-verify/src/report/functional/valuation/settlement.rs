@@ -5,6 +5,7 @@
 //! of a reversal; they never reprice an old application against a new pool.
 
 mod allocated;
+mod terms;
 
 use super::{
     BookParameters, LeafEnvelope, Leg, ParsedEntry, Rate, Reader, ReportError, failed, law_oid,
@@ -179,6 +180,7 @@ struct History<'a> {
     parsed: &'a BTreeMap<usize, ParsedEntry>,
     migration_activations: &'a BTreeMap<u64, u64>,
     releases: BTreeMap<usize, Vec<allocated::Release>>,
+    terms: BTreeMap<usize, terms::Components>,
 }
 
 pub(super) fn source_hasher(
@@ -463,7 +465,7 @@ impl History<'_> {
         let legs = &self.legs[index][range.clone()];
         let details = &entry.details[range.clone()];
         let amounts = &entry.amounts[range.clone()];
-        let entities = &entry.entities[range];
+        let entities = &entry.entities[range.clone()];
         let settled = &legs[0];
         if settled.unit != rate.quote
             || settled.mantissa > carrying.native
@@ -485,6 +487,13 @@ impl History<'_> {
                 carrying.native as u128,
             )?
         };
+        if let Some(differences) = self
+            .terms
+            .get(&index)
+            .and_then(|components| components.get(&range.start))
+        {
+            return terms::component(self, index, range, target, relief, differences);
+        }
         let core = if relief == 0 { 3 } else { 4 };
         if !(core..=core + 1).contains(&legs.len()) || amounts[0] != relief {
             return Err(invalid(
@@ -689,6 +698,7 @@ pub(super) fn verify(
         parsed,
         migration_activations,
         releases: allocated::read_history(spec, registry, envelopes, infos, parsed, parents)?,
+        terms: terms::read_history(infos)?,
     };
     if !parsed.values().any(|entry| {
         carries(entry)
@@ -774,6 +784,9 @@ pub(super) fn verify(
             ));
         }
         let ranges = history.ranges(index)?;
+        if let Some(declarations) = history.terms.get(&index) {
+            terms::check_ranges(declarations, &ranges)?;
+        }
         if law == law_oid(10) {
             allocated::check_ranges(&history.releases[&index], &ranges)?;
         }

@@ -94,8 +94,9 @@ pub use batch::{
 };
 pub use blob::BlobStore;
 pub use carrying::{
-    CarryingOpenItem, FxSettlementRequest, PreparedFxSettlement, open_item_carrying_at,
-    prepare_fx_settlement, remaining_carrying_relief,
+    CarryingOpenItem, FxSettlementRequest, FxSettlementDifference, FxSettlementWithDifferencesRequest,
+    PreparedFxSettlement, open_item_carrying_at, prepare_fx_settlement,
+    prepare_fx_settlement_with_differences, remaining_carrying_relief,
 };
 pub use case::{
     CaseApproval, CaseBody, CaseKind, CaseManifest, CaseMember, CaseRecorded, CaseRequest,

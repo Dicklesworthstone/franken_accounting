@@ -1,6 +1,8 @@
 //! A retained item allocation reaches ordinary customer and supplier cash
 //! workflows through real CLI processes, including portable plans and undo.
 
+mod differences;
+
 use super::*;
 use fa::FxLawId;
 use fa_model::FxSettlementValuationBasis;

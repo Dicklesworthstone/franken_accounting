@@ -31,6 +31,7 @@ pub mod closing;
 pub mod deposit;
 pub mod entry;
 pub mod erasable;
+pub mod fx_settlement;
 pub mod ids;
 pub mod json;
 pub mod limits;
@@ -64,6 +65,7 @@ pub use entry::{
     UnitTotal,
 };
 pub use erasable::{Canonical, Erasable, EraseError, SealKey};
+pub use fx_settlement::{FxSettlementComponent, FxSettlementTerms};
 pub use ids::{
     ApprovalRef, DIMENSION_KINDS, DimensionKind, EntryRef, Id128, LEGAL_ENTITY_DIMENSION,
     LEGAL_ENTITY_DIMENSION_CODE, Oid, PARTY_DIMENSION, PARTY_DIMENSION_CODE, PeriodRef, TypedRef,

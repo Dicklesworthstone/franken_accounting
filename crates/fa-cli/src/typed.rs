@@ -384,7 +384,7 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
             &amount,
             number.map(str::to_string),
             entity,
-            None,
+            (uses_fx && differences.is_some()).then_some(party),
             None,
         ),
         leg_json(
@@ -413,28 +413,31 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
         ("idempotency_key", s(key)),
         ("legs", Json::Arr(legs)),
     ];
-    if let Some(differences) = differences {
-        fields.push(("application", differences.declaration));
+    if !uses_fx
+        && let Some(differences) = &differences
+    {
+        fields.push(("application", differences.declaration.clone()));
     }
     if uses_fx {
-        fields.push((
-            "fx",
-            obj(vec![
-                ("law", s(fx_law)),
-                (
-                    "rates",
-                    Json::Arr(vec![s(args.require("--fx-rate", "D:<oid>")?)]),
-                ),
-                (
-                    "conversion_account",
-                    s(args.require("--conversion", "<account code>")?),
-                ),
-                (
-                    "realized_fx_account",
-                    s(args.require("--realized-fx", "<account code>")?),
-                ),
-            ]),
-        ));
+        let mut fx_fields = vec![
+            ("law", s(fx_law)),
+            (
+                "rates",
+                Json::Arr(vec![s(args.require("--fx-rate", "D:<oid>")?)]),
+            ),
+            (
+                "conversion_account",
+                s(args.require("--conversion", "<account code>")?),
+            ),
+            (
+                "realized_fx_account",
+                s(args.require("--realized-fx", "<account code>")?),
+            ),
+        ];
+        if let Some(differences) = differences {
+            fx_fields.push(("differences", differences.declaration));
+        }
+        fields.push(("fx", obj(fx_fields)));
     }
     let doc = obj(fields);
     post_document(ctx, args, None, doc)

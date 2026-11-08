@@ -13,6 +13,8 @@ use fgdb_types::CommitSeq;
 
 #[path = "revaluation/audits.rs"]
 mod audits;
+#[path = "revaluation/differences.rs"]
+mod differences;
 #[path = "revaluation/scaling.rs"]
 mod scaling;
 

@@ -5481,6 +5481,14 @@ pub(crate) fn exact_side_swap(original: &EntryPayload, reversal: &EntryPayload) 
         && original
             .extensions
             .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_TERMS_EXTENSION)
+            == reversal
+                .extensions
+                .iter()
+                .find(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_TERMS_EXTENSION)
+        && original
+            .extensions
+            .iter()
             .find(|(tag, _)| *tag == fa_model::entry::APPLICATION_TERMS_EXTENSION)
             == reversal
                 .extensions

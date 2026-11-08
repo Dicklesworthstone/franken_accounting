@@ -1,4 +1,6 @@
 //! Explicit cash-versus-application differences for the typed settlement verbs.
+//! Foreign applications retain base-unit differences in their source-derived
+//! FX profile; only the kernel may check them against the retained rate.
 
 use fa_model::application::ApplicationDifferenceKind;
 
@@ -79,12 +81,6 @@ pub(super) fn prepare(
             USAGE,
         ));
     }
-    if uses_fx {
-        return Err(usage(
-            "--difference uses the native base-unit application law and cannot be combined with FX settlement",
-            "review a base-unit receipt/payment with explicit differences, or use the separate source-derived FX route",
-        ));
-    }
     let applications = args.flag_all("--applies");
     if applications.is_empty() || applications.iter().any(|item| !item.contains('=')) {
         return Err(usage(
@@ -145,6 +141,30 @@ pub(super) fn prepare(
             account: account.to_string(),
             amount,
         });
+    }
+    if uses_fx {
+        // The foreign principal and actual base cash use different units.
+        // Never add them, or infer a rate from their difference. The source
+        // preparer checks the exact gross/net equation and derives every pair.
+        let declaration = Json::Arr(
+            rows.iter()
+                .map(|row| {
+                    obj(vec![
+                        ("item", Json::Int(0)),
+                        ("kind", s(row.kind.name())),
+                        ("account", s(&row.account)),
+                        ("amount", s(&row.amount)),
+                    ])
+                })
+                .collect(),
+        );
+        return Ok(Some(PreparedDifferences {
+            // Only the native branch consumes this value. The FX branch uses
+            // the explicitly supplied foreign application amount instead.
+            control_amount: cash.to_string(),
+            legs: Vec::new(),
+            declaration,
+        }));
     }
     let control_amount = control_amount(cash, &rows, kind).map_err(|error| usage(error, USAGE))?;
     let applied_amounts: Vec<_> = applications

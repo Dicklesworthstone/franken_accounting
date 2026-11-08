@@ -1100,6 +1100,7 @@ mod tests {
             rule_version_oid: None,
             fx_revaluation_basis: None,
             fx_settlement_basis: None,
+            fx_settlement_terms: None,
             year_end_close_basis: None,
             obligation_maturity: None,
             case_member: Some(case),

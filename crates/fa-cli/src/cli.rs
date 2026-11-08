@@ -8558,6 +8558,7 @@ fn build_post_request_with_prior(
     let mut reversal_lot_basis = None;
     let mut reversal_asset_basis = None;
     let mut reversal_application_terms = None;
+    let mut reversal_fx_settlement_terms = None;
     let mut target_evidence = Vec::new();
     let legs: Vec<LegPayload> = if class == EntryClass::RECLASSIFICATION {
         // A Reclassification names its target and moves part of its legs to
@@ -8816,6 +8817,12 @@ fn build_post_request_with_prior(
             .extensions
             .iter()
             .find(|(tag, _)| *tag == fa_model::entry::APPLICATION_TERMS_EXTENSION)
+            .cloned();
+        reversal_fx_settlement_terms = target
+            .proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_TERMS_EXTENSION)
             .cloned();
         if let Some(totals) = &mut reversal_base_totals {
             std::mem::swap(&mut totals.debits, &mut totals.credits);
@@ -9179,6 +9186,13 @@ fn build_post_request_with_prior(
         proposal.schema_minor = proposal
             .schema_minor
             .max(fa_model::entry::APPLICATION_TERMS_SCHEMA_MINOR);
+        proposal.extensions.push(extension);
+        proposal.extensions.sort_by_key(|(tag, _)| *tag);
+    }
+    if let Some(extension) = reversal_fx_settlement_terms {
+        proposal.schema_minor = proposal
+            .schema_minor
+            .max(fa_model::entry::FX_SETTLEMENT_TERMS_SCHEMA_MINOR);
         proposal.extensions.push(extension);
         proposal.extensions.sort_by_key(|(tag, _)| *tag);
     }
@@ -10136,6 +10150,7 @@ pub(crate) fn emit_post_plan(
     };
     let net_effect = reclass_net_effect(book, proposal, &accounts)?;
     let (application, application_lines) = crate::application::review(proposal)?;
+    let (fx_differences, fx_difference_lines) = crate::fx::settlement_difference_review(proposal)?;
     // What journal-entry testing would flag, said before the commit (plan
     // §5.1, fa-d5un): data only, never a refusal or a change to the plan.
     // The duplicate scan reads other entries. A launch-bound session's own
@@ -10363,6 +10378,10 @@ pub(crate) fn emit_post_plan(
         human.push('\n');
         human.push_str(&application_lines.join("\n"));
     }
+    if !fx_difference_lines.is_empty() {
+        human.push('\n');
+        human.push_str(&fx_difference_lines.join("\n"));
+    }
     if let Some((_, lines)) = &net_effect {
         human.push_str("\nNet effect (the target plus this entry):\n");
         human.push_str(&lines.join("\n"));
@@ -10471,6 +10490,7 @@ pub(crate) fn emit_post_plan(
             ),
             ("valuation", valuation),
             ("application", application),
+            ("fx_differences", fx_differences),
             (
                 "resolves",
                 resolves.map_or(Json::Null, |entry| s(format!("{:032x}", entry.vid.0))),
@@ -23526,6 +23546,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "legs",
                         "supersedes",
                         "application",
+                        "fx_differences",
                     ] {
                         fields.push((absent, Json::Null));
                     }
@@ -23589,6 +23610,8 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         .collect::<Result<_, Fail>>()?;
                     let (application, application_lines) =
                         crate::application::review(&entry.proposal)?;
+                    let (fx_differences, fx_difference_lines) =
+                        crate::fx::settlement_difference_review(&entry.proposal)?;
                     let fields = vec![
                         ("found", Json::Bool(true)),
                         ("vid", s(vid_s)),
@@ -23608,6 +23631,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("approvals", Json::Int(entry.approvals.len() as i128)),
                         ("legs", Json::Arr(legs)),
                         ("application", application),
+                        ("fx_differences", fx_differences),
                         (
                             "supersedes",
                             Json::Arr(
@@ -23634,6 +23658,10 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     if !application_lines.is_empty() {
                         human.push('\n');
                         human.push_str(&application_lines.join("\n"));
+                    }
+                    if !fx_difference_lines.is_empty() {
+                        human.push('\n');
+                        human.push_str(&fx_difference_lines.join("\n"));
                     }
                     for link in &entry.proposal.supersession {
                         let reason = reasons

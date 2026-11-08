@@ -3955,6 +3955,87 @@ impl Book {
         )))
     }
 
+    /// Derive one foreign settlement with explicit base-currency differences,
+    /// producing an ordinary proposal for the existing plan/commit protocol.
+    pub fn prepare_fx_settlement_with_differences(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: &crate::FxSettlementWithDifferencesRequest,
+        template: fa_model::EntryPayload,
+    ) -> Outcome<crate::PreparedFxSettlement> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_fx_settlement_with_differences(
+            &purposes, capability, request, template, &mut budget,
+        )))
+    }
+
+    /// Prepare distinct foreign items and their explicit differences under one rate.
+    pub fn prepare_fx_settlement_group_with_differences(
+        &mut self,
+        capability: &fa_journal::Capability,
+        requests: &[crate::FxSettlementWithDifferencesRequest],
+        template: fa_model::EntryPayload,
+    ) -> Outcome<crate::PreparedFxSettlementGroup> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_fx_settlement_group_with_differences(
+            &purposes, capability, requests, template, &mut budget,
+        )))
+    }
+
+    /// Derive explicit settlement differences and carrying effects for the
+    /// holder's own open draft, without disclosing the source's open balances.
+    pub fn prepare_fx_settlement_with_differences_in_draft(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+        request: &crate::FxSettlementWithDifferencesRequest,
+        template: fa_model::EntryPayload,
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_fx_settlement_with_differences_in_draft(
+            &purposes, capability, name, request, template, &mut budget,
+        )))
+    }
+
+    /// Derive a complete settlement group with explicit differences under the
+    /// confined draft capability; ordinary Read authority is not widened.
+    pub fn prepare_fx_settlement_group_with_differences_in_draft(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+        requests: &[crate::FxSettlementWithDifferencesRequest],
+        template: fa_model::EntryPayload,
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_fx_settlement_group_with_differences_in_draft(
+            &purposes, capability, name, requests, template, &mut budget,
+        )))
+    }
+
     /// Exact functional-currency period activity at a retained journal prefix.
     /// Pending holds stay separate. This is not cumulative stock or a certificate.
     pub fn functional_period_activity(

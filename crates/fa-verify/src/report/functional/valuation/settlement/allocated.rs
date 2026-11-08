@@ -166,7 +166,8 @@ pub(super) fn component(
         .filter(|end| *end > range.start)
         .ok_or_else(|| invalid("allocated settlement release tail is incomplete"))?;
     // The ordinary historical-cost component is checked independently,
-    // including exact remaining historical relief and current Rate cash.
+    // including exact remaining historical relief and the current Rate quote;
+    // extension 42, when present, also reconciles the explicit net cash terms.
     let mut effect = history.component(index, range.start..core_end, target, state)?;
     let carrying = state
         .base

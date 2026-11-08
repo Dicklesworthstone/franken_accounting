@@ -361,14 +361,15 @@ pub(super) fn append_release(
     let tail = release_legs(&proposal.legs[0], &release)?;
     proposal.legs.extend(tail);
     proposal.schema_minor = proposal.schema_minor.max(FX_ITEM_CARRYING_SCHEMA_MINOR);
-    proposal.extensions.push((
-        FX_SETTLEMENT_VALUATION_EXTENSION,
-        FxSettlementValuationBasis {
+    let bytes = FxSettlementValuationBasis {
             items: vec![release],
         }
         .canonical_bytes()
-        .map_err(invalid)?,
-    ));
+        .map_err(invalid)?;
+    match proposal.extensions.binary_search_by_key(&FX_SETTLEMENT_VALUATION_EXTENSION, |(tag, _)| *tag) {
+        Ok(index) => proposal.extensions[index].1 = bytes,
+        Err(index) => proposal.extensions.insert(index, (FX_SETTLEMENT_VALUATION_EXTENSION, bytes)),
+    }
     proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).map_err(invalid)?;
     let totals = proposal
         .base_totals
@@ -408,6 +409,7 @@ pub(crate) fn verify_allocated_fx_structure(
 ) -> Result<(), Refusal> {
     let declared = basis(proposal)?;
     let ranges = settlement_ranges(proposal)?;
+    let terms = differences::bound_terms(proposal, &ranges)?;
     if declared.items.len() != ranges.len() {
         return Err(invalid(
             "every allocated settlement component requires exactly one release basis",
@@ -417,6 +419,7 @@ pub(crate) fn verify_allocated_fx_structure(
     ordinary.legs.clear();
     ordinary.extensions.clear();
     let mut entities = Vec::new();
+    let mut ordinary_terms = fa_model::FxSettlementTerms { components: Vec::new() };
     for (range, release) in ranges.into_iter().zip(&declared.items) {
         if usize::from(release.applying_ordinal) != range.start {
             return Err(invalid(
@@ -429,6 +432,11 @@ pub(crate) fn verify_allocated_fx_structure(
             .end
             .checked_sub(tail)
             .ok_or_else(|| invalid("allocated settlement release tail is incomplete"))?;
+        if let Some(component) = terms.as_ref().and_then(|terms| terms.component(range.start)) {
+            let mut component = component.clone();
+            differences::rebase(&mut component, range.start, ordinary.legs.len())?;
+            ordinary_terms.components.push(component);
+        }
         ordinary
             .legs
             .extend_from_slice(&proposal.legs[range.start..end]);
@@ -437,6 +445,9 @@ pub(crate) fn verify_allocated_fx_structure(
                 .get(range.start..end)
                 .ok_or_else(|| invalid("allocated settlement entity closure is incomplete"))?,
         );
+    }
+    if !ordinary_terms.components.is_empty() {
+        ordinary.set_fx_settlement_terms(&ordinary_terms).map_err(invalid)?;
     }
     ordinary.unit_totals = EntryPayload::fold_unit_totals(&ordinary.legs).map_err(invalid)?;
     let totals = ordinary

@@ -32,6 +32,9 @@ pub(super) struct EntryInfo<'a> {
     /// Immutable extension 37. Functional replay reconstructs the historical,
     /// total and valuation relief from the exact preceding item state.
     pub fx_settlement_basis: Option<&'a [u8]>,
+    /// Sparse extension 42 declarations. Functional replay verifies every
+    /// explicit difference separately from Rate-valued realized FX.
+    pub fx_settlement_terms: Option<&'a [u8]>,
     /// Intrinsic native/carrying YearEndClose source basis, independently
     /// reproduced when functional replay relies on source-bound closing.
     pub year_end_close_basis: Option<&'a [u8]>,
@@ -317,6 +320,8 @@ pub(super) fn entry_info<'a>(
     let mut recurring = None;
     let mut fx_revaluation_basis = None;
     let mut fx_settlement_basis = None;
+    let mut fx_settlement_terms = None;
+    let mut base_application_terms = false;
     let mut year_end_close_basis = None;
     let mut obligation_maturity = None;
     let mut case_member = None;
@@ -373,6 +378,23 @@ pub(super) fn entry_info<'a>(
                 }
                 fx_settlement_basis = Some(bytes);
             }
+            if tag == 41 {
+                base_application_terms = true;
+            }
+            if tag == 42 {
+                if minor < 10
+                    || !matches!(envelope.class, 1 | 4 | 7)
+                    || envelope.class != 4 && origin != 0
+                    || has_control
+                    || has_pending
+                {
+                    return Err(failed(
+                        "supported_report",
+                        "FX settlement terms require schema minor 10 and an Original or Adjusting Intent, or exact Reversal, without lifecycle effects",
+                    ));
+                }
+                fx_settlement_terms = Some(bytes);
+            }
             if tag == 33 {
                 obligation_maturity = Some(bytes);
             }
@@ -413,6 +435,12 @@ pub(super) fn entry_info<'a>(
             return Err(failed(
                 "supported_report",
                 "source-bound Closing has an unrelated extension",
+            ));
+        }
+        if fx_settlement_terms.is_some() && base_application_terms {
+            return Err(failed(
+                "supported_report",
+                "FX settlement terms cannot reinterpret base-only application differences",
             ));
         }
     }
@@ -480,6 +508,7 @@ pub(super) fn entry_info<'a>(
         rule_version_oid,
         fx_revaluation_basis,
         fx_settlement_basis,
+        fx_settlement_terms,
         year_end_close_basis,
         obligation_maturity,
         case_member,
