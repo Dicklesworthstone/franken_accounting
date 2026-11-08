@@ -86,10 +86,18 @@ pub(super) struct Certificate<'a> {
 /// period end; they are not inferred from the producer's narrative.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifiedProcedureStatistic {
-    RoundLegs { ordinals: Vec<u16> },
-    DaysToPeriodEnd { period: String, days: u32 },
+    RoundLegs {
+        ordinals: Vec<u16>,
+    },
+    DaysToPeriodEnd {
+        period: String,
+        days: u32,
+    },
     /// Full group size and the first at most 4096 members by numeric identity.
-    DuplicateEntries { count: u64, entries: Vec<u128> },
+    DuplicateEntries {
+        count: u64,
+        entries: Vec<u128>,
+    },
 }
 
 impl VerifiedProcedureStatistic {
@@ -525,9 +533,7 @@ fn decision_card(
             .i128(power)
             .u8(0);
     }
-    w.bytes(b"population")
-        .i128(i128::from(population))
-        .u8(0);
+    w.bytes(b"population").i128(i128::from(population)).u8(0);
     if calibrated {
         candidate(&mut w, b"split_conformal_calibrated", power, 250);
         w.fixed(&150i64.to_le_bytes()).fixed(&650i64.to_le_bytes());
@@ -671,7 +677,10 @@ struct DuplicateGroup {
 impl DuplicateLineage {
     fn charge(&mut self, count: u64) -> Result<(), ReportError> {
         self.comparisons = self.comparisons.checked_add(count).ok_or_else(|| {
-            failed("procedure_arithmetic", "duplicate comparison count overflows")
+            failed(
+                "procedure_arithmetic",
+                "duplicate comparison count overflows",
+            )
         })?;
         Ok(())
     }
@@ -846,7 +855,10 @@ fn exact_duplicates(
     let population = live.len() as u64;
     lineage.charge(population.saturating_mul(u64::from(population.max(1).ilog2())))?;
     let mut findings = Vec::new();
-    for mut group in groups.into_values().filter(|group| group.members.len() >= 2) {
+    for mut group in groups
+        .into_values()
+        .filter(|group| group.members.len() >= 2)
+    {
         if findings.len() >= MAX_FINDINGS {
             return Err(failed(
                 "bounded_input",

@@ -2,9 +2,7 @@
 //! consumption, including signed records retained by an earlier writer.
 
 use super::*;
-use fa_journal::principal_key::{
-    PrincipalKeyRequest, read_principal_keys, register_principal_key,
-};
+use fa_journal::principal_key::{PrincipalKeyRequest, read_principal_keys, register_principal_key};
 use fa_journal::refusal::code;
 use fa_policy::principal_key::{SCHEME_ED25519, approval_message, key_id};
 use fa_policy::{Approval, PrincipalKey, PrincipalSignature, SignatureVerifier};
@@ -413,7 +411,12 @@ fn a_preparer_key_cannot_approve_under_an_alias_even_after_rotation() {
     register_fixture_key(&mut h, PREPARER, shared);
     register_fixture_key(&mut h, ALICE, shared);
     register_fixture_key(&mut h, BOB, [185; 32]);
-    let proposal = h.proposal(PREPARER, 500, b"signed-self-approval", EntryClass::ADJUSTING);
+    let proposal = h.proposal(
+        PREPARER,
+        500,
+        b"signed-self-approval",
+        EntryClass::ADJUSTING,
+    );
     let alias = signed_approval(&mut h, ALICE, &proposal);
     let independent = signed_approval(&mut h, BOB, &proposal);
     // Key rotation cannot undo evidence that the preparer held this key.
@@ -451,12 +454,8 @@ fn approval_consumption_uses_the_key_at_recording_and_preserves_legacy_unsigned(
     let before = h.db.frontier().unwrap();
     // Neither a later first registration nor rotation rewrites authority
     // already admitted at the approval's own recorded coordinate.
-    h.post(
-        proposal,
-        human(PREPARER, &["post"]),
-        vec![legacy, signed],
-    )
-    .unwrap();
+    h.post(proposal, human(PREPARER, &["post"]), vec![legacy, signed])
+        .unwrap();
     assert_eq!(h.db.frontier().unwrap().0, before.0 + 1);
 }
 
@@ -471,8 +470,8 @@ fn a_changed_approval_signature_is_refused_before_recording() {
     changed.bytes[0] ^= 1;
     let before = h.db.frontier().unwrap();
     let rows = h.db.vertices().unwrap();
-    let refused = record_fixture_signature(&mut h, capability.clone(), &proposal, changed)
-        .unwrap_err();
+    let refused =
+        record_fixture_signature(&mut h, capability.clone(), &proposal, changed).unwrap_err();
     assert_eq!(
         (refused.code, refused.exit),
         (code::APPROVAL_SIGNATURE, exit::SAFETY)
@@ -513,10 +512,8 @@ fn retained_approval_signature_metadata_must_match_its_recorded_key() {
             "generation" => {
                 changed.generation = 1;
                 changed.key_id = key_id(&[192; 32]);
-                changed.bytes = fixture_signature(
-                    &[192; 32],
-                    &approval_message(&body.digest().unwrap()),
-                );
+                changed.bytes =
+                    fixture_signature(&[192; 32], &approval_message(&body.digest().unwrap()));
             }
             "key" => changed.key_id = key_id(&[193; 32]),
             "unsigned" => {}

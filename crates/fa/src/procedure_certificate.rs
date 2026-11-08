@@ -885,9 +885,8 @@ impl ProcedureCertificate {
             ));
         }
         if canonical_registry_document(&self.registry)?.is_none()
-            || !registry_versions(&self.registry)?.is_some_and(|versions| {
-                duplicates || versions.0 == self.report.version
-            })
+            || !registry_versions(&self.registry)?
+                .is_some_and(|versions| duplicates || versions.0 == self.report.version)
         {
             return Err(offline_unsupported(
                 "portable procedures require their version's original canonical procedure registry closure; legacy raw-text commitments cannot be substituted",

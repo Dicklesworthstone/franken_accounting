@@ -508,9 +508,7 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
         }
         let (evidence, parameter) = match output.str(128, "procedure id")? {
             "jet.round_amounts" => ("FA-EVID-L01", Some(("round_power", 30))),
-            "jet.period_end_timing" => {
-                ("FA-EVID-L02", Some(("window_days", i128::from(u32::MAX))))
-            }
+            "jet.period_end_timing" => ("FA-EVID-L02", Some(("window_days", i128::from(u32::MAX)))),
             "duplicates.same_same_same" => ("FA-EVID-L07", None),
             _ => return Ok(false),
         };

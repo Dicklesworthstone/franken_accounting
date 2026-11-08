@@ -974,7 +974,11 @@ pub fn evaluate_cash_flow_solvency(
                     name: "commitments".into(),
                     message: format!(
                         "commitment `{}` amount {} does not equal remaining contractual amount {remaining} due on {} for liability leg ({:032x}, {})",
-                        c.commitment_id, c.amount.mantissa, c.due_date, target_leg.0.0, target_leg.1
+                        c.commitment_id,
+                        c.amount.mantissa,
+                        c.due_date,
+                        target_leg.0.0,
+                        target_leg.1
                     ),
                 });
             }
@@ -3651,15 +3655,9 @@ fn cash_flow_findings_never_truncate_their_accounting_basis() {
             continue;
         }
         let mut meter = Meter::new(procedure, None, None);
-        let scheduled = evaluate_cash_flow_solvency(
-            procedure,
-            &snapshot,
-            &book,
-            30,
-            &schedule,
-            &mut meter,
-        )
-        .map(|report| report.findings);
+        let scheduled =
+            evaluate_cash_flow_solvency(procedure, &snapshot, &book, 30, &schedule, &mut meter)
+                .map(|report| report.findings);
         let mut meter = Meter::new(procedure, None, None);
         let unscheduled = run_unscheduled_book_screen(procedure, &snapshot, &book, 30, &mut meter);
         for (result, needed, has_document) in [
@@ -3680,7 +3678,10 @@ fn cash_flow_findings_never_truncate_their_accounting_basis() {
             assert_eq!(finding.statistic.value, i128::try_from(count).unwrap());
             assert_eq!(finding.cites.len(), needed);
             assert!(finding.cites.contains(&Cite::Account(payable)));
-            assert_eq!(finding.cites.contains(&Cite::Document(document)), has_document);
+            assert_eq!(
+                finding.cites.contains(&Cite::Document(document)),
+                has_document
+            );
             for entry in snapshot.entries.iter().filter(|entry| entry.posts()) {
                 assert!(finding.cites.contains(&Cite::Entry(entry.vid)));
             }
@@ -4698,13 +4699,10 @@ fn linked_commitment_fixture() -> (Snapshot, BookContext, AuthenticatedObligatio
         Vec::new(),
         document,
     ));
-    let mut schedule = schedule_from_inline_extensions(
-        crate::cutoff::SolvencyCashFlowTest::ID,
-        &snapshot,
-        as_of,
-    )
-    .unwrap()
-    .unwrap();
+    let mut schedule =
+        schedule_from_inline_extensions(crate::cutoff::SolvencyCashFlowTest::ID, &snapshot, as_of)
+            .unwrap()
+            .unwrap();
     for (id, due_date, amount, settles_entry) in [
         ("INVOICE-MAY", day(2026, 5, 10), 60, Some((VId(20), 2))),
         ("INVOICE-JUNE", day(2026, 6, 15), 190, Some((VId(20), 2))),

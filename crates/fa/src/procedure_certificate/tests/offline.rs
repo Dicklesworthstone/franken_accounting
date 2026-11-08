@@ -482,8 +482,7 @@ fn exact_duplicates_require_every_authenticated_group_member_and_recipient_trust
             member_range = Some((start, reader.offset()));
         }
     }
-    let (start, end) =
-        member_range.expect("the duplicate member is in the authenticated prefix");
+    let (start, end) = member_range.expect("the duplicate member is in the authenticated prefix");
     let mut writer = Writer::new();
     writer
         .fixed(&bytes[..count_offset])
