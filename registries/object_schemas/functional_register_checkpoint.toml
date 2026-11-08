@@ -1,0 +1,73 @@
+# Complete unfiltered functional period activity (plan §5.3).
+schema_version = 1
+name = "FunctionalRegisterCheckpoint"
+owner = "fa_registers::functional_maintainer"
+major = 1
+minor = 0
+externally_verifiable = false
+format = "fa:register-functional-period-checkpoint:v1"
+identity_domain = "fa:vid:register-functional-period-checkpoint:v1"
+head_identity_domain = "fa:vid:register-functional-period-head:v1"
+pointer_format = "fa:register-functional-period-pointer:v1"
+book_definition_domain = "fa:register-functional-period-book:v1"
+body_domain = "fa:register-functional-period-body:v1"
+fold_digest_domain = "fa:register-functional-fold:v1"
+object_kind = 6
+storage_label = "RegisterCheckpoint"
+head_label = "RegisterState"
+head_property = "target_ref"
+max_checkpoint_bytes = 8388608
+max_distinct_cells = 100000
+max_entity_code_bytes = 32
+
+# This is a separate definition, body and identity namespace. It does not
+# reinterpret native FARS state, native register cells or native snapshots.
+# Its canonical report fold bytes remain the existing functional-fold v1.
+# Stock, dimension and class-excluded reports are outside this definition.
+#
+# Body = fixed(format), book[16], trunk[16], str(period), u32 base_unit,
+# book_definition_digest[32], u64 through,
+# opt(previous: u64 through + digest[32]), opt(u64 contribution_watermark),
+# u64 posted_entries, fold_digest[32], posted_legs_digest[32],
+# list(holds: u64 recorded_sequence + u128 entry + contribution_digest[32]),
+# u8(0) + posted_cells, u8(1) + pending_cells.
+# Each strictly ordered cell encodes u128 account, opt(str entity), i128 debits,
+# i128 credits and u64 entry_count. Period and base unit come from the body.
+# Cells order by the exact FunctionalCellKey, including optional entity code.
+# Holds order strictly by (recorded_sequence, entry) and use max_batch_entries.
+# Counts are u32 list lengths; integers are little endian; options use u8 tags.
+# Decode checks count/byte bounds before allocation, sorted unique populations,
+# nonnegative amounts, counts, frontiers and the exact functional fold digest.
+# The byte/cell bounds do not waive substrate transaction admission limits.
+#
+# book_definition_digest binds the complete canonical BookSpec bytes at through.
+# Consumers compare that definition both at through and their selected prefix;
+# a changed definition requires the independent literal fold. body_digest binds
+# the complete body above and lives in the root's FA_DIGEST and the pointer.
+# Root identity = low128(H(identity_domain || book || period || u64 through ||
+# body_digest)); the fixed-width suffix and book make this framing unambiguous.
+# Head identity = low128(H(head_identity_domain || book || period)).
+# Root properties: BOOK_ID, FA_PAYLOAD (object storage kind 6), FA_DIGEST.
+# Root/fragments must retain original immutable birth, strictly after through.
+# Head properties: BOOK_ID, EFFECTIVE_PERIOD, TARGET_REF. The pointer encodes
+# fixed(pointer_format), u64 through, body_digest[32]. Its version cannot
+# precede the snapshot it names. Predecessor through strictly precedes through.
+#
+# Complete object/fragments and pointer publish in one transaction, guarded by
+# the preparation's frontier, partition root and expected pointer. There is
+# no posting-path register write. Every substantive advance writes a complete
+# snapshot; this profile makes no native adaptive-cadence or retention claim.
+# Metadata-only retries do not manufacture empty maintenance publications.
+#
+# A selected known_at observes only the head and snapshot visible at that
+# prefix. Its suffix checks immutable Entry creation/mutation, folds committed
+# base amounts and legal-entity keys, and resolves holds from original Entry
+# payloads. Same-publication holds precede their releases; posted contribution
+# hashes retain (recorded sequence, Entry VId, leg ordinal) order. Reversals add
+# their committed inverse legs. Migration finalization, a retired suffix or an
+# unprovable pending continuation requires the literal fold. A missing/damaged
+# cache never supplies a partial report. Explicit rebuild replaces its head
+# from the literal fold and starts a new chain, retaining old immutable rows.
+# Independent verification compares the complete state to its journal prefix;
+# a checksum alone is not evidence of correct amounts or complete source.
+# Certified functional reports continue their original independent replay.

@@ -72,6 +72,7 @@ pub use fx::{
     translate_current_rate, verify_functional_fold, verify_functional_fold_excluding_classes,
     verify_functional_stock, verify_remeasurement_certificate, verify_translation_certificate,
 };
+pub use fx::functional_maintainer;
 pub use lots::{
     LotDisposalPlan, LotDisposalRequest, LotDisposalSlice, LotItem, LotReliefEdge, LotsReport,
     fold_lots_from_open_items, lots,

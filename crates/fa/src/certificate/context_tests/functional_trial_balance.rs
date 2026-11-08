@@ -1,5 +1,8 @@
 //! The v10 report is built from actual retained Rate evidence and native folds.
 
+#[path = "functional_maintenance.rs"]
+mod maintenance;
+
 use super::*;
 use crate::{
     FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT, FUNCTIONAL_TRIAL_BALANCE_OUTPUT_FORMAT,

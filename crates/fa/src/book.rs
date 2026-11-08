@@ -5379,6 +5379,50 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.advance_registers(&purposes, principal, capability, period_code)))
     }
 
+    /// Maintain exact functional-currency period activity, separated by legal
+    /// entity, under the same authority as native register maintenance. This
+    /// projection is optional; certified reports retain independent replay.
+    pub fn advance_functional_registers(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period_code: &str,
+    ) -> Outcome<fa_registers::functional_maintainer::Advance> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.advance_functional_registers(
+            &purposes, principal, capability, period_code
+        )))
+    }
+
+    /// Explicitly rebuild the optional functional activity projection from
+    /// the authoritative journal. No accounting entry is changed.
+    pub fn rebuild_functional_registers(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period_code: &str,
+    ) -> Outcome<fa_registers::functional_maintainer::Advance> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.rebuild_functional_registers(
+            &purposes, principal, capability, period_code
+        )))
+    }
+
+    /// Independently refold the prefix claimed by a functional snapshot. An
+    /// absent cache makes no verification claim; this never repairs one.
+    pub fn verify_functional_registers(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period_code: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<fa_registers::functional_maintainer::Verification> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.verify_functional_registers(
+            &purposes, principal, capability, period_code, known_at
+        )))
+    }
+
     /// [`Book::advance_registers`] under the caller's serving context. Timed
     /// maintenance awaits the existing native publication without starting a
     /// nested runtime or replacing the serving region's cancellation/budget.

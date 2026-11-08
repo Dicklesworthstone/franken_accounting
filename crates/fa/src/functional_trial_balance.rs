@@ -1,9 +1,12 @@
-//! Literal functional-currency trial balances with replayable display metadata.
+//! Functional-currency trial balances with replayable display metadata.
 //!
 //! The fold uses the book's committed base valuations and preserves its entity
 //! coordinates, pending column, exact gross amounts, source digest and watermark.
 //! Certification additionally replays the original Rate evidence and FX laws;
 //! reading an uncertified result retains the existing functional-read contract.
+//! Unfiltered activity reads may use complete maintained functional state and
+//! its exact retained tail. Certification and unsupported projections refold
+//! literally; the selected serving path never changes canonical output bytes.
 
 use std::collections::BTreeMap;
 
@@ -18,7 +21,7 @@ use fa_money::UnitId;
 use fa_registers::{FunctionalCell, FunctionalStockCell, RegisterError};
 use fa_time::DateDay;
 use fgdb::Database;
-use fgdb_types::{CommitSeq, VId};
+use fgdb_types::{CommitSeq, QueryCx, VId};
 
 use crate::{Outcome, TrialBalanceSelection};
 
@@ -191,7 +194,19 @@ pub(crate) fn report_at<V: Vfs + Clone>(
     selection: &TrialBalanceSelection,
     at: CommitSeq,
 ) -> Outcome<FunctionalTrialBalance> {
-    report_filtered_at(db, book, selection, at, None)
+    report_filtered_at(db, book, selection, at, None, None)
+}
+
+/// Ordinary activity reads may use a checked projection. Certification keeps
+/// `report_at`, which independently folds the exact selected source prefix.
+pub(crate) fn report_at_with_context<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    selection: &TrialBalanceSelection,
+    at: CommitSeq,
+) -> Outcome<FunctionalTrialBalance> {
+    report_filtered_at(db, book, selection, at, None, Some(cx))
 }
 
 pub(crate) fn report_tagged_at<V: Vfs + Clone>(
@@ -201,7 +216,7 @@ pub(crate) fn report_tagged_at<V: Vfs + Clone>(
     at: CommitSeq,
     filter: &fa_registers::DimensionFilter,
 ) -> Outcome<FunctionalTrialBalance> {
-    report_filtered_at(db, book, selection, at, Some(filter))
+    report_filtered_at(db, book, selection, at, Some(filter), None)
 }
 
 fn report_filtered_at<V: Vfs + Clone>(
@@ -210,6 +225,7 @@ fn report_filtered_at<V: Vfs + Clone>(
     selection: &TrialBalanceSelection,
     at: CommitSeq,
     filter: Option<&fa_registers::DimensionFilter>,
+    cx: Option<&QueryCx>,
 ) -> Outcome<FunctionalTrialBalance> {
     if !supported_selection(selection) {
         return Ok(Err(invalid_selection()));
@@ -229,7 +245,27 @@ fn report_filtered_at<V: Vfs + Clone>(
                     Some(at),
                     filter,
                 )?,
-                None => fa_registers::fold_period_functional(db, book, &periods[0], Some(at))?,
+                None => {
+                    let maintained = match cx {
+                        Some(cx) => fa_registers::functional_maintainer::fold_at_with_context(
+                            db,
+                            cx,
+                            book,
+                            &periods[0],
+                            at,
+                        )?,
+                        None => None,
+                    };
+                    match maintained {
+                        Some(maintained) => maintained.fold,
+                        None => fa_registers::fold_period_functional(
+                            db,
+                            book,
+                            &periods[0],
+                            Some(at),
+                        )?,
+                    }
+                }
             };
             FunctionalTrialBalance {
                 selection: selection.clone(),

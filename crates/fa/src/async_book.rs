@@ -4640,7 +4640,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
-    fn admit_register_maintenance(
+    pub(crate) fn admit_register_maintenance(
         &self,
         cx: &PurposeContexts,
         principal: VId,

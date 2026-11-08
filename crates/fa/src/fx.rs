@@ -147,7 +147,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let result = self.query(cx, |db, book| {
             crate::certificate::context_at(db, book, at)?;
             fa_journal::entry_history::verify_entry_history(db, cx, book, Some(at))?;
-            crate::functional_trial_balance::report_at(db, book, &selection, at)
+            crate::functional_trial_balance::report_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                &selection,
+                at,
+            )
         })?;
         if let Err(refusal) =
             self.admit_functional_report(cx, capability.holder(), capability, Some(at), false)?
@@ -155,6 +161,91 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(refusal));
         }
         Ok(result)
+    }
+
+    /// Maintain complete functional period activity off the posting path.
+    /// Native-only books retain their existing maintenance behavior: callers
+    /// explicitly select this projection, which requires valued foreign legs.
+    pub async fn advance_functional_registers(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        period: &str,
+    ) -> Outcome<fa_registers::functional_maintainer::Advance> {
+        if let Err(refusal) = self.admit_register_maintenance(cx, principal, capability)? {
+            return Ok(Err(refusal));
+        }
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(Ok(fa_registers::functional_maintainer::advance(
+            &mut self.db,
+            cx,
+            &self.context,
+            period,
+        )
+        .await?))
+    }
+
+    /// Rebuild the functional projection from its independent journal fold.
+    pub async fn rebuild_functional_registers(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        period: &str,
+    ) -> Outcome<fa_registers::functional_maintainer::Advance> {
+        if let Err(refusal) = self.admit_register_maintenance(cx, principal, capability)? {
+            return Ok(Err(refusal));
+        }
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(Ok(fa_registers::functional_maintainer::rebuild(
+            &mut self.db,
+            cx,
+            &self.context,
+            period,
+        )
+        .await?))
+    }
+
+    /// Independently verify a retained functional cache at its own processed
+    /// prefix. Absence is ordinary maintenance state; a green cached prefix
+    /// does not claim that the projection has consumed every later Entry.
+    pub async fn verify_functional_registers(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        period: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<fa_registers::functional_maintainer::Verification> {
+        if let Err(denial) =
+            fa_policy::require(capability, Op::Verify, "verifying functional registers")
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let at = match self
+            .prepare_functional_report(cx, principal, capability, known_at, false)
+            .await?
+        {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let result = self.query(cx, |db, book| {
+            fa_journal::entry_history::verify_entry_history(db, cx, book, Some(at))?;
+            Ok(fa_registers::functional_maintainer::verify(
+                db,
+                &cx.query(),
+                book,
+                period,
+                Some(at),
+            )?)
+        })?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, principal, capability, Some(at), false)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(Ok(result))
     }
 
     /// Certify one functional stock or activity trial balance under current

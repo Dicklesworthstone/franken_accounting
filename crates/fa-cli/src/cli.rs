@@ -16050,6 +16050,9 @@ fn verify_fx_conversion(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.switch("--functional") {
+        return verify_functional_registers_cmd(ctx, args);
+    }
     let out = &ctx.out;
     let target = args.positional.get(1).map(String::as_str);
     if args.switch("--require-materialized") && !matches!(target, Some("book" | "registers")) {
@@ -22959,7 +22962,148 @@ fn admit_registers(
     Ok(())
 }
 
+fn verify_functional_registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2
+        || args.positional.get(1).map(String::as_str) != Some("registers")
+        || args.switch("--require-materialized")
+    {
+        return Err(usage(
+            "--functional verifies retained register prefixes; --require-materialized is a native-cache currentness check",
+            "fa verify registers --functional --period <code> [--as-known-at <sequence>]",
+        ));
+    }
+    let principal = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "verify"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        admit_registers(book, principal, &capability, "verifying functional registers")
+    })?;
+    let (selected, _) = known_at_read_flag(args, &book, &ctx.out, &capability)?;
+    let at = book.read_scope(principal, &capability)??.admit_whole_book(selected)??;
+    let periods = selected_periods(args, &book)?;
+    let mut details = Vec::new();
+    let mut failing = Vec::new();
+    for period in &periods {
+        let verified = book.verify_functional_registers(
+            principal, &capability, period, Some(at),
+        )??;
+        if !verified.is_green() {
+            failing.push(period.as_str());
+        }
+        details.push(obj(vec![
+            ("period", s(period)),
+            ("status", s(if !verified.is_green() {
+                "drift"
+            } else if verified.available {
+                "verified_prefix"
+            } else {
+                "absent"
+            })),
+            ("available", Json::Bool(verified.available)),
+            ("through", verified.through.map_or(Json::Null, |seq| Json::Int(i128::from(seq.0)))),
+            ("findings", Json::Arr(verified.drift.iter().map(s).collect())),
+        ]));
+    }
+    ctx.out.known_at(at);
+    ctx.out.effective(periods_selector(&periods));
+    if !failing.is_empty() {
+        return Err(Fail::Verification {
+            message: format!("functional register prefixes differ from the journal in {}", failing.join(", ")),
+            detail: Json::Arr(details),
+            cite: Some("FA-INV-04 (registers are derived from the journal)".into()),
+            fix: Some("retain the finding; explicit recovery is `fa registers materialize --functional --period <code> --yes`".into()),
+        });
+    }
+    ctx.out.event(
+        "functional_registers_verified",
+        vec![("known_at", Json::Int(i128::from(at.0))), ("periods", Json::Arr(details))],
+        &format!("functional cached prefixes checked against the journal for {}; absent caches make no verification claim", periods.join(", ")),
+    );
+    Ok(())
+}
+
+fn functional_registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let rebuild = match args.positional.get(1).map(String::as_str) {
+        Some("advance") => false,
+        Some("materialize") => {
+            if !args.switch("--yes") {
+                return Err(usage(
+                    "rebuilding functional registers requires --yes",
+                    "fa registers materialize --functional --period <code> --yes",
+                ));
+            }
+            true
+        }
+        _ => return Err(usage(
+            "functional registers require advance or materialize",
+            "fa registers advance --functional --period <code>",
+        )),
+    };
+    let principal = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "verify", "maintain"])?;
+    fa_policy::require(&capability, fa_policy::Op::Maintain, "maintaining functional registers")
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        admit_registers(book, principal, &capability, "maintaining functional registers")
+    })?;
+    let periods = selected_periods(args, &book)?;
+    for period in &periods {
+        let advanced = if rebuild {
+            book.rebuild_functional_registers(principal, &capability, period)
+        } else {
+            book.advance_functional_registers(principal, &capability, period)
+        };
+        let advanced = match advanced {
+            Ok(value) => value?,
+            Err(BookError::Registers(fa_registers::RegisterError::ProjectionDrift(why))) => {
+                return Err(Fail::Verification {
+                    message: format!("functional register cache drift in {period}: {why}"),
+                    detail: obj(vec![("period", s(period)), ("problem", s(&why))]),
+                    cite: Some("FA-INV-04 (registers are derived from the journal)".into()),
+                    fix: Some(format!(
+                        "retain the finding; to rebuild from the authoritative journal, run `fa registers materialize --functional --period {period} --yes --json` with the same --book"
+                    )),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let fold = &advanced.fold;
+        ctx.out.at_book(&book)?;
+        ctx.out.effective(format!("period:{period}"));
+        ctx.out.event(
+            "functional_registers_advanced",
+            vec![
+                ("period", s(period)),
+                ("base_unit", s(registered_unit_code(fold.base_unit, &book.context().units)?)),
+                ("from", Json::Int(i128::from(advanced.from.0))),
+                ("through", Json::Int(i128::from(advanced.through.0))),
+                ("recorded_at", if advanced.wrote { Json::Int(i128::from(advanced.published_at.0)) } else { Json::Null }),
+                ("entries_decoded", Json::Int(advanced.entries_decoded as i128)),
+                ("legs_folded", Json::Int(i128::from(advanced.legs_folded))),
+                ("rebuilt", Json::Bool(advanced.rebuilt)),
+                ("wrote", Json::Bool(advanced.wrote)),
+                ("checkpoint_through", advanced.checkpoint.as_ref().map_or(Json::Null, |c| Json::Int(i128::from(c.through.0)))),
+                ("checkpoint_digest", advanced.checkpoint.as_ref().map_or(Json::Null, |c| s(hex(&c.body_digest)))),
+                ("cells", Json::Int(fold.cells.len() as i128)),
+                ("pending_cells", Json::Int(fold.pending.len() as i128)),
+                ("entries", Json::Int(i128::from(fold.entries))),
+                ("watermark", fold.watermark.map_or(Json::Null, |seq| Json::Int(i128::from(seq.0)))),
+                ("fold_digest", s(hex(&fold.fold_digest))),
+            ],
+            &format!(
+                "{period}: functional registers through {}, {} entries decoded, {} legs folded, {} posted cells, {} pending cells ({})",
+                advanced.through.0, advanced.entries_decoded, advanced.legs_folded,
+                fold.cells.len(), fold.pending.len(),
+                if !advanced.wrote { "already current" } else if advanced.rebuilt { "rebuilt from journal" } else { "advanced" },
+            ),
+        );
+    }
+    Ok(())
+}
+
 fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.switch("--functional") {
+        return functional_registers_cmd(ctx, args);
+    }
     let out = &ctx.out;
     match args.positional.get(1).map(String::as_str) {
         Some("advance") => {

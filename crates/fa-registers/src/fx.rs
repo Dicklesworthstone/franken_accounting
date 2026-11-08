@@ -9,6 +9,8 @@
 //! An unvalued foreign-currency leg in a functional fold is refused as
 //! projection drift.
 
+pub mod functional_maintainer;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::entity::leg_entity;
@@ -478,6 +480,37 @@ fn literal_period_functional<V: asupersync::fs::Vfs + Clone>(
     filter: Option<&DimensionFilter>,
     work: &mut FunctionalFoldWork,
 ) -> Result<FunctionalFold, RegisterError> {
+    Ok(literal_period_functional_state(
+        db,
+        book,
+        period_code,
+        known_at,
+        excluded_classes,
+        filter,
+        work,
+    )?
+    .fold)
+}
+
+/// Complete continuation belongs to the projection, not the public report.
+/// Keeping the contribution chain and unresolved identities lets maintenance
+/// extend exactly the literal fold without retaining decoded journal entries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FunctionalState {
+    fold: FunctionalFold,
+    posted_legs_digest: [u8; 32],
+    pending_holds: BTreeMap<(CommitSeq, VId), [u8; 32]>,
+}
+
+fn literal_period_functional_state<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period_code: &str,
+    known_at: Option<CommitSeq>,
+    excluded_classes: &[EntryClass],
+    filter: Option<&DimensionFilter>,
+    work: &mut FunctionalFoldWork,
+) -> Result<FunctionalState, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     period_at(db, book, period_code, seq)?;
     let root = db
@@ -577,6 +610,15 @@ fn literal_period_functional<V: asupersync::fs::Vfs + Clone>(
                 .checked_add(1)
                 .ok_or(RegisterError::Overflow)?;
         }
+        if entry.proposal.class != EntryClass::PENDING || !resolved.contains_key(vid) {
+            let legs = entry
+                .proposal
+                .legs
+                .iter()
+                .filter(|leg| filter.is_none_or(|filter| filter.admits(leg)))
+                .count();
+            work.legs_folded = work.legs_folded.saturating_add(legs as u64);
+        }
     }
 
     let cells: Vec<FunctionalCell> = cells.into_values().collect();
@@ -609,15 +651,19 @@ fn literal_period_functional<V: asupersync::fs::Vfs + Clone>(
         h.finalize().0
     };
 
-    Ok(FunctionalFold {
-        period: period_code.into(),
-        base_unit: spec.base_unit,
-        known_at: seq,
-        cells,
-        pending,
-        watermark,
-        entries: entries_count,
-        fold_digest: dimension_digest(fold_digest, filter)?,
+    Ok(FunctionalState {
+        fold: FunctionalFold {
+            period: period_code.into(),
+            base_unit: spec.base_unit,
+            known_at: seq,
+            cells,
+            pending,
+            watermark,
+            entries: entries_count,
+            fold_digest: dimension_digest(fold_digest, filter)?,
+        },
+        posted_legs_digest,
+        pending_holds,
     })
 }
 
@@ -633,6 +679,8 @@ pub struct FunctionalFoldWork {
     pub vertices_read: usize,
     /// Entry payload decodes attempted, including invisible migration chunks.
     pub entries_decoded: usize,
+    /// Legs added to selected posted or unresolved-pending amount columns.
+    pub legs_folded: u64,
     /// Single-period retries used to preserve the literal first error.
     pub literal_fallbacks: usize,
 }
@@ -787,6 +835,11 @@ pub fn fold_periods_functional_excluding_classes_counted<V: asupersync::fs::Vfs 
                     None,
                 )?;
                 fold.entries = fold.entries.checked_add(1).ok_or(RegisterError::Overflow)?;
+            }
+            if entry.proposal.class != EntryClass::PENDING || !resolved.contains_key(vid) {
+                work.legs_folded = work
+                    .legs_folded
+                    .saturating_add(entry.proposal.legs.len() as u64);
             }
         }
         folds

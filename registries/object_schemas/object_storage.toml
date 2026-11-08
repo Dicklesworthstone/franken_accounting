@@ -50,9 +50,11 @@ entry_kind = 11
 # label, like plan objects, and publish with the report in one transaction.
 # The distinct kind, body format and identity domain keep them separate from
 # report artifacts. Certificate storage is excluded from accounting scratch replay.
-# RegisterCheckpoint kind 6 stores complete native-period fold snapshots. Root
-# and fragments use RegisterCheckpoint, share immutable birth, and are published
-# atomically with the mutable RegisterState/cells and latest-checkpoint pointer.
+# RegisterCheckpoint kind 6 stores complete native-period or functional-period
+# fold snapshots. Each profile has a distinct body, identity and pointer format
+# (register_checkpoint.toml and functional_register_checkpoint.toml). Root and
+# fragments use RegisterCheckpoint, share immutable birth, and publish atomically
+# with their RegisterState/cells or complete-state discovery pointer.
 # They are rebuildable maintenance data, not authenticated opening-balance proof.
 # StatementDefinition kind 7 stores a canonical custom definition under its
 # own authoritative label. Root/fragments publish with the approving PolicyControl
