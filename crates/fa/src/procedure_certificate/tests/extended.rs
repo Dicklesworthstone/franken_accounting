@@ -314,7 +314,7 @@ fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
     party(&mut f, "LAPPING-A", "lapping-a");
     party(&mut f, "LAPPING-B", "lapping-b");
     let (source, _) = f.post(1, "3000", "1000", 1, false);
-    let post = |f: &mut Fixture, date, from: &str, to: &str, investor: &str, key: &[u8]| {
+    let post = |f: &mut Fixture, date, from: &str, to: &str, amount, investor: &str, key: &[u8]| {
         let cx = f.cx();
         let (template, _) = f.book.read_entry(&cx, source).unwrap().unwrap();
         let mut proposal = template.proposal;
@@ -328,8 +328,8 @@ fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
             )
             .unwrap();
         proposal.legs = vec![
-            LegPayload::simple(Side::Credit, f.id(from), Amount::new(f.unit, 10_000)),
-            LegPayload::simple(Side::Debit, f.id(to), Amount::new(f.unit, 10_000)),
+            LegPayload::simple(Side::Credit, f.id(from), Amount::new(f.unit, amount)),
+            LegPayload::simple(Side::Debit, f.id(to), Amount::new(f.unit, amount)),
         ];
         for leg in &mut proposal.legs {
             if leg.account_ref == f.id("1010") {
@@ -358,13 +358,30 @@ fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
             other => panic!("fresh lapping posting: {other:?}"),
         }
     };
-    let invoice = post(&mut f, 1, "3000", "1010", "LAPPING-A", b"lapping-invoice");
-    let other = post(&mut f, 3, "1010", "1000", "LAPPING-B", b"lapping-other");
+    let invoice = post(
+        &mut f,
+        1,
+        "3000",
+        "1010",
+        10_000,
+        "LAPPING-A",
+        b"lapping-invoice",
+    );
+    let other = post(
+        &mut f,
+        3,
+        "1010",
+        "1000",
+        10_000,
+        "LAPPING-B",
+        b"lapping-other",
+    );
     let settled = post(
         &mut f,
         6,
         "1010",
         "1000",
+        10_000,
         "LAPPING-A",
         b"lapping-settlement",
     );
@@ -555,6 +572,46 @@ fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
         );
     }
     assert_eq!(f.head(), after);
+
+    // Native backdated controls exercise index selection, not just the
+    // three-movement happy path. Same-day and wrong-amount A credits must
+    // be skipped; a second later match must not replace the first one.
+    for (date, amount, key) in [
+        (3, 10_000, b"lapping-same-day".as_slice()),
+        (4, 5_000, b"lapping-wrong-amount".as_slice()),
+        (9, 10_000, b"lapping-second-match".as_slice()),
+    ] {
+        post(&mut f, date, "1010", "1000", amount, "LAPPING-A", key);
+    }
+    let before = f.head();
+    let mut request = f.request("recon.lapping", source);
+    request.effective_through = None;
+    let selected = f.certify(&request).certificate;
+    assert_eq!(selected.report.findings.len(), 1);
+    assert_eq!(selected.report.work.comparisons, 20);
+    assert_eq!(
+        selected.report.findings[0].statistic,
+        Statistic::count("settlement_delay_days", 5, 6)
+    );
+    assert_eq!(selected.report.findings[0].cites, finding.cites);
+    request.version = Some(3);
+    let retained = f.certify(&request).certificate;
+    assert_eq!(retained.report.work.comparisons, 6);
+    let mut old_findings = retained.report.findings.clone();
+    for finding in &mut old_findings {
+        finding.version = 4;
+    }
+    assert_eq!(old_findings, selected.report.findings);
+    for certificate in [&selected, &retained] {
+        assert_eq!(
+            f.book
+                .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), certificate)
+                .unwrap()
+                .unwrap(),
+            certificate.report
+        );
+    }
+    assert_eq!(f.head(), before, "selection checks do not publish");
 }
 
 #[test]

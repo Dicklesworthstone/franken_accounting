@@ -1786,10 +1786,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Some(&cx.query()),
             ) {
                 Ok(report) => report,
-                // These parameters came from the retained artifact, not
-                // from a new request. A domain violation is a verification
-                // failure even when construction deferred it until run().
-                Err(error @ fa_lantern::LanternError::Parameter { .. }) => {
+                // These parameters and role requirements came from the
+                // retained artifact, not a new request. A domain violation
+                // is a verification failure even when checked only in run().
+                Err(
+                    error @ (fa_lantern::LanternError::Parameter { .. }
+                    | fa_lantern::LanternError::RoleUnassigned { .. }),
+                ) => {
                     return Ok(Err(lantern_error(error)));
                 }
                 Err(error) => return Err(error.into()),

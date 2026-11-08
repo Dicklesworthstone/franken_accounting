@@ -324,6 +324,116 @@ fn native_replay_classifies_invalid_retained_parameters_as_verification() {
     }
 }
 
+#[test]
+fn native_replay_classifies_missing_retained_roles_as_verification() {
+    let mut f = Fixture::new(128);
+    let (source, _) = f.post(1, "3000", "1020", 10_000, false);
+    let before = f.head();
+    // This real certificate supplies all six native populations without
+    // requiring an account role. Keep its authenticated inputs unchanged.
+    let mut original_request = f.request("jet.manual_vs_rule", source);
+    original_request.effective_through = None;
+    let original = f.certify(&original_request);
+    assert_eq!(original.certificate.extended_inputs.len(), extended::COUNT);
+    assert_eq!(
+        f.book
+            .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &original.certificate)
+            .unwrap()
+            .unwrap(),
+        original.report
+    );
+    let mut old_suspense = None;
+    for (id, version, role) in [
+        ("jet.suspense_aging", 3, "suspense"),
+        ("recon.lapping", 2, "receivable or payable"),
+        ("recon.lapping", 3, "receivable or payable"),
+        ("recon.lapping", 4, "receivable or payable"),
+        ("graph.ponzi_motif", 1, "cash"),
+        ("confirm.coverage", 2, "cash or receivable"),
+    ] {
+        let mut request = f.request(id, source);
+        request.version = Some(version);
+        request.effective_through = None;
+        let refused = f
+            .book
+            .certify_procedure(&f.cx(), PRINCIPAL, &cap(&["read", "produce"]), &request)
+            .expect_err("a new request still needs its registered account role");
+        assert_eq!(refused.exit(), exit::REFUSAL, "new {id}@{version}");
+        assert!(matches!(
+            refused,
+            BookError::Lantern(fa_lantern::LanternError::RoleUnassigned {
+                procedure,
+                role: missing,
+            }) if procedure == id && missing == role
+        ));
+
+        let row = fa_lantern::bind_version(id, version).unwrap();
+        let mut forged = original.certificate.clone();
+        forged.report.procedure = id.into();
+        forged.report.version = version;
+        forged.report.claim = row.claim;
+        forged.report.evidence = row.evidence;
+        forged.report.parameters = request.parameters.values();
+        forged.report.inputs = request.build().unwrap().inputs();
+        forged.report.findings.clear();
+        forged.registry = registry_digest_for_run(id, version).unwrap();
+        // Repair every public hash, retain the genuine native proofs, and
+        // confirm that request reconstruction accepts the declared identity.
+        reseal(&mut forged);
+        let decoded = ProcedureCertificate::decode(&forged.canonical_bytes().unwrap()).unwrap();
+        let reconstructed = decoded.request().unwrap();
+        assert_eq!(reconstructed.version, Some(version));
+        assert_eq!(reconstructed.effective_through, None);
+        let refusal = f
+            .book
+            .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
+            .expect("missing retained roles are a typed verification refusal")
+            .unwrap_err();
+        assert_eq!(refusal.exit, exit::VERIFICATION, "retained {id}@{version}");
+        assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+        assert!(refusal.message.contains(role));
+        assert_eq!(f.head(), before, "neither refusal may publish");
+        if id == "jet.suspense_aging" {
+            old_suspense = Some(decoded);
+        }
+    }
+
+    f.assign_role("1020", "suspense");
+    let after_role = f.head();
+    let mut request = f.request("jet.suspense_aging", source);
+    request.parameters = request.parameters.set("max_age_days", 10).unwrap();
+    let positive = f.certify(&request);
+    assert_eq!(positive.report.findings.len(), 1);
+    assert_eq!(positive.report.findings[0].severity, Severity::High);
+    assert_eq!(
+        positive.report.findings[0].statistic,
+        Statistic::count("age_days", 30, 1)
+    );
+    assert_eq!(
+        positive.report.findings[0].cites,
+        vec![Cite::Account(f.id("1020")), Cite::Entry(source)]
+    );
+    assert_eq!(
+        f.book
+            .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &positive.certificate)
+            .unwrap()
+            .unwrap(),
+        positive.report
+    );
+    // A later role assignment does not repair a false historical claim.
+    let refusal = f
+        .book
+        .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &old_suspense.unwrap())
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.exit, exit::VERIFICATION);
+    assert_eq!(
+        f.head(),
+        after_role,
+        "replay and certification are read-only"
+    );
+}
+
 fn cutoff_request(f: &Fixture, procedure: &str, through: Option<u8>) -> ProcedureRequest {
     let mut request = ProcedureRequest::new(procedure, catalog::Inputs::default()).unwrap();
     request.known_at = Some(f.head());
