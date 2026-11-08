@@ -526,7 +526,7 @@ fn retained_approval_signature_metadata_must_match_its_recorded_key() {
         corruption.set_vertex_property(
             approval.approval_vid,
             property::FA_PAYLOAD,
-            CanonicalScalar::bytes(rewritten).unwrap(),
+            Some(CanonicalScalar::bytes(rewritten).unwrap()),
         );
         let ctx = h.ctx();
         h.runtime
