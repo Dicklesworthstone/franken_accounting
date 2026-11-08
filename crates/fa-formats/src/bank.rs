@@ -367,7 +367,7 @@ fn camt_blocks<'a>(
     Ok(found.into_iter().map(|(_, block)| block).collect())
 }
 
-fn camt_attribute<'a>(
+pub(crate) fn camt_attribute<'a>(
     format: &'static str,
     mut attributes: &'a str,
     requested: Option<&str>,
@@ -483,7 +483,7 @@ fn camt_date(format: &'static str, block: CamtBlock<'_>) -> Result<DateDay, Form
     } else {
         block
     };
-    parse_date_iso(format, &camt_text(format, value)?)
+    parse_date_iso(format, camt_text(format, value)?.trim())
 }
 
 fn camt_amount(
@@ -1563,7 +1563,7 @@ pub fn parse_ofx_qbo(text: &str, units: &UnitCatalog) -> Result<BankStatementExt
     )?;
     let statement_date = parse_date_iso(
         FMT,
-        &camt_text(FMT, camt_one(FMT, ledger_bal_block, "DTASOF")?)?,
+        camt_text(FMT, camt_one(FMT, ledger_bal_block, "DTASOF")?)?.trim(),
     )?;
 
     let mut lines = Vec::new();
@@ -1579,7 +1579,7 @@ pub fn parse_ofx_qbo(text: &str, units: &UnitCatalog) -> Result<BankStatementExt
             ));
         }
         let ordinal = (idx as u32) + 1;
-        let dt = parse_date_iso(FMT, &camt_text(FMT, camt_one(FMT, trn, "DTPOSTED")?)?)?;
+        let dt = parse_date_iso(FMT, camt_text(FMT, camt_one(FMT, trn, "DTPOSTED")?)?.trim())?;
         let signed = parse_exact_decimal(
             FMT,
             &camt_text(FMT, camt_one(FMT, trn, "TRNAMT")?)?,
@@ -2901,6 +2901,31 @@ mod tests {
             parse_camt053(&once, &units).unwrap().lines[0].reference,
             "INV&#45;100"
         );
+
+        // Character references are decoded after raw XML whitespace is
+        // stripped. Normalize the decoded date, without trimming names or
+        // reference text as a side effect of stricter shared date parsing.
+        let mut padded_dates = CAMT053.to_owned();
+        for date in [
+            "2026-01-01",
+            "2026-01-31",
+            "2026-01-10",
+            "2026-01-11",
+            "2026-01-15",
+            "2026-01-16",
+        ] {
+            padded_dates = padded_dates.replace(date, &format!("&#32;&#x9;{date}&#x20;&#13;"));
+        }
+        assert_ne!(padded_dates, CAMT053);
+        assert_eq!(parse_camt053(&padded_dates, &units).unwrap(), expected);
+        for date in ["2026-01-31", "2026-01-10", "2026-01-11"] {
+            let invalid = CAMT053.replace(date, "2026-+1-+5");
+            assert!(matches!(
+                parse_camt053(&invalid, &units),
+                Err(FormatError::Parse { ref detail, .. })
+                    if detail.contains("invalid YYYY-MM-DD date")
+            ));
+        }
     }
 
     #[test]
@@ -3042,6 +3067,43 @@ mod tests {
             parse_ofx_qbo(ofx, &units).unwrap()
         );
         assert!(parse_ofx_qbo(&ofx.replace("Customer", "Customer &unknown;"), &units).is_err());
+
+        let expected = parse_ofx_qbo(ofx, &units).unwrap();
+        for tag in ["DTASOF", "DTPOSTED"] {
+            let open = format!("<{tag}>");
+            let close = format!("</{tag}>");
+            let padded = ofx
+                .replace(&open, &format!("{open}&#32;&#x9;"))
+                .replace(&close, &format!("&#x20;&#13;{close}"));
+            assert_ne!(padded, ofx);
+            assert_eq!(parse_ofx_qbo(&padded, &units).unwrap(), expected);
+            let date = ofx
+                .split_once(&open)
+                .unwrap()
+                .1
+                .split_once(&close)
+                .unwrap()
+                .0;
+            let invalid = ofx.replace(date, "2026-+1-+5");
+            assert!(matches!(
+                parse_ofx_qbo(&invalid, &units),
+                Err(FormatError::Parse { ref detail, .. })
+                    if detail.contains("invalid YYYY-MM-DD date")
+            ));
+        }
+
+        // Only date scalars normalize decoded whitespace. Preserve the
+        // existing exact decoded text of the statement's identity fields.
+        let spaced_text = ofx
+            .replace("<ACCTID>ACCT</ACCTID>", "<ACCTID>&#32;ACCT&#x20;</ACCTID>")
+            .replace("<FITID>REF</FITID>", "<FITID>&#32;REF&#x20;</FITID>")
+            .replace("<NAME>Customer</NAME>", "<NAME>&#32;Customer&#x20;</NAME>");
+        let parsed = parse_ofx_qbo(&spaced_text, &units).unwrap();
+        assert_eq!(parsed.instrument_account_id, " ACCT ");
+        assert_eq!(parsed.lines[0].reference, " REF ");
+        assert_eq!(parsed.lines[0].counterparty, " Customer ");
+        assert_eq!(parsed.statement_date, expected.statement_date);
+        assert_eq!(parsed.closing_balance, 10_100);
     }
 
     const CSV_HEADER: &str = "sequence_number,instrument_id,currency,statement_date,opening_balance,closing_balance,booking_date,value_date,side,amount,counterparty,reference";

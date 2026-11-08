@@ -107,8 +107,9 @@ impl AccountNames {
 
 /// Write a `FormatJournal` as a deterministic Beancount v3 journal with
 /// coordinate certificate metadata, `open` directives, dated transactions,
-/// and `balance` assertions.
-pub fn write_beancount(journal: &FormatJournal) -> String {
+/// and `balance` assertions. Refuse dates that the four-digit-year profile
+/// cannot represent, including an assertion whose next day is out of range.
+pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
     let mut out = String::new();
     out.push_str("; FrankenAccounting Beancount v3 export (fa-formats, bead fa-npi)\n");
     write_book_name(&mut out, &journal.coordinate.book_name);
@@ -118,7 +119,7 @@ pub fn write_beancount(journal: &FormatJournal) -> String {
     ));
     out.push_str(&format!(
         "; fa_effective_through: {}\n",
-        format_date_iso(journal.coordinate.effective_through)
+        beancount_date(journal.coordinate.effective_through, "selection cutoff")?
     ));
     out.push_str(&format!(
         "; fa_known_at_seq: {}\n",
@@ -153,7 +154,7 @@ pub fn write_beancount(journal: &FormatJournal) -> String {
             .min()
             .unwrap_or(0),
     );
-    let open_date_str = format_date_iso(open_day);
+    let open_date_str = beancount_date(open_day, "account opening")?;
     let mut acct_type_by_code = BTreeMap::new();
     for acct in &journal.accounts {
         acct_type_by_code.insert(acct.code.as_str(), acct.account_type);
@@ -172,7 +173,10 @@ pub fn write_beancount(journal: &FormatJournal) -> String {
     out.push('\n');
 
     for entry in &journal.entries {
-        let date_str = format_date_iso(entry.effective_date);
+        let date_str = beancount_date(
+            entry.effective_date,
+            &format!("entry {}", entry.entry_id),
+        )?;
         out.push_str(&format!(
             "{date_str} * \"{}\"\n",
             escape_quotes(&entry.description)
@@ -215,8 +219,19 @@ pub fn write_beancount(journal: &FormatJournal) -> String {
     for asrt in &journal.assertions {
         // Beancount checks balance at the start of the assertion date, so an
         // inclusive as-of assertion on day D is emitted on D + 1.
-        let bc_day = DateDay(asrt.as_of.0 + 1);
-        let date_str = format_date_iso(bc_day);
+        let bc_day = DateDay(asrt.as_of.0.checked_add(1).ok_or_else(|| {
+            FormatError::Overflow {
+                format: "beancount_v3",
+                detail: format!(
+                    "next day of balance assertion for account {}",
+                    asrt.account_code
+                ),
+            }
+        })?);
+        let date_str = beancount_date(
+            bc_day,
+            &format!("balance assertion for account {}", asrt.account_code),
+        )?;
         let acct_ty = acct_type_by_code
             .get(asrt.account_code.as_str())
             .copied()
@@ -233,11 +248,26 @@ pub fn write_beancount(journal: &FormatJournal) -> String {
         ));
     }
 
-    out
+    Ok(out)
+}
+
+fn beancount_date(day: DateDay, context: &str) -> Result<String, FormatError> {
+    let (year, _, _) = day.ymd();
+    if !(0..=9999).contains(&year) {
+        return Err(FormatError::Parse {
+            format: "beancount_v3",
+            detail: format!(
+                "{context} date {} is outside the YYYY-MM-DD profile (years 0000 through 9999)",
+                format_date_iso(day)
+            ),
+        });
+    }
+    Ok(format_date_iso(day))
 }
 
 /// Parse a Beancount v3 journal produced by [`write_beancount`] (or conforming
 /// to the FrankenAccounting Beancount subset) into an exact `FormatJournal`.
+/// Both original content and coordinate-certificate digests are required.
 pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, FormatError> {
     const FMT: &str = "beancount_v3";
     let mut book_name = String::from("beancount-import");
@@ -494,6 +524,13 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
         });
     }
 
+    let (Some(exp_content), Some(exp_cert)) = (expected_content_digest, expected_cert_digest)
+    else {
+        return Err(FormatError::Parse {
+            format: FMT,
+            detail: "Beancount content and certificate digests must be supplied together".into(),
+        });
+    };
     let journal = FormatJournal::new(
         &book_name,
         &base_unit_code,
@@ -504,12 +541,8 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
         entries,
         assertions,
     )?;
-    if let Some(exp_content) = expected_content_digest {
-        journal.coordinate.verify(&exp_content)?;
-    }
-    if let Some(exp_cert) = expected_cert_digest
-        && journal.coordinate.certificate_digest != exp_cert
-    {
+    journal.coordinate.verify(&exp_content)?;
+    if journal.coordinate.certificate_digest != exp_cert {
         return Err(FormatError::CertificateMismatch {
             format: FMT,
             expected_hex: hex_encode(&exp_cert),

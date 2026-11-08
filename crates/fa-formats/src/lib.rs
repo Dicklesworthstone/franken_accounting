@@ -1111,31 +1111,37 @@ pub fn format_date_iso(day: DateDay) -> String {
     format!("{year:04}-{month:02}-{dom:02}")
 }
 
-/// Parse a `YYYY-MM-DD` string into `DateDay`.
+/// Parse an exact ASCII `YYYY-MM-DD` token into `DateDay`.
 pub fn parse_date_iso(format: &'static str, text: &str) -> Result<DateDay, FormatError> {
-    let trimmed = text.trim();
-    let parts: Vec<&str> = trimmed.split('-').collect();
-    if parts.len() != 3 || parts[0].len() != 4 || parts[1].len() != 2 || parts[2].len() != 2 {
+    let parts: Vec<&str> = text.split('-').collect();
+    if parts.len() != 3
+        || parts[0].len() != 4
+        || parts[1].len() != 2
+        || parts[2].len() != 2
+        || parts
+            .iter()
+            .any(|part| !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
         return Err(FormatError::Parse {
             format,
-            detail: format!("invalid YYYY-MM-DD date {trimmed:?}"),
+            detail: format!("invalid YYYY-MM-DD date {text:?}"),
         });
     }
     let year: i32 = parts[0].parse().map_err(|_| FormatError::Parse {
         format,
-        detail: format!("invalid year in {trimmed:?}"),
+        detail: format!("invalid year in {text:?}"),
     })?;
     let month: u8 = parts[1].parse().map_err(|_| FormatError::Parse {
         format,
-        detail: format!("invalid month in {trimmed:?}"),
+        detail: format!("invalid month in {text:?}"),
     })?;
     let day: u8 = parts[2].parse().map_err(|_| FormatError::Parse {
         format,
-        detail: format!("invalid day in {trimmed:?}"),
+        detail: format!("invalid day in {text:?}"),
     })?;
     DateDay::from_ymd(year, month, day).map_err(|e| FormatError::Parse {
         format,
-        detail: format!("invalid civil date {trimmed:?}: {e}"),
+        detail: format!("invalid civil date {text:?}: {e}"),
     })
 }
 
@@ -1210,5 +1216,95 @@ pub(crate) fn normal_side_for_type(ty: AccountType) -> Side {
     match ty.normal_balance() {
         Some(1) => Side::Credit,
         _ => Side::Debit,
+    }
+}
+
+#[cfg(test)]
+mod iso_date_tests {
+    use super::{DateDay, FormatError, format_date_iso, parse_date_iso};
+
+    #[test]
+    fn iso_dates_preserve_exact_days_and_four_digit_year_boundaries() {
+        for (token, day) in [
+            ("0000-01-01", -719_528),
+            ("1969-12-31", -1),
+            ("1970-01-01", 0),
+            ("2000-02-29", 11_016),
+            ("2026-01-05", 20_458),
+            ("9999-12-31", 2_932_896),
+        ] {
+            let parsed = parse_date_iso("date-regression", token).unwrap();
+            assert_eq!(parsed, DateDay(day), "{token}");
+            assert_eq!(format_date_iso(parsed), token);
+        }
+        for token in ["0000-02-29", "1600-02-29", "2024-02-29", "2400-02-29"] {
+            assert_eq!(
+                format_date_iso(parse_date_iso("date-regression", token).unwrap()),
+                token
+            );
+        }
+    }
+
+    #[test]
+    fn iso_dates_refuse_signed_padded_and_non_ascii_tokens() {
+        for token in [
+            "2024-+1-+5",
+            "2024-+1-05",
+            "2024-01-+5",
+            "+024-01-05",
+            " 2024-01-05",
+            "2024-01-05 ",
+            "\t2024-01-05\r\n",
+            "\u{a0}2024-01-05",
+            "2024-01-05\u{2003}",
+            "2024-01-05\0",
+            "2024-1-05",
+            "2024-01-5",
+            "024-01-05",
+            "10000-01-05",
+            "2024/01/05",
+            "2024\u{2010}01\u{2010}05",
+            "２０２４-01-05",
+            "2024-٠١-05",
+            "2024-01-\u{e9}",
+            "2024-01-05-01",
+            "",
+        ] {
+            assert!(
+                matches!(
+                    parse_date_iso("date-regression", token),
+                    Err(FormatError::Parse {
+                        format: "date-regression",
+                        ..
+                    })
+                ),
+                "accepted malformed token {token:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn iso_dates_still_refuse_invalid_gregorian_dates() {
+        for token in [
+            "1900-02-29",
+            "2023-02-29",
+            "2100-02-29",
+            "2024-00-01",
+            "2024-13-01",
+            "2024-01-00",
+            "2024-01-32",
+            "2024-04-31",
+        ] {
+            assert!(
+                matches!(
+                    parse_date_iso("date-regression", token),
+                    Err(FormatError::Parse {
+                        format: "date-regression",
+                        ..
+                    })
+                ),
+                "accepted invalid civil date {token:?}"
+            );
+        }
     }
 }

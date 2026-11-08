@@ -190,37 +190,52 @@ const DAT_HEADERS: &[&str] = &[
     "NATIVEPATH",
 ];
 
-fn format_dat_row(cols: &[&str]) -> String {
+fn format_dat_row(cols: &[&str]) -> Result<String, FormatError> {
     let mut line = String::new();
     for (idx, col) in cols.iter().enumerate() {
         if idx > 0 {
             line.push(CONCORDANCE_DELIM);
         }
         line.push(CONCORDANCE_QUOTE);
-        for ch in col.chars() {
-            if ch == CONCORDANCE_QUOTE || ch == CONCORDANCE_DELIM || ch == '\r' || ch == '\n' {
-                line.push(' ');
-            } else {
-                line.push(ch);
-            }
+        if col.contains([CONCORDANCE_QUOTE, CONCORDANCE_DELIM, '\r', '\n']) {
+            return Err(FormatError::Parse {
+                format: "concordance_dat_v1",
+                detail: format!("column {} contains a reserved DAT character", idx + 1),
+            });
         }
+        line.push_str(col);
         line.push(CONCORDANCE_QUOTE);
     }
-    line
+    Ok(line)
 }
 
 /// Render a deterministic Concordance `.dat` load file (`concordance_dat_v1`).
+/// Refuse text the format cannot retain exactly rather than replacing it.
 pub fn write_concordance_dat(records: &[LoadFileRecord]) -> Result<String, FormatError> {
-    let mut out = format_dat_row(DAT_HEADERS);
+    let mut out = format_dat_row(DAT_HEADERS)?;
     out.push('\n');
     for rec in records {
-        if rec.bates.page_count == 0
-            || rec.bates.end_number < rec.bates.start_number
-            || rec.bates.end_number - rec.bates.start_number + 1 != rec.bates.page_count
+        validate_bates_range(rec, "concordance_dat_v1")?;
+        if rec
+            .exhibit_labels
+            .iter()
+            .any(|label| label.is_empty() || label.contains(';'))
         {
             return Err(FormatError::Parse {
                 format: "concordance_dat_v1",
-                detail: format!("inconsistent Bates range on {}", rec.doc_id),
+                detail: format!(
+                    "exhibit labels on {} must be nonempty and contain no semicolon",
+                    rec.doc_id
+                ),
+            });
+        }
+        if rec.redaction_contract.as_deref() == Some("") {
+            return Err(FormatError::Parse {
+                format: "concordance_dat_v1",
+                detail: format!(
+                    "empty redaction contract on {} cannot be distinguished from no contract",
+                    rec.doc_id
+                ),
             });
         }
         let beg = rec.bates.beg_bates();
@@ -247,11 +262,31 @@ pub fn write_concordance_dat(records: &[LoadFileRecord]) -> Result<String, Forma
             &exhibits,
             &rec.text_path,
             &rec.native_path,
-        ]);
+        ])?;
         out.push_str(&row);
         out.push('\n');
     }
     Ok(out)
+}
+
+fn validate_bates_range(rec: &LoadFileRecord, format: &'static str) -> Result<(), FormatError> {
+    let end = rec
+        .bates
+        .page_count
+        .checked_sub(1)
+        .and_then(|offset| rec.bates.start_number.checked_add(offset));
+    if rec.bates.matter_id.trim().is_empty()
+        || rec.bates.prefix.trim().is_empty()
+        || rec.bates.prefix.len() > 16
+        || rec.bates.start_number == 0
+        || end != Some(rec.bates.end_number)
+    {
+        return Err(FormatError::Parse {
+            format,
+            detail: format!("inconsistent Bates range on {}", rec.doc_id),
+        });
+    }
+    Ok(())
 }
 
 fn parse_bates_token(token: &str) -> Result<(String, u64), FormatError> {
@@ -373,7 +408,7 @@ pub fn parse_concordance_dat(input: &str) -> Result<Vec<LoadFileRecord>, FormatE
 
 /// Render a deterministic Opticon `.opt` page cross-reference load file (`opticon_opt_v1`).
 pub fn write_opticon_opt(volume: &str, records: &[LoadFileRecord]) -> Result<String, FormatError> {
-    if volume.trim().is_empty() || volume.contains(',') || volume.contains('\n') {
+    if volume.trim().is_empty() || volume.contains([',', '\r', '\n']) {
         return Err(FormatError::Parse {
             format: "opticon_opt_v1",
             detail: format!("invalid volume label {volume:?}"),
@@ -381,14 +416,17 @@ pub fn write_opticon_opt(volume: &str, records: &[LoadFileRecord]) -> Result<Str
     }
     let mut out = String::new();
     for rec in records {
-        if rec.bates.page_count == 0
-            || rec.bates.end_number < rec.bates.start_number
-            || rec.bates.end_number - rec.bates.start_number + 1 != rec.bates.page_count
-        {
-            return Err(FormatError::Parse {
-                format: "opticon_opt_v1",
-                detail: format!("inconsistent Bates range on {}", rec.doc_id),
-            });
+        validate_bates_range(rec, "opticon_opt_v1")?;
+        for (field, value) in [
+            ("Bates prefix", &rec.bates.prefix),
+            ("matter", &rec.bates.matter_id),
+        ] {
+            if value.contains([',', '\r', '\n']) {
+                return Err(FormatError::Parse {
+                    format: "opticon_opt_v1",
+                    detail: format!("{field} on {} contains a comma or line break", rec.doc_id),
+                });
+            }
         }
         for page_offset in 0..rec.bates.page_count {
             let page_num = rec.bates.start_number + page_offset;
@@ -448,6 +486,7 @@ pub fn write_edrm_xml(
     ));
     xml.push_str("    <Documents>\n");
     for rec in records {
+        validate_bates_range(rec, "edrm_xml_v1")?;
         let beg = rec.bates.beg_bates();
         let end = rec.bates.end_bates();
         let contract = rec.redaction_contract.as_deref().unwrap_or("");
@@ -581,6 +620,155 @@ mod tests {
             lines[3],
             "ACME-00000004,VOL001,IMAGES\\MATTER-2026-A\\ACME-00000004.tif,Y,,,2"
         );
+    }
+
+    #[test]
+    fn concordance_dat_preserves_supported_text_and_refuses_lossy_fields() {
+        let mut recs = sample_records();
+        recs[0].doc_id = "  Source, \"账簿\"; document  ".into();
+        recs[0].exhibit_labels = vec!["Px-12".into(), "  Δ exhibit  ".into()];
+        recs[0].native_path = "NATIVES\\source, copy; final.pdf".into();
+        let dat = write_concordance_dat(&recs).expect("supported DAT text");
+        assert_eq!(parse_concordance_dat(&dat).unwrap(), recs);
+        assert_eq!(dat.lines().count(), recs.len() + 1);
+
+        for forbidden in [CONCORDANCE_QUOTE, CONCORDANCE_DELIM, '\r', '\n'] {
+            for field in 0..11 {
+                let mut bad = recs.clone();
+                let text = format!("source{forbidden}text");
+                match field {
+                    0 => bad[0].doc_id = text,
+                    1 => bad[0].bates.prefix = text,
+                    2 => bad[0].bates.matter_id = text,
+                    3 => bad[0].document_kind = text,
+                    4 => bad[0].mime_type = text,
+                    5 => bad[0].document_oid_hex = text,
+                    6 => bad[0].doc_commit_hex = text,
+                    7 => bad[0].redaction_contract = Some(text),
+                    8 => bad[0].exhibit_labels = vec![text],
+                    9 => bad[0].text_path = text,
+                    _ => bad[0].native_path = text,
+                }
+                assert!(
+                    matches!(
+                        write_concordance_dat(&bad),
+                        Err(FormatError::Parse {
+                            format: "concordance_dat_v1",
+                            ..
+                        })
+                    ),
+                    "field {field} admitted {forbidden:?}"
+                );
+            }
+        }
+        for labels in [vec![""], vec!["A;B"], vec!["A", ""], vec!["", "B"]] {
+            let mut bad = recs.clone();
+            bad[0].exhibit_labels = labels.iter().map(|s| (*s).to_owned()).collect();
+            assert!(
+                matches!(
+                    write_concordance_dat(&bad),
+                    Err(FormatError::Parse {
+                        format: "concordance_dat_v1",
+                        ..
+                    })
+                ),
+                "ambiguous exhibit labels {labels:?}"
+            );
+        }
+        recs[0].redaction_contract = Some(String::new());
+        assert!(matches!(
+            write_concordance_dat(&recs),
+            Err(FormatError::Parse {
+                format: "concordance_dat_v1",
+                ..
+            })
+        ));
+        recs[0].redaction_contract = Some("  retained contract  ".into());
+        assert_eq!(
+            parse_concordance_dat(&write_concordance_dat(&recs).unwrap()).unwrap(),
+            recs
+        );
+    }
+
+    #[test]
+    fn opticon_opt_refuses_field_and_row_injection() {
+        let recs = sample_records();
+        for forbidden in [',', '\r', '\n'] {
+            let text = format!("source{forbidden}extra");
+            assert!(matches!(
+                write_opticon_opt(&text, &recs),
+                Err(FormatError::Parse {
+                    format: "opticon_opt_v1",
+                    ..
+                })
+            ));
+            for field in 0..2 {
+                let mut bad = recs.clone();
+                if field == 0 {
+                    bad[0].bates.prefix = text.clone();
+                } else {
+                    bad[0].bates.matter_id = text.clone();
+                }
+                assert!(
+                    matches!(
+                        write_opticon_opt("VOL001", &bad),
+                        Err(FormatError::Parse {
+                            format: "opticon_opt_v1",
+                            ..
+                        })
+                    ),
+                    "field {field} admitted {forbidden:?}"
+                );
+            }
+        }
+        let opt = write_opticon_opt("VOL001", &recs).unwrap();
+        assert_eq!(opt.lines().count(), 5);
+        assert!(opt.lines().all(|line| line.split(',').count() == 7));
+    }
+
+    #[test]
+    fn load_file_writers_check_public_bates_ranges_without_overflow() {
+        let mut recs = sample_records();
+        recs.truncate(1);
+        recs[0].bates = BatesRange::new("MATTER-2026-A", "ACME", u64::MAX - 1, 2).unwrap();
+        let dat = write_concordance_dat(&recs).unwrap();
+        assert_eq!(parse_concordance_dat(&dat).unwrap(), recs);
+        let opt = write_opticon_opt("VOL001", &recs).unwrap();
+        assert_eq!(opt.lines().count(), 2);
+        assert!(
+            opt.lines()
+                .nth(1)
+                .unwrap()
+                .starts_with("ACME-18446744073709551615,")
+        );
+        let digest = "cc".repeat(32);
+        let xml = write_edrm_xml("BATCH-01", "MATTER-2026-A", &digest, &recs).unwrap();
+        assert!(xml.contains("EndBates\" Value=\"ACME-18446744073709551615\""));
+
+        for (start, end, pages) in [
+            (0, u64::MAX, u64::MAX),
+            (0, 0, 1),
+            (u64::MAX, u64::MAX, 2),
+            (4, 3, 0),
+            (4, 5, 1),
+        ] {
+            recs[0].bates.start_number = start;
+            recs[0].bates.end_number = end;
+            recs[0].bates.page_count = pages;
+            for (format, result) in [
+                ("concordance_dat_v1", write_concordance_dat(&recs)),
+                ("opticon_opt_v1", write_opticon_opt("VOL001", &recs)),
+                (
+                    "edrm_xml_v1",
+                    write_edrm_xml("BATCH-01", "MATTER-2026-A", &digest, &recs),
+                ),
+            ] {
+                assert!(
+                    matches!(result, Err(FormatError::Parse { format: actual, .. }) if actual == format),
+                    "{format} admitted start={start}, end={end}, pages={pages}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -164,12 +164,12 @@ pub fn write_csv_gl(journal: &FormatJournal) -> String {
 
 /// Read a canonical CSV General Ledger extract produced by [`write_csv_gl`]
 /// back into a [`FormatJournal`], verifying the coordinate certificate and
-/// `FA-INV-01` / `FA-INV-04` refold balances. Historical v1 literal-quote
-/// records are recovered only when both original certificate digests verify
+/// `FA-INV-01` / `FA-INV-04` refold balances. Both original digests are required.
+/// Historical v1 literal-quote records are recovered only when both digests verify
 /// against the exact reconstructed text; all metadata checks still apply.
 pub fn read_csv_gl(csv: &str, units: &UnitCatalog) -> Result<FormatJournal, FormatError> {
     let strict = CsvInput::Strict(CsvRecords::new(csv, FMT_CSV));
-    match read_csv_gl_records(strict, units, false) {
+    match read_csv_gl_records(strict, units) {
         Ok(journal) => Ok(journal),
         Err(strict_error) => {
             // Older csv_gl_v1 writers emitted literal quotes without CSV
@@ -179,7 +179,7 @@ pub fn read_csv_gl(csv: &str, units: &UnitCatalog) -> Result<FormatJournal, Form
             if !csv.contains('"') {
                 return Err(strict_error);
             }
-            read_csv_gl_records(CsvInput::Legacy(csv.lines().enumerate()), units, true)
+            read_csv_gl_records(CsvInput::Legacy(csv.lines().enumerate()), units)
                 .or(Err(strict_error))
         }
     }
@@ -218,7 +218,6 @@ impl<'a> CsvInput<'a> {
 fn read_csv_gl_records(
     mut records: CsvInput<'_>,
     units: &UnitCatalog,
-    require_certificate: bool,
 ) -> Result<FormatJournal, FormatError> {
     let mut book_name = String::from("csv-import");
     let mut base_unit_code = String::from("USD");
@@ -593,12 +592,12 @@ fn read_csv_gl_records(
             ),
         });
     }
-    if expected_content.is_some() != expected_cert.is_some() {
+    let (Some(exp_content), Some(exp_cert)) = (expected_content, expected_cert) else {
         return Err(FormatError::Parse {
             format: FMT_CSV,
             detail: "CSV content and certificate digests must be supplied together".into(),
         });
-    }
+    };
     for (entry_ordinal, leg_ordinal) in empty_fields {
         let invalid = || FormatError::Parse {
             format: FMT_CSV,
@@ -632,29 +631,18 @@ fn read_csv_gl_records(
         assertions,
     )?;
 
-    if (require_certificate || dimension_encoding)
-        && (expected_content.is_none() || expected_cert.is_none())
-    {
-        return Err(FormatError::Parse {
-            format: FMT_CSV,
-            detail: "historical literal-quote or dimension-bearing CSV requires both original certificate digests"
-                .into(),
-        });
-    }
-    if let (Some(exp_content), Some(exp_cert)) = (expected_content, expected_cert) {
-        let coord = ExportCoordinate {
-            book_name,
-            base_unit_code,
-            base_unit_scale,
-            effective_through,
-            known_at_seq,
-            entry_count: journal.entries.len() as u64,
-            content_digest: exp_content,
-            certificate_digest: exp_cert,
-            account_scope: None,
-        };
-        coord.verify(&journal.coordinate.content_digest)?;
-    }
+    let coord = ExportCoordinate {
+        book_name,
+        base_unit_code,
+        base_unit_scale,
+        effective_through,
+        known_at_seq,
+        entry_count: journal.entries.len() as u64,
+        content_digest: exp_content,
+        certificate_digest: exp_cert,
+        account_scope: None,
+    };
+    coord.verify(&journal.coordinate.content_digest)?;
 
     Ok(journal)
 }

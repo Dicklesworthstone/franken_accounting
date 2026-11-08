@@ -287,6 +287,8 @@ impl Part370OutputBundle {
 /// `account_participant.txt`, `pending.txt`) and owner-capacity aggregations at the
 /// end-of-day effective date, refusing any account, participant, or pending item
 /// with a missing or invalid capacity code.
+/// Deposits and pending amounts must use USD at scale 2; the journal
+/// coordinate may retain a different book base unit.
 pub fn generate_part370_bundle(book: &Part370BankBook) -> Result<Part370OutputBundle, FormatError> {
     if book.sdia_mantissa <= 0 {
         return Err(FormatError::Parse {
@@ -385,6 +387,17 @@ pub fn generate_part370_bundle(book: &Part370BankBook) -> Result<Part370OutputBu
             "DP_Right_Capacity",
             &format!("account {}", acct.dp_acct_id),
         )?;
+        // Owner aggregation and the insurance limit share one denomination,
+        // matching the USD-cents profile enforced by Book::part370_book.
+        if acct.unit_code != "USD" || acct.scale != 2 {
+            return Err(FormatError::Parse {
+                format: "fdic_part370_v1",
+                detail: format!(
+                    "account {} has `DP_Currency` {:?} at scale {}; this Part 370 profile requires USD at scale 2",
+                    acct.dp_acct_id, acct.unit_code, acct.scale
+                ),
+            });
+        }
         let total_pi = acct
             .current_balance_mantissa
             .checked_add(acct.accrued_interest_mantissa)
@@ -417,7 +430,8 @@ pub fn generate_part370_bundle(book: &Part370BankBook) -> Result<Part370OutputBu
             .then_with(|| a.cs_unique_id.cmp(&b.cs_unique_id))
     });
 
-    let mut bps_by_account: BTreeMap<String, u32> = BTreeMap::new();
+    // Malformed ownership totals can exceed u32 before the 100% check.
+    let mut bps_by_account: BTreeMap<String, u64> = BTreeMap::new();
     for edge in &sorted_participants {
         let (acct, acct_orc, _) =
             account_map
@@ -469,7 +483,16 @@ pub fn generate_part370_bundle(book: &Part370BankBook) -> Result<Part370OutputBu
                     ),
                 });
             }
-            *bps_by_account.entry(acct.dp_acct_id.clone()).or_insert(0) += edge.ownership_pct_bps;
+            let total_bps = bps_by_account.entry(acct.dp_acct_id.clone()).or_insert(0);
+            *total_bps = total_bps
+                .checked_add(u64::from(edge.ownership_pct_bps))
+                .ok_or_else(|| FormatError::Overflow {
+                    format: "fdic_part370_v1",
+                    detail: format!(
+                        "owner `AP_Ownership_Pct_Bps` total overflow on account {}",
+                        acct.dp_acct_id
+                    ),
+                })?;
         }
     }
 
@@ -641,6 +664,15 @@ pub fn generate_part370_bundle(book: &Part370BankBook) -> Result<Part370OutputBu
             "PD_Right_Capacity",
             &format!("pending item {}", item.pending_id),
         )?;
+        if item.unit_code != "USD" || item.scale != 2 {
+            return Err(FormatError::Parse {
+                format: "fdic_part370_v1",
+                detail: format!(
+                    "pending item {} has `PD_Currency` {:?} at scale {}; this Part 370 profile requires USD at scale 2",
+                    item.pending_id, item.unit_code, item.scale
+                ),
+            });
+        }
         pending_rows.push((item, orc));
     }
 
@@ -1035,6 +1067,99 @@ mod tests {
             .map(|l| l.split('|').nth(6).unwrap())
             .collect();
         assert_eq!(shares, ["33.33", "33.33", "33.35"]);
+    }
+
+    #[test]
+    fn owner_share_totals_refuse_overallocation_across_the_u32_boundary() {
+        for (extra_edges, expected_total) in [(429_495, "4294960000"), (429_496, "4294970000")] {
+            let mut book = fixture_part370_bank_book();
+            // Every edge has an individually admissible 10,000-bps share.
+            // The first total fits u32; one more edge used to panic before
+            // the account's existing 100% ownership check could refuse it.
+            let owner = book.participants[0].clone();
+            book.participants
+                .extend(std::iter::repeat_n(owner, extra_edges));
+            let error = generate_part370_bundle(&book).unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    FormatError::Parse {
+                        format: "fdic_part370_v1",
+                        detail,
+                    } if detail == &format!(
+                        "owner `AP_Ownership_Pct_Bps` on account DEP-1001 sum to {expected_total}, expected 10000"
+                    )
+                ),
+                "unexpected refusal: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn part370_refuses_currency_and_scale_mismatches_before_owner_aggregation() {
+        for (unit_code, scale) in [("EUR", 2), ("USD", 3), ("USD", 0)] {
+            let mut book = fixture_part370_bank_book();
+            // These two SGL accounts have the same owner: their mantissas
+            // must never be combined across currencies or decimal scales.
+            book.accounts[1].unit_code = unit_code.into();
+            book.accounts[1].scale = scale;
+            let error = generate_part370_bundle(&book).unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    FormatError::Parse { format: "fdic_part370_v1", detail }
+                        if detail.contains("DP_Currency")
+                            && detail.contains("DEP-1002")
+                            && detail.contains("requires USD at scale 2")
+                ),
+                "unexpected refusal: {error:?}"
+            );
+
+            let mut book = fixture_part370_bank_book();
+            book.pending_items[0].unit_code = unit_code.into();
+            book.pending_items[0].scale = scale;
+            let error = generate_part370_bundle(&book).unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    FormatError::Parse { format: "fdic_part370_v1", detail }
+                        if detail.contains("PD_Currency")
+                            && detail.contains("PND-9001")
+                            && detail.contains("requires USD at scale 2")
+                ),
+                "unexpected refusal: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn usd_part370_positions_keep_their_units_in_a_non_usd_base_book() {
+        let mut book = fixture_part370_bank_book();
+        let coordinate = &book.coordinate;
+        book.coordinate = ExportCoordinate::compute(
+            &coordinate.book_name,
+            "EUR",
+            2,
+            coordinate.effective_through,
+            coordinate.known_at_seq,
+            coordinate.entry_count,
+            coordinate.content_digest,
+        );
+        let bundle = generate_part370_bundle(&book).unwrap();
+        assert_eq!(bundle.customer_file, GOLDEN_PART370_CUSTOMER_TXT);
+        assert_eq!(bundle.account_file, GOLDEN_PART370_ACCOUNT_TXT);
+        assert_eq!(
+            bundle.account_participant_file,
+            GOLDEN_PART370_ACCOUNT_PARTICIPANT_TXT
+        );
+        assert_eq!(bundle.pending_file, GOLDEN_PART370_PENDING_TXT);
+        assert!(
+            bundle
+                .owner_aggregations
+                .iter()
+                .all(|row| row.unit_code == "USD" && row.scale == 2)
+        );
+        verify_part370_bundle(&book, &bundle).unwrap();
     }
 
     /// A delimiter or line break inside a field would shift every later

@@ -5,6 +5,7 @@
 use fa_model::EntryClass;
 use fa_money::{Amount, Side};
 
+use crate::bank::camt_attribute;
 use crate::{
     ExportCoordinate, FormatAccount, FormatAssertion, FormatEntry, FormatError, FormatJournal,
     FormatLeg, UnitCatalog, format_account_type, format_date_iso, format_dimension_set,
@@ -228,28 +229,42 @@ pub fn read_saft_xml(xml: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
         }
         let root = xml
             .split_once("<AuditFile ")
-            .and_then(|(_, rest)| rest.split_once('>'))
-            .map(|(attributes, _)| attributes)
+            .and_then(|(_, rest)| xml_markup_prefix(rest))
             .ok_or_else(|| FormatError::Parse {
                 format: FMT,
                 detail: "dimension extension requires an AuditFile root".into(),
             })?;
-        let namespace_declarations: usize = xml
-            .split('<')
-            .skip(1)
-            .map(|markup| markup.split('>').next().unwrap_or_default())
-            .map(|tag| tag.matches("xmlns:fa").count())
-            .sum();
-        if root.matches("xmlns:fa=").count() != 1
-            || !root.contains(&format!("xmlns:fa=\"{DIMENSION_NAMESPACE}\""))
-            || namespace_declarations != 1
-        {
-            return Err(FormatError::Parse {
-                format: FMT,
-                detail: "dimension extension namespace is missing, different or rebound".into(),
-            });
+        let namespace_refusal = || FormatError::Parse {
+            format: FMT,
+            detail: "dimension extension namespace is missing, different or rebound".into(),
+        };
+        let root_namespace =
+            camt_attribute(FMT, root.trim(), Some("xmlns:fa")).map_err(|_| namespace_refusal())?;
+        let mut namespace_declarations = 0_usize;
+        for markup in xml.split('<').skip(1) {
+            let tag = xml_markup_prefix(markup).ok_or_else(namespace_refusal)?;
+            if tag.starts_with('/') || tag.starts_with('?') {
+                continue;
+            }
+            let open = tag.trim_end().strip_suffix('/').unwrap_or(tag).trim_end();
+            let split = open.find(char::is_whitespace).unwrap_or(open.len());
+            let attributes = open[split..].trim();
+            if camt_attribute(FMT, attributes, Some("xmlns:fa"))
+                .map_err(|_| namespace_refusal())?
+                .is_some()
+            {
+                namespace_declarations += 1;
+            }
         }
-    } else if xml.contains("fa:DimensionSetV1") || xml.contains("fa:DimensionEncoding") {
+        if root_namespace != Some(DIMENSION_NAMESPACE) || namespace_declarations != 1 {
+            return Err(namespace_refusal());
+        }
+    } else if xml.split('<').skip(1).any(|markup| {
+        let tag = xml_markup_prefix(markup).unwrap_or(markup);
+        tag.contains("fa:DimensionSetV1") || tag.contains("fa:DimensionEncoding")
+    }) {
+        // Inspect markup, not XML-escaped field text that may name these
+        // elements. Keep refusing undeclared names in tags and attributes.
         return Err(FormatError::Parse {
             format: FMT,
             detail: "dimension elements require the registered encoding in Header".into(),
@@ -270,7 +285,7 @@ pub fn read_saft_xml(xml: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
         })?;
     let effective_through = parse_date_iso(
         FMT,
-        extract_first_block(FMT, header_block, "SelectionEndDate")?,
+        extract_first_block(FMT, header_block, "SelectionEndDate")?.trim(),
     )?;
     let known_at_seq: u64 = extract_first_block(FMT, header_block, "KnownAtSeq")?
         .trim()
@@ -322,7 +337,7 @@ pub fn read_saft_xml(xml: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
     if let Ok(asrt_parent) = extract_first_block(FMT, master_block, "BalanceAssertions") {
         for ab in extract_all_blocks(asrt_parent, "Assertion") {
             let account_code = xml_unescape(extract_first_block(FMT, ab, "AccountID")?);
-            let as_of = parse_date_iso(FMT, extract_first_block(FMT, ab, "AsOfDate")?)?;
+            let as_of = parse_date_iso(FMT, extract_first_block(FMT, ab, "AsOfDate")?.trim())?;
             let side = match extract_first_block(FMT, ab, "Side")?.trim() {
                 "Debit" => Side::Debit,
                 "Credit" => Side::Credit,
@@ -365,8 +380,10 @@ pub fn read_saft_xml(xml: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
     let mut entries = Vec::new();
     for tx_block in extract_all_blocks(gl_entries_block, "Transaction") {
         let entry_id = xml_unescape(extract_first_block(FMT, tx_block, "TransactionID")?);
-        let effective_date =
-            parse_date_iso(FMT, extract_first_block(FMT, tx_block, "TransactionDate")?)?;
+        let effective_date = parse_date_iso(
+            FMT,
+            extract_first_block(FMT, tx_block, "TransactionDate")?.trim(),
+        )?;
         let recorded_seq: u64 = extract_first_block(FMT, tx_block, "RecordedSeq")?
             .trim()
             .parse()
@@ -495,6 +512,26 @@ pub fn read_saft_xml(xml: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
         });
     }
     Ok(journal)
+}
+
+// A literal '>' inside a quoted attribute does not end the markup. These
+// scans inspect names and namespace declarations, not decoded scalar text.
+fn xml_markup_prefix(markup: &str) -> Option<&str> {
+    let mut quote = None;
+    for (index, byte) in markup.bytes().enumerate() {
+        if let Some(delimiter) = quote {
+            if byte == delimiter {
+                quote = None;
+            }
+        } else {
+            match byte {
+                b'\'' | b'"' => quote = Some(byte),
+                b'>' => return Some(&markup[..index]),
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn extract_first_block<'a>(

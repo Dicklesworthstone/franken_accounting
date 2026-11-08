@@ -327,7 +327,7 @@ fn beancount_and_hledger_balance_differential_and_one_minor_unit_mutation_negati
     let fa_balances = journal.fold_balances().expect("fa fold");
 
     // 1. Beancount v3 write -> read -> balance differential
-    let bc_text = write_beancount(&journal);
+    let bc_text = write_beancount(&journal).expect("write_beancount");
     let bc_parsed = read_beancount(&bc_text, &units).expect("read_beancount");
     let bc_balances = bc_parsed.fold_balances().expect("bc fold");
     compare_balances_exact("acme-fy2026-p03", &fa_balances, &bc_balances)
@@ -482,6 +482,122 @@ fn saft_and_xbrl_keep_text_whitespace_exactly() {
 }
 
 #[test]
+fn saft_dimension_element_names_in_text_are_not_extension_markup() {
+    let units = UnitCatalog::embedded().unwrap();
+    for literal in [
+        "fa:DimensionSetV1",
+        "fa:DimensionEncoding",
+        "<fa:DimensionSetV1>literal</fa:DimensionSetV1>",
+        "<fa:DimensionEncoding>fa-dimension-ids-v1</fa:DimensionEncoding>",
+        "fa:DimensionSetV1 > literal",
+        "fa:DimensionEncoding > literal",
+    ] {
+        let mut source = sample_multi_unit_journal();
+        let text = format!("  {literal}\n");
+        source.accounts[0].name = text.clone();
+        source.entries[0].description = text.clone();
+        source.entries[0].migrated_from = Some(text.clone());
+        source.entries[0].legs[0].memo = Some(text.clone());
+        let journal = FormatJournal::new(
+            &text,
+            &source.coordinate.base_unit_code,
+            source.coordinate.base_unit_scale,
+            source.coordinate.effective_through,
+            source.coordinate.known_at_seq,
+            source.accounts,
+            source.entries,
+            source.assertions,
+        )
+        .unwrap();
+        let xml = write_saft_xml(&journal).unwrap();
+        assert!(!xml.contains("xmlns:fa="));
+        let restored = read_saft_xml(&xml, &units).unwrap();
+        assert_eq!(restored, journal, "literal text {literal:?}");
+        assert_eq!(write_saft_xml(&restored).unwrap(), xml);
+        verify_round_trip_identity("oecd_saft_v2", &journal, &restored).unwrap();
+        let raw_greater_than = xml.replace("&gt;", ">");
+        if raw_greater_than != xml {
+            let restored = read_saft_xml(&raw_greater_than, &units).unwrap();
+            assert_eq!(restored, journal, "raw > in literal text {literal:?}");
+            assert_eq!(write_saft_xml(&restored).unwrap(), xml);
+            verify_round_trip_identity("oecd_saft_v2", &journal, &restored).unwrap();
+        }
+    }
+
+    // Raw dimension markup still requires the registered Header declaration,
+    // including self-closing and orphaned closing tags our scalar readers
+    // would otherwise ignore. Keep the original certificate unchanged.
+    let xml = write_saft_xml(&sample_multi_unit_journal()).unwrap();
+    for markup in [
+        "<fa:DimensionSetV1>3:000000000000000000000000000000ab</fa:DimensionSetV1>",
+        "<fa:DimensionEncoding>fa-dimension-ids-v1</fa:DimensionEncoding>",
+        "<fa:DimensionSetV1/>",
+        "<fa:DimensionEncoding/>",
+        "</fa:DimensionSetV1>",
+        "</fa:DimensionEncoding>",
+        "<extra fa:DimensionSetV1=\"ignored\"/>",
+        "<extra fa:DimensionEncoding=\"ignored\"/>",
+        "<extra before='>' fa:DimensionSetV1='ignored'/>",
+        "<extra before='>' fa:DimensionEncoding='ignored'/>",
+        "<extra before=\">\" fa:DimensionSetV1=\"ignored\"/>",
+        "<extra before=\">\" fa:DimensionEncoding=\"ignored\"/>",
+        r#"<extra before="'>'" fa:DimensionSetV1="ignored"/>"#,
+        r#"<extra before='">"' fa:DimensionEncoding='ignored'/>"#,
+        "<extra before='>' fa:DimensionSetV1='ignored'/",
+        "<extra before=\">\" fa:DimensionEncoding=\"ignored\"/",
+    ] {
+        let changed = xml.replacen("</Line>", &format!("{markup}</Line>"), 1);
+        assert_ne!(changed, xml);
+        assert!(matches!(
+            read_saft_xml(&changed, &units),
+            Err(FormatError::Parse { ref detail, .. })
+                if detail == "dimension elements require the registered encoding in Header"
+        ));
+    }
+}
+
+#[test]
+fn saft_dates_normalize_xml_whitespace_but_refuse_signed_tokens() {
+    let units = UnitCatalog::embedded().unwrap();
+    let journal = sample_multi_unit_journal();
+    let canonical = write_saft_xml(&journal).unwrap();
+    let mut padded = canonical.clone();
+    for tag in ["SelectionEndDate", "AsOfDate", "TransactionDate"] {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        assert!(padded.contains(&open) && padded.contains(&close));
+        padded = padded.replacen(&open, &format!("{open}\n \t"), 1).replacen(
+            &close,
+            &format!("\r\n {close}"),
+            1,
+        );
+
+        let date = canonical
+            .split_once(&open)
+            .unwrap()
+            .1
+            .split_once(&close)
+            .unwrap()
+            .0;
+        let changed = canonical.replacen(
+            &format!("{open}{date}{close}"),
+            &format!("{open}{}-+1-+5{close}", &date[..4]),
+            1,
+        );
+        assert_ne!(changed, canonical);
+        assert!(matches!(
+            read_saft_xml(&changed, &units),
+            Err(FormatError::Parse { ref detail, .. })
+                if detail.contains("invalid YYYY-MM-DD date")
+        ));
+    }
+    let restored = read_saft_xml(&padded, &units).unwrap();
+    assert_eq!(restored, journal);
+    assert_eq!(write_saft_xml(&restored).unwrap(), canonical);
+    verify_round_trip_identity("oecd_saft_v2", &journal, &restored).unwrap();
+}
+
+#[test]
 fn aicpa_ads_and_oecd_saft_and_csv_gl_round_trip_identity_and_dropped_leg_negative() {
     let units = UnitCatalog::embedded().expect("units.toml");
     let journal = sample_multi_unit_journal();
@@ -608,6 +724,107 @@ fn csv_gl_round_trip_preserves_real_world_text_and_escaped_metadata() {
         &read_csv_gl(&plain, &units).unwrap(),
     )
     .unwrap();
+}
+
+#[test]
+fn csv_and_beancount_cannot_downgrade_original_coordinate_verification() {
+    let units = UnitCatalog::embedded().unwrap();
+    let journal = sample_multi_unit_journal();
+    let mut entries = journal.entries.clone();
+    // Change both sides of the first USD posting by one cent. The amended
+    // journal is balanced and valid in its own right, but is not the original.
+    for leg in &mut entries[0].legs[..2] {
+        assert_eq!(leg.amount.mantissa, 250_000);
+        leg.amount.mantissa = 250_001;
+    }
+    let mut assertions = journal.assertions.clone();
+    let cash = assertions
+        .iter_mut()
+        .find(|assertion| assertion.account_code == "1000" && assertion.unit_code == "USD")
+        .unwrap();
+    assert_eq!(cash.amount.mantissa, 250_000);
+    cash.amount.mantissa = 250_001;
+    let c = &journal.coordinate;
+    let amended = FormatJournal::new(
+        &c.book_name,
+        &c.base_unit_code,
+        c.base_unit_scale,
+        c.effective_through,
+        c.known_at_seq,
+        journal.accounts.clone(),
+        entries,
+        assertions,
+    )
+    .unwrap();
+    let original_content = hex_encode(&c.content_digest);
+    let original_certificate = hex_encode(&c.certificate_digest);
+    let amended_content = hex_encode(&amended.coordinate.content_digest);
+    let amended_certificate = hex_encode(&amended.coordinate.certificate_digest);
+    assert_ne!(original_content, amended_content);
+    assert_ne!(original_certificate, amended_certificate);
+
+    for (format, original, revised, content_field, certificate_field) in [
+        (
+            "csv_gl_v1",
+            write_csv_gl(&journal),
+            write_csv_gl(&amended),
+            format!("|content_digest={original_content}"),
+            format!("|certificate_digest={original_certificate}"),
+        ),
+        (
+            "beancount_v3",
+            write_beancount(&journal).unwrap(),
+            write_beancount(&amended).unwrap(),
+            format!("; fa_content_digest: {original_content}\n"),
+            format!("; fa_certificate_digest: {original_certificate}\n"),
+        ),
+    ] {
+        let read = |text: &str| {
+            if format == "csv_gl_v1" {
+                read_csv_gl(text, &units)
+            } else {
+                read_beancount(text, &units)
+            }
+        };
+        for (text, expected) in [(&original, &journal), (&revised, &amended)] {
+            let restored = read(text).unwrap();
+            assert_eq!(&restored, expected, "{format}");
+            verify_round_trip_identity(format, expected, &restored).unwrap();
+        }
+        let tampered = revised
+            .replace(&amended_content, &original_content)
+            .replace(&amended_certificate, &original_certificate);
+        assert_ne!(tampered, original);
+        assert_ne!(tampered, revised);
+        assert!(matches!(
+            read(&tampered),
+            Err(FormatError::CertificateMismatch { .. })
+        ));
+
+        for text in [&original, &tampered] {
+            for (remove_content, remove_certificate) in [(true, false), (false, true), (true, true)]
+            {
+                let mut stripped = text.clone();
+                if remove_content {
+                    assert!(stripped.contains(&content_field));
+                    stripped = stripped.replace(&content_field, "");
+                }
+                if remove_certificate {
+                    assert!(stripped.contains(&certificate_field));
+                    stripped = stripped.replace(&certificate_field, "");
+                }
+                assert_ne!(&stripped, text);
+                assert!(
+                    matches!(
+                        read(&stripped),
+                        Err(FormatError::Parse { format: actual, ref detail })
+                            if actual == format && detail.contains("must be supplied together")
+                    ),
+                    "{format}: removed content={remove_content}, certificate={remove_certificate}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -1116,7 +1333,7 @@ fn dimension_interop_round_trips_exact_native_ids_including_untagged_legs() {
     let csv = write_csv_gl(&tagged);
     let ads = write_ads_package(&tagged).unwrap();
     let saft = write_saft_xml(&tagged).unwrap();
-    let bean = write_beancount(&tagged);
+    let bean = write_beancount(&tagged).unwrap();
     for (format, read) in [
         ("csv", read_csv_gl(&csv, &units).unwrap()),
         ("ads", read_ads_package(&ads, &units).unwrap()),
@@ -1370,6 +1587,41 @@ fn dimension_saft_and_beancount_refuse_changed_or_ambiguous_posting_tags() {
     let wire = format_dimension_set(&journal.entries[0].legs[0].dimensions);
     let saft = write_saft_xml(&journal).unwrap();
     let field = format!("<fa:DimensionSetV1>{wire}</fa:DimensionSetV1>");
+    for attribute in [
+        "before='>'",
+        "before=\">\"",
+        "before=\"'>'\"",
+        "before='\">\"'",
+    ] {
+        let decorated = saft.replacen("<AuditFile ", &format!("<AuditFile {attribute} "), 1);
+        assert_ne!(decorated, saft);
+        assert_eq!(read_saft_xml(&decorated, &units).unwrap(), journal);
+    }
+    let namespace = "xmlns:fa=\"urn:frankenaccounting:saft:extensions:v1\"";
+    let with_probe = saft.replacen(namespace, &format!("{namespace} probe='{namespace}'"), 1);
+    assert_ne!(with_probe, saft);
+    assert_eq!(read_saft_xml(&with_probe, &units).unwrap(), journal);
+    for declaration in [
+        "xmlns:fa='urn:frankenaccounting:saft:extensions:v1'",
+        "xmlns:fa = \"urn:frankenaccounting:saft:extensions:v1\"",
+    ] {
+        let changed = saft.replacen(namespace, declaration, 1);
+        assert_ne!(changed, saft);
+        assert_eq!(read_saft_xml(&changed, &units).unwrap(), journal);
+    }
+    for root_attributes in [
+        format!("probe='{namespace}'"),
+        format!("{namespace} {namespace}"),
+        format!("{namespace} broken=unquoted"),
+    ] {
+        let changed = saft.replacen(namespace, &root_attributes, 1);
+        assert_ne!(changed, saft);
+        assert!(matches!(
+            read_saft_xml(&changed, &units),
+            Err(FormatError::Parse { ref detail, .. })
+                if detail == "dimension extension namespace is missing, different or rebound"
+        ));
+    }
     for changed in [
         saft.replacen(&wire, &wire.replace("000ab", "000ad"), 1),
         saft.replacen(&field, "", 1),
@@ -1399,7 +1651,19 @@ fn dimension_saft_and_beancount_refuse_changed_or_ambiguous_posting_tags() {
         assert_ne!(changed, saft);
         assert!(read_saft_xml(&changed, &units).is_err());
     }
-    let bean = write_beancount(&journal);
+    for wrapped in [
+        format!("<x before='>' xmlns:fa='urn:another:extension'>{field}</x>"),
+        format!("<x before=\">\" xmlns:fa=\"urn:another:extension\">{field}</x>"),
+    ] {
+        let changed = saft.replacen(&field, &wrapped, 1);
+        assert_ne!(changed, saft);
+        assert!(matches!(
+            read_saft_xml(&changed, &units),
+            Err(FormatError::Parse { ref detail, .. })
+                if detail == "dimension extension namespace is missing, different or rebound"
+        ));
+    }
+    let bean = write_beancount(&journal).unwrap();
     let field = format!("    fa_dimensions_v1: \"{wire}\"\n");
     for changed in [
         bean.replacen(&wire, &wire.replace("000ab", "000ad"), 1),
@@ -1445,7 +1709,7 @@ fn account_roles_survive_every_journal_round_trip_and_substitution_is_refused() 
     let ads = write_ads_package(&classified).unwrap();
     let saft = write_saft_xml(&classified).unwrap();
     let csv = write_csv_gl(&classified);
-    let bean = write_beancount(&classified);
+    let bean = write_beancount(&classified).unwrap();
     for (format, restored) in [
         ("ads", read_ads_package(&ads, &units).unwrap()),
         ("saft", read_saft_xml(&saft, &units).unwrap()),
@@ -2376,7 +2640,7 @@ fn conformance_matrices_match_published_docs_and_refuse_undocumented_divergence(
     let journal = sample_multi_unit_journal();
     let fa_fold = render_balances(&journal.fold_balances().expect("fa fold"), &units);
     let bc_fold = render_balances(
-        &read_beancount(&write_beancount(&journal), &units)
+        &read_beancount(&write_beancount(&journal).expect("write_beancount"), &units)
             .expect("read_beancount")
             .fold_balances()
             .expect("beancount fold"),
@@ -2625,7 +2889,7 @@ fn beancount_and_hledger_read_back_codes_their_names_cannot_spell() {
     for (format, read) in [
         (
             "beancount",
-            read_beancount(&write_beancount(&journal), &units),
+            read_beancount(&write_beancount(&journal).unwrap(), &units),
         ),
         ("hledger", read_hledger(&write_hledger(&journal), &units)),
     ] {
@@ -2648,7 +2912,7 @@ fn beancount_and_hledger_read_back_codes_their_names_cannot_spell() {
     for (format, read) in [
         (
             "beancount",
-            read_beancount(&write_beancount(&journal), &units),
+            read_beancount(&write_beancount(&journal).unwrap(), &units),
         ),
         ("hledger", read_hledger(&write_hledger(&journal), &units)),
     ] {
