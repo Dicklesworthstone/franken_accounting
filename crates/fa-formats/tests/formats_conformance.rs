@@ -432,7 +432,13 @@ fn saft_and_xbrl_keep_text_whitespace_exactly() {
         assert_eq!(instance.entity_identifier, book_name);
         let (coordinate, report) = verify_format_journal_xbrl_xml(&xbrl).unwrap();
         assert_eq!(coordinate, journal.coordinate);
-        assert!(report.passed());
+        assert!(report.checks_passed > 0);
+        assert!(
+            report
+                .rows
+                .iter()
+                .all(|row| row.passed && row.delta_mantissa == 0)
+        );
 
         let start = xbrl.find("<!-- fa:xbrl-coordinate ").unwrap();
         let end = start + xbrl[start..].find("-->").unwrap() + 3;
