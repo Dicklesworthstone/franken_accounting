@@ -2285,35 +2285,41 @@ fn explanation_checks(report: &crate::report::VerifiedBalanceExplanation) -> Vec
 }
 
 fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
-    let (parameter, value) = report.parameters.parameter();
+    let mut summary = vec![
+        ("book", h(&report.book_id)),
+        ("known_at", n(report.known_at)),
+        ("procedure", s(&report.procedure)),
+        ("version", n(u64::from(report.version))),
+        ("effective_through", day(report.effective_through)),
+        ("claim", s("statistical")),
+        ("evidence", s(report.parameters.evidence())),
+    ];
+    if let Some((parameter, value)) = report.parameters.parameter() {
+        summary.push((parameter, n(u64::from(value))));
+    } else {
+        summary.push(("comparisons", n(report.comparisons)));
+    }
+    summary.extend([
+        ("population", n(report.population)),
+        ("live_entries", n(report.live_entries)),
+        ("live_legs", n(report.live_legs)),
+        ("findings", n(report.findings.len() as u64)),
+        ("parameters_digest", h(&report.parameters_digest)),
+        ("inputs_digest", h(&report.inputs_digest)),
+        ("findings_digest", h(&report.findings_digest)),
+        ("decision_card_digest", h(&report.decision_card_digest)),
+        ("policy_oid", h(&report.policy_oid)),
+        (
+            "proof_scope",
+            s(
+                "exact statistical replay; fraud, approval admission and policy activation are not established",
+            ),
+        ),
+    ]);
     let mut checks = vec![Check::pass(
         "procedure_summary",
         "statistical_replay",
-        vec![
-            ("book", h(&report.book_id)),
-            ("known_at", n(report.known_at)),
-            ("procedure", s(&report.procedure)),
-            ("version", n(u64::from(report.version))),
-            ("effective_through", day(report.effective_through)),
-            ("claim", s("statistical")),
-            ("evidence", s(report.parameters.evidence())),
-            (parameter, n(u64::from(value))),
-            ("population", n(report.population)),
-            ("live_entries", n(report.live_entries)),
-            ("live_legs", n(report.live_legs)),
-            ("findings", n(report.findings.len() as u64)),
-            ("parameters_digest", h(&report.parameters_digest)),
-            ("inputs_digest", h(&report.inputs_digest)),
-            ("findings_digest", h(&report.findings_digest)),
-            ("decision_card_digest", h(&report.decision_card_digest)),
-            ("policy_oid", h(&report.policy_oid)),
-            (
-                "proof_scope",
-                s(
-                    "exact statistical replay; fraud, approval admission and policy activation are not established",
-                ),
-            ),
-        ],
+        summary,
     )];
     for finding in &report.findings {
         let mut details = vec![
@@ -2345,6 +2351,17 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
             }
             crate::report::VerifiedProcedureStatistic::DaysToPeriodEnd { period, .. } => {
                 details.push(("period", s(period)));
+            }
+            crate::report::VerifiedProcedureStatistic::DuplicateEntries { entries, .. } => {
+                details.push((
+                    "entries",
+                    Json::List(
+                        entries
+                            .iter()
+                            .map(|entry| s(format!("{entry:032x}")))
+                            .collect(),
+                    ),
+                ));
             }
         }
         details.push(("narrative", s(&finding.narrative)));

@@ -14,6 +14,13 @@ fn round_request(f: &Fixture, power: i128, through: Option<DateDay>) -> Procedur
     request
 }
 
+fn exact_duplicate_request(f: &Fixture) -> ProcedureRequest {
+    let mut request =
+        ProcedureRequest::new("duplicates.same_same_same", catalog::Inputs::default()).unwrap();
+    request.known_at = Some(f.head());
+    request
+}
+
 fn produce(f: &mut Fixture, certificate: &ProcedureCertificate) -> crate::ProducedBundle {
     let cx = f.cx();
     f.runtime
@@ -256,6 +263,253 @@ pub(super) fn reseal(certificate: &mut ProcedureCertificate) {
         *certificate,
         "the negative must pass the producer's integrity-only decoder"
     );
+}
+
+#[test]
+fn exact_duplicates_replay_offline_at_historical_and_corrected_frontiers() {
+    let mut f = Fixture::new(132);
+    let empty = f.certify(&exact_duplicate_request(&f));
+    assert_eq!(empty.report.work.entries, 0);
+    assert_eq!(empty.report.work.legs, 0);
+    assert_eq!(empty.report.work.comparisons, empty.report.population);
+    let (first, _) = f.post(5, "3000", "1000", 100_000, false);
+    let (second, _) = f.post(5, "3000", "1000", 100_000, false);
+    f.post(5, "3000", "1000", 100_001, false);
+    f.post(6, "3000", "1000", 100_000, false);
+    f.post(5, "3000", "1010", 100_000, false);
+    let mut reordered = template(&f, first, b"duplicate-reordered-legs", 5);
+    reordered.legs.reverse();
+    let reordered = post(&mut f, reordered);
+    let original = f.certify(&exact_duplicate_request(&f));
+    assert_eq!(
+        original.report.work,
+        Work {
+            entries: 6,
+            legs: 12,
+            comparisons: original.report.population + 12,
+        }
+    );
+    let undo = reverse(&mut f, second, b"duplicate-undo", 7);
+    let undone = f.certify(&exact_duplicate_request(&f));
+    reverse(&mut f, undo, b"duplicate-restore", 8);
+    let restored = f.certify(&exact_duplicate_request(&f));
+    let (backdated, _) = f.post(5, "3000", "1000", 100_000, false);
+    let later = f.certify(&exact_duplicate_request(&f));
+    let (_, replacement) = replace(&mut f, first, b"duplicate-correction", 9, 9, 200_000);
+    pay_corrected(&mut f, replacement);
+    let corrected = f.certify(&exact_duplicate_request(&f));
+    for (certificate, mut members) in [
+        (empty.certificate, vec![]),
+        (original.certificate, vec![first, second, reordered]),
+        (undone.certificate, vec![first, reordered]),
+        (restored.certificate, vec![first, second, reordered]),
+        (later.certificate, vec![first, second, reordered, backdated]),
+        (corrected.certificate, vec![second, reordered, backdated]),
+    ] {
+        members.sort_unstable();
+        let produced = produce(&mut f, &certificate);
+        let result = verify(&produced, &certificate, f.book.checkpoint_public_key());
+        let run = decode_run(&result.output).unwrap();
+        assert_eq!(run.procedure, "duplicates.same_same_same");
+        assert_eq!(run.version, 1);
+        assert!(run.parameters.is_empty());
+        assert!(run.inputs.is_empty());
+        assert_eq!(run.coordinate.effective_through, None);
+        if members.is_empty() {
+            assert!(run.findings.is_empty());
+        } else {
+            assert_eq!(run.findings.len(), 1);
+            assert_eq!(run.findings[0].severity, Severity::Medium);
+            assert_eq!(run.findings[0].statistic.name, "entries");
+            assert_eq!(run.findings[0].statistic.value, members.len() as i128);
+            assert_eq!(
+                run.findings[0].cites,
+                members.into_iter().map(Cite::Entry).collect::<Vec<_>>()
+            );
+        }
+        let verified = result.procedure.unwrap();
+        assert_eq!(verified.comparisons, run.work.comparisons);
+        assert_eq!(verified.live_entries, run.work.entries);
+        assert_eq!(verified.live_legs, run.work.legs);
+    }
+}
+
+#[test]
+fn exact_duplicates_refuse_resealed_group_members_counts_work_and_decisions() {
+    let mut f = Fixture::new(133);
+    f.post(5, "3000", "1000", 100_000, false);
+    f.post(5, "3000", "1000", 100_000, false);
+    f.post(5, "3000", "1000", 100_000, false);
+    let (other, _) = f.post(6, "3000", "1000", 100_000, false);
+    let certified = f.certify(&exact_duplicate_request(&f));
+    let produced = produce(&mut f, &certified.certificate);
+    let key = f.book.checkpoint_public_key();
+    verify(&produced, &certified.certificate, key);
+    for variant in [
+        "missing member",
+        "wrong member",
+        "false count",
+        "missing group",
+        "comparison work",
+        "population",
+        "decision population",
+    ] {
+        let mut forged = certified.certificate.clone();
+        let run = &mut forged.report;
+        match variant {
+            "missing member" => {
+                run.findings[0].cites.pop();
+            }
+            "wrong member" => {
+                run.findings[0].cites[0] = Cite::Entry(other);
+            }
+            "false count" => run.findings[0].statistic.value += 1,
+            "missing group" => run.findings.clear(),
+            "comparison work" => run.work.comparisons += 1,
+            "population" => run.population += 1,
+            "decision population" => {
+                run.decision_card
+                    .features
+                    .iter_mut()
+                    .find(|feature| feature.name == "population")
+                    .unwrap()
+                    .value += 1;
+            }
+            _ => unreachable!(),
+        }
+        reseal(&mut forged);
+        let bundle = replace_certificate(&produced.bundle.bytes, &forged);
+        // Accept the repaired outer pin deliberately, so only the independent
+        // computation can detect the forged group or complexity witness.
+        assert_eq!(
+            verify_report_expected(&bundle, &[key], None, None, Some(forged.digest()))
+                .expect_err(variant)
+                .predicate,
+            "procedure_recomputation",
+            "{variant}"
+        );
+    }
+    for variant in ["parameter", "version", "cutoff", "input handle"] {
+        let mut forged = certified.certificate.clone();
+        match variant {
+            "parameter" => forged.report.parameters.push(("window_days".into(), 1)),
+            "version" => {
+                forged.report.version = 2;
+                for finding in &mut forged.report.findings {
+                    finding.version = 2;
+                }
+            }
+            "cutoff" => forged.report.coordinate.effective_through = Some(day(5)),
+            "input handle" => forged.report.inputs.push(("account".into(), "1000".into())),
+            _ => unreachable!(),
+        }
+        reseal(&mut forged);
+        let bundle = replace_certificate(&produced.bundle.bytes, &forged);
+        let error = verify_report_expected(&bundle, &[key], None, None, Some(forged.digest()))
+            .expect_err(variant);
+        assert_eq!(
+            error.predicate,
+            if variant == "input handle" {
+                "canonical_encoding"
+            } else {
+                "procedure_profile"
+            },
+            "{variant}"
+        );
+        assert_eq!(
+            forged.check_offline_profile().unwrap_err().code,
+            fa_notary::code::SCOPE_UNSUPPORTED
+        );
+    }
+    // The native certificate refuses to encode mismatched source/run frontiers
+    // before hashes can be repaired. Historical frontier replay is exercised by
+    // the genuine artifacts above, produced after subsequent corrections.
+    let mut forged = certified.certificate.clone();
+    forged.report.coordinate.known_at = CommitSeq(forged.known_at().0 + 1);
+    assert_eq!(
+        forged.body().unwrap_err().code,
+        crate::certificate::code::CERTIFICATE_INVALID
+    );
+}
+
+#[test]
+fn exact_duplicates_require_every_authenticated_group_member_and_recipient_trust() {
+    let mut f = Fixture::new(134);
+    let (member, _) = f.post(5, "3000", "1000", 100_000, false);
+    f.post(5, "3000", "1000", 100_000, false);
+    let digest = f
+        .book
+        .read_entry(&f.cx(), member)
+        .unwrap()
+        .unwrap()
+        .0
+        .entry_digest;
+    let certified = f.certify(&exact_duplicate_request(&f));
+    let produced = produce(&mut f, &certified.certificate);
+    let key = f.book.checkpoint_public_key();
+    verify(&produced, &certified.certificate, key);
+    assert!(verify_report_expected(&produced.bundle.bytes, &[key], None, None, None).is_err());
+    assert!(
+        verify_report_expected(
+            &produced.bundle.bytes,
+            &[],
+            None,
+            Some(&produced.receipt),
+            Some(certified.certificate.digest()),
+        )
+        .is_err()
+    );
+    let bytes = &produced.bundle.bytes;
+    let mut reader = Reader::new(bytes);
+    reader.bytes(64, "format").unwrap();
+    reader.u16("major").unwrap();
+    reader.u16("minor").unwrap();
+    for field in ["certificate", "checkpoint", "prefix"] {
+        reader
+            .bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, field)
+            .unwrap();
+    }
+    let count_offset = reader.offset();
+    let count = reader.u32("records").unwrap();
+    let mut member_range = None;
+    for _ in 0..count {
+        let start = reader.offset();
+        reader.u32("proposal length").unwrap();
+        let payload = reader
+            .bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "record")
+            .unwrap();
+        if fa_model::Entry::decode(payload).is_ok_and(|entry| entry.entry_digest == digest) {
+            member_range = Some((start, reader.offset()));
+        }
+    }
+    let (start, end) =
+        member_range.expect("the duplicate member is in the authenticated prefix");
+    let mut writer = Writer::new();
+    writer
+        .fixed(&bytes[..count_offset])
+        .u32(count - 1)
+        .fixed(&bytes[count_offset + 4..start])
+        .fixed(&bytes[end..]);
+    let omitted = writer.finish().unwrap();
+    let mut altered = bytes.clone();
+    altered[end - 1] ^= 1;
+    for (changed, predicate) in [
+        (omitted, "record_completeness"),
+        (altered, "record_derivation"),
+    ] {
+        assert_eq!(
+            verify_report_expected(
+                &changed,
+                &[key],
+                None,
+                None,
+                Some(certified.certificate.digest()),
+            )
+            .unwrap_err()
+            .predicate,
+            predicate
+        );
+    }
 }
 
 #[test]

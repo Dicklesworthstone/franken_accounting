@@ -184,7 +184,7 @@ fn offline_unsupported(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §11.1/13.3 (independent procedure replay requires its complete supported input and policy closure)",
-        "export a jet.round_amounts or jet.period_end_timing v1 (no effective cutoff) or v2 (optional cutoff) certificate with its original canonical registry closure and no input handles; replay other profiles in their original book",
+        "export jet.round_amounts or jet.period_end_timing v1 (no cutoff) or v2 (optional cutoff), or duplicates.same_same_same v1 (no cutoff or parameters), with the original canonical registry closure and no input handles; replay other profiles in their original book",
     )
 }
 
@@ -864,25 +864,30 @@ fn decode_run(bytes: &[u8]) -> Result<ProcedureRun, Refusal> {
 }
 
 impl ProcedureCertificate {
-    /// Independent procedure replay accepts these two bounded v1/v2 profiles.
+    /// Independent replay accepts the bounded JET v1/v2 and exact-duplicate v1 profiles.
     /// Native replay continues to support the wider catalog and legacy hashes.
     pub(crate) fn check_offline_profile(&self) -> Result<(), Refusal> {
+        let duplicates = self.report.procedure == "duplicates.same_same_same";
+        let supported = match self.report.procedure.as_str() {
+            "jet.round_amounts" | "jet.period_end_timing" => matches!(self.report.version, 1 | 2),
+            "duplicates.same_same_same" => {
+                self.report.version == 1 && self.report.parameters.is_empty()
+            }
+            _ => false,
+        };
         if self.format() != PROCEDURE_CERTIFICATE_FORMAT
-            || !matches!(
-                self.report.procedure.as_str(),
-                "jet.round_amounts" | "jet.period_end_timing"
-            )
-            || !matches!(self.report.version, 1 | 2)
+            || !supported
             || (self.report.version == 1 && self.report.coordinate.effective_through.is_some())
             || !self.report.inputs.is_empty()
         {
             return Err(offline_unsupported(
-                "portable procedures support only jet.round_amounts and jet.period_end_timing v1 without a cutoff, or v2 with an optional cutoff, and no input handles",
+                "portable procedures support jet.round_amounts and jet.period_end_timing v1 without a cutoff or v2 with an optional cutoff, and duplicates.same_same_same v1 without a cutoff or parameters; input handles are unsupported",
             ));
         }
         if canonical_registry_document(&self.registry)?.is_none()
-            || registry_versions(&self.registry)?.map(|versions| versions.0)
-                != Some(self.report.version)
+            || !registry_versions(&self.registry)?.is_some_and(|versions| {
+                duplicates || versions.0 == self.report.version
+            })
         {
             return Err(offline_unsupported(
                 "portable procedures require their version's original canonical procedure registry closure; legacy raw-text commitments cannot be substituted",

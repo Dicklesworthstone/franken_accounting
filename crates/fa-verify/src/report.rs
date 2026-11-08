@@ -85,7 +85,9 @@
 //! Their exact source commitments never substitute rounded display amounts.
 //!
 //! ProcedureCertificate v1 additionally replays `jet.round_amounts` and
-//! `jet.period_end_timing` v1 from that complete native history. Authenticated
+//! `jet.period_end_timing` v1/v2 and `duplicates.same_same_same` v1 from the
+//! complete native history. Exact duplicates independently reconstruct the full
+//! leg multisets, effective dates and directed correction lineage. Authenticated
 //! period declarations supply the exclusive ends and period citations. The
 //! six-document closure binds native unit scales, procedure semantics and the
 //! decision card's policy identifier.
@@ -2193,6 +2195,10 @@ fn verify_report_with_native_subledger_input(
                         legs: legs[index]
                             .iter()
                             .map(|leg| (leg.unit, leg.mantissa))
+                            .collect(),
+                        leg_accounts: legs[index]
+                            .iter()
+                            .map(|leg| (leg.account, leg.debit))
                             .collect(),
                         supersession: info.supersession.clone(),
                         settlements: crate::envelope::proposal_leg_details(

@@ -1,9 +1,10 @@
-//! Independent, exact replay of round-amount and period-end timing procedures.
+//! Independent, exact replay of round-amount, period-end and exact-duplicate procedures.
 //!
 //! The complete journal prefix supplies the population; native read witnesses
 //! and the producer's findings supply no arithmetic or period metadata. These
 //! profiles accept `jet.round_amounts` and `jet.period_end_timing` v1 without an
-//! effective-date cutoff, and v2 with an optional inclusive cutoff. No profile
+//! effective-date cutoff, and v2 with an optional inclusive cutoff. Exact
+//! duplicates v1 uses the all-date population and no parameters. No profile
 //! accepts input handles. The cutoff selects postings before reversal liveness
 //! while the input commitment retains every visible entry at the frontier.
 //! Replacement identities require a later authenticated reversal, replacement,
@@ -31,6 +32,7 @@ const MAX_CITES: usize = 4096;
 pub enum VerifiedProcedureParameters {
     RoundAmounts { round_power: u32 },
     PeriodEndTiming { window_days: u32 },
+    SameSameSame,
 }
 
 impl VerifiedProcedureParameters {
@@ -38,6 +40,7 @@ impl VerifiedProcedureParameters {
         match self {
             Self::RoundAmounts { .. } => "jet.round_amounts",
             Self::PeriodEndTiming { .. } => "jet.period_end_timing",
+            Self::SameSameSame => "duplicates.same_same_same",
         }
     }
 
@@ -45,13 +48,15 @@ impl VerifiedProcedureParameters {
         match self {
             Self::RoundAmounts { .. } => "FA-EVID-L01",
             Self::PeriodEndTiming { .. } => "FA-EVID-L02",
+            Self::SameSameSame => "FA-EVID-L07",
         }
     }
 
-    pub(crate) fn parameter(self) -> (&'static str, u32) {
+    pub(crate) fn parameter(self) -> Option<(&'static str, u32)> {
         match self {
-            Self::RoundAmounts { round_power } => ("round_power", round_power),
-            Self::PeriodEndTiming { window_days } => ("window_days", window_days),
+            Self::RoundAmounts { round_power } => Some(("round_power", round_power)),
+            Self::PeriodEndTiming { window_days } => Some(("window_days", window_days)),
+            Self::SameSameSame => None,
         }
     }
 
@@ -59,6 +64,7 @@ impl VerifiedProcedureParameters {
         match self {
             Self::RoundAmounts { .. } => "O(legs)",
             Self::PeriodEndTiming { .. } => "O(entries)",
+            Self::SameSameSame => "O(legs log legs)",
         }
     }
 }
@@ -82,6 +88,8 @@ pub(super) struct Certificate<'a> {
 pub enum VerifiedProcedureStatistic {
     RoundLegs { ordinals: Vec<u16> },
     DaysToPeriodEnd { period: String, days: u32 },
+    /// Full group size and the first at most 4096 members by numeric identity.
+    DuplicateEntries { count: u64, entries: Vec<u128> },
 }
 
 impl VerifiedProcedureStatistic {
@@ -89,6 +97,7 @@ impl VerifiedProcedureStatistic {
         match self {
             Self::RoundLegs { .. } => "round_legs",
             Self::DaysToPeriodEnd { .. } => "days_to_period_end",
+            Self::DuplicateEntries { .. } => "entries",
         }
     }
 
@@ -96,6 +105,7 @@ impl VerifiedProcedureStatistic {
         match self {
             Self::RoundLegs { ordinals } => ordinals.len() as u64,
             Self::DaysToPeriodEnd { days, .. } => u64::from(*days),
+            Self::DuplicateEntries { count, .. } => *count,
         }
     }
 }
@@ -128,6 +138,8 @@ pub struct VerifiedProcedure {
     /// entries without charging leg work.
     pub live_entries: u64,
     pub live_legs: u64,
+    /// Reconstructed native comparison charges, including correction lineage.
+    pub comparisons: u64,
     pub findings: Vec<VerifiedProcedureFinding>,
     pub parameters_digest: [u8; 32],
     pub inputs_digest: [u8; 32],
@@ -156,6 +168,8 @@ pub(super) struct Entry {
     pub effective: Option<i32>,
     pub class: u16,
     pub legs: Vec<(u32, i128)>,
+    /// Account and debit/credit identity, in the same original leg order.
+    pub leg_accounts: Vec<(u128, bool)>,
     pub supersession: Vec<(u128, [u8; 32], u8)>,
     /// EntryRefs from authenticated application payloads, not output rows.
     pub settlements: Vec<(u128, [u8; 32])>,
@@ -211,18 +225,20 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         return Err(failed("procedure_profile", "unsupported procedure output"));
     }
     let id = text(&mut question, 128, "procedure.id")?;
-    let (evidence, parameter, bound) = match id {
-        "jet.round_amounts" => ("FA-EVID-L01", "round_power", 30),
-        "jet.period_end_timing" => ("FA-EVID-L02", "window_days", u32::MAX),
+    let (evidence, parameter) = match id {
+        "jet.round_amounts" => ("FA-EVID-L01", Some(("round_power", 30))),
+        "jet.period_end_timing" => ("FA-EVID-L02", Some(("window_days", u32::MAX))),
+        "duplicates.same_same_same" => ("FA-EVID-L07", None),
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "only statistical jet.round_amounts and jet.period_end_timing v1/v2 are supported",
+                "only statistical jet.round_amounts and jet.period_end_timing v1/v2, and duplicates.same_same_same v1 are supported",
             ));
         }
     };
     let version = question.u16("procedure.version")?;
     if !matches!(version, 1 | 2)
+        || (id == "duplicates.same_same_same" && version != 1)
         || question.u8("procedure.claim")? != 0
         || text(&mut question, 128, "procedure.evidence")? != evidence
     {
@@ -244,27 +260,37 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             "v1 procedure verification requires no effective-date cutoff",
         ));
     }
-    if question.count(1, 20, "procedure.parameters")? != 1
-        || text(&mut question, 64, "procedure.parameter")? != parameter
-    {
-        return Err(failed(
-            "procedure_profile",
-            format!("{parameter} must be the only procedure parameter"),
-        ));
-    }
-    let value = u32::try_from(question.i128("procedure.parameter_value")?)
-        .ok()
-        .filter(|value| *value <= bound)
-        .ok_or_else(|| {
-            failed(
+    let parameters = if let Some((parameter, bound)) = parameter {
+        if question.count(1, 20, "procedure.parameters")? != 1
+            || text(&mut question, 64, "procedure.parameter")? != parameter
+        {
+            return Err(failed(
                 "procedure_profile",
-                format!("{parameter} must be in 0..={bound}"),
-            )
-        })?;
-    let parameters = if id == "jet.round_amounts" {
-        VerifiedProcedureParameters::RoundAmounts { round_power: value }
+                format!("{parameter} must be the only procedure parameter"),
+            ));
+        }
+        let value = u32::try_from(question.i128("procedure.parameter_value")?)
+            .ok()
+            .filter(|value| *value <= bound)
+            .ok_or_else(|| {
+                failed(
+                    "procedure_profile",
+                    format!("{parameter} must be in 0..={bound}"),
+                )
+            })?;
+        if id == "jet.round_amounts" {
+            VerifiedProcedureParameters::RoundAmounts { round_power: value }
+        } else {
+            VerifiedProcedureParameters::PeriodEndTiming { window_days: value }
+        }
     } else {
-        VerifiedProcedureParameters::PeriodEndTiming { window_days: value }
+        if question.count(1, 20, "procedure.parameters")? != 0 {
+            return Err(failed(
+                "procedure_profile",
+                "exact duplicates take no procedure parameters",
+            ));
+        }
+        VerifiedProcedureParameters::SameSameSame
     };
     if question.count(0, 8, "procedure.inputs")? != 0 {
         return Err(failed(
@@ -288,8 +314,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
 }
 
 fn parameters(w: &mut Writer, value: VerifiedProcedureParameters) {
-    let (name, amount) = value.parameter();
-    w.count(1).bytes(name.as_bytes()).i128(i128::from(amount));
+    if let Some((name, amount)) = value.parameter() {
+        w.count(1).bytes(name.as_bytes()).i128(i128::from(amount));
+    } else {
+        w.count(0);
+    }
 }
 
 fn cutoff(w: &mut Writer, effective_through: Option<i32>) {
@@ -331,6 +360,12 @@ fn finding(
                 .u128(value.entry)
                 .u8(4)
                 .bytes(period.as_bytes());
+        }
+        VerifiedProcedureStatistic::DuplicateEntries { entries, .. } => {
+            w.count(entries.len());
+            for entry in entries {
+                w.u8(1).u128(*entry);
+            }
         }
     }
     w.bytes(value.narrative.as_bytes());
@@ -467,8 +502,8 @@ fn decision_card(
         .u64(population);
     parameters(&mut state, profile);
     let calibrated = population >= 100;
-    let (parameter, value) = profile.parameter();
-    let power = i128::from(value);
+    let parameter = profile.parameter();
+    let power = parameter.map_or(0, |(_, value)| i128::from(value));
     let mut w = Writer::default();
     w.fixed(b"FADC")
         .u16(1)
@@ -484,11 +519,13 @@ fn decision_card(
         power,
         if calibrated { 250 } else { 0 },
     );
-    w.count(2)
-        .bytes(format!("param.{parameter}").as_bytes())
-        .i128(power)
-        .u8(0)
-        .bytes(b"population")
+    w.count(if parameter.is_some() { 2 } else { 1 });
+    if let Some((parameter, _)) = parameter {
+        w.bytes(format!("param.{parameter}").as_bytes())
+            .i128(power)
+            .u8(0);
+    }
+    w.bytes(b"population")
         .i128(i128::from(population))
         .u8(0);
     if calibrated {
@@ -611,6 +648,233 @@ pub(super) fn replay(
     Ok((verified, output))
 }
 
+/// Reconstruct the duplicate procedure's correction relation from authenticated
+/// edges. The component inventory gives the native index's work independently:
+/// one visit per input, per edge, per node and per undirected adjacency, plus
+/// one DFS visit per node of a single-parent tree. Only non-tree components
+/// need the ordered directed searches retained by the v1 work contract.
+#[derive(Default)]
+struct DuplicateLineage {
+    parents: BTreeMap<u128, Vec<u128>>,
+    components: BTreeMap<u128, u128>,
+    intervals: BTreeMap<u128, (usize, usize)>,
+    comparisons: u64,
+}
+
+#[derive(Default)]
+struct DuplicateGroup {
+    members: Vec<u128>,
+    trees: BTreeMap<u128, BTreeMap<usize, usize>>,
+    graphs: BTreeMap<u128, Vec<u128>>,
+}
+
+impl DuplicateLineage {
+    fn charge(&mut self, count: u64) -> Result<(), ReportError> {
+        self.comparisons = self.comparisons.checked_add(count).ok_or_else(|| {
+            failed("procedure_arithmetic", "duplicate comparison count overflows")
+        })?;
+        Ok(())
+    }
+
+    fn new(entries: &[Entry]) -> Result<Self, ReportError> {
+        let mut result = Self::default();
+        let mut children: BTreeMap<u128, Vec<u128>> = BTreeMap::new();
+        result.charge(entries.len() as u64)?;
+        for entry in entries {
+            result.charge(entry.supersession.len() as u64)?;
+            for &(target, _, _) in &entry.supersession {
+                result
+                    .parents
+                    .entry(entry.identity)
+                    .or_default()
+                    .push(target);
+                result.parents.entry(target).or_default();
+                children.entry(target).or_default().push(entry.identity);
+            }
+        }
+        let identities: Vec<_> = result.parents.keys().copied().collect();
+        for start in identities {
+            if result.components.contains_key(&start) {
+                continue;
+            }
+            let mut pending = vec![start];
+            result.components.insert(start, start);
+            let mut members = Vec::new();
+            let mut edges = 0usize;
+            let mut single_parent = true;
+            while let Some(id) = pending.pop() {
+                let parents = &result.parents[&id];
+                edges += parents.len();
+                single_parent &= parents.len() <= 1;
+                let neighbors: Vec<_> = parents
+                    .iter()
+                    .chain(children.get(&id).into_iter().flatten())
+                    .copied()
+                    .collect();
+                result.charge(1 + neighbors.len() as u64)?;
+                members.push(id);
+                for neighbor in neighbors {
+                    if let std::collections::btree_map::Entry::Vacant(slot) =
+                        result.components.entry(neighbor)
+                    {
+                        slot.insert(start);
+                        pending.push(neighbor);
+                    }
+                }
+            }
+            if single_parent && edges == members.len() - 1 {
+                let root = members
+                    .iter()
+                    .copied()
+                    .find(|id| result.parents[id].is_empty())
+                    .ok_or_else(|| failed("procedure_lineage", "correction tree has no root"))?;
+                result.charge(members.len() as u64)?;
+                let mut pending = vec![(root, false)];
+                let mut clock = 0usize;
+                while let Some((id, closing)) = pending.pop() {
+                    if closing {
+                        result
+                            .intervals
+                            .get_mut(&id)
+                            .ok_or_else(|| {
+                                failed("procedure_lineage", "correction interval has no opening")
+                            })?
+                            .1 = clock;
+                    } else {
+                        result.intervals.insert(id, (clock, clock));
+                        clock += 1;
+                        pending.push((id, true));
+                        pending.extend(
+                            children
+                                .get(&id)
+                                .into_iter()
+                                .flatten()
+                                .map(|&child| (child, false)),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    fn reaches(&mut self, from: u128, to: u128) -> Result<bool, ReportError> {
+        let mut pending = vec![from];
+        let mut seen = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            self.charge(1)?;
+            if id == to {
+                return Ok(true);
+            }
+            if seen.insert(id) {
+                self.charge(self.parents[&id].len() as u64)?;
+                pending.extend(self.parents[&id].iter().copied());
+            }
+        }
+        Ok(false)
+    }
+
+    fn select(&mut self, id: u128, group: &mut DuplicateGroup) -> Result<bool, ReportError> {
+        let Some(&component) = self.components.get(&id) else {
+            return Ok(true);
+        };
+        if let Some(&(start, end)) = self.intervals.get(&id) {
+            self.charge(2)?;
+            let accepted = group.trees.entry(component).or_default();
+            if accepted
+                .range(..=start)
+                .next_back()
+                .is_some_and(|(_, &end)| end > start)
+                || accepted
+                    .range(start..)
+                    .next()
+                    .is_some_and(|(&next, _)| next < end)
+            {
+                return Ok(false);
+            }
+            accepted.insert(start, end);
+        } else {
+            let accepted = group.graphs.entry(component).or_default();
+            for &previous in accepted.iter() {
+                self.charge(1)?;
+                if self.reaches(previous, id)? || self.reaches(id, previous)? {
+                    return Ok(false);
+                }
+            }
+            accepted.push(id);
+        }
+        Ok(true)
+    }
+}
+
+fn exact_duplicates(
+    entries: &[Entry],
+    live: &[&Entry],
+) -> Result<(Vec<VerifiedProcedureFinding>, u64, u64), ReportError> {
+    type Key = (Vec<(u128, u8, u32, i128)>, i32);
+    let mut groups: BTreeMap<Key, DuplicateGroup> = BTreeMap::new();
+    let mut lineage = DuplicateLineage::new(entries)?;
+    let mut leg_count = 0u64;
+    for entry in live {
+        if entry.legs.len() != entry.leg_accounts.len() {
+            return Err(failed(
+                "procedure_profile",
+                "duplicate leg identities are incomplete",
+            ));
+        }
+        let day = entry.effective.ok_or_else(|| {
+            failed(
+                "procedure_selection",
+                "duplicate posting has no effective date",
+            )
+        })?;
+        let mut legs: Vec<_> = entry
+            .legs
+            .iter()
+            .zip(&entry.leg_accounts)
+            .map(|(&(unit, amount), &(account, debit))| (account, u8::from(!debit), unit, amount))
+            .collect();
+        leg_count = leg_count
+            .checked_add(legs.len() as u64)
+            .ok_or_else(|| failed("procedure_arithmetic", "duplicate leg count overflows"))?;
+        legs.sort_unstable();
+        let group = groups.entry((legs, day)).or_default();
+        if lineage.select(entry.identity, group)? {
+            group.members.push(entry.identity);
+        }
+    }
+    let population = live.len() as u64;
+    lineage.charge(population.saturating_mul(u64::from(population.max(1).ilog2())))?;
+    let mut findings = Vec::new();
+    for mut group in groups.into_values().filter(|group| group.members.len() >= 2) {
+        if findings.len() >= MAX_FINDINGS {
+            return Err(failed(
+                "bounded_input",
+                "duplicate findings exceed the certificate bound",
+            ));
+        }
+        group.members.sort_unstable();
+        let count = group.members.len() as u64;
+        let suffix = if group.members.len() > MAX_CITES {
+            format!(" (the first {MAX_CITES} by entry id cited)")
+        } else {
+            String::new()
+        };
+        group.members.truncate(MAX_CITES);
+        findings.push(VerifiedProcedureFinding {
+            entry: group.members[0],
+            severity: 2,
+            statistic: VerifiedProcedureStatistic::DuplicateEntries {
+                count,
+                entries: group.members,
+            },
+            population,
+            narrative: format!("{count} entries share the same legs and effective date{suffix}"),
+        });
+    }
+    Ok((findings, leg_count, lineage.comparisons))
+}
+
 fn recompute_version(
     book: [u8; 16],
     known_at: u64,
@@ -660,10 +924,13 @@ fn recompute_version(
         VerifiedProcedureParameters::RoundAmounts { round_power } => 10i128
             .checked_pow(round_power)
             .ok_or_else(|| failed("procedure_arithmetic", "round factor overflow"))?,
-        VerifiedProcedureParameters::PeriodEndTiming { .. } => 1,
+        VerifiedProcedureParameters::PeriodEndTiming { .. }
+        | VerifiedProcedureParameters::SameSameSame => 1,
     };
     let mut live_entries = 0u64;
     let mut live_legs = 0u64;
+    let mut comparisons = 0u64;
+    let mut duplicate_population = Vec::new();
     let mut findings = Vec::new();
     for entry in &entries {
         if entry.legs.is_empty()
@@ -756,6 +1023,10 @@ fn recompute_version(
                     })
                 }
             }
+            VerifiedProcedureParameters::SameSameSame => {
+                duplicate_population.push(entry);
+                None
+            }
         };
         if let Some(finding) = finding {
             if findings.len() >= MAX_FINDINGS {
@@ -767,9 +1038,13 @@ fn recompute_version(
             findings.push(finding);
         }
     }
+    if profile == VerifiedProcedureParameters::SameSameSame {
+        (findings, live_legs, comparisons) = exact_duplicates(&entries, &duplicate_population)?;
+    }
     let statistic_population = match profile {
         VerifiedProcedureParameters::RoundAmounts { .. } => live_legs,
-        VerifiedProcedureParameters::PeriodEndTiming { .. } => live_entries,
+        VerifiedProcedureParameters::PeriodEndTiming { .. }
+        | VerifiedProcedureParameters::SameSameSame => live_entries,
     };
     for finding in &mut findings {
         finding.population = statistic_population;
@@ -820,7 +1095,7 @@ fn recompute_version(
         .u64(population)
         .u64(live_entries)
         .u64(live_legs)
-        .u64(0)
+        .u64(comparisons)
         .fixed(&encoded_findings.buf)
         .fixed(&findings_digest)
         .bytes(&decision_card)
@@ -836,6 +1111,7 @@ fn recompute_version(
             population,
             live_entries,
             live_legs,
+            comparisons,
             findings,
             parameters_digest,
             inputs_digest,
@@ -883,6 +1159,11 @@ mod tests {
             recorded_at: 1,
             effective: if legs.is_empty() { None } else { Some(0) },
             class,
+            leg_accounts: legs
+                .iter()
+                .enumerate()
+                .map(|(i, _)| (i as u128, i % 2 == 0))
+                .collect(),
             legs,
             supersession: Vec::new(),
             settlements: Vec::new(),
@@ -903,6 +1184,192 @@ mod tests {
             entry(4, 1, vec![(1, 0), (1, 0)]),
             entry(5, 17, Vec::new()),
         ]
+    }
+
+    #[test]
+    fn exact_duplicates_require_the_same_accounts_sides_units_amounts_and_date() {
+        let first = entry(1, 1, vec![(1, 100), (1, 100)]);
+        let mut second = entry(256, 1, first.legs.clone());
+        second.legs.reverse();
+        second.leg_accounts.reverse();
+        let mut different_account = entry(2, 1, first.legs.clone());
+        different_account.leg_accounts[0].0 = 99;
+        let mut different_side = entry(3, 1, first.legs.clone());
+        different_side.leg_accounts[0].1 = false;
+        let mut different_day = entry(4, 1, first.legs.clone());
+        different_day.effective = Some(1);
+        let entries = vec![
+            first,
+            second,
+            different_account,
+            different_side,
+            different_day,
+            entry(5, 1, vec![(2, 100), (2, 100)]),
+            entry(6, 1, vec![(1, 101), (1, 101)]),
+            entry(7, 2, vec![(1, 100), (1, 100)]),
+            entry(8, 17, Vec::new()),
+        ];
+        let (verified, output) = recompute(
+            [1; 16],
+            9,
+            VerifiedProcedureParameters::SameSameSame,
+            entries.clone(),
+            &registry(),
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                verified.population,
+                verified.live_entries,
+                verified.live_legs,
+                verified.comparisons
+            ),
+            (9, 7, 14, 23)
+        );
+        assert_eq!(verified.findings.len(), 1);
+        assert_eq!(
+            verified.findings[0].statistic,
+            VerifiedProcedureStatistic::DuplicateEntries {
+                count: 2,
+                entries: vec![1, 256],
+            }
+        );
+        assert_eq!(verified.findings[0].population, 7);
+        assert_eq!(
+            verified.findings[0].narrative,
+            "2 entries share the same legs and effective date"
+        );
+        let mut reordered = entries.clone();
+        reordered.reverse();
+        assert_eq!(
+            recompute(
+                [1; 16],
+                9,
+                VerifiedProcedureParameters::SameSameSame,
+                reordered,
+                &registry()
+            )
+            .unwrap()
+            .1,
+            output
+        );
+        let request = Certificate {
+            source: &[],
+            registry_digest: [0; 32],
+            output: &output,
+            digest: [0; 32],
+            parameters: VerifiedProcedureParameters::SameSameSame,
+            version: 1,
+            book: [1; 16],
+            known_at: 9,
+            effective_through: None,
+        };
+        let mut omitted = entries.clone();
+        omitted.retain(|entry| entry.identity != 256);
+        let mut changed = entries;
+        changed
+            .iter_mut()
+            .find(|entry| entry.identity == 256)
+            .unwrap()
+            .leg_accounts[0]
+            .0 = 99;
+        for population in [omitted, changed] {
+            assert_eq!(
+                replay(&request, [1; 16], 9, population, &registry())
+                    .unwrap_err()
+                    .predicate,
+                "procedure_recomputation"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_duplicate_lineage_distinguishes_ancestors_from_common_ancestors() {
+        let mut root = entry(1, 1, vec![(1, 90), (1, 90)]);
+        let mut left = entry(2, 1, vec![(1, 100), (1, 100)]);
+        let mut right = entry(3, 1, left.legs.clone());
+        let unrelated = entry(4, 1, left.legs.clone());
+        left.supersession.push((root.identity, root.digest, 3));
+        right.supersession.push((root.identity, root.digest, 3));
+        for (same_legs, expected) in [(false, vec![2, 3, 4]), (true, vec![1, 4])] {
+            if same_legs {
+                root.legs = left.legs.clone();
+            }
+            let (verified, _) = recompute(
+                [1; 16],
+                9,
+                VerifiedProcedureParameters::SameSameSame,
+                vec![root.clone(), left.clone(), right.clone(), unrelated.clone()],
+                &registry(),
+            )
+            .unwrap();
+            assert_eq!(
+                verified.comparisons, 30,
+                "four inputs, two edges, three tree nodes, six selection charges and eight sort charges"
+            );
+            assert_eq!(verified.findings.len(), 1);
+            assert_eq!(
+                verified.findings[0].statistic,
+                VerifiedProcedureStatistic::DuplicateEntries {
+                    count: expected.len() as u64,
+                    entries: expected,
+                }
+            );
+            assert_eq!(verified.findings[0].population, 4);
+        }
+    }
+
+    #[test]
+    fn exact_duplicate_multi_parent_lineage_replays_directed_search_and_work() {
+        let first = entry(1, 1, vec![(1, 90), (1, 90)]);
+        let second = entry(2, 1, vec![(1, 91), (1, 91)]);
+        let mut left = entry(3, 1, vec![(1, 100), (1, 100)]);
+        left.supersession = vec![(1, first.digest, 3), (2, second.digest, 3)];
+        let mut right = entry(4, 1, left.legs.clone());
+        right.supersession = left.supersession.clone();
+        for (related, comparisons, findings) in [(false, 39, 1), (true, 42, 0)] {
+            if related {
+                right.supersession.push((left.identity, left.digest, 3));
+            }
+            let (verified, _) = recompute(
+                [1; 16],
+                9,
+                VerifiedProcedureParameters::SameSameSame,
+                vec![first.clone(), second.clone(), left.clone(), right.clone()],
+                &registry(),
+            )
+            .unwrap();
+            assert_eq!(verified.comparisons, comparisons);
+            assert_eq!(verified.findings.len(), findings);
+        }
+    }
+
+    #[test]
+    fn exact_duplicate_large_groups_keep_full_counts_and_bounded_ordered_citations() {
+        let entries: Vec<_> = (1..=4097)
+            .map(|id| entry(id, 1, vec![(1, 100), (1, 100)]))
+            .collect();
+        let (verified, _) = recompute(
+            [1; 16],
+            9,
+            VerifiedProcedureParameters::SameSameSame,
+            entries,
+            &registry(),
+        )
+        .unwrap();
+        assert_eq!(verified.comparisons, 53_261);
+        assert_eq!(verified.findings.len(), 1);
+        let VerifiedProcedureStatistic::DuplicateEntries { count, entries } =
+            &verified.findings[0].statistic
+        else {
+            panic!("duplicate finding")
+        };
+        assert_eq!(*count, 4097);
+        assert_eq!(entries, &(1..=4096).collect::<Vec<_>>());
+        assert_eq!(
+            verified.findings[0].narrative,
+            "4097 entries share the same legs and effective date (the first 4096 by entry id cited)"
+        );
     }
 
     #[test]

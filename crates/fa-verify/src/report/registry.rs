@@ -557,13 +557,17 @@ pub(super) fn verify_procedure(
         .iter()
         .filter(|row| matches!(row.get("procedure"), Some(Value::Text(id)) if id == profile.id()))
         .collect();
-    let [parameter] = parameters.as_slice() else {
-        return Err(invalid(
-            "selected procedure must declare exactly one parameter",
-        ));
-    };
-    if string(parameter, "name")? != profile.parameter().0 || integer(parameter, "default")? != 3 {
-        return Err(invalid("unsupported procedure parameter registry"));
+    if let Some((name, _)) = profile.parameter() {
+        let [parameter] = parameters.as_slice() else {
+            return Err(invalid(
+                "selected procedure must declare exactly one parameter",
+            ));
+        };
+        if string(parameter, "name")? != name || integer(parameter, "default")? != 3 {
+            return Err(invalid("unsupported procedure parameter registry"));
+        }
+    } else if !parameters.is_empty() {
+        return Err(invalid("exact duplicates must declare no parameters"));
     }
     // A future input declaration cannot be silently ignored under v1.
     if procedures.arrays.iter().any(|(name, rows)| {
