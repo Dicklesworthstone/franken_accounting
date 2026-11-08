@@ -499,8 +499,8 @@ fn original_approval_and_key_records_remain_usable_after_durable_reopen() {
     let proposal = h.activation(PREPARER, b"durable-approved-policy");
     let capability = human(ALICE, &["approve"]);
     let signature = signature_for(&h, &capability, &proposal);
-    let approved = record_fixture_signature(&mut h, capability.clone(), &proposal, signature)
-        .unwrap();
+    let approved =
+        record_fixture_signature(&mut h, capability.clone(), &proposal, signature).unwrap();
     let independent = h
         .approve(BOB, proposal.proposal_digest().unwrap())
         .unwrap()
@@ -582,7 +582,14 @@ fn a_changed_approval_signature_is_refused_before_recording() {
 
 #[test]
 fn retained_approval_signature_metadata_must_match_its_recorded_key() {
-    for field in ["scheme", "generation", "key", "signature", "body", "unsigned"] {
+    for field in [
+        "scheme",
+        "generation",
+        "key",
+        "signature",
+        "body",
+        "unsigned",
+    ] {
         let mut h = harness();
         register_fixture_key(&mut h, ALICE, [191; 32]);
         let proposal = h.proposal(PREPARER, 500, field.as_bytes(), EntryClass::ORIGINAL);
@@ -719,9 +726,7 @@ fn restoring_approval_bytes_does_not_restore_admitted_authority_or_retry_identit
         let rows = h.db.vertices().unwrap();
 
         let retry = match signature {
-            Some(signature) => {
-                record_fixture_signature(&mut h, capability, &proposal, signature)
-            }
+            Some(signature) => record_fixture_signature(&mut h, capability, &proposal, signature),
             None => approve_payload(&mut h, capability, &proposal),
         }
         .unwrap_err();
@@ -772,7 +777,9 @@ fn rewritten_or_restored_key_records_cannot_authorize_new_signatures() {
             control_kind: fa_model::ControlKind::PRINCIPAL_KEY,
             spec_body_digest: key.key_id(),
         };
-        let forged = payload.seal(entry.approvals, entry.plan_certificate).unwrap();
+        let forged = payload
+            .seal(entry.approvals, entry.plan_certificate)
+            .unwrap();
         let forged_props = fa_model::entry_mirrors(&forged).unwrap();
         let proposal = h.proposal(PREPARER, 500, field.as_bytes(), EntryClass::ORIGINAL);
         let capability = human(ALICE, &["approve"]);

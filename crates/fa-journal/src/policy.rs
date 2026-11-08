@@ -355,9 +355,8 @@ fn approval_signing_key<V: asupersync::fs::Vfs + Clone>(
     signature: Option<&PrincipalSignature>,
     recorded_at: CommitSeq,
 ) -> Outcome<Option<[u8; 32]>> {
-    let keys = crate::principal_key::chain(db, book, approval.principal, |vid| {
-        Ok(txn.vertex(db, vid)?)
-    })?;
+    let keys =
+        crate::principal_key::chain(db, book, approval.principal, |vid| Ok(txn.vertex(db, vid)?))?;
     let at_recording = keys
         .iter()
         .rfind(|generation| generation.recorded_at <= recorded_at);
@@ -403,9 +402,9 @@ fn authorize_signing_keys<V: asupersync::fs::Vfs + Clone>(
     }
     let mut excluded = BTreeMap::new();
     for principal in preparers.collect::<BTreeSet<_>>() {
-        for generation in crate::principal_key::chain(db, book, principal, |vid| {
-            Ok(txn.vertex(db, vid)?)
-        })? {
+        for generation in
+            crate::principal_key::chain(db, book, principal, |vid| Ok(txn.vertex(db, vid)?))?
+        {
             excluded.entry(generation.key.key_id()).or_insert(principal);
         }
     }
@@ -753,9 +752,8 @@ async fn record_approval_with_class<V: asupersync::fs::Vfs + Clone>(
     let digest = approval
         .digest()
         .map_err(|e| KernelError::Model(e.into()))?;
-    let keys = crate::principal_key::chain(db, book, approval.principal, |vid| {
-        Ok(txn.vertex(db, vid)?)
-    })?;
+    let keys =
+        crate::principal_key::chain(db, book, approval.principal, |vid| Ok(txn.vertex(db, vid)?))?;
     let signature_check = match (keys.last(), &signed) {
         (None, None) => Ok(()),
         (None, Some(_)) => Err(KeyError::NoKey),
