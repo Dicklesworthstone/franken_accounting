@@ -96,9 +96,9 @@ fn threshold_splitting_preserves_greedy_windows_and_exact_work() {
         (2, 4),
         (3, 4),
         (4, 4),
-        (6, 2),
-        (7, 3),
-        (8, 6),
+        (6, 6),
+        (7, 4),
+        (8, 1),
         (9, 3),
     ]
     .into_iter()
@@ -120,7 +120,8 @@ fn threshold_splitting_preserves_greedy_windows_and_exact_work() {
     assert_eq!(result.version, 1);
     assert_eq!(result.findings.len(), 2);
     // The first window totals only 9. Advancing one anchor then takes the
-    // ENTIRE next window, followed by a disjoint full-window group.
+    // ENTIRE next window, followed by a disjoint full-window group. That
+    // second group reaches 10 before its last item but must still total 11.
     for (finding, (members, total)) in result
         .findings
         .iter()

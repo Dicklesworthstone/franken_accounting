@@ -2455,6 +2455,83 @@ fn benford_samples_one_side_and_one_currency_without_double_counting() {
     assert_eq!(r_jpy.findings[0].statistic.population, 1);
 }
 
+#[test]
+fn period_boundary_widens_document_day_spans_without_changing_work() {
+    let mut h = harness();
+    let effective = day(2026, 1, 10);
+    assert_eq!(effective.0, 20_463);
+    let mut post_document = |date, document| {
+        let mut spec = Spec::simple(date, "6000", "1000", 10_000);
+        spec.document_date = Some(document);
+        h.post(&spec)
+    };
+    // These are admitted document dates on genuine 2026 postings; their
+    // calendar periods need not have stored rows in this book.
+    let past = post_document(effective, DateDay(i32::MIN + 1_000));
+    let future = post_document(effective, DateDay(i32::MAX - 1_000));
+    let ordinary = post_document(day(2026, 1, 11), day(2025, 12, 31));
+    let same_period = post_document(day(2026, 1, 12), day(2026, 1, 12));
+    let before = h.db.frontier().unwrap();
+    let snapshot = h.snapshot();
+    let procedure = PeriodBoundary::new().unwrap();
+    let result = run_over(&snapshot, &h.book, &procedure).unwrap();
+    assert_eq!(result.version, 1);
+    assert_eq!(result.findings.len(), 3);
+    for (finding, (entry, days)) in result.findings.iter().zip([
+        (past, 2_147_503_111),
+        (future, 2_147_462_184),
+        (ordinary, 11),
+    ]) {
+        assert_eq!(finding.severity, Severity::Medium);
+        assert_eq!(
+            finding.statistic,
+            Statistic {
+                name: "days_between_dates".into(),
+                value: days,
+                scale: 0,
+                population: 4,
+            }
+        );
+        assert_eq!(
+            finding.cites,
+            vec![Cite::Entry(entry), Cite::Period("FY2026-P01".into())]
+        );
+    }
+    assert!(
+        result
+            .findings
+            .iter()
+            .all(|finding| !finding.cites.contains(&Cite::Entry(same_period)))
+    );
+    assert_eq!(
+        result.work,
+        fa_lantern::Work {
+            entries: 4,
+            legs: 0,
+            comparisons: 0,
+        }
+    );
+    assert_eq!(
+        fa_lantern::run_over_metered(&snapshot, &h.book, &procedure, Some(4), None).unwrap(),
+        result
+    );
+    assert!(matches!(
+        fa_lantern::run_over_metered(&snapshot, &h.book, &procedure, Some(3), None),
+        Err(LanternError::BudgetExhausted {
+            used: 4,
+            budget: 3,
+            ..
+        })
+    ));
+    h.assert_cites_resolve(&result);
+    assert!(
+        determinism(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
 /// fa-vil6 item 4: cutoff.period_boundary honors `effective_period` when a
 /// document is dated on the civil date shared by a normal year-end period and
 /// an adjustment period (`FY2026-A1`).

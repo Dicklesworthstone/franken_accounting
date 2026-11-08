@@ -67,7 +67,9 @@ impl Procedure for PeriodBoundary {
                     .map(|p| p.code.as_str()),
             )?;
             if document_period != e.period {
-                let days = (document_date.0 - e.entry.proposal.effective_date.0).unsigned_abs();
+                let days = (i64::from(document_date.0)
+                    - i64::from(e.entry.proposal.effective_date.0))
+                .unsigned_abs();
                 hits.push((e.vid, e.period.clone(), document_period, days));
             }
         }
@@ -83,7 +85,7 @@ impl Procedure for PeriodBoundary {
                 finding(
                     Self::ID,
                     Severity::Medium,
-                    Statistic::count("days_between_dates", u64::from(days), population),
+                    Statistic::count("days_between_dates", days, population),
                     cites,
                     format!(
                         "document dated in period {document_period}, effective in period {effective_period}, {days} day(s) apart"
