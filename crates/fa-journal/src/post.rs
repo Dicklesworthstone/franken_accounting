@@ -442,7 +442,7 @@ impl PreparedPost {
             proofs.asset_charge.is_some() && crate::asset_cost::has_basis(&self.request.proposal);
         let singleton_closing = (proofs.closing.is_some() || proofs.case_closing.is_some())
             && self.request.proposal.class == EntryClass::CLOSING;
-        let singleton_revaluation =
+        let independent_revaluation =
             proofs.revaluation.is_some() && self.request.proposal.class == EntryClass::REVALUATION;
         // The posting pipeline has already witnessed the exact side-swap
         // and staged its recorded UNSETTLES effects. Ordinary quoted FX and
@@ -489,7 +489,7 @@ impl PreparedPost {
                 && !independent_disposal
                 && !independent_asset_charge
                 && !singleton_closing
-                && !singleton_revaluation
+                && !independent_revaluation
                 && !recorded_fx_undo
                 && !case_adjustment)
         {
@@ -2156,7 +2156,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         asset_charge: asset_charge_batch,
         closing: closing_draft,
         case_closing,
-        revaluation: revaluation_draft,
+        revaluation: revaluation_batch,
     } = proofs;
     let planning = matches!(admission, Admission::Plan | Admission::PlanDraft(_));
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
@@ -2327,15 +2327,18 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
             return Ok(Err(refusal));
         }
-        if carried.is_some()
+        if (carried.is_some() && revaluation_batch.is_none())
             || replacement_basis.is_some()
             || !(matches!(
                 admission,
                 Admission::Commit | Admission::VerifiedPlan(_) | Admission::Plan
             ) || (matches!(
                 admission,
-                Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
-            ) && revaluation_draft.is_some()))
+                Admission::VerifiedBatch(_)
+                    | Admission::PlanDraft(_)
+                    | Admission::Promote(_)
+                    | Admission::ScratchDraft(_)
+            ) && revaluation_batch.is_some()))
         {
             return Ok(Err(crate::revaluation::unsupported_batch()));
         }

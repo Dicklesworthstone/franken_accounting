@@ -112,6 +112,24 @@ fn close_rate(numerator: u128, denominator: u128) -> RateFixture {
 }
 
 fn source_digest(route: &Record, rate: &RateFixture, sources: &[&Record]) -> [u8; 32] {
+    source_digest_for(
+        route,
+        rate,
+        sources,
+        ["1000", "1290", "4700"],
+        &chart(),
+        &route_body(),
+    )
+}
+
+fn source_digest_for(
+    route: &Record,
+    rate: &RateFixture,
+    sources: &[&Record],
+    accounts: [&str; 3],
+    chart_rows: &[(&str, u8, u32)],
+    route_body: &[u8],
+) -> [u8; 32] {
     let mut w = Writer::default();
     w.fixed(&BOOK)
         .bytes(b"cy")
@@ -119,20 +137,21 @@ fn source_digest(route: &Record, rate: &RateFixture, sources: &[&Record]) -> [u8
         .i32(0)
         .i32(31)
         .u8(1)
-        .u128(id("1000"))
+        .u128(id(accounts[0]))
         .u8(0)
         .u32(1)
         .u32(0)
         .u128(handle(route).0)
         .fixed(&framed_hash(
             b"fa:fx-revaluation-routes:v1",
-            &[&BOOK, &route_body()],
+            &[&BOOK, route_body],
         ))
         .fixed(&rate.oid)
         .fixed(&rate.commitment);
-    for code in ["1000", "1290", "4700"] {
-        let (_, kind, unit) = chart()
-            .into_iter()
+    for code in accounts {
+        let (_, kind, unit) = chart_rows
+            .iter()
+            .copied()
             .find(|(name, _, _)| *name == code)
             .unwrap();
         w.u128(id(code))
@@ -167,6 +186,31 @@ fn adjustment(
     rate: &RateFixture,
     sources: &[&Record],
 ) -> Record {
+    adjustment_for(
+        seq,
+        observed,
+        key,
+        delta,
+        route,
+        rate,
+        source_digest(route, rate, sources),
+        ["1000", "1290", "4700"],
+        &route_body(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn adjustment_for(
+    seq: u64,
+    observed: u64,
+    key: &[u8],
+    delta: i128,
+    route: &Record,
+    rate: &RateFixture,
+    source_digest: [u8; 32],
+    accounts: [&'static str; 3],
+    route_body: &[u8],
+) -> Record {
     let mut basis = Writer::default();
     basis
         .fixed(b"FA-FX-REVALUE\0")
@@ -174,17 +218,17 @@ fn adjustment(
         .bytes(b"P1")
         .i32(30)
         .u64(observed)
-        .u128(id("1000"))
+        .u128(id(accounts[0]))
         .u8(0)
         .u128(handle(route).0)
         .fixed(&framed_hash(
             b"fa:fx-revaluation-routes:v1",
-            &[&BOOK, &route_body()],
+            &[&BOOK, route_body],
         ))
         .fixed(&rate.oid)
         .fixed(&rate.commitment)
-        .fixed(&source_digest(route, rate, sources));
-    let legs: Vec<_> = ["1290", "4700"]
+        .fixed(&source_digest);
+    let legs: Vec<_> = [accounts[1], accounts[2]]
         .into_iter()
         .enumerate()
         .map(|(ordinal, code)| TestLeg {
@@ -228,6 +272,196 @@ pub(super) fn history() -> (Vec<Record>, Vec<RateFixture>) {
     let revaluation = adjustment(8, 7, b"first-close", 10, &records[3], &close, &[&source]);
     records.extend([intake(&spot, 5), source, intake(&close, 7), revaluation]);
     (records, vec![spot, close])
+}
+
+fn atomic_history(overlapping_source: bool) -> (Vec<Record>, Vec<RateFixture>) {
+    let chart_rows = [
+        ("1000", 1, 1),
+        ("1100", 1, 1),
+        ("1290", 1, 0),
+        ("1390", 1, 0),
+        ("3000", 3, 1),
+        ("4700", 4, 0),
+    ];
+    let mut records = declarations();
+    let mut chart = Writer::default();
+    chart.count(chart_rows.len());
+    for (code, kind, unit) in chart_rows {
+        chart
+            .bytes(code.as_bytes())
+            .bytes(code.as_bytes())
+            .u8(kind)
+            .u8(u8::from(matches!(kind, 2..=4)))
+            .u8(1)
+            .fixed(&i64::from(unit).to_le_bytes())
+            .u8(0);
+    }
+    records[0] = schema_record(1, 1, &chart.buf);
+    let routes = BTreeMap::from([
+        (id("1000"), (id("1290"), id("4700"))),
+        (id("1100"), (id("1390"), id("4700"))),
+    ]);
+    let mut route_body = Writer::default();
+    route_body
+        .fixed(b"FA-FX-ROUTES\0")
+        .u16(1)
+        .i32(0)
+        .u32(0)
+        .count(routes.len());
+    for (source, (valuation, unrealized)) in routes {
+        route_body.u128(source).u128(valuation).u128(unrealized);
+    }
+    records[3] = control(4, 1, 14, &route_body.buf, b"independent-routes");
+    let spot = rate_fixture(11, 10, 1, 10);
+    let close = close_rate(6, 5);
+    let first = entry(
+        6,
+        1,
+        10,
+        b"first-exposure",
+        &pair(100, 110),
+        Some((1, &spot, None)),
+        None,
+        None,
+    );
+    let mut second_legs = pair(200, 220);
+    second_legs[0].code = "1100";
+    let second = entry(
+        7,
+        1,
+        10,
+        b"second-exposure",
+        &second_legs,
+        Some((1, &spot, None)),
+        None,
+        None,
+    );
+    let first_accounts = ["1000", "1290", "4700"];
+    let first_close = adjustment_for(
+        9,
+        8,
+        b"first-atomic-close",
+        10,
+        &records[3],
+        &close,
+        source_digest_for(
+            &records[3],
+            &close,
+            &[&first],
+            first_accounts,
+            &chart_rows,
+            &route_body.buf,
+        ),
+        first_accounts,
+        &route_body.buf,
+    );
+    let (source, accounts, delta) = if overlapping_source {
+        (&first, first_accounts, 10)
+    } else {
+        (&second, ["1100", "1390", "4700"], 20)
+    };
+    let mut second_close = adjustment_for(
+        9,
+        8,
+        b"second-atomic-close",
+        delta,
+        &records[3],
+        &close,
+        source_digest_for(
+            &records[3],
+            &close,
+            &[source],
+            accounts,
+            &chart_rows,
+            &route_body.buf,
+        ),
+        accounts,
+        &route_body.buf,
+    );
+    second_close.envelope.within_commit_ordinal = 1;
+    records.extend([
+        intake(&spot, 5),
+        first,
+        second,
+        intake(&close, 8),
+        first_close,
+        second_close,
+    ]);
+    (records, vec![spot, close])
+}
+
+#[test]
+fn independent_revaluation_publications_replay_with_shared_gain_offsets_and_promotion() {
+    for promoted in [false, true] {
+        let (mut records, rates) = atomic_history(false);
+        if promoted {
+            let mut marker = promotion(9, 123, 2);
+            marker.envelope.within_commit_ordinal = 2;
+            records.push(marker);
+        }
+        let (expected, output) = replay(&records, &rates).unwrap();
+        for (account, amount) in [
+            ("1000", 110),
+            ("1100", 220),
+            ("1290", 10),
+            ("1390", 20),
+            ("3000", -330),
+            ("4700", -30),
+        ] {
+            assert_eq!(net(&expected, account), amount);
+        }
+        let verified = migration::verify_packed(&records, 9, &rates, &output, &[]).unwrap();
+        assert_eq!(verified.functional_trial_balance, Some(expected));
+        // No accounting ordering is hidden in the authenticated leaf order.
+        records[8].envelope.within_commit_ordinal = 1;
+        records[9].envelope.within_commit_ordinal = 0;
+        records.swap(8, 9);
+        assert_eq!(
+            migration::verify_packed(&records, 9, &rates, &output, &[])
+                .unwrap()
+                .output,
+            output,
+        );
+    }
+}
+
+#[test]
+fn independent_revaluation_replay_refuses_overlapping_and_source_changing_siblings() {
+    let (records, rates) = atomic_history(false);
+    let (_, output) = replay(&records, &rates).unwrap();
+    let (overlapping, _) = atomic_history(true);
+    assert_eq!(
+        migration::verify_packed(&overlapping, 9, &rates, &output, &[])
+            .unwrap_err()
+            .predicate,
+        "functional_revaluation",
+        "two individually correct adjustments cannot claim the same pre-publication exposure",
+    );
+    for sibling in [
+        promotion(9, 123, 3),
+        transition(9, 1, 2),
+        entry(
+            9,
+            1,
+            10,
+            b"unobserved-batch-exposure",
+            &pair(100, 110),
+            Some((1, &rates[0], None)),
+            None,
+            None,
+        ),
+    ] {
+        let mut forged = records.clone();
+        let mut sibling = sibling;
+        sibling.envelope.within_commit_ordinal = 2;
+        forged.push(sibling);
+        assert_eq!(
+            migration::verify_packed(&forged, 9, &rates, &output, &[])
+                .unwrap_err()
+                .predicate,
+            "functional_revaluation",
+        );
+    }
 }
 
 fn replay(

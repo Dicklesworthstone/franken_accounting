@@ -57,7 +57,7 @@ fn decode_hex(value: &str) -> Vec<u8> {
         .collect()
 }
 
-fn run(book: &Path, args: &[&str], stdin: Option<&[u8]>) -> (i32, Json) {
+fn run_many(book: &Path, args: &[&str], stdin: Option<&[u8]>) -> (i32, Vec<Json>) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fa"))
         .arg("--book")
         .arg(book)
@@ -82,16 +82,24 @@ fn run(book: &Path, args: &[&str], stdin: Option<&[u8]>) -> (i32, Json) {
     let output = child.wait_with_output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let lines: Vec<_> = stdout.lines().collect();
-    assert_eq!(lines.len(), 1, "{args:?}: {stdout}\n{stderr}");
-    fa_cli::verbs::registry()
-        .unwrap()
-        .check_line(lines[0])
-        .unwrap_or_else(|error| panic!("{args:?}: {error}\n{stdout}\n{stderr}"));
-    (
-        output.status.code().unwrap(),
-        json::parse(lines[0]).unwrap(),
-    )
+    let registry = fa_cli::verbs::registry().unwrap();
+    let events: Vec<_> = stdout
+        .lines()
+        .map(|line| {
+            registry
+                .check_line(line)
+                .unwrap_or_else(|error| panic!("{args:?}: {error}\n{stdout}\n{stderr}"));
+            json::parse(line).unwrap()
+        })
+        .collect();
+    assert!(!events.is_empty(), "{args:?}: {stderr}");
+    (output.status.code().unwrap(), events)
+}
+
+fn run(book: &Path, args: &[&str], stdin: Option<&[u8]>) -> (i32, Json) {
+    let (status, mut events) = run_many(book, args, stdin);
+    assert_eq!(events.len(), 1, "{args:?}: {events:?}");
+    (status, events.pop().unwrap())
 }
 
 fn ok(book: &Path, args: &[&str]) -> Json {
@@ -470,6 +478,172 @@ fn agent_revaluation_review_survives_a_draft_and_independent_human_promotion() {
 }
 
 #[test]
+fn independent_account_revaluations_share_a_draft_and_promote_all_or_none() {
+    const DRAFT: &str = "all-january-exposures";
+    for (allocated, changed_source) in [(false, false), (true, false), (false, true)] {
+        let f = Fixture::new();
+        f.post_source("batch-receivable", false, "100.00");
+        f.post_source("batch-payable", true, "50.00");
+        let closing = f.closing_rate(12);
+        let rate = format!("D:{}", text(data(&closing), "oid"));
+        agent_ok(&f, &["draft", "new", DRAFT]);
+        let original = ok(&f.book, &["tb", "--period", PERIOD]);
+        let mut reviews = Vec::new();
+        for (account, key, expected_delta) in [
+            ("1200", "batch-receivable-revaluation", "10.00 USD"),
+            ("2200", "batch-payable-revaluation", "-5.00 USD"),
+        ] {
+            let mut args = vec![
+                "fx",
+                "revalue",
+                "--period",
+                PERIOD,
+                "--account",
+                account,
+                "--rate",
+                &rate,
+                "--key",
+                key,
+                "--review-only",
+            ];
+            if allocated {
+                args.push("--allocate-open-items");
+            }
+            let review = agent_ok(&f, &args);
+            assert_eq!(text(data(&review), "delta"), expected_delta);
+            let planned = agent_ok(
+                &f,
+                &[
+                    "fx",
+                    "revalue",
+                    "--review",
+                    text(data(&review), "bytes"),
+                    "--digest",
+                    text(data(&review), "review_digest"),
+                    "--draft",
+                    DRAFT,
+                ],
+            );
+            assert_eq!(text(&planned, "event"), "draft_planned");
+            assert_eq!(
+                text(data(&planned), "proposal_digest"),
+                text(data(&review), "proposal_digest"),
+            );
+            reviews.push(review);
+        }
+        let current = ok(&f.book, &["tb", "--period", PERIOD]);
+        assert_eq!(rows(data(&current), "rows"), rows(data(&original), "rows"));
+        {
+            let keys = BookKeys::load(&f.book.join("book.keys")).unwrap();
+            let book = Book::open_dir(&f.book, keys, Entropy::production()).unwrap();
+            let draft = book.draft(DRAFT).unwrap().unwrap();
+            assert_eq!(draft.intents.len(), 2);
+            for (planned, reviewed) in draft.intents.iter().zip(&reviews) {
+                assert_eq!(
+                    hex(&planned.intent.canonical_bytes().unwrap()),
+                    text(data(reviewed), "bytes"),
+                    "each reviewed source and Rate survives reopening the complete draft",
+                );
+            }
+        }
+        if changed_source {
+            f.post_source("later-batch-payable", true, "20.00");
+        }
+        let before = head(&f.book);
+        let original = ok(&f.book, &["tb", "--period", PERIOD]);
+        let promote = ["draft", "promote", DRAFT, "--as", "fx-controller", "--yes"];
+        let (status, promoted) = run(&f.book, &promote, None);
+        if changed_source {
+            assert_eq!(status, 6, "{}", promoted.render());
+            assert_eq!(text(data(&promoted), "refusal_id"), code::PLAN_INVALIDATED);
+            assert_eq!(head(&f.book), before);
+            let current = ok(&f.book, &["tb", "--period", PERIOD]);
+            assert_eq!(rows(data(&current), "rows"), rows(data(&original), "rows"));
+            let draft = ok(&f.book, &["draft", "show", DRAFT]);
+            assert_eq!(text(data(&draft).get("draft").unwrap(), "state"), "open");
+            assert_eq!(rows(data(&draft), "intents").len(), 2);
+            continue;
+        }
+        assert_eq!(status, 0, "{}", promoted.render());
+        assert_eq!(text(&promoted, "event"), "draft_promoted");
+        let entries = rows(data(&promoted), "entries");
+        assert_eq!(entries.len(), 2);
+        for (entry, review) in entries.iter().zip(&reviews) {
+            let retained = PostIntent::decode(&decode_hex(text(data(review), "bytes"))).unwrap();
+            assert_eq!(f.entry(entry.as_str().unwrap()).proposal, *retained.proposal());
+        }
+        let after = head(&f.book);
+        let retry = ok(&f.book, &promote);
+        assert_eq!(data(&retry).get("already_recorded"), Some(&Json::Bool(true)));
+        assert_eq!(rows(data(&retry), "entries"), entries);
+        assert_eq!(head(&f.book), after);
+        // Both aggregate and allocated publications remain valid history.
+        for (account, carrying) in [("1200", "120.00 USD"), ("2200", "-60.00 USD")] {
+            let observed = f.review("after-atomic-revaluation", account, &rate);
+            assert_eq!(text(&observed, "event"), "fx_revaluation_noop");
+            assert_eq!(text(data(&observed), "current_carrying_net"), carrying);
+        }
+        assert_eq!(head(&f.book), after);
+
+        // Export the actual native batch and its promotion in a signed
+        // functional artifact; the independent verifier replays both sources.
+        let certificate_file = f.dir.join("atomic-fx.cert");
+        let (status, certified) = run_many(
+            &f.book,
+            &[
+                "tb",
+                "--functional",
+                "--as-of",
+                "2026-01-31",
+                "--certificate-out",
+                certificate_file.to_str().unwrap(),
+            ],
+            None,
+        );
+        assert_eq!(status, 0, "{certified:?}");
+        assert_eq!(certified.len(), 2);
+        assert_eq!(text(&certified[1], "event"), "report_certificate");
+        let certificate =
+            fa::ReportArtifact::decode(&std::fs::read(&certificate_file).unwrap()).unwrap();
+        let locator = format!("C:{}", text(data(&certified[1]), "oid"));
+        let checkpoint = ok(&f.book, &["checkpoint", "create", "--grant", "witness"]);
+        let signed = ok(
+            &f.book,
+            &[
+                "proof",
+                "signed-checkpoint",
+                "--state",
+                text(data(&checkpoint), "oid"),
+            ],
+        );
+        let key: [u8; 32] = decode_hex(text(data(&signed), "checkpoint_public_key"))
+            .try_into()
+            .unwrap();
+        let exported = ok(
+            &f.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                &locator,
+                "--state",
+                text(data(&checkpoint), "oid"),
+            ],
+        );
+        let verified = fa_verify::report::verify_report_expected(
+            &decode_hex(text(data(&exported), "bytes")),
+            &[key],
+            None,
+            Some(&decode_hex(text(data(&exported), "receipt"))),
+            Some(certificate.digest()),
+        )
+        .expect("atomic native FX revaluations reproduce from their signed functional artifact");
+        assert_eq!(verified.output, certificate.output());
+        assert!(verified.functional_trial_balance.is_some());
+    }
+}
+
+#[test]
 fn revaluation_draft_restoration_refuses_mode_changes_and_stale_source_publication() {
     const DRAFT: &str = "reviewed-fx-source";
     let f = Fixture::new();
@@ -565,7 +739,7 @@ fn revaluation_draft_restoration_refuses_mode_changes_and_stale_source_publicati
     assert_ne!(
         status,
         0,
-        "multiple revaluations must refuse: {}",
+        "revaluations of the same source must refuse: {}",
         refused.render()
     );
     assert_eq!(head(&f.book), before);

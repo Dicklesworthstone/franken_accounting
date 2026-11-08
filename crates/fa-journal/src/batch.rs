@@ -17,7 +17,7 @@
 //! idempotency conflict. Recording durable refusals as outcomes (the rest
 //! of the FA-INV-09 `intent-outcome` clause) is not part of this slice.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
 use fa_intents::{BatchPlan, BatchPlanCertificate, PostBatch};
@@ -81,10 +81,11 @@ pub(crate) struct SingletonClosingDraft(());
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SingletonCaseClosing(());
 
-/// A source-bound revaluation can be rehearsed and promoted only as the
-/// complete draft's one intrinsic effect. No sibling can change its source.
+/// Every intrinsic revaluation names a different source account. Native
+/// preparation proves each original and current basis; fresh batches also
+/// prove that no sibling affects another source or dedicated valuation leaf.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct SingletonRevaluationDraft(());
+pub(crate) struct IndependentRevaluationBatch(());
 
 /// The complete batch's private source-composition proofs travel together
 /// through preparation and publication. An empty set grants no exception.
@@ -95,7 +96,7 @@ pub(crate) struct AggregateProofs {
     pub(crate) asset_charge: Option<IndependentAssetChargeBatch>,
     pub(crate) closing: Option<SingletonClosingDraft>,
     pub(crate) case_closing: Option<SingletonCaseClosing>,
-    pub(crate) revaluation: Option<SingletonRevaluationDraft>,
+    pub(crate) revaluation: Option<IndependentRevaluationBatch>,
 }
 
 pub(crate) struct MemberPreparation {
@@ -160,26 +161,130 @@ fn singleton_case_closing(
     Ok(Some(SingletonCaseClosing(())))
 }
 
-fn singleton_revaluation_draft(
+fn independent_revaluation_batch(
     batch: &PostBatch,
     admission: Admission,
-) -> Result<Option<SingletonRevaluationDraft>, Refusal> {
-    if !matches!(
-        admission,
-        Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
-    ) || !batch.members().iter().any(|member| {
+) -> Result<Option<IndependentRevaluationBatch>, Refusal> {
+    if !batch.members().iter().any(|member| {
         member.proposal().class == EntryClass::REVALUATION
             || crate::revaluation::is_source_bound(member.proposal())
     }) {
         return Ok(None);
     }
-    if batch.members().len() != 1
-        || batch.members()[0].proposal().class != EntryClass::REVALUATION
-        || crate::revaluation::admit(batch.members()[0].proposal())?.is_none()
-    {
+    if !matches!(
+        admission,
+        Admission::Commit
+            | Admission::Plan
+            | Admission::VerifiedBatch(_)
+            | Admission::PlanDraft(_)
+            | Admission::Promote(_)
+            | Admission::ScratchDraft(_)
+    ) {
         return Err(crate::revaluation::unsupported_batch());
     }
-    Ok(Some(SingletonRevaluationDraft(())))
+    let mut sources = BTreeSet::new();
+    for (index, member) in batch.members().iter().enumerate() {
+        let proposal = member.proposal();
+        let basis = crate::revaluation::admit(proposal)
+            .map_err(|refusal| member_refusal(index, refusal))?;
+        if proposal.class != EntryClass::REVALUATION
+            || basis.is_none_or(|basis| !sources.insert(basis.source_account))
+        {
+            return Err(member_refusal(
+                index,
+                crate::revaluation::unsupported_batch(),
+            ));
+        }
+    }
+    Ok(Some(IndependentRevaluationBatch(())))
+}
+
+/// Authorize the complete list before the first member observes accounting
+/// history. The structural proof above reads only the submitted payloads;
+/// this preflight grants no exception to native member admission.
+fn authorize_revaluation_batch<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capabilities: &[Capability],
+    batch: &PostBatch,
+    admission: Admission,
+) -> Outcome<()> {
+    for (index, (intent, capability)) in batch.members().iter().zip(capabilities).enumerate() {
+        if let Err(refusal) = crate::post::authorize_request(
+            db,
+            book,
+            &member_request(intent, capability),
+            admission,
+        )? {
+            return Ok(Err(member_refusal(index, refusal)));
+        }
+        if let Err(refusal) = crate::revaluation::authorize(db, book, capability)? {
+            return Ok(Err(member_refusal(index, refusal)));
+        }
+    }
+    Ok(Ok(()))
+}
+
+/// Authenticate each protected population only after every member has passed
+/// native source authority and law. Revaluations share the committed prefix,
+/// so staging a sibling must leave both its exposure and its adjustment
+/// history unchanged. Distinct valuation leaves also keep later historical
+/// replay unambiguous when every entry has the same publication sequence.
+fn admit_revaluation_batch_accounts<V: Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    entries: &[Entry],
+    at: CommitSeq,
+) -> Outcome<()> {
+    ctx.query()
+        .checkpoint()
+        .map_err(WriteTxnError::Interrupted)?;
+    let chart = crate::chart::read_at(db, book, at)?;
+    let mut protected = BTreeMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let basis = match crate::revaluation::admit(&entry.proposal) {
+            Ok(Some(basis)) => basis,
+            Ok(None) => return Ok(Err(crate::revaluation::unsupported_batch())),
+            Err(refusal) => return Ok(Err(member_refusal(index, refusal))),
+        };
+        let route = chart
+            .fx_revaluation_routes()
+            .iter()
+            .filter(|map| map.effective_from <= basis.closing_date)
+            .max_by_key(|map| (map.effective_from, map.recorded_at, map.control_entry))
+            .filter(|map| {
+                map.control_entry == basis.routes_entry && map.digest == basis.routes_digest
+            })
+            .and_then(|map| map.routes.get(&basis.source_account));
+        let Some(route) = route else {
+            return Ok(Err(member_refusal(
+                index,
+                crate::revaluation::unsupported_batch(),
+            )));
+        };
+        for account in [basis.source_account, route.valuation_account] {
+            if protected.insert(account, index).is_some() {
+                return Ok(Err(member_refusal(
+                    index,
+                    crate::revaluation::unsupported_batch(),
+                )));
+            }
+        }
+    }
+    for (index, entry) in entries.iter().enumerate() {
+        if entry.proposal.legs.iter().any(|leg| {
+            protected
+                .get(&leg.account_ref)
+                .is_some_and(|owner| *owner != index)
+        }) {
+            return Ok(Err(member_refusal(
+                index,
+                crate::revaluation::unsupported_batch(),
+            )));
+        }
+    }
+    Ok(Ok(()))
 }
 
 fn independent_carrying_batch(
@@ -1264,10 +1369,16 @@ fn judge_retry<V: Vfs + Clone>(
         Ok(proof) => proof,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let revaluation = match singleton_revaluation_draft(batch, admission) {
+    let revaluation = match independent_revaluation_batch(batch, admission) {
         Ok(proof) => proof,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    if revaluation.is_some()
+        && let Err(refusal) =
+            authorize_revaluation_batch(db, book, capabilities, batch, admission)?
+    {
+        return Ok(Err(refusal));
+    }
     let carrying = match independent_carrying_batch(batch, admission)? {
         Ok(carrying) => carrying,
         Err(refusal) => return Ok(Err(refusal)),
@@ -1674,10 +1785,16 @@ fn stage_batch_with<V: Vfs + Clone>(
         Ok(proof) => proof,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let revaluation = match singleton_revaluation_draft(batch, admission) {
+    let revaluation = match independent_revaluation_batch(batch, admission) {
         Ok(proof) => proof,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    if revaluation.is_some()
+        && let Err(refusal) =
+            authorize_revaluation_batch(db, book, capabilities, batch, admission)?
+    {
+        return Ok(Err(refusal));
+    }
     if let Some((i, member)) = batch.members().iter().enumerate().find(|(_, m)| {
         // A restatement case's own Post batches its case-bound entries
         // (plan §8.3); the posting law checks each is the case's.
@@ -1848,6 +1965,13 @@ fn stage_batch_with<V: Vfs + Clone>(
     }
     if carrying.is_some()
         && let Err(refusal) = admit_carrying_batch_accounts(db, ctx, book, &resolved, txn.basis())?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+    if revaluation.is_some()
+        && let Err(refusal) =
+            admit_revaluation_batch_accounts(db, ctx, book, &resolved, txn.basis())?
     {
         txn.abort();
         return Ok(Err(refusal));

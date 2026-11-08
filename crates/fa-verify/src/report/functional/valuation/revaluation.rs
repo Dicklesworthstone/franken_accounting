@@ -253,6 +253,86 @@ pub(super) struct Prepared<'a> {
 }
 
 impl Prepared<'_> {
+    /// Every member of one atomic publication observes its predecessor
+    /// prefix. Only intrinsic adjustments of independent source/valuation
+    /// populations can share that publication, plus one inert promotion
+    /// control. Route selection is authenticated once per publication here;
+    /// each member still independently reproduces both full source proofs.
+    fn independent_publications(
+        &self,
+        publications: &BTreeMap<u64, Vec<usize>>,
+    ) -> Result<(), ReportError> {
+        for (&sequence, members) in publications {
+            if !members.iter().any(|index| self.bases.contains_key(index)) {
+                continue;
+            }
+            let before = sequence
+                .checked_sub(1)
+                .ok_or_else(|| invalid("revaluation has sequence zero"))?;
+            let (schema, declarations) = self.snapshot(before)?;
+            let mut protected = BTreeMap::new();
+            let mut promotion_seen = false;
+            for &index in members {
+                let Some(basis) = self.bases.get(&index) else {
+                    if promotion_seen
+                        || self.envelopes[index].class != 25
+                        || !super::closing::promotion_control(
+                            &self.records[index].1[..self.records[index].0],
+                        )?
+                    {
+                        return Err(invalid(
+                            "revaluation publication permits only independent intrinsic adjustments and one inert promotion control",
+                        ));
+                    }
+                    promotion_seen = true;
+                    continue;
+                };
+                let map = declarations
+                    .iter()
+                    .filter(|map| map.effective <= basis.date)
+                    .max_by_key(|map| (map.effective, map.sequence, map.identity))
+                    .ok_or_else(|| invalid("no effective revaluation routes at publication"))?;
+                let route = *map
+                    .rows
+                    .get(&basis.source)
+                    .ok_or_else(|| invalid("foreign source has no revaluation route"))?;
+                if map.identity != basis.routes_entry || map.digest != basis.routes_digest {
+                    return Err(invalid(
+                        "retained revaluation route identity or digest is stale",
+                    ));
+                }
+                route_accounts(
+                    &schema,
+                    basis.source,
+                    route,
+                    basis.date,
+                    self.spec,
+                    self.registry,
+                )?;
+                self.shape(index, basis, route)?;
+                for account in [basis.source, route.valuation] {
+                    if protected.insert(account, index).is_some() {
+                        return Err(invalid(
+                            "atomic revaluations require distinct source and valuation accounts",
+                        ));
+                    }
+                }
+            }
+            for &index in members {
+                if self.legs[index].iter().any(|leg| {
+                    protected
+                        .get(&leg.account)
+                        .is_some_and(|owner| *owner != index)
+                }) {
+                    return Err(invalid(
+                        "atomic revaluation effects touch another member's source or valuation account",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn snapshot(&self, at: u64) -> Result<(metadata::Schema, Vec<Routes>), ReportError> {
         let mut schema = metadata::Schema::default();
         let mut declarations: Vec<Routes> = Vec::new();
@@ -665,34 +745,14 @@ pub(super) fn prepare<'a>(
     activations: &'a BTreeMap<u64, u64>,
 ) -> Result<Prepared<'a>, ReportError> {
     let mut bases = BTreeMap::new();
-    let mut publications = BTreeSet::new();
+    let mut publications = BTreeMap::<u64, Vec<usize>>::new();
     for (&index, info) in infos {
+        publications
+            .entry(envelopes[index].commit_seq)
+            .or_default()
+            .push(index);
         if let Some(raw) = info.fx_revaluation_basis {
             let basis = Basis::read(raw)?;
-            // Promotion atomically appends the one reviewed adjustment and
-            // an inert DraftControl::Promote record. No monetary, period or
-            // schema sibling is allowed: its ordering would invalidate the
-            // old/current source proof. This recognizes transport metadata,
-            // not an independently verified approval or draft lifecycle.
-            let mut promotion_seen = false;
-            for other in infos.keys().filter(|other| {
-                **other != index && envelopes[**other].commit_seq == envelopes[index].commit_seq
-            }) {
-                if promotion_seen
-                    || envelopes[*other].class != 25
-                    || !super::closing::promotion_control(&records[*other].1[..records[*other].0])?
-                {
-                    return Err(invalid(
-                        "aggregate revaluation cannot share publication with a monetary or source-changing Entry",
-                    ));
-                }
-                promotion_seen = true;
-            }
-            if !publications.insert((basis.source, envelopes[index].commit_seq)) {
-                return Err(invalid(
-                    "multiple revaluations of one source share an unguarded publication",
-                ));
-            }
             bases.insert(index, basis);
         } else if envelopes[index].class != 4
             && parsed[&index]
@@ -720,6 +780,7 @@ pub(super) fn prepare<'a>(
         bases,
         order,
     };
+    prepared.independent_publications(&publications)?;
     // A dedicated account must be unused even before the first closing or
     // after the final one. A route declaration requires the same complete
     // chronology checks whether or not an adjustment ever used it.

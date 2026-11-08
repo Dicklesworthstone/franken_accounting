@@ -5,7 +5,9 @@ use fa_journal::chart::{
     FxRevaluationRoute, FxRevaluationRoutesRequest, set_fx_revaluation_routes,
 };
 use fa_journal::refusal::code;
-use fa_journal::revaluation::{FxRevaluationRequest, prepare_fx_revaluation};
+use fa_journal::revaluation::{
+    FxRevaluationRequest, PreparedFxRevaluation, prepare_fx_revaluation,
+};
 use fa_model::{BaseTotals, PeriodRef};
 
 const UNSUPPORTED: [FxLawId; 2] = [
@@ -219,6 +221,336 @@ fn a_period_end_basis_cannot_launder_an_unsupported_law_and_native_revaluation_s
     assert!(matches!(repeated, Posted::AlreadyRecorded { .. }));
     assert_eq!(repeated.entry_ref(), posted.entry_ref());
     assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+struct RevaluationBatchFixture {
+    h: Harness,
+    sources: [VId; 2],
+    spot: FxRateDocument,
+    closing: FxRateDocument,
+}
+
+impl RevaluationBatchFixture {
+    fn new() -> Self {
+        let (mut h, source_rate, _) = valued_source();
+        let foreign = h.book.units.lookup("EUR").unwrap();
+        let accounts = [
+            ("1388", 1, 0, foreign),
+            ("1298", 1, 0, h.usd),
+            ("1398", 1, 0, h.usd),
+            ("4788", 4, 1, h.usd),
+        ]
+        .into_iter()
+        .map(|(code, account_type, normal_balance, unit)| AccountSpec {
+            code: code.into(),
+            name: code.into(),
+            account_type,
+            normal_balance,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(unit),
+            parent_code: None,
+            limit: None,
+        })
+        .collect::<Vec<_>>();
+        let cx = h.ctx();
+        let date = h.day();
+        let description = h
+            .proposal(vec![], b"batch-fx-chart", EntryClass::ORIGINAL)
+            .description;
+        h.runtime
+            .block_on(install_chart(
+                &mut h.db,
+                &cx,
+                &h.book,
+                &accounts,
+                PRINCIPAL,
+                date,
+                b"batch-fx-chart",
+                description.clone(),
+                &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+            ))
+            .unwrap()
+            .unwrap();
+        let sources = ["1288", "1388"].map(|code| account_vid(h.book.book_id, code));
+        let routes = sources
+            .into_iter()
+            .zip(["1298", "1398"])
+            .map(|(source, valuation)| {
+                (
+                    source,
+                    FxRevaluationRoute {
+                        valuation_account: account_vid(h.book.book_id, valuation),
+                        // Shared gain offsets are outside both protected populations.
+                        unrealized_account: account_vid(h.book.book_id, "4788"),
+                    },
+                )
+            })
+            .collect();
+        h.runtime
+            .block_on(set_fx_revaluation_routes(
+                &mut h.db,
+                &cx,
+                &h.book,
+                &Capability::embedded(PRINCIPAL, &["read", "schema_change"]).unwrap(),
+                FxRevaluationRoutesRequest {
+                    principal: PRINCIPAL,
+                    effective_from: date,
+                    routes,
+                    idempotency_key: b"batch-fx-routes".to_vec(),
+                    description,
+                },
+            ))
+            .unwrap()
+            .unwrap();
+        let closing = closing_rate(&mut h, DateDay::from_ymd(2026, 3, 31).unwrap());
+        let mut fixture = Self {
+            h,
+            sources,
+            spot: FxRateDocument::decode(&source_rate.bytes).unwrap(),
+            closing,
+        };
+        fixture.post_source(1, 200, b"batch-fx-second-source");
+        fixture
+    }
+
+    fn capability() -> Capability {
+        Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap()
+    }
+
+    fn post_source(&mut self, index: usize, amount: i128, key: &[u8]) {
+        let h = &mut self.h;
+        let foreign = h.book.units.lookup("EUR").unwrap();
+        let proposal = h.proposal(
+            vec![
+                LegPayload::simple(
+                    Side::Debit,
+                    self.sources[index],
+                    Amount::new(foreign, amount),
+                ),
+                LegPayload::simple(
+                    Side::Credit,
+                    account_vid(h.book.book_id, "4088"),
+                    Amount::new(foreign, amount),
+                ),
+            ],
+            key,
+            EntryClass::ORIGINAL,
+        );
+        let arithmetic = h.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(100_000, 0), 4096);
+        let proposal = value_proposal(
+            &mut budget,
+            proposal,
+            &fa_journal::genesis::read_book_spec(&h.db).unwrap().unwrap(),
+            &h.book.units,
+            FxLawId::SpotClose,
+            std::slice::from_ref(&self.spot),
+        )
+        .unwrap();
+        h.post(h.request(proposal, &["post"])).unwrap();
+    }
+
+    fn observe(&self, index: usize, allocated: bool) -> PreparedFxRevaluation {
+        let arithmetic = self.h.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget =
+            ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(1_000_000, 0), 4096);
+        prepare_fx_revaluation(
+            &self.h.db,
+            &self.h.ctx(),
+            &self.h.book,
+            &Self::capability(),
+            &FxRevaluationRequest {
+                period: self.h.march.clone(),
+                source_account: self.sources[index],
+                rate_document: self
+                    .closing
+                    .evidence_ref(self.h.book.book_id)
+                    .unwrap()
+                    .document_oid,
+                entity: None,
+                item_allocation: allocated,
+            },
+            &mut budget,
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    fn proposal(&self, index: usize, allocated: bool, key: &[u8]) -> EntryPayload {
+        let prepared = self.observe(index, allocated);
+        let mut template = self.h.proposal(vec![], key, EntryClass::REVALUATION);
+        template.effective_date = prepared.closing_date();
+        template.effective_period = Some(PeriodRef {
+            calendar: self.h.book.calendar.id.clone(),
+            code: self.h.march.clone(),
+        });
+        prepared.proposal(template).unwrap()
+    }
+
+    fn post_batch(&mut self, batch: fa_intents::PostBatch) -> Result<BatchPosted, Refusal> {
+        let cx = self.h.ctx();
+        self.h
+            .runtime
+            .block_on(fa_journal::post_batch(
+                &mut self.h.db,
+                &cx,
+                &self.h.book,
+                Self::capability(),
+                batch,
+            ))
+            .unwrap()
+    }
+}
+
+#[test]
+fn independent_revaluations_publish_atomically_and_replay_each_source_at_later_cutoffs() {
+    for allocated in [false, true] {
+        for planned in [false, true] {
+            let mut f = RevaluationBatchFixture::new();
+            let batch = f.h.batch(
+                b"independent-revaluations",
+                vec![
+                    f.proposal(0, allocated, b"first-revaluation"),
+                    f.proposal(1, allocated, b"second-revaluation"),
+                ],
+            );
+            let before = f.h.db.frontier().unwrap();
+            let rows = f.h.db.vertices().unwrap();
+            let plan = planned.then(|| {
+                let plan = f
+                    .h
+                    .planned_batch(batch.clone(), &RevaluationBatchFixture::capability())
+                    .unwrap();
+                assert_eq!(plan.prepared_entries().len(), 2);
+                assert_eq!(f.h.db.frontier().unwrap(), before);
+                assert_eq!(f.h.db.vertices().unwrap(), rows);
+                fa_intents::BatchPlan::decode(&plan.canonical_bytes().unwrap()).unwrap()
+            });
+            let posted = match &plan {
+                Some(plan) => f
+                    .h
+                    .publish_batch_plan(plan.clone(), &RevaluationBatchFixture::capability())
+                    .unwrap(),
+                None => f.post_batch(batch.clone()).unwrap(),
+            };
+            assert!(!posted.already_recorded);
+            assert_eq!(posted.entries.len(), 2);
+            assert_eq!(posted.recorded_at.0, before.0 + 1);
+            for (reference, member) in posted.entries.iter().zip(batch.members()) {
+                let (entry, recorded) = read_entry(&f.h.db, reference.vid).unwrap().unwrap();
+                assert_eq!(entry.proposal, *member.proposal());
+                assert_eq!(recorded, posted.recorded_at);
+            }
+            assert!(verify(&f.h, posted.recorded_at).is_green());
+            // Each source audits the retained same-sequence publication, then
+            // folds only its own dedicated valuation leaf. The shared gain
+            // account must not make either audit see a duplicate adjustment.
+            for (index, (native, adjustment, carrying)) in
+                [(100, 10, 120), (200, 20, 240)].into_iter().enumerate()
+            {
+                let observed = f.observe(index, allocated);
+                assert!(observed.is_noop());
+                assert_eq!(observed.source_native_net().mantissa, native);
+                assert_eq!(observed.prior_adjustment_net().mantissa, adjustment);
+                assert_eq!(observed.current_carrying_net().mantissa, carrying);
+            }
+            let unrelated = f.h.proposal(
+                f.h.rent_legs(7),
+                b"after-revaluations",
+                EntryClass::ORIGINAL,
+            );
+            f.h.post(f.h.request(unrelated, &["post"])).unwrap();
+            let after = f.h.db.frontier().unwrap();
+            let rows = f.h.db.vertices().unwrap();
+            let retry = match plan {
+                Some(plan) => f
+                    .h
+                    .publish_batch_plan(plan, &RevaluationBatchFixture::capability())
+                    .unwrap(),
+                None => f.post_batch(batch).unwrap(),
+            };
+            assert!(retry.already_recorded);
+            assert_eq!(retry.entries, posted.entries);
+            assert_eq!(retry.recorded_at, posted.recorded_at);
+            assert_eq!(f.h.db.frontier().unwrap(), after);
+            assert_eq!(f.h.db.vertices().unwrap(), rows);
+            assert!(f.observe(0, allocated).is_noop());
+            assert!(f.observe(1, allocated).is_noop());
+        }
+    }
+}
+
+#[test]
+fn revaluation_batches_refuse_shared_sources_and_mixed_members_without_publication() {
+    for mixed in [false, true] {
+        for reverse in [false, true] {
+            let mut f = RevaluationBatchFixture::new();
+            let first = f.proposal(0, false, b"isolated-first");
+            let second = if mixed {
+                f.h.proposal(
+                    f.h.rent_legs(10),
+                    b"ordinary-companion",
+                    EntryClass::ORIGINAL,
+                )
+            } else {
+                f.proposal(0, false, b"same-source-second")
+            };
+            let mut members = vec![first, second];
+            if reverse {
+                members.reverse();
+            }
+            let batch = f.h.batch(b"non-independent-revaluations", members);
+            let before = f.h.db.frontier().unwrap();
+            let vertices = f.h.db.vertices().unwrap();
+            let edges = f.h.db.edges().unwrap();
+            let refused = f.post_batch(batch).unwrap_err();
+            assert_eq!(refused.code, code::CLASS_NOT_IMPLEMENTED, "{refused}");
+            assert_eq!(f.h.db.frontier().unwrap(), before);
+            assert_eq!(f.h.db.vertices().unwrap(), vertices);
+            assert_eq!(f.h.db.edges().unwrap(), edges);
+        }
+    }
+}
+
+#[test]
+fn a_changed_later_revaluation_basis_or_effect_refuses_the_whole_atomic_batch() {
+    for mutation in ["source", "rate", "valuation"] {
+        let mut f = RevaluationBatchFixture::new();
+        let first = f.proposal(0, false, b"rollback-first-revaluation");
+        let mut second = f.proposal(1, false, b"rollback-second-revaluation");
+        match mutation {
+            "source" => f.post_source(1, 100, b"later-second-exposure"),
+            "rate" => {
+                let (_, raw) = second
+                    .extensions
+                    .iter_mut()
+                    .find(|(tag, _)| *tag == fa_model::entry::FX_REVALUATION_EXTENSION)
+                    .unwrap();
+                let mut basis = fa_model::FxRevaluationBasis::decode(raw).unwrap();
+                basis.rate_commit[0] ^= 1;
+                *raw = basis.canonical_bytes().unwrap();
+            }
+            "valuation" => {
+                // Still balanced and base-valued, but it poisons the sibling's
+                // protected history instead of the prepared dedicated leaf.
+                second.legs[0].account_ref = account_vid(f.h.book.book_id, "1298");
+            }
+            _ => unreachable!(),
+        }
+        let batch = f.h.batch(b"rollback-revaluations", vec![first, second]);
+        let outcome = fa_journal::batch::outcome_vid(&f.h.book, &batch);
+        let before = f.h.db.frontier().unwrap();
+        let vertices = f.h.db.vertices().unwrap();
+        let edges = f.h.db.edges().unwrap();
+        let refused = f.post_batch(batch).unwrap_err();
+        assert_eq!(refused.code, code::PLAN_INVALIDATED, "{mutation}: {refused}");
+        assert!(refused.message.contains("member 1"), "{refused}");
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+        assert_eq!(f.h.db.vertices().unwrap(), vertices);
+        assert_eq!(f.h.db.edges().unwrap(), edges);
+        assert!(f.h.db.vertex(outcome).unwrap().is_none());
+        assert_eq!(f.observe(0, false).delta().mantissa, 10);
+    }
 }
 
 #[test]

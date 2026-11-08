@@ -4,10 +4,11 @@
 //! leaf records only the delta between the retained closing-rate target and
 //! the original committed functional carrying amount plus prior adjustments.
 //! Every fresh posting reproduces the original and current source populations;
-//! its complete preparation frontier remains guarded until publication. A single
-//! intrinsic revaluation may also be retained in a dedicated draft: planning,
-//! scratch rehearsal and independent promotion reuse these same source laws.
-//! The private draft proof cannot authorize a mixed or ordinary atomic batch.
+//! its complete preparation frontier remains guarded until publication. Atomic
+//! batches and drafts compose intrinsic revaluations only across independent
+//! source accounts and dedicated valuation leaves. Planning, scratch rehearsal
+//! and independent promotion reuse these same source laws; mixed batches and
+//! overlapping source populations remain unsupported.
 
 mod history;
 mod items;
@@ -1295,7 +1296,7 @@ pub(crate) fn is_source_bound(proposal: &EntryPayload) -> bool {
 
 pub(crate) fn unsupported_batch() -> Refusal {
     unsupported(
-        "source-bound revaluation requires its own native PostPlan or a dedicated draft containing exactly one intrinsic Revaluation; mixed, multiple-member and ordinary atomic batches are not supported",
+        "source-bound revaluations compose only in native batches or dedicated drafts of intrinsic Revaluation entries with distinct source and valuation accounts; no member may affect another member's source or valuation account, and mixed batches or other execution modes are not supported",
     )
 }
 
