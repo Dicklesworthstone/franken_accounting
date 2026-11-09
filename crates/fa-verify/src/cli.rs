@@ -4537,13 +4537,27 @@ fn statement_trace_checks(
                 "authenticated_journal",
                 vec![
                     ("publication", n(publication.recorded_at)),
-                    ("event", s("recorded")),
+                    (
+                        "event",
+                        s(match entry.event {
+                            crate::report::VerifiedStatementEntryEvent::Recorded => "recorded",
+                            crate::report::VerifiedStatementEntryEvent::BecameVisible => {
+                                "became_visible"
+                            }
+                        }),
+                    ),
                     ("entry", s(format!("{:032x}", entry.entry))),
                     ("digest", h(&entry.digest)),
                     ("class", n(u64::from(entry.class))),
                     ("recorded_at", n(entry.recorded_at)),
                     ("posting_date", day(entry.posting_date)),
                     ("principal", s(format!("{:032x}", entry.principal))),
+                    (
+                        "migration_run",
+                        entry
+                            .migration_run
+                            .map_or(Json::Null, |run| s(format!("{run:032x}"))),
+                    ),
                     (
                         "references",
                         Json::List(

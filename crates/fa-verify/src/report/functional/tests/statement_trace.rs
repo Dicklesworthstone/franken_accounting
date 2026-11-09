@@ -2,8 +2,12 @@
 //! publications and changing mappings as well as each intermediate amount.
 use super::*;
 use crate::report::{
-    VerifiedStatementEntryLink, VerifiedStatementPublication, VerifiedStatementTrace,
+    VerifiedStatementEntryEvent, VerifiedStatementEntryLink, VerifiedStatementPublication,
+    VerifiedStatementTrace,
 };
+
+#[path = "statement_trace/migration.rs"]
+mod migration;
 
 fn commitment(domain: &[u8], bytes: &[u8]) -> [u8; 32] {
     hash_parts(domain, &[&(bytes.len() as u32).to_le_bytes(), bytes])
@@ -152,6 +156,7 @@ fn fixture_trace(activity: bool) -> (Fixture, Vec<Vec<u8>>, VerifiedStatementTra
             entries: entry
                 .into_iter()
                 .map(|(key, class, posting_date)| VerifiedStatementEntryLink {
+                    event: VerifiedStatementEntryEvent::Recorded,
                     entry: key_id(key),
                     digest: f
                         .records
@@ -165,6 +170,7 @@ fn fixture_trace(activity: bool) -> (Fixture, Vec<Vec<u8>>, VerifiedStatementTra
                     posting_date,
                     principal: PRINCIPAL,
                     references: Vec::new(),
+                    migration_run: None,
                 })
                 .collect(),
             changes: diff
@@ -202,12 +208,15 @@ fn trace_output(trace: &VerifiedStatementTrace) -> Vec<u8> {
             .fixed(&step.after_source_digest)
             .count(step.entries.len());
         for entry in &step.entries {
-            w.u8(0)
-                .u64(entry.recorded_at)
-                .u128(entry.entry)
-                .fixed(&entry.digest)
-                .u16(entry.class)
-                .u8(u8::from(entry.posting_date.is_some()));
+            w.u8(match entry.event {
+                VerifiedStatementEntryEvent::Recorded => 0,
+                VerifiedStatementEntryEvent::BecameVisible => 1,
+            })
+            .u64(entry.recorded_at)
+            .u128(entry.entry)
+            .fixed(&entry.digest)
+            .u16(entry.class)
+            .u8(u8::from(entry.posting_date.is_some()));
             if let Some(day) = entry.posting_date {
                 w.i32(day);
             }
@@ -215,7 +224,10 @@ fn trace_output(trace: &VerifiedStatementTrace) -> Vec<u8> {
             for (id, digest) in &entry.references {
                 w.u128(*id).fixed(digest);
             }
-            w.u8(0);
+            w.u8(u8::from(entry.migration_run.is_some()));
+            if let Some(run) = entry.migration_run {
+                w.u128(run);
+            }
         }
         w.count(step.changes.len());
         for line in &step.changes {
@@ -586,6 +598,7 @@ fn functional_trace_preserves_canceling_foreign_post_and_exact_reversal_lineage(
             before_source_digest: trace_source(&output(a, a_request)),
             after_source_digest: trace_source(&output(b, b_request)),
             entries: vec![VerifiedStatementEntryLink {
+                event: VerifiedStatementEntryEvent::Recorded,
                 entry: identity,
                 digest: record.envelope.record_digest,
                 class: record.envelope.class,
@@ -593,6 +606,7 @@ fn functional_trace_preserves_canceling_foreign_post_and_exact_reversal_lineage(
                 posting_date: record.envelope.effective_day,
                 principal: PRINCIPAL,
                 references,
+                migration_run: None,
             }],
             changes: diff
                 .lines

@@ -202,7 +202,8 @@ pub use statement_diff::{
     VerifiedCustomStatementComparison, VerifiedStatementDiff,
 };
 pub use statement_trace::{
-    VerifiedStatementEntryLink, VerifiedStatementPublication, VerifiedStatementTrace,
+    VerifiedStatementEntryEvent, VerifiedStatementEntryLink, VerifiedStatementPublication,
+    VerifiedStatementTrace,
 };
 pub use summary::{SummaryScope, VerifiedSummaryGroup, VerifiedSummaryTrialBalance};
 pub use temporal::{TimeObservation, VerifiedInstantSelection};

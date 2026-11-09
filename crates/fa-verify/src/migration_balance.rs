@@ -86,6 +86,24 @@ enum Metadata {
     },
 }
 
+/// Identify a migration link from the same canonical parser used by the
+/// lifecycle verifier. The caller must independently verify visibility before
+/// treating a recorded chunk as activated; a run reference alone is no proof
+/// of Finalize or of the run's counting policy.
+pub(crate) fn report_run_for_entry(
+    envelope: &LeafEnvelope,
+    proposal: &[u8],
+    index: u64,
+) -> Result<Option<u128>, VerifyError> {
+    if !matches!(envelope.class, CLASS_MIGRATION | CLASS_MIGRATION_CONTROL) {
+        return Ok(None);
+    }
+    match metadata(envelope, proposal, index)? {
+        Metadata::Chunk { run, .. } | Metadata::Control { run, .. } => Ok(Some(run)),
+        Metadata::Ordinary => Err(scope_error(index)),
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Policy {
     run: u128,
