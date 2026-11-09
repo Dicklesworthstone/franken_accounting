@@ -542,10 +542,12 @@ fn disclose(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )),
     };
     let capability = ctx.capability(args, &["restate", "read"])?;
+    // The comparison requests are file inputs; read them before the book
+    // borrow starts so the mutable borrow of ctx.books is unambiguous.
+    let equity = equity::disclosure_comparisons(ctx, args)?;
     let mut book = ctx
         .books
         .open_admitted(args, |book| equity::admit_disclosure(book, &capability))?;
-    let equity = equity::disclosure_comparisons(ctx, args)?;
     let date = control_date(args, &book)?;
     let done = book.disclose_case_with_equity(
         capability,
