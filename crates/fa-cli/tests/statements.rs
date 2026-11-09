@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fa_cli::json::{self, Json};
 
+#[path = "statements/cash_policy.rs"]
+mod cash_policy;
 #[path = "statements/custom.rs"]
 mod custom;
 

@@ -1,0 +1,60 @@
+# Governed reusable cash-flow classifications (plan §12.1, fa-nzix).
+schema_version = 1
+name = "CashFlowPolicyDefinition"
+owner = "fa::cash_flow_policy_activation"
+major = 1
+minor = 0
+externally_verifiable = false
+format = "fa:cash-flow-policy-definition:v1"
+plan_format = "fa:cash-flow-policy-plan:v1"
+definition_digest_domain = "fa:cash-flow-policy-definition-digest:v1"
+chart_basis_domain = "fa:statement-chart-basis:v1"
+entry_extension = 43
+minimum_entry_minor = 11
+max_definition_bytes = 65536
+max_plan_bytes = 66880
+activation_origin = "policy_activation"
+activation_payload = "LifecycleTransition"
+activation_reason = 17222
+activation_from = 0
+activation_to = 1
+sod_transition = "ActivateStatement"
+
+# Canonical body: bytes(format), string(name), u32(version), list(u128 cash
+# account), list(u128 non-cash account, u8 activity). Names are 1..64 ASCII
+# alphanumeric/hyphen/underscore bytes; versions are positive. Each list has
+# at most 4096 strictly ascending unique accounts; lists are disjoint. Activity
+# tags are Operating=0, Investing=1, Financing=2 and ExchangeEffect=3.
+# InternalTransfer is derived from complete all-cash entry pairs and is not a
+# non-cash account rule. Per-entry overrides remain explicit report inputs.
+# The complete body independently fits max_cash_flow_policy_definition_bytes.
+#
+# The body is immutable on its own trunk PolicyControl Entry extension 43.
+# LifecycleTransition object_ref is that Entry's ordinary book/principal/key
+# identity, reason 17222, from=0, to=1, proof_refs=[Object(chart basis)]. Origin
+# policy_activation(kind=3) binds the exact body digest. The proposal separately
+# binds the effective date, preparer, sealed description and key. No other
+# extension, period, session, evidence, pending, supersession or monetary effect
+# is admitted. Large Entries use the existing immutable EntryFragment storage.
+#
+# Preparation and activation require rule_change and PolicyControl class scope.
+# Activation requires two independent Human approve principals, neither the
+# preparer, using the existing ActivateStatement separation-of-duties law.
+# Current capability, security epoch and approval witnesses are checked in the
+# publication transaction. Accounting schema changes invalidate the reviewed
+# chart basis; ordinary posts and approval records do not. Cash accounts are
+# existing Asset or Liability (overdraft) leaves; counterpart rules name existing
+# non-cash monetary leaves. The security-policy epoch itself does not change.
+#
+# Activation and its common successful-intent key claim commit atomically.
+# Exact retries require the unchanged proposal and approvals. Per-name versions
+# and effective dates advance strictly. Named selection pins known-at and both
+# interval endpoints; a policy change inside an interval refuses and asks the
+# caller to split the report. History revalidates original journal births,
+# approvals, reviewed chart basis and body membership.
+#
+# Existing direct/indirect report and certificate bytes retain their exact math
+# contracts. A selected activation is separate provenance: those certificates
+# do not prove native approval authority. Independent report replay validates
+# the bounded activation shape/body digest in its authenticated journal prefix,
+# but does not claim approval admission or infer professional classification.

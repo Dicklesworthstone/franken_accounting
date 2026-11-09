@@ -120,6 +120,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("certificate", notary::certificate_cmd),
     ("open-items", open_items_cmd),
     ("gl", gl_cmd),
+    ("cash-policy", crate::cash_policy::command),
     ("explain", explain_cmd),
     ("search", search_cmd),
     ("diff", crate::diff::diff_cmd),
@@ -2551,16 +2552,17 @@ fn bound_scope_refusal(
     })
 }
 
-/// These handlers always construct a PeriodControl payload. Naming its class
+/// These handlers always construct their registered control payload. Naming its class
 /// narrows no other coordinate: the front door still judges whole-book reach
 /// before the handler reads the period to derive its default key.
 fn bound_payload_class(verb: &str, args: &Args) -> Option<EntryClass> {
-    (verb == "period"
-        && matches!(
-            args.positional.get(1).map(String::as_str),
-            Some("open" | "soft-close" | "close" | "lock" | "reopen")
-        ))
-    .then_some(EntryClass::PERIOD_CONTROL)
+    match (verb, args.positional.get(1).map(String::as_str)) {
+        ("period", Some("open" | "soft-close" | "close" | "lock" | "reopen")) => {
+            Some(EntryClass::PERIOD_CONTROL)
+        }
+        ("cash-policy", Some("define" | "activate")) => Some(EntryClass::POLICY_CONTROL),
+        _ => None,
+    }
 }
 
 /// Each `[[bound]]` rule's ops as `fa_policy::Op`s, resolved once. A rule
@@ -19099,7 +19101,8 @@ fn cash_flow_units_json(
 /// activity derives from its non-cash counterparts' account rules, or from an
 /// explicit whole-leg override, and the original cash engine then classifies
 /// it. No amount is split, netted or inferred; `decisions` records the basis
-/// of every leg. The policy is a professional input, not approved or journaled.
+/// of every leg. A supplied activation cites the separately verified native
+/// authorization history; the report certificate proves its exact inputs and math.
 #[allow(clippy::too_many_arguments)]
 fn gl_policy_cash_flow(
     out: &Out,
@@ -19111,6 +19114,7 @@ fn gl_policy_cash_flow(
     certify: bool,
     mut request: RollForwardRequest,
     policy: fa::cash_flow_policy::CashFlowPolicy,
+    activation: Option<&fa::cash_flow_policy_activation::ActivatedCashFlowPolicy>,
 ) -> Result<(), Fail> {
     let (report, artifact) = if certify {
         let certified =
@@ -19180,6 +19184,15 @@ fn gl_policy_cash_flow(
         })
         .transpose()?;
     let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
+    if let Some(activation) = activation {
+        crate::cash_policy::emit_selected(
+            out,
+            activation,
+            source.effective_from(),
+            source.effective_through(),
+            source.known_at(),
+        );
+    }
     out.event_with_certificate(
         "policy_cash_flow",
         vec![
@@ -19329,6 +19342,12 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     let sub = args.positional.get(1).map(String::as_str);
+    if args.flag("--policy-name").is_some() && sub != Some("cash-flow") {
+        return Err(usage(
+            "--policy-name selects an approved cash-flow classification policy",
+            "fa gl cash-flow --policy-name <name> --account <code> --from YYYY-MM-DD --to YYYY-MM-DD",
+        ));
+    }
     // The saved-source flags are gl aging's; any other subcommand would fold
     // afresh and silently ignore the source, so they are refused there.
     if sub != Some("aging")
@@ -20207,25 +20226,13 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ));
             }
             let mut book = ctx.books.open_admitted(args, admit_report)?;
-            let policy_path = args.require("--policy", "<policy.json|->")?;
-            let policy_text = ctx.files.read_text(policy_path)?;
-            let policy_doc = crate::json::parse(&policy_text).map_err(|e| {
-                usage(
-                    format!("invalid cash-flow policy JSON: {e}"),
-                    "pass a valid JSON object for --policy",
-                )
-            })?;
-            // Each richer policy format has an explicit selector. Its strict
-            // parser rejects fields from the other formats rather than ignoring
-            // a classification input supplied in the wrong shape.
-            let splits = policy_doc.get("splits").is_some();
-            let rules = policy_doc.get("account_rules").is_some();
-            if splits {
-                validate_cash_flow_split_policy_fields(&policy_doc, args.switch("--indirect"))?;
-            } else if rules {
-                validate_cash_flow_rules_policy_fields(&policy_doc, args.switch("--indirect"))?;
-            } else {
-                validate_cash_flow_policy_fields(&policy_doc, args.switch("--indirect"))?;
+            for flag in ["--policy", "--policy-name"] {
+                if args.flag_all(flag).len() > 1 {
+                    return Err(usage(
+                        format!("{flag} may be supplied only once"),
+                        "select one --policy file or one --policy-name",
+                    ));
+                }
             }
             let mut req = parse_gl_scope(
                 args,
@@ -20233,9 +20240,62 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 &capability,
                 out,
                 "cash-flow",
-                "fa gl cash-flow --account 1000 --from 2026-03-01 --to 2026-03-31 --policy policy.json --book <dir>",
+                "fa gl cash-flow --account 1000 --from 2026-03-01 --to 2026-03-31 --policy-name <name> --book <dir>",
             )?;
             book.prepare_report_history(who, &capability, req.known_at)??;
+            // Pin both the classification version and all report inputs to one
+            // recorded frontier. The selector rejects an effective version
+            // boundary anywhere inside the complete reporting interval.
+            let activation = if let Some(name) = args.flag("--policy-name") {
+                let at = req.known_at.unwrap_or(book.head()?);
+                req.known_at = Some(at);
+                Some(crate::cash_policy::select(
+                    &book,
+                    &capability,
+                    name,
+                    req.effective_from,
+                    req.effective_through,
+                    at,
+                )?)
+            } else {
+                None
+            };
+            if activation.is_some() && !args.switch("--indirect") && args.flag("--policy").is_some()
+            {
+                return Err(usage(
+                    "a named direct policy cannot be combined with a report-specific --policy",
+                    "use --policy-name alone, or --indirect with a strict adjustments-only --policy document",
+                ));
+            }
+            let policy_doc = match args.flag("--policy") {
+                Some(path) => crate::json::parse(&ctx.files.read_text(path)?).map_err(|error| {
+                    usage(
+                        format!("invalid cash-flow policy JSON: {error}"),
+                        "pass a valid JSON object for --policy",
+                    )
+                })?,
+                None if activation.is_some() => obj(vec![("adjustments", Json::Arr(Vec::new()))]),
+                None => {
+                    return Err(usage(
+                        "cash flow requires --policy <file.json|-> or --policy-name <activated-name>",
+                        "fa gl cash-flow --account 1000 --from YYYY-MM-DD --to YYYY-MM-DD --policy-name <name>",
+                    ));
+                }
+            };
+            // Each richer policy format has an explicit selector. Its strict
+            // parser rejects fields from the other formats rather than ignoring
+            // a classification input supplied in the wrong shape.
+            let splits = policy_doc.get("splits").is_some();
+            let rules = policy_doc.get("account_rules").is_some();
+            if activation.is_some() {
+                crate::cash_policy::validate_adjustments(&policy_doc)?;
+            } else if splits {
+                validate_cash_flow_split_policy_fields(&policy_doc, args.switch("--indirect"))?;
+            } else if rules {
+                validate_cash_flow_rules_policy_fields(&policy_doc, args.switch("--indirect"))?;
+            } else {
+                validate_cash_flow_policy_fields(&policy_doc, args.switch("--indirect"))?;
+            }
             let units = &book.context().units;
             if args.switch("--indirect") {
                 let income_periods: Vec<String> = args
@@ -20252,17 +20312,25 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         "fa gl cash-flow --indirect --income-period FY2026-P03 --account 1000 --from 2026-03-01 --to 2026-03-31 --policy policy.json --book <dir>",
                     ));
                 }
-                let (cash_policy_name, indirect_def) =
-                    parse_indirect_cash_flow_definition(&policy_doc, "indirect-cash-flow")?;
-                let cash_def = parse_indirect_cash_flow_basis(
+                let (cash_policy_name, indirect_def) = parse_indirect_cash_flow_definition(
                     &policy_doc,
-                    &book,
-                    who,
-                    &capability,
-                    &mut req,
-                    &cash_policy_name,
-                    Fail::Refusal,
+                    activation
+                        .as_ref()
+                        .map_or("indirect-cash-flow", |active| active.policy.name.as_str()),
                 )?;
+                let cash_def = if let Some(active) = &activation {
+                    fa::CashFlowBasisDefinition::Policy(active.policy.clone())
+                } else {
+                    parse_indirect_cash_flow_basis(
+                        &policy_doc,
+                        &book,
+                        who,
+                        &capability,
+                        &mut req,
+                        &cash_policy_name,
+                        Fail::Refusal,
+                    )?
+                };
                 let mut request = IndirectCashFlowRequest {
                     cash: req,
                     cash_definition: cash_def,
@@ -20370,6 +20438,15 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     })
                     .transpose()?;
                 let digest = artifact.as_ref().map(|artifact| hex(artifact.digest()));
+                if let Some(active) = &activation {
+                    crate::cash_policy::emit_selected(
+                        out,
+                        active,
+                        source.effective_from(),
+                        source.effective_through(),
+                        source.known_at(),
+                    );
+                }
                 out.event_with_certificate(
                     "indirect_cash_flow",
                     vec![
@@ -20423,13 +20500,16 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     req,
                     parsed,
                 )
-            } else if rules {
-                let policy = parse_cash_flow_rules_policy(
-                    &policy_doc,
-                    book.context().book_id,
-                    &req.accounts,
-                    "cash-flow",
-                )?;
+            } else if rules || activation.is_some() {
+                let policy = match &activation {
+                    Some(active) => active.policy.clone(),
+                    None => parse_cash_flow_rules_policy(
+                        &policy_doc,
+                        book.context().book_id,
+                        &req.accounts,
+                        "cash-flow",
+                    )?,
+                };
                 gl_policy_cash_flow(
                     out,
                     &ctx.files,
@@ -20440,6 +20520,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     certify,
                     req,
                     policy,
+                    activation.as_ref(),
                 )
             } else {
                 let cash_def = parse_cash_flow_definition(

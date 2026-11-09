@@ -155,7 +155,12 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             // approvals outside both launch templates; sessions inspect a
             // run through fa_close_status.
             || (e.verb == "close"
-                && matches!(e.subcommand.as_deref(), Some("start" | "step" | "run")));
+                && matches!(e.subcommand.as_deref(), Some("start" | "step" | "run")))
+            // Classification activation needs rule_change outside the launch
+            // ceiling and independent Human approval/confirmation. Sessions
+            // inspect and apply approved policies through the proof cluster.
+            || (e.verb == "cash-policy"
+                && matches!(e.subcommand.as_deref(), Some("define" | "activate")));
         assert!(
             is_allowed_host_only,
             "only plan §15.4 registered host-only verbs are excluded: {e:?}"

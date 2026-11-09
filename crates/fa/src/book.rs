@@ -5057,6 +5057,58 @@ impl Book {
         ))
     }
 
+    /// Admit cash-policy input reads or publication under the same native
+    /// authority law as preparation and activation.
+    pub fn admit_cash_flow_policy(
+        &self,
+        capability: &fa_policy::Capability,
+        preview: bool,
+    ) -> Outcome<()> {
+        with_store!(&self.store, core => core.admit_cash_flow_policy(
+            &self.purposes(), capability, preview,
+        ))
+    }
+
+    /// Prepare an immutable cash classification for two independent approvers.
+    pub fn plan_cash_flow_policy(
+        &self,
+        capability: &fa_policy::Capability,
+        definition: fa_model::CashFlowPolicyDefinition,
+        effective_from: DateDay,
+        key: &[u8],
+    ) -> Outcome<crate::cash_flow_policy_activation::CashFlowPolicyPlan> {
+        with_store!(&self.store, core => core.plan_cash_flow_policy(
+            &self.purposes(), capability, definition, effective_from, key,
+        ))
+    }
+
+    /// Publish the exact reviewed classification and its immutable activation.
+    pub fn activate_cash_flow_policy(
+        &mut self,
+        capability: &fa_policy::Capability,
+        plan: crate::cash_flow_policy_activation::CashFlowPolicyPlan,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<crate::cash_flow_policy_activation::ActivatedCashFlowPolicy> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.activate_cash_flow_policy(
+            &purposes, capability, plan, approvals,
+        )))
+    }
+
+    /// Resolve one approved policy for a complete interval at a recorded prefix.
+    pub fn active_cash_flow_policy(
+        &self,
+        capability: &fa_policy::Capability,
+        name: &str,
+        from: DateDay,
+        through: DateDay,
+        known_at: CommitSeq,
+    ) -> Outcome<Option<crate::cash_flow_policy_activation::ActivatedCashFlowPolicy>> {
+        with_store!(&self.store, core => core.active_cash_flow_policy(
+            &self.purposes(), capability, name, from, through, known_at,
+        ))
+    }
+
     pub fn custom_statement(
         &self,
         capability: &fa_policy::Capability,

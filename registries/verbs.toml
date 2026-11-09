@@ -594,12 +594,12 @@ example = "fa open-items --account 1200 --book ./books/myco --json"
 [[verb]]
 name = "gl"
 default_subcommand = "detail"
-summary = "General-ledger detail, account roll-forward lead schedules, effective-date open-item aging and control reconciliation, cost-basis lot schedules and relief planning, and direct/indirect cash-flow workpapers over one recorded snapshot."
+summary = "General-ledger detail, account roll-forward lead schedules, effective-date open-item aging and control reconciliation, cost-basis lot schedules and relief planning, and direct/indirect cash-flow workpapers using explicit classifications or an approved --policy-name at one recorded snapshot."
 writes = true
 subcommands = ["detail", "roll-forward", "aging", "cash-flow", "lots"]
-flags = ["--account", "--unit", "--from", "--to", "--label", "--as-of", "--bucket", "--basis", "--policy", "--income-period", "--relieve", "--law", "--regime", "--rounding-law", "--target", "--dimension", "--as-known-at", "--grant", "--certificate-out", "--branch", "--from-source", "--aging-certificate", "--control-certificate"]
+flags = ["--account", "--unit", "--from", "--to", "--label", "--as-of", "--bucket", "--basis", "--policy", "--policy-name", "--income-period", "--relieve", "--law", "--regime", "--rounding-law", "--target", "--dimension", "--as-known-at", "--grant", "--certificate-out", "--branch", "--from-source", "--aging-certificate", "--control-certificate"]
 switches = ["--reconcile", "--all-posting", "--indirect", "--certify"]
-events = ["general_ledger", "roll_forward", "aging", "due_date_aging", "aging_reconciled", "aging_portfolio_reconciled", "cash_flow", "policy_cash_flow", "split_cash_flow", "indirect_cash_flow", "lots", "report_certificate"]
+events = ["general_ledger", "roll_forward", "aging", "due_date_aging", "aging_reconciled", "aging_portfolio_reconciled", "cash_flow", "policy_cash_flow", "split_cash_flow", "indirect_cash_flow", "lots", "report_certificate", "cash_flow_policy_selected"]
 exits = [0, 2, 3, 4, 5, 7, 8]
 usage = ["gl detail --account <code[,code...]> [--unit <CODE[,CODE...]>] --from YYYY-MM-DD --to YYYY-MM-DD [--label <text>] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "gl roll-forward --account <code[,code...]> [--unit <CODE[,CODE...]>] --from YYYY-MM-DD --to YYYY-MM-DD [--label <text>] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "gl aging [ar | ap | --account <code[,code...]> | --all-posting] --as-of YYYY-MM-DD [--bucket <days>]... [--reconcile] [--certify | --certificate-out <new-file>] [--as-known-at HEAD|<seq>|<RFC3339>]   (ar or ap ages the one account holding the receivable or payable account role at the coordinate, so fa aging ar is the plan spelling; with none or several holding it, it says which and how to choose)", "gl aging [ar | ap | --account <code>] --as-of YYYY-MM-DD --basis due-date [--bucket <days>]... [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]   (due_date_aging: ages each open amount by civil days past the contractual due dates its leg's journaled obligation maturity terms record, settlements relieving the earliest installments first; open items without contractual terms, including every receivable while terms name credit legs only, are listed under unscheduled with their reason and never given a guessed due date. The default --basis effective-date keeps the aging event. Use --certify or --certificate-out to retain a due-date certificate; --from-source reuses a saved open-items prefix. Replay binds kind due-date-aging, and fa bundle produce plus fa-verify report independently recompute journaled terms and installment relief. Add --reconcile with one explicit --account to compare ALL scheduled and unscheduled open amounts with the same-prefix AsOf control in every native unit; installment parts count once per original item. It retains a distinct due-date-aging-reconciliation certificate, replays against that kind's fixed --expect request, and exports through fa bundle produce --expect for independent verification.)", "gl aging --from-source <C:oid|file|-> [--account <code>] --as-of YYYY-MM-DD [--bucket <days>]... (--certify | --certificate-out <new-file>)", "gl aging --reconcile (--account <code[,code...]> | --all-posting) --as-of YYYY-MM-DD [--bucket <days>]... --as-known-at <seq> --aging-certificate <C:oid|file|-> --control-certificate <C:oid|file|-> (--certify | --certificate-out <new-file>)", "Saved sources: --from-source ages a retained open-items certificate (fa open-items --certify) at its own recorded prefix and keeps it as the aging's source; a stated --account is checked against it (exit 8), and --as-known-at is refused. --aging-certificate (a gl aging certificate: one account, or the whole book for a portfolio) and --control-certificate (the tb --as-of certificate at the same prefix and date) are reused byte-for-byte as the reconciliation's sources. The other flags state the recipient's complete question, including a numeric --as-known-at, and a different question exits 8. Each form certifies.", "gl cash-flow --account <code[,code...]> [--unit <CODE[,CODE...]>] --from YYYY-MM-DD --to YYYY-MM-DD --policy <file.json|-> [--indirect --income-period <code>...] [--label <text>] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "gl lots --account <code> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>] [--certify | --certificate-out <new-file>]", "gl lots --account <code> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>] --relieve <amount> --law FIFO|LIFO|SpecificId|WeightedAverage [--regime US-GAAP|US-TAX|IFRS] [--rounding-law HalfEven|HalfUp|Down|Up|Ceiling|Floor] [--dimension KIND:VALUE]... [--target <vid[:ordinal]>]...   (advisory calculation only; certification and its output file cannot be combined with --relieve or its planning options)", "Certified lots require one debit-normal AnyUnit Asset posting leaf with native-cost history. Quantity and cost acquisition legs pair in ordinal order within their exact complete dimension vector; the legacy dimensionless partition retains its one-pair profile. Every disposal credit is fully applied within its original source partition. Advisory --relieve selects only the exact vector supplied by repeated --dimension KIND:VALUE; this does not filter the complete schedule. Foreign valuations, ambiguous acquisition pairs and unsupported histories refuse without retaining a certificate. Dimensionless source history retains fa:lots-certificate:v1; attributed source history uses v2, even when a cutoff leaves an empty schedule. The complete certificate binds the original account, base unit, optional effective cutoff, fixed recorded prefix, acquisition identities and all reliefs, including exhausted layers, cost-only weighted-average applications and exact reversals. It certifies the recorded schedule and provenance, not FIFO/LIFO policy selection or tax treatment. The ordinary advisory report remains available for its broader supported shapes.", "A certified lot schedule emits lots and report_certificate. fa replay C:<outer-oid> emits the original lots followed by report_replayed and --output saves its exact fa:lots:v1 or v2 bytes. The generated replay_command carries --expect JSON with kind=lots, account, through (a date or null) and fixed integer known_at; recipients may independently supply this request to reject another account, cutoff or prefix. certificate status reports later relevant postings as SupersededBy; a reversal effective after the selected cutoff leaves that historical schedule Current. An old certificate remains replayable after later changes. Portable lots export with bundle produce --certificate, and the recipient verifies with fa-verify report --base-unit <independently-expected-unit-id> --expect <outer-digest>; the certificate cannot establish its own base-currency premise.", "Historical folds are read-only unless --certify or --certificate-out retains their complete source certificate. Detail retains its roll-forward source; roll-forward, aging, aging reconciliation, the aging portfolio, lots and direct or indirect cash-flow retain their own full native artifact. Current read and produce authority are required. Replay by the returned C:<digest> works after reopening the book and later backdated postings. Cash-flow, aging, lots and reconciliation receipts include a replay command with the producing request as --expect JSON; recipients must retain and select that request independently before accepting replay.", "Uncertified RFC3339 known-at queries resolve retained TimeEvidence ticks and disclose the original resolution and brackets. Certification requires HEAD or a commit sequence because the current GL certificate format cannot retain that instant-resolution witness. Run an instant query without certification, then pass its resolved_seq to --as-known-at when requesting a certificate over that journal prefix. The same restriction applies to --certificate-out.", "Opening stock, posted movements and closing stock share one known-at frontier. --reconcile ties an account's open-item fold to its control balance and needs an explicit selection: one --account code (aging_reconciled), or a comma-separated --account list or --all-posting (every posting leaf), which reconcile from one chart, one aging fold and one control trial balance at one coordinate (aging_portfolio_reconciled). Unselected leaves are listed as uncovered, never as zero. complete and reconciled are separate verdicts, and neither is a close permit. Sequence-selected effective-date portfolio certificates also export through bundle produce --certificate --expect for independent verification of the historical chart, selected and uncovered leaves, original sources and every native-unit comparison. Cash-flow policies classify each cash leg (or indirect non-cash adjustment) explicitly without inventing a balancing plug. A direct policy with `account_rules` ([{account, activity}] for non-cash counterpart accounts) and optional `overrides` (whole cash legs, like assignments) is a rule policy (policy_cash_flow): a cash leg takes a rule's activity only when every nonzero non-cash counterpart in its entry and unit has that one activity, mixed or unmapped counterparts need an override, and `decisions` records each leg's basis. A rule policy cannot also carry assignments or splits. With --indirect it retains every rule and override as the cash basis; add cash_policy, adjustments and complete income-period coverage.", "A certified detail replay_command includes --view detail plus the original explicit account, unit, date, label and recorded-sequence selections. Retain these expectations independently before accepting a delivered certificate; replay verifies them before rendering ledger lines.", "A policy with splits selects exact split cash flow. Its splits array names entry_digest, leg_index, reason, and portions:[{activity,amount}] for each original cash leg. Every amount is a positive exact unit-tagged string in that leg's actual currency, and portions total its original amount exactly. For example, a 100.00 USD loan payment can have financing 80.00 USD and operating 20.00 USD portions. Splits cannot combine with assignments or account_rules. Direct certification retains fa:cash-flow-split:v1 and replay takes --expect kind split-cash-flow. With --indirect, add cash_policy and adjustments: the v2 indirect artifact retains the complete split source, and replay uses kind indirect-cash-flow plus income_periods and the full original split policy. Both forms bind reasons, native units and a fixed numeric known_at."]
 example = "fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book ./books/myco --json"
@@ -5341,7 +5341,7 @@ verb = "gl"
 subcommands = ["detail", "roll-forward", "aging", "cash-flow", "lots"]
 selector = "view"
 positionals = []
-flags = ["--account", "--unit", "--from", "--to", "--label", "--as-of", "--bucket", "--basis", "--policy", "--income-period", "--relieve", "--law", "--regime", "--rounding-law", "--target", "--as-known-at", "--branch", "--from-source", "--aging-certificate", "--control-certificate"]
+flags = ["--account", "--unit", "--from", "--to", "--label", "--as-of", "--bucket", "--basis", "--policy", "--policy-name", "--income-period", "--relieve", "--law", "--regime", "--rounding-law", "--target", "--as-known-at", "--branch", "--from-source", "--aging-certificate", "--control-certificate"]
 switches = ["--reconcile", "--all-posting", "--indirect", "--certify"]
 stdin_property = "policy"
 stdin_kind = "object"
@@ -7658,3 +7658,86 @@ name = "asset_register"
 book = true
 doc = "Read-only asset balances from all schedule effects recorded through known_at, with no effective-date cutoff. The basis is an explicit recorded prefix, not an effective-as-of financial statement."
 fields = ["known_at:seq", "basis:string", "rows:[asset_register_row]"]
+
+[[verb]]
+name = "cash-policy"
+summary = "Review, activate and inspect immutable cash-flow classification versions with two independent Human approvals and historical effective-date selection."
+writes = true
+subcommands = ["define", "activate", "show"]
+flags = ["--file", "--version", "--from", "--to", "--key", "--plan-out", "--plan", "--digest", "--approval", "--name", "--as-known-at"]
+switches = []
+events = ["cash_flow_policy_plan", "cash_flow_policy_activated", "cash_flow_policy_selected", "cash_flow_policy"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["cash-policy define --file policy.json --version <positive-integer> --from YYYY-MM-DD --key K [--plan-out policy.plan]   (read-only under rule_change; strict rule-policy JSON names cash_accounts and non-cash account_rules. Cash accounts must be asset or overdraft liability leaves. Per-entry overrides are refused. The review binds the definition, effective date, preparer, key and chart digest; two independent Human approvers approve proposal_digest with fa approve --proposal.)", "cash-policy activate --plan policy.plan --digest <proposal_digest> --approval <vid> --approval <vid> --yes   (atomically journals the complete reviewed definition and its approved PolicyControl activation under rule_change. --file - also accepts complete canonical review bytes or their hex encoding on stdin. The preparer cannot approve; approvals must bind the exact proposal, and chart changes require a fresh review. Exact retries return the original activation. Each later version and its effective date must advance.)", "cash-policy show --name <name> --from YYYY-MM-DD --to YYYY-MM-DD [--as-known-at HEAD|<seq>|<RFC3339>]   (pure read: resolves one approved version for the complete inclusive interval at the recorded prefix. A version change inside the interval refuses; select separate intervals explicitly.)", "gl cash-flow --policy-name <name> --account <cash-code[,cash-code...]> --from YYYY-MM-DD --to YYYY-MM-DD [--unit <CODE>] [--as-known-at <seq>] [--certify]   (selects the approved policy and report history at the same recorded frontier. Account selection must exactly match the policy's cash accounts. Direct named mode refuses --policy, so report-specific rules cannot replace the approved classification.)", "gl cash-flow --policy-name <name> --indirect --income-period <code> --account <cash-code> --from YYYY-MM-DD --to YYYY-MM-DD [--policy adjustments.json] [--certify]   (the optional JSON object contains only name and adjustments. Account rules, cash accounts, cash_policy, splits and overrides are refused; omitted adjustments means an explicit empty adjustment set. Income coverage and exact direct/indirect reconciliation remain mandatory.)", "cash_flow_policy_selected cites the native verified activation and chart separately from the math report. Existing direct-policy and indirect certificates retain their complete original classification inputs and arithmetic, and replay them after later policy activations. These certificate formats do not prove historical approval authority or professional accounting judgment. Portable verification accepts and checks the new activation's canonical entry metadata without expanding that assurance claim."]
+example = "fa cash-policy show --name company-cash --from 2026-03-01 --to 2026-03-31 --book ./books/myco --json"
+
+[[bound]]
+verbs = ["cash-policy"]
+subcommands = ["define", "activate"]
+ops = ["rule_change"]
+
+[[bound]]
+verbs = ["cash-policy"]
+subcommands = ["show"]
+ops = ["read"]
+reach = "judged"
+
+[[dangerous]]
+verb = "cash-policy"
+subcommand = "activate"
+condition = "always"
+safe = "review cash-policy define's exact proposal digest and chart, then obtain two independent Human approvals before activating the saved plan"
+
+[[event]]
+name = "cash_flow_policy_plan"
+book = true
+doc = "A read-only activation review binding the complete canonical rule definition, preparer, effective date, idempotency key and chart. Two independent Human approvers approve proposal_digest; bytes is the complete saved review."
+fields = ["policy:string", "version:int", "definition_digest:hex", "effective_from:date", "chart_digest:hex", "principal:hex", "proposal_digest:hex", "bytes:hex"]
+
+[[event]]
+name = "cash_flow_policy_activated"
+book = true
+doc = "The immutable classification version and its two-person-approved PolicyControl activation, published atomically with the common intent outcome. An exact retry returns the same activation and recording sequence."
+fields = ["policy:string", "version:int", "definition_digest:hex", "activation:hex", "effective_from:date", "recorded_at:seq", "chart_digest:hex", "already_recorded:bool"]
+
+[[event]]
+name = "cash_flow_policy_selected"
+book = true
+doc = "The native approved classification selected for one complete report interval and recorded frontier. The separate math certificate binds its original policy inputs and computation; it does not claim historical approval assurance."
+fields = ["policy:string", "version:int", "definition_digest:hex", "activation:hex", "effective_from:date", "recorded_at:seq", "chart_digest:hex", "from:date", "through:date", "known_at:seq", "scope:string"]
+
+[[event]]
+name = "cash_flow_policy"
+book = true
+doc = "The complete reusable rules of an approved cash-flow policy selected by cash-policy show, with the immutable activation identity and reviewed chart digest. No per-entry override is part of an activated policy."
+fields = ["policy:string", "version:int", "definition_digest:hex", "activation:hex", "effective_from:date", "recorded_at:seq", "chart_digest:hex", "cash_accounts:[hex]", "account_rules:[cash_flow_policy_rule]"]
+
+[[shape]]
+name = "cash_flow_policy_rule"
+doc = "An exact non-cash counterpart account and its approved operating, investing, financing or exchange_effect classification."
+fields = ["account:hex", "activity:string"]
+
+[[mcp.tool]]
+cluster = "fa.proof"
+name = "cash_policy"
+verb = "cash-policy"
+subcommands = ["show"]
+positionals = []
+flags = ["--name", "--from", "--to", "--as-known-at"]
+required = ["name", "from", "to"]
+dont = [
+  "Use this read-only tool to inspect the approved policy for the entire inclusive interval at one recorded prefix. A change inside the interval refuses instead of silently mixing classification versions.",
+  "Use fa_proof_gl with view cash-flow and policy_name to produce the corresponding direct report. The explicit account selection must equal the policy's cash accounts. With indirect true and income_period, the optional inline policy object carries only name and adjustments; no field may override the activated classification.",
+  "Policy planning and activation require operator rule_change authority and two independent Human approvals. Activation is host-confirmed. A math certificate proves its retained policy inputs and arithmetic, while this selection event separately cites native approval provenance.",
+]
+mistakes = ["Reading a current policy as the historical classification for an earlier recorded prefix.", "Treating native approval provenance as an offline accounting or approval assurance claim."]
+
+[[mcp.excluded]]
+verb = "cash-policy"
+subcommand = "define"
+reason = "host-only: preparing a classification activation requires rule_change authority outside the MCP launch ceiling; sessions inspect approved definitions with fa_proof_cash_policy"
+
+[[mcp.excluded]]
+verb = "cash-policy"
+subcommand = "activate"
+reason = "host-only: activation requires rule_change authority, two independent Human approvals and host confirmation; sessions report with fa_proof_gl policy_name"

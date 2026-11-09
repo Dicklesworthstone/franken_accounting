@@ -657,6 +657,14 @@ pub fn is_statement_activation(entry: &Entry) -> bool {
                 && *object_ref == fa_model::statement_definition_vid(proposal.book_id, spec_body_digest))
 }
 
+/// The registered cash classification activation shape. The dedicated facade
+/// separately enforces authority, chart membership and independent approvals.
+#[must_use]
+pub fn is_cash_flow_policy_activation(entry: &Entry) -> bool {
+    entry.plan_certificate.is_none()
+        && fa_model::cash_flow_policy::is_activation_entry(&entry.proposal)
+}
+
 fn normal_key_control(entry: &Entry, vid: VId) -> bool {
     let proposal = &entry.proposal;
     let admitted = matches!(
@@ -675,7 +683,7 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
                     ..
                 })
             ));
-    (admitted || is_statement_activation(entry))
+    (admitted || is_statement_activation(entry) || is_cash_flow_policy_activation(entry))
         && vid
             == fa_model::entry_vid(
                 proposal.book_id,

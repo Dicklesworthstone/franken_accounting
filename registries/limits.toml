@@ -179,6 +179,14 @@ value = 65536
 name = "max_statement_definition_plan_bytes"
 value = 66880
 
+# Complete reusable cash classification and its immutable activation review.
+[[limit]]
+name = "max_cash_flow_policy_definition_bytes"
+value = 65536
+[[limit]]
+name = "max_cash_flow_policy_plan_bytes"
+value = 66880
+
 # Actual earnings/reserve buckets split along ownership links by one group
 # report, across stock and period-activity attribution. Count includes inherited
 # and zero-cancelled buckets; a partial result never substitutes for refusal.

@@ -12,7 +12,8 @@
 //! its complete entry payload. Rules for unused accounts remain in the policy
 //! and must name existing historical non-cash monetary leaves. Overrides outside
 //! the selected cash movement set are refused, not silently ignored. No policy
-//! is activated, approved or journaled by these APIs.
+//! is activated, approved or journaled by these APIs. Governed reusable versions
+//! are provided by [`crate::cash_flow_policy_activation`].
 
 mod certificate;
 mod native;

@@ -2,6 +2,7 @@
 //! producer-supplied account or period projections.
 
 mod asset_cost;
+mod cash_policy;
 
 use super::{ReportError, Selection, failed, text};
 use crate::codec::Reader;
@@ -130,6 +131,7 @@ pub(super) fn entry_info<'a>(
     let mut r = proposal_after_legs(proposal)?;
     let mut schema = None;
     let mut time_tick = None;
+    let mut cash_policy_control = false;
     let has_control = r.present("entry.control")?;
     if has_control {
         let mut probe = Reader::new(&proposal[proposal.len() - r.remaining()..]);
@@ -145,6 +147,8 @@ pub(super) fn entry_info<'a>(
                 probe.u16("control.kind")?,
                 probe.bytes(MAX_RECORD_BYTES, "control.body")?,
             ));
+        } else if tag == 3 && envelope.class == 18 {
+            cash_policy_control = cash_policy::has_activation_reason(&mut probe)?;
         } else if tag == 4 {
             let tick = super::temporal::TimeObservation {
                 recorded_at: envelope.commit_seq,
@@ -326,6 +330,7 @@ pub(super) fn entry_info<'a>(
     let mut obligation_maturity = None;
     let mut case_member = None;
     let mut prior_period_adjustment = None;
+    let mut cash_policy_body = false;
     if minor >= 1 {
         let n = r.count(MAX_ENVELOPE_LIST, 6, "entry.extensions")?;
         let mut previous = None;
@@ -407,6 +412,10 @@ pub(super) fn entry_info<'a>(
             if tag == 39 {
                 asset_cost::charge(bytes, minor, envelope.class)?;
             }
+            if tag == 43 {
+                cash_policy::activation(proposal, envelope, bytes)?;
+                cash_policy_body = true;
+            }
             if tag == 31 {
                 let mut marker = Reader::new(bytes);
                 if marker.u16("recurring.version")? != 1 {
@@ -443,6 +452,12 @@ pub(super) fn entry_info<'a>(
                 "FX settlement terms cannot reinterpret base-only application differences",
             ));
         }
+    }
+    if cash_policy_control != cash_policy_body {
+        return Err(failed(
+            "cash_policy_history",
+            "cash-policy activation reason and typed definition must appear together",
+        ));
     }
     r.finish("report entry metadata")?;
     let (mut identity, legacy_identity) = match envelope.class {

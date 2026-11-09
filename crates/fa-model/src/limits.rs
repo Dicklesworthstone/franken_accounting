@@ -91,6 +91,11 @@ pub const MAX_STATEMENT_DEFINITION_BYTES: usize = 64 * 1024;
 /// Definition plus sealed description, caller key and fixed activation framing.
 pub const MAX_STATEMENT_DEFINITION_PLAN_BYTES: usize =
     MAX_STATEMENT_DEFINITION_BYTES + MAX_DESCRIPTION_BYTES + MAX_IDEMPOTENCY_KEY_BYTES + 256;
+/// Canonical cash-flow classification body retained in one typed Entry extension.
+pub const MAX_CASH_FLOW_POLICY_DEFINITION_BYTES: usize = 64 * 1024;
+/// Policy body plus sealed description, caller key and fixed review framing.
+pub const MAX_CASH_FLOW_POLICY_PLAN_BYTES: usize =
+    MAX_CASH_FLOW_POLICY_DEFINITION_BYTES + MAX_DESCRIPTION_BYTES + MAX_IDEMPOTENCY_KEY_BYTES + 256;
 /// Earnings and reserve buckets split across ownership links for one group
 /// report, including both stock and period activity attribution. Inherited and
 /// zero-cancelled buckets count; an exhausted budget refuses the entire report.
@@ -172,6 +177,14 @@ pub const ALL: &[(&str, u64)] = &[
     (
         "max_statement_definition_plan_bytes",
         MAX_STATEMENT_DEFINITION_PLAN_BYTES as u64,
+    ),
+    (
+        "max_cash_flow_policy_definition_bytes",
+        MAX_CASH_FLOW_POLICY_DEFINITION_BYTES as u64,
+    ),
+    (
+        "max_cash_flow_policy_plan_bytes",
+        MAX_CASH_FLOW_POLICY_PLAN_BYTES as u64,
     ),
     (
         "max_consolidation_nci_attribution_cells",

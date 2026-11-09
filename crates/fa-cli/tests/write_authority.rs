@@ -800,6 +800,34 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
         ),
         row(
             &[
+                "cash-policy",
+                "define",
+                "--file",
+                "cash-policy.json",
+                "--version",
+                "1",
+                "--from",
+                DAY,
+                "--key",
+                "matrix-cash-policy",
+            ],
+            &[Op::RuleChange],
+            Reaches,
+        ),
+        row(
+            &[
+                "cash-policy",
+                "activate",
+                "--plan",
+                "junk.plan",
+                "--digest",
+                ZERO_DIGEST,
+            ],
+            &[Op::RuleChange],
+            Reaches,
+        ),
+        row(
+            &[
                 "production",
                 "open",
                 "matrix-matter",

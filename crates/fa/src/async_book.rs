@@ -6696,6 +6696,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     book,
                     verification.known_at,
                 )?);
+            verification
+                .drift
+                .extend(crate::cash_flow_policy_activation::verify_at(
+                    db,
+                    &cx.query(),
+                    book,
+                    verification.known_at,
+                )?);
             Ok(verification)
         })
     }

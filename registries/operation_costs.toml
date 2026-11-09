@@ -681,3 +681,18 @@ hot_object_exceptions = []
 external_authorities = "none; two independent Human approvals are prior explicit native operations"
 complexity_witness = "Retained chart/schema and activation history scans, exact partition lint, and original-row/approval validation; historical checks may revisit source prefixes. Work depends on journal history and activated versions, not an indexed constant-time claim. Definition bytes are bounded at 65536 before chunk staging."
 notes = "The saved plan binds complete definition bytes, effective date, preparer, caller key and canonical accounting-schema basis. Approval commits do not alter this basis. Publication rechecks schema under the exclusive book borrow and witnesses authority, approvals, accounts and intent identity. Name/version/effective history remains immutable. Explicit older approved versions remain replayable after a newer default activates. Native regression witness: fa::statement_definition::tests::chunked_definition_activates_atomically_survives_approval_commits_and_retries."
+
+[[operation_class]]
+id = "cash_flow_policy_activation"
+name = "Approved cash-flow classification policy activation"
+substrate_class = "Read-only canonical review and one witnessed PolicyControl publication"
+substrate_transactions = "0 for preparation/read or an exact retry; 1 for a new activation"
+today_posture = "The complete immutable policy in its typed Entry extension, optional Entry fragments and shared successful-intent key claim publish atomically"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 PolicyControl Entry with extension 43, bounded 4096-byte Entry fragments above the inline threshold, and 1 IntentOutcome key claim; no mutable name head or separate definition root"
+hot_object_exceptions = []
+external_authorities = "none; two independent Human approvals are prior explicit native operations"
+complexity_witness = "Retained chart/schema and activation history scans, exact account membership checks, and original-row/approval/intent-claim validation; historical checks revisit source prefixes. Work depends on journal history and activated versions. Definition bytes are bounded at 65536 before Entry fragment staging."
+notes = "The saved review binds complete classification bytes, version, effective date, preparer, caller key and accounting-schema basis. Schema changes invalidate review; monetary posts and approvals preserve it. Publication witnesses authority, approvals, accounts and intent identity under the exclusive writer. Name versions and dates strictly advance. Named reports pin a recorded prefix and refuse intervals crossing a policy change. Existing direct/indirect cash certificates keep their math contract and do not prove activation approval authority. Native regression witness: fa::cash_flow_policy_activation::tests::cash_policy_chunked_entry_retains_the_complete_approved_definition."

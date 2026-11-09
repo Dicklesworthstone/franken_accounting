@@ -7,7 +7,7 @@ schema_version = 1
 name = "Entry"
 owner = "fa-model::entry::Entry"
 major = 1
-minor = 10
+minor = 11
 proposal_digest_domain = "fa:entry-proposal:v1"
 entry_digest_domain = "fa:entry:v1"
 semantic_digest_domain = "fa:entry-semantic:v1"
@@ -15,7 +15,14 @@ externally_verifiable = true
 
 proposal_fields = ["schema_major:u16", "schema_minor:u16", "book_id:bytes16", "branch_id:bytes16", "class:u16", "effective_date:i32", "document_date:option<i32>", "description:erasable<string>", "effective_period:option<period_ref>", "legs:list<leg_payload>", "control:option<control_payload>", "unit_totals:list<unit_total>", "base_totals:option<base_totals>", "idempotency_key:bytes", "origin:entry_origin", "principal_ref:u128", "session_ref:option<u128>", "evidence:list<evidence_ref>", "supersession:list<supersession>", "pending:option<pending>", "external_ids:list<external_id>", "tags:list<tag>", "extensions:list<extension>"]
 envelope_fields = ["proposal_digest:bytes32", "plan_certificate_oid:option<bytes32>", "approvals:list<approval_ref>", "entry_digest:bytes32"]
-extension_tags = ["1:fa:balancing:v1", "2:fa:auto-reverse:v1", "3:fa:effective-date-basis:v1", "4:fa:legal-hold-scope:v1", "5:fa:allocation-posting:v1", "6:fa:event-ref:v1", "7:fa:capability-body:v1", "8:fa:draft-body:v1", "9:fa:draft-intent:v1", "10:fa:scenario-body:v1", "11:fa:scenario-intent:v1", "12:fa:year-end-close:v1|v2|v3", "13:fa:production-profile:v1", "14:fa:production-bates:v1", "15:fa:statement-issuance:v1", "16:fa:fx-revaluation:v1|v2", "17:fa:engagement:v1", "18:fa:proposed-adjustment:v1", "19:fa:restatement-case:v1", "20:fa:case-determination:v1", "21:fa:case-rehearsal:v1", "22:fa:case-approval:v1", "23:fa:case-member:v1", "24:fa:case-posted:v1", "25:fa:case-disclosure:v1|v2", "26:fa:documentation-completion:v1", "27:fa:prior-period-error:v1", "28:fa:engagement-carry-forward:v1", "29:fa:recurring-schedule:v1", "30:fa:external-subledger-detail:v1", "31:fa:recurring-occurrence:v1", "32:fa:rule-inputs:v1", "33:fa:obligation-maturity:v1|v2", "34:fa:valuation-adjustment:v1", "35:fa:proportional-post:v1", "36:fa:prior-period-adjustment:v1", "37:fa:fx-settlement-valuation:v1", "38:fa:lot-disposal:v1", "39:fa:asset-charge:v1", "40:fa:close-run:v1", "41:fa:application-terms:v1", "42:fa:fx-settlement-terms:v2"]
+extension_tags = ["1:fa:balancing:v1", "2:fa:auto-reverse:v1", "3:fa:effective-date-basis:v1", "4:fa:legal-hold-scope:v1", "5:fa:allocation-posting:v1", "6:fa:event-ref:v1", "7:fa:capability-body:v1", "8:fa:draft-body:v1", "9:fa:draft-intent:v1", "10:fa:scenario-body:v1", "11:fa:scenario-intent:v1", "12:fa:year-end-close:v1|v2|v3", "13:fa:production-profile:v1", "14:fa:production-bates:v1", "15:fa:statement-issuance:v1", "16:fa:fx-revaluation:v1|v2", "17:fa:engagement:v1", "18:fa:proposed-adjustment:v1", "19:fa:restatement-case:v1", "20:fa:case-determination:v1", "21:fa:case-rehearsal:v1", "22:fa:case-approval:v1", "23:fa:case-member:v1", "24:fa:case-posted:v1", "25:fa:case-disclosure:v1|v2", "26:fa:documentation-completion:v1", "27:fa:prior-period-error:v1", "28:fa:engagement-carry-forward:v1", "29:fa:recurring-schedule:v1", "30:fa:external-subledger-detail:v1", "31:fa:recurring-occurrence:v1", "32:fa:rule-inputs:v1", "33:fa:obligation-maturity:v1|v2", "34:fa:valuation-adjustment:v1", "35:fa:proportional-post:v1", "36:fa:prior-period-adjustment:v1", "37:fa:fx-settlement-valuation:v1", "38:fa:lot-disposal:v1", "39:fa:asset-charge:v1", "40:fa:close-run:v1", "41:fa:application-terms:v1", "42:fa:fx-settlement-terms:v2", "43:fa:cash-flow-policy-definition:v1"]
+
+[[decision]]
+field = "extensions.43"
+appendix_a = "Versioned approved CashFlowClassification (plan §12.1)"
+code_type = "fa-model::cash_flow_policy::CashFlowPolicyDefinition; CASH_FLOW_POLICY=43; minimum schema minor 11"
+rationale = "The complete canonical name, positive version, ordered cash accounts and ordered non-cash activity rules are immutable on their own trunk PolicyControl. The LifecycleTransition targets its own book/principal/key Entry, from 0 to 1 with reason 17222 and one reviewed chart digest proof; its policy_activation origin binds the body digest. The reason and extension are inseparable and unrelated effects refuse. The native operation requires rule_change class scope, two independent Human approvals, unchanged chart membership and an atomic successful-intent claim. Versions and effective dates strictly advance; named selection pins known-at and refuses intervals crossing a version change. Existing direct/indirect cash certificate bytes keep their arithmetic contract, with activation provenance separate from certificate approval assurance. Independent report replay validates bounded control/body structure without claiming approval admission."
+tracking_bead = "fa-nzix"
 
 [[decision]]
 field = "native_storage"

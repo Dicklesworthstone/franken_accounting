@@ -51,9 +51,10 @@ pub const SCHEMA_MAJOR: u16 = 1;
 /// Minor 8 admits the immutable reviewed CloseRun task graph. Minor 9 binds
 /// explicit base-unit receipt/payment differences to their complete legs.
 /// Minor 10 binds explicit net-cash differences on source-bound FX settlements.
+/// Minor 11 retains approved, versioned cash-flow classification policy bodies.
 /// A writer may emit any minor ≤ this; bytes at a higher minor decode with
 /// their unknown extension tags preserved and skipped.
-pub const SCHEMA_MINOR: u16 = 10;
+pub const SCHEMA_MINOR: u16 = 11;
 /// The first minor whose layout carries the trailing extension block.
 pub const EXTENSIONS_MINOR: u16 = 1;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
@@ -283,6 +284,9 @@ pub const APPLICATION_TERMS_SCHEMA_MINOR: u16 = 9;
 /// version-2 complete net-cash and explicit difference-pair profile.
 pub const FX_SETTLEMENT_TERMS_EXTENSION: u16 = 42;
 pub const FX_SETTLEMENT_TERMS_SCHEMA_MINOR: u16 = 10;
+/// Immutable, reviewed cash-flow classification on its own PolicyControl.
+pub const CASH_FLOW_POLICY: u16 = 43;
+pub const CASH_FLOW_POLICY_MINOR: u16 = 11;
 pub const PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR: u16 = 3;
 
 /// The immutable source-period claim of a prior-period adjustment.
@@ -360,6 +364,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     CLOSE_RUN_EXTENSION,
     APPLICATION_TERMS_EXTENSION,
     FX_SETTLEMENT_TERMS_EXTENSION,
+    CASH_FLOW_POLICY,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1929,6 +1934,7 @@ impl EntryPayload {
                 "an unregistered extension tag at this schema minor",
             ));
         }
+        crate::cash_flow_policy::validate_entry(self)?;
         if self
             .extensions
             .iter()

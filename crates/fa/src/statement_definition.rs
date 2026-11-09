@@ -235,7 +235,10 @@ fn definition_valid(definition: &CustomStatementDefinition) -> Result<(), Refusa
     Ok(())
 }
 
-fn original<V: Vfs + Clone>(db: &Database<V>, row: &VertexRow) -> Result<bool, KernelError> {
+pub(crate) fn original<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+) -> Result<bool, KernelError> {
     let Some(before) = row.created_at.0.checked_sub(1).map(CommitSeq) else {
         return Ok(false);
     };
@@ -243,7 +246,7 @@ fn original<V: Vfs + Clone>(db: &Database<V>, row: &VertexRow) -> Result<bool, K
         && db.vertex_at(row.vid, before)?.is_none())
 }
 
-fn accounts_and_basis<V: Vfs + Clone>(
+pub(crate) fn accounts_and_basis<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &QueryCx,
     book: &BookContext,
@@ -364,7 +367,7 @@ fn definition_at<V: Vfs + Clone>(
     Ok((definition, row.created_at))
 }
 
-fn approvals_at<V: Vfs + Clone>(
+pub(crate) fn approvals_at<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &QueryCx,
     book: &BookContext,
@@ -737,7 +740,7 @@ fn admit_definition<V: Vfs + Clone>(
     )?)
 }
 
-fn admit_read<V: Vfs + Clone>(
+pub(crate) fn admit_read<V: Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     capability: &Capability,

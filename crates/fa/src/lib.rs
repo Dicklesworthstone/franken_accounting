@@ -65,6 +65,7 @@ pub mod case_statements;
 pub mod cash_flow_basis;
 pub mod cash_flow_certificate;
 pub mod cash_flow_policy;
+pub mod cash_flow_policy_activation;
 pub mod cash_flow_split;
 pub mod certificate;
 mod certificate_store;

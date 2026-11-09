@@ -26,6 +26,7 @@ pub mod application;
 pub mod asset_cost;
 pub mod bank_csv;
 pub mod canon;
+pub mod cash_flow_policy;
 pub mod close_run;
 pub mod closing;
 pub mod deposit;
@@ -53,6 +54,7 @@ pub use application::{
 };
 pub use asset_cost::{AssetChargeBasis, AssetCostKind, AssetScheduleSpec};
 pub use canon::{DecodeError, EncodeError, Reader, Writer};
+pub use cash_flow_policy::CashFlowPolicyDefinition;
 pub use close_run::{CloseRunBody, CloseTaskBody, CloseTaskBodyAction};
 pub use closing::YearEndCloseBasis;
 pub use deposit::{

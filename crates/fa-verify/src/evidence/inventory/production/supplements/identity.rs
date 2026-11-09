@@ -47,10 +47,11 @@ pub(super) fn entry_identity(
     // Replacement has both historical key-derived and modern target-derived
     // identities with no distinguishing immutable marker. Control identities
     // are separately registered and must not fall through to the posting law.
-    // Minors 9/10 add application/FX terms (extensions 41/42) without changing
-    // entry identities. Posting semantics remain outside this citation proof;
+    // Minors 9/10 add application/FX terms (extensions 41/42); minor 11 adds a
+    // separate PolicyControl definition. Monetary identities are unchanged.
+    // Posting semantics remain outside this citation proof;
     // future minors still refuse rather than assume their identity rules.
-    if minor > 10 || !(1..=15).contains(&class) || class == 5 {
+    if minor > 11 || !(1..=15).contains(&class) || class == 5 {
         return Err(EvidenceProductionError::UnsupportedTargetIdentity { leaf_index, class });
     }
     // Complete frame and citation checks apply to referenced targets even if
@@ -175,6 +176,11 @@ fn read_identity(
         for _ in 0..n {
             let tag = r.u16("extension.tag")?;
             let bytes = r.bytes(64 * 1024, "extension.body")?;
+            if tag == 43 {
+                return Err(invalid(
+                    "cash-policy activation cannot be a monetary supplement target",
+                ));
+            }
             if tag == 31 {
                 let mut marker = Reader::new(bytes);
                 if marker.u16("recurring.version")? != 1 {

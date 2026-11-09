@@ -21,6 +21,7 @@ mod asset;
 pub mod authority;
 mod bank;
 mod case;
+mod cash_policy;
 mod chart_role;
 pub mod cli;
 pub mod client;
