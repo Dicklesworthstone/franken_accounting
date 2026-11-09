@@ -459,11 +459,13 @@ fn carried_entry_history_refuses_every_entry_tamper_at_the_literal_verifiers_pre
         let saved_work = memo.read_work();
         let mut damage = WriteBatch::new(relation::HAS_LEG);
         match attack {
-            0 => damage.set_vertex_property(
-                h.source,
-                property::FA_DIGEST,
-                Some(scalar_bytes("bad digest", vec![0; 32]).unwrap()),
-            ),
+            0 => {
+                damage.set_vertex_property(
+                    h.source,
+                    property::FA_DIGEST,
+                    Some(scalar_bytes("bad digest", vec![0; 32]).unwrap()),
+                );
+            }
             1 => {
                 damage.set_vertex_label(h.source, label::ENTRY, false);
                 damage.set_vertex_label(h.source, label::DOCUMENT, true);
