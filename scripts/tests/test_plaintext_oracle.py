@@ -91,6 +91,21 @@ def save_fixture(directory: Path, texts: dict[str, str] | None = None) -> dict[s
     return result
 
 
+def contra_fixtures() -> dict[str, str]:
+    """The producer's optional D/C metadata retains both override directions."""
+    texts = fixtures()
+    texts["csv_gl"] = texts["csv_gl"].replace(
+        "Account 1000.10|Asset|D", "Account 1000.10|Asset|C").replace(
+        "Account 3000|Equity|C", "Account 3000|Equity|D")
+    texts["beancount"] = texts["beancount"].replace(
+        '  fa_type: "Asset"\n', '  fa_type: "Asset"\n  fa_normal_side_v1: "C"\n').replace(
+        '  fa_type: "Equity"\n', '  fa_type: "Equity"\n  fa_normal_side_v1: "D"\n')
+    texts["hledger_journal"] = texts["hledger_journal"].replace(
+        "fa_type:Asset ", "fa_type:Asset fa_normal_side_v1:C ").replace(
+        "fa_type:Equity ", "fa_type:Equity fa_normal_side_v1:D ")
+    return texts
+
+
 class ExactControlsTests(unittest.TestCase):
     def setUp(self):
         self.texts = fixtures()
@@ -149,6 +164,45 @@ class ExactControlsTests(unittest.TestCase):
         collision = self.texts["beancount"].replace("Equity:A3000", "Assets:A1000-10")
         with self.assertRaises(oracle.OracleError):
             oracle.read_account_map(collision, "beancount", self.reference)
+
+    def test_normal_balance_overrides_match_the_native_chart(self):
+        texts = contra_fixtures()
+        reference = oracle.read_reference(texts["csv_gl"])
+        self.assertEqual(reference.normal_sides, {"1000.10": "C", "3000": "D", "5000": "D"})
+        self.assertEqual(self.reference.normal_sides, {"1000.10": "D", "3000": "C", "5000": "D"})
+        for kind, key in (("beancount", "beancount"), ("hledger", "hledger_journal")):
+            with self.subTest(kind=kind):
+                self.assertEqual(oracle.read_account_map(texts[key], kind, reference), self.mapping)
+
+    def test_normal_balance_metadata_refuses_invalid_duplicate_missing_and_foreign_side(self):
+        texts = contra_fixtures()
+        reference = oracle.read_reference(texts["csv_gl"])
+        for kind, key, token, replacements in (
+            ("beancount", "beancount", '  fa_normal_side_v1: "C"\n', (
+                '  fa_normal_side_v1: "X"\n',
+                '  fa_normal_side_v1: "D"\n',
+                '  fa_normal_side_v1: "C"\n  fa_normal_side_v1: "C"\n',
+                '',
+                '  fa_normal_side_v2: "C"\n',
+            )),
+            ("hledger", "hledger_journal", " fa_normal_side_v1:C", (
+                " fa_normal_side_v1:X",
+                " fa_normal_side_v1:D",
+                " fa_normal_side_v1:C fa_normal_side_v1:C",
+                "",
+                " fa_normal_side_v2:C",
+            )),
+        ):
+            for replacement in replacements:
+                with self.subTest(kind=kind, replacement=replacement), self.assertRaises(oracle.OracleError):
+                    oracle.read_account_map(texts[key].replace(token, replacement), kind, reference)
+
+    def test_native_normal_balance_is_checked_when_plaintext_uses_its_type_default(self):
+        changed = self.texts["csv_gl"].replace("Account 1000.10|Asset|D", "Account 1000.10|Asset|C")
+        reference = oracle.read_reference(changed)
+        for kind, key in (("beancount", "beancount"), ("hledger", "hledger_journal")):
+            with self.subTest(kind=kind), self.assertRaisesRegex(oracle.OracleError, "normal balance"):
+                oracle.read_account_map(self.texts[key], kind, reference)
 
     def test_includes_plugins_and_automatic_posting_rules_are_not_native_exports(self):
         for kind, key, appended in (
@@ -249,6 +303,12 @@ class ExternalToolTests(unittest.TestCase):
         paths = save_fixture(root, texts)
         report = oracle.run_oracle(**paths, out=root / "oracle", **TOOLS)
         return root, report
+
+    def test_real_tools_accept_both_normal_balance_override_directions(self):
+        _, report = self.run_external(contra_fixtures())
+        self.assertEqual(report["status"], "PASS", report.get("error"))
+        self.assertEqual((report["entries"], report["postings"], report["account_currency_cells"]), (4, 8, 5))
+        self.assertEqual(report["commands"], 14)
 
     def test_real_tools_match_multicurrency_gross_counts_and_zero_net_cell(self):
         texts = fixtures()

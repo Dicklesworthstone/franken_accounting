@@ -146,6 +146,13 @@ guess original codes. The versioned `fa_book_name_hex_v1`, `fa_code_hex_v1` and
 and UTF-8 decoding; duplicate raw/encoded identities are rejected. Includes,
 plugins and automatic posting rules are outside this native-export profile.
 
+Account declarations also retain the native chart's normal side. An override
+uses `fa_normal_side_v1` with `D` or `C`; without this tag, the account type's
+default applies. The helper compares that side with the CSV declaration and
+rejects missing overrides, mismatches, duplicate tags and unknown values.
+Beancount calendar dates must use years 0001 through 9999. Balance assertions
+also require the inclusive as-of date and its following day to fit this range.
+
 Native writers preserve multiline source text as data. Beancount quoted fields
 escape newline, carriage return, tab, backspace and form feed, and unsafe posting
 memos use `fa_memo_hex_v1`. Hledger unsafe entry IDs and descriptions use
@@ -169,6 +176,16 @@ duplicate cells and missing or foreign cells are rejected. Zero-net accounts
 with real activity remain in the comparison, while declared accounts with no
 postings do not acquire invented monetary rows. Gross controls and counts catch
 offsetting additions/removals and changes hidden by unchanged net balances.
+
+A declared synthetic boundary control exposed a Beancount 3.2.0 divergence:
+the balanced pair `±1701411834604692317316873037158841057.27 USD`
+(`i128::MAX` minor units at scale 2) fails `bean-check`. Its parser retains the
+positive literal but rounds the negative one at the unchanged Decimal context
+precision of 28, leaving a reported imbalance of `158841057.27 USD`. The same
+control passed hledger's exact net, gross and count comparisons. This is one
+observed boundary, not a general precision threshold or execution of a Rust
+export. The combined oracle reports `FAIL`; neither its comparator nor the
+submitted amounts are adjusted to admit it.
 
 The result does not establish original-source completeness, evidence custody,
 native certificate validity, lot/cost-basis correctness, base-currency valuation,

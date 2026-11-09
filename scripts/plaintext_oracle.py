@@ -157,6 +157,7 @@ class Reference:
     coordinate: dict
     accounts: dict[str, str]
     scales: dict[str, int]
+    normal_sides: dict[str, str]
     cells: dict[tuple[str, str], Cell] = field(default_factory=dict)
     entries: int = 0
     postings: int = 0
@@ -193,6 +194,7 @@ def read_reference(text: str) -> Reference:
     escaped = False
     coordinate = None
     accounts: dict[str, str] = {}
+    normal_sides: dict[str, str] = {}
     for line in stream:
         line = line.rstrip("\r\n")
         if line == "# fa_csv_text_encoding_v1|percent-utf8":
@@ -233,6 +235,7 @@ def read_reference(text: str) -> Reference:
             code = metadata_text(parts[0], escaped)
             require(code and code not in accounts, "duplicate or empty native account code")
             accounts[code] = parts[2]
+            normal_sides[code] = parts[3]
         elif line.startswith(("# fa_account_roles_v1|", "# fa_assertion|", "# fa_csv_empty_optional_v1|")):
             require(coordinate is not None, "native ancillary metadata has no coordinate")
         elif line.startswith("#") or not line:
@@ -246,7 +249,7 @@ def read_reference(text: str) -> Reference:
     columns = CSV_COLUMNS + (("dimension_set_v1",) if "dimension_encoding" in coordinate else ())
     records = rows(header + "\n" + stream.read(), columns, "native CSV")
     base, _, scale = coordinate["base"].rpartition("@")
-    reference = Reference(coordinate, accounts, {base: int(scale)})
+    reference = Reference(coordinate, accounts, {base: int(scale)}, normal_sides)
     seen_entries: dict[str, tuple[str, str, str]] = {}
     counts: dict[str, int] = defaultdict(int)
     for row in records:
@@ -290,9 +293,15 @@ def read_account_map(text: str, kind: str, reference: Reference) -> dict[str, st
     mapping: dict[str, str] = {}
     seen_codes = set()
 
-    def declare(name: str, code: str, account_type: str) -> None:
+    def declare(name: str, code: str, account_type: str, normal_side: str | None) -> None:
         require(code in reference.accounts and account_type == reference.accounts[code],
                 f"{kind}: account declaration differs from native chart: {code!r}")
+        if normal_side is None:
+            normal_side = "C" if account_type in ("Liability", "Equity", "Revenue") else "D"
+        require(normal_side in ("D", "C"),
+                f"{kind}: invalid fa_normal_side_v1 {normal_side!r}; expected D or C")
+        require(normal_side == reference.normal_sides[code],
+                f"{kind}: normal balance differs from native chart: {code!r}")
         require(name.startswith(ROOTS[account_type] + ":") and not any(c.isspace() for c in name),
                 f"{kind}: invalid account name {name!r}")
         require(name not in mapping and code not in seen_codes,
@@ -318,7 +327,7 @@ def read_account_map(text: str, kind: str, reference: Reference) -> dict[str, st
                     if not following.startswith((" ", "\t")):
                         break
                     key, separator, value = following.strip().partition(":")
-                    require(separator and key in {"fa_code", "fa_name", "fa_type", "fa_roles_v1"}
+                    require(separator and key in {"fa_code", "fa_name", "fa_type", "fa_roles_v1", "fa_normal_side_v1"}
                             and key not in values, "Beancount account metadata is malformed or repeated")
                     # Beancount strings permit literal control bytes such as
                     # NUL/VT; JSON's stricter default would reject valid native
@@ -326,7 +335,7 @@ def read_account_map(text: str, kind: str, reference: Reference) -> dict[str, st
                     values[key] = json.loads(value.strip(), strict=False)
                     require(isinstance(values[key], str), "Beancount account metadata must be text")
                 require({"fa_code", "fa_type"} <= values.keys(), "Beancount account lacks explicit fa_code/fa_type")
-                declare(match[1], values["fa_code"], values["fa_type"])
+                declare(match[1], values["fa_code"], values["fa_type"], values.get("fa_normal_side_v1"))
             elif line and not line.startswith((" ", "\t", ";")):
                 require(line.startswith(('option "title" ', 'option "operating_currency" '))
                         or re.match(r"[0-9]{4}-[0-9]{2}-[0-9]{2} (?:\* |balance )", line) is not None,
@@ -335,12 +344,13 @@ def read_account_map(text: str, kind: str, reference: Reference) -> dict[str, st
             if line.startswith("account "):
                 match = re.fullmatch(
                     r"account (\S+)\s+; (fa_code|fa_code_hex_v1):(.*?) fa_type:(\S+)"
+                    r"(?: fa_normal_side_v1:(\S+))?"
                     r"(?: fa_roles_v1:\S+)? (fa_name|fa_name_hex_v1):(.*)", line)
                 require(match is not None, "hledger account lacks unambiguous explicit fa_code/fa_type")
                 code = metadata_hex(match[3]) if match[2] == "fa_code_hex_v1" else match[3]
-                if match[5] == "fa_name_hex_v1":
-                    metadata_hex(match[6])
-                declare(match[1], code, match[4])
+                if match[6] == "fa_name_hex_v1":
+                    metadata_hex(match[7])
+                declare(match[1], code, match[4], match[5])
             elif line and not line.startswith((" ", "\t", ";")):
                 require(re.match(r"[0-9]{4}-[0-9]{2}-[0-9]{2} \* ", line) is not None,
                         "hledger input is not the native export profile (includes/rules are not admitted)")

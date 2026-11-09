@@ -97,7 +97,7 @@ fn hledger_preserves_delimiters_and_multiline_source_text() {
         "  First line; reference\\n\nSecond line\t\"quoted\" ",
         None,
     );
-    let text = write_hledger(&source);
+    let text = write_hledger(&source).unwrap();
     let restored = read_hledger(&text, &UnitCatalog::embedded().unwrap()).unwrap();
     verify_round_trip_identity("hledger-text", &source, &restored).unwrap();
     assert_eq!(restored.entries.len(), 1);
@@ -132,7 +132,10 @@ fn plaintext_account_names_and_entry_ids_remain_exact() {
         ),
         (
             "hledger",
-            read_hledger(&write_hledger(&source), &UnitCatalog::embedded().unwrap()),
+            read_hledger(
+                &write_hledger(&source).unwrap(),
+                &UnitCatalog::embedded().unwrap(),
+            ),
         ),
     ] {
         verify_round_trip_identity(format, &source, &restored.unwrap()).unwrap();
@@ -166,7 +169,7 @@ fn plaintext_preserves_normal_balance_overrides_for_every_monetary_account_type(
             )
             .unwrap();
             let bean = write_beancount(&source).unwrap();
-            let hledger = write_hledger(&source);
+            let hledger = write_hledger(&source).unwrap();
             for (format, text, restored) in [
                 ("beancount", &bean, read_beancount(&bean, &units)),
                 ("hledger", &hledger, read_hledger(&hledger, &units)),
@@ -182,7 +185,7 @@ fn plaintext_preserves_normal_balance_overrides_for_every_monetary_account_type(
                 let reencoded = if format == "beancount" {
                     write_beancount(&restored).unwrap()
                 } else {
-                    write_hledger(&restored)
+                    write_hledger(&restored).unwrap()
                 };
                 assert_eq!(&reencoded, text);
             }
@@ -208,7 +211,7 @@ fn plaintext_normal_side_metadata_refuses_ambiguity_and_detects_substitution() {
     .unwrap();
     let units = UnitCatalog::embedded().unwrap();
     let bean = write_beancount(&source).unwrap();
-    let hledger = write_hledger(&source);
+    let hledger = write_hledger(&source).unwrap();
     for (bean_value, hledger_value) in [
         ("fa_normal_side_v1: \"X\"", "fa_normal_side_v1:X"),
         (
@@ -283,7 +286,7 @@ fn beancount_date_boundaries_preserve_certificates_and_inclusive_assertions() {
     let base = journal("Date boundaries", "payment", None);
     let units = UnitCatalog::embedded().unwrap();
     for (date, next_day) in [
-        ("0000-01-01", Some("0000-01-02")),
+        ("0001-01-01", Some("0001-01-02")),
         ("1969-12-31", Some("1970-01-01")),
         ("9999-12-30", Some("9999-12-31")),
         ("9999-12-31", None),
@@ -459,6 +462,7 @@ fn beancount_writer_refuses_negative_public_amount_magnitudes() {
 fn beancount_writer_refuses_dates_outside_its_profile_and_assertion_overflow() {
     let base = journal("Date boundaries", "payment", None);
     let normal = base.coordinate.effective_through;
+    let year_zero = DateDay::parse("0000-01-01").unwrap();
     let last = DateDay::parse("9999-12-31").unwrap();
     let after_last = DateDay::from_ymd(10000, 1, 1).unwrap();
     let rebuild = |cutoff, effective, assertion_day: Option<DateDay>| {
@@ -501,6 +505,9 @@ fn beancount_writer_refuses_dates_outside_its_profile_and_assertion_overflow() {
             "selection cutoff",
         ),
         (after_last, after_last, None, "selection cutoff"),
+        (year_zero, year_zero, None, "selection cutoff"),
+        (normal, year_zero, None, "account opening"),
+        (normal, normal, Some(year_zero), "account opening"),
         (last, DateDay(i32::MIN), None, "account opening"),
         (last, after_last, None, "entry source-0001"),
         (last, last, Some(last), "balance assertion for account 1000"),
@@ -529,13 +536,14 @@ fn beancount_open_directives_validate_their_dates() {
     let units = UnitCatalog::embedded().unwrap();
     let text = write_beancount(&source).unwrap();
     assert!(text.contains("1970-01-01 open "));
-    for date in ["0000-01-01", "1969-12-31", "2024-06-30"] {
+    for date in ["0001-01-01", "1969-12-31", "2024-06-30"] {
         let revised = text.replace("1970-01-01 open ", &format!("{date} open "));
         let restored = read_beancount(&revised, &units).unwrap();
         assert_eq!(restored, source);
         verify_round_trip_identity("beancount-opening-date", &source, &restored).unwrap();
     }
     for date in [
+        "0000-01-01",
         "2024-+1-+5",
         "10000-01-01",
         "-001-01-01",
@@ -550,6 +558,52 @@ fn beancount_open_directives_validate_their_dates() {
                 ..
             })
         ));
+    }
+}
+
+#[test]
+fn beancount_reader_refuses_dates_before_its_calendar_profile() {
+    let base = journal("Calendar profile", "payment", None);
+    let source = FormatJournal::new(
+        "Calendar profile",
+        "USD",
+        2,
+        base.coordinate.effective_through,
+        1,
+        base.accounts.clone(),
+        base.entries.clone(),
+        vec![FormatAssertion {
+            account_code: "1000".into(),
+            as_of: base.coordinate.effective_through,
+            side: Side::Credit,
+            amount: Amount::new(UnitId(0), 1_234_567),
+            unit_code: "USD".into(),
+            unit_scale: 2,
+        }],
+    )
+    .unwrap();
+    let text = write_beancount(&source).unwrap();
+    let units = UnitCatalog::embedded().unwrap();
+    for (original, replacement) in [
+        (
+            "; fa_effective_through: 2024-06-30",
+            "; fa_effective_through: 0000-01-01",
+        ),
+        ("1970-01-01 open ", "0000-01-01 open "),
+        ("2024-06-30 * ", "0000-01-01 * "),
+        ("2024-07-01 balance ", "0000-01-01 balance "),
+        ("2024-07-01 balance ", "0001-01-01 balance "),
+    ] {
+        assert!(text.contains(original), "{original}");
+        let revised = text.replace(original, replacement);
+        assert!(
+            matches!(
+                read_beancount(&revised, &units),
+                Err(FormatError::Parse { format: "beancount_v3", detail })
+                    if detail.contains("YYYY-MM-DD profile")
+            ),
+            "{replacement}"
+        );
     }
 }
 
@@ -594,7 +648,11 @@ fn hledger_account_names_cannot_override_declared_metadata() {
     )
     .unwrap();
     let restored =
-        read_hledger(&write_hledger(&source), &UnitCatalog::embedded().unwrap()).unwrap();
+        read_hledger(
+            &write_hledger(&source).unwrap(),
+            &UnitCatalog::embedded().unwrap(),
+        )
+        .unwrap();
     verify_round_trip_identity("hledger-name", &source, &restored).unwrap();
 }
 
@@ -634,7 +692,7 @@ fn plaintext_hex_metadata_refuses_corrupt_or_misattached_text() {
         );
     }
     for bad in ["a", "zz", "ff"] {
-        let hledger = write_hledger(&source).replace(
+        let hledger = write_hledger(&source).unwrap().replace(
             "; fa_book_name: Book",
             &format!("; fa_book_name_hex_v1: {bad}"),
         );

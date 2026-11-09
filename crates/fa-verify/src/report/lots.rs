@@ -373,8 +373,8 @@ pub(super) fn replay(
     if snapshot.items.len() > MAX_ROWS {
         return Err(failed("bounded_input", "lot source exceeds the item bound"));
     }
-    let mut by_partition: BTreeMap<(u128, Vec<(u32, u128)>), Vec<&VerifiedOpenItem>> =
-        BTreeMap::new();
+    type PartitionKey = (u128, Vec<(u32, u128)>);
+    let mut by_partition: BTreeMap<PartitionKey, Vec<&VerifiedOpenItem>> = BTreeMap::new();
     let mut application_count = 0usize;
     for item in &snapshot.items {
         validate_item(item)?;

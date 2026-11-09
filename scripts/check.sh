@@ -14,8 +14,9 @@
 #
 # STEPS (37 in full mode):
 # CANONICAL_STEPS: bench-smoke, fmt, public-ledger-unit, check, clippy, test-list, test, gate-evidence, invariants, invariants-negative, robot-schema, fuzz-smoke, conformance-mutation, deny, installer-integration, ubs, shellcheck, gate-evidence-negative, local-proof-selftest, tier0-selftest, check-classify, merge-train-selftest, owner-watch-selftest, close-bead-selftest, gate-health-selftest, docs-sync, registries, registry-check, reachability, forbidden-deps, foundations, foundations-negative, doctrine, doctrine-negative, reference-boundary, topology, topology-negative
-#   fmt, public-ledger-unit (existing Python publisher/protocol/orchestration tests;
-#   not native replay or cryptographic verification), check, clippy (-D warnings),
+#   fmt, public-ledger-unit (existing Python publisher/protocol/orchestration
+#   and oracle parser tests; not native replay or cryptographic verification),
+#   check, clippy (-D warnings),
 #   test-list + test (one rch command per
 #   package or test target, each under the worker cap, fa-0hs4.2), gate-evidence
 #   (completion markers, test-inventory witness, per-crate ratchet, fa-czx)
@@ -741,6 +742,12 @@ public_ledger_unit() {
   [ "$rc" -eq 0 ] || return "$rc"
   python3 -B -m unittest discover \
     -s "$ROOT/scripts/tests" -p 'test_house_disbursements_replay.py'
+  rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  (
+    cd "$ROOT/scripts/tests" || exit 1
+    python3 -B -m unittest -v test_plaintext_oracle.ExactControlsTests
+  )
   rc=$?
   return "$rc"
 }

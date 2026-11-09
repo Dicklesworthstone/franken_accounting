@@ -201,7 +201,8 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
                 .copied()
                 .unwrap_or(AccountType::ASSET);
             let bc_acct = to_beancount_account_name(acct_ty, &leg.account_code);
-            let amt_str = beancount_amount(
+            let amt_str = plaintext_amount(
+                "beancount_v3",
                 leg.amount,
                 leg.side,
                 leg.unit_scale,
@@ -246,7 +247,8 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
             .copied()
             .unwrap_or(AccountType::ASSET);
         let bc_acct = to_beancount_account_name(acct_ty, &asrt.account_code);
-        let amt_str = beancount_amount(
+        let amt_str = plaintext_amount(
+            "beancount_v3",
             asrt.amount,
             asrt.side,
             asrt.unit_scale,
@@ -261,20 +263,21 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
     Ok(out)
 }
 
-fn beancount_amount(
+fn plaintext_amount(
+    format: &'static str,
     amount: Amount,
     side: Side,
     scale: u8,
     context: &str,
 ) -> Result<String, FormatError> {
     let magnitude = amount.as_leg(side).map_err(|error| FormatError::Parse {
-        format: "beancount_v3",
+        format,
         detail: format!("{context}: {error}"),
     })?;
     let signed = match side {
         Side::Debit => magnitude,
         Side::Credit => magnitude.checked_neg().map_err(|_| FormatError::Overflow {
-            format: "beancount_v3",
+            format,
             detail: format!("signed amount for {context}"),
         })?,
     };
@@ -318,17 +321,28 @@ fn read_normal_side(
 }
 
 fn beancount_date(day: DateDay, context: &str) -> Result<String, FormatError> {
+    validate_beancount_date(day, context)?;
+    Ok(format_date_iso(day))
+}
+
+fn parse_beancount_date(text: &str, context: &str) -> Result<DateDay, FormatError> {
+    let day = parse_date_iso("beancount_v3", text)?;
+    validate_beancount_date(day, context)?;
+    Ok(day)
+}
+
+fn validate_beancount_date(day: DateDay, context: &str) -> Result<(), FormatError> {
     let (year, _, _) = day.ymd();
-    if !(0..=9999).contains(&year) {
+    if !(1..=9999).contains(&year) {
         return Err(FormatError::Parse {
             format: "beancount_v3",
             detail: format!(
-                "{context} date {} is outside the YYYY-MM-DD profile (years 0000 through 9999)",
+                "{context} date {} is outside the YYYY-MM-DD profile (years 0001 through 9999)",
                 format_date_iso(day)
             ),
         });
     }
-    Ok(format_date_iso(day))
+    Ok(())
 }
 
 /// Parse a Beancount v3 journal produced by [`write_beancount`] (or conforming
@@ -373,7 +387,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
                     })?;
                 }
             } else if let Some(v) = c.strip_prefix("fa_effective_through:") {
-                effective_through = parse_date_iso(FMT, v.trim())?;
+                effective_through = parse_beancount_date(v.trim(), "selection cutoff")?;
             } else if let Some(v) = c.strip_prefix("fa_known_at_seq:") {
                 known_at_seq = v.trim().parse().map_err(|_| FormatError::Parse {
                     format: FMT,
@@ -395,7 +409,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
         // Top-level directive starts with YYYY-MM-DD
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
         if tokens.len() >= 3 && tokens[1] == "open" {
-            parse_date_iso(FMT, tokens[0])?;
+            parse_beancount_date(tokens[0], "account opening")?;
             let bc_acct = tokens[2];
             let mut code = from_beancount_account_name(bc_acct)?;
             let mut name = code.clone();
@@ -431,8 +445,9 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
         }
 
         if tokens.len() >= 5 && tokens[1] == "balance" {
-            let bc_day = parse_date_iso(FMT, tokens[0])?;
+            let bc_day = parse_beancount_date(tokens[0], "balance assertion")?;
             let as_of = DateDay(bc_day.0 - 1);
+            validate_beancount_date(as_of, "balance assertion inclusive as-of")?;
             let acct_code = names.code(tokens[2])?;
             let amt_tok = tokens[3];
             let unit_code = tokens[4].to_owned();
@@ -468,7 +483,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
         }
 
         if tokens.len() >= 3 && (tokens[1] == "*" || tokens[1] == "!") {
-            let eff_date = parse_date_iso(FMT, tokens[0])?;
+            let eff_date = parse_beancount_date(tokens[0], "entry")?;
             if eff_date > effective_through {
                 effective_through = eff_date;
             }
@@ -628,8 +643,9 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
     Ok(journal)
 }
 
-/// Write a `FormatJournal` as a deterministic `hledger` / `ledger-cli` journal.
-pub fn write_hledger(journal: &FormatJournal) -> String {
+/// Write a `FormatJournal` as a deterministic `hledger` / `ledger-cli` journal,
+/// refusing negative posting magnitudes before converting their signed values.
+pub fn write_hledger(journal: &FormatJournal) -> Result<String, FormatError> {
     let mut out = String::new();
     out.push_str("; FrankenAccounting hledger export (fa-formats, bead fa-npi)\n");
     write_book_name(&mut out, &journal.coordinate.book_name);
@@ -692,11 +708,13 @@ pub fn write_hledger(journal: &FormatJournal) -> String {
                 .copied()
                 .unwrap_or(AccountType::ASSET);
             let hl_acct = to_beancount_account_name(acct_ty, &leg.account_code);
-            let signed_mantissa = match leg.side {
-                Side::Debit => leg.amount.mantissa,
-                Side::Credit => -leg.amount.mantissa,
-            };
-            let amt_str = format_exact_decimal(signed_mantissa, leg.unit_scale);
+            let amt_str = plaintext_amount(
+                "hledger_journal",
+                leg.amount,
+                leg.side,
+                leg.unit_scale,
+                &format!("entry {} leg on {}", entry.entry_id, leg.account_code),
+            )?;
             if leg.dimensions.is_empty() {
                 out.push_str(&format!("    {hl_acct}    {amt_str} {}\n", leg.unit_code));
             } else {
@@ -709,7 +727,7 @@ pub fn write_hledger(journal: &FormatJournal) -> String {
         }
         out.push('\n');
     }
-    out
+    Ok(out)
 }
 
 /// Parse an `hledger` journal produced by [`write_hledger`] into an exact `FormatJournal`.
