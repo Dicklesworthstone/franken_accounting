@@ -45,13 +45,13 @@ struct Control<'a> {
 
 /// Read only the selected Scenario's controls; unrelated scenarios can retain
 /// later semantics without changing a previously certified prefix.
-fn control<'a>(
-    proposal: &'a [u8],
-    selected: u128,
-) -> Result<Option<Control<'a>>, ReportError> {
+fn control<'a>(proposal: &'a [u8], selected: u128) -> Result<Option<Control<'a>>, ReportError> {
     let mut r = proposal_after_legs(proposal)?;
     if !r.present("scenario.control")? || r.u8("scenario.control.tag")? != 3 {
-        return Err(failed("scenario_records", "ScenarioControl lacks its lifecycle payload"));
+        return Err(failed(
+            "scenario_records",
+            "ScenarioControl lacks its lifecycle payload",
+        ));
     }
     let object = r.u128("scenario.object")?;
     if object != selected {
@@ -59,18 +59,27 @@ fn control<'a>(
     }
     let mut header = Reader::new(proposal);
     if header.u16("scenario.major")? != 1 || header.u16("scenario.minor")? != 1 {
-        return Err(failed("scenario_profile", "unsupported ScenarioControl schema"));
+        return Err(failed(
+            "scenario_profile",
+            "unsupported ScenarioControl schema",
+        ));
     }
     header.fixed::<16>("scenario.book")?;
     header.fixed::<16>("scenario.branch")?;
     header.u16("scenario.class")?;
     header.i32("scenario.undated_placeholder")?;
     if header.present("scenario.document_date")? {
-        return Err(failed("scenario_records", "ScenarioControl has a document date"));
+        return Err(failed(
+            "scenario_records",
+            "ScenarioControl has a document date",
+        ));
     }
     skip_erasable(&mut header, "scenario.description")?;
     if header.present("scenario.period")? {
-        return Err(failed("scenario_records", "ScenarioControl has an effective period"));
+        return Err(failed(
+            "scenario_records",
+            "ScenarioControl has an effective period",
+        ));
     }
     let from = r.u8("scenario.from")?;
     let to = r.u8("scenario.to")?;
@@ -93,15 +102,24 @@ fn control<'a>(
         refs.push(oid);
     }
     if r.u16("scenario.reason")? != 0 {
-        return Err(failed("scenario_records", "unsupported scenario reason code"));
+        return Err(failed(
+            "scenario_records",
+            "unsupported scenario reason code",
+        ));
     }
     r.count(0, 36, "scenario.unit_totals")?;
     if r.present("scenario.base_totals")? {
-        return Err(failed("scenario_records", "scenario control has base valuation"));
+        return Err(failed(
+            "scenario_records",
+            "scenario control has base valuation",
+        ));
     }
     let key = r.bytes(64, "scenario.key")?;
     if r.u8("scenario.origin")? != 3 || r.u16("scenario.control_kind")? != 12 {
-        return Err(failed("scenario_records", "scenario control has an unrelated origin"));
+        return Err(failed(
+            "scenario_records",
+            "scenario control has an unrelated origin",
+        ));
     }
     let body_digest = r.fixed("scenario.body_digest")?;
     let principal = r.u128("scenario.principal")?;
@@ -111,7 +129,10 @@ fn control<'a>(
     r.count(0, 65, "scenario.evidence")?;
     r.count(0, 51, "scenario.supersession")?;
     if r.present("scenario.pending")? {
-        return Err(failed("scenario_records", "scenario control has pending effects"));
+        return Err(failed(
+            "scenario_records",
+            "scenario control has pending effects",
+        ));
     }
     r.count(0, 65, "scenario.external_ids")?;
     r.count(0, 65, "scenario.tags")?;
@@ -162,7 +183,10 @@ pub(super) fn plans<'a>(
             continue;
         };
         if record.body_digest != cert.body_digest {
-            return Err(failed("scenario_records", "scenario control binds another immutable body"));
+            return Err(failed(
+                "scenario_records",
+                "scenario control binds another immutable body",
+            ));
         }
         match (record.from, record.to, record.extension) {
             (0, 1, Some((10, body))) => {
@@ -211,9 +235,8 @@ pub(super) fn plans<'a>(
                 owner = Some(opened_by);
             }
             (1, 1, Some((11, bytes))) => {
-                let owner = owner.ok_or_else(|| {
-                    failed("scenario_records", "scenario Plan precedes its Open")
-                })?;
+                let owner = owner
+                    .ok_or_else(|| failed("scenario_records", "scenario Plan precedes its Open"))?;
                 if discarded || !record.refs.is_empty() || record.principal != owner {
                     return Err(failed(
                         "scenario_records",
@@ -227,7 +250,11 @@ pub(super) fn plans<'a>(
                 }
                 let record_id = identity(
                     b"fa:vid:entry:v1",
-                    &[&expected.book_id, &record.principal.to_le_bytes(), record.key],
+                    &[
+                        &expected.book_id,
+                        &record.principal.to_le_bytes(),
+                        record.key,
+                    ],
                 );
                 if record_id != cert.intents[assumed.len()] {
                     return Err(failed(
@@ -237,7 +264,10 @@ pub(super) fn plans<'a>(
                 }
                 let mut r = Reader::new(bytes);
                 if r.u16("scenario_plan.version")? != 1 {
-                    return Err(failed("scenario_profile", "unsupported scenario Plan version"));
+                    return Err(failed(
+                        "scenario_profile",
+                        "unsupported scenario Plan version",
+                    ));
                 }
                 let intent = r.bytes(MAX_RECORD_BYTES, "scenario_plan.intent")?;
                 let capability = r.bytes(64 * 1024, "scenario_plan.historical_capability")?;
@@ -263,7 +293,10 @@ pub(super) fn plans<'a>(
                     || !record.refs.is_empty()
                     || record.key != control_key(record.object, 2, &[]).as_slice()
                 {
-                    return Err(failed("scenario_records", "invalid scenario Discard record"));
+                    return Err(failed(
+                        "scenario_records",
+                        "invalid scenario Discard record",
+                    ));
                 }
                 discarded = true;
             }
@@ -323,7 +356,10 @@ fn assumed_entry<'a>(
     }
     let mut r = proposal_after_legs(payload)?;
     if r.present("assumption.control")? {
-        return Err(failed("scenario_profile", "assumed Original cannot carry a control"));
+        return Err(failed(
+            "scenario_profile",
+            "assumed Original cannot carry a control",
+        ));
     }
     let n = r.count(4096, 36, "assumption.unit_totals")?;
     let mut totals = BTreeMap::new();
@@ -357,7 +393,10 @@ fn assumed_entry<'a>(
     }
     r.fixed::<32>("assumption.intent_oid")?;
     if r.u16("assumption.intent_kind")? != 1 || r.u128("assumption.principal")? != owner {
-        return Err(failed("scenario_profile", "assumed Original is not the owner's PostEntry"));
+        return Err(failed(
+            "scenario_profile",
+            "assumed Original is not the owner's PostEntry",
+        ));
     }
     if r.present("assumption.session")? {
         r.u128("assumption.session")?;
@@ -406,7 +445,10 @@ fn assumed_entry<'a>(
     for _ in 0..n {
         let key = text(&mut r, 64, "assumption.tag")?;
         if key.is_empty() || previous.is_some_and(|last| last >= key) {
-            return Err(failed("scenario_profile", "assumed tag keys are not canonical"));
+            return Err(failed(
+                "scenario_profile",
+                "assumed tag keys are not canonical",
+            ));
         }
         previous = Some(key);
         skip_erasable(&mut r, "assumption.tag.value")?;
@@ -416,7 +458,10 @@ fn assumed_entry<'a>(
     }
     let proposal_len = payload.len() - r.remaining();
     if r.present("assumption.plan_certificate")? {
-        return Err(failed("scenario_profile", "PostIntent cannot carry a plan certificate"));
+        return Err(failed(
+            "scenario_profile",
+            "PostIntent cannot carry a plan certificate",
+        ));
     }
     r.count(0, 48, "assumption.approvals")?;
     r.fixed::<32>("assumption.proposal_digest")?;
@@ -438,9 +483,7 @@ fn assumed_entry<'a>(
     let details = proposal_leg_details(proposal)?;
     if legs.len() < 2
         || details.iter().any(|leg| {
-            leg.base_amount.is_some()
-                || !leg.dimensions.is_empty()
-                || !leg.settlements.is_empty()
+            leg.base_amount.is_some() || !leg.dimensions.is_empty() || !leg.settlements.is_empty()
         })
     {
         return Err(failed(
@@ -565,9 +608,7 @@ pub(super) fn documents(
             }
         }
     }
-    if documents.len() != needed.len()
-        || documents.iter().map(|document| document.oid).ne(needed)
-    {
+    if documents.len() != needed.len() || documents.iter().map(|document| document.oid).ne(needed) {
         return Err(failed(
             "scenario_documents",
             "disclosure is not the exact assumption and selected-intent evidence closure",
@@ -577,7 +618,9 @@ pub(super) fn documents(
         let commitment = crate::document::doc_commit(document.kind, document.bytes);
         let oid = framed(b"fa:oid:document:v1", &[&expected.book_id, &commitment]);
         if oid != document.oid
-            || evidence.get(&oid).is_some_and(|expected| *expected != commitment)
+            || evidence
+                .get(&oid)
+                .is_some_and(|expected| *expected != commitment)
         {
             return Err(failed(
                 "scenario_documents",

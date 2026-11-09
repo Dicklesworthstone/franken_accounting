@@ -258,12 +258,9 @@ fn report_filtered_at<V: Vfs + Clone>(
                     };
                     match maintained {
                         Some(maintained) => maintained.fold,
-                        None => fa_registers::fold_period_functional(
-                            db,
-                            book,
-                            &periods[0],
-                            Some(at),
-                        )?,
+                        None => {
+                            fa_registers::fold_period_functional(db, book, &periods[0], Some(at))?
+                        }
                     }
                 }
             };

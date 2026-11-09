@@ -413,9 +413,7 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
         ("idempotency_key", s(key)),
         ("legs", Json::Arr(legs)),
     ];
-    if !uses_fx
-        && let Some(differences) = &differences
-    {
+    if !uses_fx && let Some(differences) = &differences {
         fields.push(("application", differences.declaration.clone()));
     }
     if uses_fx {

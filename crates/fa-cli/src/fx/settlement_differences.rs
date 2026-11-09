@@ -37,7 +37,12 @@ pub(super) fn parse(
             _ => None,
         }
         .filter(|item| *item < item_count)
-        .ok_or_else(|| usage(format!("{what}.item must name a cash/application pair"), USAGE))?;
+        .ok_or_else(|| {
+            usage(
+                format!("{what}.item must name a cash/application pair"),
+                USAGE,
+            )
+        })?;
         let kind = crate::application::difference_kind(super::required_string(
             value, "kind", &what, USAGE,
         )?)?;
@@ -85,36 +90,39 @@ pub(crate) fn review(proposal: &EntryPayload) -> Result<(Json, Vec<String>), Fai
             })
         })
         .collect();
-    Ok((Json::Arr(
-        terms
-            .components
-            .iter()
-            .map(|component| {
-                obj(vec![
-                    (
-                        "applying_ordinal",
-                        Json::Int(i128::from(component.applying_ordinal)),
-                    ),
-                    (
-                        "differences",
-                        Json::Arr(
-                            component
-                                .differences
-                                .iter()
-                                .map(|difference| {
-                                    obj(vec![
-                                        (
-                                            "leg_ordinal",
-                                            Json::Int(i128::from(difference.leg_ordinal)),
-                                        ),
-                                        ("kind", s(difference.kind.name())),
-                                    ])
-                                })
-                                .collect(),
+    Ok((
+        Json::Arr(
+            terms
+                .components
+                .iter()
+                .map(|component| {
+                    obj(vec![
+                        (
+                            "applying_ordinal",
+                            Json::Int(i128::from(component.applying_ordinal)),
                         ),
-                    ),
-                ])
-            })
-            .collect(),
-    ), lines))
+                        (
+                            "differences",
+                            Json::Arr(
+                                component
+                                    .differences
+                                    .iter()
+                                    .map(|difference| {
+                                        obj(vec![
+                                            (
+                                                "leg_ordinal",
+                                                Json::Int(i128::from(difference.leg_ordinal)),
+                                            ),
+                                            ("kind", s(difference.kind.name())),
+                                        ])
+                                    })
+                                    .collect(),
+                            ),
+                        ),
+                    ])
+                })
+                .collect(),
+        ),
+        lines,
+    ))
 }

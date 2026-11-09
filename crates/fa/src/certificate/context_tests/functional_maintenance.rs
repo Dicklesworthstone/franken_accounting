@@ -10,7 +10,10 @@ fn authority() -> Capability {
 fn advance(h: &mut Harness) -> maintained::Advance {
     let cx = h.cx();
     h.runtime
-        .block_on(h.book.advance_functional_registers(&cx, PRINCIPAL, &authority(), PERIOD))
+        .block_on(
+            h.book
+                .advance_functional_registers(&cx, PRINCIPAL, &authority(), PERIOD),
+        )
         .unwrap()
         .unwrap()
 }
@@ -46,14 +49,8 @@ fn literal(h: &Harness, at: CommitSeq) -> fa_registers::FunctionalFold {
 }
 
 fn served(h: &Harness, at: CommitSeq) -> Option<maintained::HeadFold> {
-    maintained::fold_at_with_context(
-        &h.book.db,
-        &h.cx().query(),
-        h.book.context(),
-        PERIOD,
-        at,
-    )
-    .unwrap()
+    maintained::fold_at_with_context(&h.book.db, &h.cx().query(), h.book.context(), PERIOD, at)
+        .unwrap()
 }
 
 #[test]
@@ -115,14 +112,22 @@ fn maintained_activity_extends_foreign_values_and_reversals_without_refolding_th
     let cx = h.cx();
     let read = h
         .runtime
-        .block_on(h.book.functional_trial_balance(&cx, &cap(&["read"]), activity(), Some(at)))
+        .block_on(
+            h.book
+                .functional_trial_balance(&cx, &cap(&["read"]), activity(), Some(at)),
+        )
         .unwrap()
         .unwrap();
     let certified = certify(&mut h, activity());
-    assert_eq!(read.canonical_bytes().unwrap(), certified.certificate.output);
-    assert!(maintained::verify(&h.book.db, &cx.query(), h.book.context(), PERIOD, None)
-        .unwrap()
-        .is_green());
+    assert_eq!(
+        read.canonical_bytes().unwrap(),
+        certified.certificate.output
+    );
+    assert!(
+        maintained::verify(&h.book.db, &cx.query(), h.book.context(), PERIOD, None)
+            .unwrap()
+            .is_green()
+    );
 }
 
 fn held_proposal(h: &Harness, key: &[u8], amount: i128) -> EntryPayload {
@@ -204,7 +209,12 @@ fn one_publication_can_create_and_release_a_hold_in_either_vertex_order() {
                     .then_some((held, vid))
             })
             .expect("both deterministic vertex orders exist in the fixture key range");
-        let target = held.0.clone().seal(Vec::new(), None).unwrap().entry_ref(held.1);
+        let target = held
+            .0
+            .clone()
+            .seal(Vec::new(), None)
+            .unwrap()
+            .entry_ref(held.1);
         let release = release_proposal(held.0.clone(), target, b"functional-atomic-release");
         let batch = fa_intents::PostBatch::new(
             b"functional-atomic-hold-and-release".to_vec(),
@@ -266,20 +276,28 @@ fn rewritten_then_restored_snapshot_falls_back_and_explicit_rebuild_recovers() {
     assert!(verified.available && !verified.is_green());
     let read = h
         .runtime
-        .block_on(h.book.functional_trial_balance(&cx, &cap(&["read"]), activity(), None))
+        .block_on(
+            h.book
+                .functional_trial_balance(&cx, &cap(&["read"]), activity(), None),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(read.total_debits().unwrap(), 25_050);
     let repaired = h
         .runtime
-        .block_on(h.book.rebuild_functional_registers(&cx, PRINCIPAL, &authority(), PERIOD))
+        .block_on(
+            h.book
+                .rebuild_functional_registers(&cx, PRINCIPAL, &authority(), PERIOD),
+        )
         .unwrap()
         .unwrap();
     assert!(repaired.rebuilt && repaired.wrote);
     assert_eq!(served(&h, h.head()).unwrap().fold, literal(&h, h.head()));
-    assert!(maintained::verify(&h.book.db, &cx.query(), h.book.context(), PERIOD, None)
-        .unwrap()
-        .is_green());
+    assert!(
+        maintained::verify(&h.book.db, &cx.query(), h.book.context(), PERIOD, None)
+            .unwrap()
+            .is_green()
+    );
 }
 
 #[test]
@@ -291,12 +309,22 @@ fn a_warm_projection_does_not_hide_an_entry_rewrite_or_accept_a_stale_preparatio
     let book = h.book.context.clone();
     let prepared = h
         .runtime
-        .block_on(maintained::prepare_advance(&mut h.book.db, &cx, &book, PERIOD))
+        .block_on(maintained::prepare_advance(
+            &mut h.book.db,
+            &cx,
+            &book,
+            PERIOD,
+        ))
         .unwrap();
     let extra = proposal(&h, b"functional-moving-preparation", 80);
     post(&mut h, extra);
     assert!(matches!(
-        h.runtime.block_on(maintained::publish_advance(&mut h.book.db, &cx, &book, prepared)),
+        h.runtime.block_on(maintained::publish_advance(
+            &mut h.book.db,
+            &cx,
+            &book,
+            prepared
+        )),
         Err(fa_registers::RegisterError::StaleFold)
     ));
     let target = fa_model::entry_vid(BOOK, &PRINCIPAL.0.to_le_bytes(), b"symbol-post");
@@ -311,13 +339,19 @@ fn a_warm_projection_does_not_hide_an_entry_rewrite_or_accept_a_stale_preparatio
         .unwrap();
     assert!(matches!(
         maintained::fold_at_with_context(&h.book.db, &cx.query(), &book, PERIOD, h.head()),
-        Err(fa_registers::RegisterError::Kernel(fa_journal::KernelError::Corrupt(_)))
+        Err(fa_registers::RegisterError::Kernel(
+            fa_journal::KernelError::Corrupt(_)
+        ))
     ));
     assert!(served(&h, before).is_some());
-    assert!(h
-        .runtime
-        .block_on(h.book.functional_trial_balance(&cx, &cap(&["read"]), activity(), None))
-        .is_err());
+    assert!(
+        h.runtime
+            .block_on(
+                h.book
+                    .functional_trial_balance(&cx, &cap(&["read"]), activity(), None)
+            )
+            .is_err()
+    );
 }
 
 #[test]
@@ -344,7 +378,11 @@ fn persisted_entity_state_hydrates_an_unloaded_tail_or_rebuilds_a_retired_tail()
                 Entropy::deterministic(u64::from(SEED)),
             ))
             .unwrap();
-        let mut h = Harness { runtime, root, book };
+        let mut h = Harness {
+            runtime,
+            root,
+            book,
+        };
         h.populate();
         advance(&mut h);
         let extra = proposal(&h, b"functional-persisted-tail", 80);
@@ -359,7 +397,11 @@ fn persisted_entity_state_hydrates_an_unloaded_tail_or_rebuilds_a_retired_tail()
         if compact {
             h.runtime.block_on(h.book.compact_storage(&cx)).unwrap();
         }
-        let Harness { runtime, root, book } = h;
+        let Harness {
+            runtime,
+            root,
+            book,
+        } = h;
         drop(book);
         let book = runtime
             .block_on(AsyncBook::open_with_vfs(
@@ -370,7 +412,11 @@ fn persisted_entity_state_hydrates_an_unloaded_tail_or_rebuilds_a_retired_tail()
                 Entropy::deterministic(u64::from(SEED) + 1),
             ))
             .unwrap();
-        let mut h = Harness { runtime, root, book };
+        let mut h = Harness {
+            runtime,
+            root,
+            book,
+        };
         let advanced = advance(&mut h);
         assert_eq!(advanced.rebuilt, compact);
         if !compact {
@@ -393,25 +439,30 @@ fn functional_maintenance_and_verification_require_their_whole_book_operations()
         cap(&["read", "maintain"]),
         cap(&["verify", "maintain"]),
     ] {
-        assert!(h
-            .runtime
-            .block_on(h.book.advance_functional_registers(&cx, PRINCIPAL, &capability, PERIOD))
-            .unwrap()
-            .is_err());
+        assert!(
+            h.runtime
+                .block_on(
+                    h.book
+                        .advance_functional_registers(&cx, PRINCIPAL, &capability, PERIOD)
+                )
+                .unwrap()
+                .is_err()
+        );
         assert_eq!(h.head(), at);
     }
     for capability in [cap(&["read"]), cap(&["verify"])] {
-        assert!(h
-            .runtime
-            .block_on(h.book.verify_functional_registers(
-                &cx,
-                PRINCIPAL,
-                &capability,
-                PERIOD,
-                None,
-            ))
-            .unwrap()
-            .is_err());
+        assert!(
+            h.runtime
+                .block_on(h.book.verify_functional_registers(
+                    &cx,
+                    PRINCIPAL,
+                    &capability,
+                    PERIOD,
+                    None,
+                ))
+                .unwrap()
+                .is_err()
+        );
         assert_eq!(h.head(), at);
     }
     let absent = h

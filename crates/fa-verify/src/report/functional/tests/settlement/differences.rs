@@ -149,11 +149,7 @@ fn explicit_component(
     ];
     let realized = quote - historical;
     if realized != 0 {
-        let side = if realized > 0 {
-            applying
-        } else {
-            !applying
-        };
+        let side = if realized > 0 { applying } else { !applying };
         legs.push(leg("7000", side, 0, realized.abs(), realized.abs()));
         legs.push(leg("1900", !side, 0, realized.abs(), realized.abs()));
     }
@@ -329,11 +325,7 @@ fn sparse_terms_preserve_unmarked_legacy_components_on_either_side() {
             legacy_historical,
             legacy_quote,
         );
-        let applying = if marked_first {
-            0
-        } else {
-            legacy.len() as u16
-        };
+        let applying = if marked_first { 0 } else { legacy.len() as u16 };
         for (ordinal, _) in &mut differences {
             *ordinal += applying;
         }
@@ -355,15 +347,8 @@ fn sparse_terms_preserve_unmarked_legacy_components_on_either_side() {
 #[test]
 fn balanced_explicit_pairs_cannot_replace_quote_math_relief_or_source_identity() {
     let (mut records, rates, source) = source_history(100, 110, (11, 10), (6, 5), false);
-    let (legs, differences) = explicit_component(
-        &source,
-        false,
-        100,
-        110,
-        120,
-        122,
-        &[(4, "5000", 2)],
-    );
+    let (legs, differences) =
+        explicit_component(&source, false, 100, 110, 120, 122, &[(4, "5000", 2)]);
     let body = terms(&[(0, differences)]);
     let honest = marked(6, 20, b"hostile-net-cash", &legs, &rates[1], &body);
     records.push(honest);
@@ -403,8 +388,7 @@ fn balanced_explicit_pairs_cannot_replace_quote_math_relief_or_source_identity()
     // A positive bank payment cannot turn a quote rounded to zero into an
     // eligible foreign settlement, even when cash and the charge cancel.
     let (mut records, rates, source) = source_history(1, 0, (1, 2), (1, 2), false);
-    let (legs, differences) =
-        explicit_component(&source, false, 1, 0, 0, 2, &[(4, "5000", 2)]);
+    let (legs, differences) = explicit_component(&source, false, 1, 0, 0, 2, &[(4, "5000", 2)]);
     records.push(marked(
         6,
         20,
@@ -439,15 +423,8 @@ fn explicit_terms_bind_full_source_dimensions_even_when_each_entity_balances() {
         None,
     );
     records[3] = source.clone();
-    let (mut legs, differences) = explicit_component(
-        &source,
-        true,
-        100,
-        110,
-        120,
-        118,
-        &[(4, "5000", 2)],
-    );
+    let (mut legs, differences) =
+        explicit_component(&source, true, 100, 110, 120, 118, &[(4, "5000", 2)]);
     for leg in &mut legs {
         leg.leg.entity = Some("alpha");
     }
@@ -528,15 +505,8 @@ fn explicit_terms_refuse_missing_unknown_reordered_and_legacy_profile_declaratio
 #[test]
 fn resealed_explicit_terms_registry_cannot_redefine_pair_layout_or_economic_equations() {
     let (mut records, rates, source) = history(100, 110, (11, 10), (6, 5));
-    let (legs, differences) = explicit_component(
-        &source,
-        true,
-        100,
-        110,
-        120,
-        118,
-        &[(4, "5000", 2)],
-    );
+    let (legs, differences) =
+        explicit_component(&source, true, 100, 110, 120, 118, &[(4, "5000", 2)]);
     let body = terms(&[(0, differences)]);
     records.push(marked(6, 20, b"retained-profile", &legs, &rates[1], &body));
     let (_, output) = replay(&records, &rates, &book(&[])).unwrap();
@@ -553,7 +523,9 @@ fn resealed_explicit_terms_registry_cannot_redefine_pair_layout_or_economic_equa
             .unwrap();
         docs[4].1[at] ^= 1;
         assert_eq!(
-            verify(&records, &rates, &output, &docs).unwrap_err().predicate,
+            verify(&records, &rates, &output, &docs)
+                .unwrap_err()
+                .predicate,
             "registry_closure",
         );
     }

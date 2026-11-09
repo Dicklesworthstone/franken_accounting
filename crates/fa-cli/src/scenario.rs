@@ -22,8 +22,7 @@ use crate::cli::{
 use crate::json::{Json, obj, s};
 
 const FORK_EXAMPLE: &str = "fa scenario fork but-for-breach --from 2025-07-01 [--at HEAD|<seq>] [--evidence <oid>]... --json";
-const DIFF_EXAMPLE: &str =
-    "fa scenario diff but-for-breach --period FY2025-P12 [--activity] [--certify --request-out <new-file>] --json";
+const DIFF_EXAMPLE: &str = "fa scenario diff but-for-breach --period FY2025-P12 [--activity] [--certify --request-out <new-file>] --json";
 
 pub(crate) fn scenario_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {

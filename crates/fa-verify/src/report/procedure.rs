@@ -107,7 +107,11 @@ impl VerifiedProcedureParameters {
     }
 
     pub(super) fn supports_cutoff(self, version: u16) -> bool {
-        version == 2 && matches!(self, Self::RoundAmounts { .. } | Self::PeriodEndTiming { .. })
+        version == 2
+            && matches!(
+                self,
+                Self::RoundAmounts { .. } | Self::PeriodEndTiming { .. }
+            )
     }
 
     pub(crate) fn complexity(self) -> &'static str {
@@ -441,7 +445,10 @@ fn finding(
     match &value.statistic {
         VerifiedProcedureStatistic::RoundLegs { ordinals } => {
             let entry = value.entry.ok_or_else(|| {
-                failed("procedure_recomputation", "round-leg finding lacks its entry")
+                failed(
+                    "procedure_recomputation",
+                    "round-leg finding lacks its entry",
+                )
             })?;
             w.count(ordinals.len() + 1).u8(1).u128(entry);
             for ordinal in ordinals {
@@ -455,11 +462,7 @@ fn finding(
                     "period-end finding lacks its entry",
                 )
             })?;
-            w.count(2)
-                .u8(1)
-                .u128(entry)
-                .u8(4)
-                .bytes(period.as_bytes());
+            w.count(2).u8(1).u128(entry).u8(4).bytes(period.as_bytes());
         }
         VerifiedProcedureStatistic::DuplicateEntries { entries, .. } => {
             w.count(entries.len());
@@ -608,7 +611,9 @@ fn decision_card(
     parameters(&mut state, profile);
     let calibrated = population >= 100;
     let parameters = profile.parameters();
-    let power = parameters.first().map_or(0, |(_, value)| i128::from(*value));
+    let power = parameters
+        .first()
+        .map_or(0, |(_, value)| i128::from(*value));
     let mut w = Writer::default();
     w.fixed(b"FADC")
         .u16(1)

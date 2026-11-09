@@ -310,11 +310,10 @@ impl Harness {
         let cx = self.cx();
         let checkpoint = self
             .runtime
-            .block_on(self.book.checkpoint(
-                &cx,
-                PRINCIPAL,
-                &cap(&["read", "produce", "witness"]),
-            ))
+            .block_on(
+                self.book
+                    .checkpoint(&cx, PRINCIPAL, &cap(&["read", "produce", "witness"])),
+            )
             .unwrap()
             .unwrap();
         self.runtime
@@ -940,11 +939,10 @@ fn portable_dimensioned_lots_follow_native_disposal_and_exact_partition_pairing(
         approvals: Vec::new(),
     };
     h.runtime
-        .block_on(h.book.set_lot_policy(
-            &cx,
-            policy,
-            &cap(&["read", "schema_change"]),
-        ))
+        .block_on(
+            h.book
+                .set_lot_policy(&cx, policy, &cap(&["read", "schema_change"])),
+        )
         .unwrap()
         .unwrap();
     let mut legs = Vec::new();
@@ -979,12 +977,10 @@ fn portable_dimensioned_lots_follow_native_disposal_and_exact_partition_pairing(
     let template = h.proposal("partitioned-disposal", "2026-03-10", Vec::new());
     let prepared = h
         .runtime
-        .block_on(h.book.prepare_lot_disposal(
-            &cx,
-            &cap(&["read", "post"]),
-            &request,
-            template,
-        ))
+        .block_on(
+            h.book
+                .prepare_lot_disposal(&cx, &cap(&["read", "post"]), &request, template),
+        )
         .unwrap()
         .unwrap();
     assert!(

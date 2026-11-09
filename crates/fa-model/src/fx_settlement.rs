@@ -4,13 +4,14 @@
 //! profile. Its ordinals bind the actual immutable legs; accounts, amounts
 //! and dimensions are not duplicated in an unauthenticated description.
 
-use crate::{ApplicationDifference, ApplicationDifferenceKind, DecodeError, EntryError, Reader, Writer};
+use crate::{
+    ApplicationDifference, ApplicationDifferenceKind, DecodeError, EntryError, Reader, Writer,
+};
 
 pub const FX_SETTLEMENT_TERMS_VERSION: u16 = 2;
 pub const MAX_FX_SETTLEMENT_COMPONENTS: usize = crate::limits::MAX_LEGS_PER_ENTRY / 4;
-pub const MAX_FX_SETTLEMENT_TERMS_BYTES: usize = 18
-    + 6 * MAX_FX_SETTLEMENT_COMPONENTS
-    + 3 * crate::application::MAX_APPLICATION_DIFFERENCES;
+pub const MAX_FX_SETTLEMENT_TERMS_BYTES: usize =
+    18 + 6 * MAX_FX_SETTLEMENT_COMPONENTS + 3 * crate::application::MAX_APPLICATION_DIFFERENCES;
 const MAGIC: &[u8; 12] = b"FA-FX-TERMS\0";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,22 +53,28 @@ impl FxSettlementTerms {
             || self.components.len() > MAX_FX_SETTLEMENT_COMPONENTS
             || leg_count > crate::limits::MAX_LEGS_PER_ENTRY
         {
-            return Err(invalid("requires a bounded nonempty list of affected components"));
+            return Err(invalid(
+                "requires a bounded nonempty list of affected components",
+            ));
         }
         let mut previous = None;
         let mut total = 0usize;
         for (index, component) in self.components.iter().enumerate() {
             let start = usize::from(component.applying_ordinal);
-            let end = self.components.get(index + 1).map_or(leg_count, |next| {
-                usize::from(next.applying_ordinal)
-            });
+            let end = self
+                .components
+                .get(index + 1)
+                .map_or(leg_count, |next| usize::from(next.applying_ordinal));
             if previous.is_some_and(|prior| prior >= start)
                 || start >= leg_count
                 || component.differences.is_empty()
             {
-                return Err(invalid("affected components must be nonempty and strictly ordered"));
+                return Err(invalid(
+                    "affected components must be nonempty and strictly ordered",
+                ));
             }
-            total = total.checked_add(component.differences.len())
+            total = total
+                .checked_add(component.differences.len())
                 .ok_or_else(|| invalid("difference count overflow"))?;
             if total > crate::application::MAX_APPLICATION_DIFFERENCES {
                 return Err(invalid("at most 128 explicit difference pairs per entry"));
@@ -80,7 +87,9 @@ impl FxSettlementTerms {
                     || ordinal + 1 >= end
                     || previous_difference.is_some_and(|prior| prior >= ordinal)
                 {
-                    return Err(invalid("difference pairs must be ordered, in range and after the four mandatory core legs"));
+                    return Err(invalid(
+                        "difference pairs must be ordered, in range and after the four mandatory core legs",
+                    ));
                 }
                 previous_difference = Some(ordinal);
             }
@@ -92,13 +101,17 @@ impl FxSettlementTerms {
     pub fn encode(&self) -> Result<Vec<u8>, EntryError> {
         self.validate_shape(crate::limits::MAX_LEGS_PER_ENTRY)?;
         let mut writer = Writer::new();
-        writer.fixed(MAGIC).u16(FX_SETTLEMENT_TERMS_VERSION)
-            .list(&self.components, |writer, component| {
-                writer.u16(component.applying_ordinal)
-                    .list(&component.differences, |writer, difference| {
+        writer.fixed(MAGIC).u16(FX_SETTLEMENT_TERMS_VERSION).list(
+            &self.components,
+            |writer, component| {
+                writer.u16(component.applying_ordinal).list(
+                    &component.differences,
+                    |writer, difference| {
                         writer.u16(difference.leg_ordinal).u8(difference.kind.tag());
-                    });
-            });
+                    },
+                );
+            },
+        );
         Ok(writer.finish()?)
     }
 
@@ -118,19 +131,25 @@ impl FxSettlementTerms {
             "fx_settlement_terms.components",
             |reader| {
                 let applying_ordinal = reader.u16("fx_settlement_terms.applying_ordinal")?;
-                let differences = reader.list(remaining, "fx_settlement_terms.differences", |reader| {
-                    let leg_ordinal = reader.u16("fx_settlement_terms.difference.ordinal")?;
-                    let tag = reader.u8("fx_settlement_terms.difference.kind")?;
-                    let kind = ApplicationDifferenceKind::from_tag(tag)
-                        .ok_or_else(|| reader.bad_tag("fx_settlement_terms.difference.kind", tag))?;
-                    Ok(ApplicationDifference { leg_ordinal, kind })
-                })?;
+                let differences =
+                    reader.list(remaining, "fx_settlement_terms.differences", |reader| {
+                        let leg_ordinal = reader.u16("fx_settlement_terms.difference.ordinal")?;
+                        let tag = reader.u8("fx_settlement_terms.difference.kind")?;
+                        let kind = ApplicationDifferenceKind::from_tag(tag).ok_or_else(|| {
+                            reader.bad_tag("fx_settlement_terms.difference.kind", tag)
+                        })?;
+                        Ok(ApplicationDifference { leg_ordinal, kind })
+                    })?;
                 remaining -= differences.len();
-                Ok(FxSettlementComponent { applying_ordinal, differences })
+                Ok(FxSettlementComponent {
+                    applying_ordinal,
+                    differences,
+                })
             },
         )?;
         let terms = Self { components };
-        terms.validate_shape(crate::limits::MAX_LEGS_PER_ENTRY)
+        terms
+            .validate_shape(crate::limits::MAX_LEGS_PER_ENTRY)
             .map_err(|_| reader.invalid("fx_settlement_terms.ordinals"))?;
         reader.finish()?;
         Ok(terms)

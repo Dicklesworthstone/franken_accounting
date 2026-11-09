@@ -1965,19 +1965,34 @@ impl EntryPayload {
             })?;
             terms.validate_shape(self.legs.len())?;
         }
-        if let Some((_, bytes)) = self.extensions.iter()
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
             .find(|(tag, _)| *tag == FX_SETTLEMENT_TERMS_EXTENSION)
         {
             if self.schema_minor < FX_SETTLEMENT_TERMS_SCHEMA_MINOR
-                || !matches!(self.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL)
-                || (self.class != EntryClass::REVERSAL && !matches!(&self.origin, EntryOrigin::Intent { .. }))
-                || self.extensions.iter().any(|(tag, _)| *tag == APPLICATION_TERMS_EXTENSION)
+                || !matches!(
+                    self.class,
+                    EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL
+                )
+                || (self.class != EntryClass::REVERSAL
+                    && !matches!(&self.origin, EntryOrigin::Intent { .. }))
+                || self
+                    .extensions
+                    .iter()
+                    .any(|(tag, _)| *tag == APPLICATION_TERMS_EXTENSION)
             {
-                return Err(invalid("extensions.fx_settlement_terms",
-                    "requires an Original/Adjusting Intent or exact Reversal at minor 10, without base-only application terms"));
+                return Err(invalid(
+                    "extensions.fx_settlement_terms",
+                    "requires an Original/Adjusting Intent or exact Reversal at minor 10, without base-only application terms",
+                ));
             }
-            let terms = crate::FxSettlementTerms::decode(bytes).map_err(|_| invalid(
-                "extensions.fx_settlement_terms", "requires canonical version-2 component and difference-pair bindings"))?;
+            let terms = crate::FxSettlementTerms::decode(bytes).map_err(|_| {
+                invalid(
+                    "extensions.fx_settlement_terms",
+                    "requires canonical version-2 component and difference-pair bindings",
+                )
+            })?;
             terms.validate_shape(self.legs.len())?;
         }
         if let Some((_, bytes)) = self
@@ -2688,19 +2703,29 @@ impl EntryPayload {
             .transpose()
     }
 
-    pub fn set_fx_settlement_terms(&mut self, terms: &crate::FxSettlementTerms) -> Result<(), EntryError> {
+    pub fn set_fx_settlement_terms(
+        &mut self,
+        terms: &crate::FxSettlementTerms,
+    ) -> Result<(), EntryError> {
         terms.validate_shape(self.legs.len())?;
         let bytes = terms.encode()?;
         self.schema_minor = self.schema_minor.max(FX_SETTLEMENT_TERMS_SCHEMA_MINOR);
-        match self.extensions.binary_search_by_key(&FX_SETTLEMENT_TERMS_EXTENSION, |(tag, _)| *tag) {
+        match self
+            .extensions
+            .binary_search_by_key(&FX_SETTLEMENT_TERMS_EXTENSION, |(tag, _)| *tag)
+        {
             Ok(index) => self.extensions[index].1 = bytes,
-            Err(index) => self.extensions.insert(index, (FX_SETTLEMENT_TERMS_EXTENSION, bytes)),
+            Err(index) => self
+                .extensions
+                .insert(index, (FX_SETTLEMENT_TERMS_EXTENSION, bytes)),
         }
         Ok(())
     }
 
     pub fn fx_settlement_terms(&self) -> Result<Option<crate::FxSettlementTerms>, EntryError> {
-        self.extensions.iter().find(|(tag, _)| *tag == FX_SETTLEMENT_TERMS_EXTENSION)
+        self.extensions
+            .iter()
+            .find(|(tag, _)| *tag == FX_SETTLEMENT_TERMS_EXTENSION)
             .map(|(_, bytes)| crate::FxSettlementTerms::decode(bytes).map_err(EntryError::from))
             .transpose()
     }

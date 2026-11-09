@@ -886,14 +886,11 @@ impl ProcedureCertificate {
                 ];
                 self.report.version == 2
                     && self.report.parameters.len() == bounds.len()
-                    && self
-                        .report
-                        .parameters
-                        .iter()
-                        .zip(bounds)
-                        .all(|((name, value), (expected, low, high))| {
+                    && self.report.parameters.iter().zip(bounds).all(
+                        |((name, value), (expected, low, high))| {
                             name == expected && (low..=high).contains(value)
-                        })
+                        },
+                    )
             }
             _ => false,
         };

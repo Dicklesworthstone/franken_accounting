@@ -552,12 +552,7 @@ pub(super) fn verify_procedure(
         || string(row, "evidence")? != profile.evidence()
         || string(row, "tie_break")? != if benford { "none" } else { "entry_vid" }
         || string(row, "complexity")? != profile.complexity()
-        || string(row, "calibration")?
-            != if benford {
-                "uncalibrated"
-            } else {
-                "corpus"
-            }
+        || string(row, "calibration")? != if benford { "uncalibrated" } else { "corpus" }
         || if benford {
             row.contains_key("artifact")
         } else {
@@ -575,12 +570,11 @@ pub(super) fn verify_procedure(
         .map(|row| Ok((string(row, "name")?, integer(row, "default")?)))
         .collect::<Result<Vec<_>, ReportError>>()?;
     declared.sort_unstable();
-    if declared.iter().copied().ne(
-        profile
-            .parameter_defaults()
-            .iter()
-            .map(|&(name, value)| (name, i128::from(value))),
-    ) {
+    if declared.iter().copied().ne(profile
+        .parameter_defaults()
+        .iter()
+        .map(|&(name, value)| (name, i128::from(value))))
+    {
         return Err(invalid(
             "unsupported procedure parameter inventory or defaults",
         ));
@@ -1052,10 +1046,8 @@ fn settlement_terms_profile(doc: &Document) -> Result<bool, ReportError> {
         || !integers("carrying_laws", &[4, 10])
         || !integers("difference_kinds", &[1, 3, 4])
         || string(profile, "layout")? != "cash_fx_differences_paired"
-        || string(profile, "receipt_equation")?
-            != "quote=cash+discount+writeoff+bank_charge"
-        || string(profile, "payment_equation")?
-            != "quote=cash+discount+writeoff-bank_charge"
+        || string(profile, "receipt_equation")? != "quote=cash+discount+writeoff+bank_charge"
+        || string(profile, "payment_equation")? != "quote=cash+discount+writeoff-bank_charge"
     {
         return Err(invalid("unsupported explicit FX settlement terms profile"));
     }

@@ -710,7 +710,10 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ),
                     ("amount", s(render_amount(leg.amount, units)?)),
                     ("applications", Json::Int(leg.settles.len() as i128)),
-                    ("dimensions", crate::cli::plan_dimensions_json(&leg.dimension_set)),
+                    (
+                        "dimensions",
+                        crate::cli::plan_dimensions_json(&leg.dimension_set),
+                    ),
                 ]))
             })
             .collect::<Result<Vec<_>, Fail>>()?;
@@ -728,7 +731,10 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("regime", s(basis.regime.as_str())),
                 ("rounding_law", s(basis.rounding_law.name())),
                 ("quantity", s(render_amount(basis.quantity, units)?)),
-                ("dimensions", crate::cli::plan_dimensions_json(&basis.dimensions)),
+                (
+                    "dimensions",
+                    crate::cli::plan_dimensions_json(&basis.dimensions),
+                ),
                 ("policy_entry", s(format!("{:032x}", basis.policy.vid.0))),
                 ("policy_digest", s(hex(&basis.policy.entry_digest))),
                 ("legs", Json::Arr(legs)),

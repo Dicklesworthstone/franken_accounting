@@ -157,13 +157,8 @@ fn lot_partitions_pair_reordered_costs_and_plan_only_the_complete_dimension_set(
         ((VId(1), 2), south.clone()),
         ((VId(1), 3), north.clone()),
     ]);
-    let lots = fold_lots_from_open_items_with_dimensions(
-        &items,
-        &digests,
-        UnitId(1),
-        &dimensions,
-    )
-    .unwrap();
+    let lots = fold_lots_from_open_items_with_dimensions(&items, &digests, UnitId(1), &dimensions)
+        .unwrap();
     assert_eq!(lots.len(), 2);
     assert_eq!((lots[0].qty_ordinal, lots[0].cost_ordinal), (0, 3));
     assert_eq!((lots[1].qty_ordinal, lots[1].cost_ordinal), (1, 2));
@@ -199,13 +194,11 @@ fn lot_partitions_pair_reordered_costs_and_plan_only_the_complete_dimension_set(
     let mut missing = dimensions.clone();
     missing.remove(&(VId(1), 3));
     assert!(
-        fold_lots_from_open_items_with_dimensions(&items, &digests, UnitId(1), &missing)
-            .is_err()
+        fold_lots_from_open_items_with_dimensions(&items, &digests, UnitId(1), &missing).is_err()
     );
     let mut wrong = dimensions;
     wrong.insert((VId(1), 3), south);
     assert!(
-        fold_lots_from_open_items_with_dimensions(&items, &digests, UnitId(1), &wrong)
-            .is_err()
+        fold_lots_from_open_items_with_dimensions(&items, &digests, UnitId(1), &wrong).is_err()
     );
 }

@@ -54,9 +54,18 @@ fn complete_functional_state_round_trips_entities_columns_and_continuation() {
         through: snapshot.through,
         body_digest: body_digest(&bytes),
     };
-    assert_eq!(read_pointer(&pointer_bytes(reference).unwrap()).unwrap(), reference);
-    assert_ne!(head_vid(BOOK, PERIOD), crate::maintainer::state_vid(BOOK, PERIOD));
-    assert_ne!(head_vid(BOOK, PERIOD), crate::checkpoint::head_vid(BOOK, PERIOD));
+    assert_eq!(
+        read_pointer(&pointer_bytes(reference).unwrap()).unwrap(),
+        reference
+    );
+    assert_ne!(
+        head_vid(BOOK, PERIOD),
+        crate::maintainer::state_vid(BOOK, PERIOD)
+    );
+    assert_ne!(
+        head_vid(BOOK, PERIOD),
+        crate::checkpoint::head_vid(BOOK, PERIOD)
+    );
     assert_ne!(
         checkpoint_vid(BOOK, PERIOD, reference),
         crate::checkpoint::vid(
@@ -71,11 +80,20 @@ fn complete_functional_state_round_trips_entities_columns_and_continuation() {
     let mut other_entity = snapshot.clone();
     other_entity.state.fold.cells[0].key.entity = Some("BETA".into());
     refresh(&mut other_entity.state).unwrap();
-    assert_ne!(other_entity.state.fold.fold_digest, snapshot.state.fold.fold_digest);
-    assert_ne!(body_digest(&other_entity.encode().unwrap()), reference.body_digest);
+    assert_ne!(
+        other_entity.state.fold.fold_digest,
+        snapshot.state.fold.fold_digest
+    );
+    assert_ne!(
+        body_digest(&other_entity.encode().unwrap()),
+        reference.body_digest
+    );
     let mut other_book_definition = snapshot.clone();
     other_book_definition.spec_digest[0] ^= 1;
-    assert_ne!(body_digest(&other_book_definition.encode().unwrap()), reference.body_digest);
+    assert_ne!(
+        body_digest(&other_book_definition.encode().unwrap()),
+        reference.body_digest
+    );
 }
 
 #[test]
@@ -104,7 +122,10 @@ fn codec_refuses_wrong_coordinates_and_resealed_invalid_continuation() {
             _ => unreachable!(),
         }
         refresh(&mut malformed.state).unwrap();
-        assert!(malformed.encode().is_err(), "invalid state {alteration} was accepted");
+        assert!(
+            malformed.encode().is_err(),
+            "invalid state {alteration} was accepted"
+        );
     }
     let mut wrong_digest = snapshot;
     wrong_digest.state.posted_legs_digest[0] ^= 1;
@@ -113,7 +134,10 @@ fn codec_refuses_wrong_coordinates_and_resealed_invalid_continuation() {
 
 #[test]
 fn functional_snapshot_bounds_precede_allocation_and_large_bodies_use_objects() {
-    for count in [MAX_REGISTER_CHECKPOINT_CELLS, MAX_REGISTER_CHECKPOINT_CELLS + 1] {
+    for count in [
+        MAX_REGISTER_CHECKPOINT_CELLS,
+        MAX_REGISTER_CHECKPOINT_CELLS + 1,
+    ] {
         let bytes = u32::try_from(count).unwrap().to_le_bytes();
         assert!(read_cells(&mut Reader::new(&bytes), PERIOD, UnitId(1)).is_err());
     }

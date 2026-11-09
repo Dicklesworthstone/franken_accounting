@@ -925,7 +925,8 @@ fn fold_lots(
                     || application.amount.mantissa <= 0
                 {
                     return Err(KernelError::Corrupt(
-                        "invalid lot application identity, unit, account, dimensions or side".into(),
+                        "invalid lot application identity, unit, account, dimensions or side"
+                            .into(),
                     ));
                 }
                 if target_leg.dimension_set == basis.dimensions

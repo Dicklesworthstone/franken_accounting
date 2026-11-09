@@ -1,8 +1,8 @@
 //! Offline additive scenario mathematics with an independently fixed question.
 
 use super::{
-    Args, Check, Json, Read, Usage, Verdict, amount, checkpoint_check, day, h, key, load, n,
-    s, subject, unhex, usage, verify_checkpoint,
+    Args, Check, Json, Read, Usage, Verdict, amount, checkpoint_check, day, h, key, load, n, s,
+    subject, unhex, usage, verify_checkpoint,
 };
 use crate::scenario_report::{ScenarioExpectation, verify_scenario_math_expected};
 
@@ -41,8 +41,13 @@ pub(super) fn run(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
             "the checkpoint authenticates the journal; retain a receipt or certificate digest separately to bind the selected hypothetical computation",
         ));
     }
-    let expected = ScenarioExpectation::decode(&load(read, question, args.hex)?)
-        .map_err(|error| usage(format!("invalid scenario question: {error}"), "use the original canonical --request-out file"))?;
+    let expected =
+        ScenarioExpectation::decode(&load(read, question, args.hex)?).map_err(|error| {
+            usage(
+                format!("invalid scenario question: {error}"),
+                "use the original canonical --request-out file",
+            )
+        })?;
     let mut checks = Vec::new();
     let expected_checkpoint = if let Some(path) = args.one("--checkpoint") {
         let signed = verify_checkpoint(&load(read, path, args.hex)?, &keys);
@@ -99,7 +104,14 @@ pub(super) fn run(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
             ),
             (
                 "assumptions",
-                Json::List(report.expectation.assumptions.iter().map(|oid| h(oid)).collect()),
+                Json::List(
+                    report
+                        .expectation
+                        .assumptions
+                        .iter()
+                        .map(|oid| h(oid))
+                        .collect(),
+                ),
             ),
             ("checked_records", n(report.checked_records as u64)),
             ("checked_intents", n(report.checked_intents as u64)),
@@ -107,8 +119,14 @@ pub(super) fn run(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
             ("changed_rows", n(report.rows.len() as u64)),
             ("signed_receipt", Json::Bool(report.receipt.is_some())),
             ("historical_admission", s(report.historical_admission)),
-            ("native_marker_membership", s(report.native_marker_membership)),
-            ("hypothetical_entries", s("assumed_effects_not_trunk_members")),
+            (
+                "native_marker_membership",
+                s(report.native_marker_membership),
+            ),
+            (
+                "hypothetical_entries",
+                s("assumed_effects_not_trunk_members"),
+            ),
             ("economic_truth", s("not_judged")),
         ],
     ));
@@ -128,8 +146,14 @@ pub(super) fn run(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 ("delta", amount(row.delta)),
                 ("trunk_debits_pending", amount(row.trunk_debits_pending)),
                 ("trunk_credits_pending", amount(row.trunk_credits_pending)),
-                ("scenario_debits_pending", amount(row.scenario_debits_pending)),
-                ("scenario_credits_pending", amount(row.scenario_credits_pending)),
+                (
+                    "scenario_debits_pending",
+                    amount(row.scenario_debits_pending),
+                ),
+                (
+                    "scenario_credits_pending",
+                    amount(row.scenario_credits_pending),
+                ),
                 ("pending_delta", amount(row.pending_delta)),
             ],
         ));

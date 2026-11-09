@@ -56,13 +56,12 @@ pub(super) fn decode(reader: &mut Reader<'_>) -> Result<VerifiedProcedureParamet
                 "Benford parameter names must be complete, unique and lexically ordered",
             ));
         }
-        values[index] =
-            u32::try_from(reader.i128("procedure.parameter_value")?).map_err(|_| {
-                failed(
-                    "procedure_profile",
-                    "Benford parameters must be unsigned 32-bit integers",
-                )
-            })?;
+        values[index] = u32::try_from(reader.i128("procedure.parameter_value")?).map_err(|_| {
+            failed(
+                "procedure_profile",
+                "Benford parameters must be unsigned 32-bit integers",
+            )
+        })?;
     }
     if values[0] > 8 || !(1..=999).contains(&values[1]) || values[6] > 1 {
         return Err(failed(
@@ -114,8 +113,7 @@ fn statistics(counts: &[u64; 9]) -> Result<(u64, u64, Option<u64>), ReportError>
         expected_cumulative = expected_cumulative
             .checked_add(expected)
             .ok_or_else(arithmetic)?;
-        largest_distance =
-            largest_distance.max(observed_cumulative.abs_diff(expected_cumulative));
+        largest_distance = largest_distance.max(observed_cumulative.abs_diff(expected_cumulative));
         if let Some(sum) = chi.as_mut() {
             let numerator = distance
                 .checked_mul(distance)
@@ -129,7 +127,10 @@ fn statistics(counts: &[u64; 9]) -> Result<(u64, u64, Option<u64>), ReportError>
     }
     let mad = u64::try_from(deviation / (n * 9)).map_err(|_| arithmetic())?;
     let ks = u64::try_from(largest_distance / n).map_err(|_| arithmetic())?;
-    let chi = chi.map(u64::try_from).transpose().map_err(|_| arithmetic())?;
+    let chi = chi
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| arithmetic())?;
     Ok((mad, ks, chi))
 }
 
@@ -170,11 +171,7 @@ pub(super) fn replay(
                 )
             })?;
             if u32::from(u8::from(!debit)) != side
-                || registry
-                    .unit_currencies
-                    .get(&unit)
-                    .copied()
-                    .map(u32::from)
+                || registry.unit_currencies.get(&unit).copied().map(u32::from)
                     != Some(currency_iso4217)
             {
                 continue;
@@ -359,8 +356,7 @@ mod tests {
                 .2
                 .is_some()
         );
-        let above =
-            finish(parameters(500), [1_000_001, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+        let above = finish(parameters(500), [1_000_001, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
         assert_eq!(
             above.statistic,
             VerifiedProcedureStatistic::FirstDigitMad {

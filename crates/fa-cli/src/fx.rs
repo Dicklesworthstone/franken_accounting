@@ -574,10 +574,7 @@ fn settlement_intent(
     // Read-based source preparation.
     let mut result = if let Some(name) = draft.filter(|_| capability.branch().is_some()) {
         book.prepare_fx_settlement_group_with_differences_in_draft(
-            capability,
-            name,
-            &requests,
-            proposal,
+            capability, name, &requests, proposal,
         )??
     } else {
         book.prepare_fx_settlement_group_with_differences(capability, &requests, proposal)??

@@ -833,13 +833,18 @@ pub(crate) fn admit_structure(
             "SettlementAllocatedCarrying and its immutable valuation-release extension are required together",
         ));
     }
-    if proposal.extensions.iter().any(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_TERMS_EXTENSION)
+    if proposal
+        .extensions
+        .iter()
+        .any(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_TERMS_EXTENSION)
         && proposal.base_totals.as_ref().is_none_or(|totals| {
             totals.fx_law_oid != FxLawId::SettlementCarryingBasis.oid()
                 && totals.fx_law_oid != FxLawId::SettlementAllocatedCarrying.oid()
         })
     {
-        return Err(fx_structure("explicit FX settlement terms require their source-bound carrying or allocated-carrying law"));
+        return Err(fx_structure(
+            "explicit FX settlement terms require their source-bound carrying or allocated-carrying law",
+        ));
     }
     let item_basis = proposal
         .extensions
@@ -1896,13 +1901,17 @@ pub(crate) fn verify_realized_fx_settlement(
     leg_entities: &[Option<String>],
     rate_docs: &[FxRateDocument],
 ) -> Result<(), Refusal> {
-    let marked = proposal.extensions.iter().any(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_TERMS_EXTENSION);
-    let ranges = if marked || proposal
-        .legs
+    let marked = proposal
+        .extensions
         .iter()
-        .filter(|leg| !leg.settles.is_empty())
-        .count()
-        > 1
+        .any(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_TERMS_EXTENSION);
+    let ranges = if marked
+        || proposal
+            .legs
+            .iter()
+            .filter(|leg| !leg.settles.is_empty())
+            .count()
+            > 1
     {
         crate::carrying::settlement_ranges(proposal)?
     } else {
@@ -1917,7 +1926,9 @@ pub(crate) fn verify_realized_fx_settlement(
             units,
             leg_entities,
             rate_docs,
-            terms.as_ref().and_then(|terms| terms.component(range.start)),
+            terms
+                .as_ref()
+                .and_then(|terms| terms.component(range.start)),
             range,
         )?;
     }
@@ -1966,18 +1977,29 @@ fn verify_realized_fx_component(
     let base_unit = spec.base_unit;
 
     if let Some(terms) = terms {
-        let source = legs.first().ok_or_else(|| fx_structure("FX settlement source is absent"))?;
+        let source = legs
+            .first()
+            .ok_or_else(|| fx_structure("FX settlement source is absent"))?;
         if rate_doc.purpose != FxRatePurpose::Settlement
-            || rate_doc.base_unit != base_unit || source.amount.unit != quote_unit
+            || rate_doc.base_unit != base_unit
+            || source.amount.unit != quote_unit
         {
-            return Err(fx_structure("explicit FX settlement uses the retained Settlement quote for its exact foreign/base unit pair"));
+            return Err(fx_structure(
+                "explicit FX settlement uses the retained Settlement quote for its exact foreign/base unit pair",
+            ));
         }
-        let historical = source.base_amount.ok_or_else(|| fx_structure("FX source relief is absent"))?;
+        let historical = source
+            .base_amount
+            .ok_or_else(|| fx_structure("FX source relief is absent"))?;
         if historical.unit != base_unit {
-            return Err(fx_structure("FX source relief has the wrong functional base unit"));
+            return Err(fx_structure(
+                "FX source relief has the wrong functional base unit",
+            ));
         }
         let rate = rate_doc.to_rate(budget)?;
-        let quoted = source.amount.convert(budget, base_unit, &rate, RoundingLaw::HalfEven, units)
+        let quoted = source
+            .amount
+            .convert(budget, base_unit, &rate, RoundingLaw::HalfEven, units)
             .map_err(fx_structure)?;
         return crate::carrying::differences::check_component(legs, terms, historical, quoted);
     }

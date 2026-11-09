@@ -398,7 +398,10 @@ fn benford_replays_signed_currency_side_and_account_type_populations_across_corr
         let result = verify(&produced, &certified.certificate, key);
         assert!(result.checkpoint.checkpoint.through_seq > original_frontier.0);
         let verified = result.procedure.unwrap();
-        assert_eq!(verified.live_entries, certified.report.work.entries, "{name}");
+        assert_eq!(
+            verified.live_entries, certified.report.work.entries,
+            "{name}"
+        );
         assert_eq!(verified.live_legs, certified.report.work.legs, "{name}");
         assert_eq!(verified.comparisons, 0);
         assert_eq!(verified.findings.len(), 1);
@@ -557,15 +560,18 @@ fn benford_refuses_resealed_statistics_citations_parameters_and_unsupported_scop
             "sample count" => run.findings[0].statistic.population += 1,
             "histogram" => {
                 run.findings[0].narrative =
-                    run.findings[0].narrative.replacen("counts [1", "counts [2", 1);
+                    run.findings[0]
+                        .narrative
+                        .replacen("counts [1", "counts [2", 1);
             }
             "KS" => {
-                run.findings[0].narrative =
-                    run.findings[0].narrative.replacen("KS ", "KS 1", 1);
+                run.findings[0].narrative = run.findings[0].narrative.replacen("KS ", "KS 1", 1);
             }
             "chi-square" => {
                 run.findings[0].narrative =
-                    run.findings[0].narrative.replacen("chi-square ", "chi-square 1", 1);
+                    run.findings[0]
+                        .narrative
+                        .replacen("chi-square ", "chi-square 1", 1);
             }
             "severity" => run.findings[0].severity = Severity::Info,
             "citation" => run.findings[0].cites.push(Cite::Entry(first)),
@@ -667,7 +673,10 @@ fn benford_refuses_resealed_statistics_citations_parameters_and_unsupported_scop
         let refused = verify_report_expected(&changed, &[key], None, None, Some(forged.digest()))
             .unwrap_err();
         assert!(
-            matches!(refused.predicate, "procedure_profile" | "canonical_encoding"),
+            matches!(
+                refused.predicate,
+                "procedure_profile" | "canonical_encoding"
+            ),
             "{variant}: {refused}"
         );
     }

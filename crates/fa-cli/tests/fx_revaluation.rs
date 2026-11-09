@@ -570,11 +570,17 @@ fn independent_account_revaluations_share_a_draft_and_promote_all_or_none() {
         assert_eq!(entries.len(), 2);
         for (entry, review) in entries.iter().zip(&reviews) {
             let retained = PostIntent::decode(&decode_hex(text(data(review), "bytes"))).unwrap();
-            assert_eq!(f.entry(entry.as_str().unwrap()).proposal, *retained.proposal());
+            assert_eq!(
+                f.entry(entry.as_str().unwrap()).proposal,
+                *retained.proposal()
+            );
         }
         let after = head(&f.book);
         let retry = ok(&f.book, &promote);
-        assert_eq!(data(&retry).get("already_recorded"), Some(&Json::Bool(true)));
+        assert_eq!(
+            data(&retry).get("already_recorded"),
+            Some(&Json::Bool(true))
+        );
         assert_eq!(rows(data(&retry), "entries"), entries);
         assert_eq!(head(&f.book), after);
         // Both aggregate and allocated publications remain valid history.

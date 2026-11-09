@@ -20799,7 +20799,11 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     out,
                     args,
                     artifact,
-                    if report.dimensioned { "fa:lots:v2" } else { "fa:lots:v1" },
+                    if report.dimensioned {
+                        "fa:lots:v2"
+                    } else {
+                        "fa:lots:v1"
+                    },
                     &bytes,
                     &retained,
                     &notary::lots_expectation_json(expected),
@@ -22995,32 +22999,49 @@ fn verify_functional_registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(),
     let principal = ctx.principal(args);
     let capability = ctx.capability(args, &["read", "verify"])?;
     let mut book = ctx.books.open_admitted(args, |book| {
-        admit_registers(book, principal, &capability, "verifying functional registers")
+        admit_registers(
+            book,
+            principal,
+            &capability,
+            "verifying functional registers",
+        )
     })?;
     let (selected, _) = known_at_read_flag(args, &book, &ctx.out, &capability)?;
-    let at = book.read_scope(principal, &capability)??.admit_whole_book(selected)??;
+    let at = book
+        .read_scope(principal, &capability)??
+        .admit_whole_book(selected)??;
     let periods = selected_periods(args, &book)?;
     let mut details = Vec::new();
     let mut failing = Vec::new();
     for period in &periods {
-        let verified = book.verify_functional_registers(
-            principal, &capability, period, Some(at),
-        )??;
+        let verified =
+            book.verify_functional_registers(principal, &capability, period, Some(at))??;
         if !verified.is_green() {
             failing.push(period.as_str());
         }
         details.push(obj(vec![
             ("period", s(period)),
-            ("status", s(if !verified.is_green() {
-                "drift"
-            } else if verified.available {
-                "verified_prefix"
-            } else {
-                "absent"
-            })),
+            (
+                "status",
+                s(if !verified.is_green() {
+                    "drift"
+                } else if verified.available {
+                    "verified_prefix"
+                } else {
+                    "absent"
+                }),
+            ),
             ("available", Json::Bool(verified.available)),
-            ("through", verified.through.map_or(Json::Null, |seq| Json::Int(i128::from(seq.0)))),
-            ("findings", Json::Arr(verified.drift.iter().map(s).collect())),
+            (
+                "through",
+                verified
+                    .through
+                    .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+            ),
+            (
+                "findings",
+                Json::Arr(verified.drift.iter().map(s).collect()),
+            ),
         ]));
     }
     ctx.out.known_at(at);
@@ -23053,17 +23074,28 @@ fn functional_registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
             }
             true
         }
-        _ => return Err(usage(
-            "functional registers require advance or materialize",
-            "fa registers advance --functional --period <code>",
-        )),
+        _ => {
+            return Err(usage(
+                "functional registers require advance or materialize",
+                "fa registers advance --functional --period <code>",
+            ));
+        }
     };
     let principal = ctx.principal(args);
     let capability = ctx.capability(args, &["read", "verify", "maintain"])?;
-    fa_policy::require(&capability, fa_policy::Op::Maintain, "maintaining functional registers")
-        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    fa_policy::require(
+        &capability,
+        fa_policy::Op::Maintain,
+        "maintaining functional registers",
+    )
+    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     let mut book = ctx.books.open_admitted(args, |book| {
-        admit_registers(book, principal, &capability, "maintaining functional registers")
+        admit_registers(
+            book,
+            principal,
+            &capability,
+            "maintaining functional registers",
+        )
     })?;
     let periods = selected_periods(args, &book)?;
     for period in &periods {

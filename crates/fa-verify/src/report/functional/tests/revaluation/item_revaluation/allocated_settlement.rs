@@ -269,7 +269,12 @@ fn with_release_and_terms(
     let mut raw = original.bytes[..original.len].to_vec();
     raw[2..4].copy_from_slice(&10u16.to_le_bytes());
     let mut w = Writer::default();
-    w.fixed(&raw).count(2).u16(37).bytes(basis).u16(42).bytes(terms);
+    w.fixed(&raw)
+        .count(2)
+        .u16(37)
+        .bytes(basis)
+        .u16(42)
+        .bytes(terms);
     finish(w, seq)
 }
 
@@ -388,7 +393,10 @@ fn explicit_fx_terms_preserve_allocated_source_relief_and_exact_undo() {
                 &terms.buf,
                 None,
             );
-            assert_eq!(replay(&records).unwrap_err().predicate, "functional_carrying");
+            assert_eq!(
+                replay(&records).unwrap_err().predicate,
+                "functional_carrying"
+            );
             *records.last_mut().unwrap() = honest.clone();
             records.push(with_release_and_terms(
                 11,

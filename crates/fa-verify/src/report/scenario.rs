@@ -90,11 +90,17 @@ impl ScenarioExpectation {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, ReportError> {
         if bytes.len() > 1024 * 1024 {
-            return Err(failed("scenario_request", "scenario question exceeds 1 MiB"));
+            return Err(failed(
+                "scenario_request",
+                "scenario question exceeds 1 MiB",
+            ));
         }
         let mut r = Reader::new(bytes);
         if r.bytes(64, "request.format")? != SCENARIO_MATH_REQUEST_FORMAT {
-            return Err(failed("scenario_request", "unknown scenario question format"));
+            return Err(failed(
+                "scenario_request",
+                "unknown scenario question format",
+            ));
         }
         let method = text(&mut r, 64, "request.method")?.to_string();
         let book_id = r.fixed("request.book")?;
@@ -490,7 +496,12 @@ fn recompute(
         .map(|row| {
             (
                 (row.account, row.unit),
-                [row.debits, row.credits, row.debits_pending, row.credits_pending],
+                [
+                    row.debits,
+                    row.credits,
+                    row.debits_pending,
+                    row.credits_pending,
+                ],
             )
         })
         .collect();

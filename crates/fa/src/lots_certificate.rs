@@ -118,7 +118,9 @@ pub fn lots_output_bytes(report: &LotsReport) -> Result<Vec<u8>, Refusal> {
         return Err(invalid("lot schedule exceeds its row bound"));
     }
     if !report.dimensioned && report.lots.iter().any(|lot| !lot.dimensions.is_empty()) {
-        return Err(invalid("a dimensionless lot schedule contains an attributed layer"));
+        return Err(invalid(
+            "a dimensionless lot schedule contains an attributed layer",
+        ));
     }
     let format = if report.dimensioned {
         LOTS_OUTPUT_FORMAT_V2
@@ -152,7 +154,9 @@ pub fn lots_output_bytes(report: &LotsReport) -> Result<Vec<u8>, Refusal> {
         if lot.dimensions.len() > fa_model::limits::MAX_DIMENSIONS_PER_LEG
             || lot.dimensions.windows(2).any(|pair| pair[0].0 >= pair[1].0)
         {
-            return Err(invalid("lot dimensions must be bounded and strictly sorted"));
+            return Err(invalid(
+                "lot dimensions must be bounded and strictly sorted",
+            ));
         }
         if report.dimensioned {
             size = bounded([size, 4, lot.dimensions.len() * 20])?;
@@ -482,7 +486,10 @@ fn supported_history(
             "the retained base unit is not a registered currency",
         ));
     }
-    let sources: BTreeMap<_, _> = entries.iter().map(|(vid, entry, _)| (*vid, entry)).collect();
+    let sources: BTreeMap<_, _> = entries
+        .iter()
+        .map(|(vid, entry, _)| (*vid, entry))
+        .collect();
     for (vid, entry, _) in entries {
         let legs: Vec<_> = entry
             .proposal
@@ -501,12 +508,11 @@ fn supported_history(
                 )));
             }
             for settlement in &leg.settles {
-                let source = sources.get(&settlement.target.vid).filter(|source| {
-                    source.entry_digest == settlement.target.entry_digest
-                });
-                let source_leg = source.and_then(|source| {
-                    source.proposal.legs.get(usize::from(settlement.ordinal))
-                });
+                let source = sources
+                    .get(&settlement.target.vid)
+                    .filter(|source| source.entry_digest == settlement.target.entry_digest);
+                let source_leg = source
+                    .and_then(|source| source.proposal.legs.get(usize::from(settlement.ordinal)));
                 if source_leg.is_none_or(|source| {
                     source.account_ref != leg.account_ref
                         || source.amount.unit != leg.amount.unit
@@ -623,15 +629,20 @@ pub(crate) fn fold<V: Vfs + Clone, B: Vfs + Clone>(
         let dimensions: BTreeMap<_, _> = entries
             .iter()
             .flat_map(|(vid, entry, _)| {
-                entry.proposal.legs.iter().enumerate().map(move |(ordinal, leg)| {
-                    ((*vid, ordinal as u16), leg.dimension_set.clone())
-                })
+                entry
+                    .proposal
+                    .legs
+                    .iter()
+                    .enumerate()
+                    .map(move |(ordinal, leg)| ((*vid, ordinal as u16), leg.dimension_set.clone()))
             })
             .collect();
         let dimensioned = entries.iter().any(|(_, entry, _)| {
-            entry.proposal.legs.iter().any(|leg| {
-                leg.account_ref == request.account && !leg.dimension_set.is_empty()
-            })
+            entry
+                .proposal
+                .legs
+                .iter()
+                .any(|leg| leg.account_ref == request.account && !leg.dimension_set.is_empty())
         });
         let items = match request.effective_through {
             Some(day) => fa_registers::open_items::history::open_items_as_of(

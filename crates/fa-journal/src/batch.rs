@@ -1374,8 +1374,7 @@ fn judge_retry<V: Vfs + Clone>(
         Err(refusal) => return Ok(Err(refusal)),
     };
     if revaluation.is_some()
-        && let Err(refusal) =
-            authorize_revaluation_batch(db, book, capabilities, batch, admission)?
+        && let Err(refusal) = authorize_revaluation_batch(db, book, capabilities, batch, admission)?
     {
         return Ok(Err(refusal));
     }
@@ -1790,8 +1789,7 @@ fn stage_batch_with<V: Vfs + Clone>(
         Err(refusal) => return Ok(Err(refusal)),
     };
     if revaluation.is_some()
-        && let Err(refusal) =
-            authorize_revaluation_batch(db, book, capabilities, batch, admission)?
+        && let Err(refusal) = authorize_revaluation_batch(db, book, capabilities, batch, admission)?
     {
         return Ok(Err(refusal));
     }

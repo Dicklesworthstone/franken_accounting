@@ -22,9 +22,7 @@ fn read(raw: &[u8]) -> Result<Components, ReportError> {
         ));
     }
     let mut r = Reader::new(raw);
-    if r.fixed::<12>("fx_terms.magic")? != *b"FA-FX-TERMS\0"
-        || r.u16("fx_terms.version")? != 2
-    {
+    if r.fixed::<12>("fx_terms.magic")? != *b"FA-FX-TERMS\0" || r.u16("fx_terms.version")? != 2 {
         return Err(invalid("unsupported explicit FX settlement terms format"));
     }
     let count = r.count(1024, 9, "fx_terms.components")?;

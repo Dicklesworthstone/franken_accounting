@@ -145,7 +145,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         budget: &mut ArithmeticBudget<'_, impl Sized>,
     ) -> Outcome<EntryPayload> {
         let admission = match self.query(cx, |db, book| {
-            Ok(fa_journal::draft::admit_sources(db, book, capability, name)?)
+            Ok(fa_journal::draft::admit_sources(
+                db, book, capability, name,
+            )?)
         })? {
             Ok(admission) => admission,
             Err(refusal) => return Ok(Err(refusal)),

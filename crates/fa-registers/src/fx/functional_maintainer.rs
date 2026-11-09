@@ -15,10 +15,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
+use fa_journal::KernelError;
 use fa_journal::genesis::{BookContext, BookSpec};
 use fa_journal::object::{self, ObjectKind};
 use fa_journal::rows::{book_root, bytes, prop, scalar_bytes, scalar_text};
-use fa_journal::KernelError;
 use fa_model::limits::{
     MAX_BATCH_ENTRIES, MAX_PERIOD_REF_BYTES, MAX_REGISTER_CHECKPOINT_BYTES,
     MAX_REGISTER_CHECKPOINT_CELLS,
@@ -166,7 +166,9 @@ pub fn checkpoint_vid(book: Id128, period: &str, reference: CheckpointRef) -> VI
 }
 
 fn write_reference(writer: &mut Writer, reference: &CheckpointRef) {
-    writer.u64(reference.through.0).fixed(&reference.body_digest);
+    writer
+        .u64(reference.through.0)
+        .fixed(&reference.body_digest);
 }
 
 fn read_reference(reader: &mut Reader<'_>) -> Result<CheckpointRef, fa_model::DecodeError> {
@@ -186,8 +188,7 @@ fn pointer_bytes(reference: CheckpointRef) -> Result<Vec<u8>, RegisterError> {
 fn read_pointer(encoded: &[u8]) -> Result<CheckpointRef, RegisterError> {
     let read = || -> Result<_, fa_model::DecodeError> {
         let mut reader = Reader::new(encoded);
-        if reader.fixed::<{ POINTER_FORMAT.len() }>("functional pointer format")?
-            != POINTER_FORMAT
+        if reader.fixed::<{ POINTER_FORMAT.len() }>("functional pointer format")? != POINTER_FORMAT
         {
             return Err(reader.invalid("functional pointer format"));
         }
@@ -207,10 +208,7 @@ fn spec_at<V: Vfs + Clone>(
         .vertex_at(book_root(), at)?
         .filter(|row| row.labels.contains(&label::BOOK))
         .ok_or_else(|| {
-            RegisterError::InvalidSelection(format!(
-                "the book does not exist at sequence {}",
-                at.0
-            ))
+            RegisterError::InvalidSelection(format!("the book does not exist at sequence {}", at.0))
         })?;
     let encoded = bytes(&root, property::FA_PAYLOAD, "functional book payload")?;
     let spec = BookSpec::decode(&encoded)?;
@@ -246,7 +244,9 @@ fn validate(snapshot: &Snapshot) -> Result<(), RegisterError> {
     if fold.period.is_empty()
         || fold.period.len() > MAX_PERIOD_REF_BYTES
         || fold.known_at != snapshot.through
-        || snapshot.previous.is_some_and(|previous| previous.through >= snapshot.through)
+        || snapshot
+            .previous
+            .is_some_and(|previous| previous.through >= snapshot.through)
         || state.pending_holds.len() > MAX_BATCH_ENTRIES
         || fold.watermark.is_some_and(|at| at > snapshot.through)
         || state.pending_holds.keys().any(|(at, _)| {
@@ -273,7 +273,9 @@ fn validate(snapshot: &Snapshot) -> Result<(), RegisterError> {
                     || cell.entry_count > entries
             })
         {
-            return Err(drift("invalid cell order, coordinate, amounts or entry counts"));
+            return Err(drift(
+                "invalid cell order, coordinate, amounts or entry counts",
+            ));
         }
     }
     if ((!fold.cells.is_empty() || !fold.pending.is_empty()) && fold.watermark.is_none())
@@ -286,12 +288,16 @@ fn validate(snapshot: &Snapshot) -> Result<(), RegisterError> {
             .len()
             > MAX_REGISTER_CHECKPOINT_CELLS
     {
-        return Err(drift("cell population disagrees with its bound or watermark"));
+        return Err(drift(
+            "cell population disagrees with its bound or watermark",
+        ));
     }
     let mut checked = state.clone();
     refresh(&mut checked)?;
     if checked.fold.fold_digest != fold.fold_digest {
-        return Err(drift("complete state does not reproduce its functional fold digest"));
+        return Err(drift(
+            "complete state does not reproduce its functional fold digest",
+        ));
     }
     Ok(())
 }
@@ -326,7 +332,9 @@ fn read_cells(
                 unit_id: base.0,
                 period: period.into(),
                 entity: reader.opt("functional checkpoint entity", |reader| {
-                    Ok(reader.str(MAX_ENTITY_CODE_BYTES, "functional checkpoint entity")?.into())
+                    Ok(reader
+                        .str(MAX_ENTITY_CODE_BYTES, "functional checkpoint entity")?
+                        .into())
                 })?,
             },
             debits: reader.i128("functional checkpoint debits")?,
@@ -467,7 +475,9 @@ fn read_head<V: Vfs + Clone>(
         || !matches!(prop(&row, property::BOOK_ID), Some(CanonicalScalar::Bytes(value)) if value.as_slice() == book.book_id.0)
         || !matches!(prop(&row, property::EFFECTIVE_PERIOD), Some(CanonicalScalar::Text(value)) if value.as_str() == period)
     {
-        return Err(drift("discovery pointer has a different identity or coordinate"));
+        return Err(drift(
+            "discovery pointer has a different identity or coordinate",
+        ));
     }
     let encoded = bytes(&row, property::TARGET_REF, "functional register pointer")?;
     let reference = read_pointer(&encoded)?;
@@ -505,7 +515,9 @@ fn load<V: Vfs + Clone>(
         || db.vertex_at(root, before)?.is_some()
         || db.vertex_at(root, row.created_at)?.as_ref() != Some(&row)
     {
-        return Err(drift("snapshot identity, coordinate or immutable creation differs"));
+        return Err(drift(
+            "snapshot identity, coordinate or immutable creation differs",
+        ));
     }
     let encoded = object::read(
         db,
@@ -519,10 +531,11 @@ fn load<V: Vfs + Clone>(
     )
     .map_err(cache_error)?;
     let snapshot = Snapshot::decode(&encoded, book.book_id, period)?;
-    let (spec, spec_digest) = spec_at(db, book, reference.through).map_err(|error| match error {
-        RegisterError::InvalidSelection(message) => drift(message),
-        error => error,
-    })?;
+    let (spec, spec_digest) =
+        spec_at(db, book, reference.through).map_err(|error| match error {
+            RegisterError::InvalidSelection(message) => drift(message),
+            error => error,
+        })?;
     if snapshot.through != reference.through
         || body_digest(&encoded) != reference.body_digest
         || snapshot.spec_digest != spec_digest
@@ -536,11 +549,16 @@ fn load<V: Vfs + Clone>(
             .chain(&snapshot.state.fold.pending)
             .any(|cell| {
                 cell.key.entity.as_ref().is_some_and(|entity| {
-                    !spec.entities.iter().any(|declared| declared.code == *entity)
+                    !spec
+                        .entities
+                        .iter()
+                        .any(|declared| declared.code == *entity)
                 })
             })
     {
-        return Err(drift("snapshot differs from its reference or historical book definition"));
+        return Err(drift(
+            "snapshot differs from its reference or historical book definition",
+        ));
     }
     crate::period_at(db, book, period, reference.through).map_err(|error| match error {
         RegisterError::InvalidSelection(message) => drift(message),
@@ -643,7 +661,9 @@ fn release<V: Vfs + Clone>(
     let expected =
         fold_functional_entry_contributions([0; 32], spec, held_at, target.vid, &hold, None)?;
     if state.pending_holds.remove(&(held_at, target.vid)) != Some(expected) {
-        return Err(drift("released hold differs from the complete pending contribution state"));
+        return Err(drift(
+            "released hold differs from the complete pending contribution state",
+        ));
     }
     for (key, released) in released {
         let cell = pending
@@ -799,9 +819,11 @@ fn apply_tail<V: Vfs + Clone>(
                     // The literal law removes every resolved hold before
                     // adding amounts. A later release can remove a temporary
                     // overflow, or an unvalued hold, in this suffix.
-                    Err(RegisterError::Overflow
-                    | RegisterError::Capacity(_)
-                    | RegisterError::ProjectionDrift(_)) => return Ok(Tail::Rebuild),
+                    Err(
+                        RegisterError::Overflow
+                        | RegisterError::Capacity(_)
+                        | RegisterError::ProjectionDrift(_),
+                    ) => return Ok(Tail::Rebuild),
                     Err(error) => return Err(error),
                 }
                 let digest =
@@ -854,15 +876,7 @@ fn rebuilt<V: Vfs + Clone>(
     at: CommitSeq,
 ) -> Result<(FunctionalState, FunctionalFoldWork), RegisterError> {
     let mut work = FunctionalFoldWork::default();
-    let state = literal_period_functional_state(
-        db,
-        book,
-        period,
-        Some(at),
-        &[],
-        None,
-        &mut work,
-    )?;
+    let state = literal_period_functional_state(db, book, period, Some(at), &[], None, &mut work)?;
     Ok((state, work))
 }
 
@@ -891,9 +905,13 @@ async fn prepare<V: Vfs + Clone>(
     let (spec, spec_digest) = spec_at(db, book, basis)?;
     let head = db.vertex(head_vid(book.book_id, period))?;
     if head.as_ref().is_some_and(|row| {
-        row.labels.iter().any(|value| *value != label::REGISTER_STATE)
+        row.labels
+            .iter()
+            .any(|value| *value != label::REGISTER_STATE)
     }) {
-        return Err(drift("discovery identity belongs to an authoritative object"));
+        return Err(drift(
+            "discovery identity belongs to an authoritative object",
+        ));
     }
     let expected_pointer = head
         .as_ref()
@@ -910,9 +928,7 @@ async fn prepare<V: Vfs + Clone>(
     let mut entries_decoded = 0;
     let mut legs_folded = 0;
     let mut state = match previous.as_ref() {
-        Some((snapshot, _)) if snapshot.spec_digest == spec_digest => {
-            Some(snapshot.state.clone())
-        }
+        Some((snapshot, _)) if snapshot.spec_digest == spec_digest => Some(snapshot.state.clone()),
         _ => {
             rebuild = true;
             None
@@ -1008,8 +1024,15 @@ pub async fn publish_advance<V: Vfs + Clone>(
     let root = checkpoint_vid(book.book_id, &result.period, reference);
     let mut batch = WriteBatch::new(relation::IN_PERIOD);
     if db.vertex(root)?.is_some() {
-        if load(db, &cx.query(), book, &result.period, reference, prepared.basis)?.0
-            != prepared.snapshot
+        if load(
+            db,
+            &cx.query(),
+            book,
+            &result.period,
+            reference,
+            prepared.basis,
+        )?
+        .0 != prepared.snapshot
         {
             return Err(drift("existing immutable snapshot differs"));
         }
@@ -1118,9 +1141,11 @@ pub fn fold_at_with_context<V: Vfs + Clone>(
     let (mut snapshot, reference) = match load_latest(db, cx, book, period, basis) {
         Ok(Some(value)) => value,
         Ok(None)
-        | Err(RegisterError::ProjectionDrift(_)
-        | RegisterError::InvalidSelection(_)
-        | RegisterError::Kernel(KernelError::Corrupt(_))) => return Ok(None),
+        | Err(
+            RegisterError::ProjectionDrift(_)
+            | RegisterError::InvalidSelection(_)
+            | RegisterError::Kernel(KernelError::Corrupt(_)),
+        ) => return Ok(None),
         Err(error) => return Err(error),
     };
     if snapshot.spec_digest != spec_digest {

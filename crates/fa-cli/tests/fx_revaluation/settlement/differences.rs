@@ -46,7 +46,11 @@ fn net_cash_workflow(liability: bool, allocated: bool) {
         );
     }
     let sign = if liability { -1 } else { 1 };
-    let cash = if liability { "128.75 USD" } else { "126.25 USD" };
+    let cash = if liability {
+        "128.75 USD"
+    } else {
+        "126.25 USD"
+    };
     let law = if allocated {
         "SettlementAllocatedCarrying"
     } else {
@@ -86,11 +90,22 @@ fn net_cash_workflow(liability: bool, allocated: bool) {
     let stock = f.stock("2026-02-28");
     assert_eq!(net(&stock, f.control()), 0);
     assert_eq!(net(&stock, "3900"), 0, "conversion closes exactly");
-    assert_eq!(net(&stock, "1100"), sign * if liability { 12_875 } else { 12_625 });
+    assert_eq!(
+        net(&stock, "1100"),
+        sign * if liability { 12_875 } else { 12_625 }
+    );
     assert_eq!(net(&stock, "6300"), sign * 200);
     assert_eq!(net(&stock, "6310"), sign * 50);
-    assert_eq!(net(&stock, "6320"), 125, "bank charges are an expense in either direction");
-    assert_eq!(net(&stock, "4900"), -sign * 2_000, "FX uses gross quote less historical cost");
+    assert_eq!(
+        net(&stock, "6320"),
+        125,
+        "bank charges are an expense in either direction"
+    );
+    assert_eq!(
+        net(&stock, "4900"),
+        -sign * 2_000,
+        "FX uses gross quote less historical cost"
+    );
     if allocated {
         assert_eq!(net(&stock, f.valuation()), 0);
         assert_eq!(net(&stock, f.unrealized()), 0);
@@ -102,26 +117,47 @@ fn net_cash_workflow(liability: bool, allocated: bool) {
         let certificate_path = f.f.path("net-cash.cert");
         let (status, events) = run_many(
             &f.f.book,
-            &["tb", "--functional", "--as-of", "2026-02-28", "--certificate-out", &certificate_path],
+            &[
+                "tb",
+                "--functional",
+                "--as-of",
+                "2026-02-28",
+                "--certificate-out",
+                &certificate_path,
+            ],
             None,
         );
         assert_eq!(status, 0, "{events:?}");
-        let certificate = fa::ReportCertificate::decode(&std::fs::read(&certificate_path).unwrap()).unwrap();
+        let certificate =
+            fa::ReportCertificate::decode(&std::fs::read(&certificate_path).unwrap()).unwrap();
         let checkpoint = ok(&f.f.book, &["checkpoint", "create", "--grant", "witness"]);
         let exported = ok(
             &f.f.book,
-            &["bundle", "produce", "--certificate", &certificate_path, "--state", text(data(&checkpoint), "oid")],
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                &certificate_path,
+                "--state",
+                text(data(&checkpoint), "oid"),
+            ],
         );
         let exported = data(&exported);
-        let key: [u8; 32] = decode_hex(text(exported, "checkpoint_public_key")).try_into().unwrap();
+        let key: [u8; 32] = decode_hex(text(exported, "checkpoint_public_key"))
+            .try_into()
+            .unwrap();
         let verified = fa_verify::report::verify_report_expected(
             &decode_hex(text(exported, "bytes")),
             &[key],
             None,
             Some(&decode_hex(text(exported, "receipt"))),
             Some(&certificate.digest),
-        ).unwrap();
-        assert_eq!(verified.output, certificate.output, "real CLI effects independently reproduce the retained functional report");
+        )
+        .unwrap();
+        assert_eq!(
+            verified.output, certificate.output,
+            "real CLI effects independently reproduce the retained functional report"
+        );
     }
     let after_post = head(&f.f.book);
     assert_eq!(
@@ -196,7 +232,12 @@ fn foreign_cash_differences_refuse_unexplained_units_reasons_routes_and_item_ind
         "kind=RealizedFx account=4900 amount=\"1.25 USD\"",
         "kind=BankCharge account=6320 amount=\"1.24 USD\"",
     ] {
-        let mut args = f.cash_args("bad-net-cash", "100.00 EUR", "128.75 USD", "SettlementCarryingBasis");
+        let mut args = f.cash_args(
+            "bad-net-cash",
+            "100.00 EUR",
+            "128.75 USD",
+            "SettlementCarryingBasis",
+        );
         args.extend(["--difference".into(), difference.into()]);
         f.refused_cash(&args);
     }
@@ -210,7 +251,14 @@ fn foreign_cash_differences_refuse_unexplained_units_reasons_routes_and_item_ind
     let before = head(&f.f.book);
     let (status, refused) = run(
         &f.f.book,
-        &["post", "--intent", &invalid_item, "--evidence", &f.f.evidence, "--yes"],
+        &[
+            "post",
+            "--intent",
+            &invalid_item,
+            "--evidence",
+            &f.f.evidence,
+            "--yes",
+        ],
         None,
     );
     assert_eq!(status, 2, "{}", refused.render());

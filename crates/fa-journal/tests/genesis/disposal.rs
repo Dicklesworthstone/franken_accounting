@@ -1254,11 +1254,17 @@ fn dimensioned_lot_relief_keeps_entities_and_cost_centers_separate_through_undo_
         let retry = f.prepare_request(&first, b"north-disposal").unwrap();
         assert_eq!(retry, prepared);
         assert_eq!(
-            f.h.post(posting(retry.into_proposal())).unwrap().entry_ref(),
+            f.h.post(posting(retry.into_proposal()))
+                .unwrap()
+                .entry_ref(),
             posted.entry_ref(),
         );
         assert_eq!(f.h.db.frontier().unwrap(), at);
-        let reversal = undo(prepared.proposal(), posted.entry_ref(), b"undo-north-disposal");
+        let reversal = undo(
+            prepared.proposal(),
+            posted.entry_ref(),
+            b"undo-north-disposal",
+        );
         f.h.post(posting(reversal)).unwrap();
         assert_eq!(f.h.applied_to(f.acquisitions[0].vid, 0), 0);
         assert_eq!(f.h.applied_to(f.acquisitions[0].vid, 2), 0);
@@ -1275,7 +1281,10 @@ fn dimensioned_lot_relief_keeps_entities_and_cost_centers_separate_through_undo_
         partial.dimensions.truncate(1);
         assert!(f.prepare_request(&partial, b"partial-partition").is_err());
         partial.dimensions.clear();
-        assert!(f.prepare_request(&partial, b"unqualified-partition").is_err());
+        assert!(
+            f.prepare_request(&partial, b"unqualified-partition")
+                .is_err()
+        );
     }
 }
 
@@ -1296,7 +1305,8 @@ fn dimensioned_acquisitions_pair_costs_by_partition_and_refuse_cross_partition_s
     for (leg, partition) in legs.iter_mut().zip([0, 0, 1, 1, 1, 1, 0, 0]) {
         leg.dimension_set = f.dimensions[partition].clone();
     }
-    let acquisition = f.h.proposal(legs, b"mixed-acquisition", EntryClass::ORIGINAL);
+    let acquisition =
+        f.h.proposal(legs, b"mixed-acquisition", EntryClass::ORIGINAL);
     let mut mismatched = acquisition.clone();
     mismatched.idempotency_key = b"mismatched-acquisition".to_vec();
     // Preserve the legal entity and every monetary balance. Only the cost

@@ -16,17 +16,16 @@
 mod allocated;
 pub(crate) mod differences;
 mod history;
-pub use differences::{
-    FxSettlementDifference, FxSettlementWithDifferencesRequest,
-    admit_draft_settlement_requests_with_differences,
-    prepare_fx_settlement_with_differences, prepare_fx_settlement_group_with_differences,
-    prepare_fx_settlement_with_differences_in_draft,
-    prepare_fx_settlement_group_with_differences_in_draft,
-};
 pub(crate) use allocated::ReleaseIndex as AllocatedReleaseIndex;
 pub(crate) use allocated::basis as allocated_basis;
 pub(crate) use allocated::covers_valuation_account;
 pub(crate) use allocated::{has_allocated_basis, verify_allocated_fx_structure};
+pub use differences::{
+    FxSettlementDifference, FxSettlementWithDifferencesRequest,
+    admit_draft_settlement_requests_with_differences, prepare_fx_settlement_group_with_differences,
+    prepare_fx_settlement_group_with_differences_in_draft, prepare_fx_settlement_with_differences,
+    prepare_fx_settlement_with_differences_in_draft,
+};
 pub use history::CarryingPopulationWork;
 pub(crate) use history::cached_liveness as reversal_liveness;
 pub(crate) use history::{CarryingHistory, CarryingIndex};
@@ -1227,7 +1226,11 @@ fn admit_draft_settlement_requests_inner<V: Vfs + Clone>(
                 for difference in differences {
                     declared.legs.extend([
                         LegPayload::simple(Side::Debit, difference.account, difference.amount),
-                        LegPayload::simple(Side::Credit, request.conversion_account, difference.amount),
+                        LegPayload::simple(
+                            Side::Credit,
+                            request.conversion_account,
+                            difference.amount,
+                        ),
                     ]);
                 }
             }
@@ -1409,7 +1412,15 @@ pub fn prepare_fx_settlement_group<V: Vfs + Clone>(
     budget: &mut ArithmeticBudget<'_, impl Sized>,
 ) -> Outcome<PreparedFxSettlementGroup> {
     prepare_fx_settlement_group_with_admission(
-        db, cx, book, capability, None, requests, &[], template, budget,
+        db,
+        cx,
+        book,
+        capability,
+        None,
+        requests,
+        &[],
+        template,
+        budget,
     )
 }
 
@@ -1471,7 +1482,9 @@ fn prepare_fx_settlement_group_with_admission<V: Vfs + Clone>(
             .checked_add(prepared.proposal.legs.len())
             .ok_or_else(|| KernelError::Corrupt("FX group leg count overflow".into()))?;
         if end > fa_model::limits::MAX_LEGS_PER_ENTRY {
-            return Ok(Err(invalid("FX group exceeds the complete Entry leg bound")));
+            return Ok(Err(invalid(
+                "FX group exceeds the complete Entry leg bound",
+            )));
         }
         items.push(FxSettlementItem {
             carrying: prepared.carrying,
@@ -1534,16 +1547,22 @@ fn prepare_fx_settlement_group_with_admission<V: Vfs + Clone>(
                     combined_basis.items.extend(next_basis.items);
                     let tag = fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION;
                     let bytes = combined_basis.canonical_bytes()?;
-                    match combined.extensions.binary_search_by_key(&tag, |(tag, _)| *tag) {
+                    match combined
+                        .extensions
+                        .binary_search_by_key(&tag, |(tag, _)| *tag)
+                    {
                         Ok(index) => combined.extensions[index].1 = bytes,
                         Err(index) => combined.extensions.insert(index, (tag, bytes)),
                     }
                 }
                 // Marker ordinals refer to the final immutable entry, including
                 // any allocated release tails and unmarked legacy components.
-                let mut combined_terms = combined.fx_settlement_terms()
+                let mut combined_terms = combined
+                    .fx_settlement_terms()
                     .map_err(|error| KernelError::Corrupt(error.to_string()))?;
-                if let Some(mut next_terms) = prepared.proposal.fx_settlement_terms()
+                if let Some(mut next_terms) = prepared
+                    .proposal
+                    .fx_settlement_terms()
                     .map_err(|error| KernelError::Corrupt(error.to_string()))?
                 {
                     for component in &mut next_terms.components {
@@ -1551,8 +1570,12 @@ fn prepare_fx_settlement_group_with_admission<V: Vfs + Clone>(
                             return Ok(Err(refusal));
                         }
                     }
-                    combined_terms.get_or_insert_with(|| fa_model::FxSettlementTerms { components: Vec::new() })
-                        .components.extend(next_terms.components);
+                    combined_terms
+                        .get_or_insert_with(|| fa_model::FxSettlementTerms {
+                            components: Vec::new(),
+                        })
+                        .components
+                        .extend(next_terms.components);
                 }
                 combined.schema_minor = combined.schema_minor.max(prepared.proposal.schema_minor);
                 combined.legs.extend(prepared.proposal.legs);
@@ -1826,12 +1849,21 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
     };
     if let Some(route) = carrying.valuation_route {
         if differences.iter().any(|difference| {
-            difference.account == route.valuation_account || difference.account == route.unrealized_account
+            difference.account == route.valuation_account
+                || difference.account == route.unrealized_account
         }) {
-            return Ok(Err(invalid("FX differences cannot post to allocated valuation or unrealized-FX destinations")));
+            return Ok(Err(invalid(
+                "FX differences cannot post to allocated valuation or unrealized-FX destinations",
+            )));
         }
     }
-    if let Err(refusal) = differences::apply(&mut template, request, differences, historical_relief, converted) {
+    if let Err(refusal) = differences::apply(
+        &mut template,
+        request,
+        differences,
+        historical_relief,
+        converted,
+    ) {
         return Ok(Err(refusal));
     }
     template.legs[0].settles = vec![Settlement {
@@ -1914,7 +1946,9 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
             proposal,
             at,
             range.start,
-            terms.as_ref().and_then(|terms| terms.component(range.start)),
+            terms
+                .as_ref()
+                .and_then(|terms| terms.component(range.start)),
             &proposal.legs[range],
             &mut audits,
         )? {

@@ -177,7 +177,9 @@ impl LotsReport {
     /// Plan a disposal of `request.quantity` against the open lots of this report.
     pub fn plan_disposal(&self, request: &LotDisposalRequest) -> Result<LotDisposalPlan, LotError> {
         if request.dimensions.len() > fa_model::limits::MAX_DIMENSIONS_PER_LEG
-            || !fa_model::canon::strictly_ascending(&request.dimensions, |(dimension, _)| *dimension)
+            || !fa_model::canon::strictly_ascending(&request.dimensions, |(dimension, _)| {
+                *dimension
+            })
         {
             return Err(LotError::InvalidCandidate(
                 "the disposal dimension set must be bounded and strictly ordered".into(),
@@ -316,8 +318,7 @@ pub fn lots<V: asupersync::fs::Vfs + Clone>(
         .into_iter()
         .map(|(vid, entry, _)| (vid, entry.entry_digest))
         .collect();
-    let lots =
-        fold_lots_from_open_items_with_dimensions(&items, &digests, base_unit, &dimensions)?;
+    let lots = fold_lots_from_open_items_with_dimensions(&items, &digests, base_unit, &dimensions)?;
     Ok(LotsReport {
         book_id: book.book_id,
         known_at: seq,

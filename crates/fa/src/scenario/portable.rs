@@ -149,7 +149,9 @@ impl Book {
                 || !p.supersession.is_empty()
                 || !p.extensions.is_empty()
                 || p.legs.len() < 2
-                || p.unit_totals.iter().any(|total| total.debits != total.credits)
+                || p.unit_totals
+                    .iter()
+                    .any(|total| total.debits != total.credits)
                 || p.legs.iter().any(|leg| {
                     leg.base_amount.is_some()
                         || !leg.dimension_set.is_empty()
@@ -162,7 +164,9 @@ impl Book {
             }
             document_oids.extend(p.evidence.iter().map(|evidence| evidence.document_oid));
             if document_oids.len() > MAX_SCENARIO_DOCUMENTS {
-                return Ok(Err(refused("scenario document closure exceeds its count bound")));
+                return Ok(Err(refused(
+                    "scenario document closure exceeds its count bound",
+                )));
             }
         }
         let report = match self.replay_scenario_diff(principal, capability, source)? {
@@ -177,8 +181,7 @@ impl Book {
             Err(refusal) => return Ok(Err(refusal)),
         };
         if fork.map.digest()? != report.seq_map_digest
-            || fork.book.head()?.0.checked_add(through as u64)
-                != Some(report.scenario_known_at.0)
+            || fork.book.head()?.0.checked_add(through as u64) != Some(report.scenario_known_at.0)
         {
             return Ok(Err(refused(
                 "scenario replay is not additive over distinct new publications",
@@ -206,7 +209,10 @@ impl Book {
             Ok(raw) => raw,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let mut content_bytes = produced.bundle.bytes.len()
+        let mut content_bytes = produced
+            .bundle
+            .bytes
+            .len()
             .saturating_add(raw.len())
             .saturating_add(map.len())
             .saturating_add(128);

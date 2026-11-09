@@ -6,7 +6,9 @@ use fa_money::Side;
 use fgdb_types::VId;
 
 use crate::args::Args;
-use crate::cli::{Fail, Out, hex, plan_dimensions_json, registered_unit_code, render_amount, usage};
+use crate::cli::{
+    Fail, Out, hex, plan_dimensions_json, registered_unit_code, render_amount, usage,
+};
 use crate::json::{Json, obj, s};
 
 /// An exact lot partition, never a subtree or a partial-dimension filter.
@@ -15,7 +17,9 @@ pub(crate) fn dimensions(args: &Args, book: Id128) -> Result<Vec<(u32, VId)>, Fa
     const EXAMPLE: &str = "--dimension legal_entity:PARENT --dimension cost_center:WAREHOUSE";
     let mut selected = std::collections::BTreeMap::new();
     for raw in args.flag_all("--dimension") {
-        let (code, value) = raw.split_once(':').filter(|(_, value)| !value.is_empty())
+        let (code, value) = raw
+            .split_once(':')
+            .filter(|(_, value)| !value.is_empty())
             .ok_or_else(|| usage("--dimension requires KIND:VALUE", EXAMPLE))?;
         let id = match code {
             fa_model::LEGAL_ENTITY_DIMENSION_CODE => fa_model::LEGAL_ENTITY_DIMENSION,
@@ -24,12 +28,21 @@ pub(crate) fn dimensions(args: &Args, book: Id128) -> Result<Vec<(u32, VId)>, Fa
                 .map(|kind| kind.id)
                 .ok_or_else(|| usage(format!("unknown lot dimension `{other}`"), EXAMPLE))?,
         };
-        if selected.insert(id, dimension_value_vid(book, code, value)).is_some() {
-            return Err(usage("an exact lot partition names each dimension once", EXAMPLE));
+        if selected
+            .insert(id, dimension_value_vid(book, code, value))
+            .is_some()
+        {
+            return Err(usage(
+                "an exact lot partition names each dimension once",
+                EXAMPLE,
+            ));
         }
     }
     if selected.len() > fa_model::limits::MAX_DIMENSIONS_PER_LEG {
-        return Err(usage("the lot partition exceeds the dimension bound", EXAMPLE));
+        return Err(usage(
+            "the lot partition exceeds the dimension bound",
+            EXAMPLE,
+        ));
     }
     Ok(selected.into_iter().collect())
 }

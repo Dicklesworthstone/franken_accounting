@@ -6335,15 +6335,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     "producing conditional scenario mathematics",
                 )
             })
-            .and_then(|()| {
-                fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
-            })
+            .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         let at = match self.query(cx, |db, book| {
-            Ok(fa_journal::policy::current_at(db, book, capability)?
-                .map(|current| current.at()))
+            Ok(fa_journal::policy::current_at(db, book, capability)?.map(|current| current.at()))
         })? {
             Ok(at) => at,
             Err(refusal) => return Ok(Err(refusal)),
@@ -6351,7 +6348,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let commitment = capability
             .commitment()
             .map_err(|error| KernelError::Corrupt(format!("capability commitment: {error}")))?;
-        Ok(Ok(prepared.sign(principal, at, commitment, &self.signer)?))
+        Ok(Ok(prepared.sign(
+            principal,
+            at,
+            commitment,
+            &self.signer,
+        )?))
     }
 
     /// Produce an evidence bundle against the journaled state `state`

@@ -191,8 +191,7 @@ pub(super) fn check_history(
         let details = proposal_leg_details(&bytes[..length])?;
         // Counts are per complete dimension set. Two values of the same
         // parent dimension never authorize pooling their quantity or cost.
-        let mut partitions: BTreeMap<Vec<(u32, u128)>, (usize, usize, usize)> =
-            BTreeMap::new();
+        let mut partitions: BTreeMap<Vec<(u32, u128)>, (usize, usize, usize)> = BTreeMap::new();
         for (ordinal, leg) in &selected {
             let detail = &details[*ordinal];
             if detail.base_amount.is_some() {
@@ -202,7 +201,10 @@ pub(super) fn check_history(
                 ));
             }
             if detail.dimensions.len() > MAX_DIMENSIONS_PER_LEG
-                || detail.dimensions.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+                || detail
+                    .dimensions
+                    .windows(2)
+                    .any(|pair| pair[0].0 >= pair[1].0)
             {
                 return Err(failed(
                     "lots_profile",

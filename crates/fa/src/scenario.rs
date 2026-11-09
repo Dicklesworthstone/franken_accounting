@@ -30,9 +30,7 @@ use crate::{Book, BookError, Outcome};
 mod certificate;
 pub(crate) mod portable;
 
-pub use fa_notary::scenario::{
-    NATIVE_ORIGINAL_ADDITIVE_METHOD, SCENARIO_MATH_BUNDLE_FORMAT,
-};
+pub use fa_notary::scenario::{NATIVE_ORIGINAL_ADDITIVE_METHOD, SCENARIO_MATH_BUNDLE_FORMAT};
 pub use portable::scenario_math_request;
 
 pub use certificate::{

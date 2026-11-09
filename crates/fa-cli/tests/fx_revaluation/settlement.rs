@@ -1,6 +1,7 @@
 //! A retained item allocation reaches ordinary customer and supplier cash
 //! workflows through real CLI processes, including portable plans and undo.
 
+#[path = "settlement/differences.rs"]
 mod differences;
 
 use super::*;

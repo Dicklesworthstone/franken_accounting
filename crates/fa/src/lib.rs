@@ -291,8 +291,8 @@ pub use fa_statements::{
 pub use findings::{RecordedFindings, finding_run_vid, finding_vid};
 pub use functional_trial_balance::{FunctionalTrialBalance, FunctionalTrialBalanceCell};
 pub use fx::{
-    FX_RATE_MIME, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms, FxSettlementItem,
-    FxSettlementDifference, FxSettlementRequest, FxSettlementWithDifferencesRequest,
+    FX_RATE_MIME, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms, FxSettlementDifference,
+    FxSettlementItem, FxSettlementRequest, FxSettlementWithDifferencesRequest,
     MAX_FX_SETTLEMENT_ITEMS, PreparedFxSettlement, PreparedFxSettlementGroup,
 };
 pub use fx_revaluation::{
@@ -317,8 +317,8 @@ pub use intake::IntakeAction;
 pub use ledger_diff::{LedgerDiff, RecordedEntry, TrialBalanceChange};
 pub use lots_certificate::{
     CertifiedLots, LOTS_CERTIFICATE_FORMAT, LOTS_CERTIFICATE_FORMAT_V2, LOTS_OUTPUT_FORMAT,
-    LOTS_OUTPUT_FORMAT_V2, LotsCertificate, LotsRequest,
-    MAX_LOTS_CERTIFICATE_BYTES, MAX_LOTS_ROWS, lots_output_bytes,
+    LOTS_OUTPUT_FORMAT_V2, LotsCertificate, LotsRequest, MAX_LOTS_CERTIFICATE_BYTES, MAX_LOTS_ROWS,
+    lots_output_bytes,
 };
 pub use outcome_recovery::{OutcomeRebuild, OutcomeRebuildPreview, PreparedOutcomeRebuild};
 pub use plan_warnings::{PlanWarning, PlanWarningKind, PlanWarnings};
@@ -356,9 +356,9 @@ pub use roll_forward::{
 };
 pub use scenario::{
     CertifiedScenarioDiff, LEGACY_SCENARIO_DIFF_CERTIFICATE_FORMAT,
-    NATIVE_ORIGINAL_ADDITIVE_METHOD, SCENARIO_DIFF_CERTIFICATE_FORMAT,
-    SCENARIO_DIFF_OUTPUT_FORMAT, SCENARIO_MATH_BUNDLE_FORMAT, ScenarioBook, ScenarioDiff,
-    ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun, scenario_math_request,
+    NATIVE_ORIGINAL_ADDITIVE_METHOD, SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT,
+    SCENARIO_MATH_BUNDLE_FORMAT, ScenarioBook, ScenarioDiff, ScenarioDiffCertificate,
+    ScenarioDiffRow, ScenarioRun, scenario_math_request,
 };
 pub use search::{SearchResults, SearchVerification, document_search_text};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};

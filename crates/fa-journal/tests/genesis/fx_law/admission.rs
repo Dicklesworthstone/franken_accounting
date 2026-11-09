@@ -337,7 +337,8 @@ impl RevaluationBatchFixture {
             EntryClass::ORIGINAL,
         );
         let arithmetic = h.root.restrict::<asupersync::cx::cap::None>();
-        let mut budget = ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(100_000, 0), 4096);
+        let mut budget =
+            ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(100_000, 0), 4096);
         let proposal = value_proposal(
             &mut budget,
             proposal,
@@ -417,20 +418,19 @@ fn independent_revaluations_publish_atomically_and_replay_each_source_at_later_c
             let before = f.h.db.frontier().unwrap();
             let rows = f.h.db.vertices().unwrap();
             let plan = planned.then(|| {
-                let plan = f
-                    .h
-                    .planned_batch(batch.clone(), &RevaluationBatchFixture::capability())
-                    .unwrap();
+                let plan =
+                    f.h.planned_batch(batch.clone(), &RevaluationBatchFixture::capability())
+                        .unwrap();
                 assert_eq!(plan.prepared_entries().len(), 2);
                 assert_eq!(f.h.db.frontier().unwrap(), before);
                 assert_eq!(f.h.db.vertices().unwrap(), rows);
                 fa_intents::BatchPlan::decode(&plan.canonical_bytes().unwrap()).unwrap()
             });
             let posted = match &plan {
-                Some(plan) => f
-                    .h
-                    .publish_batch_plan(plan.clone(), &RevaluationBatchFixture::capability())
-                    .unwrap(),
+                Some(plan) => {
+                    f.h.publish_batch_plan(plan.clone(), &RevaluationBatchFixture::capability())
+                        .unwrap()
+                }
                 None => f.post_batch(batch.clone()).unwrap(),
             };
             assert!(!posted.already_recorded);
@@ -463,10 +463,10 @@ fn independent_revaluations_publish_atomically_and_replay_each_source_at_later_c
             let after = f.h.db.frontier().unwrap();
             let rows = f.h.db.vertices().unwrap();
             let retry = match plan {
-                Some(plan) => f
-                    .h
-                    .publish_batch_plan(plan, &RevaluationBatchFixture::capability())
-                    .unwrap(),
+                Some(plan) => {
+                    f.h.publish_batch_plan(plan, &RevaluationBatchFixture::capability())
+                        .unwrap()
+                }
                 None => f.post_batch(batch).unwrap(),
             };
             assert!(retry.already_recorded);
@@ -543,7 +543,11 @@ fn a_changed_later_revaluation_basis_or_effect_refuses_the_whole_atomic_batch() 
         let vertices = f.h.db.vertices().unwrap();
         let edges = f.h.db.edges().unwrap();
         let refused = f.post_batch(batch).unwrap_err();
-        assert_eq!(refused.code, code::PLAN_INVALIDATED, "{mutation}: {refused}");
+        assert_eq!(
+            refused.code,
+            code::PLAN_INVALIDATED,
+            "{mutation}: {refused}"
+        );
         assert!(refused.message.contains("member 1"), "{refused}");
         assert_eq!(f.h.db.frontier().unwrap(), before);
         assert_eq!(f.h.db.vertices().unwrap(), vertices);

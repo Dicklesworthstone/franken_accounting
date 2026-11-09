@@ -58,6 +58,7 @@ pub use entity::{
     period_activity_by_entity, register_equals, stock_by_entity, verify_entities,
 };
 pub use explain::{BalanceExplanation, explain_balance};
+pub use fx::functional_maintainer;
 pub use fx::{
     CtaRollForwardSchedule, FUNCTIONAL_ACTIVITY_DIGEST_DOMAIN, FUNCTIONAL_FOLD_DIGEST_DOMAIN,
     FUNCTIONAL_STOCK_DIGEST_DOMAIN, FunctionalCell, FunctionalCellKey, FunctionalFold,
@@ -72,7 +73,6 @@ pub use fx::{
     translate_current_rate, verify_functional_fold, verify_functional_fold_excluding_classes,
     verify_functional_stock, verify_remeasurement_certificate, verify_translation_certificate,
 };
-pub use fx::functional_maintainer;
 pub use lots::{
     LotDisposalPlan, LotDisposalRequest, LotDisposalSlice, LotItem, LotReliefEdge, LotsReport,
     fold_lots_from_open_items, lots,

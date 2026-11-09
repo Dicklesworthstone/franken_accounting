@@ -437,8 +437,7 @@ fn output_bytes(report: &VerifiedLots) -> Vec<u8> {
 }
 
 fn wrap(native: &[u8], base_unit: u32, cutoff: Option<i32>, output: &[u8]) -> (Vec<u8>, [u8; 32]) {
-    let dimensioned =
-        Reader::new(output).bytes(64, "output format").unwrap() == b"fa:lots:v2";
+    let dimensioned = Reader::new(output).bytes(64, "output format").unwrap() == b"fa:lots:v2";
     wrap_version(native, base_unit, cutoff, output, dimensioned)
 }
 
@@ -994,7 +993,13 @@ fn partition_source(fixture: &PartitionFixture, known_at: u64) -> VerifiedOpenIt
             };
             let applications = match (known_at >= 4, disposal_ordinal) {
                 (true, Some(ordinal)) => {
-                    vec![history(fixture.disposal, ordinal, original, 4, known_at == 4)]
+                    vec![history(
+                        fixture.disposal,
+                        ordinal,
+                        original,
+                        4,
+                        known_at == 4,
+                    )]
                 }
                 _ => Vec::new(),
             };
@@ -1152,9 +1157,14 @@ fn resealed_dimension_sets_and_pairing_cannot_reassign_lot_costs() {
         let mut forged = expected.clone();
         mutate(&mut forged);
         assert_eq!(
-            custom(&fixture.records, &partition_source(&fixture, 5), &forged, BASE)
-                .expect_err(name)
-                .predicate,
+            custom(
+                &fixture.records,
+                &partition_source(&fixture, 5),
+                &forged,
+                BASE
+            )
+            .expect_err(name)
+            .predicate,
             "lots_recomputation",
             "{name}"
         );
