@@ -804,7 +804,7 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
                 "define",
                 "--file",
                 "cash-policy.json",
-                "--version",
+                "--policy-version",
                 "1",
                 "--from",
                 DAY,

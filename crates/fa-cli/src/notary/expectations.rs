@@ -15,7 +15,7 @@ use fgdb_types::CommitSeq;
 
 const MAX_EXPECTATION_BYTES: usize = 1024 * 1024;
 
-pub(super) enum Expected {
+pub(crate) enum Expected {
     AsSupplied,
     Lots(fa::LotsRequest),
     CashFlow(RollForwardRequest, CashFlowDefinition),
@@ -37,7 +37,7 @@ pub(super) enum Expected {
 }
 
 impl Expected {
-    pub(super) fn borrowed(&self) -> fa::ReportArtifactExpectation<'_> {
+    pub(crate) fn borrowed(&self) -> fa::ReportArtifactExpectation<'_> {
         match self {
             Self::AsSupplied => fa::ReportArtifactExpectation::AsSupplied,
             Self::Lots(request) => fa::ReportArtifactExpectation::Lots(request),
@@ -418,7 +418,7 @@ fn reconciliation_request(doc: &Json, book: &Book) -> Result<AgingReconciliation
     })
 }
 
-pub(super) fn parse(
+pub(crate) fn parse(
     args: &Args,
     book: &Book,
     principal: VId,

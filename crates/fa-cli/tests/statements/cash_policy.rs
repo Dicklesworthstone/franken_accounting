@@ -56,7 +56,7 @@ fn review(fixture: &Fixture, version: u32, from: &str, key: &str, rent_activity:
             "define",
             "--file",
             file.to_str().unwrap(),
-            "--version",
+            "--policy-version",
             &version.to_string(),
             "--from",
             from,
@@ -260,7 +260,7 @@ fn cash_policy_activation_requires_the_review_digest_and_two_distinct_approvers(
             "define",
             "--file",
             file.to_str().unwrap(),
-            "--version",
+            "--policy-version",
             "2",
             "--from",
             "2026-03-01",
@@ -412,6 +412,42 @@ fn named_cash_policy_keeps_both_times_and_retained_proofs_after_later_versions()
     ))
     .try_into()
     .unwrap();
+    for (wrong, exit) in [
+        (
+            expected.replace(
+                &format!("\"known_at\":{at}"),
+                &format!("\"known_at\":{}", at + 1),
+            ),
+            8,
+        ),
+        (
+            expected.replace(&rules("operating"), &rules("investing")),
+            8,
+        ),
+        (
+            expected.replace("\"kind\":\"policy-cash-flow\"", "\"kind\":\"unsupported\""),
+            2,
+        ),
+    ] {
+        assert_ne!(
+            wrong, expected,
+            "each control changes the recipient's question"
+        );
+        refused(
+            &fixture,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                &locator,
+                "--expect",
+                &wrong,
+                "--state",
+                checkpoint,
+            ],
+            exit,
+        );
+    }
     let produced = ok(
         &fixture.book,
         &[

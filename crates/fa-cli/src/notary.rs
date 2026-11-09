@@ -7,6 +7,7 @@
 mod expectations;
 mod procedure;
 
+pub(crate) use expectations::parse as parse_report_expectation;
 pub(crate) use expectations::{
     aging_bundle_expectation, aging_expectation_json, cash_flow_expectation_json,
     due_date_aging_expectation_json, due_date_reconciliation_bundle_expectation,

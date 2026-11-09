@@ -955,6 +955,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     | fa::ReportArtifactFamily::AgingReconciliation
                     | fa::ReportArtifactFamily::AgingPortfolio
                     | fa::ReportArtifactFamily::DueDateAgingReconciliation
+                    | fa::ReportArtifactFamily::PolicyCashFlow
                     | fa::ReportArtifactFamily::SplitCashFlow
                     | fa::ReportArtifactFamily::IndirectCashFlow
                     | fa::ReportArtifactFamily::EquityRollForwardDiff
@@ -962,7 +963,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )
         {
             return Err(usage(
-                "--expect on bundle produce applies only to an aging, aging reconciliation, aging portfolio, native-subledger reconciliation, split cash-flow, indirect cash-flow or equity-roll-forward-diff certificate",
+                "--expect on bundle produce applies only to an aging, aging reconciliation, aging portfolio, native-subledger reconciliation, policy cash-flow, split cash-flow, indirect cash-flow or equity-roll-forward-diff certificate",
                 "omit --expect for other portable report families",
             ));
         }
@@ -1149,6 +1150,21 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 book.produce_cash_flow_bundle(principal, &capability, state, &certificate)??
             }
             fa::ReportArtifactFamily::PolicyCashFlow => {
+                if args.flag("--expect").is_some() {
+                    let expected = crate::notary::parse_report_expectation(
+                        args,
+                        &book,
+                        principal,
+                        &capability,
+                    )?;
+                    book.replay_report_artifact_for_with_history(
+                        principal,
+                        &capability,
+                        &bytes,
+                        Some(artifact.digest()),
+                        expected.borrowed(),
+                    )??;
+                }
                 let certificate = fa::cash_flow_policy::CashFlowPolicyCertificate::decode(&bytes)?;
                 book.produce_cash_flow_policy_bundle(principal, &capability, state, &certificate)??
             }

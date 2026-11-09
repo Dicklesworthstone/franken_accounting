@@ -11,7 +11,7 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, Out, hex, known_at_read_flag, parse_digest, parse_vid, usage};
 use crate::json::{Json, obj, s};
 
-const DEFINE: &str = "fa cash-policy define --file policy.json --version 1 --from 2026-01-01 --key policy-v1 [--plan-out policy.plan]";
+const DEFINE: &str = "fa cash-policy define --file policy.json --policy-version 1 --from 2026-01-01 --key policy-v1 [--plan-out policy.plan]";
 const ACTIVATE: &str = "fa cash-policy activate --plan policy.plan --digest <proposal_digest> --approval <vid> --approval <vid> --yes";
 const SHOW: &str =
     "fa cash-policy show --name <name> --from YYYY-MM-DD --to YYYY-MM-DD [--as-known-at <seq>]";
@@ -81,7 +81,13 @@ fn date(args: &Args, flag: &str, example: &str) -> Result<DateDay, Fail> {
 fn define(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     options(
         args,
-        &["--file", "--version", "--from", "--key", "--plan-out"],
+        &[
+            "--file",
+            "--policy-version",
+            "--from",
+            "--key",
+            "--plan-out",
+        ],
         DEFINE,
     )?;
     let cap = ctx.capability(args, &["rule_change"])?;
@@ -103,9 +109,9 @@ fn define(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let version = args
-        .require("--version", "a positive policy version")?
+        .require("--policy-version", "a positive policy version")?
         .parse::<u32>()
-        .map_err(|_| usage("--version must be a positive u32", DEFINE))?;
+        .map_err(|_| usage("--policy-version must be a positive u32", DEFINE))?;
     let mut definition = CashFlowPolicyDefinition {
         name: policy.name,
         version,

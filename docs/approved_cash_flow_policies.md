@@ -34,7 +34,7 @@ admission to `PolicyControl`. Preparation is read-only and returns canonical
 review bytes and their `proposal_digest`:
 
 ```bash
-fa cash-policy define --file policy.json --version 1 --from 2026-01-01 \
+fa cash-policy define --file policy.json --policy-version 1 --from 2026-01-01 \
   --key company-cash-v1 --plan-out policy.plan \
   --token preparer.token --book ./book --json
 ```
