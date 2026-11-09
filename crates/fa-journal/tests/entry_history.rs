@@ -470,7 +470,9 @@ fn carried_entry_history_refuses_every_entry_tamper_at_the_literal_verifiers_pre
                 damage.set_vertex_label(h.source, label::ENTRY, false);
                 damage.set_vertex_label(h.source, label::DOCUMENT, true);
             }
-            2 => damage.delete_vertex(h.source),
+            2 => {
+                damage.delete_vertex(h.source);
+            }
             3 => {
                 let mut mirrors = entry_mirrors(&h.original).unwrap();
                 mirrors
