@@ -367,7 +367,12 @@ impl TimedWork {
         policy: Policy,
         periods: Vec<String>,
     ) -> Result<Self, registers::ConfigurationError> {
-        Self::maintenance_only_with_measures(cx, policy, periods, registers::MeasureSelection::Native)
+        Self::maintenance_only_with_measures(
+            cx,
+            policy,
+            periods,
+            registers::MeasureSelection::Native,
+        )
     }
 
     /// Maintain the explicit projection selection without timed accounting effects.
@@ -490,7 +495,11 @@ impl TimedWork {
         true
     }
 
-    pub(crate) async fn run_due<B: TimedBook + registers::RegisterBook>(&mut self, cx: &Cx, book: &mut B) {
+    pub(crate) async fn run_due<B: TimedBook + registers::RegisterBook>(
+        &mut self,
+        cx: &Cx,
+        book: &mut B,
+    ) {
         if self.run_register_wake(cx, book).await {
             return;
         }

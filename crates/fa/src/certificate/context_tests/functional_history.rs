@@ -183,13 +183,8 @@ fn reopened_functional_reads_reauthenticate_only_after_current_whole_book_admiss
         if compact {
             // Storage compaction retires the native creation history.
             // Derived cells cannot replace that missing integrity evidence.
-            let refusal = read(&mut h, &cap(&["read"]), None)
-                .unwrap()
-                .unwrap_err();
-            assert_eq!(
-                refusal.code,
-                fa_journal::refusal::code::REPLAY_UNSUPPORTED
-            );
+            let refusal = read(&mut h, &cap(&["read"]), None).unwrap().unwrap_err();
+            assert_eq!(refusal.code, fa_journal::refusal::code::REPLAY_UNSUPPORTED);
             assert_eq!(
                 h.book.functional_history_read_work(),
                 EntryHistoryWork::default()

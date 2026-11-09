@@ -543,7 +543,7 @@ fn render_files(
         }],
         _ => vec![ExportFile {
             name: "journal.hledger",
-            content: fa_formats::beancount::write_hledger(journal),
+            content: fa_formats::beancount::write_hledger(journal).map_err(written)?,
         }],
     })
 }

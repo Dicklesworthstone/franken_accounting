@@ -546,7 +546,9 @@ fn registry_versions(registry: &[u8; 32]) -> Result<Option<ProcedureEpochVersion
             registry_digest_with_procedures(layering_v2_registry_document(jet == 1)?)?
         };
         if registry == &canonical {
-            return Ok(Some((jet, layering, suspense, preference, fraud, lapping, solvency)));
+            return Ok(Some((
+                jet, layering, suspense, preference, fraud, lapping, solvency,
+            )));
         }
     }
     // Canonical epochs do not depend on the stricter raw-text layout inverse.
@@ -598,7 +600,9 @@ fn registry_versions(registry: &[u8; 32]) -> Result<Option<ProcedureEpochVersion
             )
         };
         if registry == &raw {
-            return Ok(Some((jet, layering, suspense, preference, fraud, lapping, solvency)));
+            return Ok(Some((
+                jet, layering, suspense, preference, fraud, lapping, solvency,
+            )));
         }
     }
     Ok(None)

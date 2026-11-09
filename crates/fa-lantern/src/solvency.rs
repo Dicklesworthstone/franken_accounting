@@ -2929,10 +2929,17 @@ fn unscheduled_cash_preserves_entity_deficits_and_contributing_citations() {
                 LegPayload::simple(Side::Credit, credit, Amount::new(usd, amount)),
             ];
             for leg in &mut legs {
-                leg.dimension_set.push((fa_model::LEGAL_ENTITY_DIMENSION, entity));
+                leg.dimension_set
+                    .push((fa_model::LEGAL_ENTITY_DIMENSION, entity));
             }
             snapshot.entries.push(make_posting(
-                &book, vid, as_of, EntryClass::ORIGINAL, legs, Vec::new(), document,
+                &book,
+                vid,
+                as_of,
+                EntryClass::ORIGINAL,
+                legs,
+                Vec::new(),
+                document,
             ));
         }
         let procedure = crate::cutoff::SolvencyCashFlowTest::new().unwrap();
@@ -2942,8 +2949,16 @@ fn unscheduled_cash_preserves_entity_deficits_and_contributing_citations() {
         let finding = &current.findings[0];
         assert_eq!(finding.statistic.value, 300);
         assert_eq!(finding.statistic.population, 2);
-        assert!(finding.narrative.contains(&format!("legal_entity={:032x}", entity_a.0)));
-        assert!(finding.narrative.contains("liquid_cash=100, book_liabilities=400"));
+        assert!(
+            finding
+                .narrative
+                .contains(&format!("legal_entity={:032x}", entity_a.0))
+        );
+        assert!(
+            finding
+                .narrative
+                .contains("liquid_cash=100, book_liabilities=400")
+        );
         assert!(finding.cites.contains(&Cite::Entry(VId(10))));
         assert!(finding.cites.contains(&Cite::Entry(VId(20))));
         assert!(!finding.cites.contains(&Cite::Entry(VId(30))));
@@ -2968,13 +2983,20 @@ fn unscheduled_cash_preserves_entity_deficits_and_contributing_citations() {
             unit_filter: None,
             entity_filter: None,
             obligations: vec![ScheduledObligation {
-                entry: VId(20), ordinal: 1, account: payable, unit: usd,
-                entity: Some(entity_a), status: ObligationStatus::Contractual,
+                entry: VId(20),
+                ordinal: 1,
+                account: payable,
+                unit: usd,
+                entity: Some(entity_a),
+                status: ObligationStatus::Contractual,
                 installments: vec![ObligationInstallment {
-                    due_date: day(2026, 5, 1), amount: 400,
+                    due_date: day(2026, 5, 1),
+                    amount: 400,
                 }],
                 evidence_refs: vec![EvidenceRef {
-                    document_oid: document, doc_commit: [0xaa; 32], role: 1,
+                    document_oid: document,
+                    doc_commit: [0xaa; 32],
+                    role: 1,
                 }],
             }],
             commitments: Vec::new(),
@@ -2982,12 +3004,22 @@ fn unscheduled_cash_preserves_entity_deficits_and_contributing_citations() {
         };
         let mut meter = Meter::new(crate::cutoff::SolvencyCashFlowTest::ID, None, None);
         let scheduled = evaluate_cash_flow_solvency(
-            crate::cutoff::SolvencyCashFlowTest::ID, &snapshot, &book, 30, &schedule, &mut meter,
-        ).unwrap();
+            crate::cutoff::SolvencyCashFlowTest::ID,
+            &snapshot,
+            &book,
+            30,
+            &schedule,
+            &mut meter,
+        )
+        .unwrap();
         let unit = &scheduled.units[&(usd.0, Some(entity_a))];
         assert_eq!(unit.liquid_cash, 100);
         assert_eq!(unit.shortfall, finding.statistic.value);
-        assert!(crate::witness::determinism(&snapshot, &book, &procedure).unwrap().deterministic());
+        assert!(
+            crate::witness::determinism(&snapshot, &book, &procedure)
+                .unwrap()
+                .deterministic()
+        );
     }
 }
 
@@ -3003,22 +3035,31 @@ fn unscheduled_cash_normalizes_only_unambiguous_entity_scopes() {
         (VId(20), expense, payable, 400),
     ] {
         snapshot.entries.push(make_posting(
-            &book, vid, as_of, EntryClass::ORIGINAL,
+            &book,
+            vid,
+            as_of,
+            EntryClass::ORIGINAL,
             vec![
                 LegPayload::simple(Side::Debit, debit, Amount::new(usd, amount)),
                 LegPayload::simple(Side::Credit, credit, Amount::new(usd, amount)),
             ],
-            Vec::new(), document,
+            Vec::new(),
+            document,
         ));
     }
     let procedure = crate::cutoff::SolvencyCashFlowTest::new().unwrap();
     let unassigned = run_over(&snapshot, &book, &procedure).unwrap();
     assert_eq!(unassigned.findings[0].statistic.value, 300);
-    assert!(unassigned.findings[0].narrative.contains("legal_entity=unassigned"));
+    assert!(
+        unassigned.findings[0]
+            .narrative
+            .contains("legal_entity=unassigned")
+    );
     let tag = |entry: &mut SnapshotEntry, entity| {
         let mut proposal = entry.entry.proposal.clone();
         for leg in &mut proposal.legs {
-            leg.dimension_set.push((fa_model::LEGAL_ENTITY_DIMENSION, entity));
+            leg.dimension_set
+                .push((fa_model::LEGAL_ENTITY_DIMENSION, entity));
         }
         entry.entry = proposal.seal(Vec::new(), None).unwrap();
     };
@@ -3028,19 +3069,27 @@ fn unscheduled_cash_normalizes_only_unambiguous_entity_scopes() {
     let sole = run_over(&snapshot, &book, &procedure).unwrap();
     assert_eq!(sole.findings[0].statistic, unassigned.findings[0].statistic);
     assert_eq!(sole.findings[0].cites, unassigned.findings[0].cites);
-    assert!(sole.findings[0].narrative.contains(&format!("legal_entity={:032x}", entity_a.0)));
+    assert!(
+        sole.findings[0]
+            .narrative
+            .contains(&format!("legal_entity={:032x}", entity_a.0))
+    );
 
     tag(&mut snapshot.entries[2], entity_b);
     let separate = run_over(&snapshot, &book, &procedure).unwrap();
     assert_eq!(separate.findings[0].statistic.value, 400);
     assert!(!separate.findings[0].cites.contains(&Cite::Entry(VId(10))));
     snapshot.entries.push(make_posting(
-        &book, VId(30), as_of, EntryClass::ORIGINAL,
+        &book,
+        VId(30),
+        as_of,
+        EntryClass::ORIGINAL,
         vec![
             LegPayload::simple(Side::Debit, cash, Amount::new(usd, 1)),
             LegPayload::simple(Side::Credit, expense, Amount::new(usd, 1)),
         ],
-        Vec::new(), document,
+        Vec::new(),
+        document,
     ));
     assert!(matches!(
         run_over(&snapshot, &book, &procedure),
@@ -3813,7 +3862,8 @@ fn cash_flow_findings_never_truncate_their_accounting_basis() {
             evaluate_cash_flow_solvency(procedure, &snapshot, &book, 30, &schedule, &mut meter)
                 .map(|report| report.findings);
         let mut meter = Meter::new(procedure, None, None);
-        let unscheduled = run_unscheduled_book_screen(procedure, 6, &snapshot, &book, 30, &mut meter);
+        let unscheduled =
+            run_unscheduled_book_screen(procedure, 6, &snapshot, &book, 30, &mut meter);
         for (result, needed, has_document) in [
             (scheduled, count + 2, true),
             (unscheduled, count + 1, false),

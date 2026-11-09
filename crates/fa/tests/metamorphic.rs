@@ -1447,10 +1447,8 @@ fn check_export_reread(
         ),
         (
             "hledger",
-            fa_formats::beancount::read_hledger(
-                &fa_formats::beancount::write_hledger(journal),
-                &units,
-            ),
+            fa_formats::beancount::write_hledger(journal)
+                .and_then(|text| fa_formats::beancount::read_hledger(&text, &units)),
         ),
     ] {
         match again.and_then(|again| again.fold_balances()) {

@@ -338,7 +338,7 @@ fn beancount_and_hledger_balance_differential_and_one_minor_unit_mutation_negati
     assert_eq!(bc_proof.leg_count, 8);
 
     // 2. hledger write -> read -> balance differential
-    let hl_text = write_hledger(&journal);
+    let hl_text = write_hledger(&journal).expect("write_hledger");
     let hl_parsed = read_hledger(&hl_text, &units).expect("read_hledger");
     let hl_balances = hl_parsed.fold_balances().expect("hledger fold");
     compare_balances_exact("acme-fy2026-p03", &fa_balances, &hl_balances)
@@ -1370,7 +1370,7 @@ fn dimension_interop_round_trips_exact_native_ids_including_untagged_legs() {
     // hledger has an intentionally narrower text profile. Its posting tags
     // and exact monetary fold still survive, without claiming its missing
     // memo, migrated-from, and assertion fields are an identity round trip.
-    let hledger = read_hledger(&write_hledger(&tagged), &units).unwrap();
+    let hledger = read_hledger(&write_hledger(&tagged).unwrap(), &units).unwrap();
     assert_eq!(
         hledger.fold_balances().unwrap(),
         tagged.fold_balances().unwrap()
@@ -1745,7 +1745,7 @@ fn account_roles_survive_every_journal_round_trip_and_substitution_is_refused() 
         hledger_profile.fold_balances().unwrap(),
         classified.fold_balances().unwrap()
     );
-    let hledger = write_hledger(&hledger_profile);
+    let hledger = write_hledger(&hledger_profile).unwrap();
     let restored = read_hledger(&hledger, &units).unwrap();
     assert_eq!(restored.accounts, classified.accounts);
     verify_round_trip_identity("hledger", &hledger_profile, &restored).unwrap();
@@ -2647,7 +2647,7 @@ fn conformance_matrices_match_published_docs_and_refuse_undocumented_divergence(
         &units,
     );
     let hl_fold = render_balances(
-        &read_hledger(&write_hledger(&journal), &units)
+        &read_hledger(&write_hledger(&journal).expect("write_hledger"), &units)
             .expect("read_hledger")
             .fold_balances()
             .expect("hledger fold"),
@@ -2891,7 +2891,10 @@ fn beancount_and_hledger_read_back_codes_their_names_cannot_spell() {
             "beancount",
             read_beancount(&write_beancount(&journal).unwrap(), &units),
         ),
-        ("hledger", read_hledger(&write_hledger(&journal), &units)),
+        (
+            "hledger",
+            read_hledger(&write_hledger(&journal).unwrap(), &units),
+        ),
     ] {
         let read = read.unwrap_or_else(|e| panic!("{format}: {e}"));
         let balances = read.fold_balances().expect("fold");
@@ -2914,7 +2917,10 @@ fn beancount_and_hledger_read_back_codes_their_names_cannot_spell() {
             "beancount",
             read_beancount(&write_beancount(&journal).unwrap(), &units),
         ),
-        ("hledger", read_hledger(&write_hledger(&journal), &units)),
+        (
+            "hledger",
+            read_hledger(&write_hledger(&journal).unwrap(), &units),
+        ),
     ] {
         let message = read.expect_err(format).to_string();
         assert!(
