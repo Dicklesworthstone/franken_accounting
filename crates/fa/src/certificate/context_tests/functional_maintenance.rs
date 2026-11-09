@@ -1,5 +1,8 @@
 //! Real native postings exercise durable functional state and exact tails.
 
+#[path = "functional_history.rs"]
+mod functional_history;
+
 use super::*;
 use fa_registers::functional_maintainer as maintained;
 

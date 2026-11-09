@@ -120,6 +120,8 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     /// post checks only the commits since the last (fa-rcw1). Bound to `db`'s
     /// own committed prefix by its Chronicle markers.
     pub(crate) carried: fa_journal::CarriedHistory,
+    /// Authenticated Entry history carried only by ordinary functional reads.
+    pub(crate) functional_history: fa_journal::entry_history::EntryHistoryMemo,
     /// The client's principal key, when this handle signs every approval and
     /// attestation it records ([`Self::sign_with_principal_key`], plan
     /// §14.5, fa-kae). Held only for the handle's life; never journaled.
@@ -270,6 +272,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             entropy,
             signer: keys.checkpoint_signing_key(),
             carried: fa_journal::CarriedHistory::default(),
+            functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
             principal_key: None,
         })
     }
@@ -326,6 +329,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             entropy,
             signer: keys.checkpoint_signing_key(),
             carried: fa_journal::CarriedHistory::default(),
+            functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
             principal_key: None,
         })
     }
@@ -3845,6 +3849,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 entropy,
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
+                functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
                 principal_key: None,
             },
             map,
@@ -3886,6 +3891,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 entropy,
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
+                functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
                 principal_key: None,
             },
             rehearsal,
@@ -3929,6 +3935,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 entropy,
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
+                functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
                 principal_key: None,
             },
             rehearsal,
@@ -3979,6 +3986,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 entropy,
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
+                functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
                 principal_key: None,
             },
             map,

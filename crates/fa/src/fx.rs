@@ -129,6 +129,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(Ok(result))
     }
 
+    /// Work performed by the last successful native Entry-history check for
+    /// an ordinary functional trial balance on this handle. A new or reopened
+    /// handle starts with zero work; refused admission leaves it unchanged.
+    /// These counters cover history authentication, not the complete report
+    /// query or independent certification and source verification.
+    #[must_use]
+    pub fn functional_history_read_work(&self) -> fa_journal::entry_history::EntryHistoryWork {
+        self.functional_history.read_work()
+    }
+
     /// Read one functional trial balance with its historical display accounts.
     /// Like the existing functional folds, this uses committed base amounts;
     /// it does not require the original Rate bodies to remain disclosed. Use
@@ -147,13 +157,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(at) => at,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let result = self.query(cx, |db, book| {
-            crate::certificate::context_at(db, book, at)?;
-            fa_journal::entry_history::verify_entry_history(db, cx, book, Some(at))?;
+        // Keep the ordinary query restriction while borrowing the memo
+        // separately. Admission and retained-history loading have already
+        // succeeded; verification remains bound to this exact native prefix.
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        let result = query.with_restriction(|| {
+            crate::certificate::context_at(&self.db, &self.context, at)?;
+            fa_journal::entry_history::verify_entry_history_carried(
+                &self.db,
+                cx,
+                &self.context,
+                Some(at),
+                &mut self.functional_history,
+            )?;
             crate::functional_trial_balance::report_at_with_context(
-                db,
-                &cx.query(),
-                book,
+                &self.db,
+                &query,
+                &self.context,
                 &selection,
                 at,
             )
