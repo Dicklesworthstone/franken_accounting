@@ -459,6 +459,69 @@ fn beancount_writer_refuses_negative_public_amount_magnitudes() {
 }
 
 #[test]
+fn plaintext_writers_refuse_duplicate_account_codes_even_across_roots() {
+    let base = journal("Duplicate chart codes", "payment", None);
+    let units = UnitCatalog::embedded().unwrap();
+    let with_account = |account| {
+        let mut accounts = base.accounts.clone();
+        accounts.push(account);
+        FormatJournal::new(
+            &base.coordinate.book_name,
+            "USD",
+            2,
+            base.coordinate.effective_through,
+            1,
+            accounts,
+            base.entries.clone(),
+            base.assertions.clone(),
+        )
+        .unwrap()
+    };
+
+    // An unused account with the same display name is valid when its code is
+    // distinct. Preserve its complete chart and journal in both formats.
+    let mut distinct = base.accounts[0].clone();
+    distinct.code = "1001".into();
+    let valid = with_account(distinct);
+    for (format, restored) in [
+        (
+            "beancount_v3",
+            read_beancount(&write_beancount(&valid).unwrap(), &units),
+        ),
+        (
+            "hledger_journal",
+            read_hledger(&write_hledger(&valid).unwrap(), &units),
+        ),
+    ] {
+        verify_round_trip_identity(format, &valid, &restored.unwrap()).unwrap();
+    }
+
+    // Reject exact duplicates and conflicting definitions that would export
+    // into different roots but still overwrite the same canonical lookup.
+    for conflicting in [false, true] {
+        let mut duplicate = base.accounts[0].clone();
+        if conflicting {
+            duplicate.account_type = AccountType::LIABILITY;
+            duplicate.normal_side = Side::Credit;
+            duplicate.name = "Conflicting chart definition".into();
+        }
+        let source = with_account(duplicate);
+        for (format, written) in [
+            ("beancount_v3", write_beancount(&source)),
+            ("hledger_journal", write_hledger(&source)),
+        ] {
+            assert!(
+                matches!(written, Err(FormatError::Parse { format: observed, detail })
+                    if observed == format
+                        && detail.contains("duplicate account code")
+                        && detail.contains("1000")),
+                "{format}: duplicate canonical chart codes must be refused",
+            );
+        }
+    }
+}
+
+#[test]
 fn plaintext_writers_refuse_undeclared_posting_and_assertion_accounts() {
     let source = journal("Account references", "payment", None);
     let units = UnitCatalog::embedded().unwrap();

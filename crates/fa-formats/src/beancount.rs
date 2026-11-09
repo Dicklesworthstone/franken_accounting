@@ -111,8 +111,8 @@ impl AccountNames {
 /// coordinate certificate metadata, `open` directives, dated transactions,
 /// and `balance` assertions. Refuse dates that the four-digit-year profile
 /// cannot represent, including an assertion whose next day is out of range,
-/// account codes that map to the same exported name, and references to accounts
-/// absent from the chart.
+/// repeated account codes, distinct codes that map to the same exported name,
+/// and references to accounts absent from the chart.
 pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
     let mut out = String::new();
     out.push_str("; FrankenAccounting Beancount v3 export (fa-formats, bead fa-npi)\n");
@@ -162,7 +162,15 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
     let mut acct_type_by_code = BTreeMap::new();
     let mut names = AccountNames::default();
     for acct in &journal.accounts {
-        acct_type_by_code.insert(acct.code.as_str(), acct.account_type);
+        if acct_type_by_code
+            .insert(acct.code.as_str(), acct.account_type)
+            .is_some()
+        {
+            return Err(FormatError::Parse {
+                format: "beancount_v3",
+                detail: format!("duplicate account code {:?} in the chart", acct.code),
+            });
+        }
         let bc_acct = to_beancount_account_name(acct.account_type, &acct.code);
         names.declare("beancount_v3", &bc_acct, &acct.code)?;
         out.push_str(&format!("{open_date_str} open {bc_acct}\n"));
@@ -654,8 +662,8 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
 }
 
 /// Write a `FormatJournal` as a deterministic `hledger` / `ledger-cli` journal,
-/// refusing colliding account names, undeclared posting accounts, and negative
-/// posting magnitudes before converting their signed values.
+/// refusing repeated account codes, colliding account names, undeclared posting
+/// accounts, and negative posting magnitudes before converting signed values.
 pub fn write_hledger(journal: &FormatJournal) -> Result<String, FormatError> {
     let mut out = String::new();
     out.push_str("; FrankenAccounting hledger export (fa-formats, bead fa-npi)\n");
@@ -684,7 +692,15 @@ pub fn write_hledger(journal: &FormatJournal) -> Result<String, FormatError> {
     let mut acct_type_by_code = BTreeMap::new();
     let mut names = AccountNames::default();
     for acct in &journal.accounts {
-        acct_type_by_code.insert(acct.code.as_str(), acct.account_type);
+        if acct_type_by_code
+            .insert(acct.code.as_str(), acct.account_type)
+            .is_some()
+        {
+            return Err(FormatError::Parse {
+                format: "hledger_journal",
+                detail: format!("duplicate account code {:?} in the chart", acct.code),
+            });
+        }
         let hl_acct = to_beancount_account_name(acct.account_type, &acct.code);
         names.declare("hledger_journal", &hl_acct, &acct.code)?;
         out.push_str(&format!(
