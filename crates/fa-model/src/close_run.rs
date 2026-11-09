@@ -49,6 +49,9 @@ pub enum CloseTaskBodyAction {
     /// Native PeriodState tags: SoftClosed=2, Closed=3, Locked=4.
     /// The actual predecessor and approval requirements are checked live.
     PeriodTransition { to: u8 },
+    /// Reproduce the fiscal year's latest intrinsic close and require that
+    /// no native or functional nominal balance remains at execution time.
+    VerifyYearEndClose { fiscal_year: i32 },
 }
 
 fn invalid(what: &'static str) -> DecodeError {
@@ -107,6 +110,7 @@ impl CloseTaskBody {
                 return Err(invalid("close_task.period_state"));
             }
             CloseTaskBodyAction::PeriodTransition { .. } => {}
+            CloseTaskBodyAction::VerifyYearEndClose { .. } => {}
         }
         Ok(())
     }
@@ -140,6 +144,9 @@ impl CloseTaskBody {
             }
             CloseTaskBodyAction::PeriodTransition { to } => {
                 w.u8(1).u8(*to);
+            }
+            CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } => {
+                w.u8(2).i32(*fiscal_year);
             }
         }
     }
@@ -184,6 +191,9 @@ impl CloseTaskBody {
             },
             1 => CloseTaskBodyAction::PeriodTransition {
                 to: r.u8("close_task.period_state")?,
+            },
+            2 => CloseTaskBodyAction::VerifyYearEndClose {
+                fiscal_year: r.i32("close_task.fiscal_year")?,
             },
             _ => return Err(r.invalid("close_task.action")),
         };
@@ -241,6 +251,58 @@ impl CloseRunBody {
                 return Err(invalid("close_run.cycle"));
             };
             visited[next] = true;
+        }
+        let ancestors_of = |selected: &CloseTaskBody| -> Result<Vec<bool>, DecodeError> {
+            let mut ancestors = vec![false; self.tasks.len()];
+            let mut pending: Vec<_> = selected.depends_on.iter().collect();
+            while let Some(id) = pending.pop() {
+                let index = self
+                    .tasks
+                    .binary_search_by(|task| task.id.cmp(id))
+                    .map_err(|_| invalid("close_run.unknown_dependency"))?;
+                if !ancestors[index] {
+                    ancestors[index] = true;
+                    pending.extend(self.tasks[index].depends_on.iter());
+                }
+            }
+            Ok(ancestors)
+        };
+        let checkpoints: Vec<_> = self
+            .tasks
+            .iter()
+            .filter(|task| matches!(task.action, CloseTaskBodyAction::VerifyYearEndClose { .. }))
+            .collect();
+        if checkpoints.len() > 1 {
+            return Err(invalid("close_run.duplicate_year_end_verification"));
+        }
+        if let Some(checkpoint) = checkpoints.first() {
+            let ancestors = ancestors_of(checkpoint)?;
+            if self.tasks.iter().enumerate().any(|(index, task)| {
+                matches!(task.action, CloseTaskBodyAction::PromoteDraft { .. }) && !ancestors[index]
+            }) {
+                return Err(invalid("close_run.verification_precedes_monetary_tasks"));
+            }
+        }
+        // Enforce the same terminal rule when decoding retained graphs, not
+        // only when a new declaration reaches the journal. Otherwise a forged
+        // graph could place its period effect before its source verification.
+        let finals: Vec<_> = self
+            .tasks
+            .iter()
+            .filter(|task| matches!(task.action, CloseTaskBodyAction::PeriodTransition { .. }))
+            .collect();
+        if finals.len() > 1 {
+            return Err(invalid("close_run.multiple_final_transitions"));
+        }
+        if let Some(terminal) = finals.first()
+            && ancestors_of(terminal)?
+                .into_iter()
+                .filter(|ancestor| *ancestor)
+                .count()
+                + 1
+                != self.tasks.len()
+        {
+            return Err(invalid("close_run.final_transition_must_follow_all_tasks"));
         }
         let bytes = self
             .canonical_bytes()
@@ -388,5 +450,52 @@ mod tests {
             assert!(body.validate().is_err());
             assert!(CloseRunBody::decode(&body.canonical_bytes().unwrap()).is_err());
         }
+    }
+
+    #[test]
+    fn year_end_verification_is_canonical_and_follows_every_monetary_task() {
+        let mut graph = body();
+        graph.tasks.push(CloseTaskBody {
+            id: "verify".into(),
+            depends_on: vec!["accrue".into()],
+            action: CloseTaskBodyAction::VerifyYearEndClose { fiscal_year: 2026 },
+        });
+        graph.tasks[1].depends_on = vec!["verify".into()];
+        graph.validate().unwrap();
+        assert_eq!(
+            CloseRunBody::decode(&graph.canonical_bytes().unwrap()).unwrap(),
+            graph
+        );
+        let original = graph.digest().unwrap();
+        graph.tasks[2].action = CloseTaskBodyAction::VerifyYearEndClose { fiscal_year: 2027 };
+        assert_ne!(graph.digest().unwrap(), original);
+
+        let mut unordered = graph.clone();
+        unordered.tasks[2].depends_on.clear();
+        assert!(unordered.validate().is_err());
+        assert!(CloseRunBody::decode(&unordered.canonical_bytes().unwrap()).is_err());
+        let mut premature_terminal = graph.clone();
+        premature_terminal.tasks[1].depends_on = vec!["accrue".into()];
+        assert!(premature_terminal.validate().is_err());
+        assert!(CloseRunBody::decode(&premature_terminal.canonical_bytes().unwrap()).is_err());
+        let mut duplicated = graph.clone();
+        duplicated.tasks.push(CloseTaskBody {
+            id: "verify-again".into(),
+            depends_on: vec!["verify".into()],
+            action: CloseTaskBodyAction::VerifyYearEndClose { fiscal_year: 2027 },
+        });
+        assert!(duplicated.validate().is_err());
+
+        // Depending on the last draft is sufficient only when that draft's
+        // own dependency path contains all the preceding monetary work.
+        let mut transitive = graph;
+        let mut second = transitive.tasks[0].clone();
+        second.id = "second".into();
+        second.depends_on = vec!["accrue".into()];
+        transitive.tasks.insert(2, second);
+        transitive.tasks[3].depends_on = vec!["second".into()];
+        transitive.validate().unwrap();
+        transitive.tasks[2].depends_on.clear();
+        assert!(transitive.validate().is_err());
     }
 }

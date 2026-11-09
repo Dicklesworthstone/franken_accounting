@@ -226,7 +226,13 @@ fn production_adapter_preserves_caller_cancellation_before_native_maintenance() 
 
     let live = runtime.request_cx_with_budget(Budget::INFINITE);
     let publication = runtime
-        .block_on(RegisterBook::advance(&mut book, &live, &capability, period, Measure::Native))
+        .block_on(RegisterBook::advance(
+            &mut book,
+            &live,
+            &capability,
+            period,
+            Measure::Native,
+        ))
         .unwrap();
     assert!(publication.wrote);
     assert_eq!(publication.through, before.0);
@@ -317,7 +323,10 @@ fn production_adapter_preserves_caller_cancellation_before_functional_maintenanc
         .unwrap();
     assert!(verified.is_green(), "{verified:?}");
     assert_eq!(verified.through.map(|seq| seq.0), Some(publication.through));
-    assert_eq!(book.verify_registers(period).unwrap().verified_through, None);
+    assert_eq!(
+        book.verify_registers(period).unwrap().verified_through,
+        None
+    );
     assert!(book.latest_tick().unwrap().is_none());
 }
 
@@ -411,10 +420,13 @@ fn configuration_is_bounded_exact_and_never_silently_repaired() {
     )
     .unwrap();
     assert_eq!(both.periods().len(), 2 * MAX_PERIODS);
-    assert!(RegisterWork::for_measures(
-        (0..=MAX_PERIODS).map(|i| format!("period-{i}")).collect(),
-        MeasureSelection::Both,
-    ).is_err());
+    assert!(
+        RegisterWork::for_measures(
+            (0..=MAX_PERIODS).map(|i| format!("period-{i}")).collect(),
+            MeasureSelection::Both,
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -425,7 +437,10 @@ fn unattempted_periods_never_claim_a_consumed_or_certified_prefix() {
     assert_eq!(status.get("periods_per_cycle"), Some(&Json::Int(1)));
     assert_eq!(status.get("measure"), Some(&s("native")));
     assert_eq!(status.get("next_measure"), Some(&s("native")));
-    assert_eq!(status.get("scope"), Some(&s("native_posted_pending_period_cells")));
+    assert_eq!(
+        status.get("scope"),
+        Some(&s("native_posted_pending_period_cells"))
+    );
     let period = &status.get("periods").unwrap().as_arr().unwrap()[0];
     assert_eq!(period.get("measure"), Some(&s("native")));
     for name in [
@@ -458,7 +473,10 @@ fn one_attempt_per_cycle_errors_are_per_period_and_rotation_is_fair() {
             work.run_cycle(&root, &mut book).await;
             assert_eq!(book.calls.len(), count);
         }
-        assert_eq!(book.calls, ["A", "B", "A", "B"].map(|p| (Measure::Native, p.into())));
+        assert_eq!(
+            book.calls,
+            ["A", "B", "A", "B"].map(|p| (Measure::Native, p.into()))
+        );
         assert_eq!(work.periods()[0].last_success, Some(publication(1)));
         assert_eq!(work.periods()[0].error.as_deref(), Some("projection drift"));
         assert!(work.periods()[1].error.is_none());
@@ -480,18 +498,22 @@ fn one_attempt_per_cycle_errors_are_per_period_and_rotation_is_fair() {
 #[test]
 fn combined_rotation_preserves_each_measure_frontier_and_failure_independently() {
     lab(187, |root| async move {
-        let mut work = RegisterWork::for_measures(
-            vec!["A".into(), "B".into()],
-            MeasureSelection::Both,
-        ).unwrap();
+        let mut work =
+            RegisterWork::for_measures(vec!["A".into(), "B".into()], MeasureSelection::Both)
+                .unwrap();
         let mut book = Scripted {
             calls: vec![],
             results: VecDeque::from([
-                Ok(publication(1)), Ok(publication(2)),
-                Ok(publication(3)), Ok(publication(4)),
-                Ok(publication(5)), Err("unvalued foreign entry".into()),
-                Ok(publication(6)), Ok(publication(7)),
-                Ok(publication(8)), Ok(publication(9)),
+                Ok(publication(1)),
+                Ok(publication(2)),
+                Ok(publication(3)),
+                Ok(publication(4)),
+                Ok(publication(5)),
+                Err("unvalued foreign entry".into()),
+                Ok(publication(6)),
+                Ok(publication(7)),
+                Ok(publication(8)),
+                Ok(publication(9)),
             ]),
         };
         for count in 1..=8 {
@@ -499,14 +521,24 @@ fn combined_rotation_preserves_each_measure_frontier_and_failure_independently()
             assert_eq!(book.calls.len(), count, "one attempt per cycle");
         }
         let rotation = [
-            (Measure::Native, "A".into()), (Measure::Functional, "A".into()),
-            (Measure::Native, "B".into()), (Measure::Functional, "B".into()),
+            (Measure::Native, "A".into()),
+            (Measure::Functional, "A".into()),
+            (Measure::Native, "B".into()),
+            (Measure::Functional, "B".into()),
         ];
         assert_eq!(&book.calls[..4], &rotation);
         assert_eq!(&book.calls[4..], &rotation);
         assert_eq!(work.periods()[1].last_success, Some(publication(2)));
-        assert_eq!(work.periods()[1].error.as_deref(), Some("unvalued foreign entry"));
-        assert!(work.periods().iter().enumerate().all(|(i, p)| i == 1 || p.error.is_none()));
+        assert_eq!(
+            work.periods()[1].error.as_deref(),
+            Some("unvalued foreign entry")
+        );
+        assert!(
+            work.periods()
+                .iter()
+                .enumerate()
+                .all(|(i, p)| i == 1 || p.error.is_none())
+        );
         let status = work.status();
         assert_eq!(status.get("measure"), Some(&s("both")));
         assert_eq!(status.get("next_measure"), Some(&s("native")));
@@ -516,7 +548,10 @@ fn combined_rotation_preserves_each_measure_frontier_and_failure_independently()
         assert_eq!(rows[1].get("measure"), Some(&s("functional")));
         assert_eq!(rows[1].get("through"), Some(&Json::Int(2)));
         work.run_cycle(&root, &mut book).await;
-        assert!(work.periods()[1].error.is_some(), "native success never clears a functional error");
+        assert!(
+            work.periods()[1].error.is_some(),
+            "native success never clears a functional error"
+        );
         work.run_cycle(&root, &mut book).await;
         assert!(work.periods()[1].error.is_none());
         assert_eq!(work.periods()[1].last_success, Some(publication(9)));

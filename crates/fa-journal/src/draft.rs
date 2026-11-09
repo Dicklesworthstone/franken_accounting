@@ -2046,7 +2046,7 @@ async fn promote_draft_in<V: asupersync::fs::Vfs + Clone>(
     txn.write(db, in_case)?;
     if let Some(completion) = completion
         && let Err(refusal) =
-            completion.stage(txn, tracker, db, book, evid, Some(&promoted_entries))?
+            completion.stage(txn, tracker, db, ctx, book, (evid, Some(&promoted_entries)))?
     {
         staged.abort();
         return Ok(Err(refusal));

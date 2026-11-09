@@ -194,7 +194,8 @@ fn run(argv: &[String]) -> u8 {
                     error.to_string(),
                     "--register-measure native|functional|both",
                     false,
-                ).0;
+                )
+                .0;
             }
         }
     };
@@ -230,7 +231,14 @@ fn run(argv: &[String]) -> u8 {
         .0;
     }
     match verb {
-        Some("serve") => serve(argv, &parsed, d, &dir, register_fiscal_year, register_measures),
+        Some("serve") => serve(
+            argv,
+            &parsed,
+            d,
+            &dir,
+            register_fiscal_year,
+            register_measures,
+        ),
         Some("status") => status(argv, &parsed, d, &dir),
         Some("stop") => stop(argv, &parsed, d, &dir),
         Some(other) => {
@@ -493,7 +501,9 @@ fn serve(
         if parsed.switch("--bootstrap-system") {
             match fad::timed::TimedWork::bootstrap(&cx, &book, policy) {
                 Ok(work) if periods.is_empty() => Some(work),
-                Ok(work) => match work.with_register_maintenance_measures(periods, register_measures) {
+                Ok(work) => match work
+                    .with_register_maintenance_measures(periods, register_measures)
+                {
                     Ok(work) => Some(work),
                     Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
                 },
@@ -501,7 +511,12 @@ fn serve(
                 Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
             }
         } else {
-            match fad::timed::TimedWork::maintenance_only_with_measures(&cx, policy, periods, register_measures) {
+            match fad::timed::TimedWork::maintenance_only_with_measures(
+                &cx,
+                policy,
+                periods,
+                register_measures,
+            ) {
                 Ok(work) => Some(work),
                 Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
             }

@@ -1614,16 +1614,26 @@ fn assertion_drift_v1_decodes_but_cannot_dispatch_the_v2_fold() {
 fn cash_flow_v6_retains_v5_native_replay_and_binds_each_registry_interpretation() {
     let mut f = Fixture::new(137);
     let cx = f.cx();
-    f.runtime.block_on(f.book.install_chart(
-        &cx,
-        &[AccountSpec {
-            code: "2000".into(), name: "Payable".into(),
-            account_type: AccountType::LIABILITY.0, normal_balance: 1,
-            is_leaf: true, unit_policy: UnitPolicy::AnyCurrency,
-            parent_code: None, limit: None,
-        }],
-        PRINCIPAL, day(1), b"cash-flow-payable", &cap(&["schema_change"]),
-    )).unwrap().unwrap();
+    f.runtime
+        .block_on(f.book.install_chart(
+            &cx,
+            &[AccountSpec {
+                code: "2000".into(),
+                name: "Payable".into(),
+                account_type: AccountType::LIABILITY.0,
+                normal_balance: 1,
+                is_leaf: true,
+                unit_policy: UnitPolicy::AnyCurrency,
+                parent_code: None,
+                limit: None,
+            }],
+            PRINCIPAL,
+            day(1),
+            b"cash-flow-payable",
+            &cap(&["schema_change"]),
+        ))
+        .unwrap()
+        .unwrap();
     f.assign_role("1000", "cash");
     let (source, _) = f.post(1, "3000", "1000", 100, false);
     f.post(2, "2000", "6000", 400, false);
@@ -1632,35 +1642,63 @@ fn cash_flow_v6_retains_v5_native_replay_and_binds_each_registry_interpretation(
     assert_eq!(current.report.version, 6);
     assert_eq!(current.report.findings.len(), 1);
     assert_eq!(current.report.findings[0].statistic.value, 300);
-    assert!(current.report.findings[0].narrative.contains("legal_entity=unassigned"));
+    assert!(
+        current.report.findings[0]
+            .narrative
+            .contains("legal_entity=unassigned")
+    );
     request.version = Some(5);
     let legacy = f.certify(&request).certificate;
     assert_eq!(legacy.report.version, 5);
     assert_eq!(legacy.report.findings[0].version, 5);
-    assert_eq!(legacy.report.findings[0].statistic, current.report.findings[0].statistic);
-    assert_eq!(legacy.report.findings[0].cites, current.report.findings[0].cites);
+    assert_eq!(
+        legacy.report.findings[0].statistic,
+        current.report.findings[0].statistic
+    );
+    assert_eq!(
+        legacy.report.findings[0].cites,
+        current.report.findings[0].cites
+    );
     assert_eq!(legacy.report.work, current.report.work);
-    assert!(!legacy.report.findings[0].narrative.contains("legal_entity="));
+    assert!(
+        !legacy.report.findings[0]
+            .narrative
+            .contains("legal_entity=")
+    );
     assert_ne!(legacy.registry, current.registry);
-    assert_eq!(registry_versions(&legacy.registry).unwrap(), Some((2, 3, 3, 4, 2, 4, 5)));
+    assert_eq!(
+        registry_versions(&legacy.registry).unwrap(),
+        Some((2, 3, 3, 4, 2, 4, 5))
+    );
 
     // A later healthy balance cannot change either retained interpretation.
     f.post(3, "3000", "1000", 500, false);
     let before = f.head();
     for certificate in [&current, &legacy] {
-        let decoded = ProcedureCertificate::decode(&certificate.canonical_bytes().unwrap()).unwrap();
+        let decoded =
+            ProcedureCertificate::decode(&certificate.canonical_bytes().unwrap()).unwrap();
         assert_eq!(
-            f.book.replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded).unwrap().unwrap(),
+            f.book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
+                .unwrap()
+                .unwrap(),
             certificate.report,
         );
     }
     let mut raw_legacy = legacy.clone();
-    raw_legacy.registry = domain_digest(b"fa:procedure-registry:v1", &[
-        pre_solvency_registry_text().unwrap().as_bytes(), PROCEDURE_REGISTRIES[1].1.as_bytes(),
-    ]);
+    raw_legacy.registry = domain_digest(
+        b"fa:procedure-registry:v1",
+        &[
+            pre_solvency_registry_text().unwrap().as_bytes(),
+            PROCEDURE_REGISTRIES[1].1.as_bytes(),
+        ],
+    );
     super::offline::reseal(&mut raw_legacy);
     assert_eq!(
-        f.book.replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &raw_legacy).unwrap().unwrap(),
+        f.book
+            .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &raw_legacy)
+            .unwrap()
+            .unwrap(),
         legacy.report,
     );
 
@@ -1669,19 +1707,36 @@ fn cash_flow_v6_retains_v5_native_replay_and_binds_each_registry_interpretation(
     unchanged.registry = legacy.registry;
     super::offline::reseal(&mut unchanged);
     assert_eq!(
-        f.book.replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &unchanged).unwrap().unwrap(),
+        f.book
+            .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &unchanged)
+            .unwrap()
+            .unwrap(),
         unchanged.report,
     );
-    for (mut confused, registry) in [(current, legacy.registry), (legacy, registry_digest().unwrap())] {
+    for (mut confused, registry) in [
+        (current, legacy.registry),
+        (legacy, registry_digest().unwrap()),
+    ] {
         confused.registry = registry;
         super::offline::reseal(&mut confused);
         let decoded = ProcedureCertificate::decode(&confused.canonical_bytes().unwrap()).unwrap();
-        let refusal = f.book.replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
-            .unwrap().unwrap_err();
+        let refusal = f
+            .book
+            .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
+            .unwrap()
+            .unwrap_err();
         assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
-        assert!(refusal.message.contains("does not declare this algorithm version"));
+        assert!(
+            refusal
+                .message
+                .contains("does not declare this algorithm version")
+        );
     }
-    assert_eq!(f.head(), before, "certification and replay remain read-only");
+    assert_eq!(
+        f.head(),
+        before,
+        "certification and replay remain read-only"
+    );
 }
 
 #[test]

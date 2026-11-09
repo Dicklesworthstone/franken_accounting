@@ -184,12 +184,11 @@ impl RegisterBook for Book {
     ) -> Result<Publication, String> {
         match measure {
             Measure::Native => {
-                let result = Book::advance_registers_with(
-                    self, cx, capability.holder(), capability, period,
-                )
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|refusal| refusal.to_string())?;
+                let result =
+                    Book::advance_registers_with(self, cx, capability.holder(), capability, period)
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .map_err(|refusal| refusal.to_string())?;
                 Ok(Publication {
                     through: result.through.0,
                     published_at: result.published_at.0,
@@ -200,7 +199,11 @@ impl RegisterBook for Book {
             }
             Measure::Functional => {
                 let result = Book::advance_functional_registers_with(
-                    self, cx, capability.holder(), capability, period,
+                    self,
+                    cx,
+                    capability.holder(),
+                    capability,
+                    period,
                 )
                 .await
                 .map_err(|e| e.to_string())?
@@ -233,7 +236,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> RegisterBook for AsyncBook<V, B> {
         match measure {
             Measure::Native => {
                 let result = AsyncBook::advance_registers(
-                    self, &purposes, capability.holder(), capability, period,
+                    self,
+                    &purposes,
+                    capability.holder(),
+                    capability,
+                    period,
                 )
                 .await
                 .map_err(|e| e.to_string())?
@@ -248,7 +255,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> RegisterBook for AsyncBook<V, B> {
             }
             Measure::Functional => {
                 let result = AsyncBook::advance_functional_registers(
-                    self, &purposes, capability.holder(), capability, period,
+                    self,
+                    &purposes,
+                    capability.holder(),
+                    capability,
+                    period,
                 )
                 .await
                 .map_err(|e| e.to_string())?
@@ -299,13 +310,16 @@ impl RegisterWork {
             periods: periods
                 .into_iter()
                 .flat_map(|period| {
-                    measures.measures().iter().map(move |&measure| PeriodStatus {
-                        period: period.clone(),
-                        measure,
-                        attempts: 0,
-                        last_success: None,
-                        error: None,
-                    })
+                    measures
+                        .measures()
+                        .iter()
+                        .map(move |&measure| PeriodStatus {
+                            period: period.clone(),
+                            measure,
+                            attempts: 0,
+                            last_success: None,
+                            error: None,
+                        })
                 })
                 .collect(),
             next: 0,
@@ -349,7 +363,10 @@ impl RegisterWork {
         let status = &mut self.periods[index];
         status.attempts = status.attempts.saturating_add(1);
         let result = match authority {
-            Ok(capability) => book.advance(cx, capability, &status.period, status.measure).await,
+            Ok(capability) => {
+                book.advance(cx, capability, &status.period, status.measure)
+                    .await
+            }
             Err(error) => Err(error.clone()),
         };
         match result {

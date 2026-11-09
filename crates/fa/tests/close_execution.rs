@@ -17,6 +17,9 @@ use fa_policy::{Capability, Op, Profile};
 use fa_time::{DateDay, FiscalCalendar, PeriodTransition};
 use fgdb_types::VId;
 
+#[path = "close_execution/closing_checkpoint.rs"]
+mod closing_checkpoint;
+
 const ADMIN: VId = VId(201);
 const PLANNER: VId = VId(202);
 const OTHER_PLANNER: VId = VId(203);

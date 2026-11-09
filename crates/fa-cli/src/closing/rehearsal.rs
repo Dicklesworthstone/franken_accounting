@@ -102,7 +102,8 @@ pub(crate) fn render(
         .tasks
         .iter()
         .map(|task| {
-            let (state, receipt, batch, at, entries, transition) = match &task.outcome {
+            let (state, receipt, batch, at, entries, transition, verification) = match &task.outcome
+            {
                 CloseTaskRehearsalOutcome::AlreadyCompleted(receipt) => (
                     "completed-on-trunk",
                     obj(vec![
@@ -114,6 +115,7 @@ pub(crate) fn render(
                     Json::Null,
                     Json::Int(i128::from(receipt.recorded_at.0)),
                     Vec::new(),
+                    Json::Null,
                     Json::Null,
                 ),
                 CloseTaskRehearsalOutcome::Rehearsed {
@@ -135,6 +137,7 @@ pub(crate) fn render(
                         })
                         .collect(),
                     Json::Null,
+                    Json::Null,
                 ),
                 CloseTaskRehearsalOutcome::AwaitingNativeTransitionReview { to } => (
                     "transition-review-required",
@@ -148,6 +151,36 @@ pub(crate) fn render(
                         4 => "lock",
                         _ => "invalid",
                     }),
+                    Json::Null,
+                ),
+                CloseTaskRehearsalOutcome::VerifiedYearEndClose {
+                    fiscal_year,
+                    base_unit,
+                    verified_at,
+                    latest_close,
+                    source_digest,
+                    review_basis,
+                } => (
+                    "year-end-verified",
+                    Json::Null,
+                    Json::Null,
+                    Json::Int(i128::from(verified_at.0)),
+                    Vec::new(),
+                    Json::Null,
+                    obj(vec![
+                        ("fiscal_year", Json::Int(i128::from(*fiscal_year))),
+                        ("base_unit", Json::Int(i128::from(*base_unit))),
+                        ("verified_at", Json::Int(i128::from(verified_at.0))),
+                        (
+                            "latest_close",
+                            obj(vec![
+                                ("vid", s(format!("{:032x}", latest_close.vid.0))),
+                                ("digest", s(hex(&latest_close.entry_digest))),
+                            ]),
+                        ),
+                        ("source_digest", s(hex(source_digest))),
+                        ("review_basis", s(hex(review_basis))),
+                    ]),
                 ),
             };
             human.push(format!("  {}: {state}", task.id));
@@ -159,6 +192,7 @@ pub(crate) fn render(
                 ("recorded_at", at),
                 ("entries", Json::Arr(entries)),
                 ("transition", transition),
+                ("verification", verification),
             ])
         })
         .collect();

@@ -108,7 +108,14 @@ fn register_measure_is_explicit_serve_only_and_requires_one_period_selection() {
             ["--register-period", "FY2026-P03"],
             ["--register-fiscal-year", "2026"],
         ] {
-            let mut args = vec!["serve", "--book", book, "--json", "--register-measure", measure];
+            let mut args = vec![
+                "serve",
+                "--book",
+                book,
+                "--json",
+                "--register-measure",
+                measure,
+            ];
             args.extend(selection);
             let result = run(&args);
             assert_eq!(result.status.code(), Some(4), "{args:?}: {result:?}");
@@ -120,12 +127,47 @@ fn register_measure_is_explicit_serve_only_and_requires_one_period_selection() {
         vec!["stop", "--register-measure", "both"],
         vec!["serve", "--register-measure", "native"],
         vec!["serve", "--bootstrap-system", "--register-measure", "both"],
-        vec!["serve", "--register-period", "FY2026-P03", "--register-measure", "Functional"],
-        vec!["serve", "--register-period", "FY2026-P03", "--register-measure", "functional "],
-        vec!["serve", "--register-period", "FY2026-P03", "--register-measure=wrong"],
-        vec!["serve", "--register-period", "FY2026-P03", "--register-measure="],
-        vec!["serve", "--register-period", "FY2026-P03", "--register-measure"],
-        vec!["serve", "--register-period", "FY2026-P03", "--register-measure", "native", "--register-measure", "both"],
+        vec![
+            "serve",
+            "--register-period",
+            "FY2026-P03",
+            "--register-measure",
+            "Functional",
+        ],
+        vec![
+            "serve",
+            "--register-period",
+            "FY2026-P03",
+            "--register-measure",
+            "functional ",
+        ],
+        vec![
+            "serve",
+            "--register-period",
+            "FY2026-P03",
+            "--register-measure=wrong",
+        ],
+        vec![
+            "serve",
+            "--register-period",
+            "FY2026-P03",
+            "--register-measure=",
+        ],
+        vec![
+            "serve",
+            "--register-period",
+            "FY2026-P03",
+            "--register-measure",
+        ],
+        vec![
+            "serve",
+            "--register-period",
+            "FY2026-P03",
+            "--register-measure",
+            "native",
+            "--register-measure",
+            "both",
+        ],
     ] {
         let mut args = options;
         args.extend(["--book", book, "--json"]);

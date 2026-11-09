@@ -77,6 +77,7 @@ pub struct ClosingRecord {
 pub struct PreparedYearEndClose {
     request: YearEndCloseRequest,
     basis: YearEndCloseBasis,
+    review_basis: [u8; 32],
     unit: UnitId,
     residuals: Vec<ClosingResidual>,
     legs: Vec<LegPayload>,
@@ -193,6 +194,85 @@ pub struct YearEndCloseVerification {
 impl YearEndCloseVerification {
     pub fn is_green(&self) -> bool {
         self.nominal_zero_at_close == Some(true)
+    }
+}
+
+/// A current, complete fiscal-year closing basis. Only a successful native
+/// verification creates this value; a prior valid close alone is insufficient.
+/// Zero-valued inspection rows remain in YearEndCloseVerification, but no
+/// native or functional residual may remain in an admitted checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct YearEndCloseCheckpoint {
+    fiscal_year: i32,
+    base_unit: UnitId,
+    known_at: CommitSeq,
+    latest_close: ClosingRecord,
+    source_digest: [u8; 32],
+    review_basis: [u8; 32],
+}
+
+impl YearEndCloseCheckpoint {
+    pub fn fiscal_year(&self) -> i32 {
+        self.fiscal_year
+    }
+
+    pub fn base_unit(&self) -> UnitId {
+        self.base_unit
+    }
+
+    pub fn known_at(&self) -> CommitSeq {
+        self.known_at
+    }
+
+    pub fn latest_close(&self) -> &ClosingRecord {
+        &self.latest_close
+    }
+
+    /// Commits source entry identities, routes, chart and closing-period
+    /// state. Advancing only an approval or certificate does not change it.
+    pub fn source_digest(&self) -> &[u8; 32] {
+        &self.source_digest
+    }
+
+    /// Same authenticated fiscal-year content and contribution order, without
+    /// monetary publication sequence numbers. A hypothetical scratch suffix
+    /// may shift after harmless metadata publication; its identities, content,
+    /// routes, chart and period state must still agree exactly for review.
+    /// Native task receipts always bind `source_digest`, including sequences.
+    pub fn review_basis(&self) -> &[u8; 32] {
+        &self.review_basis
+    }
+}
+
+/// Two commitments over one fold. The existing source protocol remains byte
+/// for byte unchanged. Only the separately domain-bound review commitment
+/// omits monetary sequence coordinates translated by a scratch rehearsal.
+struct ClosingSource {
+    exact: fgdb_crypto::Hasher,
+    review: fgdb_crypto::Hasher,
+}
+
+impl ClosingSource {
+    fn new() -> Self {
+        let mut review = fgdb_crypto::Hasher::new();
+        review.update(b"fa:year-end-close-review-basis:v1");
+        Self {
+            exact: fgdb_crypto::Hasher::new(),
+            review,
+        }
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        self.exact.update(bytes);
+        self.review.update(bytes);
+    }
+
+    fn contribution_at(&mut self, at: CommitSeq) {
+        self.exact.update(&at.0.to_le_bytes());
+    }
+
+    fn finish(self) -> ([u8; 32], [u8; 32]) {
+        (self.exact.finalize().0, self.review.finalize().0)
     }
 }
 
@@ -517,7 +597,7 @@ fn route_account(
 /// Keep dormant account declarations in the source commitment even when
 /// they emit no Closing leg. The existing route binding bytes are unchanged.
 fn bind_account(
-    source: &mut fgdb_crypto::Hasher,
+    source: &mut ClosingSource,
     chart: &ChartSnapshot,
     row: &AccountRow,
 ) -> Result<(), KernelError> {
@@ -818,7 +898,7 @@ fn bind_funds<V: Vfs + Clone>(
     book: &BookContext,
     at: CommitSeq,
     controls: &[FundControl],
-    source: &mut fgdb_crypto::Hasher,
+    source: &mut ClosingSource,
 ) -> Result<BTreeMap<VId, CommitSeq>, KernelError> {
     let corrupt = |message: &str| KernelError::Corrupt(format!("closing funds: {message}"));
     let mut funds: BTreeMap<VId, (crate::dimension::DimensionValueSpec, CommitSeq)> =
@@ -1001,7 +1081,7 @@ fn observe<V: Vfs + Clone>(
         }
     };
     let preserves_fund = version == YEAR_END_CLOSE_FUND_VERSION;
-    let mut source = fgdb_crypto::Hasher::new();
+    let mut source = ClosingSource::new();
     source.update(if preserves_fund {
         b"fa:year-end-close-source:v3"
     } else if valued {
@@ -1133,7 +1213,7 @@ fn observe<V: Vfs + Clone>(
                 )));
             }
             source.update(&vid.0.to_le_bytes());
-            source.update(&recorded_at.0.to_le_bytes());
+            source.contribution_at(recorded_at);
             source.update(&entry.entry_digest);
             source.update(&(ordinal as u64).to_le_bytes());
             let quotient = match carrying_quotient(leg.amount.mantissa, base) {
@@ -1251,6 +1331,7 @@ fn observe<V: Vfs + Clone>(
     } else {
         None
     };
+    let (source_digest, review_basis) = source.finish();
     Ok(Ok(PreparedYearEndClose {
         request: request.clone(),
         basis: YearEndCloseBasis {
@@ -1261,8 +1342,9 @@ fn observe<V: Vfs + Clone>(
             observed_at: at,
             routes_entry: routes.control_entry,
             routes_digest: routes.digest,
-            source_digest: source.finalize().0,
+            source_digest,
         },
+        review_basis,
         unit: spec.base_unit,
         residuals,
         legs,
@@ -1418,51 +1500,100 @@ pub fn verify_year_end_close<V: Vfs + Clone>(
         .checkpoint()
         .map_err(fgdb::WriteTxnError::Interrupted)?;
     query.with_restriction(|| {
-        // Historical observation never restores expired or revoked authority.
-        // Admit the current token before selecting the prefix it may observe.
-        if let Err(refusal) = crate::policy::admit_reads(db, book, capability.holder(), capability)?
-        {
-            return Ok(Err(refusal));
-        }
-        if let Err(denial) = fa_policy::reach(
-            capability,
-            &Reach {
-                branch: Some(Id128::TRUNK),
-                observes: known_at.map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
-                periods: None,
-                through: None,
-                accounts: None,
-            },
-            None,
-        ) {
-            return Ok(Err(crate::policy::refusal(&denial)));
-        }
-        let at = known_at.unwrap_or(db.frontier()?);
-        if let Err(refusal) = validate_sources(db, cx, book, at)? {
-            return Ok(Err(refusal));
-        }
-        let Some(period) = book
-            .calendar
-            .periods_for_year(fiscal_year)?
-            .into_iter()
-            .find(|period| period.kind == PeriodKind::Closing)
-        else {
-            return Ok(Err(unsupported("the fiscal year has no Closing period")));
-        };
-        let request = YearEndCloseRequest {
-            fiscal_year,
-            closing_period: period.code,
-        };
-        let current = match observe(db, cx, book, &request, at, CloseMode::Inspect, None)? {
-            Ok(current) => current,
+        let at = match verification_prefix(db, book, capability, known_at)? {
+            Ok(at) => at,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let nominal_zero_at_close = if let Some(record) = &current.latest_close {
-            Some(verify_record(db, cx, book, &request, record)?)
-        } else {
-            None
+        Ok(
+            verification_at(db, cx, book, fiscal_year, at)?
+                .map(|(verification, _, _)| verification),
+        )
+    })
+}
+
+/// Require both a valid original close and no currently unclosed nominal
+/// amounts. This is the native predicate used by a close-DAG verification
+/// task and its scratch rehearsal; no completion is recorded by this read.
+pub fn verify_year_end_close_checkpoint<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    fiscal_year: i32,
+    known_at: Option<CommitSeq>,
+) -> Outcome<YearEndCloseCheckpoint> {
+    let query = cx.query();
+    query
+        .checkpoint()
+        .map_err(fgdb::WriteTxnError::Interrupted)?;
+    query.with_restriction(|| {
+        let at = match verification_prefix(db, book, capability, known_at)? {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
         };
-        Ok(Ok(YearEndCloseVerification {
+        year_end_close_checkpoint_at(db, cx, book, fiscal_year, at)
+    })
+}
+
+fn verification_prefix<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    known_at: Option<CommitSeq>,
+) -> Outcome<CommitSeq> {
+    // A historical source never restores expired or revoked authority.
+    if let Err(refusal) = crate::policy::admit_reads(db, book, capability.holder(), capability)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(denial) = fa_policy::reach(
+        capability,
+        &Reach {
+            branch: Some(Id128::TRUNK),
+            observes: known_at.map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+            periods: None,
+            through: None,
+            accounts: None,
+        },
+        None,
+    ) {
+        return Ok(Err(crate::policy::refusal(&denial)));
+    }
+    Ok(Ok(known_at.unwrap_or(db.frontier()?)))
+}
+
+fn verification_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    fiscal_year: i32,
+    at: CommitSeq,
+) -> Outcome<(YearEndCloseVerification, YearEndCloseBasis, [u8; 32])> {
+    if let Err(refusal) = validate_sources(db, cx, book, at)? {
+        return Ok(Err(refusal));
+    }
+    let Some(period) = book
+        .calendar
+        .periods_for_year(fiscal_year)?
+        .into_iter()
+        .find(|period| period.kind == PeriodKind::Closing)
+    else {
+        return Ok(Err(unsupported("the fiscal year has no Closing period")));
+    };
+    let request = YearEndCloseRequest {
+        fiscal_year,
+        closing_period: period.code,
+    };
+    let current = match observe(db, cx, book, &request, at, CloseMode::Inspect, None)? {
+        Ok(current) => current,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let nominal_zero_at_close = if let Some(record) = &current.latest_close {
+        Some(verify_record(db, cx, book, &request, record)?)
+    } else {
+        None
+    };
+    Ok(Ok((
+        YearEndCloseVerification {
             fiscal_year,
             base_unit: current.unit,
             known_at: at,
@@ -1470,8 +1601,48 @@ pub fn verify_year_end_close<V: Vfs + Clone>(
             nominal_zero_at_close,
             needs_reclose: !current.is_noop(),
             residuals: current.residuals,
-        }))
-    })
+        },
+        current.basis,
+        current.review_basis,
+    )))
+}
+
+/// Internal callers have admitted their full native read before selecting a
+/// retained source. Recovered receipts use their original prefix, never HEAD.
+pub(crate) fn year_end_close_checkpoint_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    fiscal_year: i32,
+    at: CommitSeq,
+) -> Outcome<YearEndCloseCheckpoint> {
+    let (verification, basis, review_basis) = match verification_at(db, cx, book, fiscal_year, at)?
+    {
+        Ok(verification) => verification,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if !verification.is_green()
+        || verification.needs_reclose
+        || verification
+            .residuals
+            .iter()
+            .any(|cell| cell.net != 0 || cell.base_net != 0)
+    {
+        return Ok(Err(unsupported(
+            "the fiscal year needs a verified Closing or reclose before its close task can complete",
+        )));
+    }
+    let Some(latest_close) = verification.latest_close else {
+        return Ok(Err(unsupported("the fiscal year has no verified Closing")));
+    };
+    Ok(Ok(YearEndCloseCheckpoint {
+        fiscal_year,
+        base_unit: verification.base_unit,
+        known_at: at,
+        latest_close,
+        source_digest: basis.source_digest,
+        review_basis,
+    }))
 }
 
 /// A numerically zero balance is insufficient: historical verification

@@ -1505,9 +1505,9 @@ async fn transition_planned_in<V: asupersync::fs::Vfs + Clone>(
                     &mut staged.txn,
                     &mut staged.template_tracker,
                     db,
+                    ctx,
                     book,
-                    staged.control_entry,
-                    None,
+                    (staged.control_entry, None),
                 )? {
                     prepared.abort();
                     return Ok(Err(refusal));

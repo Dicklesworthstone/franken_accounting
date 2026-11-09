@@ -47,6 +47,8 @@ mod class_scoped_posting;
 mod closing_carrying_tests;
 #[path = "genesis/closing_case.rs"]
 mod closing_case_tests;
+#[path = "genesis/closing_checkpoint.rs"]
+mod closing_checkpoint_tests;
 #[path = "genesis/closing_draft.rs"]
 mod closing_draft_tests;
 #[path = "genesis/dimension_constraints.rs"]

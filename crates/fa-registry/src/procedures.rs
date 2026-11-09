@@ -1040,27 +1040,41 @@ mod tests {
         let current = load(R, PROCEDURES).unwrap();
         let previous = solvency_v5_document(current.clone()).unwrap();
         let raw = solvency_v5_registry_text(PROCEDURES).unwrap();
-        assert_eq!(load(R, &raw).unwrap().canonical_bytes(), previous.canonical_bytes());
+        assert_eq!(
+            load(R, &raw).unwrap().canonical_bytes(),
+            previous.canonical_bytes()
+        );
         assert_ne!(previous.canonical_bytes(), current.canonical_bytes());
-        let old_row = previous.arrays["procedure"].iter().find(|row| {
-            row.get("id").and_then(crate::toml::Value::as_str)
-                == Some("solvency.cash_flow_test")
-        }).unwrap();
+        let old_row = previous.arrays["procedure"]
+            .iter()
+            .find(|row| {
+                row.get("id").and_then(crate::toml::Value::as_str)
+                    == Some("solvency.cash_flow_test")
+            })
+            .unwrap();
         assert_eq!(req_int(R, old_row, "version").unwrap(), 5);
-        assert!(!req_str(R, old_row, "summary").unwrap().contains(SOLVENCY_V6_SUMMARY_SUFFIX));
+        assert!(
+            !req_str(R, old_row, "summary")
+                .unwrap()
+                .contains(SOLVENCY_V6_SUMMARY_SUFFIX)
+        );
 
         let layout = PROCEDURES.replace(
             "id = \"solvency.cash_flow_test\"\nversion = 6",
             "id = \"solvency.cash_flow_test\"\n# harmless canonical layout\nversion = 6",
         );
         assert_eq!(
-            solvency_v5_document(load(R, &layout).unwrap()).unwrap().canonical_bytes(),
+            solvency_v5_document(load(R, &layout).unwrap())
+                .unwrap()
+                .canonical_bytes(),
             previous.canonical_bytes(),
         );
         assert!(solvency_v5_registry_text(&layout).is_err());
         let unrelated = PROCEDURES.replace("FA-EVID-L01", "FA-EVID-L99");
         assert_ne!(
-            solvency_v5_document(load(R, &unrelated).unwrap()).unwrap().canonical_bytes(),
+            solvency_v5_document(load(R, &unrelated).unwrap())
+                .unwrap()
+                .canonical_bytes(),
             previous.canonical_bytes(),
         );
         let future = PROCEDURES.replace(
