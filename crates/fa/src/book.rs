@@ -2242,6 +2242,27 @@ impl Book {
         )))
     }
 
+    /// Disclose every mandatory statement comparison and optional complete
+    /// equity questions at the case's atomic Post. Each supplemental comparison
+    /// must concern an actual current posting period of a prior-period
+    /// adjustment and replay against its independently supplied request.
+    #[allow(clippy::too_many_arguments)]
+    pub fn disclose_case_with_equity(
+        &mut self,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        document: fa_model::Oid,
+        comparisons: &[[u8; 32]],
+        equity: &[crate::CaseEquityDisclosureComparison],
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.disclose_case_with_equity(
+            &purposes, capability, ordinal, document, comparisons, equity, effective_date, idempotency_key,
+        )))
+    }
+
     /// Close case `ordinal` (plan §8.3: Disclosed → Closed), its last record.
     pub fn close_case(
         &mut self,
@@ -2273,6 +2294,40 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.case_statement_diff_requests(
             &purposes, principal, capability, ordinal, audience,
+        )))
+    }
+
+    /// Select the explicit equity question for one actual PPA posting period.
+    /// Its before side is immediately before Post, never an issuance claim.
+    pub fn case_equity_diff_request(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        ordinal: u32,
+        selection: &crate::CaseEquityComparisonSelection,
+    ) -> Outcome<crate::EquityRollForwardDiffRequest> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.case_equity_diff_request(
+            &purposes, principal, capability, ordinal, selection,
+        )))
+    }
+
+    /// Read the case-bound current-period equity effect without Produce
+    /// authority or certificate retention. Both reports use the same existing
+    /// equity engine and the exact case Post frontiers.
+    pub fn case_equity_diff(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        ordinal: u32,
+        selection: &crate::CaseEquityComparisonSelection,
+    ) -> Outcome<(
+        crate::EquityRollForwardDiffRequest,
+        crate::EquityRollForwardDiff,
+    )> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.case_equity_diff(
+            &purposes, principal, capability, ordinal, selection,
         )))
     }
 

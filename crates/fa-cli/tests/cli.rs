@@ -13033,6 +13033,203 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
             assert_eq!(text(line, "delta"), "0.00 USD", "{out}");
         }
     }
+    // The case-specific equity bridge independently selects the actual April
+    // correction at Post-1/Post, even though certificate retention has already
+    // advanced HEAD. March is the period corrected, not the posting window.
+    let ppa_equity_args = [
+        "case",
+        "diff",
+        "2",
+        "--equity",
+        "--period",
+        "FY2026-P04",
+        "--unit",
+        "USD",
+        "--label",
+        "ppa-case-equity",
+    ];
+    let plain_request_path = dir
+        .join("ppa-case-equity-plain.request")
+        .display()
+        .to_string();
+    let mut plain_args = ppa_equity_args.to_vec();
+    plain_args.extend(["--request-out", &plain_request_path]);
+    let (code, before_equity_read) = run(true, &["book", "info"]);
+    assert_eq!(code, 0, "{before_equity_read}");
+    let (code, plain_out) = run(true, &plain_args);
+    assert_eq!(code, 0, "{plain_out}");
+    assert_eq!(field(&plain_out, "event"), Some("case_equity_diff"));
+    let plain_equity = doc(&plain_out);
+    assert_eq!(
+        json::parse(plain_out.trim()).unwrap().get("certificate"),
+        Some(&Json::Null),
+        "plain equity comparison does not retain a certificate: {plain_out}"
+    );
+    let (code, after_equity_read) = run(true, &["book", "info"]);
+    assert_eq!(code, 0, "{after_equity_read}");
+    assert_eq!(
+        before_equity_read, after_equity_read,
+        "plain case equity writes no book state"
+    );
+    let assert_case_equity = |bridge: &Json| {
+        assert_eq!(int(bridge, "case"), Some(2));
+        assert_eq!(text(bridge, "period"), "FY2026-P04");
+        assert_eq!(text(bridge, "basis"), "before-post-impact");
+        assert_eq!(int(bridge, "before_known_at"), ppa_posted_at.checked_sub(1));
+        assert_eq!(int(bridge, "after_known_at"), Some(ppa_posted_at));
+        let units = arr(bridge, "units");
+        assert_eq!(units.len(), 1);
+        assert_eq!(text(&units[0], "unit"), "USD");
+        let lines = arr(&units[0], "lines");
+        let expected = [
+            ("opening_contributed_equity", "0.00 USD"),
+            ("opening_unclosed_earnings", "0.00 USD"),
+            ("opening_total_equity", "0.00 USD"),
+            ("prior_period_adjustments", "-2.00 USD"),
+            ("opening_equity_as_adjusted", "-2.00 USD"),
+            ("net_income", "0.00 USD"),
+            ("issuances", "0.00 USD"),
+            ("distributions", "0.00 USD"),
+            ("other_equity_movements", "0.00 USD"),
+            ("closing_transfers_net", "0.00 USD"),
+            ("net_equity_change", "-2.00 USD"),
+            ("closing_contributed_equity", "-2.00 USD"),
+            ("closing_unclosed_earnings", "0.00 USD"),
+            ("closing_total_equity", "-2.00 USD"),
+            ("equity_tie_out_residual", "0.00 USD"),
+        ];
+        assert_eq!(lines.len(), expected.len());
+        for (line, (code, delta)) in lines.iter().zip(expected) {
+            assert_eq!(text(line, "code"), code);
+            assert_eq!(text(line, "delta"), delta, "{code}: {bridge:?}");
+            let field = if code == "equity_tie_out_residual" {
+                "tie_out_residual"
+            } else {
+                code
+            };
+            assert_eq!(
+                text(line, "after"),
+                text(&arr(&equity, "units")[0], field),
+                "{code}"
+            );
+            if delta == "0.00 USD" {
+                assert_eq!(text(line, "before"), text(line, "after"), "{code}");
+            }
+        }
+        assert!(arr(bridge, "before_movements").is_empty());
+        let movements = arr(bridge, "after_movements");
+        assert_eq!(movements.len(), 1);
+        assert_eq!(int(&movements[0], "case"), Some(2));
+        assert_eq!(text(&movements[0], "kind"), "prior_period_adjustment");
+        assert_eq!(text(&movements[0], "relates_to"), "FY2026-P03");
+        assert_eq!(text(&movements[0], "effective_date"), "2026-04-02");
+        assert_eq!(text(&movements[0], "account"), "3000");
+        assert_eq!(text(&movements[0], "amount"), "2.00 USD");
+    };
+    assert_case_equity(&plain_equity);
+    assert_eq!(text(&plain_equity, "request_file"), plain_request_path);
+    let equity_request_bytes = std::fs::read(&plain_request_path)?;
+    let request_hex: String = equity_request_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(text(&plain_equity, "verification_request_hex"), request_hex);
+    let equity_request = fa::EquityRollForwardDiffRequest::decode(&equity_request_bytes).unwrap();
+    let offline_request =
+        fa_verify::report::EquityRollForwardDiffRequest::decode(&equity_request_bytes).unwrap();
+    assert_eq!(i128::from(offline_request.before), ppa_posted_at - 1);
+    assert_eq!(i128::from(offline_request.after), ppa_posted_at);
+    assert_eq!(offline_request.label, "ppa-case-equity");
+    assert_eq!(
+        offline_request.effective_from,
+        fa_time::DateDay::parse("2026-04-01").unwrap().0
+    );
+    assert_eq!(
+        offline_request.effective_through,
+        fa_time::DateDay::parse("2026-04-30").unwrap().0
+    );
+    assert_eq!(offline_request.units, equity_request.before.units);
+    assert!(offline_request.issuance_accounts.is_empty());
+    assert!(offline_request.distribution_accounts.is_empty());
+
+    let wrong_period_args = [
+        "case",
+        "diff",
+        "2",
+        "--equity",
+        "--period",
+        "FY2026-P03",
+        "--unit",
+        "USD",
+        "--label",
+        "ppa-case-equity",
+    ];
+    let (code, out) = run(true, &wrong_period_args);
+    assert_eq!(
+        code, 3,
+        "the source period is not the actual PPA posting period: {out}"
+    );
+    assert!(out.contains("FA-REF-203"), "{out}");
+    for extra in [vec!["--as-known-at", "HEAD"], vec!["--statements"]] {
+        let mut invalid = ppa_equity_args.to_vec();
+        invalid.extend(extra);
+        let (code, out) = run(true, &invalid);
+        assert_eq!(
+            code, 2,
+            "a case equity bridge has one fixed purpose and frontier: {invalid:?}: {out}"
+        );
+    }
+    let equity_request_path = dir.join("ppa-case-equity.request").display().to_string();
+    let mut case_equity_certify = ppa_equity_args.to_vec();
+    case_equity_certify.extend(["--certify", "--request-out", &equity_request_path]);
+    let (code, certified_out) = run(true, &case_equity_certify);
+    assert_eq!(code, 0, "{certified_out}");
+    let certified_equity_line = certified_out
+        .lines()
+        .find(|line| field(line, "event") == Some("case_equity_diff"))
+        .expect("certified case comparison renders its actual equity bridge");
+    let certified_equity = doc(certified_equity_line);
+    assert_case_equity(&certified_equity);
+    assert_eq!(
+        text(&certified_equity, "verification_request_hex"),
+        request_hex
+    );
+    assert_eq!(std::fs::read(&equity_request_path)?, equity_request_bytes);
+    let ppa_equity_certificate = field(certified_equity_line, "certificate")
+        .unwrap()
+        .to_string();
+    assert_eq!(ppa_equity_certificate.len(), 64, "{certified_out}");
+    assert_eq!(
+        text(&doc(&certified_out), "output_format"),
+        "fa:equity-roll-forward-diff:v1"
+    );
+    let ppa_equity_expectation = format!(
+        r#"{{"kind":"equity-roll-forward-diff","units":["USD"],"label":"ppa-case-equity","from":"2026-04-01","through":"2026-04-30","known_at":{},"after_known_at":{ppa_posted_at},"issuance_accounts":[],"distribution_accounts":[]}}"#,
+        ppa_posted_at - 1,
+    );
+    let (code, out) = run(
+        true,
+        &[
+            "replay",
+            &ppa_equity_certificate,
+            "--expect",
+            &ppa_equity_expectation,
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let replayed_comparison = out
+        .lines()
+        .find(|line| field(line, "event") == Some("equity_roll_forward_diff"))
+        .map(doc)
+        .expect("retained equity comparison renders its original report");
+    assert_eq!(
+        arr(&replayed_comparison, "units"),
+        arr(&certified_equity, "units")
+    );
+    assert_eq!(
+        arr(&replayed_comparison, "after_movements"),
+        arr(&certified_equity, "after_movements")
+    );
     // Disclosed in a Disclosure document once another principal reviewed
     // it (fa-75j4 slice 5), then closed.
     let note = write(
@@ -13079,10 +13276,121 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(code, 0, "{unchanged}");
     let unchanged_case = doc(&unchanged).get("case").cloned().unwrap_or(Json::Null);
     assert_eq!(text(&unchanged_case, "state"), "Posted", "{unchanged}");
+    // Supplemental equity has its own independent, canonical question. It
+    // never substitutes for the complete required statement comparison set.
+    for extra in [
+        vec!["--equity-certificate", ppa_equity_certificate.as_str()],
+        vec!["--equity-request", equity_request_path.as_str()],
+    ] {
+        let mut incomplete = disclose_args.clone();
+        incomplete.extend(extra);
+        let (code, out) = run(true, &incomplete);
+        assert_eq!(
+            code, 2,
+            "each equity certificate needs its paired request: {out}"
+        );
+    }
+    let mut equity_only = vec!["case", "disclose", "2", "--document", &note_oid];
+    equity_only.extend([
+        "--equity-certificate",
+        &ppa_equity_certificate,
+        "--equity-request",
+        &equity_request_path,
+    ]);
+    let (code, out) = run(true, &equity_only);
+    assert_eq!(
+        code, 3,
+        "equity does not replace mandatory statements: {out}"
+    );
+    assert!(out.contains("FA-REF-203"), "{out}");
+    let mut incomplete_with_equity = missing_current.clone();
+    incomplete_with_equity.extend([
+        "--equity-certificate",
+        &ppa_equity_certificate,
+        "--equity-request",
+        &equity_request_path,
+    ]);
+    let (code, out) = run(true, &incomplete_with_equity);
+    assert_eq!(
+        code, 3,
+        "even valid equity cannot omit current statement comparisons: {out}"
+    );
+    assert!(out.contains("FA-REF-203"), "{out}");
+    for wrong in ["frontier", "period", "label"] {
+        let mut request = equity_request.clone();
+        match wrong {
+            "frontier" => {
+                let at = request.before.known_at.as_mut().unwrap();
+                at.0 = at.0.checked_sub(1).unwrap();
+            }
+            "period" => {
+                request.before.effective_from = fa_time::DateDay::parse("2026-03-01").unwrap();
+                request.before.effective_through = fa_time::DateDay::parse("2026-03-31").unwrap();
+            }
+            "label" => request.before.label = "another-equity-question".into(),
+            _ => unreachable!(),
+        }
+        let request_path = dir
+            .join(format!("ppa-equity-wrong-{wrong}.request"))
+            .display()
+            .to_string();
+        std::fs::write(&request_path, request.canonical_bytes().unwrap())?;
+        let mut invalid = disclose_args.clone();
+        invalid.extend([
+            "--equity-certificate",
+            &ppa_equity_certificate,
+            "--equity-request",
+            &request_path,
+        ]);
+        let (code, out) = run(true, &invalid);
+        assert_eq!(
+            code, 3,
+            "a validly encoded but different {wrong} question must refuse: {out}"
+        );
+        assert!(out.contains("FA-REF-203"), "{out}");
+    }
+    let (code, unchanged) = run(true, &["case", "show", "2"]);
+    assert_eq!(code, 0, "{unchanged}");
+    let unchanged_case = doc(&unchanged).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(
+        text(&unchanged_case, "state"),
+        "Posted",
+        "all refused attachments leave the case posted: {unchanged}"
+    );
+    disclose_args.extend([
+        "--equity-certificate",
+        &ppa_equity_certificate,
+        "--equity-request",
+        &equity_request_path,
+    ]);
     let (code, out) = run(true, &disclose_args);
     assert_eq!(code, 0, "{out}");
     let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
     assert_eq!(text(&case, "state"), "Disclosed", "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(false)));
+    let disclosed_at = int(&doc(&out), "recorded_at").unwrap();
+    let disclosure = case.get("disclosure").cloned().unwrap_or(Json::Null);
+    assert_eq!(arr(&disclosure, "comparisons").len(), 6);
+    let attached: BTreeSet<_> = arr(&disclosure, "comparisons")
+        .iter()
+        .map(|digest| digest.as_str().unwrap().to_string())
+        .collect();
+    let mut expected: BTreeSet<_> = disclosure_comparisons.iter().cloned().collect();
+    expected.insert(ppa_equity_certificate.clone());
+    assert_eq!(
+        attached, expected,
+        "the retained disclosure includes all five statements and the supplemental equity bridge"
+    );
+    assert_eq!(int(&disclosure, "posted_at"), Some(ppa_posted_at));
+    let (code, retry) = run(true, &disclose_args);
+    assert_eq!(code, 0, "{retry}");
+    assert_eq!(doc(&retry).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(int(&doc(&retry), "recorded_at"), Some(disclosed_at));
+    assert_eq!(
+        doc(&retry).get("case"),
+        Some(&case),
+        "exact retry preserves the original attachments: {retry}"
+    );
     let (code, out) = run(true, &["case", "close", "2"]);
     assert_eq!(code, 0, "{out}");
     let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);

@@ -24,7 +24,7 @@ pub const MAX_EQUITY_DIFF_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 const DIGEST_DOMAIN: &[u8] = b"fa:equity-roll-forward-diff-certificate-digest:v1";
 const SOURCE_DOMAIN: &[u8] = b"fa:equity-roll-forward-diff-source:v1";
 const MAX_SCOPE: usize = 4096;
-const MAX_REQUEST_BYTES: usize = 4 + 64 + 16 + 4 + 256 + 8 + 12 + MAX_SCOPE * 36;
+pub const MAX_EQUITY_DIFF_REQUEST_BYTES: usize = 4 + 64 + 16 + 4 + 256 + 8 + 12 + MAX_SCOPE * 36;
 const LINE_CODES: [&str; 15] = [
     "opening_contributed_equity",
     "opening_unclosed_earnings",
@@ -163,7 +163,7 @@ impl EquityRollForwardDiffRequest {
 
     /// Decode only canonical, bounded expectations, never a report certificate.
     pub fn decode(bytes: &[u8]) -> Result<Self, Refusal> {
-        if bytes.len() > MAX_REQUEST_BYTES {
+        if bytes.len() > MAX_EQUITY_DIFF_REQUEST_BYTES {
             return Err(invalid("equity comparison request exceeds its scope bound"));
         }
         let mut r = Reader::new(bytes);
@@ -228,7 +228,7 @@ fn amounts(unit: &EquityRollForwardUnit) -> [i128; 15] {
 impl EquityRollForwardDiff {
     // Inputs have already been replayed by the original equity engine. This
     // function performs no second monetary fold or fresh role classification.
-    fn between(
+    pub(crate) fn between(
         before: EquityRollForwardReport,
         after: EquityRollForwardReport,
     ) -> Result<Self, Refusal> {

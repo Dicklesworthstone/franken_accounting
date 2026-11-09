@@ -1,7 +1,8 @@
 //! The posting kernel's bounded artifact-to-Post binding.
 //!
 //! These are the native/functional built-in and custom statement-diff v1
-//! containers and their exact v4/v5 or v11/v12 source headers
+//! containers and their exact v4/v5 or v11/v12 source headers, plus optional
+//! equity-diff containers over original v2 equity and native roll-forward sources
 //! (`fa::statement_diff::certificate` and
 //! `fa::certificate`). The kernel needs no upward dependency on report folds:
 //! it checks the complete outer digest, the two identical statement questions,
@@ -15,6 +16,8 @@ use fgdb_types::CommitSeq;
 
 use super::{DisclosurePost, comparison_refused};
 use crate::Refusal;
+
+mod equity;
 
 const NATIVE_FORMAT: &[u8] = b"fa:statement-diff-certificate:v1";
 const FUNCTIONAL_FORMAT: &[u8] = b"fa:functional-statement-diff-certificate:v1";
@@ -234,7 +237,7 @@ fn output_header(
     Ok(())
 }
 
-/// Bind native/functional built-in or custom statement-diff bytes to the exact case Post
+/// Bind supported statement or supplemental equity comparison bytes to the exact case Post
 /// without storage access or allocating copies of either source certificate.
 /// The returned token carries no authority to read or retain an artifact.
 pub fn validate_disclosure_comparison(
@@ -251,6 +254,9 @@ pub fn validate_disclosure_comparison(
     let parse = || -> Result<(), DecodeError> {
         let mut r = Reader::new(bytes);
         let format = r.bytes(64, "comparison format")?;
+        if format == equity::FORMAT {
+            return equity::validate(book, post, digest, bytes);
+        }
         let (functional, custom) = match format {
             NATIVE_FORMAT => (false, false),
             FUNCTIONAL_FORMAT => (true, false),

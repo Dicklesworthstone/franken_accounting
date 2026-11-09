@@ -23,6 +23,8 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, control_date, hex, usage};
 use crate::json::{Json, obj, s};
 
+mod equity;
+
 const OPEN_EXAMPLE: &str = "fa case open --kind Restatement|Revision|PriorPeriodAdjustment|PolicyChangeRetrospective --periods <code>[,<code>]... [--narrative <oid>] [--determined-on YYYY-MM-DD --authority <oid>] [--key K] --json";
 const DETERMINE_EXAMPLE: &str =
     "fa case determine <case> --on YYYY-MM-DD --authority <oid> [--key K] --json";
@@ -39,7 +41,7 @@ pub(crate) fn case_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // The statement diffs are diff's alone: another subcommand would ignore
     // either switch, so it is refused rather than silently dropped.
     if sub != Some("diff")
-        && let Some(switch) = ["--statements", "--certify"]
+        && let Some(switch) = ["--statements", "--equity", "--certify"]
             .into_iter()
             .find(|switch| args.switch(switch))
     {
@@ -51,6 +53,7 @@ pub(crate) fn case_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             STATEMENTS_EXAMPLE,
         ));
     }
+    equity::validate_options(args, sub)?;
     match sub {
         Some("open") => open(ctx, args),
         Some("determine") => determine(ctx, args),
@@ -539,13 +542,17 @@ fn disclose(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )),
     };
     let capability = ctx.capability(args, &["restate", "read"])?;
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| equity::admit_disclosure(book, &capability))?;
+    let equity = equity::disclosure_comparisons(ctx, args)?;
     let date = control_date(args, &book)?;
-    let done = book.disclose_case(
+    let done = book.disclose_case_with_equity(
         capability,
         ordinal,
         disclosure,
         &comparisons,
+        &equity,
         date,
         key.as_bytes(),
     )??;
@@ -603,6 +610,9 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// case not yet rehearsed has none (FA-REF-176).
 fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let ordinal = ordinal(args, "diff", DIFF_EXAMPLE)?;
+    if args.switch("--equity") {
+        return equity::diff(ctx, args, ordinal);
+    }
     let statements = args.switch("--statements");
     // The case verb's flags belong to its writing subcommands; diff takes
     // only the case number (and --statements, which --certify may certify),

@@ -2479,9 +2479,37 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::CaseRecorded> {
+        self.disclose_case_with_equity(
+            cx,
+            capability,
+            ordinal,
+            document,
+            comparisons,
+            &[],
+            effective_date,
+            idempotency_key,
+        )
+        .await
+    }
+
+    /// Disclose the mandatory statement questions plus optional independently
+    /// selected equity comparisons of current-period prior-period adjustments.
+    /// Supplemental evidence cannot replace any mandatory statement question.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn disclose_case_with_equity(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        ordinal: u32,
+        document: fa_model::Oid,
+        comparisons: &[[u8; 32]],
+        equity: &[crate::CaseEquityDisclosureComparison],
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CaseRecorded> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         let (post, validated) = match self
-            .validate_case_disclosure_comparisons(cx, &capability, ordinal, comparisons)
+            .validate_case_disclosure_comparisons(cx, &capability, ordinal, comparisons, equity)
             .await?
         {
             Ok(validated) => validated,

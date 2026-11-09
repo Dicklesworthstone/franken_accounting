@@ -837,6 +837,234 @@ fn bound_handlers_refuse_file_paths_before_observing_the_book() {
 }
 
 #[test]
+fn case_equity_request_paths_respect_launch_and_daemon_files_roots() {
+    use fa::{Book, BookKeys, Entropy};
+    use fa_cli::cli::preflight_for_daemon;
+    use fa_journal::BookSpec;
+    use fa_model::{Id128, principal_vid};
+    use fa_money::UnitRegistry;
+    use fa_policy::{Capability, CapabilityToken, Op, Profile, possession_digest};
+    use fa_time::{DateDay, FiscalCalendar};
+
+    fn argv(flag: &str, path: &str) -> Vec<String> {
+        const DIGEST: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+        let mut words = if flag == "--equity-request" {
+            vec![
+                "case",
+                "disclose",
+                "1",
+                "--document",
+                DIGEST,
+                "--certificate",
+                DIGEST,
+                "--equity-certificate",
+                DIGEST,
+            ]
+        } else {
+            vec![
+                "case",
+                "diff",
+                "1",
+                "--equity",
+                "--period",
+                "FY2026-P03",
+                "--unit",
+                "USD",
+            ]
+        };
+        words.extend([flag, path, "--json"]);
+        words.into_iter().map(str::to_string).collect()
+    }
+
+    fn refused((status, out): (u8, Captured), flag: &str, message: &str) {
+        assert_eq!(status, 2, "{flag}: {out:?}");
+        let lines: Vec<_> = out.stdout.lines().collect();
+        assert_eq!(lines.len(), 1, "{out:?}");
+        registry().unwrap().check_line(lines[0]).unwrap();
+        let event = json::parse(lines[0]).unwrap();
+        assert_eq!(event.get("event").and_then(Json::as_str), Some("error"));
+        assert_eq!(event.get("book"), Some(&Json::Null), "{out:?}");
+        assert_eq!(event.get("coordinate"), Some(&Json::Null), "{out:?}");
+        let actual = event
+            .get("data")
+            .and_then(|data| data.get("message"))
+            .and_then(Json::as_str)
+            .unwrap();
+        assert!(actual.contains(flag), "{out:?}");
+        assert!(actual.contains(message), "{out:?}");
+    }
+
+    let dir = fixture();
+    let book_dir = dir.join("held-equity-book");
+    let allowed = dir.join("allowed");
+    std::fs::create_dir(&allowed).unwrap();
+    let allowed = fa_cli::authority::validate_files_root(allowed).unwrap();
+    // Containment preflight must not parse request content or create output.
+    // The complete case lifecycle is exercised separately by the case tests.
+    const CONTENT: &[u8] = b"request contents must remain unread during path admission";
+    std::fs::write(allowed.join("inside.request"), CONTENT).unwrap();
+    let outside = dir.join("outside.request");
+    std::fs::write(&outside, CONTENT).unwrap();
+    let units = UnitRegistry::embedded().unwrap();
+    let mut book = Book::create_memory(
+        BookKeys::for_development(0x79),
+        BookSpec {
+            book_id: Id128([0x79; 16]),
+            name: "Case equity request containment".into(),
+            base_unit: units.lookup("USD").unwrap(),
+            calendar: FiscalCalendar::monthly("equity-paths", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(121),
+    )
+    .unwrap();
+    let schema =
+        Capability::embedded(principal_vid("equity-path-issuer"), &["schema_change"]).unwrap();
+    book.create_periods(2026, schema.holder(), &schema)
+        .unwrap()
+        .unwrap();
+    let issuer = Capability::embedded(
+        principal_vid("equity-path-issuer"),
+        &["issue_capability", "read", "restate"],
+    )
+    .unwrap();
+    let secret = [0x7a; 32];
+    let capability = Capability::new(
+        principal_vid("equity-path-operator"),
+        Profile::Human,
+        &[Op::Read, Op::Restate],
+        issuer.holder(),
+    )
+    .unwrap()
+    .holder_bound(possession_digest(&secret));
+    book.issue_capability(
+        issuer,
+        capability.clone(),
+        DateDay::parse("2026-03-15").unwrap(),
+        b"issue-equity-path-operator",
+        "Read equity comparisons and disclose their independently selected requests",
+    )
+    .unwrap()
+    .unwrap();
+    let token = CapabilityToken::new("equity-path-operator", capability, secret).unwrap();
+    let no_files = LaunchAuthority::from_operator_token(book_dir.clone(), None, &token).unwrap();
+    let authority = no_files.clone().with_files(Some(allowed.clone())).unwrap();
+    let before = book.head().unwrap();
+
+    for (flag, inside, escape) in [
+        ("--equity-request", "inside.request", "../outside.request"),
+        ("--request-out", "new.request", "../leaked.request"),
+    ] {
+        // With no launch root, even a cold book is never opened for a path
+        // the caller cannot supply. The bound operator's actual rights do
+        // not authorize host filesystem access.
+        refused(
+            run_with_authority(
+                &argv(flag, inside),
+                Books::Dir,
+                Files {
+                    cwd: None,
+                    stdin: Stdin::Missing,
+                },
+                &no_files,
+                true,
+            ),
+            flag,
+            "host filesystem path",
+        );
+        assert!(!book_dir.exists());
+        for session in [Some(&authority), None] {
+            let permitted = preflight_for_daemon(
+                &argv(flag, inside),
+                &mut book,
+                book_dir.clone(),
+                Some(allowed.clone()),
+                None,
+                session,
+            );
+            assert!(permitted.is_ok(), "{flag}: {permitted:?}");
+            for path in [escape, outside.to_str().unwrap()] {
+                let rejected = preflight_for_daemon(
+                    &argv(flag, path),
+                    &mut book,
+                    book_dir.clone(),
+                    Some(allowed.clone()),
+                    None,
+                    session,
+                )
+                .expect_err("neither new request flag may escape its files root");
+                refused(
+                    rejected,
+                    flag,
+                    if session.is_some() {
+                        "outside the launch --files root"
+                    } else {
+                        "outside the daemon --files-root"
+                    },
+                );
+            }
+        }
+        refused(
+            preflight_for_daemon(
+                &argv(flag, inside),
+                &mut book,
+                book_dir.clone(),
+                None,
+                None,
+                None,
+            )
+            .expect_err("a daemon without a files root admits neither path"),
+            flag,
+            "without --files-root",
+        );
+    }
+    // Every repeated disclosure request is checked, not just the first.
+    let mut repeated = argv("--equity-request", "inside.request");
+    repeated.extend([
+        "--equity-certificate".into(),
+        "2222222222222222222222222222222222222222222222222222222222222222".into(),
+        "--equity-request".into(),
+        "../outside.request".into(),
+    ]);
+    refused(
+        preflight_for_daemon(
+            &repeated,
+            &mut book,
+            book_dir.clone(),
+            Some(allowed.clone()),
+            None,
+            Some(&authority),
+        )
+        .expect_err("the second disclosure request is independently confined"),
+        "--equity-request",
+        "outside the launch --files root",
+    );
+    // Forwarded stdin remains available without either filesystem grant.
+    assert!(
+        preflight_for_daemon(
+            &argv("--equity-request", "-"),
+            &mut book,
+            book_dir.clone(),
+            None,
+            None,
+            Some(&no_files),
+        )
+        .is_ok()
+    );
+    assert_eq!(book.head().unwrap(), before);
+    assert_eq!(std::fs::read(&outside).unwrap(), CONTENT);
+    assert_eq!(
+        std::fs::read(allowed.join("inside.request")).unwrap(),
+        CONTENT
+    );
+    assert!(!allowed.join("new.request").exists());
+    assert!(!dir.join("leaked.request").exists());
+    assert!(!book_dir.exists());
+}
+
+#[test]
 fn positional_flag_text_and_file_cwd_cannot_rebind_the_configured_book() {
     let authority = authority(LaunchProfile::Agent, &["read"]);
     let other = fixture();

@@ -6,6 +6,8 @@
 mod custom_statements;
 #[path = "restatement_case/equity_diff.rs"]
 mod equity_diff;
+#[path = "restatement_case/equity_disclosure.rs"]
+mod equity_disclosure;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1384,14 +1386,36 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         "authorization precedes malformed digests: {denied:?}"
     );
     assert_eq!(book.head().unwrap(), head);
+    let equity_attachment = equity_disclosure::prepare(
+        &mut book,
+        &closer,
+        note.oid(),
+        &comparisons,
+        fa_journal::DisclosurePost {
+            entry: posted.control_entry,
+            recorded_at: posted.recorded_at,
+        },
+        date,
+    );
     let disclosed = book
-        .disclose_case(closer.clone(), 1, note.oid(), &comparisons, date, b"note")
+        .disclose_case_with_equity(
+            closer.clone(),
+            1,
+            note.oid(),
+            &comparisons,
+            std::slice::from_ref(&equity_attachment),
+            date,
+            b"note",
+        )
         .unwrap()
         .unwrap();
     assert_eq!(disclosed.case.state, CaseState::Disclosed);
     let disclosure = disclosed.case.disclosure.unwrap();
     assert_eq!(disclosure.document, note.oid());
-    assert_eq!(disclosure.comparisons, comparisons);
+    let mut complete_comparisons = comparisons.clone();
+    complete_comparisons.push(equity_attachment.certificate);
+    complete_comparisons.sort();
+    assert_eq!(disclosure.comparisons, complete_comparisons);
     assert_eq!(disclosure.post.unwrap().entry, posted.control_entry);
     assert_eq!(disclosure.post.unwrap().recorded_at, posted.recorded_at);
     let disclosed_state = book
@@ -1479,16 +1503,36 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         "current disclosure attribution does not rewrite the historical report"
     );
     let again = book
-        .disclose_case(closer.clone(), 1, note.oid(), &comparisons, date, b"note")
+        .disclose_case_with_equity(
+            closer.clone(),
+            1,
+            note.oid(),
+            &comparisons,
+            std::slice::from_ref(&equity_attachment),
+            date,
+            b"note",
+        )
         .unwrap()
         .unwrap();
     assert!(again.already_recorded);
+    let head = book.head().unwrap();
+    let omitted_optional = book
+        .disclose_case(closer.clone(), 1, note.oid(), &comparisons, date, b"note")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(omitted_optional.code, code::CASE_STATEMENT_DIFF);
+    assert_eq!(
+        book.head().unwrap(),
+        head,
+        "an immutable retry cannot drop supplemental evidence"
+    );
     let closed = book
         .close_case(closer.clone(), 1, date, b"close")
         .unwrap()
         .unwrap();
     assert_eq!(closed.case.state, CaseState::Closed);
     assert_eq!(closed.case.disclosure, Some(disclosure));
+    equity_disclosure::replay_after_disclosure(&mut book, &equity_attachment);
     assert_eq!(
         closed
             .case
@@ -1793,6 +1837,25 @@ fn a_revision_case_revises_a_closed_periods_posting_through_its_post() {
     )
     .unwrap()
     .unwrap();
+    let head = book.head().unwrap();
+    let not_ppa = book
+        .case_equity_diff_request(
+            PRINCIPAL,
+            &restate,
+            1,
+            &fa::CaseEquityComparisonSelection {
+                period: "FY2025-P12".into(),
+                label: "unsupported revision equity attachment".into(),
+                units: vec![usd.0],
+                issuance_accounts: Vec::new(),
+                distribution_accounts: Vec::new(),
+            },
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(not_ppa.code, code::CASE_STATEMENT_DIFF);
+    assert!(not_ppa.message.contains("prior-period-adjustment"));
+    assert_eq!(book.head().unwrap(), head);
     book.open_scenario(
         planner.clone(),
         "revised",

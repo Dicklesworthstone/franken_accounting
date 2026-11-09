@@ -15,6 +15,9 @@ use crate::{
     StatementSelection,
 };
 
+mod equity;
+pub use equity::{CaseEquityComparisonSelection, CaseEquityDisclosureComparison};
+
 /// Evidence selecting the earlier statement. `BeforePost` is deliberately
 /// distinct from originally reported: a never-issued, never-locked period has
 /// no originally reported closure, but its correction can still be inspected.
@@ -235,8 +238,22 @@ fn adjustment_posting_periods<V: Vfs + Clone>(
     periods: &[fa_journal::rows::PeriodRow],
     posted_at: CommitSeq,
 ) -> Result<Vec<String>, KernelError> {
+    Ok(
+        adjustment_posting_period_units(db, book, view, periods, posted_at)?
+            .into_keys()
+            .collect(),
+    )
+}
+
+fn adjustment_posting_period_units<V: Vfs + Clone>(
+    db: &fgdb::Database<V>,
+    book: &fa_journal::BookContext,
+    view: &fa_journal::CaseView,
+    periods: &[fa_journal::rows::PeriodRow],
+    posted_at: CommitSeq,
+) -> Result<BTreeMap<String, BTreeSet<u32>>, KernelError> {
     if view.body.kind != CaseKind::PriorPeriodAdjustment {
-        return Ok(Vec::new());
+        return Ok(BTreeMap::new());
     }
     let mut by_year = BTreeMap::<i32, Vec<PeriodDef>>::new();
     for period in periods {
@@ -254,7 +271,8 @@ fn adjustment_posting_periods<V: Vfs + Clone>(
                 });
         }
     }
-    let mut selected = BTreeSet::new();
+    let chart = fa_journal::chart::read_at(db, book, posted_at)?;
+    let mut selected = BTreeMap::<String, BTreeSet<u32>>::new();
     for member in &view.posted {
         let (entry, recorded_at) = fa_journal::post::read_entry_at(db, member.entry, posted_at)?
             .ok_or_else(|| {
@@ -304,9 +322,17 @@ fn adjustment_posting_periods<V: Vfs + Clone>(
             explicit.map(|period| period.code.as_str()),
         )
         .map_err(|error| KernelError::Corrupt(format!("case posting impact period: {error:?}")))?;
-        selected.insert(period.code.clone());
+        let units = selected.entry(period.code.clone()).or_default();
+        for leg in &entry.proposal.legs {
+            let account = chart.accounts().get(&leg.account_ref).ok_or_else(|| {
+                KernelError::Corrupt("case posting impact account is absent at Post".into())
+            })?;
+            if (1..=5).contains(&account.account_type) {
+                units.insert(leg.amount.unit.0);
+            }
+        }
     }
-    Ok(selected.into_iter().collect())
+    Ok(selected)
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
@@ -1105,6 +1131,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &fa_policy::Capability,
         ordinal: u32,
         comparisons: &[[u8; 32]],
+        equity: &[CaseEquityDisclosureComparison],
     ) -> Outcome<(
         fa_journal::DisclosurePost,
         Vec<fa_journal::ValidatedDisclosureComparison>,
@@ -1125,12 +1152,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(selected) => selected,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        if comparisons.is_empty() || comparisons.len() > MAX_DISCLOSURE_COMPARISONS {
+        if comparisons.is_empty()
+            || comparisons
+                .len()
+                .checked_add(equity.len())
+                .is_none_or(|count| count > MAX_DISCLOSURE_COMPARISONS)
+        {
             return Ok(Err(comparison_refused(format!(
                 "a disclosure requires 1..={MAX_DISCLOSURE_COMPARISONS} retained statement comparison digests",
             ))));
         }
         let mut digests = comparisons.to_vec();
+        digests.extend(equity.iter().map(|comparison| comparison.certificate));
         digests.sort();
         if digests.contains(&[0; 32]) || digests.windows(2).any(|pair| pair[0] == pair[1]) {
             return Ok(Err(comparison_refused(
@@ -1188,16 +1221,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     "an already recorded disclosure fixes its comparison digests; an exact retry must supply the same set",
                 )));
             }
-        } else if digests.len() != expected.len() {
+        } else if comparisons.len() != expected.len() {
             return Ok(Err(comparison_refused(format!(
                 "case {ordinal} needs {} distinct fixed statement comparisons; {} were supplied",
                 expected.len(),
-                digests.len(),
+                comparisons.len(),
             ))));
         }
         let mut matched = vec![false; expected.len()];
         let mut validated = Vec::with_capacity(digests.len());
-        for digest in &digests {
+        for digest in comparisons {
             let artifact = match self
                 .read_report_artifact(cx, principal, capability, digest)
                 .await?
@@ -1294,6 +1327,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(refusal) => return Ok(Err(refusal)),
             }
             matched[index] = true;
+        }
+        match self
+            .validate_case_equity_disclosures(cx, capability, ordinal, post, equity)
+            .await?
+        {
+            Ok(mut supplemental) => validated.append(&mut supplemental),
+            Err(refusal) => return Ok(Err(refusal)),
         }
         Ok(Ok((post, validated)))
     }

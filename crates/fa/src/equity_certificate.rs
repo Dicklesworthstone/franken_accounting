@@ -25,7 +25,7 @@ const LEGACY_EQUITY_REPORT_FORMAT: &str = "fa:equity-roll-forward-report:v1";
 pub const MAX_EQUITY_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 const DIGEST_DOMAIN: &[u8] = b"fa:equity-roll-forward-certificate-digest:v2";
 const LEGACY_DIGEST_DOMAIN: &[u8] = b"fa:equity-roll-forward-certificate-digest:v1";
-const MAX_SCOPE: usize = 4096;
+pub(crate) const MAX_SCOPE: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EquityRollForwardCertificate {

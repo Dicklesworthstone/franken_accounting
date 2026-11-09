@@ -2830,6 +2830,7 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
     for flag in [
         "--plan-out",
         "--certificate-out",
+        "--request-out",
         "--out",
         "--output",
         "--workpaper-out",
@@ -2852,6 +2853,7 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         "--replace-with",
         "--issuer-token",
         "--privilege",
+        "--equity-request",
     ] {
         for value in args.flag_all(flag) {
             if value != "-" {
@@ -9813,7 +9815,7 @@ pub(crate) fn read_plan_bytes(
     read_bounded_plan_bytes(files, path, domain, kind, MAX_PLAN_BYTES)
 }
 
-fn read_bounded_plan_bytes(
+pub(crate) fn read_bounded_plan_bytes(
     files: &Files,
     path: &str,
     domain: &[u8],
@@ -17131,7 +17133,7 @@ fn parse_gl_window(
     })
 }
 
-fn parse_gl_units(
+pub(crate) fn parse_gl_units(
     args: &Args,
     book: &Book,
     capability: &Capability,
@@ -21315,7 +21317,7 @@ pub(crate) fn render_equity_roll_forward(
 
 /// Every original classified leg keeps its original account code, case and
 /// source-period citation on both sides of an equity comparison.
-fn equity_movements_json(
+pub(crate) fn equity_movements_json(
     report: &fa::EquityRollForwardReport,
     units: &fa_money::UnitRegistry,
 ) -> Result<Vec<Json>, Fail> {
@@ -21380,19 +21382,15 @@ fn equity_movements_json(
         .collect()
 }
 
-pub(crate) fn render_equity_roll_forward_diff(
-    out: &Out,
+/// Shared exact presentation for retained comparisons and a case's read-only
+/// Post bridge. This helper supplies no certificate identity or assurance.
+pub(crate) fn equity_diff_presentation(
     book: &Book,
     report: &fa::EquityRollForwardDiff,
-    sources: (&[u8; 32], &[u8; 32]),
-    verification_request: &[u8],
-    request_file: Option<&str>,
-    certificate: Option<&str>,
-) -> Result<(), Fail> {
+) -> Result<(Vec<Json>, String), Fail> {
     let before = &report.before().statement;
     let after = &report.after().statement;
     let units = &book.context().units;
-    out.known_at(CommitSeq(after.known_at));
     let mut human = format!(
         "equity roll-forward diff `{}` ({}..={}) · {} -> {}",
         after.label,
@@ -21424,6 +21422,23 @@ pub(crate) fn render_equity_roll_forward_diff(
         }
         unit_rows.push(obj(vec![("unit", s(code)), ("lines", Json::Arr(lines))]));
     }
+    Ok((unit_rows, human))
+}
+
+pub(crate) fn render_equity_roll_forward_diff(
+    out: &Out,
+    book: &Book,
+    report: &fa::EquityRollForwardDiff,
+    sources: (&[u8; 32], &[u8; 32]),
+    verification_request: &[u8],
+    request_file: Option<&str>,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    let before = &report.before().statement;
+    let after = &report.after().statement;
+    let units = &book.context().units;
+    out.known_at(CommitSeq(after.known_at));
+    let (unit_rows, mut human) = equity_diff_presentation(book, report)?;
     human.push_str(&format!(
         "\nOriginal sources: {} -> {}",
         hex(sources.0),

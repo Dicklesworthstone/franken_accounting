@@ -164,7 +164,8 @@ pub use book::{
     Replanned,
 };
 pub use case_statements::{
-    CaseStatementBasis, CaseStatementComparisonRequest, CaseStatementDiffRequest,
+    CaseEquityComparisonSelection, CaseEquityDisclosureComparison, CaseStatementBasis,
+    CaseStatementComparisonRequest, CaseStatementDiffRequest,
 };
 pub use cash_flow_basis::{
     CashFlowBasis, CashFlowBasisCertificate, CashFlowBasisDefinition, CashFlowBasisKind,
@@ -201,7 +202,7 @@ pub use equity_diff::{
     CertifiedEquityRollForwardDiff, EQUITY_DIFF_CERTIFICATE_FORMAT, EQUITY_DIFF_OUTPUT_FORMAT,
     EQUITY_DIFF_REQUEST_FORMAT, EquityRollForwardDiff, EquityRollForwardDiffCertificate,
     EquityRollForwardDiffLine, EquityRollForwardDiffRequest, EquityRollForwardDiffUnit,
-    MAX_EQUITY_DIFF_CERTIFICATE_BYTES,
+    MAX_EQUITY_DIFF_CERTIFICATE_BYTES, MAX_EQUITY_DIFF_REQUEST_BYTES,
 };
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
 pub use external_subledger::{
