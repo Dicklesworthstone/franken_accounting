@@ -11376,19 +11376,32 @@ fn approve_post_review_bytes(
         ));
     }
     let capability = ctx.capability(args, &["read", "approve"])?;
-    // Pure admission before the book coordinate or a signing-key file is
-    // observed. The native approval repeats these checks and independently
-    // witnesses current authority and the retained class-scoped issuance.
-    fa_policy::reach_class(
+    // Judge the supplied proposal's actor, operation, book, class and amount
+    // ceilings before opening storage. Account subtrees and calendar periods
+    // are resolved by the native preflight before a signing-key file is read.
+    let legs: Vec<_> = review
+        .proposal()
+        .legs
+        .iter()
+        .map(|leg| (leg.amount.unit, leg.amount.mantissa))
+        .collect();
+    fa_policy::admit_base(
         &capability,
-        &fa_policy::Reach::whole_book(true),
-        None,
-        review.proposal().class,
+        &fa_policy::Intent {
+            principal: capability.holder(),
+            trunk: true,
+            op: fa_policy::Op::Approve,
+            book: review.proposal().book_id,
+            legs: &legs,
+        },
     )
-    .and_then(|()| fa_policy::admit_direct_write(&capability))
+    .and_then(|()| fa_policy::require_class(&capability, Some(review.proposal().class)))
     .map_err(|denial| fa_journal::policy::refusal(&denial))?;
     let routed_through_daemon = ctx.routed_through_daemon();
-    let mut book = ctx.books.open(args)?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.admit_entry_approval(&capability, review.proposal())??;
+        Ok(())
+    })?;
     let key = crate::principal::load_principal_key_from_files(
         &ctx.files,
         routed_through_daemon,

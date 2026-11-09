@@ -169,6 +169,116 @@ fn payload_approvals_use_real_registered_keys_and_preserve_class_scope() {
 }
 
 #[test]
+fn scoped_entry_preflight_and_signed_approval_share_complete_payload_admission() {
+    let (mut book, usd, day, source) = certified_fixture();
+    let principal = VId(220);
+    let key = fa_notary::SigningKey::from_seed(&[220; 32]);
+    let unrelated_key = fa_notary::SigningKey::from_seed(&[221; 32]);
+    book.register_principal_key(
+        Capability::embedded(principal, &["approve"]).unwrap(),
+        &key,
+        None,
+        day,
+        b"departmental-signing-key",
+        "Register the departmental approver's key",
+    )
+    .unwrap()
+    .unwrap();
+    let capability = Capability::new(principal, Profile::Human, &[Op::Approve], VId(1))
+        .unwrap()
+        .holder_bound(possession_digest(&[220; 32]))
+        .for_classes(&[EntryClass::ORIGINAL])
+        .unwrap()
+        .for_accounts(&["1000", "6000"])
+        .unwrap()
+        .for_periods(&["FY2026-P03"])
+        .unwrap()
+        .effective_through(DateDay::from_ymd(2026, 3, 31).unwrap())
+        .with_ceiling(usd, 150_000)
+        .unwrap();
+    book.issue_capability(
+        Capability::embedded(VId(1), &["issue_capability", "approve"]).unwrap(),
+        capability.clone(),
+        day,
+        b"departmental-approval-authority",
+        "Approve bounded March rent and cash postings",
+    )
+    .unwrap()
+    .unwrap();
+    let mut proposal = book.read_entry(source).unwrap().unwrap().0.proposal;
+    proposal.idempotency_key = b"departmental-signed-post".to_vec();
+    let before = book.head().unwrap();
+    book.admit_entry_approval(&capability, &proposal)
+        .unwrap()
+        .unwrap();
+    assert_eq!(book.head().unwrap(), before);
+
+    let mut excessive = proposal.clone();
+    for leg in &mut excessive.legs {
+        leg.amount.mantissa += 1;
+    }
+    excessive.unit_totals = EntryPayload::fold_unit_totals(&excessive.legs).unwrap();
+    let preflight = book
+        .admit_entry_approval(&capability, &excessive)
+        .unwrap()
+        .unwrap_err();
+    let signed = book
+        .approve_entry_signed(capability.clone(), &excessive, &unrelated_key)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(preflight.code, fa_policy::denial::code::CEILING);
+    assert_eq!(
+        signed, preflight,
+        "scope is decided before signing-key validation"
+    );
+
+    let mut outside = proposal.clone();
+    outside.legs[0].account_ref = fa_model::account_vid(outside.book_id, "9999");
+    let refused = book
+        .approve_entry_signed(capability.clone(), &outside, &unrelated_key)
+        .unwrap()
+        .unwrap_err();
+    assert!(refused.message.contains("accounts"), "{refused}");
+    let mut foreign = proposal.clone();
+    foreign.book_id = Id128([221; 16]);
+    let preflight = book
+        .admit_entry_approval(&capability, &foreign)
+        .unwrap()
+        .unwrap_err();
+    let signed = book
+        .approve_entry_signed(capability.clone(), &foreign, &unrelated_key)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(preflight.code, code::COORDINATE);
+    assert_eq!(signed.code, preflight.code);
+    assert_eq!(book.head().unwrap(), before);
+
+    let approved = book
+        .approve_entry_signed(capability.clone(), &proposal, &key)
+        .unwrap()
+        .unwrap();
+    retained_signed_approval(
+        &book,
+        &approved,
+        &capability,
+        &proposal,
+        0,
+        &key.public_key(),
+    );
+    assert!(matches!(
+        book.post(PostRequest {
+            capability: Capability::embedded(proposal.principal_ref, &["post"]).unwrap(),
+            proposal,
+            approvals: vec![approved.approval()],
+            plan_certificate: None,
+        })
+        .unwrap()
+        .unwrap(),
+        Posted::Committed { .. }
+    ));
+}
+
+#[test]
 fn independently_valid_ed25519_signatures_do_not_make_a_shared_key_independent() {
     for rotate_alias in [false, true] {
         let (mut book, _, day, source) = certified_fixture();

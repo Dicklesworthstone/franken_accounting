@@ -1,4 +1,4 @@
-//! An approval's admitted class follows its actual proposal through native
+//! An approval's admitted scope follows its actual proposal through native
 //! consumption, including signed records retained by an earlier writer.
 
 use super::*;
@@ -45,6 +45,210 @@ fn assert_classes(refusal: &Refusal) {
         (code::CAPABILITY, exit::SAFETY)
     );
     assert!(refusal.message.contains("classes"), "{refusal}");
+}
+
+fn payload_approver(holder: VId, salt: u8) -> Capability {
+    Capability::new(holder, Profile::Human, &[Op::Approve], PREPARER)
+        .unwrap()
+        .holder_bound(possession_digest(&[salt; 32]))
+}
+
+#[test]
+fn departmental_approval_posts_a_closed_adjustment_and_survives_later_revocation() {
+    let mut h = harness();
+    h.close_march();
+    let capability = payload_approver(ALICE, 201)
+        .for_classes(&[EntryClass::ADJUSTING])
+        .unwrap()
+        .for_accounts(&["1000", "6000"])
+        .unwrap()
+        .for_periods(&["FY2026-P03"])
+        .unwrap()
+        .effective_through(DateDay::from_ymd(2026, 3, 31).unwrap())
+        .on_branch(Id128::TRUNK)
+        .unwrap()
+        .with_ceiling(h.usd, 500)
+        .unwrap();
+    issue_approver(&mut h, &capability, b"departmental-adjuster");
+    let proposal = h.proposal(
+        PREPARER,
+        500,
+        b"departmental-adjustment",
+        EntryClass::ADJUSTING,
+    );
+    let before = h.db.frontier().unwrap();
+    fa_journal::policy::admit_approval(&h.db, &h.book, &capability, Some(&proposal))
+        .unwrap()
+        .unwrap();
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert!(
+        h.approve_with(capability.clone(), proposal.proposal_digest().unwrap())
+            .is_err(),
+        "an opaque digest cannot establish the departmental scope"
+    );
+    let approved = approve_payload(&mut h, capability.clone(), &proposal).unwrap();
+    let recorded_at = h.db.frontier().unwrap();
+    let retry = approve_payload(&mut h, capability.clone(), &proposal).unwrap();
+    assert!(matches!(retry, Approved::AlreadyRecorded { .. }));
+    assert_eq!(retry.approval(), approved.approval());
+    assert_eq!(h.db.frontier().unwrap(), recorded_at);
+
+    let mut changed = proposal.clone();
+    changed.idempotency_key = b"changed-departmental-adjustment".to_vec();
+    let refusal = h
+        .post(
+            changed,
+            human(PREPARER, &["post", "post_closed"]),
+            vec![approved.approval()],
+        )
+        .unwrap_err();
+    assert!(refusal.message.contains("digest"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), recorded_at);
+
+    h.revoke(
+        &human(PREPARER, &["issue_capability"]),
+        &capability,
+        b"revoke-departmental-approver",
+    )
+    .unwrap();
+    let before = h.db.frontier().unwrap();
+    let refused = approve_payload(&mut h, capability, &proposal).unwrap_err();
+    assert!(refused.message.contains("revoked"), "{refused}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert!(matches!(
+        h.post(
+            proposal,
+            human(PREPARER, &["post", "post_closed"]),
+            vec![approved.approval()],
+        )
+        .unwrap(),
+        Posted::Committed { .. }
+    ));
+}
+
+#[test]
+fn scoped_approval_requires_every_leg_to_be_in_the_account_subtree() {
+    let mut h = harness();
+    let (travel, meals) = h.install_subtree();
+    let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+    let capability = payload_approver(ALICE, 202)
+        .for_accounts(&["6100"])
+        .unwrap();
+    issue_approver(&mut h, &capability, b"subtree-approver");
+    let outside = h.between(travel, h.cash, 500, b"outside-approval-subtree", day);
+    let before = h.db.frontier().unwrap();
+    let refused = approve_payload(&mut h, capability.clone(), &outside).unwrap_err();
+    assert_eq!(refused.code, code::CAPABILITY);
+    assert!(refused.message.contains("accounts"), "{refused}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let inside = h.between(travel, meals, 500, b"inside-approval-subtree", day);
+    let approved = approve_payload(&mut h, capability, &inside).unwrap();
+    h.post(
+        inside,
+        human(PREPARER, &["post"]),
+        vec![approved.approval()],
+    )
+    .unwrap();
+}
+
+#[test]
+fn scoped_approval_enforces_period_date_amount_branch_and_recorded_bounds() {
+    let mut h = harness();
+    let proposal = h.proposal(PREPARER, 500, b"bounded-approval", EntryClass::ORIGINAL);
+    let base = payload_approver(ALICE, 203);
+    let cases = [
+        (
+            base.clone().for_periods(&["FY2026-P04"]).unwrap(),
+            "periods",
+        ),
+        (
+            base.clone()
+                .effective_through(DateDay::from_ymd(2026, 3, 14).unwrap()),
+            "effective",
+        ),
+        (base.clone().with_ceiling(h.usd, 499).unwrap(), "ceiling"),
+        (
+            base.clone().with_ceiling(UnitId(h.usd.0 + 1), 500).unwrap(),
+            "unit",
+        ),
+        (base.clone().known_at_most(CommitSeq(0)), "known_at"),
+        (base.clone().on_branch(Id128([203; 16])).unwrap(), "branch"),
+    ];
+    for (index, (capability, caveat)) in cases.into_iter().enumerate() {
+        issue_approver(
+            &mut h,
+            &capability,
+            format!("bounded-approver-{index}").as_bytes(),
+        );
+        let before = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let refused = approve_payload(&mut h, capability, &proposal).unwrap_err();
+        assert!(refused.message.contains(caveat), "{caveat}: {refused}");
+        assert_eq!(h.db.frontier().unwrap(), before);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+    issue_approver(&mut h, &base, b"coordinate-approver");
+    let before = h.db.frontier().unwrap();
+    for foreign_book in [true, false] {
+        let mut foreign = proposal.clone();
+        if foreign_book {
+            foreign.book_id = Id128([204; 16]);
+        } else {
+            foreign.branch_id = Id128([204; 16]);
+        }
+        let refused = approve_payload(&mut h, base.clone(), &foreign).unwrap_err();
+        assert_eq!(refused.code, code::COORDINATE);
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn scoped_approval_refuses_unretained_authority_and_nonlocal_payloads() {
+    let mut h = harness();
+    let ordinary = h.proposal(PREPARER, 500, b"scoped-effects", EntryClass::ORIGINAL);
+    for capability in [
+        human(ALICE, &["approve"])
+            .for_accounts(&["1000", "6000"])
+            .unwrap(),
+        human(ALICE, &["approve"]).with_ceiling(h.usd, 500).unwrap(),
+    ] {
+        let before = h.db.frontier().unwrap();
+        let refused = approve_payload(&mut h, capability, &ordinary).unwrap_err();
+        assert!(refused.message.contains("retained issuance"), "{refused}");
+        assert_eq!(h.db.frontier().unwrap(), before);
+    }
+    let capability = payload_approver(ALICE, 204)
+        .for_accounts(&["1000", "6000"])
+        .unwrap();
+    issue_approver(&mut h, &capability, b"local-effects-approver");
+    let mut settling = ordinary.clone();
+    settling.legs[0].settles.push(Settlement {
+        target: NOWHERE,
+        ordinal: 0,
+        amount: Amount::new(h.usd, 500),
+    });
+    let adjusting = h.proposal(PREPARER, 500, b"scheduled-approval", EntryClass::ADJUSTING);
+    let scheduled =
+        fa_journal::schedule::with_auto_reverse(adjusting, DateDay::from_ymd(2026, 4, 1).unwrap());
+    let pending = h.hold(
+        ordinary.legs.clone(),
+        b"pending-approval",
+        ordinary.effective_date,
+    );
+    let control = h.period_proposal(
+        PeriodState::Open,
+        PeriodState::SoftClosed,
+        b"control-approval",
+    );
+    let before = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    for proposal in [settling, scheduled, pending, control] {
+        let refused = approve_payload(&mut h, capability.clone(), &proposal).unwrap_err();
+        assert_eq!(refused.code, code::CAPABILITY);
+        assert!(refused.message.contains("complete ordinary"), "{refused}");
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), rows);
 }
 
 #[test]
@@ -276,13 +480,24 @@ fn import_signed_approval(
     capability: &Capability,
     proposal: &EntryPayload,
 ) -> ApprovalRef {
+    import_signed_approval_as(h, capability, proposal, |_| {})
+}
+
+fn import_signed_approval_as(
+    h: &mut Harness,
+    capability: &Capability,
+    proposal: &EntryPayload,
+    alter: impl FnOnce(&mut Approval),
+) -> ApprovalRef {
     let public_key = [173; 32];
-    let generation = register_fixture_key(h, capability.holder(), public_key);
     let digest = proposal.proposal_digest().unwrap();
     let epoch = security_policy_epoch(&h.db).unwrap();
-    let approval = Approval::by(capability, Op::Approve, h.book.book_id, digest, epoch, 0)
+    let mut approval = Approval::by(capability, Op::Approve, h.book.book_id, digest, epoch, 0)
         .unwrap()
         .unwrap();
+    alter(&mut approval);
+    let principal = approval.principal;
+    let generation = register_fixture_key(h, principal, public_key);
     let approval_digest = approval.digest().unwrap();
     let signature = PrincipalSignature {
         scheme: SCHEME_ED25519,
@@ -298,7 +513,7 @@ fn import_signed_approval(
         Approval::decode_record(&bytes).unwrap(),
         (approval, Some(signature))
     );
-    let vid = approval_vid(h.book.book_id, capability.holder(), &digest, epoch);
+    let vid = approval_vid(h.book.book_id, principal, &digest, epoch);
     let mut props = vec![
         (property::FA_PAYLOAD, CanonicalScalar::bytes(bytes).unwrap()),
         (
@@ -363,6 +578,152 @@ fn legacy_signed_approvals_cannot_cross_classes_at_posting_or_control_consumptio
         }
         assert_eq!(h.db.frontier().unwrap().0, before.0 + 1);
     }
+}
+
+#[test]
+fn retained_signed_approvals_recheck_the_actual_payload_scope_at_consumption() {
+    for caveat in ["accounts", "periods", "effective", "amount"] {
+        let mut h = harness();
+        let base = payload_approver(ALICE, 205);
+        let capability = match caveat {
+            "accounts" => base.for_accounts(&["6000"]).unwrap(),
+            "periods" => base.for_periods(&["FY2026-P04"]).unwrap(),
+            "effective" => base.effective_through(DateDay::from_ymd(2026, 3, 14).unwrap()),
+            "amount" => base.with_ceiling(h.usd, 499).unwrap(),
+            _ => unreachable!(),
+        };
+        issue_approver(&mut h, &capability, b"legacy-scoped-approver");
+        let proposal = h.proposal(PREPARER, 500, b"legacy-scoped-target", EntryClass::ORIGINAL);
+        // Bypass today's recording admission: a well-formed historical
+        // signature still cannot authorize work outside its retained grant.
+        let approval = import_signed_approval(&mut h, &capability, &proposal);
+        let before = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let refused = h
+            .post(proposal, human(PREPARER, &["post"]), vec![approval])
+            .unwrap_err();
+        if caveat == "amount" {
+            assert_eq!(refused.code, fa_policy::denial::code::CEILING);
+        } else {
+            assert_eq!(refused.code, code::CAPABILITY);
+            assert!(refused.message.contains(caveat), "{refused}");
+        }
+        assert_eq!(h.db.frontier().unwrap(), before);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+}
+
+#[test]
+fn retained_approval_cannot_claim_another_holder_profile_or_operation() {
+    for mismatch in ["holder", "profile", "operation"] {
+        let mut h = harness();
+        let capability = payload_approver(ALICE, 208)
+            .with_ceiling(h.usd, 500)
+            .unwrap();
+        issue_approver(&mut h, &capability, b"retained-identity-approver");
+        let proposal = h.proposal(
+            PREPARER,
+            500,
+            b"retained-identity-target",
+            EntryClass::ORIGINAL,
+        );
+        let approval =
+            import_signed_approval_as(&mut h, &capability, &proposal, |approval| match mismatch {
+                "holder" => approval.principal = BOB,
+                "profile" => approval.profile = Profile::Agent,
+                "operation" => approval.op = Op::Read,
+                _ => unreachable!(),
+            });
+        let before = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let refused = h
+            .post(proposal, human(PREPARER, &["post"]), vec![approval])
+            .unwrap_err();
+        assert_eq!(refused.code, code::CAPABILITY);
+        assert!(refused.message.contains("retained capability"), "{refused}");
+        assert_eq!(h.db.frontier().unwrap(), before);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+}
+
+#[test]
+fn removing_retained_issuance_cannot_erase_an_approvals_scope() {
+    let mut h = harness();
+    let capability = payload_approver(ALICE, 209)
+        .for_accounts(&["6000"])
+        .unwrap();
+    issue_approver(&mut h, &capability, b"removed-approval-issuance");
+    let proposal = h.proposal(
+        PREPARER,
+        500,
+        b"removed-issuance-target",
+        EntryClass::ORIGINAL,
+    );
+    let approval = import_signed_approval(&mut h, &capability, &proposal);
+    let issued =
+        fa_journal::policy::issuance_vid(h.book.book_id, &capability.commitment().unwrap());
+    let mut damage = WriteBatch::new(relation::IN_BOOK);
+    damage.delete_vertex(issued);
+    let ctx = h.ctx();
+    h.runtime
+        .block_on(h.db.write(&ctx.commit(), damage))
+        .unwrap();
+    assert!(h.db.vertex(issued).unwrap().is_none());
+    let before = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    let refused = h
+        .post(proposal, human(PREPARER, &["post"]), vec![approval])
+        .unwrap_err();
+    assert_eq!(refused.code, code::CAPABILITY);
+    assert!(
+        refused.message.contains("issuance has disappeared"),
+        "{refused}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+}
+
+#[test]
+fn later_chart_growth_or_issuance_cannot_retroactively_authorize_an_approval() {
+    let mut h = harness();
+    let capability = payload_approver(ALICE, 206)
+        .for_accounts(&["6100"])
+        .unwrap();
+    issue_approver(&mut h, &capability, b"historical-subtree-approver");
+    let proposal = h.between(
+        account_vid(h.book.book_id, "6110"),
+        account_vid(h.book.book_id, "6120"),
+        500,
+        b"approval-before-chart-growth",
+        DateDay::from_ymd(2026, 3, 15).unwrap(),
+    );
+    let approval = import_signed_approval(&mut h, &capability, &proposal);
+    h.install_subtree();
+    let before = h.db.frontier().unwrap();
+    let refused = h
+        .post(proposal, human(PREPARER, &["post"]), vec![approval])
+        .unwrap_err();
+    assert!(refused.message.contains("accounts"), "{refused}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    let late = payload_approver(BOB, 207).with_ceiling(h.usd, 500).unwrap();
+    let proposal = h.proposal(
+        PREPARER,
+        500,
+        b"approval-before-issuance",
+        EntryClass::ORIGINAL,
+    );
+    let approval = import_signed_approval(&mut h, &late, &proposal);
+    issue_approver(&mut h, &late, b"late-approval-issuance");
+    let before = h.db.frontier().unwrap();
+    let refused = h
+        .post(proposal, human(PREPARER, &["post"]), vec![approval])
+        .unwrap_err();
+    assert!(
+        refused.message.contains("present when it was approved"),
+        "{refused}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
 }
 
 #[test]

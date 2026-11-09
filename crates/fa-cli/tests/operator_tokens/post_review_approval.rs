@@ -1,5 +1,5 @@
-//! A class-scoped approver receives the complete sealed entry, not a class
-//! claimed alongside an opaque digest. Exercise the actual client binary,
+//! A scoped approver receives the complete sealed entry, not scope claimed
+//! alongside an opaque digest. Exercise the actual client binary,
 //! issued token files, native approval publication and eventual posting.
 
 use super::*;
@@ -423,7 +423,11 @@ fn entry_review_approval_refuses_substitution_and_preserves_other_scope_boundari
         "host filesystem path",
     );
     for (holder, extra, caveat) in [
-        ("period-reviewer", vec!["--period", PERIOD], "`periods`"),
+        (
+            "period-reviewer",
+            vec!["--period", "FY2026-P02"],
+            "`periods`",
+        ),
         (
             "rehearsal-reviewer",
             vec!["--requires-dry-run"],
@@ -452,6 +456,185 @@ fn entry_review_approval_refuses_substitution_and_preserves_other_scope_boundari
     let denied = client.refused(&request, Some(b"FA-ALLOC-REVIEW\0invalid"), 7, "`classes`");
     assert_eq!(text(&denied, "refusal_id"), "FA-REF-011");
     client.ok(&request, Some(text(&review.event, "bytes").as_bytes()));
+}
+
+#[test]
+fn a_departmental_reviewer_signs_only_complete_in_scope_adjustments() {
+    let client = Client::new();
+    client.ok(
+        &["principal", "key", "new", "--out", "department.key"],
+        None,
+    );
+    client.ok(
+        &[
+            "principal",
+            "key",
+            "add",
+            "--as",
+            "department-reviewer",
+            "--sign-key",
+            "department.key",
+        ],
+        None,
+    );
+    let reviewer = client.issue(
+        "department-reviewer",
+        "Adjusting",
+        &[
+            "--account",
+            "1000",
+            "--account",
+            "4000",
+            "--period",
+            PERIOD,
+            "--effective-through",
+            "2026-03-12",
+            "--ceiling",
+            "1.00 USD",
+        ],
+    );
+    let restricted = [
+        (
+            client.issue("cash-only", "Adjusting", &["--account", "1000"]),
+            "`accounts`",
+        ),
+        (
+            client.issue("february-only", "Adjusting", &["--period", "FY2026-P02"]),
+            "`periods`",
+        ),
+        (
+            client.issue(
+                "earlier-only",
+                "Adjusting",
+                &["--effective-through", "2026-03-11"],
+            ),
+            "`effective`",
+        ),
+        (
+            client.issue("smaller-only", "Adjusting", &["--ceiling", "0.99 USD"]),
+            "ceiling",
+        ),
+    ];
+    client.ok(
+        &["period", "close", PERIOD, "--reason", "Scheduled", "--yes"],
+        None,
+    );
+    let review = client.review("Adjusting", "department-adjustment");
+    let digest = text(&review.event, "review_digest");
+    for (token, caveat) in &restricted {
+        // Full scope admission precedes the host's signing-key file read.
+        // The in-scope debit alone must not authorize the hidden credit.
+        client.refused(
+            &[
+                "--token",
+                token,
+                "approve",
+                "--review",
+                text(&review.event, "bytes"),
+                "--digest",
+                digest,
+                "--sign-key",
+                "must-not-read.key",
+            ],
+            None,
+            7,
+            caveat,
+        );
+    }
+    client.refused(
+        &[
+            "--token",
+            &reviewer,
+            "approve",
+            "--proposal",
+            text(&review.event, "proposal_digest"),
+        ],
+        None,
+        7,
+        "`classes`",
+    );
+    let unsigned = client.refused(
+        &[
+            "--token",
+            &reviewer,
+            "approve",
+            "--review",
+            text(&review.event, "bytes"),
+            "--digest",
+            digest,
+        ],
+        None,
+        7,
+        "must be signed",
+    );
+    assert_eq!(text(&unsigned, "refusal_id"), "FA-REF-205");
+    let approved = client.ok(
+        &[
+            "--token",
+            &reviewer,
+            "approve",
+            "--review",
+            "-",
+            "--digest",
+            digest,
+            "--sign-key",
+            "department.key",
+        ],
+        Some(&review.bytes),
+    );
+    assert_eq!(text(&approved, "event"), "approved");
+    assert_eq!(
+        text(&approved, "approved_digest"),
+        text(&review.event, "proposal_digest")
+    );
+    let approved_at = client.head();
+    let retry = client.ok(
+        &[
+            "--token",
+            &reviewer,
+            "approve",
+            "--review",
+            text(&review.event, "bytes"),
+            "--digest",
+            digest,
+            "--sign-key",
+            "department.key",
+        ],
+        None,
+    );
+    assert_eq!(
+        text(&retry, "approval_vid"),
+        text(&approved, "approval_vid")
+    );
+    assert_eq!(field(&retry, "already_recorded"), &Json::Bool(true));
+    assert_eq!(client.head(), approved_at);
+    let posted = client.ok(
+        &[
+            "post",
+            "--review",
+            &review.path,
+            "--digest",
+            digest,
+            "--approval",
+            text(&approved, "approval_vid"),
+            "--grant",
+            "post_closed",
+            "--yes",
+        ],
+        None,
+    );
+    assert_eq!(text(&posted, "event"), "posted");
+    let vid = VId(u128::from_str_radix(text(&posted, "vid"), 16).unwrap());
+    let (entry, _) = client.book().read_entry(vid).unwrap().unwrap();
+    assert_eq!(
+        entry.proposal,
+        *PostIntent::decode(&review.bytes).unwrap().proposal()
+    );
+    assert_eq!(entry.approvals.len(), 1);
+    assert_eq!(
+        format!("{:032x}", entry.approvals[0].approval_vid.0),
+        text(&approved, "approval_vid")
+    );
 }
 
 #[test]

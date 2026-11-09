@@ -3712,12 +3712,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
     } else if !balancing
         && !scratch_case
-        && let Err(r) = policy::authorize_approvals(
+        && let Err(r) = policy::authorize_entry_approvals(
             &txn,
             db,
             book,
             &req.approvals,
-            &proposal.proposal_digest()?,
+            proposal,
             epoch,
             &sod_key,
             matrix_approvals,
@@ -4869,13 +4869,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         sealed.legs.clone_from(legs);
         sealed.unit_totals = EntryPayload::fold_unit_totals(&sealed.legs)
             .map_err(|e| KernelError::Corrupt(format!("balancing unit totals: {e:?}")))?;
-        let resolved_digest = sealed.proposal_digest()?;
-        if let Err(refusal) = policy::authorize_approvals(
+        if let Err(refusal) = policy::authorize_entry_approvals(
             &txn,
             db,
             book,
             &req.approvals,
-            &resolved_digest,
+            &sealed,
             epoch,
             &sod_key,
             matrix_approvals,

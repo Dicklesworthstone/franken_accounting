@@ -1129,9 +1129,29 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
-    /// Approve the exact canonical entry payload. An issued class-scoped
-    /// capability may approve an entry of its own class through this path;
-    /// an opaque digest alone cannot establish the approved class.
+    /// Admit an exact entry approval without publishing or reading its
+    /// signing key. This checks current authority and the complete payload
+    /// scope; recording repeats the checks in the publication transaction.
+    pub fn admit_entry_approval(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        proposal: &fa_model::EntryPayload,
+    ) -> Outcome<()> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::policy::admit_approval(
+                db,
+                context,
+                capability,
+                Some(proposal),
+            )?)
+        })
+    }
+
+    /// Approve the exact canonical entry payload. Issued capability
+    /// caveats admit its class and, for ordinary Original/Adjusting entries,
+    /// every account, period, effective date and leg amount. An opaque
+    /// digest alone cannot establish those coordinates or effects.
     pub async fn approve_entry(
         &mut self,
         cx: &PurposeContexts,
@@ -1206,8 +1226,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     }
 
     /// [`Self::approve_entry`] signed by the approver's registered key.
-    /// The entry supplies both the class and the digest; neither can be
-    /// substituted independently by a caller.
+    /// The entry supplies both its complete approval scope and its digest;
+    /// neither can be substituted independently by a caller.
     pub async fn approve_entry_signed(
         &mut self,
         cx: &PurposeContexts,
@@ -1230,16 +1250,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .await?);
         }
         let proposal_digest = proposal.proposal_digest().map_err(KernelError::from)?;
-        let signature = match self.approval_signature(
-            cx,
-            &capability,
-            proposal_digest,
-            Some(proposal.class),
-            key,
-        )? {
-            Ok(signature) => signature,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
+        let signature =
+            match self.approval_signature(cx, &capability, proposal_digest, Some(proposal), key)? {
+                Ok(signature) => signature,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
         Ok(fa_journal::record_signed_approval_for(
             &mut self.db,
             cx,
@@ -1264,7 +1279,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         cx: &PurposeContexts,
         capability: &fa_journal::Capability,
         proposal_digest: [u8; 32],
-        class: Option<EntryClass>,
+        proposal: Option<&fa_model::EntryPayload>,
         key: &fa_notary::SigningKey,
     ) -> Outcome<fa_policy::PrincipalSignature> {
         fn capability_error(error: fa_policy::CapabilityError) -> KernelError {
@@ -1274,42 +1289,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 other => KernelError::Corrupt(format!("capability: {other}")),
             }
         }
-        let admission =
-            fa_policy::require(capability, fa_policy::Op::Approve, "recording an approval")
-                .and_then(|()| fa_policy::scope(capability, self.context.book_id))
-                .and_then(|()| match class {
-                    Some(class) => fa_policy::reach_class(
-                        capability,
-                        &fa_policy::Reach::whole_book(true),
-                        None,
-                        class,
-                    ),
-                    None => fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None),
-                })
-                .and_then(|()| fa_policy::admit_direct_write(capability));
-        if let Err(denial) = admission {
-            return Ok(Err(fa_journal::policy::refusal(&denial)));
-        }
         let coordinates = self.query(cx, |db, context| {
-            if let Err(denial) = fa_policy::current(capability, db.frontier().map_err(KernelError::from)?) {
-                return Ok(Err(fa_journal::policy::refusal(&denial)));
-            }
-            if let Err(refusal) = fa_journal::policy::capability_admitted(db, context, capability)? {
+            if let Err(refusal) =
+                fa_journal::policy::admit_approval(db, context, capability, proposal)?
+            {
                 return Ok(Err(refusal));
-            }
-            if capability.classes().is_some() {
-                let commitment = capability.commitment().map_err(capability_error)?;
-                if fa_journal::policy::read_issued(db, context, &commitment)?.is_none() {
-                    return Ok(Err(fa_journal::policy::refusal(&fa_policy::Denial::OutOfScope {
-                        caveat: "classes",
-                        value: "an approval whose class-scoped capability has no retained issuance body".into(),
-                    })));
-                }
             }
             let chain = fa_journal::read_principal_keys(db, context, capability.holder())?;
             Ok(Ok((
                 fa_journal::security_policy_epoch(db)?,
-                chain.last().map_or(0, |generation| generation.key.generation),
+                chain
+                    .last()
+                    .map_or(0, |generation| generation.key.generation),
             )))
         })?;
         let (epoch, generation) = match coordinates {

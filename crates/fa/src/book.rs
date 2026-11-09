@@ -1655,9 +1655,21 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.approve_signed(&purposes, capability, proposal_digest, key)))
     }
 
+    /// Admit an exact entry approval without publishing or reading its
+    /// signing key ([`AsyncBook::admit_entry_approval`]).
+    pub fn admit_entry_approval(
+        &self,
+        capability: &fa_journal::Capability,
+        proposal: &fa_model::EntryPayload,
+    ) -> Outcome<()> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.admit_entry_approval(&purposes, capability, proposal))
+    }
+
     /// Approve an exact entry payload, deriving its digest and admitting
-    /// its class together. A class-scoped capability must have a retained
-    /// issuance and admit this entry's class. Configured principal signing
+    /// its complete scope together. Issued capabilities can restrict an
+    /// ordinary Original/Adjusting entry by class, account subtree, period,
+    /// effective date and per-leg amount. Configured principal signing
     /// applies as it does to [`Self::approve`].
     pub fn approve_entry(
         &mut self,

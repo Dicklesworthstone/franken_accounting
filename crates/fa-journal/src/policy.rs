@@ -243,19 +243,89 @@ pub fn authorize_approvals_in<V: asupersync::fs::Vfs + Clone>(
     preparer: Party,
     case_preparers: Option<&std::collections::BTreeSet<VId>>,
 ) -> Outcome<()> {
-    let steward = steward()?;
-    let witnessed = match witness_approvals(
+    authorize_approvals_target(
         txn,
         db,
         book,
         approvals,
         proposal_digest,
         epoch,
-        EntryClass::from_name(&key.class),
-    )? {
-        Ok(read) => read,
-        Err(r) => return Ok(Err(r)),
-    };
+        key,
+        matrix_approvals,
+        preparer,
+        case_preparers,
+        ApprovalTarget::Class(EntryClass::from_name(&key.class)),
+    )
+}
+
+/// Consume approvals of this exact entry, rechecking every retained scope and
+/// amount bound against its complete payload. Controls and aggregate manifests
+/// keep the whole-book admission of [`authorize_approvals`]; their digest alone
+/// cannot establish an ordinary posting's accounts or effective period.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn authorize_entry_approvals<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    approvals: &[ApprovalRef],
+    proposal: &EntryPayload,
+    epoch: u64,
+    key: &SodKey,
+    matrix_approvals: u8,
+    preparer: Party,
+) -> Outcome<()> {
+    authorize_approvals_target(
+        txn,
+        db,
+        book,
+        approvals,
+        &proposal.proposal_digest()?,
+        epoch,
+        key,
+        matrix_approvals,
+        preparer,
+        None,
+        ApprovalTarget::Entry(proposal),
+    )
+}
+
+#[derive(Clone, Copy)]
+enum ApprovalTarget<'a> {
+    /// A control or an aggregate whose complete reach is not established by
+    /// an ordinary monetary payload. Class-only authority remains decidable.
+    Class(Option<EntryClass>),
+    Entry(&'a EntryPayload),
+}
+
+impl ApprovalTarget<'_> {
+    fn class(self) -> Option<EntryClass> {
+        match self {
+            Self::Class(class) => class,
+            Self::Entry(proposal) => Some(proposal.class),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn authorize_approvals_target<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    approvals: &[ApprovalRef],
+    proposal_digest: &[u8; 32],
+    epoch: u64,
+    key: &SodKey,
+    matrix_approvals: u8,
+    preparer: Party,
+    case_preparers: Option<&std::collections::BTreeSet<VId>>,
+    target: ApprovalTarget<'_>,
+) -> Outcome<()> {
+    let steward = steward()?;
+    let witnessed =
+        match witness_approvals(txn, db, book, approvals, proposal_digest, epoch, target)? {
+            Ok(read) => read,
+            Err(r) => return Ok(Err(r)),
+        };
     let mut lineages = None;
     if steward.excludes(key, "session_lineage") {
         lineages = approval_lineages(txn, db, book, &witnessed.commitments)?;
@@ -307,8 +377,15 @@ pub fn authorize_lineage<V: asupersync::fs::Vfs + Clone>(
     preparer: VId,
     case_preparers: &BTreeSet<VId>,
 ) -> Outcome<()> {
-    let witnessed = match witness_approvals(txn, db, book, approvals, proposal_digest, epoch, None)?
-    {
+    let witnessed = match witness_approvals(
+        txn,
+        db,
+        book,
+        approvals,
+        proposal_digest,
+        epoch,
+        ApprovalTarget::Class(None),
+    )? {
         Ok(read) => read,
         Err(r) => return Ok(Err(r)),
     };
@@ -456,7 +533,7 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
     approvals: &[ApprovalRef],
     proposal_digest: &[u8; 32],
     epoch: u64,
-    class: Option<EntryClass>,
+    target: ApprovalTarget<'_>,
 ) -> Outcome<WitnessedApprovals> {
     let mut witnessed: Vec<Approver> = Vec::with_capacity(approvals.len());
     let mut commitments: Vec<[u8; 32]> = Vec::with_capacity(approvals.len());
@@ -512,31 +589,74 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
         if !crate::outcome::original(db, &row)? {
             return Ok(Err(rewritten_approval(cited.approval_vid)));
         }
+        // An approval recorded under an issued capability keeps every
+        // immutable scope and amount restriction, even when the approval
+        // predates payload-aware recording. Only the actual posting payload
+        // establishes a narrowed monetary reach; an aggregate digest does not.
+        // Do not reapply current expiry/revocation: those do not unwind a
+        // previously recorded approval (plan §14.2).
+        let issued_vid = issuance_vid(book.book_id, &approval.capability_commitment);
+        let issued = txn.vertex(db, issued_vid)?;
+        if issued.is_none() && db.vertex_at(issued_vid, row.created_at)?.is_some() {
+            return Ok(Err(Refusal::new(
+                code::CAPABILITY,
+                exit::SAFETY,
+                "the approval's retained capability issuance has disappeared",
+                "plan §14.2 (immutable recorded approval authority)",
+                "restore the book from verified history; a missing issuance cannot turn a scoped approval into an unscoped legacy approval",
+            )));
+        }
+        if let Some(issued) = issued {
+            if issued.created_at > row.created_at || !crate::outcome::original(db, &issued)? {
+                return Ok(Err(Refusal::new(
+                    code::CAPABILITY,
+                    exit::SAFETY,
+                    "the approval's capability issuance is not an unchanged record present when it was approved",
+                    "plan §14.2 (recorded approval authority)",
+                    "obtain a new approval under an unchanged capability issued before the approval",
+                )));
+            }
+            let (capability, _) =
+                issued_here(&issued, book.book_id, &approval.capability_commitment)?;
+            let expected = match Approval::by(
+                &capability,
+                Op::Approve,
+                book.book_id,
+                *proposal_digest,
+                epoch,
+                approval.role,
+            )
+            .map_err(capability_error)?
+            {
+                Ok(expected) => expected,
+                Err(denial) => return Ok(Err(refusal(&denial))),
+            };
+            if approval != expected {
+                return Ok(Err(Refusal::new(
+                    code::CAPABILITY,
+                    exit::SAFETY,
+                    "the approval's principal, profile or operation disagrees with its retained capability",
+                    "plan §14.2 (capability-bound approval authority)",
+                    "obtain an approval from the holder and profile of the retained approval capability",
+                )));
+            }
+            if let Err(refused) = approval_base(book, &capability, target) {
+                return Ok(Err(refused));
+            }
+            let accounts = approval_accounts(txn, db, book, &capability, Some(row.created_at))?;
+            if let Err(denial) = approval_reach(book, &capability, target, accounts.as_ref()) {
+                return Ok(Err(refusal(&denial)));
+            }
+        }
+        // Legacy embedded approvals retained only the commitment, not a
+        // capability body. Their historical caveats cannot be recovered;
+        // keep those records compatible. New scoped/amount-bound approvals
+        // require retained issuance so every such approval can be checked.
         match approval_signing_key(txn, db, book, &approval, signature.as_ref(), row.created_at)? {
             Ok(Some(key)) => signers.push((approval.principal, key)),
             Ok(None) => {}
             Err(refused) => return Ok(Err(refused)),
         }
-        // An approval recorded under an issued capability keeps that
-        // capability's immutable class restriction, even when the approval
-        // predates class-aware recording. Judge the actual proposal class
-        // supplied by its SoD key, not a class asserted by the approver.
-        // Do not reapply current expiry/revocation: those do not unwind a
-        // previously recorded approval (plan §14.2).
-        if let Some(issued) = txn.vertex(
-            db,
-            issuance_vid(book.book_id, &approval.capability_commitment),
-        )? {
-            let (capability, _) =
-                issued_here(&issued, book.book_id, &approval.capability_commitment)?;
-            if let Err(d) = fa_policy::require_class(&capability, class) {
-                return Ok(Err(refusal(&d)));
-            }
-        }
-        // Legacy embedded approvals retained only the commitment, not a
-        // capability body. Its historical class set cannot be recovered;
-        // keep those records compatible. New class-scoped approvals require
-        // retained issuance below so every such approval can be checked.
         witnessed.push(Approver::from(&approval));
         commitments.push(approval.capability_commitment);
     }
@@ -545,6 +665,246 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
         commitments,
         signers,
     }))
+}
+
+/// These caveats require an actual monetary payload. A digest or a control's
+/// class establishes neither the accounts reached nor the approved amount.
+fn approval_payload_caveat(capability: &Capability) -> Option<&'static str> {
+    if capability.accounts().is_some() {
+        Some("accounts")
+    } else if capability.periods().is_some() {
+        Some("periods")
+    } else if capability.effective_bound().is_some() {
+        Some("effective")
+    } else if !capability.ceilings().is_empty() {
+        Some("amount")
+    } else {
+        None
+    }
+}
+
+fn approval_issuance_caveat(capability: &Capability) -> Option<&'static str> {
+    capability
+        .classes()
+        .map(|_| "classes")
+        .or_else(|| approval_payload_caveat(capability))
+}
+
+fn approval_issuance_missing(caveat: &'static str) -> Refusal {
+    refusal(&Denial::OutOfScope {
+        caveat,
+        value: "an approval whose scoped capability has no retained issuance body".into(),
+    })
+}
+
+/// All checks that need no book observation. The target principal is the
+/// preparer, not the approver: approval authority belongs to the capability's
+/// holder, while its amount ceiling judges every leg of the work it approves.
+fn approval_base(
+    book: &BookContext,
+    capability: &Capability,
+    target: ApprovalTarget<'_>,
+) -> Result<(), Refusal> {
+    let mut legs = Vec::new();
+    if let ApprovalTarget::Entry(proposal) = target {
+        if proposal.book_id != book.book_id || proposal.branch_id != Id128::TRUNK {
+            return Err(Refusal::new(
+                code::COORDINATE,
+                exit::USAGE,
+                "the approved proposal must name this book's trunk target",
+                "plan Appendix A Approval (one intended book and target coordinate)",
+                "approve the canonical trunk proposal in the book it names",
+            ));
+        }
+        legs.extend(
+            proposal
+                .legs
+                .iter()
+                .map(|leg| (leg.amount.unit, leg.amount.mantissa)),
+        );
+    }
+    fa_policy::admit_base(
+        capability,
+        &Intent {
+            principal: capability.holder(),
+            trunk: true,
+            op: Op::Approve,
+            book: book.book_id,
+            legs: &legs,
+        },
+    )
+    .and_then(|()| fa_policy::require_class(capability, target.class()))
+    .map_err(|denial| refusal(&denial))?;
+    if let Some(caveat) = approval_payload_caveat(capability) {
+        let supported = match target {
+            ApprovalTarget::Entry(proposal) => {
+                matches!(proposal.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING)
+                    && matches!(proposal.origin, EntryOrigin::Intent { .. })
+                    && proposal.control.is_none()
+                    && proposal.pending.is_none()
+                    && proposal.supersession.is_empty()
+                    && proposal.extensions.is_empty()
+                    && proposal.legs.iter().all(|leg| leg.settles.is_empty())
+            }
+            ApprovalTarget::Class(_) => false,
+        };
+        if !supported {
+            return Err(refusal(&Denial::OutOfScope {
+                caveat,
+                value: "an approval without a complete ordinary Original/Adjusting payload; scoped approvals cannot cover controls, schedules, settlements, supersession or unclassified effects".into(),
+            }));
+        }
+        if let ApprovalTarget::Entry(proposal) = target {
+            proposal.validate_for_write().map_err(|error| {
+                Refusal::new(
+                    code::STRUCTURE,
+                    exit::USAGE,
+                    error.to_string(),
+                    "Appendix A fa:entry:v1 (the complete canonical approval target)",
+                    "correct the proposal and obtain a new canonical review",
+                )
+            })?;
+        }
+    }
+    // Judge coordinates known from the request before reading current
+    // issuance or even the capability's own chart roots. The complete reach
+    // is still checked after compiling those roots and again at consumption.
+    if let Some(branch) = capability.branch()
+        && branch != Id128::TRUNK
+    {
+        return Err(refusal(&Denial::OutOfScope {
+            caveat: "branch",
+            value: format!("branch {}", Id128::TRUNK.to_hex()),
+        }));
+    }
+    if let Some(pin) = capability.known_at_pin() {
+        return Err(refusal(&Denial::OutOfScope {
+            caveat: "known_at",
+            value: format!(
+                "an act at the book head (the token is pinned at known-at <= {})",
+                pin.0
+            ),
+        }));
+    }
+    if let ApprovalTarget::Entry(proposal) = target {
+        if let Some(periods) = capability.periods() {
+            let period = resolved_period(
+                book,
+                proposal.effective_date,
+                proposal
+                    .effective_period
+                    .as_ref()
+                    .map(|period| period.code.as_str()),
+            );
+            if period
+                .as_ref()
+                .is_none_or(|period| !periods.contains(period))
+            {
+                return Err(refusal(&Denial::OutOfScope {
+                    caveat: "periods",
+                    value: period.map_or_else(
+                        || "a proposal whose effective period cannot be established".into(),
+                        |period| format!("period `{period}`"),
+                    ),
+                }));
+            }
+        }
+        if let Some(bound) = capability.effective_bound()
+            && proposal.effective_date > bound
+        {
+            return Err(refusal(&Denial::OutOfScope {
+                caveat: "effective",
+                value: format!(
+                    "effective date {} (the token reaches effective <= {})",
+                    proposal.effective_date.render(),
+                    bound.render()
+                ),
+            }));
+        }
+    }
+    Ok(())
+}
+
+fn approval_reach(
+    book: &BookContext,
+    capability: &Capability,
+    target: ApprovalTarget<'_>,
+    accounts: Option<&AccountScope>,
+) -> Result<(), Denial> {
+    match target {
+        ApprovalTarget::Entry(proposal) if approval_payload_caveat(capability).is_some() => {
+            payload_reach(capability, book, proposal, accounts)
+        }
+        _ => match target.class() {
+            Some(class) => {
+                fa_policy::reach_class(capability, &Reach::whole_book(true), None, class)
+            }
+            None => fa_policy::reach(capability, &Reach::whole_book(true), None),
+        },
+    }
+}
+
+/// Compile only the retained authority's own account roots inside a native
+/// transaction. Creation first proves that authority current and witnesses
+/// descendant reads against a concurrent chart change. Consumption uses the
+/// chart at the immutable approval's recording sequence, so a later chart
+/// expansion cannot retroactively grant reach. It does not reapply later
+/// revocation or expiry.
+fn approval_accounts<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    recorded_at: Option<CommitSeq>,
+) -> Result<Option<AccountScope>, KernelError> {
+    let Some(roots) = capability.accounts() else {
+        return Ok(None);
+    };
+    let mut members = BTreeSet::new();
+    let mut pending: Vec<VId> = roots
+        .iter()
+        .map(|code| account_vid(book.book_id, code))
+        .collect();
+    while let Some(vid) = pending.pop() {
+        if members.insert(vid) {
+            pending.extend(match recorded_at {
+                Some(at) => db.in_neighbours_at(vid, relation::CHILD_OF, at)?,
+                None => txn.in_neighbours(db, vid, relation::CHILD_OF)?,
+            });
+        }
+    }
+    Ok(Some(AccountScope::compiled(members)))
+}
+
+/// Check approval authority without publishing or inspecting a signing key.
+/// A complete ordinary payload establishes account, period, date and amount
+/// scope; an opaque digest retains whole-book reach. Narrowed approvals require
+/// their issued capability body so consumption can independently repeat the
+/// scope checks. The recording transaction rechecks all of these predicates.
+pub fn admit_approval<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    proposal: Option<&EntryPayload>,
+) -> Outcome<()> {
+    let target = proposal.map_or(ApprovalTarget::Class(None), ApprovalTarget::Entry);
+    if let Err(refused) = approval_base(book, capability, target) {
+        return Ok(Err(refused));
+    }
+    let current = match current_at(db, book, capability)? {
+        Ok(current) => current,
+        Err(refused) => return Ok(Err(refused)),
+    };
+    if let Some(caveat) = approval_issuance_caveat(capability) {
+        let commitment = capability.commitment().map_err(capability_error)?;
+        let Some(issued) = db.vertex(issuance_vid(book.book_id, &commitment))? else {
+            return Ok(Err(approval_issuance_missing(caveat)));
+        };
+        issued_here(&issued, book.book_id, &commitment)?;
+    }
+    let accounts = account_scope(db, book, &current)?;
+    Ok(approval_reach(book, capability, target, accounts.as_ref())
+        .map_err(|denial| refusal(&denial)))
 }
 
 /// Record one approval over a proposal digest.
@@ -624,17 +984,18 @@ pub async fn record_signed_approval<V: asupersync::fs::Vfs + Clone>(
     req: ApprovalRequest,
     signed: Option<SignedBy>,
 ) -> Outcome<Approved> {
-    record_approval_with_class(db, ctx, book, req, signed, None).await
+    record_approval_with_target(db, ctx, book, req, signed, None).await
 }
 
 /// Record an approval of a complete canonical proposal. The digest and
 /// class are derived together from `proposal`; no caller-supplied class
-/// can stand in for the bytes being approved. Other scope caveats retain
-/// the whole-book admission of [`record_approval`].
+/// can stand in for the bytes being approved. An ordinary Original/Adjusting
+/// posting also establishes its account, period, effective-date and per-leg
+/// amount reach. Nonlocal and control effects remain whole-book approvals.
 ///
-/// A class-scoped capability must have its canonical body retained in this
-/// book's issuance journal, so consumption can independently enforce the
-/// same class restriction without changing the Approval wire format.
+/// A scoped or amount-bound capability must have its canonical body retained
+/// in this book's issuance journal, so consumption independently enforces its
+/// restrictions without changing the Approval wire format.
 pub async fn record_approval_for<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -648,7 +1009,7 @@ pub async fn record_approval_for<V: asupersync::fs::Vfs + Clone>(
 
 /// [`record_approval_for`] with the approver's principal-key signature.
 /// The signed Approval body is unchanged; its approved digest commits the
-/// same canonical proposal whose class admission checks here.
+/// same canonical proposal whose complete scope is admitted here.
 pub async fn record_signed_approval_for<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -668,7 +1029,7 @@ pub async fn record_signed_approval_for<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     let approved_proposal_digest = proposal.proposal_digest()?;
-    record_approval_with_class(
+    record_approval_with_target(
         db,
         ctx,
         book,
@@ -678,59 +1039,41 @@ pub async fn record_signed_approval_for<V: asupersync::fs::Vfs + Clone>(
             role,
         },
         signed,
-        Some(proposal.class),
+        Some(proposal),
     )
     .await
 }
 
-async fn record_approval_with_class<V: asupersync::fs::Vfs + Clone>(
+async fn record_approval_with_target<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     req: ApprovalRequest,
     signed: Option<SignedBy>,
-    class: Option<EntryClass>,
+    proposal: Option<&EntryPayload>,
 ) -> Outcome<Approved> {
-    // An opaque digest establishes no class. The payload-taking API alone
-    // supplies the class bound by that same digest; all coordinate caveats
-    // still judge whole-book reach, so this does not widen other scopes.
-    if let Err(d) = fa_policy::require(&req.capability, Op::Approve, "recording an approval")
-        .and_then(|()| fa_policy::scope(&req.capability, book.book_id))
-        .and_then(|()| fa_policy::admit_direct_write(&req.capability))
-        .and_then(|()| match class {
-            Some(class) => {
-                fa_policy::reach_class(&req.capability, &Reach::whole_book(true), None, class)
-            }
-            None => fa_policy::reach(&req.capability, &Reach::whole_book(true), None),
-        })
-    {
-        return Ok(Err(refusal(&d)));
+    if let Err(refused) = admit_approval(db, book, &req.capability, proposal)? {
+        return Ok(Err(refused));
     }
-    let at = db.frontier()?;
-    if let Err(d) = fa_policy::current(&req.capability, at) {
-        return Ok(Err(refusal(&d)));
-    }
+    let target = proposal.map_or(ApprovalTarget::Class(None), ApprovalTarget::Entry);
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
         txn.abort();
         return Ok(Err(r));
     }
-    if req.capability.classes().is_some() {
+    if let Some(caveat) = approval_issuance_caveat(&req.capability) {
         let commitment = req.capability.commitment().map_err(capability_error)?;
         let Some(issued) = txn.vertex(db, issuance_vid(book.book_id, &commitment))? else {
             txn.abort();
-            return Ok(Err(refusal(&Denial::OutOfScope {
-                caveat: "classes",
-                value: "an approval whose class-scoped capability has no retained issuance body"
-                    .into(),
-            })));
+            return Ok(Err(approval_issuance_missing(caveat)));
         };
-        let (retained, _) = issued_here(&issued, book.book_id, &commitment)?;
-        if let Err(d) = fa_policy::require_class(&retained, class) {
-            txn.abort();
-            return Ok(Err(refusal(&d)));
-        }
+        issued_here(&issued, book.book_id, &commitment)?;
+    }
+    let accounts = approval_accounts(&txn, db, book, &req.capability, None)?;
+    if let Err(denial) = approval_reach(book, &req.capability, target, accounts.as_ref()) {
+        txn.abort();
+        return Ok(Err(refusal(&denial)));
     }
     let epoch = epoch_witness(&txn, db)?;
     let approval = match Approval::by(
