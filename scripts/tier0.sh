@@ -10,11 +10,11 @@
 #      completion-marker rules as scripts/check.sh (`Remote command finished:
 #      exit=0` + `Finished `).
 #   3. Availability (WHAT 5): when the `rch` fleet refuses to execute due to
-#      disk/capacity pressure ("no admissible workers", exit 103, or exit 100
-#      / refusing local fallback / completion unconfirmed with no remote
-#      execution), `tier0.sh` falls back to the local lane on the gate host
+#      disk/capacity pressure before remote execution, `tier0.sh` falls back
+#      to the local lane on the gate host
 #      (`RCH_CARGO_WRAPPER_BYPASS=1 cargo check ...`) unless
 #      `TIER0_DISABLE_LOCAL_FALLBACK=1` is set (which reports `UNRUN`).
+#      Explicit unconfirmed completion always reports `UNRUN` without replay.
 #      Every run records the tree hash, toolchain, lane (`remote` or `local`),
 #      host fingerprint, step verdicts, and durations, and writes a git note
 #      under `refs/notes/fa-tier0` on a clean PASS tree.
@@ -251,7 +251,7 @@ else
       "$RCH_BIN" exec -- "$CARGO_BIN" check -j "$TIER0_JOBS" --workspace --all-targets >"$check_log" 2>&1
     check_rc=$?
     check_worker="$(extract_worker "$check_log")"
-    if grep -Eq '^RCH_SCOPED_COMPLETION_UNCONFIRMED$|^RCH_SOURCE_NAMESPACE_CONTROL_UNSETTLED([[:space:]]|$)|^\[RCH\] remote .* completion unconfirmed; ownership retained for recovery' "$check_log"; then
+    if grep -Eq '^RCH_SCOPED_COMPLETION_UNCONFIRMED$|^RCH_SOURCE_NAMESPACE_CONTROL_UNSETTLED([[:space:]]|$)|^\[RCH\] remote .* completion unconfirmed; ownership retained for recovery|remote execution completion is unconfirmed; automatic replay is unsafe' "$check_log"; then
       # The worker may still own a running command or its source namespace.
       # Missing completion is not proof of a pre-start refusal: never replay.
       check_lane="remote"

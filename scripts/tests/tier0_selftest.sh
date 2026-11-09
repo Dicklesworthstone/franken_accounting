@@ -55,6 +55,10 @@ case "${FAKE_RCH_MODE:-remote}" in
     printf '[RCH] remote hz3 completion unconfirmed; ownership retained for recovery (no local fallback)\n' >&2
     exit 1
     ;;
+  completion-unconfirmed-transport)
+    printf '\033[33m WARN rch::hook: Remote execution failed on hz3; refusing local fallback: remote execution completion is unconfirmed; automatic replay is unsafe: SSH execution exit 255 does not prove remote completion\033[0m\n' >&2
+    exit 1
+    ;;
   source-unsettled)
     printf 'RCH_SOURCE_NAMESPACE_CONTROL_UNSETTLED status=0 cause=deadline-or-external-interruption\n' >&2
     exit 1
@@ -528,7 +532,7 @@ printf '%s\n' "$*" >> "$FAKE_TIER0_CARGO_CALLS"
 exec "$FAKE_TIER0_REAL_CARGO" "$@"
 CARGO_OBSERVER
   chmod +x "$base/bin/cargo-observer"
-  for mode in completion-unconfirmed completion-unconfirmed-zero completion-unconfirmed-message source-unsettled; do
+  for mode in completion-unconfirmed completion-unconfirmed-zero completion-unconfirmed-message completion-unconfirmed-transport source-unsettled; do
     rc=0
     (
       cd "$dev" || exit 1
@@ -550,7 +554,7 @@ CARGO_OBSERVER
       return 1
     fi
   done
-  gate_pass "unconfirmed_remote_completion_never_replays_locally (four unsettled-completion cases -> UNRUN, no local check, no PASS note)"
+  gate_pass "unconfirmed_remote_completion_never_replays_locally (five unsettled-completion cases -> UNRUN, no local check, no PASS note)"
   return 0
 }
 
