@@ -32,6 +32,7 @@ use crate::cli::{Ctx, Fail, post_document, usage};
 use crate::json::{Json, obj, s};
 
 mod differences;
+mod inventory;
 
 #[derive(Clone, Copy)]
 enum Kind {
@@ -652,6 +653,7 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
     }
     let mut line_legs = Vec::with_capacity(raw_lines.len());
     let mut amounts = Vec::with_capacity(raw_lines.len());
+    let mut relief = Vec::new();
     for (i, raw) in raw_lines.iter().enumerate() {
         let what = format!("--line {}", i + 1);
         let words = line_words(raw).map_err(|e| usage(format!("{what}: {e}"), example.clone()))?;
@@ -676,11 +678,16 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
                 "post the tax leg explicitly with fa post, or omit tax",
             ));
         }
-        if let Some((name, _)) = words.iter().find(|(k, _)| !FIELDS.contains(&k.as_str())) {
+        if let Some((name, _)) = words.iter().find(|(k, _)| {
+            !FIELDS.contains(&k.as_str()) && !inventory::LINE_FIELDS.contains(&k.as_str())
+        }) {
             return Err(usage(
                 format!("{what}: unknown field `{name}`"),
                 format!("fields: {}", FIELDS.join(", ")),
             ));
+        }
+        if let Some(line) = inventory::parse_line(&words, i, matches!(kind, Kind::Invoice))? {
+            relief.push(line);
         }
         let amount = match (field("amount"), field("qty"), field("unit_price")) {
             (Some(amount), None, None) => sum(&[amount.to_string()])
@@ -771,7 +778,69 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
             ])]),
         ));
     }
-    post_document(ctx, args, None, obj(fields))
+    let doc = obj(fields);
+    if relief.is_empty() {
+        post_document(ctx, args, None, doc)
+    } else {
+        post_inventory_invoice(ctx, args, &doc, &relief)
+    }
+}
+
+/// Invoice revenue and its law-derived inventory effects share the existing
+/// atomic batch protocol. No source is reserved by preparation, and no new
+/// accounting store or cost-flow implementation is introduced here.
+fn post_inventory_invoice(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    doc: &Json,
+    relief: &[inventory::LineRelief],
+) -> Result<(), Fail> {
+    if args.flag("--scenario").is_some() {
+        return Err(usage(
+            "an inventory invoice requires trunk or an owned draft; counterfactual lot disposal is not supported",
+            "use --dry-run for a native plan or --draft <name> for reviewed promotion",
+        ));
+    }
+    if args.flag_all("--draft").len() > 1 || args.flag("--draft").is_some_and(str::is_empty) {
+        return Err(usage("--draft needs one nonempty name", "--draft <name>"));
+    }
+    crate::cli::check_post_planning_options(args)?;
+    if args.flag("--draft").is_some()
+        && (args.switch("--dry-run") || args.flag("--plan-out").is_some())
+    {
+        return Err(usage(
+            "select a native dry-run plan or a retained draft",
+            "use --dry-run [--plan-out <new-file>] or --draft <name>",
+        ));
+    }
+    let principal = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "post"])?;
+    let draft = args.flag("--draft");
+    let mut book = ctx.books.open_admitted(args, |book| match draft {
+        // Admit the ordinary invoice first. Retained draft entries can be
+        // retried after closure; only fresh source derivation needs an open
+        // draft, which the native disposal factory independently checks.
+        Some(name) => crate::fx::admit_draft_intent_sources(book, &capability, doc, name),
+        None => crate::cli::admit_whole_book_read(
+            book,
+            &capability,
+            &[fa_policy::Op::Post],
+            "deriving an invoice's inventory quantity and cost relief",
+        ),
+    })?;
+    let invoice = crate::cli::build_original_post_intent(
+        &ctx.out,
+        &mut book,
+        args,
+        doc,
+        principal,
+        capability.clone(),
+    )?;
+    let batch = inventory::prepare(&mut book, &capability, draft, &invoice, relief)?;
+    let classes = vec!["Original".to_string(); batch.members().len()];
+    crate::cli::submit_post_batch(
+        &ctx.out, &mut book, &ctx.files, args, batch, capability, &classes, draft,
+    )
 }
 
 fn capitalized(word: &str) -> String {

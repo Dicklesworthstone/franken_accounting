@@ -56,6 +56,9 @@ impl Harness {
         Self::in_book(BOOK)
     }
     pub(super) fn in_book(book_id: Id128) -> Self {
+        Self::in_book_with_opening_date(book_id, None)
+    }
+    pub(super) fn in_book_with_opening_date(book_id: Id128, opening_date: Option<DateDay>) -> Self {
         let runtime = RuntimeBuilder::new().build().unwrap();
         let root = runtime.request_cx_with_budget(Budget::INFINITE);
         let cx = PurposeContexts::narrow_runtime_root(&root);
@@ -76,7 +79,7 @@ impl Harness {
                     calendar: FiscalCalendar::monthly("cal", 1, 1).unwrap(),
                     time_zone_policy: None,
                     entities: Vec::new(),
-                    opening_date: None,
+                    opening_date,
                 },
                 Entropy::deterministic(115),
             ))
@@ -111,7 +114,13 @@ impl Harness {
                 .unwrap()
                 .unwrap();
         }
+        let periods = book.periods(&cx).unwrap();
         for period in ["FY2025-P03", "FY2026-P03", "FY2026-P04"] {
+            if periods.iter().find(|row| row.code == period).unwrap().state
+                != fa_time::PeriodState::Future
+            {
+                continue;
+            }
             runtime
                 .block_on(book.transition_period(
                     &cx,

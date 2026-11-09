@@ -8,6 +8,9 @@ use fgdb_types::CanonicalScalar;
 #[path = "custom_certificate_tests.rs"]
 mod custom;
 
+#[path = "migration_certificate_tests.rs"]
+mod migration;
+
 fn certify(h: &Harness, request: &StatementTraceRequest) -> CertifiedStatementTrace {
     h.book
         .certify_statement_trace(&h.cx(), PRINCIPAL, &cap(&["read", "produce"]), request)

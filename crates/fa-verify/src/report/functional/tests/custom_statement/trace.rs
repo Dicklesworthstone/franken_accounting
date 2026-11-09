@@ -5,7 +5,8 @@
 
 use super::*;
 use crate::report::{
-    StatementLineChange, VerifiedStatementEntryLink, VerifiedStatementPublication,
+    MAX_REPORT_BUNDLE_BYTES, StatementLineChange, VerifiedStatementEntryEvent,
+    VerifiedStatementEntryLink, VerifiedStatementPublication,
 };
 
 const TRACE_END: u64 = 9;
@@ -119,6 +120,7 @@ fn publications(
             let entries = key
                 .into_iter()
                 .map(|key| VerifiedStatementEntryLink {
+                    event: VerifiedStatementEntryEvent::Recorded,
                     entry: if class == 4 {
                         reversal_identity(identity(b"comparison-small-expense"))
                     } else {
@@ -143,6 +145,7 @@ fn publications(
                     } else {
                         Vec::new()
                     },
+                    migration_run: None,
                 })
                 .collect();
             let old = exact(functional, at - 1);
@@ -188,13 +191,21 @@ fn trace_output(
         (end, outputs.last().unwrap(), exact(functional, end)),
         false,
     );
+    trace_output_with_summary(functional, &summary, publications)
+}
+
+fn trace_output_with_summary(
+    functional: bool,
+    summary: &[u8],
+    publications: &[VerifiedStatementPublication],
+) -> Vec<u8> {
     let mut w = Writer::default();
     w.bytes(if functional {
         b"fa:functional-custom-statement-trace:v1"
     } else {
         b"fa:custom-statement-trace:v1"
     })
-    .bytes(&summary)
+    .bytes(summary)
     .count(publications.len());
     for step in publications {
         w.u64(step.recorded_at)
@@ -202,12 +213,15 @@ fn trace_output(
             .fixed(&step.after_source_digest)
             .count(step.entries.len());
         for entry in &step.entries {
-            w.u8(0)
-                .u64(entry.recorded_at)
-                .u128(entry.entry)
-                .fixed(&entry.digest)
-                .u16(entry.class)
-                .u8(u8::from(entry.posting_date.is_some()));
+            w.u8(match entry.event {
+                VerifiedStatementEntryEvent::Recorded => 0,
+                VerifiedStatementEntryEvent::BecameVisible => 1,
+            })
+            .u64(entry.recorded_at)
+            .u128(entry.entry)
+            .fixed(&entry.digest)
+            .u16(entry.class)
+            .u8(u8::from(entry.posting_date.is_some()));
             if let Some(day) = entry.posting_date {
                 w.i32(day);
             }
@@ -215,7 +229,10 @@ fn trace_output(
             for (identity, digest) in &entry.references {
                 w.u128(*identity).fixed(digest);
             }
-            w.u8(0);
+            w.u8(u8::from(entry.migration_run.is_some()));
+            if let Some(run) = entry.migration_run {
+                w.u128(run);
+            }
         }
         w.count(step.changes.len());
         for line in &step.changes {
@@ -282,6 +299,151 @@ fn check(
     let (certificate, pin) = trace_certificate(functional, sources, output, false);
     let (bundle, checkpoint) = bundle(fixture, functional, &certificate, &fixture.rates, false);
     verify(&bundle, &checkpoint, Some(&pin))
+}
+
+#[test]
+fn custom_migration_traces_retain_zero_effect_activation_in_native_and_functional_outputs() {
+    use crate::report::functional::tests::migration as migration_fixture;
+
+    let mut fixture = fixture();
+    fixture.records.truncate(5);
+    fixture.rates.truncate(1);
+    let body = migration_fixture::body(0, false);
+    let run = migration_fixture::run();
+    fixture
+        .records
+        .push(migration_fixture::control(6, 0, run, &body));
+    // Gross movement within one balance-sheet leaf has no custom income
+    // effect. Its activation must still be disclosed, even with a zero delta.
+    let legs = pair(2, 2)
+        .into_iter()
+        .map(|mut leg| {
+            leg.code = "1000";
+            leg.unit = 0;
+            leg.base = None;
+            leg
+        })
+        .collect::<Vec<_>>();
+    fixture.records.push(entry_with_migration(
+        7,
+        12,
+        10,
+        b"custom-migrated-cash",
+        &legs,
+        None,
+        None,
+        None,
+        Some(run),
+    ));
+    fixture
+        .records
+        .push(migration_fixture::control(8, 1, run, &body));
+    let chunk_digest = framed_hash(
+        b"fa:vid:migration-entry:v1",
+        &[&BOOK, &run.to_le_bytes(), b"custom-migrated-cash"],
+    );
+    let chunk_id = u128::from_le_bytes(chunk_digest[..16].try_into().unwrap());
+
+    for functional in [false, true] {
+        let amounts = if functional { [14, 0, 14] } else { [9, 0, 9] };
+        let outputs = (5..=8)
+            .map(|at| output_with_amounts(functional, at, fixture.activation, amounts, 0))
+            .collect::<Vec<_>>();
+        let sources = outputs
+            .iter()
+            .enumerate()
+            .map(|(index, output)| source(&fixture, functional, 5 + index as u64, output, 0))
+            .collect::<Vec<_>>();
+        let link = |at: u64, event| VerifiedStatementEntryLink {
+            event,
+            entry: if at == 7 {
+                chunk_id
+            } else {
+                identity(&at.to_le_bytes())
+            },
+            digest: fixture.records[at as usize - 1].envelope.record_digest,
+            class: if at == 7 { 12 } else { 22 },
+            recorded_at: at,
+            posting_date: (at == 7).then_some(10),
+            principal: PRINCIPAL,
+            references: Vec::new(),
+            migration_run: Some(run),
+        };
+        let publications = outputs
+            .windows(2)
+            .enumerate()
+            .map(|(index, adjacent)| {
+                let at = 6 + index as u64;
+                let mut entries = vec![link(at, VerifiedStatementEntryEvent::Recorded)];
+                if at == 8 {
+                    entries.push(link(7, VerifiedStatementEntryEvent::BecameVisible));
+                }
+                entries.sort_by_key(|entry| entry.entry);
+                VerifiedStatementPublication {
+                    recorded_at: at,
+                    before_source_digest: trace_digest(functional, &adjacent[0].inner),
+                    after_source_digest: trace_digest(functional, &adjacent[1].inner),
+                    entries,
+                    changes: Vec::new(),
+                    mapping_changes: Vec::new(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let summary = bridge_at(
+            functional,
+            (5, &outputs[0], amounts),
+            (8, &outputs[3], amounts),
+            false,
+        );
+        let expected = trace_output_with_summary(functional, &summary, &publications);
+        let (certificate, pin) = trace_certificate(functional, &sources, &expected, false);
+        let (raw, checkpoint) = bundle(&fixture, functional, &certificate, &fixture.rates, false);
+        let add_body = |raw: &[u8]| {
+            let mut r = Reader::new(raw);
+            r.bytes(64, "format").unwrap();
+            r.u16("major").unwrap();
+            r.u16("minor").unwrap();
+            for _ in 0..3 {
+                r.bytes(MAX_REPORT_BUNDLE_BYTES, "frame").unwrap();
+            }
+            let count = r.count(100, 8, "records").unwrap();
+            for _ in 0..count {
+                r.u32("proposal length").unwrap();
+                r.bytes(MAX_REPORT_BUNDLE_BYTES, "record").unwrap();
+            }
+            let offset = raw.len() - r.remaining();
+            assert_eq!(r.count(100, 12, "bodies").unwrap(), 0);
+            let mut w = Writer::default();
+            w.fixed(&raw[..offset])
+                .count(1)
+                .u64(5)
+                .bytes(&body)
+                .fixed(&raw[raw.len() - r.remaining()..]);
+            w.buf
+        };
+        let verified = verify(&add_body(&raw), &checkpoint, Some(&pin)).unwrap();
+        assert_eq!(verified.output, expected);
+        let trace = verified.statement_trace.unwrap();
+        assert_eq!(trace.publications, publications);
+        assert!(trace.summary.lines.iter().all(|line| line.delta == [0, 0]));
+        assert_eq!(
+            trace.summary.custom.unwrap().activation.activation,
+            fixture.activation
+        );
+        assert!(verify(&raw, &checkpoint, Some(&pin)).is_err());
+
+        let mut forged = publications;
+        let visible = forged[2]
+            .entries
+            .iter_mut()
+            .find(|entry| entry.event == VerifiedStatementEntryEvent::BecameVisible)
+            .unwrap();
+        visible.migration_run = Some(run ^ 1);
+        let false_output = trace_output_with_summary(functional, &summary, &forged);
+        let (certificate, pin) = trace_certificate(functional, &sources, &false_output, false);
+        let (raw, checkpoint) = bundle(&fixture, functional, &certificate, &fixture.rates, false);
+        assert!(verify(&add_body(&raw), &checkpoint, Some(&pin)).is_err());
+    }
 }
 
 #[test]

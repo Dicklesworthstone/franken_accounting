@@ -6,7 +6,7 @@ use crate::{
 };
 use fa_money::RoundingLaw;
 
-fn activate(h: &mut Harness, version: u32) -> CustomStatementSelection {
+pub(super) fn activate(h: &mut Harness, version: u32) -> CustomStatementSelection {
     let mut definition = CustomStatementDefinition::from_builtin(
         &StatementDefinition::embedded("income-statement").unwrap(),
     );
@@ -94,7 +94,10 @@ fn source(h: &mut Harness, selection: &CustomStatementSelection) -> crate::Certi
     }
 }
 
-fn direct(h: &mut Harness, request: &CustomStatementTraceRequest) -> CertifiedStatementTrace {
+pub(super) fn direct(
+    h: &mut Harness,
+    request: &CustomStatementTraceRequest,
+) -> CertifiedStatementTrace {
     let cx = h.cx();
     let authority = cap(&["read", "produce"]);
     if request.selection.functional {

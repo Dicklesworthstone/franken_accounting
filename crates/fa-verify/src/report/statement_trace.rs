@@ -35,10 +35,18 @@ const MAX_SOURCES: usize = 257;
 const MAX_LINKS: usize = 65_536;
 const MAX_REFERENCES: usize = 4096;
 
-/// One recorded entry, reconstructed from its authenticated canonical payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerifiedStatementEntryEvent {
+    Recorded,
+    /// Finalize made an earlier recorded migration chunk count at this step.
+    BecameVisible,
+}
+
+/// One recorded or newly visible entry, reconstructed from its authenticated payload.
 /// Its references identify lineage and settlement targets, not economic causes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedStatementEntryLink {
+    pub event: VerifiedStatementEntryEvent,
     pub entry: u128,
     pub digest: [u8; 32],
     pub class: u16,
@@ -46,6 +54,7 @@ pub struct VerifiedStatementEntryLink {
     pub posting_date: Option<i32>,
     pub principal: u128,
     pub references: Vec<(u128, [u8; 32])>,
+    pub migration_run: Option<u128>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -250,7 +259,7 @@ fn source(
     legs: &[Vec<Leg>],
     units: &[u32],
     functional_inputs: Option<&FunctionalInputs<'_>>,
-) -> Result<(ReplayedStatement, Vec<u8>), ReportError> {
+) -> Result<ReplayedSource, ReportError> {
     let source_bodies = crate::migration_balance::report_bodies_at(
         envelopes,
         records,
@@ -301,7 +310,11 @@ fn source(
                 "an intermediate custom trace source differs in its historical activation, exact statement, mappings or independently rounded presentation",
             ));
         }
-        return Ok((ReplayedStatement::Custom(statement), output));
+        return Ok(ReplayedSource {
+            statement: ReplayedStatement::Custom(statement),
+            output,
+            migration_activations: inputs.migration_activations,
+        });
     }
     let Selection::Statement(selection) = &certificate.selection else {
         return Err(failed(
@@ -348,7 +361,18 @@ fn source(
             "an intermediate trace statement differs from its independently reconstructed historical source",
         ));
     }
-    Ok((ReplayedStatement::BuiltIn(statement), output))
+    Ok(ReplayedSource {
+        statement: ReplayedStatement::BuiltIn(statement),
+        output,
+        migration_activations: inputs.migration_activations,
+    })
+}
+
+struct ReplayedSource {
+    statement: ReplayedStatement,
+    output: Vec<u8>,
+    /// Counting chunks mapped to the sequence of their authenticated Finalize.
+    migration_activations: BTreeMap<u64, u64>,
 }
 
 fn source_digest(custom: bool, functional: bool, output: &[u8]) -> Result<[u8; 32], ReportError> {
@@ -376,23 +400,37 @@ fn links(
     envelopes: &[LeafEnvelope],
     records: &[(usize, &[u8])],
     legs: &[Vec<Leg>],
+    migration_activations: &BTreeMap<u64, u64>,
 ) -> Result<Vec<VerifiedStatementEntryLink>, ReportError> {
     let mut links = BTreeMap::new();
     for (index, envelope) in envelopes.iter().enumerate() {
-        if envelope.kind != KIND_ENTRY || envelope.commit_seq != at {
+        if envelope.kind != KIND_ENTRY || envelope.commit_seq > at {
             continue;
         }
-        // Migration visibility events and historical replacement row aliases
-        // require additional authenticated identity semantics. Never guess them.
-        if matches!(envelope.class, 5 | 12 | 22) {
+        let event = if envelope.commit_seq == at {
+            VerifiedStatementEntryEvent::Recorded
+        } else if envelope.class == 12 && migration_activations.get(&(index as u64)) == Some(&at) {
+            // The lifecycle proof has already checked the run body, counting
+            // policy and unique terminal publication. Preserve the chunk's
+            // actual recording sequence rather than assigning Finalize to it.
+            VerifiedStatementEntryEvent::BecameVisible
+        } else {
+            continue;
+        };
+        // The original replacement format does not distinguish its historical
+        // row alias. Never guess that identity from an untrusted output link.
+        if envelope.class == 5 {
             return Err(failed(
                 "supported_report",
-                "portable trace attribution does not yet support migration publications or ambiguous legacy replacement identities",
+                "portable trace attribution does not yet support ambiguous legacy replacement identities",
             ));
         }
         let (len, payload) = records[index];
         let proposal = &payload[..len];
         let info = metadata::entry_info(proposal, envelope)?;
+        let migration_run =
+            crate::migration_balance::report_run_for_entry(envelope, proposal, index as u64)
+                .map_err(|error| failed("migration_visibility", error.to_string()))?;
         let mut references = BTreeMap::new();
         let mut insert = |id, digest| -> Result<(), ReportError> {
             if references
@@ -424,10 +462,11 @@ fn links(
             }
         }
         let link = VerifiedStatementEntryLink {
+            event,
             entry: info.identity,
             digest: envelope.record_digest,
             class: envelope.class,
-            recorded_at: at,
+            recorded_at: envelope.commit_seq,
             posting_date: if legs[index].is_empty() {
                 None
             } else {
@@ -435,6 +474,7 @@ fn links(
             },
             principal: info.principal,
             references: references.into_iter().collect(),
+            migration_run,
         };
         if links.insert(link.entry, link).is_some() {
             return Err(failed(
@@ -477,7 +517,11 @@ fn encode_publication(
         Ok(())
     };
     for entry in &step.entries {
-        charge(81 + usize::from(entry.posting_date.is_some()) * 4 + entry.references.len() * 48)?;
+        charge(
+            81 + usize::from(entry.posting_date.is_some()) * 4
+                + entry.references.len() * 48
+                + usize::from(entry.migration_run.is_some()) * 16,
+        )?;
     }
     for line in &step.changes {
         charge(
@@ -507,12 +551,15 @@ fn encode_publication(
         .fixed(&step.after_source_digest)
         .count(step.entries.len());
     for entry in &step.entries {
-        w.u8(0)
-            .u64(entry.recorded_at)
-            .u128(entry.entry)
-            .fixed(&entry.digest)
-            .u16(entry.class)
-            .u8(u8::from(entry.posting_date.is_some()));
+        w.u8(match entry.event {
+            VerifiedStatementEntryEvent::Recorded => 0,
+            VerifiedStatementEntryEvent::BecameVisible => 1,
+        })
+        .u64(entry.recorded_at)
+        .u128(entry.entry)
+        .fixed(&entry.digest)
+        .u16(entry.class)
+        .u8(u8::from(entry.posting_date.is_some()));
         if let Some(day) = entry.posting_date {
             w.i32(day);
         }
@@ -520,7 +567,10 @@ fn encode_publication(
         for (id, digest) in &entry.references {
             w.u128(*id).fixed(digest);
         }
-        w.u8(0); // No migration run in this admitted attribution profile.
+        w.u8(u8::from(entry.migration_run.is_some()));
+        if let Some(run) = entry.migration_run {
+            w.u128(run);
+        }
     }
     w.count(step.changes.len());
     for line in &step.changes {
@@ -570,7 +620,11 @@ pub(super) fn replay(
     }
     let functional_inputs = functional_inputs.as_ref();
     let first_certificate = super::certificate(request.sources[0])?;
-    let (first, first_bytes) = source(
+    let ReplayedSource {
+        statement: first,
+        output: first_bytes,
+        ..
+    } = source(
         &first_certificate,
         envelopes,
         records,
@@ -587,7 +641,11 @@ pub(super) fn replay(
     let mut link_count = 0usize;
     for raw in request.sources.iter().skip(1) {
         let next_certificate = super::certificate(raw)?;
-        let (next, next_bytes) = source(
+        let ReplayedSource {
+            statement: next,
+            output: next_bytes,
+            migration_activations,
+        } = source(
             &next_certificate,
             envelopes,
             records,
@@ -605,7 +663,13 @@ pub(super) fn replay(
             next.clone(),
             &next_bytes,
         )?;
-        let entries = links(next_certificate.known_at, envelopes, records, legs)?;
+        let entries = links(
+            next_certificate.known_at,
+            envelopes,
+            records,
+            legs,
+            &migration_activations,
+        )?;
         link_count = link_count
             .checked_add(entries.len())
             .filter(|n| *n <= MAX_LINKS)

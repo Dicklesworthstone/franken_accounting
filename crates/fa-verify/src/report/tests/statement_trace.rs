@@ -3,6 +3,9 @@
 //! and its exact lineage must nevertheless survive the portable proof.
 use super::*;
 
+#[path = "statement_trace/migration.rs"]
+mod migration;
+
 fn key_id(key: &[u8]) -> u128 {
     let mut parts = Writer::default();
     parts
@@ -117,6 +120,7 @@ fn fixture_trace() -> (Fixture, Vec<Vec<u8>>, VerifiedStatementTrace) {
             before_source_digest: commitment(b"fa:statement-trace-source:v1", &old_bytes),
             after_source_digest: commitment(b"fa:statement-trace-source:v1", &new_bytes),
             entries: vec![VerifiedStatementEntryLink {
+                event: VerifiedStatementEntryEvent::Recorded,
                 entry,
                 digest: f.records[at as usize - 1].envelope.record_digest,
                 class,
@@ -124,6 +128,7 @@ fn fixture_trace() -> (Fixture, Vec<Vec<u8>>, VerifiedStatementTrace) {
                 posting_date: Some(day),
                 principal: PRINCIPAL,
                 references,
+                migration_run: None,
             }],
             changes: if at == 5 {
                 summary
@@ -159,12 +164,15 @@ fn trace_output(trace: &VerifiedStatementTrace) -> Vec<u8> {
             .fixed(&step.after_source_digest)
             .count(step.entries.len());
         for entry in &step.entries {
-            w.u8(0)
-                .u64(entry.recorded_at)
-                .u128(entry.entry)
-                .fixed(&entry.digest)
-                .u16(entry.class)
-                .u8(u8::from(entry.posting_date.is_some()));
+            w.u8(match entry.event {
+                VerifiedStatementEntryEvent::Recorded => 0,
+                VerifiedStatementEntryEvent::BecameVisible => 1,
+            })
+            .u64(entry.recorded_at)
+            .u128(entry.entry)
+            .fixed(&entry.digest)
+            .u16(entry.class)
+            .u8(u8::from(entry.posting_date.is_some()));
             if let Some(day) = entry.posting_date {
                 w.i32(day);
             }
@@ -172,7 +180,10 @@ fn trace_output(trace: &VerifiedStatementTrace) -> Vec<u8> {
             for (id, digest) in &entry.references {
                 w.u128(*id).fixed(digest);
             }
-            w.u8(0);
+            w.u8(u8::from(entry.migration_run.is_some()));
+            if let Some(run) = entry.migration_run {
+                w.u128(run);
+            }
         }
         w.count(step.changes.len());
         for line in &step.changes {

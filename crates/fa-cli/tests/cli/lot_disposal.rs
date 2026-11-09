@@ -4,6 +4,8 @@ use super::*;
 
 #[path = "lot_disposal/certified.rs"]
 mod certified;
+#[path = "lot_disposal/invoice.rs"]
+mod invoice;
 
 fn run(book: &Path, step: &str, args: &[&str]) -> (i32, String, String) {
     let (code, out, err) = fa(Some(book), args);
