@@ -251,7 +251,13 @@ else
       "$RCH_BIN" exec -- "$CARGO_BIN" check -j "$TIER0_JOBS" --workspace --all-targets >"$check_log" 2>&1
     check_rc=$?
     check_worker="$(extract_worker "$check_log")"
-    if [ "$check_rc" -eq 0 ]; then
+    if grep -Eq '^RCH_SCOPED_COMPLETION_UNCONFIRMED$|^RCH_SOURCE_NAMESPACE_CONTROL_UNSETTLED([[:space:]]|$)|^\[RCH\] remote .* completion unconfirmed; ownership retained for recovery' "$check_log"; then
+      # The worker may still own a running command or its source namespace.
+      # Missing completion is not proof of a pre-start refusal: never replay.
+      check_lane="remote"
+      check_status="UNRUN"
+      remote_reason="remote completion or source release is unconfirmed; recover the existing RCH job before retrying"
+    elif [ "$check_rc" -eq 0 ]; then
       if grep -Fq 'Remote command finished: exit=0' "$check_log" \
         && grep -Eq '^[[:space:]]*Finished ' "$check_log"; then
         check_lane="remote"
@@ -263,8 +269,9 @@ else
     else
       executed=0
       grep -q 'Remote command finished' "$check_log" && executed=1
-      # Without `Remote command finished` the check never ran on this tree,
-      # so its exit says nothing about the tree: an rch SSH timeout
+      # Without `Remote command finished`, the remote result cannot qualify
+      # this tree. Explicit unsettled completion was handled above and must
+      # never replay. For the remaining offloader failures, an rch SSH timeout
       # (`[RCH-E104] SSH command timed out (no local fallback)`, exit 1) is
       # as UNRUN as a refusal (exit 103). check.sh classifies it the same
       # way (`ssh_timeout_exit1_is_unrun`). A compile error ran remotely and

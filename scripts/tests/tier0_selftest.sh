@@ -11,6 +11,7 @@
 #   - scripts/tests/tier0_selftest.sh::falls_back_to_local_lane_on_rch_refusal
 #   - scripts/tests/tier0_selftest.sh::unrun_refuses_to_fold_without_ejecting
 #   - scripts/tests/tier0_selftest.sh::forced_color_preserves_completion_and_forwarded_inputs
+#   - scripts/tests/tier0_selftest.sh::unconfirmed_remote_completion_never_replays_locally
 # =============================================================================
 
 set -uo pipefail
@@ -41,6 +42,24 @@ if [ "${FAKE_RCH_MODE:-remote}" = "ssh-timeout" ]; then
   printf '[RCH] remote hz3 failed [RCH-E104] SSH command timed out (no local fallback)\n' >&2
   exit 1
 fi
+case "${FAKE_RCH_MODE:-remote}" in
+  completion-unconfirmed)
+    printf 'RCH_SCOPED_COMPLETION_UNCONFIRMED\n' >&2
+    exit 1
+    ;;
+  completion-unconfirmed-zero)
+    printf 'Finished dev profile\nRemote command finished: exit=0\nRCH_SCOPED_COMPLETION_UNCONFIRMED\n' >&2
+    exit 0
+    ;;
+  completion-unconfirmed-message)
+    printf '[RCH] remote hz3 completion unconfirmed; ownership retained for recovery (no local fallback)\n' >&2
+    exit 1
+    ;;
+  source-unsettled)
+    printf 'RCH_SOURCE_NAMESPACE_CONTROL_UNSETTLED status=0 cause=deadline-or-external-interruption\n' >&2
+    exit 1
+    ;;
+esac
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--" ]; then
   shift 2
 fi
@@ -499,6 +518,42 @@ unexecuted_transport_failure_is_unrun() {
   return 0
 }
 
+unconfirmed_remote_completion_never_replays_locally() {
+  local mode rc head_sha note cargo_bin
+  cargo_bin="$(command -v cargo)"
+  cat > "$base/bin/cargo-observer" <<'CARGO_OBSERVER'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$*" >> "$FAKE_TIER0_CARGO_CALLS"
+exec "$FAKE_TIER0_REAL_CARGO" "$@"
+CARGO_OBSERVER
+  chmod +x "$base/bin/cargo-observer"
+  for mode in completion-unconfirmed completion-unconfirmed-zero completion-unconfirmed-message source-unsettled; do
+    rc=0
+    (
+      cd "$dev" || exit 1
+      git commit -q --allow-empty -m "fixture: $mode must not replay or publish PASS"
+      FA_CARGO_BIN="$base/bin/cargo-observer" \
+        FAKE_TIER0_REAL_CARGO="$cargo_bin" \
+        FAKE_TIER0_CARGO_CALLS="$base/$mode-cargo-calls" \
+        FAKE_RCH_MODE="$mode" \
+        bash scripts/tier0.sh --log-dir "$base/$mode-logs"
+    ) > "$base/$mode.out" 2> "$base/$mode.err"
+    rc=$?
+    head_sha="$(git -C "$dev" rev-parse HEAD)"
+    note="$(git -C "$dev" notes --ref=fa-tier0 show "$head_sha" 2>/dev/null || true)"
+    if [ "$rc" -ne 2 ] \
+      || ! grep -Eq '^UNRUN check tier0 UNRUN step=check ' "$base/$mode.out" \
+      || grep -Eq '^check([[:space:]]|$)' "$base/$mode-cargo-calls" \
+      || grep -Fxq 'verdict=pass' <<< "$note"; then
+      gate_fail "unconfirmed_remote_completion_never_replays_locally — $mode exit=$rc, calls=$(cat "$base/$mode-cargo-calls"), note=$note ($(cat "$base/$mode.out" "$base/$mode.err"))"
+      return 1
+    fi
+  done
+  gate_pass "unconfirmed_remote_completion_never_replays_locally (four unsettled-completion cases -> UNRUN, no local check, no PASS note)"
+  return 0
+}
+
 # 7. Note publication under a concurrent publisher: another clone moved the
 #    remote refs/notes/fa-tier0, so a plain push of this run's note is refused
 #    as non-fast-forward. --push-note must still publish this run's PASS note
@@ -607,6 +662,7 @@ if [ "$#" -gt 0 ]; then
       pre_push_requires_tier0_note|\
       falls_back_to_local_lane_on_rch_refusal|\
       unexecuted_transport_failure_is_unrun|\
+      unconfirmed_remote_completion_never_replays_locally|\
       unrun_refuses_to_fold_without_ejecting|\
       publishes_note_after_the_remote_notes_ref_moved)
         "$fn"
@@ -624,6 +680,7 @@ else
   pre_push_requires_tier0_note
   falls_back_to_local_lane_on_rch_refusal
   unexecuted_transport_failure_is_unrun
+  unconfirmed_remote_completion_never_replays_locally
   unrun_refuses_to_fold_without_ejecting
   publishes_note_after_the_remote_notes_ref_moved
 fi
