@@ -81,6 +81,31 @@ def fixtures(postings: tuple = POSTINGS) -> dict[str, str]:
     return {"csv_gl": native, "beancount": bean, "hledger_journal": ledger}
 
 
+def native_tb_fixture() -> dict:
+    """Hand-declared stock/gross controls, not computed by the comparator."""
+    cells = (
+        ("1000.10", "Asset", "USD", "150.27", "150.27", "0.00"),
+        ("1000.10", "Asset", "EUR", "9.876", "0.000", "9.876"),
+        ("3000", "Equity", "USD", "0.00", "150.27", "-150.27"),
+        ("3000", "Equity", "EUR", "0.000", "9.876", "-9.876"),
+        ("5000", "Expense", "USD", "150.27", "0.00", "150.27"),
+    )
+    return {
+        "v": 1, "event": "trial_balance", "book": "c" * 32, "warnings": [],
+        "coordinate": {"branch": "trunk", "effective": "as-of:2024-01-31", "known_at": 9},
+        "data": {
+            "mode": "stock", "activity": False, "balanced": True, "dimension": None, "periods": [],
+            "effective_through": "2024-01-31", "known_at": 9,
+            "rows": [{"code": code, "type": kind, "name": f"Account {code}",
+                      "debits": f"{debit} {unit}", "credits": f"{credit} {unit}", "net": f"{net} {unit}",
+                      "debits_pending": f"0 {unit}", "credits_pending": f"0 {unit}"}
+                     for code, kind, unit, debit, credit, net in cells],
+            "unit_totals": [{"unit": "USD", "debits": "300.54 USD", "credits": "300.54 USD"},
+                            {"unit": "EUR", "debits": "9.876 EUR", "credits": "9.876 EUR"}],
+        },
+    }
+
+
 def save_fixture(directory: Path, texts: dict[str, str] | None = None) -> dict[str, Path]:
     names = {"csv_gl": "native.csv", "beancount": "journal.beancount", "hledger_journal": "journal.hledger"}
     result = {}
@@ -132,6 +157,66 @@ class ExactControlsTests(unittest.TestCase):
         for value in (0.1, 1, None, "NaN", "inf", "1e2", " 1.00", "1.001", "1,000.00", "1_000"):
             with self.subTest(value=value), self.assertRaises(oracle.OracleError):
                 oracle.minor_units(value, 2)
+
+    def test_native_tb_matches_exact_gross_and_keeps_pending_separate(self):
+        doc = native_tb_fixture()
+        doc["data"]["rows"][0]["name"] = "Name\u0085with\u2028separators"
+        doc["data"]["rows"].append({
+            "code": "5000", "type": "Expense", "debits": "0 GBP", "credits": "0 GBP", "net": "0 GBP",
+            "debits_pending": "4.12 GBP", "credits_pending": "0 GBP",
+        })
+        doc["data"]["unit_totals"].append({"unit": "GBP", "debits": "0 GBP", "credits": "0 GBP"})
+        result = oracle.read_native_trial_balance(json.dumps(doc, ensure_ascii=False), self.reference)
+        self.assertEqual(result, {"observed_book_id": "c" * 32, "known_at": 9,
+                                  "effective_through": "2024-01-31", "account_currency_cells": 5})
+
+    def test_native_tb_refuses_wrong_scope_coordinate_and_account_cells(self):
+        changes = (
+            lambda d: d["coordinate"].update(known_at=10),
+            lambda d: d["coordinate"].update(branch="draft"),
+            lambda d: d["data"].update(known_at=10),
+            lambda d: d["data"].update(effective_through="2024-02-01"),
+            lambda d: d["data"].update(mode="activity"),
+            lambda d: d["data"].update(activity=True),
+            lambda d: d["data"].update(dimension={"kind": "department", "value": 1}),
+            lambda d: d["data"].update(periods=["FY2024-P01"]),
+            lambda d: d["data"].update(balanced=False),
+            lambda d: d.update(warnings=["diagnostic"]),
+            lambda d: d["data"]["rows"][0].update(code="9999"),
+            lambda d: d["data"]["rows"][0].update(code=[]),
+            lambda d: d["data"]["rows"][0].update(type="Liability"),
+            lambda d: d["data"]["rows"][0].update(net="0.01 USD"),
+            lambda d: d["data"]["rows"][0].update(debits="150.27 GBP", credits="150.27 GBP", net="0 GBP"),
+            lambda d: d["data"]["rows"][1].update(debits="9.8761 EUR", net="9.8761 EUR"),
+            lambda d: d["data"]["rows"].append(dict(d["data"]["rows"][0])),
+            lambda d: d["data"]["rows"].pop(),
+            lambda d: d["data"]["unit_totals"].append(dict(d["data"]["unit_totals"][0])),
+            lambda d: d["data"]["unit_totals"].pop(),
+            lambda d: d["data"]["unit_totals"][0].update(debits="300.55 USD", credits="300.55 USD"),
+        )
+        for index, change in enumerate(changes):
+            doc = native_tb_fixture()
+            change(doc)
+            with self.subTest(index=index), self.assertRaises(oracle.OracleError):
+                oracle.read_native_trial_balance(json.dumps(doc), self.reference)
+        # The question remains balanced and every net is unchanged. Its gross
+        # activity is still wrong, even with matching self-reported totals.
+        doc = native_tb_fixture()
+        doc["data"]["rows"][0].update(debits="150.28 USD", credits="150.28 USD")
+        doc["data"]["unit_totals"][0].update(debits="300.55 USD", credits="300.55 USD")
+        with self.assertRaises(oracle.OracleError):
+            oracle.read_native_trial_balance(json.dumps(doc), self.reference)
+
+    def test_native_tb_refuses_duplicate_json_fields_noninteger_numbers_and_extra_events(self):
+        text = json.dumps(native_tb_fixture())
+        for changed in (
+            text.replace('"balanced": true', '"balanced": true, "balanced": true'),
+            text.replace('"known_at": 9', '"known_at": 9.0'),
+            text.replace('"known_at": 9', '"known_at": NaN'),
+            text + "\n" + text,
+        ):
+            with self.subTest(changed=changed), self.assertRaises(oracle.OracleError):
+                oracle.read_native_trial_balance(changed, self.reference)
 
     def test_native_csv_refuses_count_leg_scope_scale_and_schema_damage(self):
         text = self.texts["csv_gl"]
@@ -296,13 +381,44 @@ class ExactControlsTests(unittest.TestCase):
 
 @unittest.skipUnless(all(TOOLS.values()), "UNRUN: real bean-check, bean-query and hledger executables are required")
 class ExternalToolTests(unittest.TestCase):
-    def run_external(self, texts=None):
+    def run_external(self, texts=None, native_tb=None):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
         paths = save_fixture(root, texts)
-        report = oracle.run_oracle(**paths, out=root / "oracle", **TOOLS)
+        tb_path = None
+        if native_tb is not None:
+            tb_path = root / "native-tb.jsonl"
+            tb_path.write_text(native_tb, encoding="utf-8")
+        report = oracle.run_oracle(**paths, out=root / "oracle", native_tb=tb_path, **TOOLS)
         return root, report
+
+    def test_real_tools_match_the_supplied_native_trial_balance_and_retain_its_bytes(self):
+        text = json.dumps(native_tb_fixture())
+        root, report = self.run_external(native_tb=text)
+        self.assertEqual(report["status"], "PASS", report.get("error"))
+        self.assertIn("native_trial_balance_matches_native_csv_net_gross_and_unit_totals", report["checks"])
+        self.assertEqual(report["native_trial_balance"]["observed_book_id"], "c" * 32)
+        pin = report["input_files"]["native_tb"]
+        self.assertEqual((root / "oracle" / pin["snapshot"]).read_text(), text)
+        self.assertEqual(oracle.snapshot(root / "native-tb.jsonl"),
+                         {key: pin[key] for key in ("bytes", "sha256")})
+
+    def test_native_trial_balance_original_and_snapshot_changes_invalidate_real_tool_success(self):
+        real_run = oracle.Commands.run
+        for snapshot in (False, True):
+            def run_and_mutate(commands, label, argv, **kwargs):
+                result = real_run(commands, label, argv, **kwargs)
+                if label == "bean-check":
+                    path = (commands.output / "inputs" if snapshot else commands.output.parent) / "native-tb.jsonl"
+                    with path.open("a", encoding="utf-8") as stream:
+                        stream.write("\n")
+                return result
+            with self.subTest(snapshot=snapshot), mock.patch.object(oracle.Commands, "run", run_and_mutate):
+                _, report = self.run_external(native_tb=json.dumps(native_tb_fixture()))
+            self.assertEqual(report["status"], "FAIL")
+            self.assertIn("native_tb bytes changed", report["error"])
+            self.assertEqual(report["commands"], 14, "all real external commands actually completed")
 
     def test_real_tools_accept_both_normal_balance_override_directions(self):
         _, report = self.run_external(contra_fixtures())
@@ -342,6 +458,8 @@ class ExternalToolTests(unittest.TestCase):
         self.assertTrue(all(tool["version"] and tool["sha256"] for tool in report["tools"].values()))
         self.assertIn("beanquery_debit_and_counts_match_every_native_cell", report["checks"])
         self.assertIn("hledger_independent_gross_credits_match_every_native_cell", report["checks"])
+        self.assertIsNone(report["native_trial_balance"])
+        self.assertNotIn("native_trial_balance_matches_native_csv_net_gross_and_unit_totals", report["checks"])
 
     def test_balanced_beancount_amount_change_still_fails_external_differential(self):
         texts = fixtures()
