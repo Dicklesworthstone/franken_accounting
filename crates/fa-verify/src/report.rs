@@ -86,7 +86,10 @@
 //!
 //! ProcedureCertificate v1 additionally replays `jet.round_amounts` and
 //! `jet.period_end_timing` v1/v2, `duplicates.same_same_same` v1 and first-digit
-//! Benford v2 from the complete native history. Exact duplicates reconstruct the full
+//! Benford v2 from the complete native history. `jet.post_closing` v1 additionally
+//! reconstructs the first journaled close of each period and the recording
+//! distance of every live posting after it, including reopened periods.
+//! Exact duplicates reconstruct the full
 //! leg multisets, effective dates and directed correction lineage. Authenticated
 //! period declarations supply the exclusive ends and period citations. The
 //! six-document closure binds native unit scales, procedure semantics and the
@@ -2161,6 +2164,12 @@ fn verify_report_with_native_subledger_input(
             ));
         }
         let (verified_procedure, output) = if let Some(request) = &procedure {
+            let period_transitions =
+                if request.parameters == procedure::VerifiedProcedureParameters::PostClosing {
+                    procedure::period_transitions(&cert.book, envelopes, &records, &infos)?
+                } else {
+                    BTreeMap::new()
+                };
             let entries = infos
                 .iter()
                 .filter(|(index, _)| {
@@ -2170,6 +2179,7 @@ fn verify_report_with_native_subledger_input(
                     let period = if matches!(
                         request.parameters,
                         procedure::VerifiedProcedureParameters::PeriodEndTiming { .. }
+                            | procedure::VerifiedProcedureParameters::PostClosing
                     ) && !legs[index].is_empty()
                     {
                         let effective = envelopes[index].effective_day.ok_or_else(|| {
@@ -2213,6 +2223,7 @@ fn verify_report_with_native_subledger_input(
                         })
                         .collect(),
                         period,
+                        transition: period_transitions.get(&index).cloned(),
                     })
                 })
                 .collect::<Result<Vec<_>, ReportError>>()?;

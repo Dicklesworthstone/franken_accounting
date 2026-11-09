@@ -262,6 +262,190 @@ fn direct_procedure_certificates_replay_and_verify_without_recording_findings() 
 }
 
 #[test]
+fn post_closing_certificate_exports_original_findings_after_reopening_and_reclosing() {
+    let fixture = Fixture::new();
+    let evidence = fixture.chart_and_evidence();
+    fixture.post("before-close", "2026-03-20", "10.00", &evidence);
+    let closed = ok(&fixture.book, &["period", "soft-close", "FY2026-P03"]);
+    let first_close = u64::try_from(integer(&closed, "recorded_at")).unwrap();
+    let plan_path = fixture.dir.join("post-closing-reopen.plan");
+    let planned = ok(
+        &fixture.book,
+        &[
+            "period",
+            "reopen",
+            "FY2026-P03",
+            "--to",
+            "open",
+            "--reason",
+            "LateTransactions",
+            "--plan-out",
+            plan_path.to_str().unwrap(),
+        ],
+    );
+    let approval = ok(
+        &fixture.book,
+        &[
+            "approve",
+            "--proposal",
+            text(&planned, "proposal_digest"),
+            "--as",
+            "post-closing-reviewer",
+        ],
+    );
+    let reopened = ok(
+        &fixture.book,
+        &[
+            "period",
+            "reopen",
+            "FY2026-P03",
+            "--to",
+            "open",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--approval",
+            text(&approval, "approval_vid"),
+            "--yes",
+        ],
+    );
+    assert_eq!(text(&reopened, "to"), "Open");
+    let selected = fixture.post("after-reopen", "2026-03-02", "20.00", &evidence);
+    let selected_at = u64::try_from(integer(&selected, "recorded_at")).unwrap();
+    let known_at = fixture.head();
+    let path = fixture.dir.join("post-closing.certificate");
+    let (report, metadata) = certified(
+        &fixture,
+        &[
+            "procedure",
+            "run",
+            "jet.post_closing@1",
+            "--certificate-out",
+            path.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(integer(&report, "finding_count"), 1);
+    let certificate = fa::procedure_certificate::ProcedureCertificate::decode(&bytes(&metadata))
+        .expect("retained post-closing certificate");
+    assert_eq!(certificate.known_at().0, known_at);
+    assert_eq!(certificate.report().version, 1);
+    assert!(certificate.report().coordinate.effective_through.is_none());
+    assert!(certificate.report().parameters.is_empty());
+    assert_eq!(certificate.report().work.comparisons, 2);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        certificate.canonical_bytes().unwrap()
+    );
+    let locator = format!("C:{}", text(&metadata, "oid"));
+
+    fixture.post("later-after-reopen", "2026-03-01", "30.00", &evidence);
+    ok(&fixture.book, &["period", "soft-close", "FY2026-P03"]);
+    ok(
+        &fixture.book,
+        &[
+            "period",
+            "close",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--yes",
+        ],
+    );
+    let fresh = ok(&fixture.book, &["procedure", "run", "jet.post_closing"]);
+    assert_eq!(integer(&fresh, "finding_count"), 2);
+    for source in [locator.as_str(), path.to_str().unwrap()] {
+        let replayed = ok(&fixture.book, &["replay", source]);
+        assert_eq!(replayed.get("data"), report.get("data"));
+        assert_eq!(replayed.get("coordinate"), report.get("coordinate"));
+    }
+    let state = fixture.checkpoint();
+    let signed = exported(
+        &fixture.book,
+        &["signed-checkpoint", "--state", text(&state, "oid")],
+    );
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    let checkpoint = fa_verify::verify_checkpoint(&bytes(&signed), &[key]).unwrap();
+    let before_export = fixture.head();
+    let produced = ok(
+        &fixture.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &locator,
+            "--state",
+            text(&state, "oid"),
+        ],
+    );
+    let bundle = bytes(&produced);
+    let receipt = unhex(text(&produced, "receipt"));
+    let verified = fa_verify::report::verify_report_expected(
+        &bundle,
+        &[key],
+        Some(&checkpoint.checkpoint),
+        Some(&receipt),
+        Some(certificate.digest()),
+    )
+    .expect("the independent reader reproduces the first-close finding at its original frontier");
+    assert_eq!(verified.output, certificate.output());
+    assert_eq!(verified.known_at, known_at);
+    let independent = verified.procedure.unwrap();
+    assert_eq!(independent.findings.len(), 1);
+    assert_eq!(
+        independent.findings[0].entry,
+        Some(u128::from_str_radix(text(&selected, "vid"), 16).unwrap())
+    );
+    assert_eq!(
+        independent.findings[0].statistic,
+        fa_verify::report::VerifiedProcedureStatistic::CommitsAfterClose {
+            period: "FY2026-P03".into(),
+            commits: selected_at - first_close,
+        }
+    );
+    let pin = fa_verify::blake3::hex(certificate.digest());
+    let result = fa_verify::cli::run(
+        &[
+            "report",
+            "post-closing.fab",
+            "--key",
+            text(&signed, "checkpoint_public_key"),
+            "--receipt",
+            "post-closing.receipt",
+            "--expect",
+            &pin,
+            "--json",
+        ]
+        .map(str::to_string),
+        &|path| match path {
+            "post-closing.fab" => Ok(bundle.clone()),
+            "post-closing.receipt" => Ok(receipt.clone()),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "unexpected input",
+            )),
+        },
+    );
+    assert_eq!(result.exit, 0, "{}{}", result.stdout, result.stderr);
+    assert!(result.stdout.contains("\"procedure\":\"jet.post_closing\""));
+    assert!(result.stdout.contains("\"evidence\":\"FA-EVID-L03\""));
+    assert!(result.stdout.contains("\"period\":\"FY2026-P03\""));
+    assert!(result.stdout.contains("\"commits_after_close\""));
+    assert_eq!(
+        fixture.head(),
+        before_export,
+        "proof export does not post accounting entries"
+    );
+    assert_eq!(
+        integer(
+            &ok(&fixture.book, &["finding", "runs"]),
+            "total_recorded_runs"
+        ),
+        0
+    );
+}
+
+#[test]
 fn constant_procedure_calls_retain_the_direct_certificate_and_replay_its_original_selection() {
     let fixture = Fixture::new();
     let evidence = fixture.chart_and_evidence();

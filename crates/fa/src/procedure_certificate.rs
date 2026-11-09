@@ -869,9 +869,10 @@ impl ProcedureCertificate {
     pub(crate) fn check_offline_profile(&self) -> Result<(), Refusal> {
         let duplicates = self.report.procedure == "duplicates.same_same_same";
         let benford = self.report.procedure == "benford.first_digit";
+        let post_closing = self.report.procedure == "jet.post_closing";
         let supported = match self.report.procedure.as_str() {
             "jet.round_amounts" | "jet.period_end_timing" => matches!(self.report.version, 1 | 2),
-            "duplicates.same_same_same" => {
+            "jet.post_closing" | "duplicates.same_same_same" => {
                 self.report.version == 1 && self.report.parameters.is_empty()
             }
             "benford.first_digit" => {
@@ -901,12 +902,13 @@ impl ProcedureCertificate {
             || !self.report.inputs.is_empty()
         {
             return Err(offline_unsupported(
-                "portable profiles are JET round-amount/period-end v1/v2, exact duplicates v1, and first-digit Benford v2 with its complete parameter inventory; only JET v2 supports an effective cutoff and no profile supports input handles",
+                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, exact duplicates v1, and first-digit Benford v2 with its complete parameter inventory; only round-amount/period-end v2 supports an effective cutoff and no profile supports input handles",
             ));
         }
         if canonical_registry_document(&self.registry)?.is_none()
-            || !registry_versions(&self.registry)?
-                .is_some_and(|versions| duplicates || benford || versions.0 == self.report.version)
+            || !registry_versions(&self.registry)?.is_some_and(|versions| {
+                duplicates || benford || post_closing || versions.0 == self.report.version
+            })
         {
             return Err(offline_unsupported(
                 "portable procedures require their version's original canonical procedure registry closure; legacy raw-text commitments cannot be substituted",

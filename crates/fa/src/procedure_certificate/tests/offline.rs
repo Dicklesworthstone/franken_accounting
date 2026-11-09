@@ -890,8 +890,8 @@ fn exact_duplicates_require_every_authenticated_group_member_and_recipient_trust
     let bytes = &produced.bundle.bytes;
     let mut reader = Reader::new(bytes);
     reader.bytes(64, "format").unwrap();
-    reader.u16("major").unwrap();
-    reader.u16("minor").unwrap();
+    assert_eq!(reader.u16("major").unwrap(), 2);
+    assert_eq!(reader.u16("minor").unwrap(), 0);
     for field in ["certificate", "checkpoint", "prefix"] {
         reader
             .bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, field)
@@ -2780,4 +2780,357 @@ fn period_end_timing_uses_each_authenticated_months_own_end_and_citation() {
             vec![Cite::Entry(entry), Cite::Period("FY2026-P02".into())]
         );
     }
+}
+
+fn post_closing_request(f: &Fixture) -> ProcedureRequest {
+    let mut request =
+        ProcedureRequest::new("jet.post_closing", catalog::Inputs::default()).unwrap();
+    request.known_at = Some(f.head());
+    request
+}
+
+fn post_closing_transition(
+    f: &mut Fixture,
+    period: &str,
+    transition: PeriodTransition,
+    key: &[u8],
+) -> CommitSeq {
+    let cx = f.cx();
+    let recorded = if matches!(transition, PeriodTransition::Reopen { .. }) {
+        let plan = f
+            .book
+            .plan_transition(&cx, period, transition, PRINCIPAL, 1, key)
+            .unwrap()
+            .unwrap();
+        let digest = f.book.plan_digest(&plan).unwrap().unwrap();
+        let approval = f
+            .runtime
+            .block_on(f.book.approve(
+                &cx,
+                Capability::embedded(VId(74), &["approve"]).unwrap(),
+                digest,
+            ))
+            .unwrap()
+            .unwrap()
+            .approval();
+        f.runtime
+            .block_on(f.book.transition_planned(
+                &cx,
+                &plan,
+                transition,
+                &cap(&["reopen"]),
+                &[approval],
+            ))
+            .unwrap()
+            .unwrap()
+    } else {
+        f.runtime
+            .block_on(f.book.transition_period(
+                &cx,
+                period,
+                transition,
+                PRINCIPAL,
+                1,
+                key,
+                &cap(&["close"]),
+            ))
+            .unwrap()
+            .unwrap()
+    };
+    recorded.recorded_at
+}
+
+#[test]
+fn post_closing_replays_first_close_reopening_reversals_and_historical_selection() {
+    let mut f = Fixture::new(124);
+    let (before_close, _) = f.post(20, "3000", "1000", 100_000, false);
+    let before = f.certify(&post_closing_request(&f)).certificate;
+    let first_close = post_closing_transition(
+        &mut f,
+        "FY2026-P01",
+        PeriodTransition::SoftClose,
+        b"post-closing-first",
+    );
+    post_closing_transition(
+        &mut f,
+        "FY2026-P01",
+        PeriodTransition::Reopen {
+            to: fa_time::PeriodState::Open,
+        },
+        b"post-closing-reopen",
+    );
+    // An earlier effective date does not erase the later recorded timing.
+    let (selected, _) = f.post(2, "3000", "1000", 200_000, false);
+    let (reversed, _) = f.post(3, "3000", "1000", 300_000, false);
+    reverse(&mut f, reversed, b"post-closing-undo", 4);
+    let (restored, _) = f.post(5, "3000", "1000", 400_000, false);
+    let undo = reverse(&mut f, restored, b"post-closing-first-undo", 6);
+    reverse(&mut f, undo, b"post-closing-undo-the-undo", 7);
+    post_closing_transition(
+        &mut f,
+        "FY2026-P02",
+        PeriodTransition::Open,
+        b"post-closing-open-february",
+    );
+    let mut february = template(&f, before_close, b"post-closing-february", 1);
+    february.effective_date = DateDay::from_ymd(2026, 2, 1).unwrap();
+    let february = post(&mut f, february);
+    let historical = f.certify(&post_closing_request(&f)).certificate;
+    reverse(&mut f, selected, b"post-closing-later-undo", 8);
+    post_closing_transition(
+        &mut f,
+        "FY2026-P01",
+        PeriodTransition::SoftClose,
+        b"post-closing-second",
+    );
+    post_closing_transition(
+        &mut f,
+        "FY2026-P01",
+        PeriodTransition::Close,
+        b"post-closing-final",
+    );
+    let current = f.certify(&post_closing_request(&f)).certificate;
+    let key = f.book.checkpoint_public_key();
+    for (certificate, expected, population, comparisons) in [
+        (&before, vec![], 1, 1),
+        (&historical, vec![selected, restored], 4, 3),
+        (&current, vec![restored], 3, 3),
+    ] {
+        let produced = produce(&mut f, certificate);
+        let verified = verify(&produced, certificate, key);
+        let independent = verified.procedure.as_ref().unwrap();
+        assert_eq!(independent.procedure, "jet.post_closing");
+        assert_eq!(independent.version, 1);
+        assert_eq!(
+            independent.parameters,
+            fa_verify::report::VerifiedProcedureParameters::PostClosing
+        );
+        assert_eq!(
+            (independent.live_entries, independent.live_legs),
+            (population, 0)
+        );
+        let replayed = decode_run(&verified.output).unwrap();
+        assert_eq!(replayed, *certificate.report());
+        assert_eq!(replayed.evidence, "FA-EVID-L03");
+        assert!(replayed.parameters.is_empty());
+        assert_eq!(
+            replayed.work,
+            Work {
+                entries: population,
+                legs: 0,
+                comparisons,
+            }
+        );
+        let observed: BTreeSet<_> = independent
+            .findings
+            .iter()
+            .map(|finding| VId(finding.entry.expect("post-closing entry citation")))
+            .collect();
+        assert_eq!(observed, expected.into_iter().collect());
+        for finding in &independent.findings {
+            let entry = VId(finding.entry.unwrap());
+            let (_, recorded_at) = f.book.read_entry(&f.cx(), entry).unwrap().unwrap();
+            let after = recorded_at.0 - first_close.0;
+            assert_eq!(
+                finding.statistic,
+                fa_verify::report::VerifiedProcedureStatistic::CommitsAfterClose {
+                    period: "FY2026-P01".into(),
+                    commits: after,
+                }
+            );
+            let original = replayed
+                .findings
+                .iter()
+                .find(|finding| finding.cites.first() == Some(&Cite::Entry(entry)))
+                .unwrap();
+            assert_eq!(original.severity, Severity::Medium);
+            assert_eq!(original.statistic.population, population);
+            assert_eq!(
+                original.narrative,
+                format!(
+                    "recorded {after} commit(s) after the period's first transition to SoftClosed"
+                )
+            );
+        }
+        for excluded in [before_close, reversed, undo, february] {
+            assert!(!observed.contains(&excluded));
+        }
+    }
+}
+
+#[test]
+fn post_closing_refuses_resealed_findings_missing_close_records_and_unpinned_recipients() {
+    let mut f = Fixture::new(125);
+    let (before, _) = f.post(1, "3000", "1000", 100_000, false);
+    post_closing_transition(
+        &mut f,
+        "FY2026-P01",
+        PeriodTransition::SoftClose,
+        b"post-closing-authenticated-close",
+    );
+    post_closing_transition(
+        &mut f,
+        "FY2026-P01",
+        PeriodTransition::Reopen {
+            to: fa_time::PeriodState::Open,
+        },
+        b"post-closing-authenticated-reopen",
+    );
+    f.post(2, "3000", "1000", 200_000, false);
+    let certified = f.certify(&post_closing_request(&f)).certificate;
+    let produced = produce(&mut f, &certified);
+    let key = f.book.checkpoint_public_key();
+    verify(&produced, &certified, key);
+    for variant in [
+        "omitted finding",
+        "before-close entry",
+        "distance",
+        "period",
+        "population",
+        "transition work",
+        "first-close state",
+        "decision population",
+    ] {
+        let mut forged = certified.clone();
+        match variant {
+            "omitted finding" => forged.report.findings.clear(),
+            "before-close entry" => forged.report.findings[0].cites[0] = Cite::Entry(before),
+            "distance" => forged.report.findings[0].statistic.value += 1,
+            "period" => forged.report.findings[0].cites[1] = Cite::Period("FY2026-P02".into()),
+            "population" => forged.report.findings[0].statistic.population += 1,
+            "transition work" => forged.report.work.comparisons += 1,
+            "first-close state" => {
+                forged.report.findings[0].narrative = forged.report.findings[0]
+                    .narrative
+                    .replace("SoftClosed", "Closed");
+            }
+            "decision population" => {
+                forged
+                    .report
+                    .decision_card
+                    .features
+                    .iter_mut()
+                    .find(|feature| feature.name == "population")
+                    .unwrap()
+                    .value += 1;
+            }
+            _ => unreachable!(),
+        }
+        reseal(&mut forged);
+        let bundle = replace_certificate(&produced.bundle.bytes, &forged);
+        let error = verify_report_expected(&bundle, &[key], None, None, Some(forged.digest()))
+            .expect_err(variant);
+        assert_eq!(
+            error.predicate, "procedure_recomputation",
+            "{variant}: {error}"
+        );
+    }
+    for variant in ["version", "parameter", "cutoff", "input"] {
+        let mut unsupported = certified.clone();
+        match variant {
+            "version" => unsupported.report.version = 2,
+            "parameter" => unsupported
+                .report
+                .parameters
+                .push(("window_days".into(), 3)),
+            "cutoff" => unsupported.report.coordinate.effective_through = Some(day(31)),
+            "input" => unsupported
+                .report
+                .inputs
+                .push(("account".into(), "1000".into())),
+            _ => unreachable!(),
+        }
+        assert!(unsupported.check_offline_profile().is_err(), "{variant}");
+    }
+    assert!(verify_report_expected(&produced.bundle.bytes, &[key], None, None, None).is_err());
+    assert!(
+        verify_report_expected(
+            &produced.bundle.bytes,
+            &[],
+            None,
+            Some(&produced.receipt),
+            Some(certified.digest())
+        )
+        .is_err()
+    );
+    assert!(
+        verify_report_expected(&produced.bundle.bytes, &[key], None, None, Some(&[0; 32])).is_err()
+    );
+
+    let bytes = &produced.bundle.bytes;
+    let mut reader = Reader::new(bytes);
+    reader.bytes(64, "format").unwrap();
+    reader.u16("major").unwrap();
+    reader.u16("minor").unwrap();
+    for field in ["certificate", "checkpoint", "prefix"] {
+        reader
+            .bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, field)
+            .unwrap();
+    }
+    let count_offset = reader.offset();
+    let count = reader.u32("records").unwrap();
+    let records_offset = reader.offset();
+    let mut removed = None;
+    for _ in 0..count {
+        let start = reader.offset();
+        reader.u32("proposal length").unwrap();
+        let record = reader
+            .bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "record")
+            .unwrap();
+        if fa_model::Entry::decode(record).is_ok_and(|entry| {
+            entry.proposal.idempotency_key == b"post-closing-authenticated-close"
+        }) {
+            assert!(removed.replace((start, reader.offset())).is_none());
+        }
+    }
+    assert_eq!(reader.u32("migration bodies").unwrap(), 0);
+    assert_eq!(reader.u32("registries").unwrap(), 6);
+    let mut registry_names = Vec::new();
+    let mut procedure_registry_end = None;
+    for _ in 0..6 {
+        let name = reader.str(128, "registry name").unwrap();
+        let document = reader.bytes(1024 * 1024, "registry document").unwrap();
+        assert!(!document.is_empty());
+        registry_names.push(name);
+        if name == "procedures" {
+            procedure_registry_end = Some(reader.offset());
+        }
+    }
+    reader.finish().unwrap();
+    assert_eq!(
+        registry_names,
+        [
+            "account_types",
+            "entry_classes",
+            "units",
+            "foundations",
+            "procedures",
+            "sod_policy"
+        ]
+    );
+    let mut changed_registry = bytes.clone();
+    changed_registry[procedure_registry_end.unwrap() - 1] ^= 1;
+    assert!(
+        verify_report_expected(
+            &changed_registry,
+            &[key],
+            None,
+            None,
+            Some(certified.digest())
+        )
+        .is_err(),
+        "the original procedure registry is part of the verified closure"
+    );
+    let (start, end) = removed.expect("the exact first close is in the complete signed prefix");
+    let mut writer = Writer::new();
+    writer
+        .fixed(&bytes[..count_offset])
+        .u32(count - 1)
+        .fixed(&bytes[records_offset..start])
+        .fixed(&bytes[end..]);
+    let omitted = writer.finish().unwrap();
+    assert!(
+        verify_report_expected(&omitted, &[key], None, None, Some(certified.digest())).is_err(),
+        "omitting the close cannot erase an authenticated post-closing finding"
+    );
 }

@@ -2383,7 +2383,8 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                     ),
                 ));
             }
-            crate::report::VerifiedProcedureStatistic::DaysToPeriodEnd { period, .. } => {
+            crate::report::VerifiedProcedureStatistic::DaysToPeriodEnd { period, .. }
+            | crate::report::VerifiedProcedureStatistic::CommitsAfterClose { period, .. } => {
                 details.push(("period", s(period)));
             }
             crate::report::VerifiedProcedureStatistic::DuplicateEntries { entries, .. } => {
