@@ -1579,10 +1579,10 @@ fn prepare_fx_settlement_group_with_admission<V: Vfs + Clone>(
                 }
                 combined.schema_minor = combined.schema_minor.max(prepared.proposal.schema_minor);
                 combined.legs.extend(prepared.proposal.legs);
-                if let Some(terms) = combined_terms {
-                    if let Err(error) = combined.set_fx_settlement_terms(&terms) {
-                        return Ok(Err(invalid(error)));
-                    }
+                if let Some(terms) = combined_terms
+                    && let Err(error) = combined.set_fx_settlement_terms(&terms)
+                {
+                    return Ok(Err(invalid(error)));
                 }
             }
         }
@@ -1847,15 +1847,15 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
         Ok(proposal) => proposal,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if let Some(route) = carrying.valuation_route {
-        if differences.iter().any(|difference| {
+    if let Some(route) = carrying.valuation_route
+        && differences.iter().any(|difference| {
             difference.account == route.valuation_account
                 || difference.account == route.unrealized_account
-        }) {
-            return Ok(Err(invalid(
-                "FX differences cannot post to allocated valuation or unrealized-FX destinations",
-            )));
-        }
+        })
+    {
+        return Ok(Err(invalid(
+            "FX differences cannot post to allocated valuation or unrealized-FX destinations",
+        )));
     }
     if let Err(refusal) = differences::apply(
         &mut template,

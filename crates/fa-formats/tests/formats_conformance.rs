@@ -2886,15 +2886,11 @@ fn beancount_and_hledger_read_back_codes_their_names_cannot_spell() {
         expected.keys().any(|(account, _)| account == "1200.01"),
         "{expected:?}"
     );
+    let bean = write_beancount(&journal).unwrap();
+    let hledger = write_hledger(&journal).unwrap();
     for (format, read) in [
-        (
-            "beancount",
-            read_beancount(&write_beancount(&journal).unwrap(), &units),
-        ),
-        (
-            "hledger",
-            read_hledger(&write_hledger(&journal).unwrap(), &units),
-        ),
+        ("beancount", read_beancount(&bean, &units)),
+        ("hledger", read_hledger(&hledger, &units)),
     ] {
         let read = read.unwrap_or_else(|e| panic!("{format}: {e}"));
         let balances = read.fold_balances().expect("fold");
@@ -2910,8 +2906,45 @@ fn beancount_and_hledger_read_back_codes_their_names_cannot_spell() {
         .cloned()
         .expect("the respelled account");
     twin.code = "1200_01".to_owned();
+    let mut distinct_roots = colliding.clone();
+    let mut other_root = twin.clone();
+    other_root.account_type = AccountType::EXPENSE;
+    distinct_roots.push(other_root);
     colliding.push(twin);
     let journal = rebuild(colliding);
+    for (format, written) in [
+        ("beancount_v3", write_beancount(&journal)),
+        ("hledger_journal", write_hledger(&journal)),
+    ] {
+        assert!(
+            matches!(written, Err(FormatError::Parse { format: observed, detail })
+                if observed == format && detail.contains("1200.01") && detail.contains("1200_01")),
+            "{format}: colliding chart must be refused before export",
+        );
+    }
+
+    // Preserve the reader's independent collision control: a supplied journal
+    // can contain duplicate names even though the native writer now refuses.
+    let bean = format!(
+        "{bean}\n1970-01-01 open Assets:A1200-01\n  fa_code: \"1200_01\"\n  fa_name: \"Accounts Receivable\"\n  fa_type: \"Asset\"\n"
+    );
+    let hledger = format!(
+        "{hledger}\naccount Assets:A1200-01  ; fa_code:1200_01 fa_type:Asset fa_name:Accounts Receivable\n"
+    );
+    for (format, read) in [
+        ("beancount", read_beancount(&bean, &units)),
+        ("hledger", read_hledger(&hledger, &units)),
+    ] {
+        let message = read.expect_err(format).to_string();
+        assert!(
+            message.contains("1200.01") && message.contains("1200_01"),
+            "{format}: {message}"
+        );
+    }
+
+    // Identical sanitized leaves in different roots are unambiguous. The
+    // complete exported name, rather than only its leaf, defines a collision.
+    let journal = rebuild(distinct_roots);
     for (format, read) in [
         (
             "beancount",
@@ -2922,11 +2955,11 @@ fn beancount_and_hledger_read_back_codes_their_names_cannot_spell() {
             read_hledger(&write_hledger(&journal).unwrap(), &units),
         ),
     ] {
-        let message = read.expect_err(format).to_string();
-        assert!(
-            message.contains("1200.01") && message.contains("1200_01"),
-            "{format}: {message}"
-        );
+        let read = read.unwrap_or_else(|e| panic!("{format}: {e}"));
+        assert_eq!(read.accounts, journal.accounts, "{format}");
+        let balances = read.fold_balances().expect("fold");
+        compare_balances_exact("distinct-account-roots", &expected, &balances)
+            .unwrap_or_else(|e| panic!("{format}: {e}"));
     }
 }
 

@@ -110,7 +110,9 @@ impl AccountNames {
 /// Write a `FormatJournal` as a deterministic Beancount v3 journal with
 /// coordinate certificate metadata, `open` directives, dated transactions,
 /// and `balance` assertions. Refuse dates that the four-digit-year profile
-/// cannot represent, including an assertion whose next day is out of range.
+/// cannot represent, including an assertion whose next day is out of range,
+/// account codes that map to the same exported name, and references to accounts
+/// absent from the chart.
 pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
     let mut out = String::new();
     out.push_str("; FrankenAccounting Beancount v3 export (fa-formats, bead fa-npi)\n");
@@ -158,9 +160,11 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
     );
     let open_date_str = beancount_date(open_day, "account opening")?;
     let mut acct_type_by_code = BTreeMap::new();
+    let mut names = AccountNames::default();
     for acct in &journal.accounts {
         acct_type_by_code.insert(acct.code.as_str(), acct.account_type);
         let bc_acct = to_beancount_account_name(acct.account_type, &acct.code);
+        names.declare("beancount_v3", &bc_acct, &acct.code)?;
         out.push_str(&format!("{open_date_str} open {bc_acct}\n"));
         out.push_str(&format!(
             "  fa_code: \"{}\"\n  fa_name: \"{}\"\n  fa_type: \"{}\"\n",
@@ -199,7 +203,10 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
             let acct_ty = acct_type_by_code
                 .get(leg.account_code.as_str())
                 .copied()
-                .unwrap_or(AccountType::ASSET);
+                .ok_or_else(|| FormatError::UnknownAccount {
+                    format: "beancount_v3",
+                    account_code: leg.account_code.clone(),
+                })?;
             let bc_acct = to_beancount_account_name(acct_ty, &leg.account_code);
             let amt_str = plaintext_amount(
                 "beancount_v3",
@@ -245,7 +252,10 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
         let acct_ty = acct_type_by_code
             .get(asrt.account_code.as_str())
             .copied()
-            .unwrap_or(AccountType::ASSET);
+            .ok_or_else(|| FormatError::UnknownAccount {
+                format: "beancount_v3",
+                account_code: asrt.account_code.clone(),
+            })?;
         let bc_acct = to_beancount_account_name(acct_ty, &asrt.account_code);
         let amt_str = plaintext_amount(
             "beancount_v3",
@@ -644,7 +654,8 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
 }
 
 /// Write a `FormatJournal` as a deterministic `hledger` / `ledger-cli` journal,
-/// refusing negative posting magnitudes before converting their signed values.
+/// refusing colliding account names, undeclared posting accounts, and negative
+/// posting magnitudes before converting their signed values.
 pub fn write_hledger(journal: &FormatJournal) -> Result<String, FormatError> {
     let mut out = String::new();
     out.push_str("; FrankenAccounting hledger export (fa-formats, bead fa-npi)\n");
@@ -671,9 +682,11 @@ pub fn write_hledger(journal: &FormatJournal) -> Result<String, FormatError> {
     ));
 
     let mut acct_type_by_code = BTreeMap::new();
+    let mut names = AccountNames::default();
     for acct in &journal.accounts {
         acct_type_by_code.insert(acct.code.as_str(), acct.account_type);
         let hl_acct = to_beancount_account_name(acct.account_type, &acct.code);
+        names.declare("hledger_journal", &hl_acct, &acct.code)?;
         out.push_str(&format!(
             "account {hl_acct}  ; {} fa_type:{}{}{} {}\n",
             inline_text_metadata("fa_code", &acct.code, true),
@@ -706,7 +719,10 @@ pub fn write_hledger(journal: &FormatJournal) -> Result<String, FormatError> {
             let acct_ty = acct_type_by_code
                 .get(leg.account_code.as_str())
                 .copied()
-                .unwrap_or(AccountType::ASSET);
+                .ok_or_else(|| FormatError::UnknownAccount {
+                    format: "hledger_journal",
+                    account_code: leg.account_code.clone(),
+                })?;
             let hl_acct = to_beancount_account_name(acct_ty, &leg.account_code);
             let amt_str = plaintext_amount(
                 "hledger_journal",

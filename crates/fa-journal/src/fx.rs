@@ -1926,10 +1926,12 @@ pub(crate) fn verify_realized_fx_settlement(
             units,
             leg_entities,
             rate_docs,
-            terms
-                .as_ref()
-                .and_then(|terms| terms.component(range.start)),
-            range,
+            (
+                terms
+                    .as_ref()
+                    .and_then(|terms| terms.component(range.start)),
+                range,
+            ),
         )?;
     }
     Ok(())
@@ -1942,8 +1944,10 @@ fn verify_realized_fx_component(
     units: &UnitRegistry,
     leg_entities: &[Option<String>],
     rate_docs: &[FxRateDocument],
-    terms: Option<&fa_model::FxSettlementComponent>,
-    range: core::ops::Range<usize>,
+    (terms, range): (
+        Option<&fa_model::FxSettlementComponent>,
+        core::ops::Range<usize>,
+    ),
 ) -> Result<(), Refusal> {
     let leg_entities = leg_entities
         .get(range.clone())

@@ -16,6 +16,8 @@ const SELECTION_FLAGS: &[&str] = &[
     "--request-out",
 ];
 
+type EquityPresentation = (Vec<(&'static str, Json)>, String);
+
 pub(super) fn validate_options(args: &Args, sub: Option<&str>) -> Result<(), Fail> {
     if args.switch("--equity") && args.switch("--statements") {
         return Err(usage(
@@ -138,7 +140,7 @@ fn presentation(
     report: &fa::EquityRollForwardDiff,
     request_bytes: &[u8],
     request_file: Option<&str>,
-) -> Result<(Vec<(&'static str, Json)>, String), Fail> {
+) -> Result<EquityPresentation, Fail> {
     let (units, human) = crate::cli::equity_diff_presentation(book, report)?;
     let before = expected.before.known_at.ok_or_else(|| {
         Fail::Internal("case equity request lost its fixed before frontier".into())

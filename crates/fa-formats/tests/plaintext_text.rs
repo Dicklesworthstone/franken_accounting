@@ -459,6 +459,72 @@ fn beancount_writer_refuses_negative_public_amount_magnitudes() {
 }
 
 #[test]
+fn plaintext_writers_refuse_undeclared_posting_and_assertion_accounts() {
+    let source = journal("Account references", "payment", None);
+    let units = UnitCatalog::embedded().unwrap();
+    for (format, restored) in [
+        (
+            "beancount_v3",
+            read_beancount(&write_beancount(&source).unwrap(), &units),
+        ),
+        (
+            "hledger_journal",
+            read_hledger(&write_hledger(&source).unwrap(), &units),
+        ),
+    ] {
+        verify_round_trip_identity(format, &source, &restored.unwrap()).unwrap();
+    }
+
+    // Public fields can be changed after construction. Neither writer may
+    // invent an Asset account for a posting absent from the chart.
+    let mut malformed = source.clone();
+    malformed.entries[0].legs[0].account_code = "9999".into();
+    for (format, written) in [
+        ("beancount_v3", write_beancount(&malformed)),
+        ("hledger_journal", write_hledger(&malformed)),
+    ] {
+        assert!(
+            matches!(written, Err(FormatError::UnknownAccount { format: observed, account_code })
+                if observed == format && account_code == "9999"),
+            "{format}: an undeclared posting account must be refused",
+        );
+    }
+
+    // Assertions are not part of the constructor's posting fold. Check both a
+    // valid assertion and an unknown account with freshly computed certificates.
+    let with_assertion = |account_code: &str| {
+        FormatJournal::new(
+            &source.coordinate.book_name,
+            "USD",
+            2,
+            source.coordinate.effective_through,
+            1,
+            source.accounts.clone(),
+            source.entries.clone(),
+            vec![FormatAssertion {
+                account_code: account_code.into(),
+                as_of: source.coordinate.effective_through,
+                side: Side::Credit,
+                amount: Amount::new(UnitId(0), 1_234_567),
+                unit_code: "USD".into(),
+                unit_scale: 2,
+            }],
+        )
+        .unwrap()
+    };
+    let valid = with_assertion("1000");
+    let restored = read_beancount(&write_beancount(&valid).unwrap(), &units).unwrap();
+    verify_round_trip_identity("beancount-declared-assertion", &valid, &restored).unwrap();
+    assert!(matches!(
+        write_beancount(&with_assertion("9999")),
+        Err(FormatError::UnknownAccount {
+            format: "beancount_v3",
+            account_code,
+        }) if account_code == "9999"
+    ));
+}
+
+#[test]
 fn hledger_amount_magnitudes_preserve_extrema_and_refuse_negative_public_values() {
     let base = journal("Hledger amounts", "payment", None);
     let units = UnitCatalog::embedded().unwrap();
@@ -509,7 +575,7 @@ fn hledger_amount_magnitudes_preserve_extrema_and_refuse_negative_public_values(
 fn beancount_writer_refuses_dates_outside_its_profile_and_assertion_overflow() {
     let base = journal("Date boundaries", "payment", None);
     let normal = base.coordinate.effective_through;
-    let year_zero = DateDay::parse("0000-01-01").unwrap();
+    let year_zero = DateDay::from_ymd(0, 1, 1).unwrap();
     let last = DateDay::parse("9999-12-31").unwrap();
     let after_last = DateDay::from_ymd(10000, 1, 1).unwrap();
     let rebuild = |cutoff, effective, assertion_day: Option<DateDay>| {

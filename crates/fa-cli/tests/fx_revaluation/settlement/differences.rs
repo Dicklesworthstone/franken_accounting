@@ -164,10 +164,12 @@ fn net_cash_workflow(liability: bool, allocated: bool) {
         data(&f.f.commit(&plan_path)).get("already_recorded"),
         Some(&Json::Bool(true))
     );
-    assert_eq!(
-        data(&f.cash(&args)).get("already_recorded"),
-        Some(&Json::Bool(true))
-    );
+    // Direct retries use fa post's recorded event; saved-plan commits above
+    // carry the separate already_recorded field.
+    let retried = f.cash(&args);
+    assert_eq!(text(&retried, "event"), "recorded");
+    assert_eq!(text(data(&retried), "vid"), vid);
+    assert_eq!(f.f.entry(vid), entry);
     assert_eq!(head(&f.f.book), after_post);
     let undone = ok(
         &f.f.book,
