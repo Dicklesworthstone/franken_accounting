@@ -283,6 +283,98 @@ def read_reference(text: str) -> Reference:
     return reference
 
 
+def read_native_trial_balance(text: str, reference: Reference) -> dict:
+    """Check one unsliced stock `fa tb --json` against the native posting fold."""
+    def fields(pairs):
+        result = {}
+        for key, value in pairs:
+            require(key not in result, f"native TB repeats JSON field {key!r}")
+            result[key] = value
+        return result
+
+    def invalid_number(value):
+        raise OracleError(f"native TB contains a non-integer JSON number {value!r}")
+
+    lines = [line for line in text.split("\n") if line.strip(" \t\r")]
+    require(len(lines) == 1, "native TB must contain exactly one trial_balance event")
+    try:
+        envelope = json.loads(lines[0], object_pairs_hook=fields,
+                              parse_float=invalid_number, parse_constant=invalid_number)
+    except (ValueError, RecursionError) as error:
+        raise OracleError(f"invalid native TB JSON: {error}") from error
+    require(isinstance(envelope, dict) and type(envelope.get("v")) is int
+            and envelope["v"] == 1 and envelope.get("event") == "trial_balance"
+            and envelope.get("warnings") == [], "native TB is not a completed version-1 trial_balance event")
+    book = envelope.get("book")
+    require(isinstance(book, str) and re.fullmatch(r"[0-9a-f]{32}", book) is not None,
+            "native TB has no canonical book identity")
+    coordinate, data = envelope.get("coordinate"), envelope.get("data")
+    require(isinstance(coordinate, dict) and isinstance(data, dict), "native TB has no coordinate or data")
+    known_at, through = int(reference.coordinate["known_at"]), reference.coordinate["effective_through"]
+    require(type(data.get("known_at")) is int and data["known_at"] == known_at
+            and type(coordinate.get("known_at")) is int and coordinate["known_at"] == known_at
+            and data.get("effective_through") == through
+            and coordinate.get("effective") == f"as-of:{through}"
+            and coordinate.get("branch") == "trunk", "native TB coordinate differs from the native CSV")
+    require(data.get("mode") == "stock" and data.get("activity") is False
+            and "dimension" in data and data["dimension"] is None and data.get("periods") == []
+            and data.get("balanced") is True, "native TB must be balanced, unsliced stock at an as-of date")
+
+    def amount(value):
+        require(isinstance(value, str), "native TB amounts must be exact decimal/unit strings")
+        number, separator, unit = value.rpartition(" ")
+        require(separator and re.fullmatch(r"[A-Z][A-Z0-9._'-]*", unit, re.ASCII) is not None,
+                "native TB amount has no valid unit")
+        if unit not in reference.scales:
+            # An inactive or pending-only unit has no posted scale in the CSV.
+            # Only exact zero is comparable without inventing that scale.
+            require(re.fullmatch(r"[+-]?0(?:\.0+)?", number, re.ASCII) is not None,
+                    "native TB has nonzero activity in a unit absent from the CSV")
+            return 0, unit
+        return minor_units(number, reference.scales[unit]), unit
+
+    rows = data.get("rows")
+    require(isinstance(rows, list), "native TB has no account rows")
+    observed, seen = {}, set()
+    for row in rows:
+        require(isinstance(row, dict) and isinstance(row.get("code"), str)
+                and row["code"] in reference.accounts,
+                "native TB names an undeclared account")
+        code = row["code"]
+        require(row.get("type") == reference.accounts[code], "native TB account type differs from the CSV")
+        (debit, unit), (credit, credit_unit), (net, net_unit) = (
+            amount(row.get(key)) for key in ("debits", "credits", "net"))
+        require(unit == credit_unit == net_unit and debit >= 0 and credit >= 0 and net == debit - credit,
+                "native TB row has inconsistent units, gross activity or net")
+        key = (code, unit)
+        require(key not in seen, "native TB repeats an account/currency cell")
+        seen.add(key)
+        if key in reference.cells or debit or credit:
+            observed[key] = {"net": net, "debit": debit, "credit": credit}
+    expected = {key: {name: getattr(cell, name) for name in ("net", "debit", "credit")}
+                for key, cell in reference.cells.items()}
+    compare_cells(observed, expected, "native TB net/gross cells")
+    totals = data.get("unit_totals")
+    require(isinstance(totals, list), "native TB has no unit totals")
+    observed_totals, seen_units = {}, set()
+    for row in totals:
+        require(isinstance(row, dict), "native TB has an invalid unit total")
+        (debit, unit), (credit, credit_unit) = (amount(row.get(key)) for key in ("debits", "credits"))
+        require(unit == credit_unit == row.get("unit") and debit >= 0 and credit >= 0,
+                "native TB unit total has inconsistent units or negative activity")
+        require(unit not in seen_units, "native TB repeats a unit total")
+        seen_units.add(unit)
+        if debit or credit:
+            observed_totals[unit] = (debit, credit)
+    expected_totals = {}
+    for (_, unit), cell in reference.cells.items():
+        debit, credit = expected_totals.get(unit, (0, 0))
+        expected_totals[unit] = (debit + cell.debit, credit + cell.credit)
+    require(observed_totals == expected_totals, "native TB unit totals differ from the native CSV")
+    return {"observed_book_id": book, "known_at": known_at, "effective_through": through,
+            "account_currency_cells": len(observed)}
+
+
 def read_account_map(text: str, kind: str, reference: Reference) -> dict[str, str]:
     """Read native declarations, not monetary postings or inferred account codes."""
     require(kind in ("beancount", "hledger"), "unknown plaintext format")
@@ -480,6 +572,7 @@ class Commands:
 
 
 def run_oracle(csv_gl: Path, beancount: Path, hledger_journal: Path, out: Path, *,
+               native_tb: Path | None = None,
                bean_check: str | Path | None = None, bean_query: str | Path | None = None,
                hledger: str | Path | None = None, timeout: int = 300) -> dict:
     """Execute the real tools and retain a PASS/FAIL/UNRUN report in a new directory.
@@ -493,8 +586,12 @@ def run_oracle(csv_gl: Path, beancount: Path, hledger_journal: Path, out: Path, 
     require(not out.exists(), "oracle output already exists; preserve the previous run and choose a new directory")
     inputs = {"csv_gl": Path(csv_gl).resolve(strict=True), "beancount": Path(beancount).resolve(strict=True),
               "hledger": Path(hledger_journal).resolve(strict=True)}
+    if native_tb is not None:
+        inputs["native_tb"] = Path(native_tb).resolve(strict=True)
     content = {name: path.read_bytes() for name, path in inputs.items()}
     reference = read_reference(content["csv_gl"].decode("utf-8", errors="strict"))
+    checked_tb = (read_native_trial_balance(content["native_tb"].decode("utf-8", errors="strict"), reference)
+                  if native_tb is not None else None)
     maps = {kind: read_account_map(content[kind].decode("utf-8", errors="strict"), kind, reference)
             for kind in ("beancount", "hledger")}
     require(maps["beancount"] == maps["hledger"], "plaintext exports disagree about original account identities")
@@ -506,6 +603,8 @@ def run_oracle(csv_gl: Path, beancount: Path, hledger_journal: Path, out: Path, 
     retained = out / "inputs"
     retained.mkdir()
     filenames = {"csv_gl": "native.csv", "beancount": "journal.beancount", "hledger": "journal.hledger"}
+    if native_tb is not None:
+        filenames["native_tb"] = "native-tb.jsonl"
     input_pins = {}
     for name, data in content.items():
         path = retained / filenames[name]
@@ -522,10 +621,13 @@ def run_oracle(csv_gl: Path, beancount: Path, hledger_journal: Path, out: Path, 
               "tools": tool_pins, "entries": reference.entries, "postings": reference.postings,
               "account_currency_cells": len(reference.cells), "declared_accounts": len(reference.accounts),
               "currencies": reference.scales, "checks": [],
+              "native_trial_balance": checked_tb,
               "compared_controls": {"file": "expected.json", **snapshot(out / "expected.json")},
               "helper_sha256": snapshot(Path(__file__))["sha256"], "python_version": sys.version,
               "tool_hash_scope": "Hashes bind the resolved executable files; Python launcher hashes do not bind all installed package dependencies."}
     try:
+        if checked_tb is not None:
+            report["checks"].append("native_trial_balance_matches_native_csv_net_gross_and_unit_totals")
         for name, path in tools.items():
             version = commands.run(f"{name}-version", [str(path), "--version"], allow_stderr=True)
             require(version.strip(), f"{name} returned no version")
@@ -585,6 +687,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--csv-gl", type=Path, required=True, help="untouched fa export csv-gl output")
     parser.add_argument("--beancount", type=Path, required=True, help="untouched same-coordinate Beancount export")
     parser.add_argument("--hledger-journal", type=Path, required=True, help="untouched same-coordinate hledger export")
+    parser.add_argument("--native-tb", type=Path, help="untouched fa tb --as-of <date> --as-known-at <seq> --json output")
     parser.add_argument("--out", type=Path, required=True, help="new directory for immutable input copies and tool transcripts")
     parser.add_argument("--bean-check", type=Path, help="real bean-check executable; default PATH")
     parser.add_argument("--bean-query", type=Path, help="real bean-query executable; default PATH")
@@ -593,6 +696,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         report = run_oracle(args.csv_gl, args.beancount, args.hledger_journal, args.out,
+                            native_tb=args.native_tb,
                             bean_check=args.bean_check, bean_query=args.bean_query,
                             hledger=args.hledger, timeout=args.timeout)
     except Unavailable as error:
