@@ -126,14 +126,33 @@ Migration runs can stage opening balances for limited accounts without making th
 
 Register verification compares both amount columns, counts, identity, period membership, watermark and fold checksum against the journal payloads. Rebuilding repairs derived rows and retires phantom cells without changing journal entries. Existing register caches from before the pending-column format must be rebuilt; their missing columns are reported as drift rather than assumed to be zero.
 
-`fa verify book --require-materialized` also requires every period's cache to
-be initialized and current.
+`fa verify book --require-materialized` also requires every period's native
+cache to be initialized and current.
 `fa verify registers --period FY2026-P03 --require-materialized` applies that
 requirement to the selected periods.
 These checks exit 8 for missing or stale caches and name the maintenance needed;
 without the switch, an absent or verified stale cache remains maintenance lag.
 `fa registers advance --fiscal-year 2026` initializes the complete year's caches,
 including empty periods whose ordinary materialization is a no-op.
+
+Whole-book verification also checks every retained functional-currency cache
+against its literal journal prefix. A damaged functional cache fails
+`fa verify book`; an absent or intact but lagging cache remains optional
+maintenance state. To require current functional caches explicitly, run:
+
+```bash
+fa verify registers --functional --fiscal-year 2026 --require-materialized --book ./books/acme --json
+fa registers advance --functional --fiscal-year 2026 --book ./books/acme --json
+```
+
+Functional verification reports `available`, `through`, `stale` and
+`lag_entries` for each selected period. Lag counts unread Entry births across
+the book, including control entries and cross-period hold resolutions, because
+each maintained period follows that journal stream. Cache publications and
+document-only commits do not create lag. Historical selections measure
+currentness at their selected observation. The strict check exits 8 for an
+absent or lagging cache and supplies the advancement command; drift supplies
+an explicit materialization command. Verification never repairs a cache.
 
 The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Uncertified head and historical trial balances and period activity can use checked native cells plus an exact tail bounded by the requested recorded sequence. Historical reads pin the chart, periods, maintenance state and cells to that same snapshot, so later postings and cache repairs cannot enter the result. Missing or damaged historical cells and unavailable delta windows fall back to the literal journal fold; these retained snapshots are not journaled RegisterCheckpoints. Other selections retain literal folds.
 

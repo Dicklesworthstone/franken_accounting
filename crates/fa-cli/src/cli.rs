@@ -15869,7 +15869,7 @@ fn verify_usage_at(
 /// The targets `fa verify book` runs, cheapest first (plan §15.3 Proofs;
 /// fa-waow). `verify close` is not one: it asks whether a fiscal year needs a
 /// close, which is not a question about the book's integrity.
-const BOOK_VERIFY_TARGETS: [&str; 11] = [
+const BOOK_VERIFY_TARGETS: [&str; 12] = [
     "projections",
     "periods",
     "schedules",
@@ -15880,6 +15880,7 @@ const BOOK_VERIFY_TARGETS: [&str; 11] = [
     "fx-conversion",
     "entities",
     "registers",
+    "functional-registers",
     "replay",
 ];
 
@@ -15912,12 +15913,25 @@ fn verify_book(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mut failed = Vec::new();
     let mut first_error = None;
     for target in BOOK_VERIFY_TARGETS {
-        let by_period = matches!(target, "entities" | "registers");
+        let by_period = matches!(target, "entities" | "registers" | "functional-registers");
         let (verdict, detail) = if by_period && periods.is_empty() {
             ("skipped", "the book has no periods".to_string())
         } else {
             let mut sub = args.clone();
-            sub.positional = vec!["verify".to_string(), target.to_string()];
+            sub.positional = vec![
+                "verify".to_string(),
+                if target == "functional-registers" {
+                    "registers".to_string()
+                } else {
+                    target.to_string()
+                },
+            ];
+            if target == "functional-registers" {
+                sub.switches.push("--functional".to_string());
+            }
+            // The existing whole-book strict mode requires native caches.
+            // Functional caches are optional; explicitly select them with
+            // `verify registers --functional --require-materialized`.
             if target != "registers" {
                 sub.switches.retain(|s| s != "--require-materialized");
             }
@@ -15969,7 +15983,9 @@ fn verify_book(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 failed
                     .iter()
                     .map(|t| {
-                        if *t == "registers" && args.switch("--require-materialized") {
+                        if *t == "functional-registers" {
+                            "fa verify registers --functional --period <code> --json".to_string()
+                        } else if *t == "registers" && args.switch("--require-materialized") {
                             format!("fa verify {t} --require-materialized --json")
                         } else {
                             format!("fa verify {t} --json")
@@ -23096,13 +23112,11 @@ fn admit_registers(
 }
 
 fn verify_functional_registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    if args.positional.len() != 2
-        || args.positional.get(1).map(String::as_str) != Some("registers")
-        || args.switch("--require-materialized")
+    if args.positional.len() != 2 || args.positional.get(1).map(String::as_str) != Some("registers")
     {
         return Err(usage(
-            "--functional verifies retained register prefixes; --require-materialized is a native-cache currentness check",
-            "fa verify registers --functional --period <code> [--as-known-at <sequence>]",
+            "--functional selects functional registers; verify book already checks their integrity",
+            "fa verify registers --functional --period <code> [--as-known-at <sequence>] [--require-materialized]",
         ));
     }
     let principal = ctx.principal(args);
@@ -23120,13 +23134,17 @@ fn verify_functional_registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(),
         .read_scope(principal, &capability)??
         .admit_whole_book(selected)??;
     let periods = selected_periods(args, &book)?;
+    let period_refs: Vec<_> = periods.iter().map(String::as_str).collect();
+    let verified =
+        book.verify_functional_registers_each(principal, &capability, &period_refs, Some(at))??;
     let mut details = Vec::new();
     let mut failing = Vec::new();
-    for period in &periods {
-        let verified =
-            book.verify_functional_registers(principal, &capability, period, Some(at))??;
+    let mut lagging = Vec::new();
+    for (period, verified) in periods.iter().zip(verified) {
         if !verified.is_green() {
             failing.push(period.as_str());
+        } else if !verified.available || verified.stale {
+            lagging.push(period.as_str());
         }
         details.push(obj(vec![
             ("period", s(period)),
@@ -23141,6 +23159,8 @@ fn verify_functional_registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(),
                 }),
             ),
             ("available", Json::Bool(verified.available)),
+            ("stale", Json::Bool(verified.stale)),
+            ("lag_entries", Json::Int(verified.lag_entries as i128)),
             (
                 "through",
                 verified
@@ -23163,10 +23183,28 @@ fn verify_functional_registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(),
             fix: Some("retain the finding; explicit recovery is `fa registers materialize --functional --period <code> --yes`".into()),
         });
     }
+    if args.switch("--require-materialized") && !lagging.is_empty() {
+        return Err(Fail::Verification {
+            message: format!(
+                "functional registers are uninitialized or have unread journal entries in {}",
+                lagging.join(", "),
+            ),
+            detail: Json::Arr(details),
+            cite: Some("plan §5.3 (materialized registers follow journal activity)".into()),
+            fix: Some(format!(
+                "advance the selected caches with `fa registers advance --functional {} --json` using the same --book, then rerun verification",
+                lagging
+                    .iter()
+                    .map(|period| format!("--period {period}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )),
+        });
+    }
     ctx.out.event(
         "functional_registers_verified",
         vec![("known_at", Json::Int(i128::from(at.0))), ("periods", Json::Arr(details))],
-        &format!("functional cached prefixes checked against the journal for {}; absent caches make no verification claim", periods.join(", ")),
+        &format!("functional cached prefixes checked against the journal for {}; {} uninitialized or lagging caches; absent caches make no verification claim", periods.join(", "), lagging.len()),
     );
     Ok(())
 }

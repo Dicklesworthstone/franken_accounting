@@ -242,6 +242,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         period: &str,
         known_at: Option<CommitSeq>,
     ) -> Outcome<fa_registers::functional_maintainer::Verification> {
+        match self
+            .verify_functional_registers_each(cx, principal, capability, &[period], known_at)
+            .await?
+        {
+            Err(refusal) => Ok(Err(refusal)),
+            Ok(verified) => verified.into_iter().next().map(Ok).ok_or_else(|| {
+                BookError::Kernel(fa_journal::KernelError::Corrupt(
+                    "functional verification omitted its selected period".into(),
+                ))
+            }),
+        }
+    }
+
+    /// Verify a selected cohort under one current-authority admission and one
+    /// retained observation, sharing its Entry inventory across the periods.
+    /// Absence and unread Entry activity remain distinct from cached drift.
+    pub async fn verify_functional_registers_each(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        periods: &[&str],
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<Vec<fa_registers::functional_maintainer::Verification>> {
         if let Err(denial) =
             fa_policy::require(capability, Op::Verify, "verifying functional registers")
         {
@@ -256,11 +280,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         };
         let result = self.query(cx, |db, book| {
             fa_journal::entry_history::verify_entry_history(db, cx, book, Some(at))?;
-            Ok(fa_registers::functional_maintainer::verify(
+            Ok(fa_registers::functional_maintainer::verify_each(
                 db,
                 &cx.query(),
                 book,
-                period,
+                periods,
                 Some(at),
             )?)
         })?;

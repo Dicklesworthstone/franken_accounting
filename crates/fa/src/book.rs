@@ -5623,6 +5623,21 @@ impl Book {
         )))
     }
 
+    /// Independently verify selected functional snapshots at one observation,
+    /// sharing Entry currentness reads without publishing or repairing caches.
+    pub fn verify_functional_registers_each(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        periods: &[&str],
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<Vec<fa_registers::functional_maintainer::Verification>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.verify_functional_registers_each(
+            &purposes, principal, capability, periods, known_at
+        )))
+    }
+
     /// [`Book::advance_registers`] under the caller's serving context. Timed
     /// maintenance awaits the existing native publication without starting a
     /// nested runtime or replacing the serving region's cancellation/budget.
