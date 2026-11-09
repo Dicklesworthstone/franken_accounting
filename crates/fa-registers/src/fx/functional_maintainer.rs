@@ -26,7 +26,7 @@ use fa_model::limits::{
 use fa_model::symbols::{label, property, relation};
 use fa_model::{ControlPayload, Entry, EntryClass, Id128, Reader, Writer, domain_digest};
 use fa_money::UnitId;
-use fgdb::{Database, WriteBatch, WriteMismatchPolicy};
+use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy};
 use fgdb_delta_types::{DeltaRow, ElementId, IndexError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, ObjectId, QueryCx, VId};
@@ -100,6 +100,13 @@ pub struct HeadFold {
 pub struct Verification {
     pub available: bool,
     pub through: Option<CommitSeq>,
+    /// An absent cache or unread Entry activity at the selected observation.
+    /// Meaningful only when `is_green()`; corruption is never ordinary lag.
+    pub stale: bool,
+    /// Book-wide unread Entry births, including controls and staged migrations.
+    /// Cache publications and document-only commits do not create Entry work.
+    /// A prefix identity change is drift, not a newly born entry.
+    pub lag_entries: usize,
     pub drift: Vec<String>,
 }
 
@@ -1181,6 +1188,8 @@ pub fn fold_at_with_context<V: Vfs + Clone>(
 
 /// Independently compare complete cached state to its literal journal prefix.
 /// Coherently resealed invented cells/counts are findings, not valid evidence.
+/// Freshness counts Entry activity after that prefix through the selected
+/// observation; a maintenance publication does not make its own cache stale.
 pub fn verify<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &QueryCx,
@@ -1190,6 +1199,99 @@ pub fn verify<V: Vfs + Clone>(
 ) -> Result<Verification, RegisterError> {
     context(cx)?;
     let at = crate::resolve_known_at(db, known_at)?;
+    verify_at(db, cx, book, period, at, &mut None)
+}
+
+/// Verify selected periods at one observation, sharing the current Entry
+/// inventory. Each cached prefix is still independently refolded; the results
+/// preserve period order and the first error, without repairing derived state.
+pub fn verify_each<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    periods: &[&str],
+    known_at: Option<CommitSeq>,
+) -> Result<Vec<Verification>, RegisterError> {
+    context(cx)?;
+    let at = crate::resolve_known_at(db, known_at)?;
+    let mut current = None;
+    periods
+        .iter()
+        .map(|period| verify_at(db, cx, book, period, at, &mut current))
+        .collect()
+}
+
+fn entry_inventory<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    at: CommitSeq,
+) -> Result<BTreeMap<VId, VertexRow>, RegisterError> {
+    let mut entries = BTreeMap::new();
+    for row in db.vertices_at(at)? {
+        context(cx)?;
+        if row.labels.contains(&label::ENTRY) {
+            entries.insert(row.vid, row);
+        }
+    }
+    Ok(entries)
+}
+
+fn entry_lag<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    through: Option<CommitSeq>,
+    at: CommitSeq,
+    current: &mut Option<BTreeMap<VId, VertexRow>>,
+) -> Result<(usize, Vec<String>), RegisterError> {
+    if current.is_none() {
+        *current = Some(entry_inventory(db, cx, at)?);
+    }
+    let current = current
+        .as_ref()
+        .ok_or_else(|| drift("the selected Entry inventory was not loaded"))?;
+    let lag = current
+        .values()
+        .filter(|row| through.is_none_or(|basis| row.created_at > basis))
+        .count();
+    let mut findings = Vec::new();
+    if let Some(basis) = through.filter(|basis| *basis < at) {
+        let before = entry_inventory(db, cx, basis)?;
+        for (vid, row) in &before {
+            context(cx)?;
+            if current.get(vid).is_none_or(|now| {
+                now.created_at != row.created_at
+                    || now.labels != row.labels
+                    || prop(now, property::FA_PAYLOAD) != prop(row, property::FA_PAYLOAD)
+                    || prop(now, property::FA_DIGEST) != prop(row, property::FA_DIGEST)
+            }) {
+                findings.push(format!(
+                    "journal entry {:032x} changed or disappeared after the checked prefix",
+                    vid.0
+                ));
+            }
+        }
+        for row in current.values() {
+            context(cx)?;
+            if row.created_at <= basis && !before.contains_key(&row.vid) {
+                findings.push(format!(
+                    "journal entry {:032x} appeared with a creation sequence inside the checked prefix",
+                    row.vid.0
+                ));
+            }
+        }
+    }
+    Ok((lag, findings))
+}
+
+fn verify_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    period: &str,
+    at: CommitSeq,
+    current: &mut Option<BTreeMap<VId, VertexRow>>,
+) -> Result<Verification, RegisterError> {
+    context(cx)?;
     crate::period_at(db, book, period, at)?;
     let loaded = match load_latest(db, cx, book, period, at) {
         Ok(loaded) => loaded,
@@ -1198,27 +1300,34 @@ pub fn verify<V: Vfs + Clone>(
             return Ok(Verification {
                 available: true,
                 through: None,
+                stale: false,
+                lag_entries: 0,
                 drift: vec![message],
             });
         }
         Err(error) => return Err(error),
     };
     let Some((snapshot, reference)) = loaded else {
+        let (lag_entries, drift) = entry_lag(db, cx, None, at, current)?;
         return Ok(Verification {
             available: false,
             through: None,
-            drift: Vec::new(),
+            stale: true,
+            lag_entries,
+            drift,
         });
     };
     let (literal, _) = rebuilt(db, book, period, reference.through)?;
+    let (lag_entries, mut drift) = entry_lag(db, cx, Some(reference.through), at, current)?;
+    if snapshot.state != literal {
+        drift.push("complete functional state disagrees with its literal journal prefix".into());
+    }
     Ok(Verification {
         available: true,
         through: Some(reference.through),
-        drift: if snapshot.state == literal {
-            Vec::new()
-        } else {
-            vec!["complete functional state disagrees with its literal journal prefix".into()]
-        },
+        stale: drift.is_empty() && lag_entries != 0,
+        lag_entries,
+        drift,
     })
 }
 

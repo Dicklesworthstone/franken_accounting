@@ -1,5 +1,7 @@
 //! Real native postings exercise durable functional state and exact tails.
 
+#[path = "functional_health.rs"]
+mod functional_health;
 #[path = "functional_history.rs"]
 mod functional_history;
 

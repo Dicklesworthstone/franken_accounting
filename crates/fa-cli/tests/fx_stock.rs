@@ -19,6 +19,8 @@ use fgdb_types::{CanonicalScalar, CommitSeq};
 
 #[path = "fx_stock/custom_statement.rs"]
 mod custom_statement;
+#[path = "fx_stock/functional_health.rs"]
+mod functional_health;
 #[path = "fx_stock/functional_registers.rs"]
 mod functional_registers;
 #[path = "fx_stock/issuance.rs"]
