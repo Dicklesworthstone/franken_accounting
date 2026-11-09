@@ -5584,6 +5584,21 @@ impl Book {
         ).await)
     }
 
+    /// [`Book::advance_functional_registers`] under the caller's serving
+    /// context, preserving its cancellation and budget without a nested runtime.
+    pub async fn advance_functional_registers_with(
+        &mut self,
+        cx: &Cx,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period_code: &str,
+    ) -> Outcome<fa_registers::functional_maintainer::Advance> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&mut self.store, core => core.advance_functional_registers(
+            &purposes, principal, capability, period_code
+        ).await)
+    }
+
     /// Replace native posted/pending period registers and their maintenance
     /// cursor by a fresh journal fold, atomically. Authoritative objects are
     /// never changed. Reports continue to use their independent literal fold.

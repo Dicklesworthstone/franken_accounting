@@ -142,6 +142,11 @@ struct Fixture {
 }
 
 async fn fixture(root: &Cx, seed: u8) -> Fixture {
+    let usd = UnitRegistry::embedded().unwrap().lookup("USD").unwrap();
+    fixture_with_unit_policy(root, seed, UnitPolicy::Single(usd)).await
+}
+
+async fn fixture_with_unit_policy(root: &Cx, seed: u8, unit_policy: UnitPolicy) -> Fixture {
     let cx = PurposeContexts::narrow_runtime_root(root);
     let vfs = cx.commit().with_restriction(MemVfs::new).unwrap();
     let book_id = Id128([seed; 16]);
@@ -173,7 +178,7 @@ async fn fixture(root: &Cx, seed: u8) -> Fixture {
         account_type: kind,
         normal_balance: 0,
         is_leaf: true,
-        unit_policy: UnitPolicy::Single(usd),
+        unit_policy,
         parent_code: None,
         limit: None,
     });
@@ -270,6 +275,55 @@ async fn fixture(root: &Cx, seed: u8) -> Fixture {
         },
         vfs,
     }
+}
+
+async fn valued_foreign_fixture(root: &Cx, seed: u8) -> Fixture {
+    use fa_journal::fx::{FxLawId, FxRateDocument, FxRatePurpose, RATE_DOCUMENT_KIND};
+    use fa_money::RoundingLaw;
+    use fa_money::rate::{ArithmeticBudget, BudgetLimits};
+
+    let mut fixture = fixture_with_unit_policy(root, seed, UnitPolicy::AnyCurrency).await;
+    let cx = PurposeContexts::narrow_runtime_root(root);
+    let units = &fixture.book.context().units;
+    let rate = FxRateDocument {
+        base_unit: units.lookup("USD").unwrap(),
+        quote_unit: units.lookup("EUR").unwrap(),
+        rate_num: 5,
+        rate_den: 4,
+        rounding: RoundingLaw::HalfEven,
+        as_of: fixture.request.proposal.effective_date,
+        retrieved_at_ns: 1,
+        purpose: FxRatePurpose::SpotClose,
+        source: "Retained daemon functional-maintenance rate".into(),
+    };
+    let document = Document {
+        book_id: fixture.book.context().book_id,
+        kind: RATE_DOCUMENT_KIND,
+        mime: "application/vnd.fa.fx-rate".into(),
+        grade: 3,
+        retrieved_by: VId(1),
+        bytes: rate.canonical_bytes().unwrap(),
+    };
+    fixture.book.add_document(&cx, &document).await.unwrap().unwrap();
+    let mut proposal = fixture.request.proposal.clone();
+    for leg in &mut proposal.legs {
+        leg.amount.unit = rate.quote_unit;
+    }
+    proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+    let spec = fixture.book.spec(&cx).unwrap();
+    let arithmetic = root.restrict::<asupersync::cx::cap::None>();
+    let mut budget = ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(1_000_000, 0), 4096);
+    fixture.request.proposal = cx.merge_eval().with_restriction(|| {
+        fa_journal::fx::value_proposal(
+            &mut budget,
+            proposal,
+            &spec,
+            &fixture.book.context().units,
+            FxLawId::SpotClose,
+            std::slice::from_ref(&rate),
+        )
+    }).unwrap();
+    fixture
 }
 
 fn observation(cx: &Cx, utc_ns: u64) -> Observation {
@@ -1564,6 +1618,143 @@ fn commit_wakes_advance_real_registers_without_ticks_or_a_self_wake() {
 }
 
 #[test]
+fn functional_maintenance_follows_foreign_values_and_resumes_the_durable_tail_after_restart() {
+    use registers::{Measure, MeasureSelection};
+
+    lab(189, |root| async move {
+        let mut fixture = valued_foreign_fixture(&root, 189).await;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let policy = Policy { tick_ns: 1_000_000_000, ..POLICY };
+        let mut work = TimedWork::maintenance_only_with_measures(
+            &root, policy, vec!["FY2026-P03".into()], MeasureSelection::Both,
+        ).unwrap();
+        fixture.book.post(&cx, fixture.request.clone()).await.unwrap().unwrap();
+        let posted_at = fixture.book.head(&cx).unwrap();
+        work.notify_commit();
+        work.notify_commit();
+        work.run_due(&root, &mut fixture.book).await;
+        let native = work.register_maintenance().unwrap().periods()[0].last_success.clone().unwrap();
+        assert_eq!(native.through, posted_at.0);
+        assert_eq!(work.register_maintenance().unwrap().attempts(), 1);
+        assert!(!work.run_register_wake(&root, &mut fixture.book).await);
+        assert_eq!(work.register_maintenance().unwrap().periods()[1].measure, Measure::Functional);
+        assert!(work.register_maintenance().unwrap().periods()[1].last_success.is_none());
+
+        advance(&root, policy.tick_ns).await;
+        work.run_due(&root, &mut fixture.book).await;
+        let functional = work.register_maintenance().unwrap().periods()[1].last_success.clone().unwrap();
+        assert_eq!(work.register_maintenance().unwrap().attempts(), 2);
+        assert!(functional.wrote && functional.rebuilt);
+        let reader = Capability::embedded(VId(1), &["read", "verify"]).unwrap();
+        let verified = fixture.book.verify_functional_registers(
+            &cx, VId(1), &reader, "FY2026-P03", None,
+        ).await.unwrap().unwrap();
+        assert!(verified.available && verified.is_green(), "{verified:?}");
+        assert_eq!(verified.through.map(|seq| seq.0), Some(functional.through));
+        let literal = fixture.book.functional_period_activity(
+            &cx, &reader, "FY2026-P03", verified.through,
+        ).await.unwrap().unwrap();
+        assert_eq!(literal.total_debits().unwrap(), 1_250);
+        assert_eq!(literal.total_credits().unwrap(), 1_250);
+        assert!(fixture.book.verify_registers(&cx, "FY2026-P03").unwrap().is_green());
+        assert!(fixture.book.latest_tick(&cx).unwrap().is_none());
+        assert_eq!(work.cycles, 0);
+        assert!(!work.timing_enabled());
+        assert!(!work.run_register_wake(&root, &mut fixture.book).await);
+
+        // Reopen the real persisted store and create a fresh scheduler. Its
+        // unattempted status cannot claim the prior process's work, but the
+        // maintainer must resume the saved prefix instead of refolding it.
+        let Fixture { book, mut request, vfs } = fixture;
+        drop(book);
+        let mut book = AsyncBook::open_with_vfs(
+            &cx, vfs, Path::new("timed-book"),
+            BookKeys::for_development(189), Entropy::deterministic(189),
+        ).await.unwrap();
+        let mut restarted = TimedWork::maintenance_only_with_measures(
+            &root, policy, vec!["FY2026-P03".into()], MeasureSelection::Functional,
+        ).unwrap();
+        assert!(restarted.register_maintenance().unwrap().periods()[0].last_success.is_none());
+        request.proposal.idempotency_key = b"foreign-after-restart".to_vec();
+        book.post(&cx, request).await.unwrap().unwrap();
+        let posted_at = book.head(&cx).unwrap();
+        restarted.notify_commit();
+        restarted.run_due(&root, &mut book).await;
+        let continued = restarted.register_maintenance().unwrap().periods()[0].last_success.as_ref().unwrap();
+        assert_eq!(continued.through, posted_at.0);
+        assert_eq!(continued.entries_decoded, 1, "only the new foreign entry is decoded");
+        assert!(!continued.rebuilt, "restart consumes the durable functional cursor");
+        assert!(continued.wrote);
+        let verified = book.verify_functional_registers(&cx, VId(1), &reader, "FY2026-P03", None).await.unwrap().unwrap();
+        assert!(verified.available && verified.is_green(), "{verified:?}");
+        assert_eq!(verified.through.map(|seq| seq.0), Some(continued.through));
+        let literal = book.functional_period_activity(&cx, &reader, "FY2026-P03", verified.through).await.unwrap().unwrap();
+        assert_eq!(literal.total_debits().unwrap(), 2_500);
+        assert_eq!(literal.total_credits().unwrap(), 2_500);
+        assert_eq!(book.verify_registers(&cx, "FY2026-P03").unwrap().verified_through.map(|seq| seq.0), Some(native.through));
+        assert!(book.latest_tick(&cx).unwrap().is_none());
+        assert!(!restarted.timing_enabled());
+        assert!(!restarted.run_register_wake(&root, &mut book).await);
+    }).unwrap().expect("lab completed");
+}
+
+#[test]
+fn an_unvalued_foreign_period_does_not_block_native_or_other_functional_periods() {
+    use registers::MeasureSelection;
+
+    lab(191, |root| async move {
+        let mut fixture = fixture_with_unit_policy(&root, 191, UnitPolicy::AnyCurrency).await;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut foreign = fixture.request.clone();
+        let eur = fixture.book.context().units.lookup("EUR").unwrap();
+        for leg in &mut foreign.proposal.legs {
+            leg.amount.unit = eur;
+        }
+        foreign.proposal.unit_totals = EntryPayload::fold_unit_totals(&foreign.proposal.legs).unwrap();
+        fixture.book.post(&cx, foreign).await.unwrap().unwrap();
+        let mut april = fixture.request.clone();
+        april.proposal.idempotency_key = b"unaffected-april".to_vec();
+        april.proposal.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
+        fixture.book.post(&cx, april).await.unwrap().unwrap();
+        let mut work = TimedWork::maintenance_only_with_measures(
+            &root, POLICY, vec!["FY2026-P03".into(), "FY2026-P04".into()], MeasureSelection::Both,
+        ).unwrap();
+        for count in 1..=4 {
+            advance(&root, POLICY.tick_ns).await;
+            let before = fixture.book.head(&cx).unwrap();
+            work.run_due(&root, &mut fixture.book).await;
+            assert_eq!(work.register_maintenance().unwrap().attempts(), count);
+            if count == 2 {
+                assert_eq!(fixture.book.head(&cx).unwrap(), before, "failed functional fold publishes nothing");
+            }
+        }
+        let periods = work.register_maintenance().unwrap().periods();
+        assert!(periods[0].last_success.is_some() && periods[0].error.is_none());
+        assert!(periods[1].last_success.is_none());
+        assert!(periods[1].error.as_ref().unwrap().contains("without a functional base_amount"));
+        assert!(periods[2].last_success.is_some() && periods[2].error.is_none());
+        assert!(periods[3].last_success.is_some() && periods[3].error.is_none());
+        let failure = periods[1].error.clone();
+        let reader = Capability::embedded(VId(1), &["read", "verify"]).unwrap();
+        let march = fixture.book.verify_functional_registers(&cx, VId(1), &reader, "FY2026-P03", None).await.unwrap().unwrap();
+        assert!(!march.available && march.through.is_none());
+        let april = fixture.book.verify_functional_registers(&cx, VId(1), &reader, "FY2026-P04", None).await.unwrap().unwrap();
+        assert!(april.available && april.is_green(), "{april:?}");
+        let literal = fixture.book.functional_period_activity(&cx, &reader, "FY2026-P04", april.through).await.unwrap().unwrap();
+        assert_eq!(literal.total_debits().unwrap(), 1_000);
+        assert_eq!(literal.total_credits().unwrap(), 1_000);
+        for period in ["FY2026-P03", "FY2026-P04"] {
+            assert!(fixture.book.verify_registers(&cx, period).unwrap().is_green());
+        }
+        advance(&root, POLICY.tick_ns).await;
+        work.run_due(&root, &mut fixture.book).await;
+        assert_eq!(work.register_maintenance().unwrap().periods()[1].error, failure, "a later native success never erases the functional failure");
+        assert_eq!(work.cycles, 0);
+        assert!(fixture.book.latest_tick(&cx).unwrap().is_none());
+    }).unwrap().expect("lab completed");
+}
+
+#[test]
 fn a_due_timing_cycle_consumes_a_commit_wake_only_once() {
     lab(151, |root| async move {
         let mut fixture = fixture(&root, 151).await;
@@ -1654,4 +1845,33 @@ fn cancelling_a_queued_commit_wake_prevents_native_maintenance_and_rearming() {
         result,
         Err(asupersync::runtime::JoinError::Cancelled(_))
     ));
+}
+
+#[test]
+fn cancelling_a_queued_functional_wake_prevents_publication_and_rearming() {
+    let completed = Arc::new(AtomicBool::new(false));
+    let done = completed.clone();
+    let result = lab(193, move |root| async move {
+        let mut fixture = valued_foreign_fixture(&root, 193).await;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        fixture.book.post(&cx, fixture.request.clone()).await.unwrap().unwrap();
+        let mut work = TimedWork::maintenance_only_with_measures(
+            &root, POLICY, vec!["FY2026-P03".into()], registers::MeasureSelection::Functional,
+        ).unwrap();
+        work.notify_commit();
+        root.cancel_with(CancelKind::User, Some("stop queued functional maintenance"));
+        assert!(work.run_register_wake(&root, &mut fixture.book).await);
+        let registers = work.register_maintenance().unwrap();
+        assert_eq!(registers.attempts(), 0);
+        assert!(registers.periods()[0].last_success.is_none());
+        assert_eq!(registers.status().get("next_measure"), Some(&s("functional")));
+        assert_eq!(work.deadline(), None);
+        assert!(!work.register_wake);
+        work.notify_commit();
+        assert!(!work.register_wake);
+        assert!(!work.run_register_wake(&root, &mut fixture.book).await);
+        done.store(true, Ordering::Release);
+    });
+    assert!(completed.load(Ordering::Acquire), "all cancellation assertions ran");
+    assert!(matches!(result, Err(asupersync::runtime::JoinError::Cancelled(_))));
 }

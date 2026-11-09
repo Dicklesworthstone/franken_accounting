@@ -367,6 +367,16 @@ impl TimedWork {
         policy: Policy,
         periods: Vec<String>,
     ) -> Result<Self, registers::ConfigurationError> {
+        Self::maintenance_only_with_measures(cx, policy, periods, registers::MeasureSelection::Native)
+    }
+
+    /// Maintain the explicit projection selection without timed accounting effects.
+    pub fn maintenance_only_with_measures(
+        cx: &Cx,
+        policy: Policy,
+        periods: Vec<String>,
+        measures: registers::MeasureSelection,
+    ) -> Result<Self, registers::ConfigurationError> {
         policy
             .validate()
             .map_err(|_| registers::ConfigurationError("invalid daemon maintenance policy"))?;
@@ -391,7 +401,7 @@ impl TimedWork {
             sweep_index_rebuilt: false,
             expiry_reads: None,
             recurring_history: None,
-            registers: Some(registers::RegisterWork::new(periods)?),
+            registers: Some(registers::RegisterWork::for_measures(periods, measures)?),
             register_wake: false,
         })
     }
@@ -405,15 +415,24 @@ impl TimedWork {
     /// wire request can reach this builder or broaden these exact codes.
     /// Existing launchers remain timing-only until they call this method.
     pub fn with_register_maintenance(
+        self,
+        periods: Vec<String>,
+    ) -> Result<Self, registers::ConfigurationError> {
+        self.with_register_maintenance_measures(periods, registers::MeasureSelection::Native)
+    }
+
+    /// Add explicit native, functional, or combined derived-cache maintenance.
+    pub fn with_register_maintenance_measures(
         mut self,
         periods: Vec<String>,
+        measures: registers::MeasureSelection,
     ) -> Result<Self, registers::ConfigurationError> {
         if self.registers.is_some() {
             return Err(registers::ConfigurationError(
                 "register maintenance is already configured",
             ));
         }
-        self.registers = Some(registers::RegisterWork::new(periods)?);
+        self.registers = Some(registers::RegisterWork::for_measures(periods, measures)?);
         Ok(self)
     }
 
@@ -471,7 +490,7 @@ impl TimedWork {
         true
     }
 
-    pub(crate) async fn run_due(&mut self, cx: &Cx, book: &mut Book) {
+    pub(crate) async fn run_due<B: TimedBook + registers::RegisterBook>(&mut self, cx: &Cx, book: &mut B) {
         if self.run_register_wake(cx, book).await {
             return;
         }

@@ -171,6 +171,33 @@ fn run(argv: &[String]) -> u8 {
             .0;
         }
     }
+    let measures = parsed.flag_all("--register-measure");
+    let register_measures = if measures.is_empty() {
+        fad::timed::registers::MeasureSelection::Native
+    } else {
+        if verb != Some("serve")
+            || measures.len() != 1
+            || (register_periods.is_empty() && register_fiscal_year.is_none())
+        {
+            return cli::usage_error(
+                argv,
+                "--register-measure is a single local serve choice requiring --register-period or --register-fiscal-year",
+                "fad serve --book <dir> --register-period <code> --register-measure native|functional|both",
+                false,
+            ).0;
+        }
+        match fad::timed::registers::MeasureSelection::parse(measures[0]) {
+            Ok(measures) => measures,
+            Err(error) => {
+                return cli::usage_error(
+                    argv,
+                    error.to_string(),
+                    "--register-measure native|functional|both",
+                    false,
+                ).0;
+            }
+        }
+    };
     if (parsed.flag("--mcp").is_some()
         || parsed.flag("--token").is_some()
         || !parsed.flag_all("--cluster").is_empty())
@@ -203,7 +230,7 @@ fn run(argv: &[String]) -> u8 {
         .0;
     }
     match verb {
-        Some("serve") => serve(argv, &parsed, d, &dir, register_fiscal_year),
+        Some("serve") => serve(argv, &parsed, d, &dir, register_fiscal_year, register_measures),
         Some("status") => status(argv, &parsed, d, &dir),
         Some("stop") => stop(argv, &parsed, d, &dir),
         Some(other) => {
@@ -246,6 +273,7 @@ fn serve(
     d: &Daemon,
     dir: &Path,
     register_fiscal_year: Option<i32>,
+    register_measures: fad::timed::registers::MeasureSelection,
 ) -> u8 {
     let json = parsed.switch("--json");
     let mcp_mode = match parsed.flag("--mcp") {
@@ -465,7 +493,7 @@ fn serve(
         if parsed.switch("--bootstrap-system") {
             match fad::timed::TimedWork::bootstrap(&cx, &book, policy) {
                 Ok(work) if periods.is_empty() => Some(work),
-                Ok(work) => match work.with_register_maintenance(periods) {
+                Ok(work) => match work.with_register_maintenance_measures(periods, register_measures) {
                     Ok(work) => Some(work),
                     Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
                 },
@@ -473,7 +501,7 @@ fn serve(
                 Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
             }
         } else {
-            match fad::timed::TimedWork::maintenance_only(&cx, policy, periods) {
+            match fad::timed::TimedWork::maintenance_only_with_measures(&cx, policy, periods, register_measures) {
                 Ok(work) => Some(work),
                 Err(error) => return cli::foundation_error(argv, error.to_string(), false).0,
             }

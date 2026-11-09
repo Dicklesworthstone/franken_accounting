@@ -37,7 +37,7 @@ where
 }
 
 struct Scripted {
-    calls: Vec<String>,
+    calls: Vec<(Measure, String)>,
     results: VecDeque<Result<Publication, String>>,
 }
 
@@ -51,13 +51,14 @@ impl RegisterBook for Scripted {
         _cx: &Cx,
         capability: &Capability,
         period: &str,
+        measure: Measure,
     ) -> Result<Publication, String> {
         assert_eq!(
             capability.ops(),
             &BTreeSet::from([Op::Read, Op::Verify, Op::Maintain])
         );
         assert_eq!(capability.books(), Some(&BTreeSet::from([self.book_id()])));
-        self.calls.push(period.to_owned());
+        self.calls.push((measure, period.to_owned()));
         self.results
             .pop_front()
             .expect("one result per scripted call")
@@ -217,6 +218,7 @@ fn production_adapter_preserves_caller_cancellation_before_native_maintenance() 
             &cancelled,
             &capability,
             period,
+            Measure::Native,
         ))
         .expect_err("cancelled production maintenance must publish nothing");
     assert_eq!(book.head().unwrap(), before);
@@ -224,7 +226,7 @@ fn production_adapter_preserves_caller_cancellation_before_native_maintenance() 
 
     let live = runtime.request_cx_with_budget(Budget::INFINITE);
     let publication = runtime
-        .block_on(RegisterBook::advance(&mut book, &live, &capability, period))
+        .block_on(RegisterBook::advance(&mut book, &live, &capability, period, Measure::Native))
         .unwrap();
     assert!(publication.wrote);
     assert_eq!(publication.through, before.0);
@@ -236,6 +238,86 @@ fn production_adapter_preserves_caller_cancellation_before_native_maintenance() 
         Some(publication.through)
     );
     assert_eq!(book.fold_period(period).unwrap(), expected);
+    assert!(book.latest_tick().unwrap().is_none());
+}
+
+#[test]
+fn production_adapter_preserves_caller_cancellation_before_functional_maintenance() {
+    use asupersync::runtime::RuntimeBuilder;
+    use fa::{BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_money::UnitRegistry;
+    use fa_time::FiscalCalendar;
+    use fgdb_types::VId;
+
+    let mut book = Book::create_memory(
+        BookKeys::for_development(185),
+        BookSpec {
+            book_id: Id128([185; 16]),
+            name: "Production functional maintenance cancellation".into(),
+            base_unit: UnitRegistry::embedded().unwrap().lookup("USD").unwrap(),
+            calendar: FiscalCalendar::monthly("functional-maintenance", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(185),
+    )
+    .unwrap();
+    let principal = VId(1);
+    book.create_periods(
+        2026,
+        principal,
+        &Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let period = "FY2026-P03";
+    let capability = Capability::embedded(principal, &["read", "verify", "maintain"]).unwrap();
+    let before = book.head().unwrap();
+    let uninitialized = book
+        .verify_functional_registers(principal, &capability, period, None)
+        .unwrap()
+        .unwrap();
+    assert!(!uninitialized.available);
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let cancelled = runtime.request_cx_with_budget(Budget::INFINITE);
+    cancelled.cancel_with(CancelKind::User, Some("stop functional maintenance region"));
+    runtime
+        .block_on(RegisterBook::advance(
+            &mut book,
+            &cancelled,
+            &capability,
+            period,
+            Measure::Functional,
+        ))
+        .expect_err("cancelled functional maintenance must publish nothing");
+    assert_eq!(book.head().unwrap(), before);
+    assert_eq!(
+        book.verify_functional_registers(principal, &capability, period, None)
+            .unwrap()
+            .unwrap(),
+        uninitialized,
+    );
+    let live = runtime.request_cx_with_budget(Budget::INFINITE);
+    let publication = runtime
+        .block_on(RegisterBook::advance(
+            &mut book,
+            &live,
+            &capability,
+            period,
+            Measure::Functional,
+        ))
+        .unwrap();
+    assert!(publication.wrote);
+    assert_eq!(publication.through, before.0);
+    let verified = book
+        .verify_functional_registers(principal, &capability, period, None)
+        .unwrap()
+        .unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+    assert_eq!(verified.through.map(|seq| seq.0), Some(publication.through));
+    assert_eq!(book.verify_registers(period).unwrap().verified_through, None);
     assert!(book.latest_tick().unwrap().is_none());
 }
 
@@ -323,6 +405,16 @@ fn configuration_is_bounded_exact_and_never_silently_repaired() {
     assert_eq!(work.attempts(), 0);
     assert!(RegisterWork::new((0..MAX_PERIODS).map(|i| format!("period-{i}")).collect()).is_ok());
     assert!(RegisterWork::new(vec!["x".repeat(MAX_PERIOD_CODE_BYTES)]).is_ok());
+    let both = RegisterWork::for_measures(
+        (0..MAX_PERIODS).map(|i| format!("period-{i}")).collect(),
+        MeasureSelection::Both,
+    )
+    .unwrap();
+    assert_eq!(both.periods().len(), 2 * MAX_PERIODS);
+    assert!(RegisterWork::for_measures(
+        (0..=MAX_PERIODS).map(|i| format!("period-{i}")).collect(),
+        MeasureSelection::Both,
+    ).is_err());
 }
 
 #[test]
@@ -331,7 +423,11 @@ fn unattempted_periods_never_claim_a_consumed_or_certified_prefix() {
     let status = work.status();
     assert_eq!(status.get("certified"), Some(&Json::Bool(false)));
     assert_eq!(status.get("periods_per_cycle"), Some(&Json::Int(1)));
+    assert_eq!(status.get("measure"), Some(&s("native")));
+    assert_eq!(status.get("next_measure"), Some(&s("native")));
+    assert_eq!(status.get("scope"), Some(&s("native_posted_pending_period_cells")));
     let period = &status.get("periods").unwrap().as_arr().unwrap()[0];
+    assert_eq!(period.get("measure"), Some(&s("native")));
     for name in [
         "through",
         "published_at",
@@ -362,7 +458,7 @@ fn one_attempt_per_cycle_errors_are_per_period_and_rotation_is_fair() {
             work.run_cycle(&root, &mut book).await;
             assert_eq!(book.calls.len(), count);
         }
-        assert_eq!(book.calls, ["A", "B", "A", "B"]);
+        assert_eq!(book.calls, ["A", "B", "A", "B"].map(|p| (Measure::Native, p.into())));
         assert_eq!(work.periods()[0].last_success, Some(publication(1)));
         assert_eq!(work.periods()[0].error.as_deref(), Some("projection drift"));
         assert!(work.periods()[1].error.is_none());
@@ -375,6 +471,55 @@ fn one_attempt_per_cycle_errors_are_per_period_and_rotation_is_fair() {
         assert_eq!(work.periods()[0].last_success, Some(publication(5)));
         assert!(work.periods()[0].error.is_none());
         assert_eq!(work.attempts(), 5);
+        assert!(book.results.is_empty());
+    })
+    .unwrap()
+    .expect("lab completed");
+}
+
+#[test]
+fn combined_rotation_preserves_each_measure_frontier_and_failure_independently() {
+    lab(187, |root| async move {
+        let mut work = RegisterWork::for_measures(
+            vec!["A".into(), "B".into()],
+            MeasureSelection::Both,
+        ).unwrap();
+        let mut book = Scripted {
+            calls: vec![],
+            results: VecDeque::from([
+                Ok(publication(1)), Ok(publication(2)),
+                Ok(publication(3)), Ok(publication(4)),
+                Ok(publication(5)), Err("unvalued foreign entry".into()),
+                Ok(publication(6)), Ok(publication(7)),
+                Ok(publication(8)), Ok(publication(9)),
+            ]),
+        };
+        for count in 1..=8 {
+            work.run_cycle(&root, &mut book).await;
+            assert_eq!(book.calls.len(), count, "one attempt per cycle");
+        }
+        let rotation = [
+            (Measure::Native, "A".into()), (Measure::Functional, "A".into()),
+            (Measure::Native, "B".into()), (Measure::Functional, "B".into()),
+        ];
+        assert_eq!(&book.calls[..4], &rotation);
+        assert_eq!(&book.calls[4..], &rotation);
+        assert_eq!(work.periods()[1].last_success, Some(publication(2)));
+        assert_eq!(work.periods()[1].error.as_deref(), Some("unvalued foreign entry"));
+        assert!(work.periods().iter().enumerate().all(|(i, p)| i == 1 || p.error.is_none()));
+        let status = work.status();
+        assert_eq!(status.get("measure"), Some(&s("both")));
+        assert_eq!(status.get("next_measure"), Some(&s("native")));
+        let rows = status.get("periods").unwrap().as_arr().unwrap();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[1].get("period"), Some(&s("A")));
+        assert_eq!(rows[1].get("measure"), Some(&s("functional")));
+        assert_eq!(rows[1].get("through"), Some(&Json::Int(2)));
+        work.run_cycle(&root, &mut book).await;
+        assert!(work.periods()[1].error.is_some(), "native success never clears a functional error");
+        work.run_cycle(&root, &mut book).await;
+        assert!(work.periods()[1].error.is_none());
+        assert_eq!(work.periods()[1].last_success, Some(publication(9)));
         assert!(book.results.is_empty());
     })
     .unwrap()

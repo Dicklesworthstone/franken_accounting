@@ -93,9 +93,46 @@ fn registered_help_explains_explicit_period_selection() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("--register-period"));
     assert!(text.contains("--register-fiscal-year"));
+    assert!(text.contains("--register-measure native|functional|both"));
+    assert!(text.contains("failing functional projection does not block native"));
     assert!(text.contains("--bootstrap-system"));
     assert!(text.contains("--files-root"));
     assert!(text.contains("one period"));
+}
+
+#[test]
+fn register_measure_is_explicit_serve_only_and_requires_one_period_selection() {
+    let book = "/this-book-must-not-be-opened/register-measure-launch";
+    for measure in ["native", "functional", "both"] {
+        for selection in [
+            ["--register-period", "FY2026-P03"],
+            ["--register-fiscal-year", "2026"],
+        ] {
+            let mut args = vec!["serve", "--book", book, "--json", "--register-measure", measure];
+            args.extend(selection);
+            let result = run(&args);
+            assert_eq!(result.status.code(), Some(4), "{args:?}: {result:?}");
+            assert!(!std::path::Path::new(book).exists());
+        }
+    }
+    for options in [
+        vec!["status", "--register-measure", "functional"],
+        vec!["stop", "--register-measure", "both"],
+        vec!["serve", "--register-measure", "native"],
+        vec!["serve", "--bootstrap-system", "--register-measure", "both"],
+        vec!["serve", "--register-period", "FY2026-P03", "--register-measure", "Functional"],
+        vec!["serve", "--register-period", "FY2026-P03", "--register-measure", "functional "],
+        vec!["serve", "--register-period", "FY2026-P03", "--register-measure=wrong"],
+        vec!["serve", "--register-period", "FY2026-P03", "--register-measure="],
+        vec!["serve", "--register-period", "FY2026-P03", "--register-measure"],
+        vec!["serve", "--register-period", "FY2026-P03", "--register-measure", "native", "--register-measure", "both"],
+    ] {
+        let mut args = options;
+        args.extend(["--book", book, "--json"]);
+        let result = run(&args);
+        assert_eq!(result.status.code(), Some(2), "{args:?}: {result:?}");
+        assert!(!std::path::Path::new(book).exists());
+    }
 }
 
 #[test]

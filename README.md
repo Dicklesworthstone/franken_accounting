@@ -150,25 +150,54 @@ known-at caveat excludes HEAD. These reads load no history, repair no cache and
 preserve the same capability caveats. Uncertified CLI period-stock and activity
 reports also disclose the actual serving basis for historical selections.
 
-`fad serve --book ./books/acme --register-period FY2026-P03` selects native
-register maintenance without granting System authority. It attempts one selected
-period per timer cycle in fair rotation. The commit-wake implementation also
-makes one attempt ready when a served request advances the journal; repeated
-notifications coalesce, and reads or idempotent retries that change nothing do
-not wake it. This early attempt does not record clock evidence, run sweeps or
-postpone the regular timer. Its Rust regressions still require qualification.
-`fad serve --book ./books/acme --register-fiscal-year 2026` selects the complete
-year from the book's actual fiscal calendar, including Opening, Adjustment and
-Closing periods. This is an alternative to exact `--register-period` options.
-The selected cohort includes periods created later in that year, so creating
-the year after startup makes those periods maintainable without a restart.
-Missing periods remain visible as per-period errors until creation; other years
-are outside the selection. Custom calendars accept only their declared years.
-The existing 64-period scheduling bound and one-attempt rotation still apply.
-Native register checkpoints exist as disposable cache objects with a cadence
-decision card; journaled checkpoints at fiscal-year boundaries, functional-value
-maintenance, other register families and the remaining cached report reads are
-unfinished.
+The daemon can maintain period caches on the same book writer that serves
+requests. For native currency, select exact periods:
+
+```bash
+fad serve --book ./books/acme --register-period FY2026-P03
+```
+
+Or maintain native and functional currency for a complete fiscal year:
+
+```bash
+fad serve --book ./books/acme --register-fiscal-year 2026 --register-measure both
+```
+
+The year comes from the book's fiscal calendar, including Opening, Adjustment
+and Closing periods. This fixed cohort includes periods created later in that
+year; missing periods remain visible as task errors until creation. Other years
+are outside the selection. Custom calendars accept only their declared years,
+and the existing 64-period scheduling bound still applies.
+
+`--register-measure native|functional|both` selects the maintained projections.
+The default remains native, and a measure requires explicit periods or a fiscal
+year. One timer cycle attempts one period and measure in fair rotation. Each
+task has its own status, consumed frontier and error. Missing base valuations
+can refuse a functional task while native tasks and other periods continue.
+Restart resumes from each projection's persisted cursor.
+
+A served write also queues one coalesced maintenance wake; reads and idempotent
+retries that change nothing do not wake it. This early attempt does not record
+clock evidence, run sweeps or postpone the regular timer. Maintenance needs no
+`--bootstrap-system`; that separate option enables timed accounting effects.
+See [daemon register maintenance](docs/daemon-register-maintenance.md) for
+launch, authority and status details.
+
+Repeated ordinary functional trial balances on one open `AsyncBook` authenticate
+new Entry history against the already verified native commit prefix. Warm
+reads do not rescan historical Entry rows. New handles and selections older
+than the handle's verified prefix run the complete integrity fold. Entry or
+fragment changes fall back to that fold, which detects rewrites even after
+the original bytes are restored. The `functional_history_read_work()` counters
+expose this verifier's actual work, excluding remaining report and substrate
+work. Current authorization still precedes retained-history loading.
+Certificates and explicit audits retain their independent full verification.
+If storage compaction has retired the required native history, the read refuses;
+maintained cells cannot substitute for that missing integrity evidence.
+
+Native register checkpoints remain disposable cache objects. Journaled
+fiscal-year checkpoints, other register families and the remaining cached
+report reads are unfinished.
 
 ### Approved company statement layouts
 
