@@ -124,6 +124,28 @@ fn source_history(
     (records, rates, source)
 }
 
+fn zero_carrying_history(
+    debit: bool,
+    quote: (u128, u128),
+    prior_cash: i128,
+) -> (Vec<Record>, Vec<RateFixture>, Record) {
+    // A direct SpotClose source must have positive functional value. Start
+    // with 4 foreign units carried at 2, then apply 3: HalfEven(2 * 3 / 4)
+    // relieves 2 and leaves one native unit with exactly zero carrying value.
+    let (mut records, rates, source) = source_history(4, 2, (1, 2), quote, debit);
+    let prior = component(
+        &source,
+        0,
+        if debit { "1100" } else { "2000" },
+        debit,
+        3,
+        2,
+        prior_cash,
+    );
+    records.push(payment(6, 20, b"prior-rounded-relief", &prior, &rates[1]));
+    (records, rates, source)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn explicit_component(
     source: &Record,
@@ -180,8 +202,18 @@ fn explicit_fx_terms_separate_actual_cash_all_three_differences_and_quote_gain_o
             (100, 120, (6, 5), (6, 5), 120),
             (1, 0, (1, 2), (10, 1), 10),
         ] {
-            let (mut records, rates, source) =
-                source_history(native, historical, spot, quote, debit);
+            let (mut records, rates, source) = if historical == 0 {
+                zero_carrying_history(debit, quote, 30)
+            } else {
+                source_history(native, historical, spot, quote, debit)
+            };
+            let (source_carrying, prior_cash, prior_realized) = if historical == 0 {
+                // The preceding 3-unit application was quoted at 30 and
+                // relieved all 2 functional units of the original source.
+                (2, 30, 28)
+            } else {
+                (historical, 0, 0)
+            };
             // A 5-unit discount, 1-unit writeoff and 2-unit charge: receipt
             // cash is Q-8, whereas payment cash is Q-5-1+2 = Q-4.
             let cash = quoted - if debit { 8 } else { 4 };
@@ -195,15 +227,20 @@ fn explicit_fx_terms_separate_actual_cash_all_three_differences_and_quote_gain_o
                 &[(1, "4000", 5), (3, "5000", 1), (4, "5000", 2)],
             );
             let body = terms(&[(0, differences)]);
-            records.push(marked(6, 20, b"net-cash", &legs, &rates[1], &body));
+            let seq = records.last().unwrap().envelope.commit_seq + 1;
+            records.push(marked(seq, 20, b"net-cash", &legs, &rates[1], &body));
             let (report, output) = replay(&records, &rates, &book(&[])).unwrap();
             let control = if debit { "1100" } else { "2000" };
-            assert_eq!(totals(&report, control), (historical, historical));
+            assert_eq!(totals(&report, control), (source_carrying, source_carrying));
             assert_eq!(
                 totals(&report, "1000"),
-                if debit { (cash, 0) } else { (0, cash) },
+                if debit {
+                    (prior_cash + cash, 0)
+                } else {
+                    (0, prior_cash + cash)
+                },
             );
-            let realized = quoted - historical;
+            let realized = prior_realized + quoted - historical;
             let realized_debit = if realized > 0 { !debit } else { debit };
             assert_eq!(
                 totals(&report, "7000"),
@@ -222,6 +259,20 @@ fn explicit_fx_terms_separate_actual_cash_all_three_differences_and_quote_gain_o
                 Some(report),
             );
         }
+    }
+}
+
+#[test]
+fn a_direct_spot_source_cannot_create_zero_functional_carrying() {
+    for debit in [true, false] {
+        let (records, rates, _) = source_history(1, 0, (1, 2), (10, 1), debit);
+        assert_eq!(
+            replay(&records[..4], &rates[..1], &book(&[]))
+                .unwrap_err()
+                .predicate,
+            "functional_valuation",
+            "zero relief must come from the preceding carrying history, not a zero-valued direct source",
+        );
     }
 }
 
@@ -387,10 +438,10 @@ fn balanced_explicit_pairs_cannot_replace_quote_math_relief_or_source_identity()
     }
     // A positive bank payment cannot turn a quote rounded to zero into an
     // eligible foreign settlement, even when cash and the charge cancel.
-    let (mut records, rates, source) = source_history(1, 0, (1, 2), (1, 2), false);
+    let (mut records, rates, source) = zero_carrying_history(false, (1, 2), 2);
     let (legs, differences) = explicit_component(&source, false, 1, 0, 0, 2, &[(4, "5000", 2)]);
     records.push(marked(
-        6,
+        7,
         20,
         b"zero-gross-quote",
         &legs,
