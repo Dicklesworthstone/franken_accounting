@@ -8082,16 +8082,38 @@ fn post_batch_document(
     }
     let batch = fa::PostBatch::new(key.as_bytes().to_vec(), intents)
         .map_err(|e| usage(format!("batch intent: {e}; nothing was posted"), FIX))?;
+    submit_post_batch(
+        out, &mut book, &ctx.files, args, batch, capability, &classes, draft,
+    )
+}
+
+/// One publication path for explicit batches and typed compound operations.
+/// Every caller supplies already resolved proposals; planning, draft retention,
+/// current authority, atomic publication and retries remain native batch law.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn submit_post_batch(
+    out: &Out,
+    book: &mut Book,
+    files: &Files,
+    args: &Args,
+    batch: fa::PostBatch,
+    capability: Capability,
+    classes: &[String],
+    draft: Option<&str>,
+) -> Result<(), Fail> {
+    let key = std::str::from_utf8(batch.idempotency_key())
+        .map_err(|error| Fail::Internal(format!("CLI batch key is not UTF-8: {error}")))?
+        .to_string();
     if let Some(name) = draft {
         let planned = book.plan_batch_into_draft(capability, name, batch.clone())??;
-        return batch_plan::emit_draft(out, &book, name, &batch, &planned);
+        return batch_plan::emit_draft(out, book, name, &batch, &planned);
     }
     if args.switch("--dry-run") || out.is_bound_agent() {
         let plan = book.plan_batch(batch, &capability)??;
-        return batch_plan::emit(out, &book, &ctx.files, args, &plan, &capability);
+        return batch_plan::emit(out, book, files, args, &plan, &capability);
     }
     let posted = book.post_batch(batch, &capability)??;
-    out.at_book(&book)?;
+    out.at_book(book)?;
     let members_json: Vec<Json> = posted
         .entries
         .iter()
@@ -8199,6 +8221,33 @@ struct BuiltPost {
     class_name: String,
     typed_reversal: bool,
     reversal_detail: Option<(String, Reason)>,
+}
+
+/// Build a typed operation's Original member with the ordinary entry parser.
+/// Its caller must admit current authority before any source or chart access.
+pub(crate) fn build_original_post_intent(
+    out: &Out,
+    book: &mut Book,
+    args: &Args,
+    doc: &Json,
+    principal: VId,
+    capability: Capability,
+) -> Result<PostIntent, Fail> {
+    let built = build_post_request(
+        out,
+        book,
+        args,
+        Some(EntryClass::ORIGINAL),
+        doc,
+        principal,
+        capability,
+    )?;
+    PostIntent::new(built.request.proposal, built.request.approvals).map_err(|error| {
+        usage(
+            format!("invalid Original member: {error}"),
+            "check the typed document's inputs",
+        )
+    })
 }
 
 /// The timing fields of an entry intent, and the earlier period an
