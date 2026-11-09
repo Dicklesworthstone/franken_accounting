@@ -69,7 +69,7 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("confirm.coverage", 2),
     // Version 3 judges each position as of the effective date (fa-gebi, fa-ti99).
     ("solvency.balance_sheet_test", 3),
-    ("solvency.cash_flow_test", 5),
+    ("solvency.cash_flow_test", 6),
     // Full registered u32 civil-day windows, with prior algorithms retained.
     ("lookback.preferences", 4),
     ("lookback.fraudulent_transfer", 2),
@@ -98,6 +98,7 @@ pub(super) fn supported(id: &str, version: u16) -> bool {
                 | ("lookback.preferences", 3)
                 | ("lookback.fraudulent_transfer", 1)
                 | ("recon.lapping", 2 | 3)
+                | ("solvency.cash_flow_test", 5)
         )
 }
 

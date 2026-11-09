@@ -1853,6 +1853,7 @@ impl Procedure for SolvencyBalanceSheetTest {
 pub struct SolvencyCashFlowTest {
     params: Params,
     schedule: Option<crate::solvency::AuthenticatedObligationSchedule>,
+    version: u16,
 }
 
 impl SolvencyCashFlowTest {
@@ -1862,6 +1863,7 @@ impl SolvencyCashFlowTest {
         Ok(Self {
             params: Params::defaults(Self::ID)?,
             schedule: None,
+            version: 6,
         })
     }
 
@@ -1870,6 +1872,7 @@ impl SolvencyCashFlowTest {
         Self {
             params,
             schedule: None,
+            version: 6,
         }
     }
 
@@ -1881,7 +1884,25 @@ impl SolvencyCashFlowTest {
         Self {
             params,
             schedule: Some(schedule),
+            version: 6,
         }
+    }
+    /// Retain the documented whole-book unscheduled interpretation of v5.
+    /// Scheduled maturity evaluation is unchanged between these versions.
+    #[must_use]
+    pub(crate) fn with_legacy_scope(params: Params) -> Self {
+        Self {
+            params,
+            schedule: None,
+            version: 5,
+        }
+    }
+
+    fn findings_with_version(&self, mut findings: Vec<Finding>) -> Vec<Finding> {
+        for finding in &mut findings {
+            finding.version = self.version;
+        }
+        findings
     }
 }
 
@@ -1890,7 +1911,7 @@ impl Procedure for SolvencyCashFlowTest {
         Self::ID
     }
     fn version(&self) -> u16 {
-        5
+        self.version
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1922,7 +1943,7 @@ impl Procedure for SolvencyCashFlowTest {
                 schedule,
                 work,
             )?;
-            return Ok(report.findings);
+            return Ok(self.findings_with_version(report.findings));
         }
         if let Some(inline_schedule) =
             crate::solvency::schedule_from_inline_extensions(Self::ID, snapshot, ref_date)?
@@ -1935,10 +1956,18 @@ impl Procedure for SolvencyCashFlowTest {
                 &inline_schedule,
                 work,
             )?;
-            return Ok(report.findings);
+            return Ok(self.findings_with_version(report.findings));
         }
 
-        crate::solvency::run_unscheduled_book_screen(Self::ID, snapshot, book, horizon_days, work)
+        crate::solvency::run_unscheduled_book_screen(
+            Self::ID,
+            self.version,
+            snapshot,
+            book,
+            horizon_days,
+            work,
+        )
+        .map(|findings| self.findings_with_version(findings))
     }
 }
 

@@ -185,7 +185,7 @@ fn lookback_versions_keep_the_real_prior_registry_and_native_replay() {
     assert_eq!(legacy.registry, expected);
     assert_eq!(
         registry_versions(&expected).unwrap(),
-        Some((2, 3, 3, 3, 1, 2))
+        Some((2, 3, 3, 3, 1, 2, 5))
     );
     assert_ne!(current.registry, expected);
     let mut mixed = fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1).unwrap();
@@ -472,7 +472,7 @@ fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
     );
     assert_eq!(
         registry_versions(&old_wide.registry).unwrap(),
-        Some((2, 3, 3, 4, 2, 3))
+        Some((2, 3, 3, 4, 2, 3, 5))
     );
     request.version = Some(2);
     let legacy = f.certify(&request).certificate;
@@ -489,7 +489,7 @@ fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
     );
     assert_eq!(
         registry_versions(&legacy.registry).unwrap(),
-        Some((2, 3, 3, 4, 2, 2))
+        Some((2, 3, 3, 4, 2, 2, 5))
     );
     request.version = None;
     let current = f.certify(&request).certificate;
@@ -500,7 +500,7 @@ fn lapping_v3_retains_native_v2_outputs_and_rejects_the_unversioned_widening() {
     assert_ne!(current.registry, old_wide.registry);
     assert_eq!(
         registry_versions(&current.registry).unwrap(),
-        Some((2, 3, 3, 4, 2, 4))
+        Some((2, 3, 3, 4, 2, 4, 6))
     );
     // Extracted independently from both actual native certificates in the
     // preserved 6a1e62d3/b1afca58 control, not regenerated from this producer.
@@ -1220,12 +1220,13 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
         // full-u32 lookback arithmetic moved preferences to version 4, and
         // fa-yugf.83 the investor-population ones on to version 4. As-of
         // netting moved aging.inventory to version 3; cash-overdraft netting
-        // and a shared cash/liability cutoff moved the cash-flow screen to 5.
+        // and a shared cash/liability cutoff moved the cash-flow screen to 5;
+        // preserving each legal entity in that fallback moved it to 6.
         let version = match id {
             "graph.ponzi_motif" => 1,
             "lookback.preferences" | "recon.lapping" => 4,
             "aging.inventory" | "jet.suspense_aging" => 3,
-            "solvency.cash_flow_test" => 5,
+            "solvency.cash_flow_test" => 6,
             "ponzi.net_investment" => 5,
             "distribution.rising_tide" | "distribution.pro_rata" => 4,
             _ => 2,
@@ -1607,6 +1608,80 @@ fn assertion_drift_v1_decodes_but_cannot_dispatch_the_v2_fold() {
         saved.body().is_err(),
         "legacy decoding still requires every attestation/REA witness"
     );
+}
+
+#[test]
+fn cash_flow_v6_retains_v5_native_replay_and_binds_each_registry_interpretation() {
+    let mut f = Fixture::new(137);
+    let cx = f.cx();
+    f.runtime.block_on(f.book.install_chart(
+        &cx,
+        &[AccountSpec {
+            code: "2000".into(), name: "Payable".into(),
+            account_type: AccountType::LIABILITY.0, normal_balance: 1,
+            is_leaf: true, unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None, limit: None,
+        }],
+        PRINCIPAL, day(1), b"cash-flow-payable", &cap(&["schema_change"]),
+    )).unwrap().unwrap();
+    f.assign_role("1000", "cash");
+    let (source, _) = f.post(1, "3000", "1000", 100, false);
+    f.post(2, "2000", "6000", 400, false);
+    let mut request = f.request("solvency.cash_flow_test", source);
+    let current = f.certify(&request).certificate;
+    assert_eq!(current.report.version, 6);
+    assert_eq!(current.report.findings.len(), 1);
+    assert_eq!(current.report.findings[0].statistic.value, 300);
+    assert!(current.report.findings[0].narrative.contains("legal_entity=unassigned"));
+    request.version = Some(5);
+    let legacy = f.certify(&request).certificate;
+    assert_eq!(legacy.report.version, 5);
+    assert_eq!(legacy.report.findings[0].version, 5);
+    assert_eq!(legacy.report.findings[0].statistic, current.report.findings[0].statistic);
+    assert_eq!(legacy.report.findings[0].cites, current.report.findings[0].cites);
+    assert_eq!(legacy.report.work, current.report.work);
+    assert!(!legacy.report.findings[0].narrative.contains("legal_entity="));
+    assert_ne!(legacy.registry, current.registry);
+    assert_eq!(registry_versions(&legacy.registry).unwrap(), Some((2, 3, 3, 4, 2, 4, 5)));
+
+    // A later healthy balance cannot change either retained interpretation.
+    f.post(3, "3000", "1000", 500, false);
+    let before = f.head();
+    for certificate in [&current, &legacy] {
+        let decoded = ProcedureCertificate::decode(&certificate.canonical_bytes().unwrap()).unwrap();
+        assert_eq!(
+            f.book.replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded).unwrap().unwrap(),
+            certificate.report,
+        );
+    }
+    let mut raw_legacy = legacy.clone();
+    raw_legacy.registry = domain_digest(b"fa:procedure-registry:v1", &[
+        pre_solvency_registry_text().unwrap().as_bytes(), PROCEDURE_REGISTRIES[1].1.as_bytes(),
+    ]);
+    super::offline::reseal(&mut raw_legacy);
+    assert_eq!(
+        f.book.replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &raw_legacy).unwrap().unwrap(),
+        legacy.report,
+    );
+
+    // The transition also retains certificates for unchanged procedures.
+    let mut unchanged = f.certify(&f.request("graph.layering", source)).certificate;
+    unchanged.registry = legacy.registry;
+    super::offline::reseal(&mut unchanged);
+    assert_eq!(
+        f.book.replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &unchanged).unwrap().unwrap(),
+        unchanged.report,
+    );
+    for (mut confused, registry) in [(current, legacy.registry), (legacy, registry_digest().unwrap())] {
+        confused.registry = registry;
+        super::offline::reseal(&mut confused);
+        let decoded = ProcedureCertificate::decode(&confused.canonical_bytes().unwrap()).unwrap();
+        let refusal = f.book.replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
+            .unwrap().unwrap_err();
+        assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+        assert!(refusal.message.contains("does not declare this algorithm version"));
+    }
+    assert_eq!(f.head(), before, "certification and replay remain read-only");
 }
 
 #[test]

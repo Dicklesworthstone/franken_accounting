@@ -1160,6 +1160,10 @@ pub fn bind_version(id: &str, version: u16) -> Result<Row, LanternError> {
         row.complexity = "O(legs log legs)".into();
         return Ok(row);
     }
+    if id == cutoff::SolvencyCashFlowTest::ID && version == 5 && row.version == 6 {
+        row.version = 5;
+        return Ok(row);
+    }
     Err(LanternError::Version {
         procedure: row.id,
         code: version,

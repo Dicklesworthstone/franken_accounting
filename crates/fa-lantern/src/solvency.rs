@@ -1191,6 +1191,7 @@ pub fn evaluate_cash_flow_solvency(
 /// maturity is never presented as a contractual maturity-schedule conclusion.
 pub(crate) fn run_unscheduled_book_screen(
     procedure: &str,
+    version: u16,
     snapshot: &Snapshot,
     book: &BookContext,
     horizon_days: u32,
@@ -1206,10 +1207,25 @@ pub(crate) fn run_unscheduled_book_screen(
     let mut visit = snapshot.live_postings_through(Some(ref_date))?;
     visit.sort_by_key(|e| e.vid);
 
-    let mut cash_net: BTreeMap<(VId, u32), i128> = BTreeMap::new();
-    let mut liab_net: BTreeMap<(VId, u32), i128> = BTreeMap::new();
-    let mut unit_accts: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
-    let mut unit_entries: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
+    // Version 5 deliberately judged the whole book per unit. Preserve that
+    // retained interpretation; version 6 uses the scheduled evaluator's exact
+    // entity normalization, so another entity cannot supply this one's cash.
+    let entity_scope = if version >= 6 {
+        Some(crate::projection::entity_scope(
+            visit.iter().flat_map(|entry| &entry.entry.proposal.legs),
+        )?)
+    } else {
+        None
+    };
+    #[derive(Default)]
+    struct Cell {
+        cash: BTreeMap<VId, i128>,
+        liabilities: BTreeMap<VId, i128>,
+        accounts: BTreeSet<VId>,
+        entries: BTreeSet<VId>,
+        population: u64,
+    }
+    let mut cells = BTreeMap::<(u32, Option<VId>), Cell>::new();
     let mut population = 0u64;
 
     // A cash account holds the Asset role only, so no leg is both.
@@ -1217,67 +1233,53 @@ pub(crate) fn run_unscheduled_book_screen(
         work.entry()?;
         for leg in &e.entry.proposal.legs {
             work.leg()?;
+            let entity = match &entity_scope {
+                Some(scope) => crate::projection::scoped_entity(scope, leg)?,
+                None => None,
+            };
             let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                 continue;
             };
-            if cash.contains(&leg.account_ref) {
-                population = population.saturating_add(1);
-                let signed = signed_leg(leg.side, leg.amount.mantissa)?;
-                let c = cash_net
-                    .entry((leg.account_ref, leg.amount.unit.0))
-                    .or_default();
+            let is_cash = cash.contains(&leg.account_ref);
+            if !is_cash && AccountType(acct.account_type) != AccountType::LIABILITY {
+                continue;
+            }
+            let cell = cells.entry((leg.amount.unit.0, entity)).or_default();
+            let signed = signed_leg(leg.side, leg.amount.mantissa)?;
+            if is_cash {
+                let c = cell.cash.entry(leg.account_ref).or_default();
                 *c = c
                     .checked_add(signed)
                     .ok_or(LanternError::Overflow("cash_flow_test cash fold"))?;
-            } else if AccountType(acct.account_type) == AccountType::LIABILITY {
-                population = population.saturating_add(1);
-                let signed = signed_leg(leg.side, leg.amount.mantissa)?;
-                let l = liab_net
-                    .entry((leg.account_ref, leg.amount.unit.0))
-                    .or_default();
+            } else {
+                let l = cell.liabilities.entry(leg.account_ref).or_default();
                 *l = l
                     .checked_add(signed)
                     .ok_or(LanternError::Overflow("cash_flow_test liability fold"))?;
-            } else {
-                continue;
             }
-            unit_accts
-                .entry(leg.amount.unit.0)
-                .or_default()
-                .insert(leg.account_ref);
-            unit_entries
-                .entry(leg.amount.unit.0)
-                .or_default()
-                .insert(e.vid);
+            population = population.saturating_add(1);
+            cell.population = cell.population.saturating_add(1);
+            cell.accounts.insert(leg.account_ref);
+            cell.entries.insert(e.vid);
         }
-    }
-
-    let mut units: BTreeSet<u32> = BTreeSet::new();
-    for &(_, u) in cash_net.keys().chain(liab_net.keys()) {
-        units.insert(u);
     }
 
     let mut out = Vec::new();
-    for unit_id in units {
+    for ((unit_id, entity), cell) in cells {
         work.compare(1)?;
         let mut liquid_cash = 0i128;
-        for (&(_, u), &net) in &cash_net {
-            if u == unit_id {
-                liquid_cash = liquid_cash
-                    .checked_add(net)
-                    .ok_or(LanternError::Overflow("cash_flow_test liquid_cash sum"))?;
-            }
+        for net in cell.cash.values() {
+            liquid_cash = liquid_cash
+                .checked_add(*net)
+                .ok_or(LanternError::Overflow("cash_flow_test liquid_cash sum"))?;
         }
-        // Apply the authenticated schedule's net-before-floor policy to this
-        // book-wide screen: net every cash account in the unit before flooring
-        // available cash at zero.
-        // Dropping each overdraft first overstates spendable cash whenever
-        // another account is positive. This remains an unscheduled screen;
-        // it does not invent a maturity or duplicate a scheduled obligation.
+        // Net every cash account within this unit and entity before flooring
+        // available cash at zero. Dropping overdrafts first overstates cash.
+        // This remains an unscheduled screen: it invents no maturity.
         let liquid_cash = liquid_cash.max(0);
         let mut book_liabilities = 0i128;
-        for (&(_, u), &net) in &liab_net {
-            if u == unit_id && net < 0 {
+        for &net in cell.liabilities.values() {
+            if net < 0 {
                 book_liabilities = book_liabilities
                     .checked_add(amount_negated(net, "cash_flow_test obligation")?)
                     .ok_or(LanternError::Overflow("cash_flow_test obligations sum"))?;
@@ -1287,13 +1289,16 @@ pub(crate) fn run_unscheduled_book_screen(
             let shortfall = book_liabilities
                 .checked_sub(liquid_cash)
                 .ok_or(LanternError::Overflow("cash_flow_test shortfall"))?;
-            let cites = cash_flow_citations(
-                procedure,
-                unit_accts.remove(&unit_id).unwrap_or_default(),
-                unit_entries.remove(&unit_id).unwrap_or_default(),
-                &[],
-            )?;
+            let cites = cash_flow_citations(procedure, cell.accounts, cell.entries, &[])?;
             let scale = crate::unit_scale(book, unit_id)?;
+            let subject = if entity_scope.is_some() {
+                format!(
+                    "unit {unit_id} legal_entity={}",
+                    entity.map_or_else(|| "unassigned".into(), |value| format!("{:032x}", value.0)),
+                )
+            } else {
+                format!("unit {unit_id}")
+            };
             out.push(finding(
                 procedure,
                 Severity::High,
@@ -1301,11 +1306,15 @@ pub(crate) fn run_unscheduled_book_screen(
                     name: "cash_flow_shortfall".into(),
                     value: shortfall,
                     scale,
-                    population: population.max(1),
+                    population: if entity_scope.is_some() {
+                        cell.population.max(1)
+                    } else {
+                        population.max(1)
+                    },
                 },
                 cites,
                 format!(
-                    "unit {unit_id} as-of liquidity screen at {ref_date}: liquid_cash={liquid_cash}, book_liabilities={book_liabilities}, shortfall={shortfall} (maturity_basis=unscheduled_book_liability_screen; no authenticated maturity schedule declared; no contractual maturity conclusion for the {horizon_days}-day horizon)"
+                    "{subject} as-of liquidity screen at {ref_date}: liquid_cash={liquid_cash}, book_liabilities={book_liabilities}, shortfall={shortfall} (maturity_basis=unscheduled_book_liability_screen; no authenticated maturity schedule declared; no contractual maturity conclusion for the {horizon_days}-day horizon)"
                 ),
             ));
         }
@@ -2827,7 +2836,7 @@ fn unscheduled_cash_nets_overdrafts_like_a_single_entity_schedule() {
         }
         let procedure = crate::cutoff::SolvencyCashFlowTest::new().unwrap();
         let screen = run_over(&snapshot, &book, &procedure).unwrap();
-        assert_eq!(screen.version, 5);
+        assert_eq!(screen.version, 6);
         assert_eq!(screen.findings.len(), usize::from(expected_shortfall > 0));
         if expected_shortfall > 0 {
             let finding = &screen.findings[0];
@@ -2892,6 +2901,151 @@ fn unscheduled_cash_nets_overdrafts_like_a_single_entity_schedule() {
                 .deterministic()
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn unscheduled_cash_preserves_entity_deficits_and_contributing_citations() {
+    let as_of = day(2026, 4, 30);
+    let entity_a = VId(70);
+    let entity_b = VId(71);
+    for other_is_cash in [true, false] {
+        let (mut snapshot, book, cash, payable, document) = test_fixture(as_of);
+        let usd = book.units.lookup("USD").unwrap();
+        let expense = account_vid(book.book_id, "6000");
+        for (vid, entity, debit, credit, amount) in [
+            (VId(10), entity_a, cash, expense, 100),
+            (VId(20), entity_a, expense, payable, 400),
+            (
+                VId(30),
+                entity_b,
+                if other_is_cash { cash } else { payable },
+                expense,
+                500,
+            ),
+        ] {
+            let mut legs = vec![
+                LegPayload::simple(Side::Debit, debit, Amount::new(usd, amount)),
+                LegPayload::simple(Side::Credit, credit, Amount::new(usd, amount)),
+            ];
+            for leg in &mut legs {
+                leg.dimension_set.push((fa_model::LEGAL_ENTITY_DIMENSION, entity));
+            }
+            snapshot.entries.push(make_posting(
+                &book, vid, as_of, EntryClass::ORIGINAL, legs, Vec::new(), document,
+            ));
+        }
+        let procedure = crate::cutoff::SolvencyCashFlowTest::new().unwrap();
+        let current = run_over(&snapshot, &book, &procedure).unwrap();
+        assert_eq!(current.version, 6);
+        assert_eq!(current.findings.len(), 1);
+        let finding = &current.findings[0];
+        assert_eq!(finding.statistic.value, 300);
+        assert_eq!(finding.statistic.population, 2);
+        assert!(finding.narrative.contains(&format!("legal_entity={:032x}", entity_a.0)));
+        assert!(finding.narrative.contains("liquid_cash=100, book_liabilities=400"));
+        assert!(finding.cites.contains(&Cite::Entry(VId(10))));
+        assert!(finding.cites.contains(&Cite::Entry(VId(20))));
+        assert!(!finding.cites.contains(&Cite::Entry(VId(30))));
+        assert!(finding.cites.contains(&Cite::Account(cash)));
+        assert!(finding.cites.contains(&Cite::Account(payable)));
+
+        // The published v5 whole-book screen remains executable verbatim.
+        // Both B's cash and B's debit balance on the shared payable account
+        // could cover A under that deliberately broader interpretation.
+        let legacy = crate::cutoff::SolvencyCashFlowTest::with_legacy_scope(
+            Params::defaults(crate::cutoff::SolvencyCashFlowTest::ID).unwrap(),
+        );
+        let old = run_over(&snapshot, &book, &legacy).unwrap();
+        assert_eq!(old.version, 5);
+        assert!(old.findings.is_empty());
+
+        let schedule = AuthenticatedObligationSchedule {
+            schema_version: SCHEDULE_SCHEMA_VERSION,
+            book_id: book.book_id,
+            known_at: snapshot.coordinate.known_at,
+            as_of,
+            unit_filter: None,
+            entity_filter: None,
+            obligations: vec![ScheduledObligation {
+                entry: VId(20), ordinal: 1, account: payable, unit: usd,
+                entity: Some(entity_a), status: ObligationStatus::Contractual,
+                installments: vec![ObligationInstallment {
+                    due_date: day(2026, 5, 1), amount: 400,
+                }],
+                evidence_refs: vec![EvidenceRef {
+                    document_oid: document, doc_commit: [0xaa; 32], role: 1,
+                }],
+            }],
+            commitments: Vec::new(),
+            expected_inflows: Vec::new(),
+        };
+        let mut meter = Meter::new(crate::cutoff::SolvencyCashFlowTest::ID, None, None);
+        let scheduled = evaluate_cash_flow_solvency(
+            crate::cutoff::SolvencyCashFlowTest::ID, &snapshot, &book, 30, &schedule, &mut meter,
+        ).unwrap();
+        let unit = &scheduled.units[&(usd.0, Some(entity_a))];
+        assert_eq!(unit.liquid_cash, 100);
+        assert_eq!(unit.shortfall, finding.statistic.value);
+        assert!(crate::witness::determinism(&snapshot, &book, &procedure).unwrap().deterministic());
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn unscheduled_cash_normalizes_only_unambiguous_entity_scopes() {
+    let as_of = day(2026, 4, 30);
+    let (mut snapshot, book, cash, payable, document) = test_fixture(as_of);
+    let usd = book.units.lookup("USD").unwrap();
+    let expense = account_vid(book.book_id, "6000");
+    for (vid, debit, credit, amount) in [
+        (VId(10), cash, expense, 100),
+        (VId(20), expense, payable, 400),
+    ] {
+        snapshot.entries.push(make_posting(
+            &book, vid, as_of, EntryClass::ORIGINAL,
+            vec![
+                LegPayload::simple(Side::Debit, debit, Amount::new(usd, amount)),
+                LegPayload::simple(Side::Credit, credit, Amount::new(usd, amount)),
+            ],
+            Vec::new(), document,
+        ));
+    }
+    let procedure = crate::cutoff::SolvencyCashFlowTest::new().unwrap();
+    let unassigned = run_over(&snapshot, &book, &procedure).unwrap();
+    assert_eq!(unassigned.findings[0].statistic.value, 300);
+    assert!(unassigned.findings[0].narrative.contains("legal_entity=unassigned"));
+    let tag = |entry: &mut SnapshotEntry, entity| {
+        let mut proposal = entry.entry.proposal.clone();
+        for leg in &mut proposal.legs {
+            leg.dimension_set.push((fa_model::LEGAL_ENTITY_DIMENSION, entity));
+        }
+        entry.entry = proposal.seal(Vec::new(), None).unwrap();
+    };
+    let entity_a = VId(70);
+    let entity_b = VId(71);
+    tag(&mut snapshot.entries[1], entity_a);
+    let sole = run_over(&snapshot, &book, &procedure).unwrap();
+    assert_eq!(sole.findings[0].statistic, unassigned.findings[0].statistic);
+    assert_eq!(sole.findings[0].cites, unassigned.findings[0].cites);
+    assert!(sole.findings[0].narrative.contains(&format!("legal_entity={:032x}", entity_a.0)));
+
+    tag(&mut snapshot.entries[2], entity_b);
+    let separate = run_over(&snapshot, &book, &procedure).unwrap();
+    assert_eq!(separate.findings[0].statistic.value, 400);
+    assert!(!separate.findings[0].cites.contains(&Cite::Entry(VId(10))));
+    snapshot.entries.push(make_posting(
+        &book, VId(30), as_of, EntryClass::ORIGINAL,
+        vec![
+            LegPayload::simple(Side::Debit, cash, Amount::new(usd, 1)),
+            LegPayload::simple(Side::Credit, expense, Amount::new(usd, 1)),
+        ],
+        Vec::new(), document,
+    ));
+    assert!(matches!(
+        run_over(&snapshot, &book, &procedure),
+        Err(LanternError::Overflow("missing money-flow legal entity"))
+    ));
 }
 
 #[cfg(test)]
@@ -3659,7 +3813,7 @@ fn cash_flow_findings_never_truncate_their_accounting_basis() {
             evaluate_cash_flow_solvency(procedure, &snapshot, &book, 30, &schedule, &mut meter)
                 .map(|report| report.findings);
         let mut meter = Meter::new(procedure, None, None);
-        let unscheduled = run_unscheduled_book_screen(procedure, &snapshot, &book, 30, &mut meter);
+        let unscheduled = run_unscheduled_book_screen(procedure, 6, &snapshot, &book, 30, &mut meter);
         for (result, needed, has_document) in [
             (scheduled, count + 2, true),
             (unscheduled, count + 1, false),

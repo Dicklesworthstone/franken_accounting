@@ -212,6 +212,9 @@ pub fn build_version(
         (PartyLayering::ID, 2) => Ok(Box::new(PartyLayering::with_version(params, 2))),
         (ReconLapping::ID, 2) => Ok(Box::new(ReconLapping::with_version(params, 2))),
         (ReconLapping::ID, 3) => Ok(Box::new(ReconLapping::with_version(params, 3))),
+        (SolvencyCashFlowTest::ID, 5) => {
+            Ok(Box::new(SolvencyCashFlowTest::with_legacy_scope(params)))
+        }
         (LookbackPreferences::ID, 3) => Ok(Box::new(LookbackPreferences::with_version(params, 3))),
         (LookbackFraudulentTransfer::ID, 1) => Ok(Box::new(
             LookbackFraudulentTransfer::with_version(params, 1),

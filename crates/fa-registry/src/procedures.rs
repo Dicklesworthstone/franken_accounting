@@ -20,6 +20,85 @@ const LAPPING_V3_SUMMARY_SUFFIX: &str = " Version 3 preserves the full u32 windo
 const LAPPING_V4_SUMMARY_SUFFIX: &str = " Version 4 indexes matching settlements and meters candidate searches; versions 2 and 3 retain their historical work transcripts.";
 const LAPPING_V4_COMPLEXITY: &str = "O((legs + parties) log (legs + parties) + legs^2 log legs)";
 
+const SOLVENCY_V6_SUMMARY_SUFFIX: &str = " Version 6 also partitions the unscheduled screen by legal entity using the scheduled evaluator's normalization: unnamed legs share an unassigned scope when no entity is named, inherit the sole named entity, and are refused when multiple named entities make them ambiguous. Cash accounts net and floor at zero within each unit/entity; liability balances remain account-scoped and findings cite only their entity's contributing entries. Version 5's whole-book screen remains available for replay.";
+
+/// Restore exactly the published whole-book cash-flow screen.
+pub fn solvency_v5_document(
+    mut doc: crate::toml::Document,
+) -> Result<crate::toml::Document, RegistryError> {
+    let row = doc
+        .arrays
+        .get_mut("procedure")
+        .and_then(|rows| {
+            rows.iter_mut().find(|row| {
+                row.get("id").and_then(crate::toml::Value::as_str)
+                    == Some("solvency.cash_flow_test")
+            })
+        })
+        .ok_or_else(|| invalid(R, "missing retained cash-flow solvency row"))?;
+    if row.get("version").and_then(crate::toml::Value::as_int) != Some(6) {
+        return Err(invalid(R, "unavailable cash-flow solvency revision"));
+    }
+    let summary = req_str(R, row, "summary")?
+        .strip_suffix(SOLVENCY_V6_SUMMARY_SUFFIX)
+        .ok_or_else(|| invalid(R, "unrecognized cash-flow solvency revision"))?
+        .to_string();
+    row.insert("version".into(), crate::toml::Value::Int(5));
+    row.insert("summary".into(), crate::toml::Value::Str(summary));
+    Ok(doc)
+}
+
+/// Raw certificates require the exact published text as well as its meaning.
+pub fn solvency_v5_registry_text(text: &str) -> Result<String, RegistryError> {
+    let doc = load(R, text)?;
+    let expected = solvency_v5_document(doc.clone())?.canonical_bytes();
+    let row = doc
+        .arrays
+        .get("procedure")
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("id").and_then(crate::toml::Value::as_str)
+                    == Some("solvency.cash_flow_test")
+            })
+        })
+        .ok_or_else(|| invalid(R, "missing retained cash-flow solvency row"))?;
+    let summary = req_str(R, row, "summary")?;
+    let old_summary = summary
+        .strip_suffix(SOLVENCY_V6_SUMMARY_SUFFIX)
+        .ok_or_else(|| invalid(R, "unrecognized cash-flow solvency revision"))?;
+    let prefix = "[[procedure]]\nid = \"solvency.cash_flow_test\"\nversion = 6\n";
+    if text.matches(prefix).count() != 1 {
+        return Err(invalid(R, "unavailable raw cash-flow solvency revision"));
+    }
+    let start = text
+        .find(prefix)
+        .ok_or_else(|| invalid(R, "missing raw cash-flow solvency row"))?;
+    let tail = &text[start + prefix.len()..];
+    let end = tail
+        .find("\n[[")
+        .map_or(text.len(), |offset| start + prefix.len() + offset);
+    let block = &text[start..end];
+    let summary_line = format!("summary = \"{summary}\"\n");
+    if block.matches(&summary_line).count() != 1 {
+        return Err(invalid(R, "unavailable raw cash-flow solvency summary"));
+    }
+    let restored = block
+        .replacen(
+            prefix,
+            "[[procedure]]\nid = \"solvency.cash_flow_test\"\nversion = 5\n",
+            1,
+        )
+        .replacen(&summary_line, &format!("summary = \"{old_summary}\"\n"), 1);
+    let retained = format!("{}{restored}{}", &text[..start], &text[end..]);
+    if load(R, &retained)?.canonical_bytes() != expected {
+        return Err(invalid(
+            R,
+            "retained raw and canonical cash-flow solvency registries disagree",
+        ));
+    }
+    Ok(retained)
+}
+
 /// Restore the exact row before indexed, fully metered lapping execution.
 pub fn lapping_v3_document(
     mut doc: crate::toml::Document,
@@ -954,6 +1033,45 @@ mod tests {
         let unknown = PROCEDURES.replace(LOOKBACK_WINDOW_SUMMARY_SUFFIX, " unknown window law");
         assert!(legacy_lookback_document(load(R, &unknown).unwrap()).is_err());
         assert!(legacy_lookback_registry_text(&unknown).is_err());
+    }
+
+    #[test]
+    fn solvency_v5_registry_reconstruction_preserves_only_the_published_transition() {
+        let current = load(R, PROCEDURES).unwrap();
+        let previous = solvency_v5_document(current.clone()).unwrap();
+        let raw = solvency_v5_registry_text(PROCEDURES).unwrap();
+        assert_eq!(load(R, &raw).unwrap().canonical_bytes(), previous.canonical_bytes());
+        assert_ne!(previous.canonical_bytes(), current.canonical_bytes());
+        let old_row = previous.arrays["procedure"].iter().find(|row| {
+            row.get("id").and_then(crate::toml::Value::as_str)
+                == Some("solvency.cash_flow_test")
+        }).unwrap();
+        assert_eq!(req_int(R, old_row, "version").unwrap(), 5);
+        assert!(!req_str(R, old_row, "summary").unwrap().contains(SOLVENCY_V6_SUMMARY_SUFFIX));
+
+        let layout = PROCEDURES.replace(
+            "id = \"solvency.cash_flow_test\"\nversion = 6",
+            "id = \"solvency.cash_flow_test\"\n# harmless canonical layout\nversion = 6",
+        );
+        assert_eq!(
+            solvency_v5_document(load(R, &layout).unwrap()).unwrap().canonical_bytes(),
+            previous.canonical_bytes(),
+        );
+        assert!(solvency_v5_registry_text(&layout).is_err());
+        let unrelated = PROCEDURES.replace("FA-EVID-L01", "FA-EVID-L99");
+        assert_ne!(
+            solvency_v5_document(load(R, &unrelated).unwrap()).unwrap().canonical_bytes(),
+            previous.canonical_bytes(),
+        );
+        let future = PROCEDURES.replace(
+            "id = \"solvency.cash_flow_test\"\nversion = 6",
+            "id = \"solvency.cash_flow_test\"\nversion = 7",
+        );
+        assert!(solvency_v5_document(load(R, &future).unwrap()).is_err());
+        assert!(solvency_v5_registry_text(&future).is_err());
+        let unknown = PROCEDURES.replace(SOLVENCY_V6_SUMMARY_SUFFIX, " unknown entity law");
+        assert!(solvency_v5_document(load(R, &unknown).unwrap()).is_err());
+        assert!(solvency_v5_registry_text(&unknown).is_err());
     }
 
     const MINIMAL: &str = r#"
