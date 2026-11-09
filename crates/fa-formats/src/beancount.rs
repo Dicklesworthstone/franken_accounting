@@ -10,6 +10,8 @@
 //! control/whitespace-sensitive memos. Hledger's unquoted grammar uses optional
 //! `fa_code_hex_v1`, `fa_name_hex_v1`, `fa_entry_id_hex_v1`, and
 //! `fa_description_hex_v1` tags; each value is exact UTF-8 encoded as hex.
+//! Accounts whose normal balance differs from their type carry the optional
+//! `fa_normal_side_v1` tag (`D` or `C`), retaining contra-account semantics.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
@@ -166,6 +168,12 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
             escape_quotes(&acct.name),
             format_account_type(acct.account_type),
         ));
+        if acct.normal_side != normal_side_for_type(acct.account_type) {
+            out.push_str(&format!(
+                "  fa_normal_side_v1: \"{}\"\n",
+                normal_side_code(acct.normal_side)
+            ));
+        }
         if !acct.roles.is_empty() {
             out.push_str(&format!("  fa_roles_v1: \"{}\"\n", acct.roles.join(",")));
         }
@@ -278,6 +286,37 @@ fn beancount_amount(
     Ok(text)
 }
 
+fn normal_side_code(side: Side) -> &'static str {
+    match side {
+        Side::Debit => "D",
+        Side::Credit => "C",
+    }
+}
+
+fn read_normal_side(
+    format: &'static str,
+    value: &str,
+    side: &mut Option<Side>,
+) -> Result<(), FormatError> {
+    if side.is_some() {
+        return Err(FormatError::Parse {
+            format,
+            detail: "duplicate fa_normal_side_v1 account metadata".into(),
+        });
+    }
+    *side = Some(match value {
+        "D" => Side::Debit,
+        "C" => Side::Credit,
+        _ => {
+            return Err(FormatError::Parse {
+                format,
+                detail: format!("invalid fa_normal_side_v1 {value:?}; expected D or C"),
+            });
+        }
+    });
+    Ok(())
+}
+
 fn beancount_date(day: DateDay, context: &str) -> Result<String, FormatError> {
     let (year, _, _) = day.ymd();
     if !(0..=9999).contains(&year) {
@@ -361,6 +400,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
             let mut code = from_beancount_account_name(bc_acct)?;
             let mut name = code.clone();
             let mut acct_type = infer_account_type_from_beancount(bc_acct)?;
+            let mut normal_side = None;
             let mut roles = Vec::new();
             i += 1;
             while i < lines.len() && (lines[i].starts_with("  ") || lines[i].starts_with('\t')) {
@@ -372,6 +412,8 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
                 } else if let Some(v) = meta.strip_prefix("fa_type:") {
                     let t_str = unquote(FMT, v.trim())?;
                     acct_type = parse_account_type(FMT, &t_str)?;
+                } else if let Some(v) = meta.strip_prefix("fa_normal_side_v1:") {
+                    read_normal_side(FMT, &unquote(FMT, v.trim())?, &mut normal_side)?;
                 } else if let Some(v) = meta.strip_prefix("fa_roles_v1:") {
                     roles.extend(unquote(FMT, v.trim())?.split(',').map(str::to_owned));
                 }
@@ -382,7 +424,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
                 code,
                 name,
                 account_type: acct_type,
-                normal_side: normal_side_for_type(acct_type),
+                normal_side: normal_side.unwrap_or_else(|| normal_side_for_type(acct_type)),
                 roles,
             });
             continue;
@@ -617,9 +659,14 @@ pub fn write_hledger(journal: &FormatJournal) -> String {
         acct_type_by_code.insert(acct.code.as_str(), acct.account_type);
         let hl_acct = to_beancount_account_name(acct.account_type, &acct.code);
         out.push_str(&format!(
-            "account {hl_acct}  ; {} fa_type:{}{} {}\n",
+            "account {hl_acct}  ; {} fa_type:{}{}{} {}\n",
             inline_text_metadata("fa_code", &acct.code, true),
             format_account_type(acct.account_type),
+            if acct.normal_side == normal_side_for_type(acct.account_type) {
+                String::new()
+            } else {
+                format!(" fa_normal_side_v1:{}", normal_side_code(acct.normal_side))
+            },
             if acct.roles.is_empty() {
                 String::new()
             } else {
@@ -718,6 +765,7 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
             };
             let mut code = from_beancount_account_name(acct_tok)?;
             let mut acct_type = infer_account_type_from_beancount(acct_tok)?;
+            let mut normal_side = None;
             let mut name = code.clone();
             let mut roles = Vec::new();
             if let Some(c) = comment_opt {
@@ -738,6 +786,8 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
                         name = decode_text_hex(FMT, v)?;
                     } else if let Some(v) = tok.strip_prefix("fa_type:") {
                         acct_type = parse_account_type(FMT, v)?;
+                    } else if let Some(v) = tok.strip_prefix("fa_normal_side_v1:") {
+                        read_normal_side(FMT, v, &mut normal_side)?;
                     } else if let Some(v) = tok.strip_prefix("fa_roles_v1:") {
                         roles.extend(v.split(',').map(str::to_owned));
                     }
@@ -748,7 +798,7 @@ pub fn read_hledger(text: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
                 code,
                 name,
                 account_type: acct_type,
-                normal_side: normal_side_for_type(acct_type),
+                normal_side: normal_side.unwrap_or_else(|| normal_side_for_type(acct_type)),
                 roles,
             });
             i += 1;

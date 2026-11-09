@@ -140,6 +140,115 @@ fn plaintext_account_names_and_entry_ids_remain_exact() {
 }
 
 #[test]
+fn plaintext_preserves_normal_balance_overrides_for_every_monetary_account_type() {
+    let base = journal("Contra accounts", "Payment", None);
+    let units = UnitCatalog::embedded().unwrap();
+    for (kind, default_side) in [
+        (AccountType::ASSET, Side::Debit),
+        (AccountType::LIABILITY, Side::Credit),
+        (AccountType::EQUITY, Side::Credit),
+        (AccountType::REVENUE, Side::Credit),
+        (AccountType::EXPENSE, Side::Debit),
+    ] {
+        for side in [Side::Debit, Side::Credit] {
+            let mut accounts = base.accounts.clone();
+            accounts[0].account_type = kind;
+            accounts[0].normal_side = side;
+            let source = FormatJournal::new(
+                "Contra accounts",
+                "USD",
+                2,
+                base.coordinate.effective_through,
+                1,
+                accounts,
+                base.entries.clone(),
+                Vec::new(),
+            )
+            .unwrap();
+            let bean = write_beancount(&source).unwrap();
+            let hledger = write_hledger(&source);
+            for (format, text, restored) in [
+                ("beancount", &bean, read_beancount(&bean, &units)),
+                ("hledger", &hledger, read_hledger(&hledger, &units)),
+            ] {
+                assert_eq!(
+                    text.contains("fa_normal_side_v1:"),
+                    side != default_side,
+                    "{format} {kind:?} {side:?}"
+                );
+                let restored = restored.unwrap();
+                assert_eq!(restored, source, "{format} {kind:?} {side:?}");
+                verify_round_trip_identity(format, &source, &restored).unwrap();
+                let reencoded = if format == "beancount" {
+                    write_beancount(&restored).unwrap()
+                } else {
+                    write_hledger(&restored)
+                };
+                assert_eq!(&reencoded, text);
+            }
+        }
+    }
+}
+
+#[test]
+fn plaintext_normal_side_metadata_refuses_ambiguity_and_detects_substitution() {
+    let base = journal("Contra asset", "Payment", None);
+    let mut accounts = base.accounts.clone();
+    accounts[0].normal_side = Side::Credit;
+    let source = FormatJournal::new(
+        "Contra asset",
+        "USD",
+        2,
+        base.coordinate.effective_through,
+        1,
+        accounts,
+        base.entries.clone(),
+        Vec::new(),
+    )
+    .unwrap();
+    let units = UnitCatalog::embedded().unwrap();
+    let bean = write_beancount(&source).unwrap();
+    let hledger = write_hledger(&source);
+    for (bean_value, hledger_value) in [
+        ("fa_normal_side_v1: \"X\"", "fa_normal_side_v1:X"),
+        (
+            "fa_normal_side_v1: \"C\"\n  fa_normal_side_v1: \"D\"",
+            "fa_normal_side_v1:C fa_normal_side_v1:D",
+        ),
+    ] {
+        for result in [
+            read_beancount(
+                &bean.replace("fa_normal_side_v1: \"C\"", bean_value),
+                &units,
+            ),
+            read_hledger(
+                &hledger.replace("fa_normal_side_v1:C", hledger_value),
+                &units,
+            ),
+        ] {
+            assert!(matches!(
+                result,
+                Err(FormatError::Parse { detail, .. }) if detail.contains("fa_normal_side_v1")
+            ));
+        }
+    }
+    let changed_bean = bean.replace("fa_normal_side_v1: \"C\"", "fa_normal_side_v1: \"D\"");
+    assert!(matches!(
+        read_beancount(&changed_bean, &units),
+        Err(FormatError::CertificateMismatch { .. })
+    ));
+    // Hledger imports do not carry a producer certificate; the independent
+    // comparison must still reject an otherwise balanced chart substitution.
+    let changed_hledger = hledger.replace("fa_normal_side_v1:C", "fa_normal_side_v1:D");
+    let changed = read_hledger(&changed_hledger, &units).unwrap();
+    assert_eq!(
+        changed.fold_balances().unwrap(),
+        source.fold_balances().unwrap()
+    );
+    assert!(verify_round_trip_identity("hledger-normal-side", &source, &changed).is_err());
+}
+
+#[test]
 fn beancount_opens_accounts_before_all_legacy_effective_dates() {
     let base = journal("Legacy", "import", None);
     let mut entries = vec![base.entries[0].clone(), base.entries[0].clone()];
