@@ -218,7 +218,7 @@ fn direct_procedure_certificates_replay_and_verify_without_recording_findings() 
         assert_eq!(independent.findings.len(), 1);
         assert_eq!(
             independent.findings[0].entry,
-            u128::from_str_radix(text(&selected, "vid"), 16).unwrap()
+            Some(u128::from_str_radix(text(&selected, "vid"), 16).unwrap())
         );
         assert_eq!(
             independent.effective_through,
@@ -392,7 +392,7 @@ fn constant_procedure_calls_retain_the_direct_certificate_and_replay_its_origina
     assert_eq!(independent.findings.len(), 1);
     assert_eq!(
         independent.findings[0].entry,
-        u128::from_str_radix(text(&selected, "vid"), 16).unwrap()
+        Some(u128::from_str_radix(text(&selected, "vid"), 16).unwrap())
     );
     assert_eq!(fixture.head(), before);
     assert_eq!(
