@@ -459,6 +459,53 @@ fn beancount_writer_refuses_negative_public_amount_magnitudes() {
 }
 
 #[test]
+fn hledger_amount_magnitudes_preserve_extrema_and_refuse_negative_public_values() {
+    let base = journal("Hledger amounts", "payment", None);
+    let units = UnitCatalog::embedded().unwrap();
+    for (magnitude, decimal) in [
+        (1, "0.01"),
+        (i128::MAX, "1701411834604692317316873037158841057.27"),
+    ] {
+        let mut entries = base.entries.clone();
+        for leg in &mut entries[0].legs {
+            leg.amount.mantissa = magnitude;
+        }
+        let source = FormatJournal::new(
+            "Hledger amounts",
+            "USD",
+            2,
+            base.coordinate.effective_through,
+            1,
+            base.accounts.clone(),
+            entries,
+            Vec::new(),
+        )
+        .unwrap();
+        let text = write_hledger(&source).unwrap();
+        assert!(text.contains(&format!(
+            "    Expenses:A5000    {decimal} USD\n    Assets:A1000    -{decimal} USD\n"
+        )));
+        let restored = read_hledger(&text, &units).unwrap();
+        assert_eq!(restored, source);
+        verify_round_trip_identity("hledger-amount-boundary", &source, &restored).unwrap();
+        assert_eq!(write_hledger(&restored).unwrap(), text);
+    }
+    // Public fields can bypass the constructor's positive-magnitude check.
+    // Neither side may turn a negative magnitude into an exported posting.
+    for index in [0, 1] {
+        for magnitude in [-1, i128::MIN] {
+            let mut malformed = base.clone();
+            malformed.entries[0].legs[index].amount.mantissa = magnitude;
+            assert!(matches!(
+                write_hledger(&malformed),
+                Err(FormatError::Parse { format: "hledger_journal", detail })
+                    if detail.contains("entry source-0001 leg on") && detail.contains("negative")
+            ));
+        }
+    }
+}
+
+#[test]
 fn beancount_writer_refuses_dates_outside_its_profile_and_assertion_overflow() {
     let base = journal("Date boundaries", "payment", None);
     let normal = base.coordinate.effective_through;
@@ -647,12 +694,11 @@ fn hledger_account_names_cannot_override_declared_metadata() {
         vec![],
     )
     .unwrap();
-    let restored =
-        read_hledger(
-            &write_hledger(&source).unwrap(),
-            &UnitCatalog::embedded().unwrap(),
-        )
-        .unwrap();
+    let restored = read_hledger(
+        &write_hledger(&source).unwrap(),
+        &UnitCatalog::embedded().unwrap(),
+    )
+    .unwrap();
     verify_round_trip_identity("hledger-name", &source, &restored).unwrap();
 }
 
