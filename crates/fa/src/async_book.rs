@@ -559,6 +559,55 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
         capability: &fa_policy::Capability,
     ) -> Outcome<fa_journal::closing::YearEndCloseVerification> {
+        let selected = match self
+            .prepare_year_end_verification(cx, known_at, capability)
+            .await?
+        {
+            Ok(selected) => selected,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(fa_journal::closing::verify_year_end_close(
+            &self.db,
+            cx,
+            &self.context,
+            capability,
+            fiscal_year,
+            Some(selected),
+        )?)
+    }
+
+    /// Authenticate a current, fully closed fiscal-year basis for a close
+    /// checkpoint or its hypothetical rehearsal, without recording a task.
+    pub async fn verify_year_end_close_checkpoint(
+        &mut self,
+        cx: &PurposeContexts,
+        fiscal_year: i32,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::closing::YearEndCloseCheckpoint> {
+        let selected = match self
+            .prepare_year_end_verification(cx, known_at, capability)
+            .await?
+        {
+            Ok(selected) => selected,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(fa_journal::closing::verify_year_end_close_checkpoint(
+            &self.db,
+            cx,
+            &self.context,
+            capability,
+            fiscal_year,
+            Some(selected),
+        )?)
+    }
+
+    async fn prepare_year_end_verification(
+        &mut self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<CommitSeq> {
         if let Err(denial) =
             fa_policy::admit_read(capability, capability.holder(), self.context.book_id).and_then(
                 |()| {
@@ -593,14 +642,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
             return Ok(Err(refusal));
         }
-        Ok(fa_journal::closing::verify_year_end_close(
-            &self.db,
-            cx,
-            &self.context,
-            capability,
-            fiscal_year,
-            Some(selected),
-        )?)
+        Ok(Ok(selected))
     }
 
     pub async fn install_chart(
@@ -1630,6 +1672,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         };
         for task in tasks {
             let action = match task.action {
+                crate::ReviewedCloseAction::VerifyYearEndClose { fiscal_year } => {
+                    fa_journal::CloseTaskAction::VerifyYearEndClose { fiscal_year }
+                }
                 crate::ReviewedCloseAction::PeriodTransition(transition) => {
                     fa_journal::CloseTaskAction::PeriodTransition(transition)
                 }
@@ -1732,6 +1777,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, book| {
             Ok(fa_journal::close_run::close_run_status(
                 db, cx, book, name, capability,
+            )?)
+        })
+    }
+
+    pub(crate) async fn verify_close_run_checkpoints_at(
+        &mut self,
+        cx: &PurposeContexts,
+        name: &str,
+        capability: &fa_journal::Capability,
+        at: CommitSeq,
+    ) -> Outcome<()> {
+        if let Err(refusal) = self.prepare_close_history(cx, capability, false).await? {
+            return Ok(Err(refusal));
+        }
+        self.query(cx, |db, book| {
+            Ok(fa_journal::close_run::verify_close_run_checkpoints(
+                db, cx, book, name, capability, at,
             )?)
         })
     }

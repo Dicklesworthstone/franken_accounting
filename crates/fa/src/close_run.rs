@@ -26,6 +26,11 @@ pub enum ReviewedCloseAction {
     /// A native period transition. Execution consumes a separately reviewed
     /// TransitionPlan and its required independent approvals.
     PeriodTransition(PeriodTransition),
+    /// Authenticate the latest intrinsic Closing and the absence of any
+    /// native or functional residual, then bind the fiscal-year source basis.
+    /// Every monetary task must precede this check; the terminal transition
+    /// refuses if relevant accounting activity later changes that basis.
+    VerifyYearEndClose { fiscal_year: i32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,6 +143,31 @@ fn same_reviewed_rehearsal(reviewed: &CloseRunRehearsal, mut current: CloseRunRe
         ) = (&mut current.outcome, &reviewed.outcome)
         {
             *recorded_at = *reviewed_at;
+        }
+        if let (
+            CloseTaskRehearsalOutcome::VerifiedYearEndClose {
+                verified_at,
+                source_digest,
+                review_basis,
+                ..
+            },
+            CloseTaskRehearsalOutcome::VerifiedYearEndClose {
+                verified_at: reviewed_at,
+                source_digest: reviewed_digest,
+                review_basis: reviewed_basis,
+                ..
+            },
+        ) = (&mut current.outcome, &reviewed.outcome)
+        {
+            if *review_basis != *reviewed_basis {
+                return false;
+            }
+            *verified_at = *reviewed_at;
+            // The exact hash includes hypothetical publication sequences,
+            // which shift with the scratch prefix. The separate verified
+            // review basis still binds every ordered monetary identity and
+            // content, routes, chart, currency and period state across FY.
+            *source_digest = *reviewed_digest;
         }
     }
     current == *reviewed
@@ -592,7 +622,8 @@ impl Book {
                 .action
                 .clone();
             let (plan, approvals) = match action {
-                CloseTaskBodyAction::PromoteDraft { .. } => (None, Vec::new()),
+                CloseTaskBodyAction::PromoteDraft { .. }
+                | CloseTaskBodyAction::VerifyYearEndClose { .. } => (None, Vec::new()),
                 CloseTaskBodyAction::PeriodTransition { to } => match transition_input.as_ref() {
                     None => {
                         return Ok(Ok(CloseRunExecution {

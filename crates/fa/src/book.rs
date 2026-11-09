@@ -1809,6 +1809,17 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.close_run_status(&purposes, name, capability)))
     }
 
+    pub(crate) fn verify_close_run_checkpoints_at(
+        &mut self,
+        name: &str,
+        capability: &fa_journal::Capability,
+        at: CommitSeq,
+    ) -> Outcome<()> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.verify_close_run_checkpoints_at(&purposes, name, capability, at)))
+    }
+
     /// Prepare the exact period-transition proposal for a ready close task.
     #[allow(clippy::too_many_arguments)]
     pub fn plan_close_task_transition(
@@ -8357,6 +8368,19 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(
             core.verify_year_end_close(&purposes, fiscal_year, known_at, capability))
         )
+    }
+
+    /// Authenticate a closed fiscal-year basis, including both nominal
+    /// currencies and retained functional amounts. This read records no task.
+    pub fn verify_year_end_close_checkpoint(
+        &mut self,
+        fiscal_year: i32,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_journal::closing::YearEndCloseCheckpoint> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.verify_year_end_close_checkpoint(&purposes, fiscal_year, known_at, capability)))
     }
 
     /// Derive a period-balance allocation instruction from the current immutable journal.

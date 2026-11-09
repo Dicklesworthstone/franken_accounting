@@ -49,6 +49,17 @@ pub enum CloseTaskRehearsalOutcome {
     /// No period state was changed. Live execution still requires the native
     /// transition plan and its independent approval references.
     AwaitingNativeTransitionReview { to: u8 },
+    /// The original Closing and the complete current fiscal-year basis
+    /// verified after every preceding hypothetical monetary task. This read
+    /// publishes neither a trunk receipt nor a hypothetical journal entry.
+    VerifiedYearEndClose {
+        fiscal_year: i32,
+        base_unit: u32,
+        verified_at: CommitSeq,
+        latest_close: EntryRef,
+        source_digest: [u8; 32],
+        review_basis: [u8; 32],
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -272,6 +283,14 @@ impl CloseRunRehearsal {
                     }
                     all_completed = false;
                 }
+                CloseTaskRehearsalOutcome::VerifiedYearEndClose { verified_at, .. } => {
+                    if *verified_at != next {
+                        return Err(invalid(
+                            "a year-end check must observe the preceding combined monetary result",
+                        ));
+                    }
+                    all_completed = false;
+                }
             }
         }
         if self.rehearsal_known_at != next
@@ -317,6 +336,19 @@ impl CloseRunRehearsal {
                     }
                     CloseTaskRehearsalOutcome::AwaitingNativeTransitionReview { to } => {
                         w.u8(2).u8(*to);
+                    }
+                    CloseTaskRehearsalOutcome::VerifiedYearEndClose {
+                        fiscal_year,
+                        base_unit,
+                        verified_at,
+                        latest_close,
+                        source_digest,
+                        review_basis,
+                    } => {
+                        w.u8(3).i32(*fiscal_year).u32(*base_unit).u64(verified_at.0);
+                        latest_close.encode(w);
+                        w.fixed(source_digest);
+                        w.fixed(review_basis);
                     }
                 }
             })
@@ -657,6 +689,11 @@ impl Book {
                 "the close graph did not exist at the selected source prefix",
             )));
         }
+        if let Err(refusal) =
+            self.verify_close_run_checkpoints_at(&view.body.name, capability, source_at)?
+        {
+            return Ok(Err(refusal));
+        }
         let mut visited = BTreeSet::new();
         let mut tasks = Vec::with_capacity(view.body.tasks.len());
         // All previously committed prerequisites are satisfied from the start.
@@ -701,7 +738,7 @@ impl Book {
                 _ => None,
             })
             .collect();
-        let (scratch, seq_map_digest, steps) = if names.is_empty() {
+        let (mut scratch, seq_map_digest, steps) = if names.is_empty() {
             (None, None, Vec::new())
         } else {
             let (scratch, sequence) =
@@ -750,6 +787,30 @@ impl Book {
         let mut rehearsal_at = source_at;
         for task in ordered {
             let outcome = match &task.action {
+                CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } => {
+                    // The graph requires every monetary task to precede this
+                    // check, so the owned scratch contains exactly its basis.
+                    let source = match scratch.as_mut() {
+                        Some(scratch) => scratch,
+                        None => &mut *self,
+                    };
+                    let verified = match source.verify_year_end_close_checkpoint(
+                        *fiscal_year,
+                        Some(rehearsal_at),
+                        capability,
+                    )? {
+                        Ok(verified) => verified,
+                        Err(refusal) => return Ok(Err(in_task(&task.id, refusal))),
+                    };
+                    CloseTaskRehearsalOutcome::VerifiedYearEndClose {
+                        fiscal_year: *fiscal_year,
+                        base_unit: verified.base_unit().0,
+                        verified_at: verified.known_at(),
+                        latest_close: verified.latest_close().entry_ref,
+                        source_digest: *verified.source_digest(),
+                        review_basis: *verified.review_basis(),
+                    }
+                }
                 CloseTaskBodyAction::PeriodTransition { to } => {
                     CloseTaskRehearsalOutcome::AwaitingNativeTransitionReview { to: *to }
                 }

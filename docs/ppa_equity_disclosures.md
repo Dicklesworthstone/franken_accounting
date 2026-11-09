@@ -51,7 +51,7 @@ outer `certificate` field identifies the retained artifact.
 `--request-out` writes a new file and refuses to replace an existing one. It is
 also available on the pure comparison, so the question can be saved before
 certification. `verification_request_hex` contains the same canonical bytes.
-Keep that question separately from the delivered proof. Its full units, label,
+Keep that question separately from the delivered certificate. Its full units, label,
 dates, owner roles and recorded frontiers are the recipient's expectation;
 deriving those choices from an untrusted certificate would not independently
 select the question.

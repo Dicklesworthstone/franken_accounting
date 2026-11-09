@@ -3,7 +3,9 @@
 //! The declaration is immutable. A task's receipt is staged in the native
 //! promotion/period transaction, so recovery can never observe a completed
 //! task without its effect, or an effect acknowledged by this run without its
-//! receipt. A refusal leaves the task ready for a later admissible attempt.
+//! receipt. Read-only year-end checks atomically retain their authenticated
+//! source basis with task completion; a terminal transition rechecks that basis.
+//! A refusal leaves the task ready for a later admissible attempt.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -46,6 +48,9 @@ pub enum CloseTaskAction {
         expected_entries: Vec<EntryRef>,
     },
     PeriodTransition(PeriodTransition),
+    VerifyYearEndClose {
+        fiscal_year: i32,
+    },
     /// Future task kinds are explicitly refused, never marked complete.
     Unsupported(String),
 }
@@ -177,6 +182,8 @@ pub struct CloseRunReviewReceipt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CloseTaskReceipt {
     pub record: VId,
+    /// Native effect; for a verification task, the earlier Closing entry
+    /// whose complete source basis the same-commit receipt authenticates.
     pub effect: VId,
     pub recorded_at: CommitSeq,
     pub principal: VId,
@@ -346,6 +353,21 @@ fn definition_body(
                 };
                 CloseTaskBodyAction::PeriodTransition { to }
             }
+            CloseTaskAction::VerifyYearEndClose { fiscal_year } => {
+                if !book
+                    .calendar
+                    .periods_for_year(*fiscal_year)?
+                    .iter()
+                    .any(|period| period.code == definition.period)
+                {
+                    return Ok(Err(invalid(
+                        "the verification fiscal year must contain this close run's period",
+                    )));
+                }
+                CloseTaskBodyAction::VerifyYearEndClose {
+                    fiscal_year: *fiscal_year,
+                }
+            }
             CloseTaskAction::PromoteDraft {
                 source,
                 certificate_digest,
@@ -399,35 +421,6 @@ fn definition_body(
     };
     if let Err(error) = body.validate() {
         return Ok(Err(invalid(format!("invalid close graph: {error}"))));
-    }
-    let finals: Vec<_> = body
-        .tasks
-        .iter()
-        .filter(|task| matches!(task.action, CloseTaskBodyAction::PeriodTransition { .. }))
-        .collect();
-    if finals.len() > 1 {
-        return Ok(Err(invalid(
-            "a close run has at most one final period transition",
-        )));
-    }
-    if let Some(final_task) = finals.first() {
-        let mut ancestors = BTreeSet::new();
-        let mut pending = final_task.depends_on.clone();
-        while let Some(id) = pending.pop() {
-            if ancestors.insert(id.clone()) {
-                let task = body
-                    .tasks
-                    .iter()
-                    .find(|task| task.id == id)
-                    .ok_or_else(|| corrupt("validated dependency is absent"))?;
-                pending.extend(task.depends_on.iter().cloned());
-            }
-        }
-        if ancestors.len() + 1 != body.tasks.len() {
-            return Ok(Err(invalid(
-                "the final period transition must depend on every other close task",
-            )));
-        }
     }
     Ok(Ok(body))
 }
@@ -869,6 +862,19 @@ fn read_view<V: Vfs + Clone>(
     if body.book_id != book.book_id || body.name != name {
         return Err(corrupt("run identity/body mismatch"));
     }
+    for task in &body.tasks {
+        if let CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } = task.action
+            && !book
+                .calendar
+                .periods_for_year(fiscal_year)?
+                .iter()
+                .any(|period| period.code == body.period)
+        {
+            return Err(corrupt(
+                "verification fiscal year differs from the run's declared period",
+            ));
+        }
+    }
     let digest = body.digest().map_err(encode)?;
     let tasks: BTreeMap<_, _> = body
         .tasks
@@ -987,18 +993,37 @@ fn read_view<V: Vfs + Clone>(
             if (*from, *to) != (0, 1) || !p.extensions.is_empty() {
                 return Err(corrupt("invalid task completion transition"));
             }
-            let (effect, review) = match proof_refs.as_slice() {
-                [TypedRef::Vertex(effect)] => (*effect, None),
-                [TypedRef::Vertex(effect), TypedRef::Object(review)] => (*effect, Some(review.0)),
+            let task = tasks
+                .get(object_ref)
+                .ok_or_else(|| corrupt("completion target is absent"))?;
+            let (effect, checkpoint, review) = match (&task.action, proof_refs.as_slice()) {
+                (
+                    CloseTaskBodyAction::VerifyYearEndClose { .. },
+                    [TypedRef::Vertex(effect), TypedRef::Object(basis)],
+                ) => (*effect, Some(basis.0), None),
+                (
+                    CloseTaskBodyAction::VerifyYearEndClose { .. },
+                    [
+                        TypedRef::Vertex(effect),
+                        TypedRef::Object(basis),
+                        TypedRef::Object(review),
+                    ],
+                ) => (*effect, Some(basis.0), Some(review.0)),
+                (CloseTaskBodyAction::VerifyYearEndClose { .. }, _) => {
+                    return Err(corrupt(
+                        "a year-end verification must retain its closing entry and complete source basis",
+                    ));
+                }
+                (_, [TypedRef::Vertex(effect)]) => (*effect, None, None),
+                (_, [TypedRef::Vertex(effect), TypedRef::Object(review)]) => {
+                    (*effect, None, Some(review.0))
+                }
                 _ => {
                     return Err(corrupt(
                         "task completion names one native effect and optionally its selected combined review",
                     ));
                 }
             };
-            let task = tasks
-                .get(object_ref)
-                .ok_or_else(|| corrupt("completion target is absent"))?;
             verify_effect(
                 db,
                 cx,
@@ -1008,6 +1033,7 @@ fn read_view<V: Vfs + Clone>(
                 effect,
                 *seq,
                 p.principal_ref,
+                checkpoint,
             )?;
             if completions
                 .insert(
@@ -1229,14 +1255,42 @@ fn read_view<V: Vfs + Clone>(
     if births != selected {
         return Err(corrupt("close object lacks its native creation history"));
     }
-    Ok(Some(CloseRunView {
+    let view = CloseRunView {
         vid: run,
         body,
         opened_at,
         complete,
         tasks: views,
         reviews,
-    }))
+    };
+    // A terminal receipt must prove that its earlier verification was still
+    // current immediately before that transition committed. Replaying only
+    // the native PeriodControl would miss a stale source at publication.
+    // Later activity is irrelevant to this historical completion predicate.
+    for body in &view.body.tasks {
+        if matches!(body.action, CloseTaskBodyAction::PeriodTransition { .. })
+            && let Some(receipt) = view
+                .tasks
+                .iter()
+                .find(|task| task.id == body.id)
+                .and_then(|task| task.completion.as_ref())
+        {
+            let at = CommitSeq(
+                receipt
+                    .recorded_at
+                    .0
+                    .checked_sub(1)
+                    .ok_or_else(|| corrupt("terminal receipt has no source prefix"))?,
+            );
+            check_year_end_checkpoints(db, cx, book, &view, at)?.map_err(|refusal| {
+                corrupt(format!(
+                    "retained terminal transition used a stale year-end checkpoint: {}",
+                    refusal.message,
+                ))
+            })?;
+        }
+    }
+    Ok(Some(view))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1249,7 +1303,31 @@ fn verify_effect<V: Vfs + Clone>(
     effect: VId,
     seq: CommitSeq,
     principal: VId,
+    checkpoint: Option<[u8; 32]>,
 ) -> Result<(), KernelError> {
+    if let CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } = task.action {
+        let at = CommitSeq(
+            seq.0
+                .checked_sub(1)
+                .ok_or_else(|| corrupt("verification receipt has no source prefix"))?,
+        );
+        let verified = crate::closing::year_end_close_checkpoint_at(db, cx, book, fiscal_year, at)?
+            .map_err(|refusal| {
+                corrupt(format!(
+                    "retained year-end verification: {}",
+                    refusal.message
+                ))
+            })?;
+        if Some(*verified.source_digest()) != checkpoint
+            || verified.latest_close().entry_ref.vid != effect
+            || verified.latest_close().recorded_at >= seq
+        {
+            return Err(corrupt(
+                "verification receipt does not reproduce its original closing entry and source basis",
+            ));
+        }
+        return Ok(());
+    }
     let row = db
         .vertex(effect)?
         .ok_or_else(|| corrupt("task's native effect is absent"))?;
@@ -1337,8 +1415,108 @@ fn verify_effect<V: Vfs + Clone>(
                 ));
             }
         }
+        CloseTaskBodyAction::VerifyYearEndClose { .. } => {
+            return Err(corrupt(
+                "year-end verification escaped its native source check",
+            ));
+        }
     }
     Ok(())
+}
+
+fn stale_checkpoint(task: &str) -> Refusal {
+    Refusal::new(
+        code::PLAN_INVALIDATED,
+        exit::CONFLICT,
+        format!("close task `{task}` verified an earlier fiscal-year source; the terminal transition cannot use that stale completion"),
+        "plan §7.5 (verify the exact current close before the terminal transition)",
+        "inspect `fa verify close FY<year>`, post a reviewed reclose if needed, then start a new close run with a fresh year-end verification task before its terminal transition",
+    )
+    .at("task", task)
+}
+
+fn check_year_end_checkpoints<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    view: &CloseRunView,
+    at: CommitSeq,
+) -> Outcome<()> {
+    for body in &view.body.tasks {
+        let CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } = body.action else {
+            continue;
+        };
+        let Some(receipt) = view
+            .tasks
+            .iter()
+            .find(|task| task.id == body.id)
+            .and_then(|task| task.completion.as_ref())
+            .filter(|receipt| receipt.recorded_at <= at)
+        else {
+            continue;
+        };
+        let row = db
+            .vertex(receipt.record)?
+            .ok_or_else(|| corrupt("verified close receipt disappeared"))?;
+        let recorded = crate::entry_storage::decode_at(db, &row, receipt.recorded_at)?;
+        let Some(ControlPayload::LifecycleTransition { proof_refs, .. }) =
+            recorded.proposal.control
+        else {
+            return Err(corrupt("verified close receipt has no lifecycle"));
+        };
+        let Some(TypedRef::Object(basis)) = proof_refs.get(1) else {
+            return Err(corrupt("verified close receipt has no source digest"));
+        };
+        let current =
+            match crate::closing::year_end_close_checkpoint_at(db, cx, book, fiscal_year, at)? {
+                Ok(current) => current,
+                Err(_) => return Ok(Err(stale_checkpoint(&body.id))),
+            };
+        if current.source_digest() != &basis.0
+            || current.latest_close().entry_ref.vid != receipt.effect
+        {
+            return Ok(Err(stale_checkpoint(&body.id)));
+        }
+    }
+    Ok(Ok(()))
+}
+
+/// Rehearsal admission for completed year-end checks whose terminal task is
+/// still pending at the selected prefix. Completed runs remain historical
+/// facts; later activity never rewrites their successful original completion.
+pub fn verify_close_run_checkpoints<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    name: &str,
+    capability: &Capability,
+    at: CommitSeq,
+) -> Outcome<()> {
+    if let Err(refusal) = admit(db, book, capability, None)? {
+        return Ok(Err(refusal));
+    }
+    let Some(view) = read_view(db, cx, book, name)? else {
+        return Ok(Err(invalid("the close run does not exist")));
+    };
+    if at < view.opened_at || at > db.frontier()? {
+        return Ok(Err(invalid(
+            "close verification selects an unavailable prefix",
+        )));
+    }
+    let pending_terminal = view.body.tasks.iter().any(|body| {
+        matches!(body.action, CloseTaskBodyAction::PeriodTransition { .. })
+            && view
+                .tasks
+                .iter()
+                .find(|task| task.id == body.id)
+                .and_then(|task| task.completion.as_ref())
+                .is_none_or(|receipt| receipt.recorded_at > at)
+    });
+    if pending_terminal {
+        check_year_end_checkpoints(db, cx, book, &view, at)
+    } else {
+        Ok(Ok(()))
+    }
 }
 
 fn ready_task<'a>(
@@ -1457,6 +1635,9 @@ pub fn plan_close_task_transition<V: Vfs + Clone>(
             "only the final period task takes a transition plan",
         )));
     };
+    if let Err(refusal) = check_year_end_checkpoints(db, cx, book, &view, db.frontier()?)? {
+        return Ok(Err(refusal));
+    }
     crate::period::plan_transition(
         db,
         book,
@@ -1477,6 +1658,7 @@ pub(crate) struct TaskCompletion {
     capability: Capability,
     description: Erasable<String>,
     review: Option<CloseTaskReview>,
+    verification: Option<crate::closing::YearEndCloseCheckpoint>,
 }
 
 impl TaskCompletion {
@@ -1485,10 +1667,11 @@ impl TaskCompletion {
         txn: &mut WriteTxn,
         tracker: &mut TemplateByteTracker,
         db: &mut Database<V>,
+        cx: &PurposeContexts,
         book: &BookContext,
-        effect: VId,
-        entries: Option<&[EntryRef]>,
+        effects: (VId, Option<&[EntryRef]>),
     ) -> Outcome<()> {
+        let (effect, entries) = effects;
         if let Err(refusal) = policy::capability_witness(txn, db, book, &self.capability)? {
             return Ok(Err(refusal));
         }
@@ -1513,6 +1696,47 @@ impl TaskCompletion {
             if prop(&row, property::STATE) != Some(&CanonicalScalar::Int(expected_state)) {
                 return Ok(Err(conflict("close task state changed during execution")));
             }
+        }
+        if matches!(body.action, CloseTaskBodyAction::PeriodTransition { .. }) {
+            // The native transition has been staged but remains unpublished.
+            // Bind its receipt to the still-current authenticated fiscal-year
+            // basis, under this same owned transaction and writer lease.
+            for task in &self.view.body.tasks {
+                if matches!(task.action, CloseTaskBodyAction::VerifyYearEndClose { .. })
+                    && let Some(receipt) = self
+                        .view
+                        .tasks
+                        .iter()
+                        .find(|state| state.id == task.id)
+                        .and_then(|state| state.completion.as_ref())
+                {
+                    txn.vertex(db, receipt.record)?;
+                    txn.vertex(db, receipt.effect)?;
+                }
+            }
+            if let Err(refusal) =
+                check_year_end_checkpoints(db, cx, book, &self.view, db.frontier()?)?
+            {
+                return Ok(Err(refusal));
+            }
+        }
+        if let CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } = body.action {
+            let Some(verification) = &self.verification else {
+                return Err(corrupt(
+                    "year-end completion has no authenticated source basis",
+                ));
+            };
+            if verification.fiscal_year() != fiscal_year
+                || verification.known_at() != db.frontier()?
+                || verification.latest_close().entry_ref.vid != effect
+            {
+                return Ok(Err(stale_checkpoint(&body.id)));
+            }
+            txn.vertex(db, effect)?;
+        } else if self.verification.is_some() {
+            return Err(corrupt(
+                "a non-verification task carries a year-end source basis",
+            ));
         }
         if let CloseTaskBodyAction::PromoteDraft {
             certificate_digest,
@@ -1541,7 +1765,7 @@ impl TaskCompletion {
             }
         } else if entries.is_some() {
             return Err(corrupt(
-                "period completion unexpectedly carries draft entries",
+                "a non-draft completion unexpectedly carries draft entries",
             ));
         }
         let mut batch = WriteBatch::new(relation::IN_CASE);
@@ -1605,6 +1829,14 @@ impl TaskCompletion {
             self.description.clone(),
             Some(effect),
         )?;
+        if let Some(verification) = &self.verification {
+            let Some(ControlPayload::LifecycleTransition { proof_refs, .. }) =
+                &mut task_record.control
+            else {
+                return Err(corrupt("year-end completion has no lifecycle payload"));
+            };
+            proof_refs.push(TypedRef::Object(Oid(*verification.source_digest())));
+        }
         if let Some(digest) = review_digest {
             let Some(ControlPayload::LifecycleTransition { proof_refs, .. }) =
                 &mut task_record.control
@@ -1726,6 +1958,13 @@ pub async fn execute_close_task<V: Vfs + Clone>(
             })));
         }
     }
+    if matches!(body.action, CloseTaskBodyAction::VerifyYearEndClose { .. })
+        && (request.transition_plan.is_some() || !request.approvals.is_empty())
+    {
+        return Ok(Err(invalid(
+            "year-end verification tasks take no transition plan or approval references",
+        )));
+    }
     if let CloseTaskBodyAction::PeriodTransition { to } = &body.action {
         if let Some(plan) = &request.transition_plan {
             if plan.period_code != view.body.period
@@ -1768,12 +2007,28 @@ pub async fn execute_close_task<V: Vfs + Clone>(
             already_recorded: true,
         }));
     }
+    let verification = if let CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } = body.action
+    {
+        match crate::closing::year_end_close_checkpoint_at(
+            db,
+            cx,
+            book,
+            fiscal_year,
+            db.frontier()?,
+        )? {
+            Ok(verified) => Some(verified),
+            Err(refusal) => return Ok(Err(refusal.at("task", task_id))),
+        }
+    } else {
+        None
+    };
     let completion = TaskCompletion {
         view: view.clone(),
         task: task_id.into(),
         capability: request.capability.clone(),
         description: request.description.clone(),
         review: request.review.clone(),
+        verification,
     };
     match &body.action {
         CloseTaskBodyAction::PromoteDraft {
@@ -1822,6 +2077,42 @@ pub async fn execute_close_task<V: Vfs + Clone>(
             .await?
             {
                 return Ok(Err(refusal));
+            }
+        }
+        CloseTaskBodyAction::VerifyYearEndClose { .. } => {
+            let verification = completion
+                .verification
+                .as_ref()
+                .ok_or_else(|| corrupt("year-end completion lost its authenticated basis"))?;
+            let mut txn = db.begin(&cx.txn())?;
+            let mut tracker = TemplateByteTracker::default();
+            if let Err(refusal) = completion.stage(
+                &mut txn,
+                &mut tracker,
+                db,
+                cx,
+                book,
+                (verification.latest_close().entry_ref.vid, None),
+            )? {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
+            if verification.known_at() != db.frontier()? {
+                txn.abort();
+                return Ok(Err(stale_checkpoint(task_id)));
+            }
+            if let Err(denial) = fa_policy::current(&request.capability, db.frontier()?) {
+                txn.abort();
+                return Ok(Err(policy::refusal(&denial)));
+            }
+            match txn.commit(db, &cx.commit()).await {
+                Ok(_) => {}
+                Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins {
+                    detail, ..
+                })) => {
+                    return Ok(Err(conflict(detail)));
+                }
+                Err(error) => return Err(error.into()),
             }
         }
     }
