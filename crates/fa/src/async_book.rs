@@ -359,9 +359,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, _| Ok(db.frontier().map_err(KernelError::from)?))
     }
 
-    /// Materialize a substrate storage checkpoint and retention cut over the
-    /// committed spine (plan §16.6): upon reopen, delta cursors prior to the
-    /// compacted frontier are retired while all certified reads remain intact.
+    /// Consolidate a substrate storage checkpoint without discarding historical
+    /// facts (plan §16.6). Reopen initially exposes a lazy delta window; retained
+    /// commit capsules can be authenticated and loaded by `ensure_delta_window`.
+    /// All certified reads remain intact.
     pub async fn compact_storage(&mut self, cx: &PurposeContexts) -> Result<(), BookError> {
         let commit = cx.commit();
         commit.checkpoint().map_err(BookError::Context)?;
@@ -372,8 +373,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(())
     }
 
-    /// Whether the substrate's live delta stream still retains commits since
-    /// `since` (`false` once `since` precedes a reopened compaction cut).
+    /// Whether the current resident delta window includes commits since `since`.
+    /// A lazy checkpoint open can return `false` until retained capsules are
+    /// loaded; this alone does not establish that history was discarded.
     pub fn has_delta_since(
         &self,
         cx: &PurposeContexts,
@@ -6041,23 +6043,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Some(Err(refusal)) => return Ok(Err(refusal)),
             Some(Ok(basis)) => basis,
         };
+        // The verifier authenticates migration run bodies and activation links.
+        // The legacy replacement format still leaves its row alias ambiguous.
         if matches!(report, ReportBundleCertificate::StatementTrace(_))
             && journal.leaves.iter().any(|leaf| {
                 leaf.envelope.is_entry()
                     && leaf.envelope.commit_seq > history_start
                     && leaf.envelope.commit_seq <= certificate.known_at
-                    && matches!(
-                        leaf.envelope.class,
-                        EntryClass::REPLACEMENT
-                            | EntryClass::MIGRATION
-                            | EntryClass::MIGRATION_CONTROL
-                    )
+                    && leaf.envelope.class == EntryClass::REPLACEMENT
             })
         {
             return Ok(Err(fa_journal::Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 fa_journal::exit::REFUSAL,
-                "portable trace attribution does not yet support migration publications or ambiguous legacy replacement identities",
+                "portable trace attribution does not yet support ambiguous legacy replacement identities",
                 "plan §8.3 / §13.3 (authenticate every publication and exact entry identity)",
                 "replay this trace in its original book, or export a supported native or functional interval; no partial trace is produced",
             )));

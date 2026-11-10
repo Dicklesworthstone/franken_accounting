@@ -40,7 +40,7 @@ fn closing_draft(f: &mut Fixture) -> ReviewedCloseAction {
         .set_closing_routes(
             fa::ClosingRoutesRequest {
                 principal: ADMIN,
-                effective_from: DateDay::from_ymd(2026, 1, 1).unwrap(),
+                effective_from: day(),
                 routes: [(account_vid(book_id, "6000"), account_vid(book_id, "3000"))].into(),
                 idempotency_key: b"checkpoint-route".to_vec(),
                 description,

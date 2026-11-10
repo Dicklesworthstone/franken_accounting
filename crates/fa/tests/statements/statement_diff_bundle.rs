@@ -615,7 +615,7 @@ fn statement_diff_bundle_counts_migration_only_after_finalize_at_each_source_fro
     };
     proposal.evidence = vec![evidence.evidence_ref(1)];
     let approvals = approve(&mut fixture.book, &proposal);
-    fixture
+    let chunk = fixture
         .book
         .post(PostRequest {
             proposal,
@@ -717,9 +717,8 @@ fn statement_diff_bundle_counts_migration_only_after_finalize_at_each_source_fro
             assert_eq!(line.delta, [5_000, 0]);
         }
     }
-    // In-book traces retain migration visibility events. Portable attribution
-    // must refuse each migration publication until its full event contract is
-    // independently supported, including a zero-effect staged chunk.
+    // Portable attribution authenticates every migration publication. Open and
+    // staged chunks have zero effect; only Finalize makes the chunk count.
     for (before, after) in [(before_open, opened), (opened, staged), (staged, finalized)] {
         let trace = fixture
             .book
@@ -737,7 +736,7 @@ fn statement_diff_bundle_counts_migration_only_after_finalize_at_each_source_fro
             )
             .unwrap()
             .unwrap();
-        let refusal = fixture
+        let produced = fixture
             .book
             .produce_statement_trace_bundle(
                 PRINCIPAL,
@@ -746,9 +745,81 @@ fn statement_diff_bundle_counts_migration_only_after_finalize_at_each_source_fro
                 &trace.certificate,
             )
             .unwrap()
-            .unwrap_err();
-        assert_eq!(refusal.code, fa_notary::code::SCOPE_UNSUPPORTED);
-        assert!(refusal.message.contains("migration publications"));
+            .unwrap()
+            .unwrap();
+        let key = fixture.book.checkpoint_public_key();
+        let trusted = fa_verify::verify_checkpoint(&produced.checkpoint.bytes, &[key]).unwrap();
+        let verified = fa_verify::report::verify_report_expected(
+            &produced.bundle.bytes,
+            &[key],
+            Some(&trusted.checkpoint),
+            Some(&produced.receipt),
+            Some(trace.certificate.digest()),
+        )
+        .expect("portable attribution independently reconstructs migration visibility");
+        assert_eq!(verified.output, trace.certificate.output());
+        assert_eq!(verified.certificate_digest, *trace.certificate.digest());
+        assert_eq!(verified.known_at, after.0);
+        assert_eq!(verified.scope, "recomputation");
+        let verified_trace = verified.statement_trace.unwrap();
+        assert_eq!(verified_trace.summary.before_known_at, before.0);
+        assert_eq!(verified_trace.summary.after_known_at, after.0);
+        assert_eq!(verified_trace.publications.len() as u64, after.0 - before.0);
+        let amount = if after == finalized { 5_000 } else { 0 };
+        for code in ["assets", "equity"] {
+            let line = verified_trace
+                .summary
+                .lines
+                .iter()
+                .find(|line| line.code == code && line.unit == fixture.usd.0)
+                .unwrap();
+            assert_eq!(line.before, [0, 0]);
+            assert_eq!(line.after, [amount, 0]);
+            assert_eq!(line.delta, [amount, 0]);
+        }
+        for publication in &verified_trace.publications {
+            assert!(publication.mapping_changes.is_empty());
+            if publication.recorded_at == finalized.0 {
+                let visible: Vec<_> = publication
+                    .entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.event == fa_verify::report::VerifiedStatementEntryEvent::BecameVisible
+                    })
+                    .collect();
+                assert_eq!(visible.len(), 1);
+                assert_eq!(visible[0].entry, chunk.entry_ref().vid.0);
+                assert_eq!(visible[0].digest, chunk.entry_ref().entry_digest);
+                assert_eq!(visible[0].recorded_at, staged.0);
+                assert_eq!(visible[0].migration_run, Some(body.vid().0));
+                for code in ["assets", "equity"] {
+                    let line = publication
+                        .changes
+                        .iter()
+                        .find(|line| line.code == code && line.unit == fixture.usd.0)
+                        .unwrap();
+                    assert_eq!(line.delta, [5_000, 0]);
+                }
+            } else {
+                assert!(publication.changes.is_empty());
+                assert!(publication.entries.iter().all(|entry| {
+                    entry.event == fa_verify::report::VerifiedStatementEntryEvent::Recorded
+                }));
+            }
+        }
+        for source in trace.certificate.sources() {
+            assert!(
+                fa_verify::report::verify_report_expected(
+                    &produced.bundle.bytes,
+                    &[key],
+                    Some(&trusted.checkpoint),
+                    Some(&produced.receipt),
+                    Some(&source.digest),
+                )
+                .is_err(),
+                "one source cannot pin the entire migration trace"
+            );
+        }
     }
     assert_eq!(fixture.book.head().unwrap(), head);
 }

@@ -3396,6 +3396,15 @@ fn export_writes_the_trial_balance_selection_in_every_interop_format() -> std::i
         );
         assert_eq!(code, 0, "{format}: {out}\n{err}");
         assert_eq!(field(&out, "event"), Some("journal_exported"), "{out}");
+        let envelope = robot_line(&out);
+        assert_eq!(
+            text(
+                envelope.get("coordinate").expect("export coordinate"),
+                "effective"
+            ),
+            "as-of:2026-03-31",
+            "{out}"
+        );
         let exported = doc(&out);
         let data = &exported;
         assert_eq!(text(data, "format"), format);
@@ -3524,6 +3533,22 @@ fn export_writes_the_trial_balance_selection_in_every_interop_format() -> std::i
         .collect();
     assert!(fa_formats::csv_gl::verify_ndjson_gl_stream(&truncated).is_err());
     assert_eq!(digests.len(), 1, "every format exports one selection");
+    let (code, selected, err) = fa(
+        Some(&book),
+        &["export", "csv-gl", "--as-of", "2026-03-16", "--json"],
+    );
+    assert_eq!(code, 0, "{selected}\n{err}");
+    let envelope = robot_line(&selected);
+    assert_eq!(
+        text(
+            envelope.get("coordinate").expect("export coordinate"),
+            "effective"
+        ),
+        "as-of:2026-03-16"
+    );
+    let selected = doc(&selected);
+    assert_eq!(text(&selected, "effective_through"), "2026-03-16");
+    assert_eq!(int(&selected, "entries"), Some(1));
     let tb = report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
     let rent = tb
         .split('{')
@@ -3689,7 +3714,7 @@ fn verify_export_proves_every_format_against_the_book_at_its_coordinate() -> std
         ("xbrl", "export.xbrl", "coordinate"),
     ] {
         let path = dir.join(name).display().to_string();
-        ok(
+        let created = ok(
             &book,
             &[
                 "export",
@@ -3701,7 +3726,25 @@ fn verify_export_proves_every_format_against_the_book_at_its_coordinate() -> std
                 "--json",
             ],
         );
+        let envelope = robot_line(&created);
+        assert_eq!(
+            text(
+                envelope.get("coordinate").expect("export coordinate"),
+                "effective"
+            ),
+            "as-of:2026-03-31",
+            "{created}"
+        );
         let out = ok(&book, &["verify", "export", format, &path, "--json"]);
+        let envelope = robot_line(&out);
+        assert_eq!(
+            text(
+                envelope.get("coordinate").expect("verified coordinate"),
+                "effective"
+            ),
+            "as-of:2026-03-31",
+            "{out}"
+        );
         assert_eq!(field(&out, "event"), Some("export_verified"), "{out}");
         assert_eq!(field(&out, "format"), Some(format), "{out}");
         assert_eq!(field(&out, "reread"), Some(reread), "{out}");
@@ -3735,6 +3778,17 @@ fn verify_export_proves_every_format_against_the_book_at_its_coordinate() -> std
     for (format, path) in &exported {
         let out = ok(&book, &["verify", "export", format, path, "--json"]);
         assert_eq!(field(&out, "entries"), Some("2"), "{format}: {out}");
+        let envelope = robot_line(&out);
+        assert_eq!(
+            text(
+                envelope
+                    .get("coordinate")
+                    .expect("historical export coordinate"),
+                "effective"
+            ),
+            "as-of:2026-03-31",
+            "{format}: {out}"
+        );
     }
 
     // Planted: a tampered amount, a byte the reader tolerates, and another
@@ -12187,6 +12241,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
             "fx-conversion",
             "entities",
             "registers",
+            "functional-registers",
             "replay"
         ]
     );
@@ -12199,6 +12254,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     for event in [
         "projections_verified",
         "registers_verified",
+        "functional_registers_verified",
         "replay_verified",
     ] {
         assert!(
@@ -13521,6 +13577,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
             {"code":"1000","name":"Cash","type":"Asset","parent":"100","leaf":true,"unit":"USD"},
             {"code":"1400","name":"Inventory","type":"Asset","parent":"100","leaf":true,"unit":"any"},
             {"code":"3000","name":"Equity","type":"Equity","leaf":true,"unit":"USD"},
+            {"code":"4000","name":"Revenue","type":"Revenue","leaf":true,"unit":"USD"},
             {"code":"6000","name":"Rent","type":"Expense","leaf":true,"unit":"USD"}
         ]}"#,
     );
@@ -13660,7 +13717,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let cf_rules = write(
         &dir,
         "cf_rules.json",
-        r#"{"name":"cf-r","cash_accounts":["1000"],"account_rules":[{"account":"6000","activity":"operating"}]}"#,
+        r#"{"name":"cf-r","cash_accounts":["1000"],"account_rules":[{"account":"4000","activity":"operating"},{"account":"6000","activity":"operating"}]}"#,
     );
     run2(&[
         "gl",
@@ -13673,6 +13730,73 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "2026-03-31",
         "--policy",
         &cf_rules,
+    ]);
+    let cash_plan = dir.join("events-cash.plan").display().to_string();
+    let (_, cash_review) = run2(&[
+        "cash-policy",
+        "define",
+        "--file",
+        &cf_rules,
+        "--policy-version",
+        "1",
+        "--from",
+        "2026-03-01",
+        "--key",
+        "events-cash-policy",
+        "--plan-out",
+        &cash_plan,
+    ]);
+    let cash_digest = field(&cash_review, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let (_, cash_first) = run2(&[
+        "approve",
+        "--proposal",
+        &cash_digest,
+        "--as",
+        "cash-approver-a",
+    ]);
+    let (_, cash_second) = run2(&[
+        "approve",
+        "--proposal",
+        &cash_digest,
+        "--as",
+        "cash-approver-b",
+    ]);
+    run2(&[
+        "cash-policy",
+        "activate",
+        "--plan",
+        &cash_plan,
+        "--digest",
+        &cash_digest,
+        "--approval",
+        field(&cash_first, "approval_vid").unwrap_or_default(),
+        "--approval",
+        field(&cash_second, "approval_vid").unwrap_or_default(),
+        "--yes",
+    ]);
+    run2(&[
+        "cash-policy",
+        "show",
+        "--name",
+        "cf-r",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
+    ]);
+    run2(&[
+        "gl",
+        "cash-flow",
+        "--policy-name",
+        "cf-r",
+        "--account",
+        "1000",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-31",
     ]);
     let cf_split = write(
         &dir,
@@ -14007,7 +14131,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "activate",
         &fee_digest,
         "--from",
-        "2026-04-01",
+        "2026-03-01",
         "--dry-run",
     ]);
     let rule_proposal = field(&planned_rule, "proposal_digest")
@@ -14032,7 +14156,27 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "--as",
         "rule-approver-b",
     ]);
-    run2(&["rule", "derive", "--event", "EV-1001"]);
+    let event_keys = fa::BookKeys::load(&book2.join("book.keys")).unwrap();
+    let event_head = || {
+        fa::Book::open_dir(&book2, event_keys.clone(), fa::Entropy::production())
+            .unwrap()
+            .head()
+            .unwrap()
+    };
+    let before_activation = event_head();
+    let derive = ["rule", "derive", "--event", "EV-1001", "--json"];
+    let (code, out, err) = fa(Some(&book2), &derive);
+    assert_eq!(code, 3, "{out}\n{err}");
+    assert!(out.contains("FA-REF-196"), "{out}");
+    assert_eq!(
+        check_robot_output(&derive, code, &out),
+        vec!["error".to_string()]
+    );
+    assert_eq!(
+        event_head(),
+        before_activation,
+        "a refused derivation wrote"
+    );
     run2(&["rule", "backtest", &fee_rule]);
     let fee_golden = write(
         &dir,
@@ -14050,6 +14194,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "--approval",
         field(&second, "approval_vid").unwrap_or_default(),
     ]);
+    run2(&["rule", "derive", "--event", "EV-1001"]);
     run2(&["verify", "periods"]);
     run2(&[
         "capability",
@@ -14716,6 +14861,13 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
     assert_eq!(text(&functional_stock, "scope"), "stock");
     assert_eq!(text(&functional_stock, "effective_through"), "2026-03-31");
     assert_eq!(functional_stock.get("balanced"), Some(&Json::Bool(true)));
+    run5(&[
+        "registers",
+        "advance",
+        "--functional",
+        "--period",
+        "FY2026-P03",
+    ]);
 
     let fx_book = dir.join("fx-revaluation-events-book");
     let mut run_fx = |args: &[&str]| -> String {
@@ -16657,6 +16809,7 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("recover", Some("outcomes"), "always"),
     ("capability", Some("revoke"), "always"),
     ("draft", Some("promote"), "always"),
+    ("cash-policy", Some("activate"), "always"),
 ];
 
 /// Every operation the plan calls dangerous has a `[[dangerous]]` row
@@ -16864,6 +17017,14 @@ fn dangerous_operations_need_yes_and_name_the_safe_alternative() -> std::io::Res
         ],
         "fa draft show",
     );
+    // Activation is confirmed before its saved-plan validation.
+    unconfirmed(
+        &["cash-policy", "activate", "--json"],
+        "two independent Human approvals",
+    );
+    let (code, out) = confirmed(&["cash-policy", "activate", "--yes", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(text(&doc(&out), "message").contains("--plan"), "{out}");
     // A safe alternative never suggests changing an entry's true effective
     // date to escape the period law (AGENTS.md; CobaltGull 3384).
     for d in &registry().expect("verbs.toml").dangerous {
@@ -29606,7 +29767,7 @@ fn account_roles_choose_lantern_populations_by_role_not_by_name() -> std::io::Re
         "--effective-through",
         "2026-01-31",
     ]));
-    assert_eq!(int(&aging, "version"), Some(2), "{aging:?}");
+    assert_eq!(int(&aging, "version"), Some(3), "{aging:?}");
     let findings = arr(&aging, "findings");
     assert_eq!(findings.len(), 1, "{aging:?}");
     let cites = arr(&findings[0], "cites");

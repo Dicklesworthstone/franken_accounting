@@ -180,24 +180,40 @@ fn reopened_functional_reads_reauthenticate_only_after_current_whole_book_admiss
                 .is_err()
         );
         assert!(h.book.db.delta_since(CommitSeq(0)).is_err());
-        if compact {
-            // Storage compaction retires the native creation history.
-            // Derived cells cannot replace that missing integrity evidence.
-            let refusal = read(&mut h, &cap(&["read"]), None).unwrap().unwrap_err();
-            assert_eq!(refusal.code, fa_journal::refusal::code::REPLAY_UNSUPPORTED);
-            assert_eq!(
-                h.book.functional_history_read_work(),
-                EntryHistoryWork::default()
-            );
-            assert_eq!(h.head(), at);
-            continue;
-        }
+        // The pinned substrate compacts with a zero retention floor. Reopen
+        // leaves a lazy window in either case; authority must precede loading
+        // the retained native creation history, never trusting cached cells.
         assert_eq!(allowed(&mut h, None), expected);
         let cold = h.book.functional_history_read_work();
         assert!(cold.rebuilt && cold.snapshot_scans == 1 && cold.entries_decoded > 0);
+        assert!(h.book.db.delta_since(CommitSeq(0)).is_ok());
         assert_eq!(allowed(&mut h, None), expected);
         assert_warm(h.book.functional_history_read_work());
         assert_eq!(h.head(), at);
+
+        // A genuinely damaged source must still fail after rehydration, even
+        // with a warm maintained projection and a previously verified prefix.
+        let work = h.book.functional_history_read_work();
+        let mut corrupt = WriteBatch::new(relation::IN_BOOK);
+        corrupt.set_vertex_property(
+            fa_model::entry_vid(BOOK, &PRINCIPAL.0.to_le_bytes(), b"symbol-post"),
+            property::FA_DIGEST,
+            Some(scalar_bytes("rewritten retained Entry", vec![0; 32]).unwrap()),
+        );
+        h.runtime
+            .block_on(h.book.db.write(&cx.commit(), corrupt))
+            .unwrap();
+        let damaged_at = h.head();
+        assert!(matches!(
+            read(&mut h, &cap(&["read"]), None),
+            Err(crate::BookError::Kernel(fa_journal::KernelError::Corrupt(
+                _
+            )))
+        ));
+        assert_eq!(h.book.functional_history_read_work(), work);
+        assert_eq!(h.head(), damaged_at);
+        assert_eq!(allowed(&mut h, Some(at)), expected);
+        assert_eq!(h.head(), damaged_at);
     }
 }
 

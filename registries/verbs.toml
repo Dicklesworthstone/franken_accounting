@@ -7735,7 +7735,7 @@ verb = "cash-policy"
 subcommands = ["show"]
 positionals = []
 flags = ["--name", "--from", "--to", "--as-known-at"]
-required = ["name", "from", "to"]
+required = ["--name", "--from", "--to"]
 dont = ["Use this read-only tool to inspect the approved policy for the entire inclusive interval at one recorded prefix. A change inside the interval refuses instead of silently mixing classification versions.", "Use fa_proof_gl with view cash-flow and policy_name to produce the corresponding direct report. The explicit account selection must equal the policy's cash accounts. With indirect true and income_period, the optional inline policy object carries only name and adjustments; no field may override the activated classification.", "Policy planning and activation require operator rule_change authority and two independent Human approvals. Activation is host-confirmed. A math certificate proves its retained policy inputs and arithmetic, while this selection event separately cites native approval provenance."]
 mistakes = ["Reading a current policy as the historical classification for an earlier recorded prefix.", "Treating native approval provenance as an offline accounting or approval assurance claim."]
 

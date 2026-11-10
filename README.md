@@ -2184,7 +2184,7 @@ fa procedure run graph.related_party_exposure --param max_depth=4 --book acme.fa
 # Retain an independently replayable run without recording a FindingRun in the journal.
 # --certificate-out implies --certify; both require current whole-book Read and Produce.
 fa procedure run jet.round_amounts --effective-through 2025-12-31 --certificate-out round-amounts.cert --book acme.fabook --json
-fa replay --certificate round-amounts.cert --book acme.fabook --json
+fa replay round-amounts.cert --book acme.fabook --json
 # Round amounts and period-end timing default to v2, which accepts an optional effective cutoff.
 # Explicit @1 retains the original no-cutoff algorithm for reproducing historical runs.
 fa procedure run jet.period_end_timing@1 --certify --book acme.fabook --json

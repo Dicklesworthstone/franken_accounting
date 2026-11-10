@@ -120,7 +120,6 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("certificate", notary::certificate_cmd),
     ("open-items", open_items_cmd),
     ("gl", gl_cmd),
-    ("cash-policy", crate::cash_policy::command),
     ("explain", explain_cmd),
     ("search", search_cmd),
     ("diff", crate::diff::diff_cmd),
@@ -165,6 +164,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("dispose", crate::disposal::dispose_cmd),
     ("depreciate", crate::asset::depreciate),
     ("amortize", crate::asset::amortize),
+    ("cash-policy", crate::cash_policy::command),
 ];
 
 /// The registered verbs this build can dispatch (the parity tests compare

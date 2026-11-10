@@ -1633,6 +1633,13 @@ impl ToolSpec {
                 }),
             }
         };
+        let supplied = |name: &str| {
+            obj.get(name).is_some_and(|value| match value {
+                JsonValue::Null => false,
+                JsonValue::Array(items) => !items.is_empty(),
+                _ => true,
+            })
+        };
         let mut argv = vec![self.verb.clone()];
         let mut stdin: Option<Vec<u8>> = None;
         if let Some(sel) = &self.selector {
@@ -1741,7 +1748,7 @@ impl ToolSpec {
                         .iter()
                         .skip_while(|q| q.name != p.name)
                         .skip(1)
-                        .any(|q| obj.contains_key(&q.name))
+                        .any(|q| supplied(&q.name))
                     {
                         return Err(ArgError {
                             message: format!(
@@ -1871,14 +1878,13 @@ impl ToolSpec {
             }
             let present = if r.starts_with("--") {
                 let via = self.stdin.as_ref().filter(|s| &s.via == r);
-                obj.contains_key(&self.flag_property(r))
-                    || via.is_some_and(|s| obj.contains_key(&s.property))
+                supplied(&self.flag_property(r)) || via.is_some_and(|s| supplied(&s.property))
             } else {
-                obj.contains_key(r)
+                supplied(r)
                     || self
                         .stdin
                         .as_ref()
-                        .is_some_and(|s| &s.via == r && obj.contains_key(&s.property))
+                        .is_some_and(|s| &s.via == r && supplied(&s.property))
             };
             if !present {
                 let spelled = if r.starts_with("--") {
@@ -2931,6 +2937,27 @@ mod tests {
             inv.argv,
             vec!["explain", "balance", "1000", "--period", "P", "--json"]
         );
+        let inv = explain
+            .invocation(&mcp, reg, &json!({"period": ["P"], "account": "1000"}))
+            .expect("a nonempty required list emits its flag");
+        assert_eq!(
+            inv.argv,
+            vec!["explain", "balance", "1000", "--period", "P", "--json"]
+        );
+        let mut unexpectedly_accepted = Vec::new();
+        for args in [
+            json!({"account": "1000"}),
+            json!({"account": "1000", "period": null}),
+            json!({"account": "1000", "period": []}),
+        ] {
+            match explain.invocation(&mcp, reg, &args) {
+                Ok(inv) => unexpectedly_accepted.push((args, inv.argv)),
+                Err(error) => {
+                    assert!(error.message.contains("`period` is required"), "{error:?}");
+                    assert!(error.fix.contains("`period`"), "{error:?}");
+                }
+            }
+        }
         let docs = mcp.tool_by_wire("fa_orient_robot_docs").expect("docs");
         let inv = docs
             .invocation(&mcp, reg, &json!({"topic": "schema", "name": "posted"}))
@@ -2952,6 +2979,50 @@ mod tests {
         assert_eq!(
             inv.argv,
             vec!["period", "create", "--fiscal-year", "2026", "--json"]
+        );
+        for args in [json!({}), json!({"fiscal_year": null})] {
+            match fy.invocation(&mcp, reg, &args) {
+                Ok(inv) => unexpectedly_accepted.push((args, inv.argv)),
+                Err(error) => {
+                    assert!(
+                        error.message.contains("`fiscal_year` is required"),
+                        "{error:?}"
+                    );
+                    assert!(error.fix.contains("`fiscal_year`"), "{error:?}");
+                }
+            }
+        }
+        let tb = mcp
+            .tool_by_wire("fa_read_trial_balance")
+            .expect("trial balance");
+        for args in [json!({"period": null}), json!({"period": []})] {
+            let inv = tb
+                .invocation(&mcp, reg, &args)
+                .expect("an optional empty list retains the default selection");
+            assert_eq!(inv.argv, vec!["tb", "--json"]);
+        }
+        let dimension = mcp
+            .tool_by_wire("fa_dimensions_dimension")
+            .expect("dimensions");
+        let inv = dimension
+            .invocation(
+                &mcp,
+                reg,
+                &json!({"action": "list", "dimension": null, "code": null}),
+            )
+            .expect("null optional positionals are omitted consistently");
+        assert_eq!(inv.argv, vec!["dimension", "list", "--json"]);
+        let error = dimension
+            .invocation(
+                &mcp,
+                reg,
+                &json!({"action": "list", "dimension": null, "code": "retail"}),
+            )
+            .expect_err("a later value cannot shift into an omitted positional");
+        assert!(error.message.contains("`dimension` is needed"), "{error:?}");
+        assert!(
+            unexpectedly_accepted.is_empty(),
+            "required values emitted no flag: {unexpectedly_accepted:?}"
         );
     }
 

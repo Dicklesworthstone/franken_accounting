@@ -396,7 +396,7 @@ fn creditor_and_investor_margins_survive_public_workflow() {
         ],
     );
     let run_data = data(&run_out);
-    assert_eq!(integer(run_data, "version"), 3);
+    assert_eq!(integer(run_data, "version"), 4);
     let expected = vec![
         ("VEND-A".to_string(), 10_000),
         ("VEND-B".to_string(), 20_000),

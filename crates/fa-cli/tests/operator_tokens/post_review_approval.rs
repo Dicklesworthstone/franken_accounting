@@ -401,7 +401,7 @@ fn entry_review_approval_refuses_substitution_and_preserves_other_scope_boundari
         ],
         Some(&foreign.canonical_bytes().unwrap()),
         2,
-        "another book",
+        "this book's trunk target",
     );
     assert_eq!(
         text(&denied, "refusal_id"),

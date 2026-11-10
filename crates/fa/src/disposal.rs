@@ -158,6 +158,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
+        // HEAD report admission can keep Chronicle lazy. Disposal must also
+        // authenticate immutable Entry births before deriving quantity/cost.
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
         Ok(fa_journal::disposal::prepare_lot_disposal(
             &self.db,
             cx,

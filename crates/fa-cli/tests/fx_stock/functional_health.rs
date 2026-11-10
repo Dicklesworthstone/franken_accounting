@@ -63,10 +63,10 @@ fn summary(events: &[Json]) -> &Json {
 }
 
 #[test]
-fn functional_health_survives_cold_reopen_and_refuses_retired_history() {
+fn functional_health_rehydrates_compacted_history_and_refuses_source_rewrites() {
     let seed = 0xc6;
     let fixture = Fixture::create(Some(seed));
-    fixture.post("functional-health-initial", "2026-01-05", "100.00", 11);
+    let posted = fixture.post("functional-health-initial", "2026-01-05", "100.00", 11);
     let original = head(&fixture.book).to_string();
     let absent = ok(&fixture.book, VERIFY);
     assert_eq!(text(health(&absent), "status"), "absent");
@@ -166,21 +166,60 @@ fn functional_health_survives_cold_reopen_and_refuses_retired_history() {
     assert_eq!(text(&periods[1], "period"), "FY2026-P02");
     assert_eq!(integer(&periods[1], "lag_entries"), 1);
 
-    // Every command above reopened the book and verified retained source
-    // history. Actual storage compaction retires that native evidence;
-    // neither a current cache nor relaxed currentness can replace it.
+    // Compaction preserves native evidence in the pinned substrate. Cold
+    // commands authenticate that history before trusting maintained cells.
     let before_compact = head(&fixture.book);
     fixture.compact(seed);
+    for args in [VERIFY, strict.as_slice()] {
+        let verified = ok(&fixture.book, args);
+        assert_eq!(health(&verified), health(&caught_up));
+        assert_eq!(head(&fixture.book), before_compact);
+    }
+
+    // A real immutable-source rewrite still fails, even with a valid cache.
+    let entry = fgdb_types::VId(u128::from_str_radix(text(data(&posted), "vid"), 16).unwrap());
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let cx = PurposeContexts::narrow_runtime_root(&root);
+    let mut db = runtime
+        .block_on(Database::open(
+            &cx.commit(),
+            &fixture.book.join("store"),
+            db_keys(seed),
+        ))
+        .unwrap();
+    let row = db.vertex(entry).unwrap().unwrap();
+    let mut digest = fa_journal::rows::bytes(&row, property::FA_DIGEST, "entry digest").unwrap();
+    assert_eq!(digest.len(), 32);
+    digest[0] ^= 1;
+    let mut damage = WriteBatch::new(relation::IN_PERIOD);
+    damage.set_vertex_property(
+        entry,
+        property::FA_DIGEST,
+        Some(fa_journal::rows::scalar_bytes("rewritten entry digest", digest).unwrap()),
+    );
+    runtime.block_on(db.write(&cx.commit(), damage)).unwrap();
+    drop(db);
+    let damaged_at = head(&fixture.book);
     for args in [VERIFY, strict.as_slice()] {
         let (code, refusal) = run(&fixture.book, args);
         assert_eq!(code, 5, "{}", refusal.render());
         assert!(
-            refusal
-                .render()
-                .contains(fa_journal::refusal::code::REPLAY_UNSUPPORTED)
+            refusal.render().contains(&format!(
+                "journal Entry {:032x} was modified at {damaged_at} after creation at {original}; a later restoration cannot erase this history",
+                entry.0
+            )),
+            "{}",
+            refusal.render()
         );
-        assert_eq!(head(&fixture.book), before_compact);
+        assert_eq!(head(&fixture.book), damaged_at);
     }
+    let historical_at = before_compact.to_string();
+    let mut historical: Vec<&str> = strict;
+    historical.extend(["--as-known-at", historical_at.as_str()]);
+    let verified = ok(&fixture.book, &historical);
+    assert_eq!(health(&verified), health(&caught_up));
+    assert_eq!(head(&fixture.book), damaged_at);
 }
 
 #[test]

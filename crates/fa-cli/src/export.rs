@@ -383,6 +383,7 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     out.at_book(&book)?;
     let coordinate = &journal.coordinate;
     out.known_at(fgdb_types::CommitSeq(coordinate.known_at_seq));
+    out.effective(format!("as-of:{}", coordinate.effective_through.render()));
     let listed = files_json(&files, output.is_none());
     out.event(
         "journal_exported",
@@ -731,6 +732,7 @@ fn export_part370_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     out.at_book(&book)?;
     out.known_at(fgdb_types::CommitSeq(coordinate.known_at_seq));
+    out.effective(format!("as-of:{}", bundle.effective_date.render()));
     out.event(
         "part370_exported",
         vec![
@@ -1356,6 +1358,7 @@ pub(crate) fn verify_export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     let out = &ctx.out;
     out.at_book(&book)?;
     out.known_at(fgdb_types::CommitSeq(coordinate.known_at_seq));
+    out.effective(format!("as-of:{}", coordinate.effective_through.render()));
     out.event(
         "export_verified",
         vec![
@@ -1557,6 +1560,7 @@ fn verify_part370_export(ctx: &mut Ctx<'_>, args: &Args, path: &str) -> Result<(
     let out = &ctx.out;
     out.at_book(&book)?;
     out.known_at(seq);
+    out.effective(format!("as-of:{}", effective_date.render()));
     out.event(
         "export_verified",
         vec![

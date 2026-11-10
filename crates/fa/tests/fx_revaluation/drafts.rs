@@ -82,9 +82,9 @@ fn promote(f: &mut Fixture) -> Result<fa_journal::DraftPromoted, fa_journal::Ref
         .unwrap()
 }
 
-fn ordinary(f: &Fixture, key: &[u8]) -> PostIntent {
+fn ordinary(f: &Fixture, principal: VId, key: &[u8]) -> PostIntent {
     let mut proposal = f.template(key, EntryClass::ORIGINAL, day(10));
-    proposal.principal_ref = PLANNER;
+    proposal.principal_ref = principal;
     proposal.evidence = vec![f.invoice];
     proposal.legs = vec![
         LegPayload::simple(Side::Debit, f.account("6700"), Amount::new(f.usd, 100)),
@@ -302,7 +302,7 @@ fn source_bound_fx_draft_rehearses_and_promotes_the_original_signed_delta_once()
 }
 
 #[test]
-fn fx_draft_refuses_mixed_multiple_and_ordinary_batch_publication_without_partial_records() {
+fn fx_draft_and_native_batches_refuse_mixed_or_repeated_sources_without_partial_records() {
     for mode in ["fx-first", "ordinary-first", "two-fx"] {
         let mut f = Fixture::new();
         f.post_source(b"singleton-exposure", false, 10_000);
@@ -313,7 +313,7 @@ fn fx_draft_refuses_mixed_multiple_and_ordinary_batch_publication_without_partia
         let other = if mode == "two-fx" {
             review(&mut f, &agent, "1200", rate.oid, b"duplicate-fx-source")
         } else {
-            ordinary(&f, b"ordinary-draft-member")
+            ordinary(&f, PLANNER, b"ordinary-draft-member")
         };
         let (first, second) = if mode == "ordinary-first" {
             (other, fx)
@@ -335,20 +335,98 @@ fn fx_draft_refuses_mixed_multiple_and_ordinary_batch_publication_without_partia
         );
         assert_open_unchanged(&f, before, &retained);
     }
-    let mut f = Fixture::new();
-    f.post_source(b"native-batch-exposure", false, 10_000);
-    let rate = f.closing_rate(12);
-    let intent = review(&mut f, &author(), "1200", rate.oid, b"native-batch-fx");
-    let batch = fa_intents::PostBatch::new(b"not-a-draft".to_vec(), vec![intent]).unwrap();
-    let before = f.book.head().unwrap();
-    assert!(
-        f.book
+    for mode in ["fx-first", "ordinary-first", "two-fx"] {
+        let mut f = Fixture::new();
+        f.post_source(b"native-batch-exposure", false, 10_000);
+        let rate = f.closing_rate(12);
+        let fx = review(&mut f, &author(), "1200", rate.oid, b"native-batch-fx");
+        let other = if mode == "two-fx" {
+            review(
+                &mut f,
+                &author(),
+                "1200",
+                rate.oid,
+                b"duplicate-native-source",
+            )
+        } else {
+            ordinary(&f, PRINCIPAL, b"ordinary-native-member")
+        };
+        let members = if mode == "ordinary-first" {
+            vec![other, fx]
+        } else {
+            vec![fx, other]
+        };
+        let batch = fa_intents::PostBatch::new(b"refused-native-fx".to_vec(), members).unwrap();
+        let before = f.book.head().unwrap();
+        let refusal = f
+            .book
             .plan_batch(batch.clone(), &author())
             .unwrap()
-            .is_err()
-    );
-    assert!(f.book.post_batch(batch, &author()).unwrap().is_err());
-    assert_eq!(f.book.head().unwrap(), before);
+            .unwrap_err();
+        assert_eq!(
+            refusal.code,
+            code::CLASS_NOT_IMPLEMENTED,
+            "{mode}: {refusal}"
+        );
+        assert_eq!(f.book.head().unwrap(), before);
+        let refusal = f.book.post_batch(batch, &author()).unwrap().unwrap_err();
+        assert_eq!(
+            refusal.code,
+            code::CLASS_NOT_IMPLEMENTED,
+            "{mode}: {refusal}"
+        );
+        assert_eq!(f.book.head().unwrap(), before);
+    }
+}
+
+#[test]
+fn source_bound_fx_singleton_batch_plans_without_writes_and_publishes_exactly_once() {
+    for item_allocation in [false, true] {
+        let mut f = Fixture::new();
+        let source = f.post_source(b"native-singleton-exposure", false, 10_000);
+        let original = f.book.read_entry(source.vid).unwrap().unwrap();
+        let rate = f.closing_rate(12);
+        let intent = review_mode(
+            &mut f,
+            &author(),
+            "1200",
+            rate.oid,
+            b"native-singleton-fx",
+            item_allocation,
+        );
+        let proposal = intent.proposal().clone();
+        let batch = fa_intents::PostBatch::new(b"native-singleton".to_vec(), vec![intent]).unwrap();
+        let before = f.book.head().unwrap();
+        let plan = f
+            .book
+            .plan_batch(batch.clone(), &author())
+            .unwrap()
+            .unwrap();
+        assert_eq!(f.book.head().unwrap(), before);
+        let posted = f.book.commit_batch_plan(plan, &author()).unwrap().unwrap();
+        assert!(!posted.already_recorded);
+        assert_eq!(posted.entries.len(), 1);
+        assert_eq!(posted.recorded_at, CommitSeq(before.0 + 1));
+        let (entry, recorded_at) = f.book.read_entry(posted.entries[0].vid).unwrap().unwrap();
+        assert_eq!(entry.proposal, proposal);
+        assert_eq!(recorded_at, posted.recorded_at);
+        let repeated = f.book.post_batch(batch, &author()).unwrap().unwrap();
+        assert!(repeated.already_recorded);
+        assert_eq!(repeated.outcome, posted.outcome);
+        assert_eq!(repeated.entries, posted.entries);
+        assert_eq!(repeated.recorded_at, posted.recorded_at);
+        assert_eq!(f.book.head().unwrap(), posted.recorded_at);
+        assert_eq!(f.book.read_entry(source.vid).unwrap().unwrap(), original);
+        let mut request = f.request("1200", rate.oid);
+        request.item_allocation = item_allocation;
+        assert!(
+            f.book
+                .prepare_fx_revaluation(&request, &author())
+                .unwrap()
+                .unwrap()
+                .is_noop()
+        );
+    }
 }
 
 #[test]

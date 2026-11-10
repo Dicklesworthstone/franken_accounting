@@ -452,7 +452,13 @@ fn tamper_evidence_red_team_matrix() {
             Some(Json::Arr(targets)) => targets.clone(),
             other => panic!("targets: {other:?}"),
         };
-        assert_eq!(targets.len(), 11, "{book_out}");
+        assert_eq!(targets.len(), 12, "{book_out}");
+        assert!(
+            targets
+                .iter()
+                .any(|t| text(t, "target") == "functional-registers"),
+            "{book_out}"
+        );
         assert!(
             targets
                 .iter()

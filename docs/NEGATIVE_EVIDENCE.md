@@ -4,6 +4,58 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-09 — retained procedure readers lost calibration and export coordinates
+
+The executable case loader and its calibration checker rejected explicitly
+retained JET v1 references even though Lantern already executed those versions.
+The README renderer separately omitted WorldCom's v1 calibration clause because
+it compared the requested version only with the current v2 row. The original
+whole CLI run failed 76 tests; the subsequent whole CLI/oracles run reached
+96 passing case tests and exposed the missing sentence through the unchanged
+`rendered_docs_do_not_drift` control. The committed case README was preserved.
+
+The readers now use the existing exact retained-version resolver. The retained
+transition changes the version and optional effective-window input, preserving
+the claim and calibration. Controls admit JET v1 and v2 while rejecting an
+unsupported version and the unretained graph v1 declaration. The latter's
+stale classification remains a failure pending a fresh two-reader assessment;
+its digest and readers have not been relabelled. These repairs restore the
+declared evidence scope, not a measured false-positive rate on real books.
+
+Stock export and export-verification receipts also reported an `all` effective
+coordinate while their payload selected an explicit cutoff. The four generic
+and Part370 handlers now carry that same cutoff in the existing envelope.
+Period-end, mid-period population and historical verification controls retain
+their original amount and mutation checks.
+
+Separately, public `FormatJournal` values could bypass constructor validation
+and reach plaintext writers with duplicate accounts or invalid posting folds.
+The shared fold now rejects duplicate codes, and both writers validate the
+fold before returning text. Whole format targets passed 175 tests, including
+exact balance, overflow and alias controls. None of these results constitutes
+a full repository verdict: the latest combined run still exited 101, and the
+standard UBS gate exited 1 on three public-key metadata comparisons.
+
+The complete MCP package subsequently ran 119 tests and exited 101 with 12
+passing and 107 failing across six targets. Registry construction refused the
+new `fa.proof.cash_policy` binding: its required fields used JSON property
+names where flag-backed requirements must name the declared CLI flags. This
+prevented server startup and unrelated tools from constructing their registry.
+The binding now names `--name`, `--from` and `--to`; its public properties stay
+required as `name`, `from` and `to`. No parser, authority boundary, cluster
+ceiling or test assertion is relaxed. The same whole package then passed all
+119 tests with its existing checker and assertions intact.
+
+A subsequent argument-lowering regression ran the complete package with the
+production lowerer unchanged: 118 tests passed and one failed. Required
+`period: null`, `period: []` and `fiscal_year: null` were counted as supplied
+even though their resulting invocations contained no corresponding flag.
+Supplied-value checks now follow lowering's null and empty-list semantics.
+Optional positional ordering uses the same omission rule, while a real later
+value still requires its predecessor. The regression retains valid scalar and
+nonempty-list calls and optional defaults. Authority and host-path checks
+continue to reject forbidden key presence regardless of its value.
+
 ## 2026-11-07 — lapping searches escaped work and cancellation accounting
 
 Source review found that the lapping v2/v3 nested settlement search charged

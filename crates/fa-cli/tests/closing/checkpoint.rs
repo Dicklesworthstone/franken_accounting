@@ -42,7 +42,7 @@ fn closing_checkpoint_cli_rehearses_then_locks_with_original_native_approval() {
     f.close_now("checkpoint-native-close");
     ok(
         &f.book,
-        &["period", "close", PERIOD, "--reason", "Scheduled"],
+        &["period", "close", PERIOD, "--reason", "Scheduled", "--yes"],
     );
     let started = start(&f, "guarded-lock", "lock");
     let verify = task(get(&started, "run"), "verify");

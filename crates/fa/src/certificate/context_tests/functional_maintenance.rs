@@ -360,7 +360,7 @@ fn a_warm_projection_does_not_hide_an_entry_rewrite_or_accept_a_stale_preparatio
 }
 
 #[test]
-fn persisted_entity_state_hydrates_an_unloaded_tail_or_rebuilds_a_retired_tail() {
+fn persisted_entity_state_hydrates_an_unloaded_tail_after_reopen_and_compaction() {
     for compact in [false, true] {
         let runtime = RuntimeBuilder::new().build().unwrap();
         let root = runtime.request_cx_with_budget(Budget::INFINITE);
@@ -389,7 +389,7 @@ fn persisted_entity_state_hydrates_an_unloaded_tail_or_rebuilds_a_retired_tail()
             book,
         };
         h.populate();
-        advance(&mut h);
+        let initial = advance(&mut h);
         let extra = proposal(&h, b"functional-persisted-tail", 80);
         post(&mut h, extra);
         let expected = literal(&h, h.head());
@@ -422,11 +422,14 @@ fn persisted_entity_state_hydrates_an_unloaded_tail_or_rebuilds_a_retired_tail()
             root,
             book,
         };
+        // Both opens initially expose a lazy resident window. Compaction
+        // preserves Chronicle, so its authenticated suffix is recoverable.
+        assert!(h.book.db.delta_since(initial.through).is_err());
         let advanced = advance(&mut h);
-        assert_eq!(advanced.rebuilt, compact);
-        if !compact {
-            assert_eq!((advanced.entries_decoded, advanced.legs_folded), (1, 2));
-        }
+        assert!(!advanced.rebuilt);
+        assert_eq!(advanced.from, initial.through);
+        assert_eq!((advanced.entries_decoded, advanced.legs_folded), (1, 2));
+        assert!(h.book.db.delta_since(initial.through).is_ok());
         assert_eq!(advanced.fold.cells, expected.cells);
         assert_eq!(advanced.fold.pending, expected.pending);
         assert_eq!(advanced.fold.fold_digest, expected.fold_digest);

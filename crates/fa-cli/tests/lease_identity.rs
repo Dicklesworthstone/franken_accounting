@@ -102,7 +102,13 @@ fn malformed_diagnostics_do_not_hide_an_os_held_lease_or_disclose_contents() {
     assert_eq!((refusal.code, refusal.exit), (LEASE_HELD, 6));
     assert!(!refusal.message.contains("PRIVATE FILE CONTENT"));
     assert_eq!(fs::read(&path).unwrap(), secret);
+    // A shared description can outlive this handle (including across fork).
+    // Releasing the OS lock explicitly establishes the next phase's premise.
+    let shared = held.try_clone().unwrap();
     drop(held);
+    assert_eq!(Lease::holder(&dir, NAME), Some(String::new()));
+    shared.unlock().unwrap();
+    drop(shared);
     assert_eq!(Lease::holder(&dir, NAME), None);
     assert!(matches!(
         Lease::acquire(&dir, NAME, "next writer"),

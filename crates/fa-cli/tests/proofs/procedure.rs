@@ -338,7 +338,16 @@ fn post_closing_certificate_exports_original_findings_after_reopening_and_reclos
     let locator = format!("C:{}", text(&metadata, "oid"));
 
     fixture.post("later-after-reopen", "2026-03-01", "30.00", &evidence);
-    ok(&fixture.book, &["period", "soft-close", "FY2026-P03"]);
+    ok(
+        &fixture.book,
+        &[
+            "period",
+            "soft-close",
+            "FY2026-P03",
+            "--key",
+            "post-closing-second-soft-close",
+        ],
+    );
     ok(
         &fixture.book,
         &[

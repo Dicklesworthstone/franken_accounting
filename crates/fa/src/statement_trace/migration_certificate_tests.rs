@@ -233,7 +233,9 @@ fn verify(
 
 #[test]
 fn migration_statement_traces_round_trip_all_four_producer_families_and_historical_frontiers() {
-    let mut h = Harness::in_book_with_opening_date(Id128([0x74; 16]), Some(day("2026-01-02")));
+    // A Normal-period boundary after the January opening makes FY2026-OPEN
+    // a locked legacy period, as required for the approved Migration chunks.
+    let mut h = Harness::in_book_with_opening_date(Id128([0x74; 16]), Some(day("2026-02-01")));
     let selection = super::custom::activate(&mut h, 1);
     let (body, evidence) = source(&mut h);
     let before = h.head();
@@ -396,7 +398,7 @@ fn replace_outer(bundle: &[u8], certificate: &[u8]) -> Vec<u8> {
 
 #[test]
 fn migration_statement_trace_real_bundle_refuses_resealed_attribution_and_unpinned_recipients() {
-    let mut h = Harness::in_book_with_opening_date(Id128([0x74; 16]), Some(day("2026-01-02")));
+    let mut h = Harness::in_book_with_opening_date(Id128([0x74; 16]), Some(day("2026-02-01")));
     let (body, evidence) = source(&mut h);
     let before = h.head();
     open(&mut h, &body, evidence);

@@ -266,6 +266,14 @@ fn part370_export_of_a_real_book_equals_the_profile_goldens() -> std::io::Result
         ],
     );
     assert_eq!(field(&out, "event"), Some("part370_exported"));
+    let envelope = robot_line(&out);
+    assert_eq!(
+        text(
+            envelope.get("coordinate").expect("Part 370 coordinate"),
+            "effective"
+        ),
+        "as-of:2026-04-10"
+    );
     let data = doc(&out);
     assert_eq!(text(&data, "effective_date"), "2026-04-10");
     assert_eq!(int(&data, "customers"), Some(3));
@@ -410,6 +418,16 @@ fn part370_package_verifies_at_its_own_coordinate_and_refuses_an_edit() -> std::
         &["verify", "export", "part370", &package, "--json"],
     );
     assert_eq!(field(&verified, "event"), Some("export_verified"));
+    let envelope = robot_line(&verified);
+    assert_eq!(
+        text(
+            envelope
+                .get("coordinate")
+                .expect("verified Part 370 coordinate"),
+            "effective"
+        ),
+        "as-of:2026-04-10"
+    );
     let data = doc(&verified);
     assert_eq!(text(&data, "format"), "part370");
     assert_eq!(text(&data, "reread"), "package");

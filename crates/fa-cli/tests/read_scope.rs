@@ -1097,6 +1097,10 @@ fn every_command_that_does_not_judge_its_reach_refuses_a_scoped_token() {
             let mut argv: Vec<&str> = vec![verb.as_str()];
             argv.extend(sub);
             argv.extend(arg);
+            if verb == "query" && arg.is_none() {
+                // Exercise reach admission with a syntactically valid query.
+                argv.push("MATCH (n) RETURN n");
+            }
             argv.extend(flags.iter().copied());
             for (token, caveat) in &tokens {
                 let mut scoped = vec!["--token", token.as_str()];

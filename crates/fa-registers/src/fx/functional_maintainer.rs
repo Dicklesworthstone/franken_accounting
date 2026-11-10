@@ -515,7 +515,7 @@ fn load<V: Vfs + Clone>(
         .ok_or_else(|| drift("snapshot has no immutable creation"))?;
     if row.labels.as_slice() != [label::REGISTER_CHECKPOINT]
         || row.props.len() != 3
-        || row.retired_at.is_some()
+        || row.retired_at.is_some_and(|retired| retired <= at)
         || reference.through >= row.created_at
         || !matches!(prop(&row, property::BOOK_ID), Some(CanonicalScalar::Bytes(value)) if value.as_slice() == book.book_id.0)
         || !matches!(prop(&row, property::FA_DIGEST), Some(CanonicalScalar::Bytes(value)) if value.as_slice() == reference.body_digest)
@@ -1249,10 +1249,7 @@ fn entry_lag<V: Vfs + Clone>(
     let current = current
         .as_ref()
         .ok_or_else(|| drift("the selected Entry inventory was not loaded"))?;
-    let lag = current
-        .values()
-        .filter(|row| through.is_none_or(|basis| row.created_at > basis))
-        .count();
+    let mut lag = if through.is_none() { current.len() } else { 0 };
     let mut findings = Vec::new();
     if let Some(basis) = through.filter(|basis| *basis < at) {
         let before = entry_inventory(db, cx, basis)?;
@@ -1272,7 +1269,14 @@ fn entry_lag<V: Vfs + Clone>(
         }
         for row in current.values() {
             context(cx)?;
-            if row.created_at <= basis && !before.contains_key(&row.vid) {
+            // A new content version of an existing Entry is drift, not a
+            // birth. Only identities absent from the checked prefix add lag.
+            if before.contains_key(&row.vid) {
+                continue;
+            }
+            if row.created_at > basis {
+                lag = lag.checked_add(1).ok_or(RegisterError::Overflow)?;
+            } else {
                 findings.push(format!(
                     "journal entry {:032x} appeared with a creation sequence inside the checked prefix",
                     row.vid.0
