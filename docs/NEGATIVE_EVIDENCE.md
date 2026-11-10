@@ -4060,3 +4060,56 @@ requirements; this bounded safety repair does not close the all-fixture oracle
 acceptance. Raw controls and results:
 `/home/ubuntu/.codex/artifacts/fa-bean-control-hypothesis-1110-gt4cz210` and
 `/home/ubuntu/.codex/artifacts/fa-oracle-quoted-recovery-1110-xhfqco_h`.
+
+### 2026-11-10 — Gate-health history and partial telemetry could mislead operators
+
+The existing health helper selected the last hash-ordered Git note without
+checking success or chronological time. Actual output called a RED Tier-1
+note the last successful run and ignored the current Tier-0 duration fields.
+Its configured slot count also described only basic status/disk thresholds;
+it did not prove admission against live disk reservations. The real native
+gate subsequently refused three targets before Cargo with E330, and an
+alternate-worker probe refused a source namespace before any execution grant.
+Neither outcome is a test assertion failure or successful qualification.
+
+Fresh review then found that an evaluator exception after one valid worker
+left partial PASS output and exit 0. Explicitly synthetic malformed-slot,
+NaN-disk and negative-slot controls all returned 0 on helper SHA
+`9471b0d910f04cdd74d682c520852b14e9724abbe55f538df888a010fb1f3b50`.
+The latter two claimed nonfinite disk or more free slots than physical slots.
+A missing option value also reached a bounded owned-process timeout rather
+than returning usage. The first-worker-invalid control correctly exited 2
+through the gate library's zero-assertion protection; Root initially reported
+that result incorrectly to the peer and corrected it before further work.
+Only the valid-first/malformed-second control establishes the partial-PASS
+bug. Declarations, raw output and exit results remain at
+`/home/ubuntu/.codex/artifacts/fa-health-invalid-metrics-1110-yoyd19cy` and
+`/home/ubuntu/.codex/artifacts/fa-health-partial-metrics-1110-4nt8b9vy`.
+
+The completed repair filters recorded PASS notes by aware timestamps, reads
+current and retained duration fields, and reports missing durations as unknown.
+Capacity fields explicitly describe metadata estimates, with admission unchecked.
+It validates finite disk metrics, whole nonnegative slot counts and option
+arity, propagates evaluator failures before consuming partial output, and
+preserves live diagnostics. A final independent control also found repeated
+worker IDs doubled four physical slots to eight; selected IDs are now deduped.
+Usage failures are anchored in stdout. The original three health controls are
+unchanged. Root's complete selftest exits 0: 11 named cases and 31 input
+controls, with helper/selftest/verdict-library hashes unchanged across the run;
+canonical shellcheck exits 0 and scoped UBS exits 0 with zero critical findings
+or warnings. These are health-helper checks, not financial tests or native
+admission proof. The broader capacity task and full repository verdict remain
+open; no guard, disk budget, floor or original acceptance condition was relaxed.
+
+The final test-isolation review confirmed a further Git-context hazard:
+inherited repository-local Git variables overrode `git -C`. In a separate
+synthetic sentinel repository, the then-current selftest exited 1 and wrote its
+synthetic Tier-0/Tier-1 notes into the sentinel. The helper also ignored its
+explicit `--repo` in a new existing-family control (10 named cases passed,
+one failed). No canonical project Git directory was injected. Both entry
+points now clear the repository-local variables enumerated by Git before any
+snapshot or fixture operation. The same strengthened controls then pass with
+0 with 11 named cases and 32 controls; launching it with foreign Git variables
+also exits 0, with both sentinel refs and project note refs verified unchanged.
+Raw baseline and fixed sentinel material remains at
+`/home/ubuntu/.codex/artifacts/fa-health-git-sentinel-1110-azt0138s`.

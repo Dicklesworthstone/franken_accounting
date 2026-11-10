@@ -3,9 +3,9 @@
 # scripts/gate_health.sh — Designated gate worker capacity & disk health check
 # (bead fa-abhg)
 #
-# Reports admissible slots, disk headroom (GB and %), and last successful
-# tier-0 / tier-1 durations for the designated gate workers in
-# scripts/gate_workers.conf under the substrate gate_verdict.sh contract.
+# Reports designated-worker slot/disk metadata and repository-wide recorded
+# PASS note timestamps and timings under the gate_verdict.sh contract.
+# Dispatch-time admission guards remain authoritative for actual capacity.
 #
 # Usage:
 #   bash scripts/gate_health.sh [options]
@@ -15,14 +15,26 @@
 #   --repo <path>                Git repository to inspect for tier-0/tier-1 notes
 #   --workers <csv>              Comma-separated worker IDs (default: FA_GATE_WORKERS)
 #   --min-free-gb <float>        Minimum free disk GB per worker (default: 15.0)
-#   --min-free-pct <float>       Minimum free disk % per worker (default: 5.0)
-#   --min-admissible-slots <int> Minimum admissible slots across pool (default: 1)
+#   --min-free-pct <float>       Minimum free disk % per worker (default: 2.5)
+#   --min-admissible-slots <int> Minimum metadata slot estimate across pool (default: 1)
 #   --janitor-plan               Print target-pool disk budget & age-sweep policy
 # =============================================================================
 
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Hooks export repository-local Git variables that override even `git -C`.
+# This helper always inspects its explicit repository, never that caller state.
+git_local_env="$(git rev-parse --local-env-vars)"
+git_env_rc=$?
+if [ "$git_env_rc" -ne 0 ]; then
+  printf 'UNRUN gate-health-git-context: could not inspect Git environment (rc=%s)\n' "$git_env_rc"
+  printf 'FAIL gate-health-git-context: repository isolation did not run\n'
+  exit 2
+fi
+while IFS= read -r git_variable; do
+  [ -z "$git_variable" ] || unset "$git_variable"
+done <<<"$git_local_env"
 # shellcheck source=lib/gate_verdict.sh
 source "$ROOT/scripts/lib/gate_verdict.sh"
 if [ -r "$ROOT/scripts/gate_workers.conf" ]; then
@@ -39,6 +51,14 @@ MIN_ADMISSIBLE_SLOTS="${FA_GATE_MIN_ADMISSIBLE_SLOTS:-1}"
 PRINT_JANITOR_PLAN=0
 
 while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --status-json | --repo | --workers | --min-free-gb | --min-free-pct | --min-admissible-slots)
+      if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ "$2" == --* ]]; then
+        printf 'FAIL gate-health-usage: %s requires a value\n' "$1"
+        exit 2
+      fi
+      ;;
+  esac
   case "$1" in
     --status-json)
       STATUS_JSON_FILE="${2:-}"
@@ -73,7 +93,7 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     *)
-      printf 'gate_health.sh: unknown option: %s\n' "$1" >&2
+      printf 'FAIL gate-health-usage: unknown option: %s\n' "$1"
       exit 2
       ;;
   esac
@@ -114,7 +134,7 @@ else
     exit $?
   fi
   TMP_STATUS="$(mktemp "${TMPDIR:-/tmp}/fa-gate-health-status.XXXXXX")"
-  rch status --json >"$TMP_STATUS" 2>/dev/null
+  rch status --json >"$TMP_STATUS"
   rc=$?
   if [ "$rc" -ne 0 ] || [ ! -s "$TMP_STATUS" ]; then
     gate_unrun "rch-status" "rch status --json failed (rc=$rc)"
@@ -126,61 +146,104 @@ fi
 
 EVAL_OUT="$(python3 - "$STATUS_JSON_FILE" "$REPO_PATH" "$WORKERS_CSV" "$MIN_FREE_GB" "$MIN_FREE_PCT" "$MIN_ADMISSIBLE_SLOTS" <<'PY'
 import json
+from datetime import datetime
+import math
+import re
 import subprocess
 import sys
 
 status_file, repo_path, workers_csv, min_gb_s, min_pct_s, min_slots_s = sys.argv[1:7]
-min_gb = float(min_gb_s)
-min_pct = float(min_pct_s)
-min_slots = int(min_slots_s)
-designated = [w.strip() for w in workers_csv.split(",") if w.strip()]
+designated = list(dict.fromkeys(w.strip() for w in workers_csv.split(",") if w.strip()))
+
+def finite_number(value, label, maximum=None):
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a finite nonnegative number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{label} must be a finite nonnegative number") from exc
+    if not math.isfinite(number) or number < 0 or (maximum is not None and number > maximum):
+        raise ValueError(f"{label} is outside its finite nonnegative domain")
+    return number
+
+def slot_count(value, label):
+    if type(value) is int:
+        number = value
+    elif isinstance(value, str) and re.fullmatch(r"\+?[0-9]+", value.strip(), re.ASCII):
+        number = int(value)
+    else:
+        raise ValueError(f"{label} must be a nonnegative whole slot count")
+    if number < 0:
+        raise ValueError(f"{label} must be a nonnegative whole slot count")
+    return number
+
+try:
+    min_gb = finite_number(min_gb_s, "minimum free GB")
+    min_pct = finite_number(min_pct_s, "minimum free percentage", 100)
+    min_slots = slot_count(min_slots_s, "minimum slots")
+    if not designated:
+        raise ValueError("at least one worker ID is required")
+except ValueError as exc:
+    print(f"UNRUN\tgate-health-arguments\t{exc}")
+    sys.exit(0)
 
 def git_out(args):
     p = subprocess.run(["git", "-C", repo_path] + args, capture_output=True, text=True)
     return p.stdout.strip() if p.returncode == 0 else ""
 
-# Inspect latest tier-0 and tier-1 notes in repo_path
-last_tier0_commit = "none"
-last_tier0_utc = "none"
-last_tier0_ms = 0
-t0_list = git_out(["notes", "--ref=refs/notes/fa-tier0", "list"])
-if t0_list:
-    last_line = t0_list.splitlines()[-1].split()
-    if len(last_line) == 2:
-        last_tier0_commit = last_line[1][:12]
-        body = git_out(["notes", "--ref=refs/notes/fa-tier0", "show", last_line[1]])
-        for line in body.splitlines():
-            if line.startswith("recorded_utc="):
-                last_tier0_utc = line.split("=", 1)[1]
-            elif line.startswith("duration_ms="):
-                try:
-                    last_tier0_ms = int(line.split("=", 1)[1])
-                except ValueError:
-                    pass
+def latest_pass_note(ref, time_field):
+    # Git lists notes by object ID, not execution time. These are recorded
+    # metadata summaries, not independent verification of their proof bundles.
+    latest = None
+    for row in git_out(["notes", f"--ref={ref}", "list"]).splitlines():
+        parts = row.split()
+        if len(parts) != 2:
+            continue
+        commit = parts[1]
+        body = git_out(["notes", f"--ref={ref}", "show", commit])
+        fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
+        if fields.get("verdict", "").lower() != "pass":
+            continue
+        if fields.get("check_exit", "0") != "0" or fields.get("tree_stable", "true") != "true":
+            continue
+        stamp = fields.get(time_field, "")
+        try:
+            when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when.tzinfo is None or (latest is not None and (when, commit) <= latest[:2]):
+            continue
+        duration = None
+        try:
+            if "duration_ms" in fields:
+                duration = int(fields["duration_ms"])
+            elif time_field == "recorded_utc":
+                seconds = [int(fields[key]) for key in ("fmt_seconds", "check_seconds")]
+                if all(value >= 0 for value in seconds):
+                    duration = sum(seconds) * 1000
+            else:
+                steps = [json.loads(line.split("=", 1)[1]) for line in body.splitlines()
+                         if line.startswith("step_verdict=")]
+                if steps and all(isinstance(step, dict)
+                                 and type(step.get("duration_ms")) is int
+                                 and step["duration_ms"] >= 0 for step in steps):
+                    duration = sum(step["duration_ms"] for step in steps)
+        except (KeyError, TypeError, ValueError):
+            pass
+        if duration is not None and duration < 0:
+            duration = None
+        latest = (when, commit, stamp, duration)
+    return (latest[1][:12], latest[2], latest[3]) if latest else ("none", "none", None)
 
-last_tier1_commit = "none"
-last_tier1_utc = "none"
-last_tier1_ms = 0
-t1_list = git_out(["notes", "--ref=refs/notes/fa-verdict", "list"])
-if t1_list:
-    last_line = t1_list.splitlines()[-1].split()
-    if len(last_line) == 2:
-        last_tier1_commit = last_line[1][:12]
-        body = git_out(["notes", "--ref=refs/notes/fa-verdict", "show", last_line[1]])
-        total_ms = 0
-        for line in body.splitlines():
-            if line.startswith("finished_utc="):
-                last_tier1_utc = line.split("=", 1)[1]
-            elif line.startswith("step_verdict="):
-                try:
-                    sv = json.loads(line.split("=", 1)[1])
-                    total_ms += int(sv.get("duration_ms", 0))
-                except Exception:
-                    pass
-        last_tier1_ms = total_ms
+def duration_text(value):
+    return "unknown" if value is None else f"{value}ms"
+
+def invalid_json_constant(value):
+    raise ValueError(f"nonfinite JSON number {value}")
 
 try:
-    raw = json.load(open(status_file, "r", encoding="utf-8"))
+    with open(status_file, "r", encoding="utf-8") as stream:
+        raw = json.load(stream, parse_constant=invalid_json_constant)
 except Exception as exc:
     print(f"UNRUN\trch-status\tinvalid status JSON: {exc}")
     sys.exit(0)
@@ -192,7 +255,44 @@ workers_list = (
 )
 by_id = {w.get("id"): w for w in workers_list if isinstance(w, dict) and w.get("id")}
 
-admissible_slots = 0
+# Validate every selected worker before emitting any PASS. Missing telemetry
+# cannot become a full disk or an extra slot through defaults or truncation.
+metrics = {}
+invalid_metrics = False
+for wid in designated:
+    w = by_id.get(wid)
+    if w is None:
+        continue
+    try:
+        used = slot_count(w.get("used_slots"), "used slots")
+        total = slot_count(w.get("total_slots"), "total slots")
+        if used > total:
+            raise ValueError("used slots exceed total slots")
+        free_value = w.get("pressure_disk_free_gb")
+        if free_value is None:
+            free_value = w.get("disk_free_gb")
+        free_gb = finite_number(free_value, "free disk GB")
+        ratio = w.get("pressure_disk_free_ratio")
+        if ratio is not None:
+            free_pct = finite_number(ratio, "free disk ratio", 1) * 100
+        elif w.get("pressure_disk_total_gb") is not None:
+            total_gb = finite_number(w["pressure_disk_total_gb"], "total disk GB")
+            if total_gb == 0:
+                raise ValueError("total disk GB cannot establish a percentage")
+            free_pct = finite_number(free_gb / total_gb * 100, "free disk percentage", 100)
+        else:
+            free_pct = finite_number(w.get("disk_free_pct"), "free disk percentage", 100)
+        metrics[wid] = (used, total, free_gb, free_pct)
+    except ValueError as exc:
+        print(f"UNRUN\tworker-{wid}-metrics\t{exc}")
+        invalid_metrics = True
+if invalid_metrics:
+    sys.exit(0)
+
+last_tier0_commit, last_tier0_utc, last_tier0_ms = latest_pass_note("refs/notes/fa-tier0", "recorded_utc")
+last_tier1_commit, last_tier1_utc, last_tier1_ms = latest_pass_note("refs/notes/fa-verdict", "finished_utc")
+
+estimated_slots = 0
 summary_workers = []
 
 for wid in designated:
@@ -202,28 +302,15 @@ for wid in designated:
         continue
     status = str(w.get("status", "unknown"))
     circuit = str(w.get("circuit_state", "unknown"))
-    used_slots = int(w.get("used_slots") or 0)
-    total_slots = int(w.get("total_slots") or 0)
-    free_slots = max(0, total_slots - used_slots)
+    used_slots, total_slots, free_gb, free_pct = metrics[wid]
+    free_slots = total_slots - used_slots
     pressure = str(w.get("pressure_state", "unknown"))
-    free_gb_val = w.get("pressure_disk_free_gb")
-    if free_gb_val is None:
-        free_gb_val = w.get("disk_free_gb", 0.0)
-    free_gb = float(free_gb_val or 0.0)
-    ratio_val = w.get("pressure_disk_free_ratio")
-    if ratio_val is not None:
-        free_pct = float(ratio_val) * 100.0
-    elif w.get("pressure_disk_total_gb"):
-        total_gb = float(w.get("pressure_disk_total_gb") or 1.0)
-        free_pct = (free_gb / total_gb) * 100.0 if total_gb > 0 else 0.0
-    else:
-        free_pct = float(w.get("disk_free_pct", 100.0))
 
     print(
         f"LOG\tGATE_HEALTH_WORKER worker={wid} status={status} circuit={circuit} "
         f"slots={free_slots}/{total_slots} pressure={pressure} "
         f"disk_free_gb={free_gb:.1f} disk_free_pct={free_pct:.1f}% "
-        f"last_tier0_ms={last_tier0_ms} last_tier1_ms={last_tier1_ms}"
+        f"last_tier0_duration={duration_text(last_tier0_ms)} last_tier1_duration={duration_text(last_tier1_ms)}"
     )
 
     worker_ok = True
@@ -241,7 +328,7 @@ for wid in designated:
         worker_ok = False
 
     if worker_ok:
-        admissible_slots += free_slots
+        estimated_slots += free_slots
         print(
             f"PASS\tworker-{wid}\tslots={free_slots}/{total_slots} "
             f"disk_free={free_gb:.1f}GB ({free_pct:.1f}%) pressure={pressure}"
@@ -256,24 +343,28 @@ for wid in designated:
         "pressure_state": pressure,
         "disk_free_gb": round(free_gb, 2),
         "disk_free_pct": round(free_pct, 2),
-        "admissible": worker_ok,
+        "metadata_healthy": worker_ok,
     })
 
-if admissible_slots < min_slots:
+if estimated_slots < min_slots:
     print(
-        f"FAIL\tgate-capacity\tadmissible_slots={admissible_slots} below min_admissible_slots={min_slots} "
+        f"FAIL\tgate-capacity\testimated_admissible_slots={estimated_slots} below min_admissible_slots={min_slots} "
         f"across designated workers ({','.join(designated)})"
     )
 else:
     print(
-        f"PASS\tgate-capacity\tadmissible_slots={admissible_slots} (min={min_slots}) "
-        f"last_tier0={last_tier0_commit}@{last_tier0_utc}({last_tier0_ms}ms) "
-        f"last_tier1={last_tier1_commit}@{last_tier1_utc}({last_tier1_ms}ms)"
+        f"PASS\tgate-capacity\testimated_admissible_slots={estimated_slots} (min={min_slots}); "
+        f"worker metadata only, dispatch admission guards remain authoritative; "
+        f"last_tier0={last_tier0_commit}@{last_tier0_utc}({duration_text(last_tier0_ms)}) "
+        f"last_tier1={last_tier1_commit}@{last_tier1_utc}({duration_text(last_tier1_ms)})"
     )
 
 summary = {
     "designated_workers": designated,
-    "admissible_slots": admissible_slots,
+    "estimated_admissible_slots": estimated_slots,
+    "capacity_basis": "worker_status_metadata",
+    "admission_checked": False,
+    "history_scope": "repository_recorded_pass_metadata",
     "min_free_gb": min_gb,
     "min_free_pct": min_pct,
     "last_tier0_commit": last_tier0_commit,
@@ -284,9 +375,18 @@ summary = {
     "last_tier1_duration_ms": last_tier1_ms,
     "workers": summary_workers,
 }
-print("LOG\tGATE_HEALTH_SUMMARY=" + json.dumps(summary, separators=(",", ":"), sort_keys=True))
+print("LOG\tGATE_HEALTH_SUMMARY=" + json.dumps(summary, separators=(",", ":"), sort_keys=True, allow_nan=False))
 PY
 )"
+eval_rc=$?
+if [ "$eval_rc" -ne 0 ]; then
+  while IFS= read -r diagnostic; do
+    printf 'GATE_HEALTH_EVALUATOR_DIAGNOSTIC %s\n' "$diagnostic"
+  done <<<"$EVAL_OUT"
+  gate_unrun "health-evaluator" "metadata evaluation failed (rc=$eval_rc); partial output is not a verdict"
+  gate_verdict
+  exit $?
+fi
 
 while IFS=$'\t' read -r kind step detail; do
   [ -z "$kind" ] && continue
