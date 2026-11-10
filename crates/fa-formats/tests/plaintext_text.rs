@@ -459,6 +459,161 @@ fn beancount_writer_refuses_negative_public_amount_magnitudes() {
 }
 
 #[test]
+fn plaintext_writers_validate_public_posting_streams_before_returning_success() {
+    let base = journal("Posting admission", "payment", None);
+    let mut zero = base.clone();
+    zero.entries[0].legs[0].amount = Amount::new(UnitId(0), 0);
+    let mut empty = base.clone();
+    empty.entries[0].legs.clear();
+    let mut unbalanced = base.clone();
+    unbalanced.entries[0].legs[0].amount = Amount::new(UnitId(0), 1_234_568);
+    let mut overflow = base.clone();
+    for leg in &mut overflow.entries[0].legs {
+        leg.amount = Amount::new(UnitId(0), i128::MAX);
+    }
+    let repeated = overflow.entries[0].legs.clone();
+    overflow.entries[0].legs.extend(repeated);
+
+    for (case, source) in [
+        ("zero", zero),
+        ("empty", empty),
+        ("unbalanced", unbalanced),
+        ("overflow", overflow),
+    ] {
+        for (format, written) in [
+            ("beancount_v3", write_beancount(&source)),
+            ("hledger_journal", write_hledger(&source)),
+        ] {
+            let refused = match (case, written) {
+                ("zero", Err(FormatError::Parse { detail, .. })) => {
+                    detail.contains("non-positive mantissa 0")
+                }
+                ("empty", Err(FormatError::Parse { detail, .. })) => detail.contains("zero legs"),
+                (
+                    "unbalanced",
+                    Err(FormatError::UnbalancedEntry {
+                        entry_id,
+                        unit_code,
+                        debits: 1_234_568,
+                        credits: 1_234_567,
+                        ..
+                    }),
+                ) => entry_id == "source-0001" && unit_code == "USD",
+                ("overflow", Err(FormatError::Overflow { detail, .. })) => {
+                    detail.contains("entry debit sum overflow")
+                }
+                _ => false,
+            };
+            assert!(
+                refused,
+                "{format}: {case} postings must not produce an export"
+            );
+        }
+    }
+}
+
+#[test]
+fn plaintext_writers_refuse_inconsistent_scales_without_changing_valid_units() {
+    let base = journal("Unit scales", "payment", None);
+    let units = UnitCatalog::embedded().unwrap();
+    let (eur, eur_scale) = units.lookup_code("EUR").unwrap();
+    let mut entries = base.entries.clone();
+    let mut foreign = entries[0].clone();
+    foreign.entry_id = "source-0002".into();
+    foreign.recorded_seq = 2;
+    for leg in &mut foreign.legs {
+        leg.amount.unit = eur;
+        leg.unit_code = "EUR".into();
+        leg.unit_scale = eur_scale;
+    }
+    entries.push(foreign);
+    let valid = FormatJournal::new(
+        "Unit scales",
+        "USD",
+        2,
+        base.coordinate.effective_through,
+        2,
+        base.accounts.clone(),
+        entries,
+        vec![],
+    )
+    .unwrap();
+    for (format, restored) in [
+        (
+            "beancount_v3",
+            read_beancount(&write_beancount(&valid).unwrap(), &units),
+        ),
+        (
+            "hledger_journal",
+            read_hledger(&write_hledger(&valid).unwrap(), &units),
+        ),
+    ] {
+        verify_round_trip_identity(format, &valid, &restored.unwrap()).unwrap();
+    }
+
+    let mut base_leg = valid.clone();
+    base_leg.entries[0].legs[0].unit_scale = 3;
+    let mut foreign_leg = valid.clone();
+    foreign_leg.entries[1].legs[1].unit_scale = eur_scale + 1;
+    let mut later_entry = valid.clone();
+    let mut later = later_entry.entries[1].clone();
+    later.entry_id = "source-0003".into();
+    later.recorded_seq = 3;
+    for leg in &mut later.legs {
+        leg.unit_scale = eur_scale + 1;
+    }
+    later_entry.entries.push(later);
+    let mut coordinate = valid.clone();
+    coordinate.coordinate.base_unit_scale = 3;
+    let mut assertion = valid.clone();
+    assertion.assertions.push(FormatAssertion {
+        account_code: "1000".into(),
+        as_of: base.coordinate.effective_through,
+        side: Side::Credit,
+        amount: Amount::new(UnitId(0), 1_234_567),
+        unit_code: "USD".into(),
+        unit_scale: 3,
+    });
+
+    let mut accepted = Vec::new();
+    for (case, source) in [
+        ("base leg", base_leg),
+        ("foreign leg", foreign_leg),
+        ("later entry", later_entry),
+        ("coordinate", coordinate),
+        ("assertion", assertion),
+    ] {
+        for (surface, result) in [
+            ("fold", source.fold_balances().map(|_| ())),
+            ("beancount", write_beancount(&source).map(|_| ())),
+            ("hledger", write_hledger(&source).map(|_| ())),
+            (
+                "constructor",
+                FormatJournal::new(
+                    &source.coordinate.book_name,
+                    &source.coordinate.base_unit_code,
+                    source.coordinate.base_unit_scale,
+                    source.coordinate.effective_through,
+                    source.coordinate.known_at_seq,
+                    source.accounts.clone(),
+                    source.entries.clone(),
+                    source.assertions.clone(),
+                )
+                .map(|_| ()),
+            ),
+        ] {
+            match result {
+                Err(FormatError::Parse { detail, .. }) => {
+                    assert!(detail.contains("inconsistent scales"), "{surface}/{case}: {detail}");
+                }
+                other => accepted.push(format!("{surface}/{case}: {other:?}")),
+            }
+        }
+    }
+    assert!(accepted.is_empty(), "inconsistent scales: {accepted:?}");
+}
+
+#[test]
 fn plaintext_writers_refuse_duplicate_account_codes_even_across_roots() {
     let base = journal("Duplicate chart codes", "payment", None);
     let units = UnitCatalog::embedded().unwrap();
@@ -475,14 +630,13 @@ fn plaintext_writers_refuse_duplicate_account_codes_even_across_roots() {
             base.entries.clone(),
             base.assertions.clone(),
         )
-        .unwrap()
     };
 
     // An unused account with the same display name is valid when its code is
     // distinct. Preserve its complete chart and journal in both formats.
     let mut distinct = base.accounts[0].clone();
     distinct.code = "1001".into();
-    let valid = with_account(distinct);
+    let valid = with_account(distinct).unwrap();
     for (format, restored) in [
         (
             "beancount_v3",
@@ -505,7 +659,15 @@ fn plaintext_writers_refuse_duplicate_account_codes_even_across_roots() {
             duplicate.normal_side = Side::Credit;
             duplicate.name = "Conflicting chart definition".into();
         }
-        let source = with_account(duplicate);
+        assert!(matches!(
+            with_account(duplicate.clone()),
+            Err(FormatError::Parse { format: "FormatJournal", detail })
+                if detail.contains("duplicate account code") && detail.contains("1000")
+        ));
+        // Public fields can still be mutated after a valid construction. Each
+        // writer enforces its own admission boundary before returning bytes.
+        let mut source = base.clone();
+        source.accounts.push(duplicate);
         for (format, written) in [
             ("beancount_v3", write_beancount(&source)),
             ("hledger_journal", write_hledger(&source)),
@@ -518,6 +680,67 @@ fn plaintext_writers_refuse_duplicate_account_codes_even_across_roots() {
                 "{format}: duplicate canonical chart codes must be refused",
             );
         }
+    }
+}
+
+#[test]
+fn plaintext_readers_refuse_distinct_names_aliasing_one_native_account() {
+    let base = journal("Ambiguous imported codes", "payment", None);
+    let units = UnitCatalog::embedded().unwrap();
+    let bean = write_beancount(&base).unwrap();
+    let hledger = write_hledger(&base).unwrap();
+    for (format, restored) in [
+        ("beancount_v3", read_beancount(&bean, &units)),
+        ("hledger_journal", read_hledger(&hledger, &units)),
+    ] {
+        verify_round_trip_identity(format, &base, &restored.unwrap()).unwrap();
+    }
+
+    // Keep the two external account names, but deliberately make their native
+    // codes identical. Both legs would otherwise fold into one zero balance.
+    let mut ambiguous = base.clone();
+    assert_eq!(ambiguous.accounts[1].code, "5000");
+    assert_eq!(ambiguous.entries[0].legs[0].account_code, "5000");
+    ambiguous.accounts[1].code = "1000".into();
+    ambiguous.entries[0].legs[0].account_code = "1000".into();
+    let content = FormatJournal::compute_content_digest(
+        &ambiguous.accounts,
+        &ambiguous.entries,
+        &ambiguous.assertions,
+    );
+    ambiguous.coordinate = fa_formats::ExportCoordinate::compute(
+        &base.coordinate.book_name,
+        "USD",
+        2,
+        base.coordinate.effective_through,
+        1,
+        1,
+        content,
+    );
+    ambiguous.coordinate.verify(&content).unwrap();
+    let coherent_digests = |wire: String| {
+        wire.replace(
+            &fa_formats::hex_encode(&base.coordinate.content_digest),
+            &fa_formats::hex_encode(&ambiguous.coordinate.content_digest),
+        )
+        .replace(
+            &fa_formats::hex_encode(&base.coordinate.certificate_digest),
+            &fa_formats::hex_encode(&ambiguous.coordinate.certificate_digest),
+        )
+    };
+    assert!(bean.contains("fa_code: \"5000\""));
+    assert!(hledger.contains("fa_code:5000"));
+    let bean = coherent_digests(bean.replace("fa_code: \"5000\"", "fa_code: \"1000\""));
+    let hledger = coherent_digests(hledger.replace("fa_code:5000", "fa_code:1000"));
+    for read in [
+        read_beancount(&bean, &units),
+        read_hledger(&hledger, &units),
+    ] {
+        assert!(matches!(
+            read,
+            Err(FormatError::Parse { format: "FormatJournal", detail })
+                if detail.contains("duplicate account code") && detail.contains("1000")
+        ));
     }
 }
 

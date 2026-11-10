@@ -112,7 +112,7 @@ impl AccountNames {
 /// and `balance` assertions. Refuse dates that the four-digit-year profile
 /// cannot represent, including an assertion whose next day is out of range,
 /// repeated account codes, distinct codes that map to the same exported name,
-/// and references to accounts absent from the chart.
+/// references to accounts absent from the chart, and invalid posting folds.
 pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
     let mut out = String::new();
     out.push_str("; FrankenAccounting Beancount v3 export (fa-formats, bead fa-npi)\n");
@@ -278,6 +278,7 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
         ));
     }
 
+    let _ = journal.fold_balances()?;
     Ok(out)
 }
 
@@ -663,7 +664,7 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
 
 /// Write a `FormatJournal` as a deterministic `hledger` / `ledger-cli` journal,
 /// refusing repeated account codes, colliding account names, undeclared posting
-/// accounts, and negative posting magnitudes before converting signed values.
+/// accounts, negative posting magnitudes, and invalid posting folds.
 pub fn write_hledger(journal: &FormatJournal) -> Result<String, FormatError> {
     let mut out = String::new();
     out.push_str("; FrankenAccounting hledger export (fa-formats, bead fa-npi)\n");
@@ -759,6 +760,7 @@ pub fn write_hledger(journal: &FormatJournal) -> Result<String, FormatError> {
         }
         out.push('\n');
     }
+    let _ = journal.fold_balances()?;
     Ok(out)
 }
 

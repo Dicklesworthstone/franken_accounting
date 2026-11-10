@@ -4,6 +4,7 @@
 The CSV export supplies exact fixed-scale controls. bean-check validates the
 Beancount input, bean-query computes net/gross balances and posting counts,
 and hledger computes balances independently and exposes its parsed postings.
+An optional native stock trial balance checks the CSV fold against `fa tb`.
 This does not implement a replacement Beancount or hledger accounting engine.
 
 Account identities come from the exports' explicit fa_code metadata, never

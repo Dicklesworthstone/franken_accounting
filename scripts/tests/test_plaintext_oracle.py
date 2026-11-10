@@ -414,11 +414,17 @@ class ExternalToolTests(unittest.TestCase):
                     with path.open("a", encoding="utf-8") as stream:
                         stream.write("\n")
                 return result
-            with self.subTest(snapshot=snapshot), mock.patch.object(oracle.Commands, "run", run_and_mutate):
-                _, report = self.run_external(native_tb=json.dumps(native_tb_fixture()))
-            self.assertEqual(report["status"], "FAIL")
-            self.assertIn("native_tb bytes changed", report["error"])
-            self.assertEqual(report["commands"], 14, "all real external commands actually completed")
+            with self.subTest(snapshot=snapshot):
+                with mock.patch.object(oracle.Commands, "run", run_and_mutate):
+                    root, report = self.run_external(native_tb=json.dumps(native_tb_fixture()))
+                transcript = [json.loads(line) for line in (root / "oracle/commands.jsonl").read_text().splitlines()]
+                self.assertEqual(len(transcript), 14)
+                self.assertTrue(all(row["exit"] == 0 for row in transcript), transcript)
+                self.assertTrue(all(row["stderr"]["bytes"] == 0 or "--version" in row["command"]
+                                    for row in transcript), transcript)
+                self.assertEqual(report["status"], "FAIL")
+                self.assertIn("native_tb bytes changed", report["error"])
+                self.assertEqual(report["commands"], 14, "all real external commands actually completed")
 
     def test_real_tools_accept_both_normal_balance_override_directions(self):
         _, report = self.run_external(contra_fixtures())

@@ -764,8 +764,15 @@ impl FormatJournal {
                 }
             }
         }
-        let known_accounts: std::collections::BTreeSet<&str> =
-            self.accounts.iter().map(|a| a.code.as_str()).collect();
+        let mut known_accounts = std::collections::BTreeSet::new();
+        for account in &self.accounts {
+            if !known_accounts.insert(account.code.as_str()) {
+                return Err(FormatError::Parse {
+                    format: "FormatJournal",
+                    detail: format!("duplicate account code {:?} in the chart", account.code),
+                });
+            }
+        }
         let mut balances: BTreeMap<(String, String), i128> = BTreeMap::new();
 
         for entry in &self.entries {

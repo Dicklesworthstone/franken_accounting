@@ -105,10 +105,13 @@ EXPORTS="$(mktemp -d)"
   --out "$EXPORTS/journal.beancount" --json
 "$FA" --book "$BOOK" export hledger --period FY2025-P03 --as-known-at 554 \
   --out "$EXPORTS/journal.hledger" --json
+"$FA" --book "$BOOK" tb --as-of 2025-03-31 --as-known-at 554 --json \
+  >> "$EXPORTS/native-tb.jsonl"
 python3 -B scripts/plaintext_oracle.py \
   --csv-gl "$EXPORTS/native.csv" \
   --beancount "$EXPORTS/journal.beancount" \
   --hledger-journal "$EXPORTS/journal.hledger" \
+  --native-tb "$EXPORTS/native-tb.jsonl" \
   --bean-check "$ORACLE_TOOLS/python/bin/bean-check" \
   --bean-query "$ORACLE_TOOLS/python/bin/bean-query" \
   --hledger "$ORACLE_TOOLS/hledger/hledger" \
@@ -116,6 +119,13 @@ python3 -B scripts/plaintext_oracle.py \
 ```
 
 Executable flags are optional when all three programs are on `PATH`.
+`--native-tb` is optional for the historical CSV-fold-only profile. Supplying
+it adds a comparison with the posted net, gross debits, gross credits and unit
+totals from `fa tb` at the CSV's exact effective cutoff and known-at sequence.
+Capture the stock report with `--as-of`, without period, activity or dimension
+filters, from the same book used for the exports. Keep each capture in a fresh
+directory; multiple events in the trial-balance file are refused. Historical
+results without this fourth input do not acquire the additional predicate.
 `--timeout` sets a per-command limit in seconds, default 300. `--out` must be a
 new directory. Inputs are copied byte-for-byte into `inputs/`; the originals,
 snapshots and executable files are hashed before and after execution. No text
@@ -176,6 +186,16 @@ duplicate cells and missing or foreign cells are rejected. Zero-net accounts
 with real activity remain in the comparison, while declared accounts with no
 postings do not acquire invented monetary rows. Gross controls and counts catch
 offsetting additions/removals and changes hidden by unchanged net balances.
+
+The optional native trial balance must be an unfiltered stock report on trunk.
+Its separate pending columns do not count as posted activity. Declared inactive
+or pending-only rows with no posted activity do not invent monetary cells;
+zero-net rows with gross activity remain mandatory. The fourth input is copied
+and hashed with the exports, and a change to either its original or snapshot
+invalidates a successful external run. Its receipt records the observed book
+UUID. The CSV export carries a human book name but no UUID, so this arithmetic
+and available-selector comparison does not establish a cryptographic book
+identity binding. Retain the native executable and source provenance separately.
 
 A declared synthetic boundary control exposed a Beancount 3.2.0 divergence:
 the balanced pair `±1701411834604692317316873037158841057.27 USD`
