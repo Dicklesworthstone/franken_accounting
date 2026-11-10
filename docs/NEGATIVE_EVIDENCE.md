@@ -4108,8 +4108,8 @@ synthetic Tier-0/Tier-1 notes into the sentinel. The helper also ignored its
 explicit `--repo` in a new existing-family control (10 named cases passed,
 one failed). No canonical project Git directory was injected. Both entry
 points now clear the repository-local variables enumerated by Git before any
-snapshot or fixture operation. The same strengthened controls then pass with
-0 with 11 named cases and 32 controls; launching it with foreign Git variables
+snapshot or fixture operation. The repaired selftest exits 0 with the same
+11 named cases and 32 controls; launching it with foreign Git variables
 also exits 0, with both sentinel refs and project note refs verified unchanged.
 Raw baseline and fixed sentinel material remains at
 `/home/ubuntu/.codex/artifacts/fa-health-git-sentinel-1110-azt0138s`.
