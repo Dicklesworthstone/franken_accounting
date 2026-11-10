@@ -604,7 +604,10 @@ fn plaintext_writers_refuse_inconsistent_scales_without_changing_valid_units() {
         ] {
             match result {
                 Err(FormatError::Parse { detail, .. }) => {
-                    assert!(detail.contains("inconsistent scales"), "{surface}/{case}: {detail}");
+                    assert!(
+                        detail.contains("inconsistent scales"),
+                        "{surface}/{case}: {detail}"
+                    );
                 }
                 other => accepted.push(format!("{surface}/{case}: {other:?}")),
             }
