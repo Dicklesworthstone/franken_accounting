@@ -4,6 +4,35 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-10 — exhausted test admission kept submitting the unqualified tail
+
+The full gate kept invoking later test targets after a target exhausted its
+registered offloader retries. When hz4 became draining or unreachable, the
+actual run completed eight targets (869 passing tests), then dispatched the
+remaining 197 without execution. Its 398 retry headers are retained. The
+agent's polling did not stop this rapid loop in time; the run exited143
+and never qualified the tree.
+
+The split-test driver now stops submissions after exhausted or unconfirmed
+admission, records the attempted and unsubmitted populations, retains the
+complete intended inventory and logs, and exits through the existing verdict
+function. A prior executed failure keeps exit1; pure UNRUN keeps exit2.
+Normal runs still execute all targets, and real test failures still allow
+later targets to execute while admission remains available. Retry counts,
+budgets, deadlines, profiles, completion rules and worker selection are unchanged.
+
+The admitted/rejected verdict set is unchanged: complete and recovered
+transient runs pass; real failures, cap kills and stale isolated tests fail;
+permanent refusal and missing completion remain UNRUN. One existing protocol
+expectation intentionally changes from three attempted targets to one after
+permanent refusal. Actual submission counts and child exits are now checked.
+The unchanged driver failed four enriched controls (exit1, ten passing groups
+and four failures); the repair passes all eleven groups twice. All nine
+protocol scenarios retain their intended three-target inventory and matching
+log checksums. These use explicit fake offloader fixtures, not native Rust
+or accounting evidence. Broader `fa-abhg` acceptance and repository qualification
+remain open; this change creates no permission to pass an unexecuted target.
+
 ## 2026-11-10 — legacy timestamps lost precision and aliased absence
 
 The IIF and generic CSV imports discarded fractional seconds in legacy

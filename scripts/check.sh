@@ -377,6 +377,9 @@ cargo_build() {
 # command the offloader never ran is retried (CHECK_TEST_ATTEMPTS); an
 # executed failure, a cap kill (exit 137) included, never is. An isolated
 # test that matches no test fails the step, so the list cannot go stale.
+# Exhausted or unconfirmed admission stops the remaining submissions and the
+# gate with a nonzero verdict. Completed failures keep precedence over UNRUN;
+# the complete intended inventory and every attempted command stay in the logs.
 # An isolated command runs one test, so it carries its own rch test budget
 # (CHECK_ISOLATED_TIMEOUT_SEC, via RCH_TEST_TIMEOUT_SEC); every other command
 # keeps the fleet's cap.
@@ -534,7 +537,8 @@ cargo_test_jobs() {
       printf '==== test worker %s: %s\n' "$package" "$worker" >>"$log"
     done < <(assign_test_workers "$jobs")
   fi
-  local job args job_log rc attempt count=0
+  local job args job_log rc attempt planned count=0
+  planned="$(awk 'NF { count++ } END { print count + 0 }' "$jobs")"
   local -a argv budget failed=() unrun=() stale=()
   while IFS=$'\t' read -r job args; do
     [ -n "$job" ] || continue
@@ -565,6 +569,7 @@ cargo_test_jobs() {
       fi
     elif [ "$rc" -eq 0 ] || is_rch_offloader_unrun "$rc" "$job_log"; then
       unrun+=("$job")
+      break
     else
       failed+=("$job")
     fi
@@ -574,6 +579,11 @@ cargo_test_jobs() {
   dur=$((t1 - t0))
   local passed_total
   passed_total="$(awk '/^test result: ok\./ { for (i = 1; i <= NF; i++) if ($i == "passed;") sum += $(i - 1) } END { print sum + 0 }' "$log")"
+  local admission_detail=""
+  if [ "${#unrun[@]}" -gt 0 ]; then
+    admission_detail="$label — submission stopped at ${unrun[*]} after $attempt attempt(s); $count of $planned targets attempted, $((planned - count)) not submitted; completion is unqualified; log: $log; inventory: $jobs"
+    printf '==== %s\n' "$admission_detail" >>"$log"
+  fi
   if [ "${#failed[@]}" -gt 0 ] || [ "${#stale[@]}" -gt 0 ]; then
     record_step_verdict "$label" "FAIL" "$started" "$finished" "$dur" "$log"
     gate_fail "$label (${#failed[@]} of $count jobs failed: ${failed[*]:-none}; isolated tests matching no test: ${stale[*]:-none}); log: $log"
@@ -581,13 +591,23 @@ cargo_test_jobs() {
     grep -E '^test .+ \.\.\. FAILED$' "$log" >&2 || true
   elif [ "${#unrun[@]}" -gt 0 ]; then
     record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
-    gate_unrun "$label — ${#unrun[@]} of $count jobs did not run or complete after $CHECK_TEST_ATTEMPTS attempts: ${unrun[*]} (retryable, not a product verdict); log: $log"
+    gate_unrun "$admission_detail"
   elif ! grep -Eq '^test result: ok\. ' "$log" || [ "${passed_total:-0}" -le 0 ]; then
     record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
     gate_unrun "$label — $count jobs exited 0 without a positive 'test result: ok. N passed' completion marker; log: $log"
   else
     record_step_verdict "$label" "PASS" "$started" "$finished" "$dur" "$log"
     gate_pass "$label ($count jobs, $passed_total passed)"
+  fi
+  if [ "${#unrun[@]}" -gt 0 ]; then
+    # A real failure observed before admission was lost remains a failure.
+    # The existing verdict function preserves that precedence and tree checks.
+    if [ "${#failed[@]}" -gt 0 ] || [ "${#stale[@]}" -gt 0 ]; then
+      gate_unrun "$admission_detail"
+    fi
+    gate_verdict
+    rc=$?
+    exit "$rc"
   fi
 }
 
