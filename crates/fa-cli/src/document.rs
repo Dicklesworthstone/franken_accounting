@@ -1973,14 +1973,19 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     })?
             };
             let key = crate::principal::load_principal_key(ctx, args, "--sign-key")?;
-            let capability = ctx.capability(args, &["post"])?;
-            let (mut book, proposal) = match source {
-                ManualSource::Review(review) => (ctx.books.open(args)?, review.proposal().clone()),
+            let (mut book, proposal, capability) = match source {
+                ManualSource::Review(review) => {
+                    let capability = ctx.capability(args, &["post"])?;
+                    (ctx.books.open(args)?, review.proposal().clone(), capability)
+                }
                 ManualSource::Intent(intent_path) => {
                     let who = ctx.principal(args);
                     let text = ctx.files.read_text(intent_path)?;
                     let doc = parse_json(intent_path, &text)?;
-                    let mut book = ctx.books.open(args)?;
+                    let capability = ctx.capability(args, crate::fx::posting_ops(&doc))?;
+                    let mut book = ctx.books.open_admitted(args, |book| {
+                        crate::fx::admit_intent_sources(book, &capability, &doc)
+                    })?;
                     let proposal = build_proposal_from_intent(
                         &ctx.out,
                         &mut book,
@@ -1989,7 +1994,7 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         who,
                         capability.clone(),
                     )?;
-                    (book, proposal)
+                    (book, proposal, capability)
                 }
             };
             let proposal_digest = proposal

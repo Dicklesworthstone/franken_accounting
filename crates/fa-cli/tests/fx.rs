@@ -569,6 +569,123 @@ fn same_unit_foreign_and_native_group_use_retained_quotes_and_exact_cold_retry()
 }
 
 #[test]
+fn manual_fx_intent_plans_and_commits_its_retained_exact_valuation() {
+    let f = Fixture::new();
+    let rate = f.rate(
+        "manual-spot",
+        "spot_close",
+        "2026-03-05",
+        "11",
+        "10",
+        "HalfEven",
+    );
+    let intent = f.intent("manual-sale", text(data(&rate), "oid"), "SpotClose");
+    let plan = f.dir.join("manual-sale.plan").display().to_string();
+    let before = head(&f.book);
+    let asserted = ok(
+        &f.book,
+        &[
+            "document",
+            "attest",
+            "manual",
+            "--intent",
+            &intent,
+            "--reason",
+            "NoDocumentIssued",
+            "--statement",
+            "Declared synthetic transaction; no real invoice or market-rate assurance is claimed.",
+            "--plan-out",
+            &plan,
+        ],
+    );
+    assert_eq!(text(&asserted, "event"), "attestation_recorded");
+    assert_eq!(text(data(&asserted), "claim"), "ManualAssertion");
+    assert_eq!(head(&f.book), before + 1);
+
+    let commit = ["commit", "--plan", &plan, "--grant", "read"];
+    let posted = ok(&f.book, &commit);
+    let vid = text(data(&posted), "vid");
+    let entry = f.entry(vid);
+    let units = fa_money::UnitRegistry::embedded().unwrap();
+    let native = fa_money::Amount::new(units.lookup("EUR").unwrap(), 10_000);
+    let valued = fa_money::Amount::new(units.lookup("USD").unwrap(), 11_000);
+    assert_eq!(entry.proposal.legs.len(), 2);
+    assert!(
+        entry
+            .proposal
+            .legs
+            .iter()
+            .all(|leg| leg.amount == native && leg.base_amount == Some(valued))
+    );
+    let totals = entry.proposal.base_totals.as_ref().unwrap();
+    assert_eq!((totals.debits, totals.credits), (11_000, 11_000));
+    assert_eq!(totals.fx_law_oid, fa::FxLawId::SpotClose.oid());
+    let activity = f.activity();
+    assert_eq!(integer(data(&activity), "entries"), 1);
+    assert_eq!(
+        text(data(&activity).get("totals").unwrap(), "debits"),
+        "110.00 USD"
+    );
+
+    let before_retry = head(&f.book);
+    let retried = ok(&f.book, &commit);
+    assert_eq!(text(data(&retried), "vid"), vid);
+    assert_eq!(
+        data(&retried).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(head(&f.book), before_retry);
+}
+
+#[test]
+fn manual_fx_intent_refuses_a_post_only_token_before_disclosing_the_book() {
+    let f = Fixture::new();
+    let rate = f.rate(
+        "manual-denied",
+        "spot_close",
+        "2026-03-05",
+        "11",
+        "10",
+        "HalfEven",
+    );
+    let intent = std::fs::read_to_string(f.intent(
+        "manual-denied-sale",
+        text(data(&rate), "oid"),
+        "SpotClose",
+    ))
+    .unwrap();
+    let poster = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "manual-post-only",
+        LaunchProfile::Preparer,
+        &["post"],
+    )
+    .unwrap();
+    let before = head(&f.book);
+    let (status, denied) = bound(
+        &poster,
+        &[
+            "document",
+            "attest",
+            "manual",
+            "--intent",
+            "-",
+            "--reason",
+            "NoDocumentIssued",
+            "--statement",
+            "Declared synthetic authority probe; no transaction should be recorded.",
+        ],
+        Some(&intent),
+    );
+    assert_eq!(status, 7, "{}", denied.render());
+    assert!(text(data(&denied), "message").contains("read"));
+    assert_eq!(denied.get("book"), Some(&Json::Null));
+    assert_eq!(denied.get("coordinate"), Some(&Json::Null));
+    assert_eq!(head(&f.book), before);
+}
+
+#[test]
 fn foreign_receipt_relief_is_derived_partial_final_reversed_and_retry_safe() {
     let (f, invoice, rate) = settlement_fixture();
     let receipt_args = |number: &str, foreign: &str, cash: &str| -> Vec<String> {

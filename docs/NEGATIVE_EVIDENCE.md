@@ -4,6 +4,29 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-10 — manual FX intents omitted retained-source admission
+
+The manual-attestation intent route used a post-only embedded capability and
+opened the book before admitting the intent's source reads. Ordinary `post`
+already selected its authority through `fx::posting_ops` and used
+`open_admitted` with `fx::admit_intent_sources`. The omitted wiring made an
+otherwise valid manual FX plan refuse unless the embedded owner explicitly
+supplied `--grant read`. A real post-only preparer token was correctly refused
+that read, but its error disclosed the book and current journal coordinate.
+The journal head remained unchanged.
+
+Both counterexamples were observed with retained CLI binary SHA256
+`cb1ed7f44a3c3a5c8768f5136712f8dbc68d3fa4dba36cdde3207285fdbf0866`,
+bound to source `6ea2d95f2cf962a9b22accd548cdca013119228270dde79535d189876028dce7`.
+The raw requests and responses remain under
+`/home/ubuntu/.codex/artifacts/fa-valued-oracle-20261110.fxeyui7k`.
+The current manual-intent route now uses those existing admission helpers;
+authenticated tokens retain their original authority. The sealed-review
+route keeps its existing post-only operation scope. Two native CLI regressions
+exercise the valued plan/commit/replay/retry flow and the post-only refusal
+before disclosure. Their execution and repository qualification are pending;
+the older binary's observations are not a pass for the modified source.
+
 ## 2026-11-10 — inconsistent scales could certify an unbalanced plaintext export
 
 `FormatJournal::fold_balances` added raw mantissas by unit code while the
