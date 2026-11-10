@@ -4022,9 +4022,9 @@ counterexample: an indented `invalid" include "<nonexistent-path>"` passed that
 guard while Beancount still attempted the include. An invalid lexer token had
 consumed the opening quote that the regex incorrectly treated as a string.
 
-The final guard consumes other non-whitespace tokens in full before recognizing
-later strings, and refuses directive words outside complete native strings,
-semicolon comments and sanitized ASCII account tokens. Admission occurs before
+The first Root repair consumed other non-whitespace tokens in full before recognizing
+later strings, and attempted to refuse directive words outside complete native strings,
+semicolon comments and sanitized ASCII account tokens. Admission occurred before
 tool resolution or output creation. Existing monetary comparisons, expected
 values, tool pins and workloads are unchanged. The unchanged first guard with
 the strengthened tests exited 1: 29 functions, 16 failing subcases across two
@@ -4034,6 +4034,21 @@ skips, 17.635 seconds. The original peer baseline/fix and Root's distinct
 quote-recovery controls remain preserved; these counts are not additive
 financial fixtures. Ordinary quoted source text, comments and account names
 containing directive words still pass the real tools.
+
+A further independent read found that Root's token approximation was also
+incomplete: NUMBER or KEY tokens immediately before a quote could hide later
+directives from the guard. Root confirmed actual nonexistent-include resolution
+for both cases. Adding those prefixes to the same tests produced another real
+baseline exit 1: 16 failing subcases across two functions, 11 explicit external
+skips. The final repair admits complete native physical-line forms, without
+approximating the recovering lexer's token state. Its complete 29-test module
+exits 0 with zero skips in 17.966 seconds. The existing real-engine positive
+control now exercises roles, normal-side and numeric metadata, migration text,
+memo comments and hex, dimensions, and balance assertions, retaining the same
+four entries, eight postings, five cells and 14 commands. Both untouched valued
+CLI snapshot exports also retain equal native/Beancount/hledger account maps.
+The earlier 29-pass result and compile-only Tier 0 on `6e92314a` are historical
+bounded evidence; they did not establish complete directive rejection.
 
 Ivory changed only the two Python inputs during the earlier native gate before
 the source-freeze handoff was acknowledged. That replay is void as an

@@ -43,6 +43,7 @@ BEANCOUNT_RECOVERY_PREFIXES = (
     "", "  ", "\t", "  invalid ",
     '2024-01-05 * "unfinished" ', '  fa_entry_id: "unfinished" ',
     '  invalid" ', '  invalid"; ',
+    '  1" " ', '  fa_entry_id:" " ',
 )
 
 
@@ -144,6 +145,25 @@ def directive_word_fixtures() -> dict[str, str]:
         texts[key] += '\n; include "not-included.bean" plugin "not.loaded"\n'
     texts["beancount"] = texts["beancount"].replace(
         '"Control 1"', json.dumps('include "not-included.bean"; plugin "not.loaded" \\ source'))
+    # Exercise every native structural form without changing a monetary cell.
+    texts["beancount"] = texts["beancount"].replace(
+        '  fa_type: "Asset"\n',
+        '  fa_type: "Asset"\n  fa_normal_side_v1: "D"\n  fa_roles_v1: "cash"\n', 1)
+    texts["beancount"] = texts["beancount"].replace(
+        '  fa_entry_id: "entry-1"\n',
+        '  fa_entry_id: "entry-1"\n  fa_recorded_seq: 2\n  fa_class: 12\n'
+        '  fa_migrated_from: "include plugin source"\n', 1)
+    texts["beancount"] = texts["beancount"].replace(
+        '  Assets:Aplugin-include  150.27 USD\n',
+        '  Assets:Aplugin-include  150.27 USD ; memo:include "data" plugin\n', 1)
+    texts["beancount"] = texts["beancount"].replace(
+        '  Equity:A3000  -150.27 USD\n',
+        '  Equity:A3000  -150.27 USD\n'
+        '    fa_memo_hex_v1: "20696e636c75646520706c7567696e20"\n'
+        '    fa_dimensions_v1: "1:00000000000000000000000000000001"\n', 1)
+    texts["beancount"] += (
+        '2024-02-01 balance Assets:Aplugin-include 0.00 USD\n'
+        '2024-02-01 balance Assets:Aplugin-include 9.876 EUR\n')
     return texts
 
 

@@ -379,25 +379,29 @@ def read_native_trial_balance(text: str, reference: Reference) -> dict:
 def read_account_map(text: str, kind: str, reference: Reference) -> dict[str, str]:
     """Read native declarations, not monetary postings or inferred account codes."""
     require(kind in ("beancount", "hledger"), "unknown plaintext format")
-    if kind == "beancount":
-        # Beancount can load includes/plugins after reporting syntax errors,
-        # including after indented or otherwise malformed native-looking
-        # prefixes. Reject their tokens before any external command starts.
-        # Skip strings, semicolon comments and the complete ASCII account
-        # tokens emitted by our sanitizer: directive words there are data.
-        # Consume every other non-whitespace token in full. In particular,
-        # an invalid token can swallow a quote before parser recovery; that
-        # quote must not hide a later directive inside a supposed string.
-        for token in re.finditer(
-                r'(?P<data>"(?:[^"\\]|\\[^\n])*"|;[^\n]*|'
-                r'[A-Z][A-Za-z0-9-]*(?::[A-Z0-9][A-Za-z0-9-]*)+)'
-                r'|(?P<other>[^ \t\r\n]+)', text):
-            if token.lastgroup == "other":
-                require(not any(word in token[0] for word in ("include", "plugin")),
-                        "Beancount native export profile forbids include/plugin directives")
     # Match native Rust str::lines and the external journal grammars: Unicode
     # separators and vertical tabs inside source text are not new directives.
     lines = [line.removesuffix("\r") for line in text.split("\n")]
+    if kind == "beancount":
+        # Beancount can execute include/plugin directives even after syntax
+        # errors. Admit complete native physical-line forms instead of trying
+        # to reconstruct its recovering lexer's quote state. Source text is
+        # confined to complete strings/comments; monetary checks stay below.
+        quoted = r'"(?:[^"\\\n]|\\[^\n])*"'
+        account = r'(?:Assets|Liabilities|Equity|Income|Expenses)(?::[A-Z0-9][A-Za-z0-9-]*)+'
+        day = r'[0-9]{4}-[0-9]{2}-[0-9]{2}'
+        number = r'-?[0-9]+(?:\.[0-9]+)?'
+        currency = r"[A-Z/][A-Z0-9'._-]*"
+        native_line = re.compile(
+            rf'(?:[ \t]*|[ \t]*;[^\n]*|option "(?:title|operating_currency)" {quoted}'
+            rf'|{day} open {account}|{day} \* {quoted}'
+            rf'|{day} balance {account} {number} {currency}'
+            rf'|[ \t]+fa_(?:code|name|type|roles_v1|normal_side_v1|entry_id|migrated_from|'
+            rf'memo_hex_v1|dimensions_v1): {quoted}'
+            rf'|[ \t]+fa_(?:recorded_seq|class): [0-9]+'
+            rf'|[ \t]+{account}  {number} {currency}(?: ;[^\n]*)?)')
+        require(all(native_line.fullmatch(line) is not None for line in lines),
+                "Beancount input is not the native export profile (includes/plugins are not admitted)")
     metadata = {}
     mapping: dict[str, str] = {}
     seen_codes = set()
