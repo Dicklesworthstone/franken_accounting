@@ -39,6 +39,11 @@ POSTINGS = (
 )
 CONTENT = "a" * 64
 CERTIFICATE = "b" * 64
+BEANCOUNT_RECOVERY_PREFIXES = (
+    "", "  ", "\t", "  invalid ",
+    '2024-01-05 * "unfinished" ', '  fa_entry_id: "unfinished" ',
+    '  invalid" ', '  invalid"; ',
+)
 
 
 def fixtures(postings: tuple = POSTINGS) -> dict[str, str]:
@@ -128,6 +133,17 @@ def contra_fixtures() -> dict[str, str]:
     texts["hledger_journal"] = texts["hledger_journal"].replace(
         "fa_type:Asset ", "fa_type:Asset fa_normal_side_v1:C ").replace(
         "fa_type:Equity ", "fa_type:Equity fa_normal_side_v1:D ")
+    return texts
+
+
+def directive_word_fixtures() -> dict[str, str]:
+    """Directive words are ordinary account, quoted-source and comment data."""
+    texts = fixtures()
+    for key in ("beancount", "hledger_journal"):
+        texts[key] = texts[key].replace("Assets:A1000-10", "Assets:Aplugin-include")
+        texts[key] += '\n; include "not-included.bean" plugin "not.loaded"\n'
+    texts["beancount"] = texts["beancount"].replace(
+        '"Control 1"', json.dumps('include "not-included.bean"; plugin "not.loaded" \\ source'))
     return texts
 
 
@@ -298,6 +314,42 @@ class ExactControlsTests(unittest.TestCase):
         ):
             with self.subTest(kind=kind, directive=appended), self.assertRaises(oracle.OracleError):
                 oracle.read_account_map(self.texts[key] + appended, kind, self.reference)
+        # Beancount recovers from malformed prefixes and can still load an
+        # include or execute a plugin. Parser errors do not make them inert.
+        for prefix in BEANCOUNT_RECOVERY_PREFIXES:
+            for directive in ("include", "plugin"):
+                for separator in (" ", ""):
+                    appended = f'\n{prefix}{directive}{separator}"not-used"\n'
+                    with self.subTest(directive=appended), self.assertRaises(oracle.OracleError):
+                        oracle.read_account_map(self.texts["beancount"] + appended,
+                                                "beancount", self.reference)
+
+    def test_beancount_recovery_directives_never_reach_external_tool_resolution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for prefix in BEANCOUNT_RECOVERY_PREFIXES:
+                for directive in ("include", "plugin"):
+                    for separator in (" ", ""):
+                        appended = f'\n{prefix}{directive}{separator}"not-used"\n'
+                        texts = dict(self.texts)
+                        texts["beancount"] += appended
+                        paths = save_fixture(root, texts)
+                        out = root / "must-not-be-created"
+                        with self.subTest(directive=appended), mock.patch.object(
+                                oracle, "resolve_tool",
+                                side_effect=AssertionError("external tool resolution reached")) as resolve:
+                            with self.assertRaises(oracle.OracleError):
+                                oracle.run_oracle(**paths, out=out)
+                            resolve.assert_not_called()
+                            self.assertFalse(out.exists())
+
+    def test_directive_words_remain_data_in_strings_comments_and_account_names(self):
+        texts = directive_word_fixtures()
+        expected = dict(self.mapping)
+        expected["Assets:Aplugin-include"] = expected.pop("Assets:A1000-10")
+        for kind, key in (("beancount", "beancount"), ("hledger", "hledger_journal")):
+            with self.subTest(kind=kind):
+                self.assertEqual(oracle.read_account_map(texts[key], kind, self.reference), expected)
 
     def test_versioned_hex_metadata_preserves_identity_and_rejects_ambiguity(self):
         book = "  Public book\r\nÉxpenditure\t  "
@@ -428,6 +480,12 @@ class ExternalToolTests(unittest.TestCase):
 
     def test_real_tools_accept_both_normal_balance_override_directions(self):
         _, report = self.run_external(contra_fixtures())
+        self.assertEqual(report["status"], "PASS", report.get("error"))
+        self.assertEqual((report["entries"], report["postings"], report["account_currency_cells"]), (4, 8, 5))
+        self.assertEqual(report["commands"], 14)
+
+    def test_real_tools_keep_directive_words_as_source_text_and_account_names(self):
+        _, report = self.run_external(directive_word_fixtures())
         self.assertEqual(report["status"], "PASS", report.get("error"))
         self.assertEqual((report["entries"], report["postings"], report["account_currency_cells"]), (4, 8, 5))
         self.assertEqual(report["commands"], 14)

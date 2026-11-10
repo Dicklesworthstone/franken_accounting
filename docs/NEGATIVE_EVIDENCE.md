@@ -4009,3 +4009,39 @@ Tier 0, the original full repository gate and the complete workspace test
 remain separate required executions, subject to normal remote admission.
 Shared-service maintenance approval remains unanswered; no service, lease,
 guard, cache, tool pin or budget is altered to obtain a green result.
+
+### 2026-11-10 — Parser recovery could execute excluded Beancount directives
+
+The native-export oracle ignored most indented lines while reading account
+declarations. Installed Beancount 3.2.0 resolved a nonexistent `include` target
+and executed its built-in `check_commodity` plugin after reporting syntax
+errors. These were explicitly synthetic lexical controls; no arbitrary plugin
+or existing external data target was used. IvoryHorizon's initial whole-input
+guard fixed those controls, but DustyIbis's fresh review found another real
+counterexample: an indented `invalid" include "<nonexistent-path>"` passed that
+guard while Beancount still attempted the include. An invalid lexer token had
+consumed the opening quote that the regex incorrectly treated as a string.
+
+The final guard consumes other non-whitespace tokens in full before recognizing
+later strings, and refuses directive words outside complete native strings,
+semicolon comments and sanitized ASCII account tokens. Admission occurs before
+tool resolution or output creation. Existing monetary comparisons, expected
+values, tool pins and workloads are unchanged. The unchanged first guard with
+the strengthened tests exited 1: 29 functions, 16 failing subcases across two
+functions, 11 external-tool tests explicitly skipped in that baseline. The
+corrected complete module with all three real tools exited 0: 29 tests, zero
+skips, 17.635 seconds. The original peer baseline/fix and Root's distinct
+quote-recovery controls remain preserved; these counts are not additive
+financial fixtures. Ordinary quoted source text, comments and account names
+containing directive words still pass the real tools.
+
+Ivory changed only the two Python inputs during the earlier native gate before
+the source-freeze handoff was acknowledged. That replay is void as an
+unchanged-tree proof: exit 143, explicit tree-drift failure naming both paths.
+Its Clippy child completed normally with remote exit 0; every project wrapper
+then acknowledged and released source/tree/pair ownership. Root edited only
+after that retirement. Exact-source Tier 0 and the full gate remain separate
+requirements; this bounded safety repair does not close the all-fixture oracle
+acceptance. Raw controls and results:
+`/home/ubuntu/.codex/artifacts/fa-bean-control-hypothesis-1110-gt4cz210` and
+`/home/ubuntu/.codex/artifacts/fa-oracle-quoted-recovery-1110-xhfqco_h`.

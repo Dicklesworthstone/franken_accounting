@@ -379,6 +379,22 @@ def read_native_trial_balance(text: str, reference: Reference) -> dict:
 def read_account_map(text: str, kind: str, reference: Reference) -> dict[str, str]:
     """Read native declarations, not monetary postings or inferred account codes."""
     require(kind in ("beancount", "hledger"), "unknown plaintext format")
+    if kind == "beancount":
+        # Beancount can load includes/plugins after reporting syntax errors,
+        # including after indented or otherwise malformed native-looking
+        # prefixes. Reject their tokens before any external command starts.
+        # Skip strings, semicolon comments and the complete ASCII account
+        # tokens emitted by our sanitizer: directive words there are data.
+        # Consume every other non-whitespace token in full. In particular,
+        # an invalid token can swallow a quote before parser recovery; that
+        # quote must not hide a later directive inside a supposed string.
+        for token in re.finditer(
+                r'(?P<data>"(?:[^"\\]|\\[^\n])*"|;[^\n]*|'
+                r'[A-Z][A-Za-z0-9-]*(?::[A-Z0-9][A-Za-z0-9-]*)+)'
+                r'|(?P<other>[^ \t\r\n]+)', text):
+            if token.lastgroup == "other":
+                require(not any(word in token[0] for word in ("include", "plugin")),
+                        "Beancount native export profile forbids include/plugin directives")
     # Match native Rust str::lines and the external journal grammars: Unicode
     # separators and vertical tabs inside source text are not new directives.
     lines = [line.removesuffix("\r") for line in text.split("\n")]
