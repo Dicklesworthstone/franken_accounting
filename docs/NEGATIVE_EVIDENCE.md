@@ -4,6 +4,27 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-10 — Beancount keyword precedence bypassed the currency-token guard
+
+The new literal-currency guard matched the currency pattern but missed the
+earlier lexer rules for exact `TRUE`, `FALSE` and `NULL`. Real Beancount 3.2.0
+rejected all three as BOOL/NONE tokens; the writer admitted them. The complete
+format package with the enriched grammar table exited101: 178 tests passed
+and the existing grammar test failed on `TRUE`. The original tests and all
+assertions remained intact. The source and raw parser inputs/results are
+retained, including an initial incorrect control hypothesis that `NULL` was a
+valid currency; the actual NONE-token error disproved it.
+
+The Beancount guard now excludes only those three exact spellings. Longer
+codes and slash-prefixed futures remain supported, and hledger retains these
+ordinary commodity names. The unchanged enriched test tables pass in the
+complete 179-test format package, and all 32 document/FX integration tests
+pass again against that corrected dependency tree. Neither run has failures,
+ignored or filtered tests; both exit0 and retain the same 1,961-input snapshot.
+Repository qualification is recorded separately. Earlier passing format tests
+did not cover keyword precedence,
+and earlier source reviews claiming complete lexer equivalence were incomplete.
+
 ## 2026-11-10 — manual FX intents omitted retained-source admission
 
 The manual-attestation intent route used a post-only embedded capability and

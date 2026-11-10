@@ -313,6 +313,10 @@ fn check_unit_code(format: &'static str, code: &str, supported: bool) -> Result<
 }
 
 fn beancount_unit_code(code: &str) -> bool {
+    // Boolean and null keywords win lexer ties before the currency rule.
+    if matches!(code, "TRUE" | "FALSE" | "NULL") {
+        return false;
+    }
     // Beancount's currency lexer admits uppercase letters, or a leading slash
     // for futures. A slash token must contain a letter; all tokens end in an
     // uppercase letter or digit. Punctuation is permitted only in the middle.
