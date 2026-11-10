@@ -513,6 +513,187 @@ fn plaintext_writers_validate_public_posting_streams_before_returning_success() 
 }
 
 #[test]
+fn plaintext_writers_refuse_unsafe_unit_tokens_at_every_emitted_position() {
+    let base = journal("Unit tokens", "payment", None);
+    let mut accepted = Vec::new();
+    for code in [
+        "", "USD\n", "USD\r", "US\tD", "US D", "US\0D", "US\"D", "US;D",
+    ] {
+        for position in ["base", "posting", "assertion"] {
+            let mut entries = base.entries.clone();
+            if position == "posting" {
+                for leg in &mut entries[0].legs {
+                    leg.unit_code = code.into();
+                }
+            }
+            let assertions = if position == "assertion" {
+                vec![FormatAssertion {
+                    account_code: "1000".into(),
+                    as_of: base.coordinate.effective_through,
+                    side: Side::Credit,
+                    amount: Amount::new(UnitId(0), 1_234_567),
+                    unit_code: code.into(),
+                    unit_scale: 2,
+                }]
+            } else {
+                Vec::new()
+            };
+            // Recompute both digests: rejection must be due to the actual
+            // unit spelling, not a stale certificate or an invalid fold.
+            let source = FormatJournal::new(
+                "Unit tokens",
+                if position == "base" { code } else { "USD" },
+                2,
+                base.coordinate.effective_through,
+                1,
+                base.accounts.clone(),
+                entries,
+                assertions,
+            )
+            .unwrap();
+            let mut results = vec![("beancount_v3", write_beancount(&source))];
+            // Hledger does not emit balance assertions.
+            if position != "assertion" {
+                results.push(("hledger_journal", write_hledger(&source)));
+            }
+            for (expected_format, result) in results {
+                match result {
+                    Err(FormatError::Parse { format, detail }) => {
+                        assert_eq!(format, expected_format);
+                        assert!(detail.contains("unit code"), "{detail}");
+                        assert!(detail.contains("profile"), "{detail}");
+                    }
+                    other => accepted.push(format!(
+                        "{expected_format}/{position}/{code:?}: {}",
+                        if other.is_ok() {
+                            "accepted"
+                        } else {
+                            "wrong refusal"
+                        }
+                    )),
+                }
+            }
+        }
+    }
+    assert!(accepted.is_empty(), "unsafe unit tokens: {accepted:?}");
+}
+
+#[test]
+fn beancount_unit_tokens_follow_its_currency_grammar() {
+    let base = journal("Currency grammar", "payment", None);
+    for (code, valid) in [
+        ("A", true),
+        ("USD", true),
+        ("CUSTOM", true),
+        ("CO2", true),
+        ("NT.TO", true),
+        ("C_1", true),
+        ("BRK-B", true),
+        ("O'BRIEN", true),
+        ("/6J", true),
+        ("/NQH21_QNEG21C13100", true),
+        ("usd", false),
+        ("123", false),
+        ("CAC_", false),
+        ("A-", false),
+        ("/6.3", false),
+        ("A/B", false),
+        ("/", false),
+    ] {
+        let mut entries = base.entries.clone();
+        for leg in &mut entries[0].legs {
+            leg.unit_code = code.into();
+        }
+        let source = FormatJournal::new(
+            "Currency grammar",
+            code,
+            2,
+            base.coordinate.effective_through,
+            1,
+            base.accounts.clone(),
+            entries,
+            vec![],
+        )
+        .unwrap();
+        let result = write_beancount(&source);
+        if valid {
+            let text = result.unwrap();
+            assert!(text.contains(&format!("12345.67 {code}\n")), "{code}");
+            assert!(
+                text.contains(&format!("option \"operating_currency\" \"{code}\"")),
+                "{code}"
+            );
+        } else {
+            assert!(
+                matches!(result, Err(FormatError::Parse { format: "beancount_v3", detail })
+                    if detail.contains("unit code") && detail.contains("profile")),
+                "{code}"
+            );
+        }
+    }
+}
+
+#[test]
+fn hledger_unit_tokens_preserve_its_distinct_literal_profile() {
+    let base = journal("Commodity grammar", "payment", None);
+    for (code, valid) in [
+        ("USD", true),
+        ("CUSTOM", true),
+        ("usd", true),
+        ("$", true),
+        ("€", true),
+        ("£", true),
+        ("¥", true),
+        ("Café", true),
+        ("back\\slash", true),
+        ("a_b", true),
+        ("percent%", true),
+        ("CO2", false),
+        ("NT.TO", false),
+        ("C_1", false),
+        ("a-b", false),
+        ("USD@v1", false),
+        ("US*D", false),
+        ("US{D", false),
+        ("US}D", false),
+        ("US=D", false),
+        ("US+D", false),
+        ("US\u{a0}D", false),
+    ] {
+        let mut entries = base.entries.clone();
+        for leg in &mut entries[0].legs {
+            leg.unit_code = code.into();
+        }
+        let source = FormatJournal::new(
+            "Commodity grammar",
+            code,
+            2,
+            base.coordinate.effective_through,
+            1,
+            base.accounts.clone(),
+            entries,
+            vec![],
+        )
+        .unwrap();
+        let result = write_hledger(&source);
+        if valid {
+            let text = result.unwrap();
+            assert!(text.contains(&format!("12345.67 {code}\n")), "{code}");
+            assert!(
+                text.contains(&format!("fa_base_unit: {code}@2\n")),
+                "{code}"
+            );
+        } else {
+            assert!(
+                matches!(result, Err(FormatError::Parse { format: "hledger_journal", detail })
+                    if detail.contains("unit code") && detail.contains("profile")),
+                "{code}"
+            );
+        }
+    }
+}
+
+#[test]
 fn plaintext_writers_refuse_inconsistent_scales_without_changing_valid_units() {
     let base = journal("Unit scales", "payment", None);
     let units = UnitCatalog::embedded().unwrap();

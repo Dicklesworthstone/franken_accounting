@@ -112,8 +112,25 @@ impl AccountNames {
 /// and `balance` assertions. Refuse dates that the four-digit-year profile
 /// cannot represent, including an assertion whose next day is out of range,
 /// repeated account codes, distinct codes that map to the same exported name,
-/// references to accounts absent from the chart, and invalid posting folds.
+/// references to accounts absent from the chart, invalid posting folds, and
+/// unit codes outside Beancount's literal currency-token grammar.
 pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
+    for code in std::iter::once(journal.coordinate.base_unit_code.as_str())
+        .chain(
+            journal
+                .entries
+                .iter()
+                .flat_map(|entry| entry.legs.iter().map(|leg| leg.unit_code.as_str())),
+        )
+        .chain(
+            journal
+                .assertions
+                .iter()
+                .map(|assertion| assertion.unit_code.as_str()),
+        )
+    {
+        check_unit_code("beancount_v3", code, beancount_unit_code(code))?;
+    }
     let mut out = String::new();
     out.push_str("; FrankenAccounting Beancount v3 export (fa-formats, bead fa-npi)\n");
     write_book_name(&mut out, &journal.coordinate.book_name);
@@ -280,6 +297,51 @@ pub fn write_beancount(journal: &FormatJournal) -> Result<String, FormatError> {
 
     let _ = journal.fold_balances()?;
     Ok(out)
+}
+
+fn check_unit_code(format: &'static str, code: &str, supported: bool) -> Result<(), FormatError> {
+    if supported {
+        Ok(())
+    } else {
+        Err(FormatError::Parse {
+            format,
+            detail: format!(
+                "unit code {code:?} cannot be represented by this format's literal-token profile"
+            ),
+        })
+    }
+}
+
+fn beancount_unit_code(code: &str) -> bool {
+    // Beancount's currency lexer admits uppercase letters, or a leading slash
+    // for futures. A slash token must contain a letter; all tokens end in an
+    // uppercase letter or digit. Punctuation is permitted only in the middle.
+    let bytes = code.as_bytes();
+    let Some(first) = bytes.first() else {
+        return false;
+    };
+    (first.is_ascii_uppercase() || *first == b'/')
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.iter().any(u8::is_ascii_uppercase)
+        && bytes[1..].iter().all(|byte| {
+            byte.is_ascii_uppercase()
+                || byte.is_ascii_digit()
+                || matches!(*byte, b'\'' | b'.' | b'_' | b'-')
+        })
+}
+
+fn hledger_unit_code(code: &str) -> bool {
+    // Hledger 1.52's simple commodity lexer excludes digits and amount/comment
+    // delimiters. Also exclude controls and all whitespace so the retained
+    // metadata and this profile's whitespace-separated reader keep the code.
+    // Backslashes, underscores, currency symbols and Unicode letters are data.
+    !code.is_empty()
+        && code.chars().all(|ch| {
+            !ch.is_ascii_digit()
+                && !ch.is_control()
+                && !ch.is_whitespace()
+                && !"-+.@*;\"{}=".contains(ch)
+        })
 }
 
 fn plaintext_amount(
@@ -664,8 +726,17 @@ pub fn read_beancount(text: &str, units: &UnitCatalog) -> Result<FormatJournal, 
 
 /// Write a `FormatJournal` as a deterministic `hledger` / `ledger-cli` journal,
 /// refusing repeated account codes, colliding account names, undeclared posting
-/// accounts, negative posting magnitudes, and invalid posting folds.
+/// accounts, negative posting magnitudes, invalid posting folds, and unit codes
+/// requiring quoted commodity syntax outside this literal-token profile.
 pub fn write_hledger(journal: &FormatJournal) -> Result<String, FormatError> {
+    for code in std::iter::once(journal.coordinate.base_unit_code.as_str()).chain(
+        journal
+            .entries
+            .iter()
+            .flat_map(|entry| entry.legs.iter().map(|leg| leg.unit_code.as_str())),
+    ) {
+        check_unit_code("hledger_journal", code, hledger_unit_code(code))?;
+    }
     let mut out = String::new();
     out.push_str("; FrankenAccounting hledger export (fa-formats, bead fa-npi)\n");
     write_book_name(&mut out, &journal.coordinate.book_name);
