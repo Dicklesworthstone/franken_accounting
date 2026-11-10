@@ -30,6 +30,7 @@ use super::fact::Provenance;
 use super::log::{StepRecord, VerdictRecord};
 use super::names;
 use super::phrases::{assurance_status, calibration_clause, phrase_table, source_phrase};
+use super::tiers;
 use super::verdict::RowVerdict;
 
 /// The generated-file header every README starts with.
@@ -555,10 +556,11 @@ fn results(
         }
         if e.kind == ExpectationType::D
             && let (Some(id), Some(version)) = (e.fields.str("procedure"), e.fields.int("version"))
-            && let Some(p) = procedures
-                .as_ref()
-                .and_then(|ps| ps.get(id))
-                .filter(|p| i128::from(p.version) == version)
+            && let Some(p) = procedures.as_ref().and_then(|ps| ps.get(id)).filter(|p| {
+                i128::from(p.version) == version
+                    || tiers::registry_row_version(tiers::PROCEDURES, id, version)
+                        .is_ok_and(|(registered, _)| registered == version)
+            })
         {
             let _ = writeln!(
                 out,

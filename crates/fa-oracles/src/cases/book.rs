@@ -3421,7 +3421,15 @@ impl<'a> Check<'a, '_> {
             ));
         };
         let row = self.reg.procedures.as_ref()?.get(id);
-        let ok = row.is_some_and(|p| version.parse::<u16>().is_ok_and(|v| v == p.version));
+        let ok = version.parse::<u16>().is_ok_and(|version| {
+            row.is_some_and(|p| version == p.version)
+                || super::tiers::registry_row_version(
+                    super::tiers::PROCEDURES,
+                    id,
+                    i128::from(version),
+                )
+                .is_ok_and(|(registered, _)| registered == i128::from(version))
+        });
         (!ok).then(|| {
             (
                 LoadErrorKind::DanglingKey,

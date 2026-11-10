@@ -106,6 +106,35 @@ fn line_of(text: &str, needle: &str) -> usize {
 }
 
 #[test]
+fn expectation_procedure_versions_preserve_retained_pins_and_refuse_unknown_versions() {
+    let revise = |version| {
+        let text = once(
+            EXPECTATIONS,
+            "procedure:jet.round_amounts@1",
+            &format!("procedure:jet.round_amounts@{version}"),
+        );
+        once(
+            &text,
+            "procedure = \"jet.round_amounts\"\nversion = 1",
+            &format!("procedure = \"jet.round_amounts\"\nversion = {version}"),
+        )
+    };
+    for version in [1, 2] {
+        let case = loads(
+            &with_expectations(&revise(version)),
+            "retained procedure pin",
+        );
+        let row = case.expectations.as_ref().unwrap().get("W-D-03").unwrap();
+        assert_eq!(row.fields.int("version"), Some(version));
+    }
+    refused_exp(
+        &with_expectations(&revise(65535)),
+        LoadErrorKind::DanglingKey,
+        "jet.round_amounts@65535",
+    );
+}
+
+#[test]
 fn pilot_expectations_load_and_every_key_resolves() {
     let case = loads(&with_expectations(EXPECTATIONS), "the pilot loads");
     let set = case.expectations.as_ref().expect("expectations.toml");

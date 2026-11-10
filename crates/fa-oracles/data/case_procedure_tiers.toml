@@ -146,17 +146,24 @@ reads_evidence = false
 reader_reads_evidence = false
 second_reader_reads_evidence = false
 
-# StormyLion: cycle search over the party flow projection
-# MaroonCat: SCCs of each (legal entity, unit) partition's party-flow graph, then a first-fit cycle search in (effective, recorded) order with leg reuse barred (graph.rs:1087-1200). Caveat: legs with no party, or several, map to one BOOK_NODE (projection.rs:163-171), so a component touching it can absorb most of the book
+# DustyIbis (2026-11-09): current v2 party projection, then per-(legal entity, unit)
+# SCCs and chronological first-fit cycle search with consumed legs (graph.rs:1066-1284).
+# IvoryHorizon (2026-11-10, independent reading, Agent Mail 8615): G/false;
+# no document or attestation reads. Relative order is component-local, not O.
+# Caveats: missing/multiple party mentions share BOOK_NODE (projection.rs:163-173),
+# so filler must be component-disjoint including that node. Population, narrative
+# and CGSE graph sizes can move under disjoint filler; only the plan §2.6 D
+# projection is covered. Greedy search is not exhaustive; extremal witnesses and
+# the table's successful-run budget/corrupt-input exclusions still apply.
 [[tier]]
 procedure = "graph.party_circular_flows"
-version = 1
-row_digest = "f85679972a9d8f60e64938685424851fb5aaaee2038f805ec4cf3866771b135a"
+version = 2
+row_digest = "9d9c4f9851a3f0793c73e5d75e63ca9e1896914becdbe302e2af1443e9df7800"
 tier = "G"
-code_location = "crates/fa-lantern/src/graph.rs:659"
-reader = "StormyLion"
+code_location = "crates/fa-lantern/src/graph.rs:662"
+reader = "DustyIbis-20261109"
 reader_tier = "G"
-second_reader = "MaroonCat"
+second_reader = "IvoryHorizon-20261110"
 second_reader_tier = "G"
 disagreement = false
 reads_evidence = false

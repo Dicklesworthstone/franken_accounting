@@ -1413,7 +1413,9 @@ impl<'a> Check<'a, '_> {
             .view
             .procedures
             .get(id)
-            .is_some_and(|(v, _)| i128::from(*v) == version);
+            .is_some_and(|(v, _)| i128::from(*v) == version)
+            || super::tiers::registry_row_version(super::tiers::PROCEDURES, id, version)
+                .is_ok_and(|(registered, _)| registered == version);
         if !ok {
             self.push(
                 f.line,

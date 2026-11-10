@@ -139,6 +139,41 @@ fn unconstrained_cell_is_marked_and_record_cell_is_not() {
 }
 
 #[test]
+fn retained_jet_calibration_is_rendered_without_substituting_an_unknown_version() {
+    use crate::cases::expect::Field;
+
+    for (version, supported) in [(1, true), (2, true), (65535, false)] {
+        let mut case = load(&WORLDCOM);
+        let expectation = case
+            .expectations
+            .as_mut()
+            .unwrap()
+            .expectations
+            .iter_mut()
+            .find(|row| row.id == "W-D-03")
+            .unwrap();
+        expectation
+            .fields
+            .map
+            .insert("version".into(), Field::Int(version));
+        let text = render_readme(&case, &green(&[])).expect("renders");
+        let section = text
+            .split("### `W-D-03`")
+            .nth(1)
+            .and_then(|section| section.split("\n### ").next())
+            .unwrap();
+        assert_eq!(
+            section.contains("Claim class: statistical. Calibration: measured on fa-gen's labelled synthetic corpora, where precision is 100% by the generator's construction; its false-positive rate on real books has not been estimated."),
+            supported,
+            "version {version}: {section}"
+        );
+        if !supported {
+            assert!(!section.contains("Claim class:"), "{section}");
+        }
+    }
+}
+
+#[test]
 fn t_sentence_renders_the_phrases_a3c_gives() {
     // X-T-01's quarterly lines narrow the audited 10-K/A to unaudited.
     let case = load(&XBRL);

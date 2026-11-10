@@ -8,6 +8,7 @@ use fa_registry::procedures::{Calibration, Procedures};
 use super::super::EXPECTATIONS_FILE;
 use super::super::expect::ExpectationType;
 use super::super::phrases::clause_table;
+use super::super::tiers;
 use super::{CheckReport, Context};
 
 #[must_use]
@@ -55,10 +56,11 @@ pub fn check_with(
             r.examined(e.id.clone());
             continue;
         };
-        let Some(row) = procedures
-            .get(id)
-            .filter(|p| i128::from(p.version) == version)
-        else {
+        let Some(row) = procedures.get(id).filter(|p| {
+            i128::from(p.version) == version
+                || tiers::registry_row_version(tiers::PROCEDURES, id, version)
+                    .is_ok_and(|(registered, _)| registered == version)
+        }) else {
             r.fail(
                 EXPECTATIONS_FILE,
                 e.fields.line,
@@ -68,6 +70,8 @@ pub fn check_with(
             r.examined(e.id.clone());
             continue;
         };
+        // The explicitly retained JET transition changes only the version and
+        // optional effective-window input; its calibration is unchanged.
         let name = calibration_name(row.calibration);
         match table(row.calibration) {
             Some(clause) => r.examined(format!("{} {id}@{version} {name}: {clause}", e.id)),
@@ -87,6 +91,7 @@ pub fn check_with(
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::expect::Field;
     use super::super::super::phrases::calibration_clause;
     use super::super::super::tests::pilot_planted;
     use super::super::Verdict;
@@ -149,5 +154,43 @@ mod tests {
             calibration_name(missing)
         );
         assert!(text.lines().any(|l| l == want), "{want}\n{text}");
+    }
+
+    #[test]
+    fn retained_calibration_versions_are_exact_and_do_not_admit_unretained_rows() {
+        for (id, version, verdict) in [
+            ("jet.round_amounts", 1, Verdict::Pass),
+            ("jet.round_amounts", 2, Verdict::Pass),
+            ("jet.round_amounts", 65535, Verdict::Fail),
+            ("graph.party_circular_flows", 1, Verdict::Fail),
+        ] {
+            let mut case = pilot_planted(&[]);
+            let row = case
+                .expectations
+                .as_mut()
+                .unwrap()
+                .expectations
+                .iter_mut()
+                .find(|row| row.id == "W-D-03")
+                .unwrap();
+            row.fields
+                .map
+                .insert("procedure".into(), Field::Str(id.into()));
+            row.fields.map.insert("version".into(), Field::Int(version));
+            let report = check(&Context::new(&case));
+            assert_eq!(report.verdict, verdict, "{}", report.render(None));
+            if verdict == Verdict::Pass {
+                assert!(
+                    report
+                        .rows
+                        .iter()
+                        .any(|row| row.starts_with(&format!("W-D-03 {id}@{version} corpus:")))
+                );
+            } else {
+                assert!(report.render(None).contains(&format!(
+                    "{id}@{version} is not a row of registries/procedures.toml"
+                )));
+            }
+        }
     }
 }

@@ -762,6 +762,24 @@ fn with_finding_params(params: &str) -> String {
 }
 
 #[test]
+fn finding_record_resolves_retained_versions_and_refuses_an_unregistered_version() {
+    let source = with_finding_params("\"window_days=4\"");
+    let current = period_end_timing();
+    for version in [1, 2] {
+        let book = source.replace(&current, &format!("jet.period_end_timing@{version}"));
+        load(&case_with(&[("books/native.toml", &book)]))
+            .expect("both explicitly retained algorithms are registered");
+    }
+    let unsupported = source.replace(&current, "jet.period_end_timing@65535");
+    let errors = refused_native(&unsupported);
+    native_err(
+        &errors,
+        LoadErrorKind::DanglingKey,
+        "jet.period_end_timing@65535",
+    );
+}
+
+#[test]
 fn finding_record_param_not_registered_for_its_procedure_is_refused() {
     load(&case_with(&[(
         "books/native.toml",
