@@ -24,8 +24,12 @@ The current manual-intent route now uses those existing admission helpers;
 authenticated tokens retain their original authority. The sealed-review
 route keeps its existing post-only operation scope. Two native CLI regressions
 exercise the valued plan/commit/replay/retry flow and the post-only refusal
-before disclosure. Their execution and repository qualification are pending;
-the older binary's observations are not a pass for the modified source.
+before disclosure. Both pass in the complete FX and document integration
+targets: 32 passed, with no failures, ignored or filtered tests, actual exit0.
+All 1,961 captured tracked inputs stayed unchanged through worker retirement.
+The native transcript is `native-manual-fx-fixed-1110-1558.log` under the
+retained implementation artifact directory. Repository-wide qualification
+is recorded separately; these scoped tests are not a repository verdict.
 
 ## 2026-11-10 — inconsistent scales could certify an unbalanced plaintext export
 
