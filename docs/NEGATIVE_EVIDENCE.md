@@ -4,6 +4,44 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-10 — legacy timestamps lost precision and aliased absence
+
+The IIF and generic CSV imports discarded fractional seconds in legacy
+recorded-time provenance, saturated out-of-range timestamps, and ignored
+malformed trailing time text. Two supplied timestamps one nanosecond apart
+therefore merged without the required conflicting-provenance refusal. This
+field is source provenance, never the journal's recorded CommitSeq.
+
+Five new regression functions first ran against unchanged production code:
+the complete formats package exited101 with 180 passing and four failing
+tests. The exact parser then passed those four controls, but the complete
+package exited101 with 183 passing and one failing test: the v1 attestation
+encoded both absent timestamps and a valid minus-one-nanosecond timestamp
+as the integer -1. Identical source bytes and money produced identical
+attestations under those different column projections. The later two-entry
+control was not reached in that failing run.
+
+The parser now retains one through nine fractional digits exactly, checks
+the complete signed value in i128 before converting to i64, and refuses
+overflow and incomplete or ignored time components. The existing UTC forms
+and nonnegative numeric seconds/nanoseconds heuristic remain. A distinct
+versioned, framed presence extension escapes the reserved -1 value and binds
+presence in each entry's order; other parsed values keep the v1 encoding.
+Correcting fractional parsing intentionally changes previously wrong results.
+
+The completed repair passed all 184 formats tests twice, including both
+single-entry and ordered two-entry same-source controls, with zero failures,
+ignored or filtered tests. The five regression functions were unchanged
+through all three implementation stages. Final Rust source SHA256 is
+0391c160817658c9b40b32becd5e38a3505076c176eba9ed522fb3ba4b92039e;
+all 1,961 source inputs stayed fixed during both final executions. Raw stage
+logs and source controls remain in `fa-gap-work-20261031.lM8xfA`; the second
+execution is `fa-implementation-20261105.IzfGoE/native-legacy-root-final-1110-2108.log`
+under the Codex artifacts directory. Scoped UBS exited0 with zero critical
+findings, 526 warnings and 102 informational items; it is not warning-free
+or a replacement for the still-required repository gates. Original `fa-5woj`
+remains open against its broader acceptance criteria.
+
 ## 2026-11-10 — Beancount keyword precedence bypassed the currency-token guard
 
 The new literal-currency guard matched the currency pattern but missed the

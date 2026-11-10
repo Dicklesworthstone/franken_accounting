@@ -974,6 +974,20 @@ fn finalize_legacy_batch(
             }
         }
     }
+    // V1 uses -1 for an absent timestamp. Exact subsecond civil input can
+    // also represent Some(-1), so escape that reserved value with a framed
+    // presence extension. The old native parser could not produce -1ns.
+    // When the reserved value is absent, retain the existing v1 encoding.
+    if chunks
+        .iter()
+        .any(|chunk| chunk.provenance.source_recorded_at_ns == Some(-1))
+    {
+        att.update(b"fa:formats:legacy-import-timestamp-presence:v1");
+        att.update(&(chunks.len() as u64).to_le_bytes());
+        for chunk in &chunks {
+            att.update(&[u8::from(chunk.provenance.source_recorded_at_ns.is_some())]);
+        }
+    }
     let attestation_digest = att.finalize().0;
 
     Ok(LegacyImportBatch {
@@ -987,8 +1001,13 @@ fn finalize_legacy_batch(
     })
 }
 
-/// Parse an optional legacy recorded-at timestamp (`YYYY-MM-DDTHH:MM:SSZ`,
-/// `YYYY-MM-DD HH:MM:SS`, or integer epoch seconds/nanoseconds) into UTC nanoseconds.
+/// Parse an optional legacy timestamp into signed UTC nanoseconds.
+///
+/// Civil timestamps accept `YYYY-MM-DDTHH:MM:SS[.fffffffff]Z`, a space instead
+/// of `T`, or an absent `Z` (UTC). Date-only input means midnight. Fractions
+/// contain one through nine digits and are never rounded. Numeric input keeps
+/// the legacy rule: nonnegative integers below 10^12 are seconds, otherwise
+/// nanoseconds. Unrepresentable timestamps are refused, never saturated.
 pub fn parse_legacy_timestamp_ns(
     format: &'static str,
     raw: &str,
@@ -1004,49 +1023,86 @@ pub fn parse_legacy_timestamp_ns(
         })?;
         // Heuristic: < 10^12 is epoch seconds; >= 10^12 is nanoseconds.
         let ns = if val < 1_000_000_000_000 {
-            val.saturating_mul(1_000_000_000)
+            val.checked_mul(1_000_000_000)
+                .ok_or_else(|| FormatError::Overflow {
+                    format,
+                    detail: format!(
+                        "legacy timestamp {trimmed:?} is outside the signed i64 nanosecond range"
+                    ),
+                })?
         } else {
             val
         };
         return Ok(Some(ns));
     }
-    let cleaned = trimmed.trim_end_matches('Z');
+    let invalid_time = || FormatError::Parse {
+        format,
+        detail: format!("invalid UTC time in legacy timestamp {trimmed:?}"),
+    };
+    let cleaned = trimmed.strip_suffix('Z').unwrap_or(trimmed);
     let (date_part, time_part) = cleaned
         .split_once('T')
         .or_else(|| cleaned.split_once(' '))
         .unwrap_or((cleaned, "00:00:00"));
+    if date_part.trim() != date_part {
+        return Err(invalid_time());
+    }
     let day = parse_date_flexible(format, date_part)?;
-    let mut t_parts = time_part.split(':');
-    let hh: i64 = t_parts
-        .next()
-        .unwrap_or("0")
-        .parse()
-        .map_err(|_| FormatError::Parse {
-            format,
-            detail: format!("invalid hour in timestamp {trimmed:?}"),
-        })?;
-    let mm: i64 = t_parts
-        .next()
-        .unwrap_or("0")
-        .parse()
-        .map_err(|_| FormatError::Parse {
-            format,
-            detail: format!("invalid minute in timestamp {trimmed:?}"),
-        })?;
-    let ss_raw = t_parts.next().unwrap_or("0");
-    let ss_only = ss_raw.split('.').next().unwrap_or("0");
-    let ss: i64 = ss_only.parse().map_err(|_| FormatError::Parse {
-        format,
-        detail: format!("invalid second in timestamp {trimmed:?}"),
-    })?;
+    let mut parts = time_part.split(':');
+    let (Some(hour), Some(minute), Some(seconds), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(invalid_time());
+    };
+    let (second, fraction) = seconds
+        .split_once('.')
+        .map_or((seconds, None), |(second, fraction)| {
+            (second, Some(fraction))
+        });
+    if [hour, minute, second]
+        .iter()
+        .any(|part| part.len() != 2 || !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return Err(invalid_time());
+    }
+    let hh: i64 = hour.parse().map_err(|_| invalid_time())?;
+    let mm: i64 = minute.parse().map_err(|_| invalid_time())?;
+    let ss: i64 = second.parse().map_err(|_| invalid_time())?;
     if !(0..24).contains(&hh) || !(0..60).contains(&mm) || !(0..60).contains(&ss) {
         return Err(FormatError::Parse {
             format,
             detail: format!("out-of-range time component in {trimmed:?}"),
         });
     }
+    let mut fraction_ns = 0_i128;
+    if let Some(fraction) = fraction {
+        if fraction.is_empty()
+            || fraction.len() > 9
+            || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(invalid_time());
+        }
+        // At most nine ASCII digits, so both loops remain below 10^9.
+        for digit in fraction.bytes() {
+            fraction_ns = fraction_ns * 10 + i128::from(digit - b'0');
+        }
+        for _ in fraction.len()..9 {
+            fraction_ns *= 10;
+        }
+    }
+    // DateDay is i32 and time components are bounded above. Form the complete
+    // signed value in i128 before checking i64: a pre-epoch second plus its
+    // positive fraction can represent i64::MIN even when that second cannot.
     let day_secs = i64::from(day.0) * 86_400 + hh * 3_600 + mm * 60 + ss;
-    Ok(Some(day_secs.saturating_mul(1_000_000_000)))
+    let ns = i128::from(day_secs) * 1_000_000_000 + fraction_ns;
+    i64::try_from(ns)
+        .map(Some)
+        .map_err(|_| FormatError::Overflow {
+            format,
+            detail: format!(
+                "legacy timestamp {trimmed:?} is outside the signed i64 nanosecond range"
+            ),
+        })
 }
 
 // Some exports put transaction metadata on just one of its rows. Retain the
@@ -2629,6 +2685,198 @@ mod tests {
             "[columns]\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\naccount_column = \"account\"\nsigned_amount_column = \"amount\"\n{extra}"
         ))
         .expect("declared columns")
+    }
+
+    #[test]
+    fn legacy_timestamps_preserve_exact_nanoseconds_and_signed_endpoints() {
+        let mut mismatches = Vec::new();
+        for (source, expected) in [
+            ("0", 0),
+            ("1", 1_000_000_000),
+            ("9223372036", 9_223_372_036_000_000_000),
+            ("1767175200", 1_767_175_200_000_000_000),
+            ("1767175200123456789", 1_767_175_200_123_456_789),
+            ("2025-12-31", 1_767_139_200_000_000_000),
+            ("2025-12-31 10:00:00", 1_767_175_200_000_000_000),
+            ("2025-12-31T10:00:00Z", 1_767_175_200_000_000_000),
+            ("2025-12-31T10:00:00.1Z", 1_767_175_200_100_000_000),
+            ("2025-12-31 10:00:00.123456789", 1_767_175_200_123_456_789),
+            ("1970-01-01T00:00:00.000000001Z", 1),
+            ("1969-12-31T23:59:59.5Z", -500_000_000),
+            ("1969-12-31T23:59:59.999999999Z", -1),
+            ("2262-04-11T23:47:16.854775807Z", i64::MAX),
+            ("1677-09-21T00:12:43.145224192Z", i64::MIN),
+        ] {
+            let actual = parse_legacy_timestamp_ns("legacy-test", source);
+            if actual != Ok(Some(expected)) {
+                mismatches.push(format!("{source}: expected {expected}, got {actual:?}"));
+            }
+        }
+        assert_eq!(parse_legacy_timestamp_ns("legacy-test", " \t"), Ok(None));
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    }
+
+    #[test]
+    fn legacy_timestamps_refuse_overflow_instead_of_saturating() {
+        let mut failures = Vec::new();
+        for source in [
+            "9223372037",
+            "999999999999",
+            "2262-04-11T23:47:16.854775808Z",
+            "1677-09-21T00:12:43.145224191Z",
+            "0001-01-01T00:00:00Z",
+            "9999-12-31T23:59:59Z",
+        ] {
+            let result = parse_legacy_timestamp_ns("legacy-test", source);
+            if !matches!(result, Err(FormatError::Overflow { .. })) {
+                failures.push(format!(
+                    "{source}: expected overflow refusal, got {result:?}"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn legacy_timestamps_refuse_incomplete_or_ignored_time_text() {
+        let mut accepted = Vec::new();
+        for source in [
+            "2025-12-31T10:00Z",
+            "2025-12-31T10:00:00:01Z",
+            "2025-12-31T10:00:00ZZ",
+            "2025-12-31T+1:00:00Z",
+            "2025-12-31T10:+1:00Z",
+            "2025-12-31T10:00:+1Z",
+            "2025-12-31T10:00:00.Z",
+            "2025-12-31T10:00:00.nopeZ",
+            "2025-12-31T10:00:00.123garbageZ",
+            "2025-12-31T10:00:00.1234567890Z",
+            "2025-12-31T10:00:00.123+02:00",
+            "2025-12-31T24:00:00Z",
+            "2025-12-31T10:60:00Z",
+            "2025-12-31T10:00:60Z",
+        ] {
+            if parse_legacy_timestamp_ns("legacy-test", source).is_ok() {
+                accepted.push(source);
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "ignored or malformed time text: {accepted:?}"
+        );
+    }
+
+    #[test]
+    fn legacy_csv_and_iif_keep_subsecond_provenance_and_refuse_conflicts() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let columns = csv_columns("recorded_at_column = \"recorded\"\n");
+        let first = "2025-12-31T10:00:00.123456789Z";
+        let different = "2025-12-31T10:00:00.123456790Z";
+        let mut failures = Vec::new();
+        for kind in ["csv", "iif"] {
+            let read = |second: &str| {
+                if kind == "csv" {
+                    let source = format!(
+                        "entry,date,account,amount,recorded\nA,2025-12-31,1000,12.50,{first}\nA,2025-12-31,3000,-12.50,{second}\n"
+                    );
+                    parse_generic_csv(&source, &columns, &units, &accounts)
+                } else {
+                    let source = format!(
+                        "!TRNS\tTRNSID\tDATE\tACCNT\tAMOUNT\tTIMESTAMP\n!SPL\tSPLID\tDATE\tACCNT\tAMOUNT\tTIMESTAMP\nTRNS\tA\t2025-12-31\t1000\t12.50\t{first}\nSPL\tA-1\t2025-12-31\t3000\t-12.50\t{second}\nENDTRNS\n"
+                    );
+                    parse_quickbooks_iif(&source, &units, &accounts, "USD")
+                }
+            };
+            let batch = read(first).expect("balanced source with matching exact timestamps");
+            assert_eq!(batch.row_count, 2);
+            assert_eq!(batch.chunks.len(), 1);
+            let chunk = &batch.chunks[0];
+            assert_eq!(chunk.effective_date, DateDay::parse("2025-12-31").unwrap());
+            assert_eq!(chunk.legs.len(), 2);
+            assert_eq!(chunk.legs[0].amount.mantissa, 1250);
+            assert_eq!(chunk.legs[1].amount.mantissa, 1250);
+            if chunk.provenance.source_recorded_at_ns != Some(1_767_175_200_123_456_789) {
+                failures.push(format!(
+                    "{kind}: lost fractional source provenance: {:?}",
+                    chunk.provenance
+                ));
+            }
+            let conflict = read(different);
+            if !matches!(&conflict, Err(FormatError::Parse { detail, .. }) if detail.contains("conflicting recorded timestamp"))
+            {
+                failures.push(format!(
+                    "{kind}: nanosecond conflict was not refused: {conflict:?}"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn legacy_timestamp_presence_is_bound_for_minus_one_nanosecond() {
+        let units = UnitCatalog::embedded().unwrap();
+        let accounts = test_account_map();
+        let source = concat!(
+            "entry,date,account,amount,recorded\n",
+            "A,2025-12-31,1000,12.50,1969-12-31T23:59:59.999999999Z\n",
+            "A,2025-12-31,3000,-12.50,1969-12-31T23:59:59.999999999Z\n",
+        );
+        let ignored = parse_generic_csv(source, &csv_columns(""), &units, &accounts).unwrap();
+        let retained = parse_generic_csv(
+            source,
+            &csv_columns("recorded_at_column = \"recorded\"\n"),
+            &units,
+            &accounts,
+        )
+        .unwrap();
+        assert_eq!(ignored.source_bytes_digest, retained.source_bytes_digest);
+        assert_eq!(ignored.trial_balance, retained.trial_balance);
+        assert_eq!(ignored.chunks[0].provenance.source_recorded_at_ns, None);
+        assert_ne!(retained.chunks[0].provenance.source_recorded_at_ns, None);
+        assert_ne!(
+            ignored.attestation_digest, retained.attestation_digest,
+            "timestamp absence and a retained pre-epoch timestamp must bind different projections of the same source bytes"
+        );
+
+        // The escape must bind presence to each entry, not merely announce
+        // that some entry has a timestamp. Keep raw source and money fixed.
+        let source = concat!(
+            "entry,date,account,amount,left,right\n",
+            "A,2025-12-31,1000,12.50,1969-12-31T23:59:59.999999999Z,\n",
+            "A,2025-12-31,3000,-12.50,1969-12-31T23:59:59.999999999Z,\n",
+            "B,2025-12-31,1000,25.00,,1969-12-31T23:59:59.999999999Z\n",
+            "B,2025-12-31,3000,-25.00,,1969-12-31T23:59:59.999999999Z\n",
+        );
+        let read = |column| {
+            parse_generic_csv(
+                source,
+                &csv_columns(&format!("recorded_at_column = \"{column}\"\n")),
+                &units,
+                &accounts,
+            )
+            .unwrap()
+        };
+        let left = read("left");
+        let right = read("right");
+        assert_eq!(left.source_bytes_digest, right.source_bytes_digest);
+        assert_eq!(left.trial_balance, right.trial_balance);
+        assert_eq!(
+            left.chunks
+                .iter()
+                .map(|chunk| chunk.provenance.source_recorded_at_ns.is_some())
+                .collect::<Vec<_>>(),
+            vec![true, false]
+        );
+        assert_eq!(
+            right
+                .chunks
+                .iter()
+                .map(|chunk| chunk.provenance.source_recorded_at_ns.is_some())
+                .collect::<Vec<_>>(),
+            vec![false, true]
+        );
+        assert_ne!(left.attestation_digest, right.attestation_digest);
     }
 
     #[test]
