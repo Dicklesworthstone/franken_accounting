@@ -736,6 +736,37 @@ impl FormatJournal {
     /// compute exact signed `(Dr - Cr)` balances per `(account_code, unit_code)`.
     pub fn fold_balances(&self) -> Result<BTreeMap<(String, String), i128>, FormatError> {
         self.validate_dimensions()?;
+        // A currency code denotes one scale throughout the extract. Adding raw
+        // mantissas with different scales could certify an unbalanced decimal
+        // export; neither the fold nor a writer may silently rescale it.
+        let mut unit_scales = BTreeMap::from([(
+            self.coordinate.base_unit_code.as_str(),
+            self.coordinate.base_unit_scale,
+        )]);
+        for (code, scale) in self
+            .entries
+            .iter()
+            .flat_map(|entry| {
+                entry
+                    .legs
+                    .iter()
+                    .map(|leg| (leg.unit_code.as_str(), leg.unit_scale))
+            })
+            .chain(
+                self.assertions
+                    .iter()
+                    .map(|assertion| (assertion.unit_code.as_str(), assertion.unit_scale)),
+            )
+        {
+            if let Some(previous) = unit_scales.insert(code, scale)
+                && previous != scale
+            {
+                return Err(FormatError::Parse {
+                    format: "FormatJournal",
+                    detail: format!("unit {code:?} has inconsistent scales {previous} and {scale}"),
+                });
+            }
+        }
         if self
             .accounts
             .iter()

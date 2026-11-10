@@ -4,6 +4,35 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-10 — inconsistent scales could certify an unbalanced plaintext export
+
+`FormatJournal::fold_balances` added raw mantissas by unit code while the
+plaintext writers rendered each leg at its own scale. A debit of `1.00 USD`
+and a credit of `0.100 USD` could therefore pass the fold. The regression-only
+complete format/oracle invocation exited 101: the new test observed all 24
+malformed calls accepted across six scale placements and four entry points.
+The other 175 format tests and all 542 oracle tests passed; the oracle library's
+436 tests include the existing exact tier/version/digest controls.
+
+The shared fold now requires one scale per unit code across the coordinate,
+all postings and assertions. It refuses ambiguity without changing amounts,
+scales or durable digest encodings. Existing positive controls retain USD,
+EUR, JPY and a coherent catalog-free custom unit. The unchanged regression
+subsequently passed in the complete two-package run: 176 format tests and
+542 oracle tests, with no failures, ignored or filtered tests. Tier0 also
+passed, using its documented local compile fallback after remote refusal.
+Strict Clippy and the attempted full repository gate remained unqualified
+because protected disk reservations refused execution. These scoped results
+do not constitute a complete repository verdict.
+
+Separately, the stale `graph.party_circular_flows` classification now records
+the current v2 row and fresh independent readings by DustyIbis and IvoryHorizon.
+Both classify it G with `reads_evidence = false`, with the component-disjoint
+BOOK_NODE and verdict-projection limits explicit. The prior 435/1 failure and
+old row remain in the retained evidence; neither reader nor digest is relabelled
+from v1. This is a bounded source classification, not detector calibration or
+completion of the extremal filler campaigns.
+
 ## 2026-11-09 — retained procedure readers lost calibration and export coordinates
 
 The executable case loader and its calibration checker rejected explicitly
