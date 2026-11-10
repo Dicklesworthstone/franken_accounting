@@ -527,12 +527,23 @@ fn plaintext_writers_refuse_inconsistent_scales_without_changing_valid_units() {
         leg.unit_scale = eur_scale;
     }
     entries.push(foreign);
+    let (jpy, jpy_scale) = units.lookup_code("JPY").unwrap();
+    assert_ne!(jpy_scale, eur_scale);
+    let mut yen = entries[0].clone();
+    yen.entry_id = "source-0003".into();
+    yen.recorded_seq = 3;
+    for leg in &mut yen.legs {
+        leg.amount.unit = jpy;
+        leg.unit_code = "JPY".into();
+        leg.unit_scale = jpy_scale;
+    }
+    entries.push(yen);
     let valid = FormatJournal::new(
         "Unit scales",
         "USD",
         2,
         base.coordinate.effective_through,
-        2,
+        3,
         base.accounts.clone(),
         entries,
         vec![],
@@ -551,14 +562,42 @@ fn plaintext_writers_refuse_inconsistent_scales_without_changing_valid_units() {
         verify_round_trip_identity(format, &valid, &restored.unwrap()).unwrap();
     }
 
+    // Consistency is local to the journal, not a new embedded-catalog limit.
+    let mut custom = base.entries.clone();
+    for leg in &mut custom[0].legs {
+        leg.unit_code = "CUSTOM".into();
+        leg.unit_scale = 3;
+    }
+    let custom = FormatJournal::new(
+        "Custom unit",
+        "CUSTOM",
+        3,
+        base.coordinate.effective_through,
+        1,
+        base.accounts.clone(),
+        custom,
+        vec![],
+    )
+    .unwrap();
+    assert!(
+        write_beancount(&custom)
+            .unwrap()
+            .contains("1234.567 CUSTOM")
+    );
+    assert!(write_hledger(&custom).unwrap().contains("1234.567 CUSTOM"));
+
     let mut base_leg = valid.clone();
     base_leg.entries[0].legs[0].unit_scale = 3;
+    let mut base_entry = valid.clone();
+    for leg in &mut base_entry.entries[0].legs {
+        leg.unit_scale = 3;
+    }
     let mut foreign_leg = valid.clone();
     foreign_leg.entries[1].legs[1].unit_scale = eur_scale + 1;
     let mut later_entry = valid.clone();
     let mut later = later_entry.entries[1].clone();
-    later.entry_id = "source-0003".into();
-    later.recorded_seq = 3;
+    later.entry_id = "source-0004".into();
+    later.recorded_seq = 4;
     for leg in &mut later.legs {
         leg.unit_scale = eur_scale + 1;
     }
@@ -578,6 +617,7 @@ fn plaintext_writers_refuse_inconsistent_scales_without_changing_valid_units() {
     let mut accepted = Vec::new();
     for (case, source) in [
         ("base leg", base_leg),
+        ("base entry", base_entry),
         ("foreign leg", foreign_leg),
         ("later entry", later_entry),
         ("coordinate", coordinate),
