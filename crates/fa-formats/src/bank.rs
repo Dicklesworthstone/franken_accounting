@@ -3442,20 +3442,24 @@ Invoice 100
         ];
         let mut accepted = Vec::new();
         for (index, note) in invalid.iter().enumerate() {
-            let transaction = STANDARD_MT940.replace(
-                ":86:Acme Customer\nInvoice 100\n",
-                &format!(":86:{note}\n"),
-            );
+            let transaction = STANDARD_MT940
+                .replace(":86:Acme Customer\nInvoice 100\n", &format!(":86:{note}\n"));
             let final_note = format!("{STANDARD_MT940}:86:{note}\n");
             for (location, source) in [("transaction", transaction), ("final", final_note)] {
-                for (ending, source) in [("LF", source.clone()), ("CRLF", source.replace('\n', "\r\n"))] {
+                for (ending, source) in [
+                    ("LF", source.clone()),
+                    ("CRLF", source.replace('\n', "\r\n")),
+                ] {
                     if parse_mt940(&source, &units).is_ok() {
                         accepted.push((index, location, ending));
                     }
                 }
             }
         }
-        assert!(accepted.is_empty(), "accepted malformed physical information: {accepted:?}");
+        assert!(
+            accepted.is_empty(),
+            "accepted malformed physical information: {accepted:?}"
+        );
     }
 
     #[test]
