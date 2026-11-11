@@ -833,7 +833,7 @@ impl ClaimsLintConfig {
 // The 19 Appendix G classes plus the registered native accounting extensions.
 // Require their identities, not merely a row count: an unrelated class cannot
 // replace an existing operation's cost contract.
-const REQUIRED_OPERATION_CLASS_IDS: [&str; 36] = [
+const REQUIRED_OPERATION_CLASS_IDS: [&str; 37] = [
     "balance_read_at_watermark",
     "certified_report",
     "single_entry_post",
@@ -854,6 +854,7 @@ const REQUIRED_OPERATION_CLASS_IDS: [&str; 36] = [
     "account_lifecycle",
     "dimension_value_registration",
     "native_subledger_registration",
+    "fx_revaluation_routes_record",
     "close_run_execute",
     "restatement_case_post",
     "register_maintenance_flush",
@@ -2904,7 +2905,7 @@ mod tests {
 
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
         assert_eq!(op_costs.hot_object_exceptions.len(), 2);
-        assert_eq!(op_costs.classes.len(), 36);
+        assert_eq!(op_costs.classes.len(), 37);
         assert_eq!(op_costs.kernel_op_witnesses.len(), 9);
 
         let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
@@ -3124,6 +3125,7 @@ mod tests {
         assert!(matching.hot_object_exceptions.is_empty());
 
         for id in [
+            "fx_revaluation_routes_record",
             "closing_routes_record",
             "year_end_close",
             "bank_match_confirmation",

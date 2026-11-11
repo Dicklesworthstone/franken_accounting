@@ -3,6 +3,9 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "fx_routes/outcome_keys.rs"]
+mod outcome_keys;
+
 use std::collections::BTreeMap;
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};
@@ -54,6 +57,7 @@ struct Harness {
     book: BookContext,
     usd: UnitId,
     evidence: EvidenceRef,
+    storage: (MemVfs, DatabaseKeys),
 }
 
 impl Harness {
@@ -61,10 +65,14 @@ impl Harness {
         let runtime = RuntimeBuilder::new().build().unwrap();
         let root = runtime.request_cx_with_budget(Budget::INFINITE);
         let cx = PurposeContexts::narrow_runtime_root(&root);
+        let keys = DatabaseKeys::new([211; 32], DatabaseSecurityNamespaceId([212; 32]), [213; 32]);
+        let vfs = cx.commit().with_restriction(MemVfs::new).unwrap();
         let mut db = runtime
-            .block_on(Database::open_memory(
+            .block_on(Database::create_with_vfs(
                 &cx.commit(),
-                DatabaseKeys::new([211; 32], DatabaseSecurityNamespaceId([212; 32]), [213; 32]),
+                vfs.clone(),
+                vfs.database_dir(),
+                keys.clone(),
             ))
             .unwrap();
         let units = UnitRegistry::embedded().unwrap();
@@ -201,6 +209,7 @@ impl Harness {
             book,
             usd,
             evidence: document.evidence_ref(1),
+            storage: (vfs, keys),
         }
     }
 
