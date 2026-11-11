@@ -357,3 +357,238 @@ fn native_pipeline_preserves_exact_units_and_refuses_unsupported_certification()
     );
     assert_eq!(f.book.head().unwrap(), at);
 }
+
+#[test]
+fn historical_query_authority_binds_native_reads_certification_and_typed_replay() {
+    let mut f = Fixture::new();
+    f.post(f.proposal(
+        "historical-invoice",
+        "2026-03-01",
+        f.usd,
+        "ar",
+        "sales",
+        10_000,
+    ));
+    let pin = f.book.head().unwrap();
+    let statement = format!(
+        "MATCH (l:Leg) RETURN COUNT(*) AS legs AS KNOWN AT {}",
+        pin.0
+    );
+    let fa_query::Selection::Native(native) = fa_query::rewrite(&statement).unwrap().selection
+    else {
+        panic!("native statement");
+    };
+    let reader = cap(&["read"]).known_at_most(pin);
+    let producer = cap(&["read", "produce"]).known_at_most(pin);
+    let original = f
+        .book
+        .query_native_for(PRINCIPAL, &reader, &native, pin, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(original.rows, vec![vec![QueryCell::Int(2)]]);
+    let certified = f
+        .book
+        .certify_query(PRINCIPAL, &producer, &statement)
+        .unwrap()
+        .unwrap();
+    assert_eq!(certified.rows, original);
+    let pipeline = format!(
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account {{code:'ar'}}) CALL fa.open_amount(l) YIELD open, age_days RETURN open, age_days EFFECTIVE AT '2026-03-20' AS KNOWN AT {}",
+        pin.0
+    );
+    let certified_pipeline = f
+        .book
+        .certify_query(PRINCIPAL, &producer, &pipeline)
+        .unwrap()
+        .unwrap();
+    assert!(certified_pipeline.certificate.pipeline_source().is_some());
+
+    // The current graph now differs. Both certificate versions and a fresh
+    // native query still read the selected old snapshot under current authority.
+    f.post(f.proposal("later-invoice", "2026-03-02", f.usd, "ar", "sales", 4_000));
+    let head = f.book.head().unwrap();
+    assert_eq!(
+        f.book
+            .query_native(&native, head, None)
+            .unwrap()
+            .unwrap()
+            .rows,
+        vec![vec![QueryCell::Int(4)]]
+    );
+    assert_eq!(
+        f.book
+            .query_native_for(PRINCIPAL, &reader, &native, pin, None)
+            .unwrap()
+            .unwrap(),
+        original
+    );
+    assert_eq!(
+        f.book
+            .certify_query(PRINCIPAL, &producer, &statement)
+            .unwrap()
+            .unwrap()
+            .rows,
+        original
+    );
+    for certified in [&certified, &certified_pipeline] {
+        assert_eq!(
+            f.book
+                .replay_query(PRINCIPAL, &reader, &certified.certificate)
+                .unwrap()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            certified.rows.canonical_bytes().unwrap()
+        );
+        assert_eq!(
+            f.book
+                .query_certificate_status(PRINCIPAL, &reader, &certified.certificate)
+                .unwrap()
+                .unwrap_err()
+                .code,
+            "FA-REF-011",
+            "status observes HEAD even when replay itself is authorized"
+        );
+    }
+
+    // No selector inferred from a predicate narrows the graph's reach. These
+    // refusals precede even looking up the deliberately nonexistent period.
+    let scopes = [
+        producer.clone().known_at_most(CommitSeq(pin.0 - 1)),
+        producer.clone().for_accounts(&["ar"]).unwrap(),
+        producer.clone().for_periods(&["FY2026-P03"]).unwrap(),
+        producer.clone().effective_through(day("2026-03-31")),
+        producer
+            .clone()
+            .for_classes(&[EntryClass::ORIGINAL])
+            .unwrap(),
+        producer.clone().on_branch(Id128([0x96; 16])).unwrap(),
+        producer.clone().for_books(&[Id128([0x96; 16])]).unwrap(),
+    ];
+    for scoped in scopes {
+        assert_eq!(
+            f.book
+                .query_native_for(PRINCIPAL, &scoped, &native, pin, Some("missing-period"))
+                .unwrap()
+                .unwrap_err()
+                .code,
+            "FA-REF-011"
+        );
+        assert_eq!(
+            f.book
+                .certify_query(PRINCIPAL, &scoped, &statement)
+                .unwrap()
+                .unwrap_err()
+                .code,
+            "FA-REF-011"
+        );
+        assert_eq!(
+            f.book
+                .replay_query(PRINCIPAL, &scoped, &certified.certificate)
+                .unwrap()
+                .unwrap_err()
+                .code,
+            "FA-REF-011"
+        );
+    }
+    assert_eq!(
+        f.book
+            .query_native_for(PRINCIPAL, &reader, &native, head, None)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        "FA-REF-011"
+    );
+    for suffix in ["", " AS KNOWN AT HEAD", " AS CURRENTLY STATED"] {
+        assert_eq!(
+            f.book
+                .certify_query(
+                    PRINCIPAL,
+                    &producer,
+                    &format!("MATCH (l:Leg) RETURN COUNT(*) AS legs{suffix}"),
+                )
+                .unwrap()
+                .unwrap_err()
+                .code,
+            "FA-REF-011"
+        );
+    }
+    assert!(
+        fa_query::rewrite("MATCH (l:Leg) FOR SYSTEM_TIME AS OF SEQ 999 RETURN l").is_err(),
+        "Native cannot smuggle a second sequence past the authorized binding"
+    );
+    assert_eq!(
+        f.book.head().unwrap(),
+        head,
+        "read-only operations do not publish"
+    );
+}
+
+#[test]
+fn historical_query_authority_expires_and_revokes_at_the_current_head() {
+    let mut f = Fixture::new();
+    f.post(f.proposal(
+        "original-invoice",
+        "2026-03-01",
+        f.usd,
+        "ar",
+        "sales",
+        10_000,
+    ));
+    let pin = f.book.head().unwrap();
+    let statement = format!(
+        "MATCH (l:Leg) RETURN COUNT(*) AS legs AS KNOWN AT {}",
+        pin.0
+    );
+    let fa_query::Selection::Native(native) = fa_query::rewrite(&statement).unwrap().selection
+    else {
+        panic!("native statement");
+    };
+    let pinned = cap(&["read", "produce"]).known_at_most(pin);
+    let expiring = pinned.clone().expiring_at(CommitSeq(pin.0 + 1));
+    let certified = f
+        .book
+        .certify_query(PRINCIPAL, &expiring, &statement)
+        .unwrap()
+        .unwrap();
+    f.post(f.proposal("expiry-advances", "2026-03-02", f.usd, "ar", "sales", 100));
+    f.book
+        .revoke_capability(
+            cap(&["issue_capability"]),
+            pinned.commitment().unwrap(),
+            day("2026-03-03"),
+            b"withdraw-query-reader",
+            "Withdraw historical query authority",
+        )
+        .unwrap()
+        .unwrap();
+    let head = f.book.head().unwrap();
+    for (capability, expected) in [(&expiring, "FA-REF-014"), (&pinned, "FA-REF-023")] {
+        assert_eq!(
+            f.book
+                .query_native_for(PRINCIPAL, capability, &native, pin, Some("missing-period"))
+                .unwrap()
+                .unwrap_err()
+                .code,
+            expected,
+            "authority refusal wins over protected historical metadata"
+        );
+        assert_eq!(
+            f.book
+                .certify_query(PRINCIPAL, capability, &statement)
+                .unwrap()
+                .unwrap_err()
+                .code,
+            expected
+        );
+        assert_eq!(
+            f.book
+                .replay_query(PRINCIPAL, capability, &certified.certificate)
+                .unwrap()
+                .unwrap_err()
+                .code,
+            expected
+        );
+    }
+    assert_eq!(f.book.head().unwrap(), head);
+}

@@ -9,13 +9,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    AccountType, DecodeError, EncodeError, Erasable, Id128, Reader, Writer, domain_digest,
-    entry_mirrors, entry_vid,
+    AccountType, DecodeError, EncodeError, EntryPayload, Erasable, Id128, Reader, Writer,
+    domain_digest, entry_mirrors, entry_vid,
 };
 use fa_money::{UnitId, UnitKind, UnitRegistry};
 use fa_policy::{Capability, Reach};
 use fa_time::DateDay;
-use fgdb::{Database, WriteBatch, WriteTxn, WriteTxnError};
+use fgdb::{Database, VertexRow, WriteBatch, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
@@ -305,6 +305,7 @@ struct PreparedRoutes {
     capability: Capability,
     control_entry: VId,
     digest: [u8; 32],
+    proposal: EntryPayload,
 }
 
 enum Preparation {
@@ -330,6 +331,53 @@ fn authorize<V: Vfs + Clone>(
         return Ok(Err(refusal));
     }
     Ok(Ok(()))
+}
+
+fn recorded_or_conflict<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    row: &VertexRow,
+    proposal: &EntryPayload,
+    digest: [u8; 32],
+) -> Outcome<FxRevaluationRoutesRecorded> {
+    if !crate::entry_storage::has_class_mirror(row, proposal.class) {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    if !row.labels.contains(&label::ENTRY) {
+        return Err(KernelError::Corrupt(
+            "FX route identity is not an Entry".into(),
+        ));
+    }
+    let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
+    if !stored.approvals.is_empty()
+        || stored.plan_certificate.is_some()
+        || !crate::outcome::verify_control_recorded(db, row, &stored)?
+    {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    let same = stored.proposal_digest == proposal.proposal_digest()?
+        || match (
+            stored.proposal.semantic_digest(&book.seal_key),
+            proposal.semantic_digest(&book.seal_key),
+        ) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+    if !same {
+        return Ok(Err(Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            "FX route key already names different content",
+            "plan §4.9 (immutable keyed intent)",
+            "retry the same map or choose a new key",
+        )));
+    }
+    Ok(Ok(FxRevaluationRoutesRecorded {
+        control_entry: row.vid,
+        recorded_at: row.created_at,
+        digest,
+        already_recorded: true,
+    }))
 }
 
 fn prepare<V: Vfs + Clone>(
@@ -382,46 +430,36 @@ fn prepare<V: Vfs + Clone>(
         &request.idempotency_key,
         request.description,
     );
-    let proposal_digest = proposal.proposal_digest()?;
     let control_entry = entry_vid(
         book.book_id,
         &request.principal.0.to_le_bytes(),
         &request.idempotency_key,
     );
+    if let Err(refusal) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        request.principal,
+        &request.idempotency_key,
+        control_entry,
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, control_entry)? {
         txn.abort();
-        if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
-            return Ok(Err(crate::outcome::key_conflict()));
-        }
-        if !row.labels.contains(&label::ENTRY) {
-            return Err(KernelError::Corrupt(
-                "FX route identity is not an Entry".into(),
-            ));
-        }
-        let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
-        let same = stored.proposal_digest == proposal_digest
-            || match (
-                stored.proposal.semantic_digest(&book.seal_key),
-                proposal.semantic_digest(&book.seal_key),
-            ) {
-                (Ok(a), Ok(b)) => a == b,
-                _ => false,
-            };
-        if !same {
-            return Ok(Err(Refusal::new(
-                code::IDEMPOTENCY_CONFLICT,
-                exit::CONFLICT,
-                "FX route key already names different content",
-                "plan §4.9 (immutable keyed intent)",
-                "retry the same map or choose a new key",
-            )));
-        }
-        return Ok(Ok(Preparation::Recorded(FxRevaluationRoutesRecorded {
-            control_entry,
-            recorded_at: row.created_at,
-            digest,
-            already_recorded: true,
-        })));
+        return Ok(
+            recorded_or_conflict(db, book, &row, &proposal, digest)?.map(Preparation::Recorded)
+        );
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     crate::entry_history::verify_entry_history(db, cx, book, Some(txn.basis()))?;
     let chart = super::read_at(db, book, txn.basis())?;
@@ -466,6 +504,7 @@ fn prepare<V: Vfs + Clone>(
     let entry = proposal.seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::CHILD_OF);
     batch.create_vertex(control_entry, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, control_entry)?;
     if let Err(error) = txn.write(db, batch) {
         txn.abort();
         return Err(error.into());
@@ -475,6 +514,7 @@ fn prepare<V: Vfs + Clone>(
         capability: capability.clone(),
         control_entry,
         digest,
+        proposal: entry.proposal,
     }))))
 }
 
@@ -521,6 +561,12 @@ pub async fn set_fx_revaluation_routes<V: Vfs + Clone>(
         Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
             Ok(Err(changed(detail)))
         }
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => match db.vertex(prepared.control_entry)? {
+            Some(row) => recorded_or_conflict(db, book, &row, &prepared.proposal, prepared.digest),
+            None => Ok(Err(crate::outcome::key_conflict())),
+        },
         Err(error) => Err(error.into()),
     }
 }

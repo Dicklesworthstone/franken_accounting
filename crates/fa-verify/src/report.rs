@@ -50,6 +50,9 @@
 //! histories remain unsupported. Native v8
 //! dimension trial balances reconstruct declarations and closes from the signed
 //! journal, then fold only legs tagged with the authenticated value hierarchy.
+//! They retain their version-1 transport and also accept version 2 with the
+//! certificate's exact four-registry closure, authenticated by a recipient pin
+//! or production receipt.
 //! A filtered view need not balance across the selected legs. The scope is accounting
 //! recomputation, not economic truth, source-document authenticity, journaled
 //! registry activation, or database read attestations.
@@ -1363,6 +1366,7 @@ fn verify_report_with_native_subledger_input(
             && !is_custom_statement
             && !is_open_items
             && !is_explanation
+            && cert.dimension.is_none()
             && roll_forward.is_none()
             && summary.is_none()
             && native_subledger.is_none()
@@ -1370,7 +1374,7 @@ fn verify_report_with_native_subledger_input(
     {
         return Err(failed(
             "supported_report",
-            "registry bundles require a native statement, custom statement, OpenItems, ExplainBalance, summary, native subledger, roll-forward, equity or direct cash flow; explicit unit universes require a v4 statement",
+            "registry bundles require a native statement, custom statement, dimension-filtered trial balance, OpenItems, ExplainBalance, summary, native subledger, roll-forward, equity or direct cash flow; explicit unit universes require a v4 statement",
         ));
     }
     if (is_open_items
@@ -2947,6 +2951,17 @@ fn verify_report_with_native_subledger_input(
         &resolved,
         &visible_migrations,
     )?;
+    if dimension.is_some()
+        && major == 2
+        && rows
+            .iter()
+            .any(|row| units.binary_search(&row.unit).is_err())
+    {
+        return Err(failed(
+            "registry_closure",
+            "dimension trial-balance rows use a unit absent from the authenticated registry",
+        ));
+    }
     if let Some(certificate) = &roll_forward {
         let (roll_forward, output) = roll_forward::replay(
             certificate,
@@ -3202,11 +3217,12 @@ fn verify_report_with_native_subledger_input(
     } else {
         (None, output)
     };
-    let unit_universe_source = if summary.is_some() || native_subledger.is_some() {
-        "authenticated-registry"
-    } else {
-        "not-applicable"
-    };
+    let unit_universe_source =
+        if summary.is_some() || native_subledger.is_some() || dimension.is_some() && major == 2 {
+            "authenticated-registry"
+        } else {
+            "not-applicable"
+        };
     Ok(VerifiedReport {
         scope: "recomputation",
         summary,

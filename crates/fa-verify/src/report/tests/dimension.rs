@@ -150,6 +150,27 @@ fn dimension_bundle(
     included: &[&str],
     expected_rows: &[ReportRow],
 ) -> (Vec<u8>, SignedCheckpoint) {
+    let (bytes, anchor, _) = dimension_bundle_with_registries(
+        records,
+        known_at,
+        selection,
+        value,
+        included,
+        expected_rows,
+        None,
+    );
+    (bytes, anchor)
+}
+
+fn dimension_bundle_with_registries(
+    records: &[Record],
+    known_at: u64,
+    selection: Selection,
+    value: &str,
+    included: &[&str],
+    expected_rows: &[ReportRow],
+    registries: Option<&[(String, Vec<u8>)]>,
+) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
     let (native, anchor) = bundle(records, known_at, selection.clone(), expected_rows);
     let mut r = Reader::new(&native);
     r.bytes(64, "bundle").unwrap();
@@ -205,7 +226,7 @@ fn dimension_bundle(
     }
     cert.bytes(b"cost_center")
         .bytes(value.as_bytes())
-        .fixed(&native_certificate.registry_digest)
+        .fixed(&registries.map_or(native_certificate.registry_digest, statements::closure))
         .fixed(&native_certificate.journal_root)
         .u64(native_certificate.leaves)
         .count(8);
@@ -219,11 +240,183 @@ fn dimension_bundle(
     cert.fixed(&digest);
     let mut out = Writer::default();
     out.bytes(REPORT_BUNDLE_FORMAT)
-        .u16(1)
+        .u16(if registries.is_some() { 2 } else { 1 })
         .u16(0)
         .bytes(&cert.buf)
         .fixed(tail);
-    (out.buf, anchor)
+    if let Some(registries) = registries {
+        out.count(registries.len());
+        for (name, bytes) in registries {
+            out.bytes(name.as_bytes()).bytes(bytes);
+        }
+    }
+    (out.buf, anchor, digest)
+}
+
+#[test]
+fn dimension_registry_bundles_bind_original_sources_and_require_recipient_authority() {
+    let mut records = dimensions();
+    records.push(tagged(
+        1,
+        6,
+        10,
+        100,
+        &[(2, value_vid(&BOOK, "cost_center", "child"))],
+        &[],
+    ));
+    let registries = statements::registries();
+    let (bytes, anchor, pin) = dimension_bundle_with_registries(
+        &records,
+        6,
+        Selection::AsOf(30),
+        "root",
+        &["child", "root"],
+        &cash(100, 0),
+        Some(&registries),
+    );
+    let report = verify_report_with(&bytes, &[], None, None, Some(&pin), |_, _| {
+        Ok(anchor.clone())
+    })
+    .unwrap();
+    assert_eq!(report.rows, cash(100, 0));
+    assert_eq!(report.dimension.unwrap().values, ["child", "root"]);
+    assert_eq!(report.unit_universe_source, "authenticated-registry");
+    assert_eq!(
+        verify_fixture(&bytes, anchor.clone())
+            .unwrap_err()
+            .predicate,
+        "report_input_authority",
+        "the checkpoint alone does not authenticate supplied registry meanings"
+    );
+    let wrong_pin = [0x55; 32];
+    assert_eq!(
+        verify_report_with(&bytes, &[], None, None, Some(&wrong_pin), |_, _| {
+            Ok(anchor.clone())
+        })
+        .unwrap_err()
+        .predicate,
+        "recipient_certificate"
+    );
+
+    // Resealing a changed claimed amount does not substitute for the literal
+    // tagged fold, even when the recipient selects that exact certificate.
+    let (wrong, wrong_anchor, wrong_digest) = dimension_bundle_with_registries(
+        &records,
+        6,
+        Selection::AsOf(30),
+        "root",
+        &["child", "root"],
+        &cash(101, 0),
+        Some(&registries),
+    );
+    assert_eq!(
+        verify_report_with(&wrong, &[], None, None, Some(&wrong_digest), |_, _| {
+            Ok(wrong_anchor)
+        })
+        .unwrap_err()
+        .predicate,
+        "report_recomputation"
+    );
+
+    let mut incomplete = registries;
+    incomplete.pop();
+    let (wrong, wrong_anchor, wrong_digest) = dimension_bundle_with_registries(
+        &records,
+        6,
+        Selection::AsOf(30),
+        "root",
+        &["child", "root"],
+        &cash(100, 0),
+        Some(&incomplete),
+    );
+    assert_eq!(
+        verify_report_with(&wrong, &[], None, None, Some(&wrong_digest), |_, _| {
+            Ok(wrong_anchor)
+        })
+        .unwrap_err()
+        .predicate,
+        "registry_closure"
+    );
+}
+
+#[test]
+fn dimension_registry_bundles_refuse_selected_units_absent_from_the_bound_registry() {
+    let mut records = dimensions();
+    records.push(tagged(
+        1,
+        6,
+        10,
+        100,
+        &[(2, value_vid(&BOOK, "cost_center", "child"))],
+        &[],
+    ));
+
+    // Independently encode a valid one-unit registry containing only USD (0).
+    // The authenticated posting and selected row both use EUR (1); resealing
+    // and recipient-pinning this smaller registry cannot give that unit meaning.
+    let text = |w: &mut Writer, value: &str| {
+        w.u64(value.len() as u64).fixed(value.as_bytes());
+    };
+    let mut units = Writer::default();
+    units.fixed(b"fa:registry-document:v1").u64(1);
+    text(&mut units, "schema_version");
+    units.u8(2).i128(1).u64(0).u64(1);
+    text(&mut units, "unit");
+    units.u64(1).u64(7);
+    text(&mut units, "code");
+    units.u8(1);
+    text(&mut units, "USD");
+    text(&mut units, "id");
+    units.u8(2).i128(0);
+    text(&mut units, "iso4217");
+    units.u8(2).i128(840);
+    text(&mut units, "kind");
+    units.u8(1);
+    text(&mut units, "currency");
+    text(&mut units, "rounding_default");
+    units.u8(2).i128(3);
+    text(&mut units, "scale");
+    units.u8(2).i128(2);
+    text(&mut units, "version");
+    units.u8(2).i128(0);
+    let mut registries = statements::registries();
+    registries[2].1 = units.buf;
+    let supplied = registries
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        registry::verify(&supplied, &statements::closure(&registries), false)
+            .unwrap()
+            .0,
+        [0],
+        "the negative registry is valid and its exact closure authenticates"
+    );
+    let (bytes, anchor, pin) = dimension_bundle_with_registries(
+        &records,
+        6,
+        Selection::AsOf(30),
+        "root",
+        &["child", "root"],
+        &cash(100, 0),
+        Some(&registries),
+    );
+    let error =
+        verify_report_with(&bytes, &[], None, None, Some(&pin), |_, _| Ok(anchor)).unwrap_err();
+    assert_eq!(error.predicate, "registry_closure");
+    assert!(error.detail.contains("unit absent"), "{error:?}");
+
+    let (legacy, anchor) = dimension_bundle(
+        &records,
+        6,
+        Selection::AsOf(30),
+        "root",
+        &["child", "root"],
+        &cash(100, 0),
+    );
+    let report = verify_fixture(&legacy, anchor).unwrap();
+    assert_eq!(report.rows, cash(100, 0));
+    assert_eq!(report.unit_universe_source, "not-applicable");
 }
 
 #[test]

@@ -154,6 +154,8 @@ pub fn assemble(
 /// registry documents. The shared entry_classes document belongs to both
 /// independently checked registry closures. Party detail and the designation
 /// are reconstructed from the authenticated complete prefix.
+/// Native v8 dimension slices use the same four-registry closure as native
+/// statements; their hierarchy is independently reconstructed from the prefix.
 /// V2 appends a list of (registry name, canonical registry document) frames;
 /// existing v1 trial-balance bytes remain unchanged.
 pub fn assemble_with_registries(
@@ -208,6 +210,7 @@ pub fn assemble_with_registries(
         &["account_types", "entry_classes", "units", "foundations"]
     };
     if !(certificate_format(certificate, b"fa:report-certificate:v4")
+        || certificate_format(certificate, b"fa:report-certificate:v8")
         || custom
         || summary_certificate(certificate)
         || open_items_certificate(certificate)
@@ -236,7 +239,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, five including rounding_laws for custom statements, six including procedures and sod_policy for JET round-amount/period-end v1/v2, post-closing v1, exact duplicates v1 or first-digit Benford v2, or six including control_payload and symbols for native subledger reconciliation",
+            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, dimension-filtered and summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, five including rounding_laws for custom statements, six including procedures and sod_policy for JET round-amount/period-end v1/v2, post-closing v1, exact duplicates v1 or first-digit Benford v2, or six including control_payload and symbols for native subledger reconciliation",
         )));
     }
     assemble_inner(
@@ -1007,6 +1010,7 @@ fn assemble_inner(
             || certificate_format(certificate, b"fa:report-certificate:v8"))
         || major == 2
             && (certificate_format(certificate, b"fa:report-certificate:v4")
+                || certificate_format(certificate, b"fa:report-certificate:v8")
                 || custom_statement_certificate(certificate)
                 || summary_certificate(certificate)
                 || open_items_certificate(certificate)

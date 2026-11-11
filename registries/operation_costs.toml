@@ -77,7 +77,7 @@ derived_objects = "1 Entry + n Leg + edges + ExternalIds + 1 IntentOutcome; abov
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none; a rate lookup is a document already in the book, never a synchronous call"
 complexity_witness = "O(legs) point reads + 1 period witness + 1 Entry vertex + O(legs) Leg vertices and projection edges + 1 common-key IntentOutcome claim; final-overlay register capacity adds O(snapshot vertices + journal legs), O(snapshot vertices) retained row/insertion witnesses and transient memory, with cancellation checkpoints and no extra writes. Source-bound FX groups add O(M log M + legs) disjoint-target/component validation and retain one carrying-history scan/sort/fold per item, conservatively O(M * (snapshot vertices + entries log entries + journal legs log legs)), including retained groups' disjoint-target checks; preparation copies the empty template/provenance O(M * template_bytes). Each component has at least four legs and all share one retained rate. No additional publication or shared cell; exact-prefix guards remain. Key admission uses metadata point probes and authentic coverage, checking the bounded original genesis publication or O(log K) immutable key-tree nodes for K recovered keys"
-notes = "One native publication includes the successful common-key claim. Reversal, resolution and replacement identities retain their target-derived Entry VIds while reserving the same (book, principal, key) namespace as ordinary posts and batches. PeriodControl transitions, TimeControl ticks, normal-key security/retention policy activations, account lifecycle controls, dimension value creation, native subledger registration and new capability issuance/revocation events also reserve this namespace; other dedicated writers, historical capability events without claims, and Migration run keys remain outside it. Durable refusals remain unimplemented. Automatic scheduled reversals require one capacity prefix scan per candidate, including when composed into period Open; a sweep blocks refused candidates before staging, while Open refuses atomically. This is a conservative interim cost, not a measured SLO. A limited account's LimitCell (the registered §5.5 exception) is compare-and-set when the entry moves that account; no other shared cell is registered. A settling leg also moves each target leg's `applied` mirror by compare-and-set (plan §5.7), for which Appendix G registers no exception (recorded on fa-vz7e for an owner ruling)."
+notes = "One native publication includes the successful common-key claim. Reversal, resolution and replacement identities retain their target-derived Entry VIds while reserving the same (book, principal, key) namespace as ordinary posts and batches. PeriodControl transitions, TimeControl ticks, normal-key security/retention policy activations, account lifecycle controls, closing and FX revaluation routes, dimension value creation, native subledger registration and new capability issuance/revocation events also reserve this namespace; other dedicated writers, historical capability events without claims, and Migration run keys remain outside it. Durable refusals remain unimplemented. Automatic scheduled reversals require one capacity prefix scan per candidate, including when composed into period Open; a sweep blocks refused candidates before staging, while Open refuses atomically. This is a conservative interim cost, not a measured SLO. A limited account's LimitCell (the registered §5.5 exception) is compare-and-set when the entry moves that account; no other shared cell is registered. A settling leg also moves each target leg's `applied` mirror by compare-and-set (plan §5.7), for which Appendix G registers no exception (recorded on fa-vz7e for an owner ruling)."
 
 [[operation_class]]
 id = "portable_single_entry_plan_and_commit"
@@ -638,19 +638,34 @@ complexity_witness = "Complete retained-prefix scans discover attestation births
 notes = "No changed monetary amount, independent balance store, mutable reconciliation head or extra posting transaction. New closes require the reviewed current prefix at preparation and publication; exact retries preserve the original claim without writing. The full attestation is bounded by max_entry_bytes and predecessor/line lists by existing import bounds; excess scope refuses rather than truncating. Counted native witnesses and historical/mutation negatives live under fa-journal/tests/bank_matches/reconciliation.rs and reconciliation_guard.rs."
 
 [[operation_class]]
-id = "closing_routes_record"
-name = "Journaled nominal-to-equity closing routes"
-substrate_class = "One witnessed SchemaChange control transaction"
-substrate_transactions = "1 for a new complete routing map; 0 for a semantic retry"
-today_posture = "Canonical effective-dated routes publish once with their attributable SchemaChange entry"
+id = "fx_revaluation_routes_record"
+name = "Journaled source-bound FX revaluation routes"
+substrate_class = "One witnessed SchemaChange control and common-key claim transaction"
+substrate_transactions = "1 for a new complete routing map; 0 for an exact or resealed-equivalent retry"
+today_posture = "Canonical additive routes and their shared successful-intent key publish atomically under current whole-book Read and SchemaChange authority"
 today_transactions = 1
 barrier_count = 2
 today_barrier_count = 2
-derived_objects = "1 SchemaChange entry carrying the complete canonical routing map and its ordinary book projection; no Account field is rewritten"
+derived_objects = "2 immutable vertices: 1 SchemaControl entry carrying the complete canonical map + 1 IntentOutcome; no new edges or account fields"
 hot_object_exceptions = []
 external_authorities = "none"
-complexity_witness = "O(chart controls + routed accounts) replay and schema/account/policy witnesses; one control publication; exact retries return the original control"
-notes = "The closing map is append-only and selected independently by effective date and recorded prefix. No shared mutable routing head or extra publication is introduced."
+complexity_witness = "Existing complete entry-history verification, chart replay, route validation and Entry/leg scan for previously occupied valuation accounts retain their history-dependent costs. Common-key admission adds metadata point witnesses and a bounded original genesis-frame check or O(log K) authenticated recovered-key reads. Retry authenticates the original Entry and optional claim through historical point reads; publication keeps its existing exact-frontier guard."
+notes = "route_claims_publish_atomically_and_retries_survive_durable_reopen checks the two-vertex, zero-edge, one-publication census. No extra transaction or shared mutable routing head. Genuine pre-protocol kind14 entries remain read-only retry anchors; new routing changes require verified monetary-key coverage. Changed requests, post/batch key collisions, deleted or retargeted claims and altered approval/plan envelopes refuse without publication. Native accounting replay copies the claim with its Entry. This is structural accounting, not measured latency or a general migration of every schema-control key."
+
+[[operation_class]]
+id = "closing_routes_record"
+name = "Journaled nominal-to-equity closing routes"
+substrate_class = "One witnessed SchemaChange control and common-key claim transaction"
+substrate_transactions = "1 for a new complete routing map; 0 for a semantic retry"
+today_posture = "Canonical effective-dated routes and their shared successful-intent key publish atomically under current whole-book SchemaChange authority"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "2 immutable vertices: 1 SchemaChange entry carrying the complete canonical routing map + 1 IntentOutcome; no new edges or Account field changes"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "Existing chart replay, complete Entry scan and schema/account/policy witnesses retain their history-dependent costs. Key admission adds metadata point reads and a bounded original genesis-frame check or O(log K) authenticated recovered-key reads. Exact retries authenticate original Entry/claim snapshots without publication; historical reads are hydrated only after current whole-book schema authority."
+notes = "closing_route_claims_publish_atomically_and_retries_survive_durable_reopen checks the two-vertex, zero-edge, one-publication census. The map stays append-only and independently selected by effective date and recorded prefix; a newer version may replace old assignments. Genuine pre-protocol kind12 controls retain their normal-key retry anchors; fresh declarations require verified monetary-key coverage. Key conflicts, altered envelopes and deleted, retargeted or restored claims publish nothing. No shared mutable routing head, Read permission, extra publication or new full-frontier guard is introduced."
 
 [[operation_class]]
 id = "year_end_close"

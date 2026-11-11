@@ -7671,6 +7671,22 @@ impl Book {
         with_store!(&self.store, core => core.query_native(&self.purposes(), native, known_at, period))
     }
 
+    /// Run a native profile query at an explicitly selected sequence under
+    /// current authority. Known-at ceilings are enforced before any graph
+    /// read; other scoped graph caveats remain unsupported and refuse.
+    pub fn query_native_for(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        native: &crate::NativeQuery,
+        known_at: CommitSeq,
+        period: Option<&str>,
+    ) -> Outcome<crate::QueryRows> {
+        with_store!(&self.store, core => core.query_native_for(
+            &self.purposes(), principal, capability, native, known_at, period
+        ))
+    }
+
     /// Run a profile statement and certify exactly its result (`fa query
     /// --certify`); see [`crate::QueryCertificate`].
     pub fn certify_query(
