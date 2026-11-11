@@ -20,7 +20,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use fa::{Book, BookError};
-use fa_formats::legacy::{self, AccountMap, LegacyColumnMap, LegacyFormat, LegacyImportBatch};
+use fa_formats::legacy::{
+    AccountMap, LegacyColumnMap, LegacyFormat, LegacyImportBatch, LegacyTimestampProfile,
+};
 use fa_formats::{FormatError, UnitCatalog};
 use fa_journal::redaction::DocumentRead;
 use fa_journal::{
@@ -52,6 +54,9 @@ const PERIOD_BALANCES_MIME: &str =
 const FULL_DETAIL_DOMAIN: &[u8] = b"FA-LEGACY-FULL-DETAIL-IMPORT\0";
 const FULL_DETAIL_MIME: &str = "application/vnd.frankenaccounting.legacy-full-detail-import.v1";
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+// This marker is part of the authenticated mapping's durable format. A future
+// parser that changes the meaning of timestamps needs a distinct profile.
+const EXACT_TIMESTAMP_MAPPING_PREFIX: &str = "FA-LEGACY-TIMESTAMPS-EXACT-NS-V1\n";
 const MAX_PACKAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CHUNKS: usize = 4096;
 
@@ -455,6 +460,20 @@ impl ImportRequest {
         })
     }
 
+    fn resolve_default_unit(&mut self, book: &Book) -> Result<(), Fail> {
+        if self.default_unit.is_none() {
+            let unit = book
+                .context()
+                .units
+                .get(book.spec()?.base_unit)
+                .ok_or_else(|| {
+                    Fail::Internal("book base unit is absent from its registry".into())
+                })?;
+            self.default_unit = Some(unit.code.clone());
+        }
+        Ok(())
+    }
+
     fn canonical_text(&self) -> String {
         let mut fields = vec![
             ("run", s(format!("MR:{:032x}", self.run.0))),
@@ -550,6 +569,23 @@ struct Package {
 }
 
 impl Package {
+    fn open_mapping(&self, book: &Book) -> Result<(String, bool), Fail> {
+        if self.request.subject_ref().is_some() {
+            return Err(invalid(
+                "mapping configuration must be sealed without a subject",
+            ));
+        }
+        let mut config = self
+            .request
+            .open(&book.context().seal_key, MAX_REQUEST_BYTES)
+            .map_err(|_| invalid("sealed mapping configuration cannot be authenticated"))?;
+        let exact_timestamps = config.starts_with(EXACT_TIMESTAMP_MAPPING_PREFIX);
+        if exact_timestamps {
+            config.replace_range(..EXACT_TIMESTAMP_MAPPING_PREFIX.len(), "");
+        }
+        Ok((config, exact_timestamps))
+    }
+
     fn encode(&self) -> Result<Vec<u8>, Fail> {
         let mut writer = Writer::new();
         writer
@@ -717,9 +753,10 @@ fn opening_period(book: &Book, run: &Run, preparing: bool) -> Result<String, Fai
 
 fn parse_source(
     book: &Book,
-    request: &mut ImportRequest,
+    request: &ImportRequest,
     run: &Run,
     source: &Document,
+    timestamps: LegacyTimestampProfile,
 ) -> Result<LegacyImportBatch, Fail> {
     if source.oid() != request.source || source.book_id != book.context().book_id {
         return Err(invalid("source identity or book does not match"));
@@ -788,15 +825,11 @@ fn parse_source(
     }
     let context = book.context();
     let units = UnitCatalog::embedded()?;
-    let default_unit = match &request.default_unit {
-        Some(unit) => unit.clone(),
-        None => context
-            .units
-            .get(book.spec()?.base_unit)
-            .map(|unit| unit.code.clone())
-            .ok_or_else(|| Fail::Internal("book base unit is absent from its registry".into()))?,
-    };
-    let unit_id = context.units.lookup(&default_unit).ok_or_else(|| {
+    let default_unit = request
+        .default_unit
+        .as_deref()
+        .ok_or_else(|| Fail::Internal("legacy import default unit was not resolved".into()))?;
+    let unit_id = context.units.lookup(default_unit).ok_or_else(|| {
         usage(
             "default_unit is not registered in the selected book",
             "choose the book's exact registered unit code",
@@ -806,59 +839,50 @@ fn parse_source(
         .units
         .get(unit_id)
         .ok_or_else(|| Fail::Internal("book unit index is inconsistent".into()))?;
-    if units.lookup_code(&default_unit) != Some((unit_id, unit.scale)) {
+    if units.lookup_code(default_unit) != Some((unit_id, unit.scale)) {
         return Err(usage(
             "legacy parser and selected book disagree on the default unit's identity or scale",
             "use the parser and unit registry matching the book; never reinterpret fixed-scale amounts",
         ));
     }
-    request.default_unit = Some(default_unit.clone());
-    let batch = match request.format {
-        LegacyFormat::QuickBooksIif => {
-            legacy::parse_quickbooks_iif(source_text, &units, &account_map, &default_unit)?
+    let columns = if request.format == LegacyFormat::GenericCsv {
+        let raw = request
+            .column_map
+            .as_deref()
+            .ok_or_else(|| usage("generic CSV requires column_map", EXAMPLE))?;
+        let mut columns = LegacyColumnMap::parse_toml(raw)?;
+        if !columns.account_mappings.is_empty() {
+            return Err(usage(
+                "column_map must not contain a second account_map",
+                "keep column declarations in column_map and every explicit legacy-to-leaf mapping in the intent's account_map object",
+            ));
         }
-        LegacyFormat::QuickBooksCsv => {
-            legacy::parse_quickbooks_csv(source_text, &units, &account_map, &default_unit)?
+        let declares_default = raw
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .any(|(key, _)| matches!(key.trim(), "default_unit" | "\"default_unit\""));
+        if declares_default && columns.default_unit != default_unit {
+            return Err(usage(
+                "column_map default_unit conflicts with the import intent's default or book base unit",
+                "declare default_unit in the import intent and remove or match the column_map declaration; never silently reinterpret source amounts",
+            ));
         }
-        LegacyFormat::XeroCsv => {
-            legacy::parse_xero_csv(source_text, &units, &account_map, &default_unit)?
-        }
-        LegacyFormat::NetSuiteCsv => {
-            legacy::parse_netsuite_csv(source_text, &units, &account_map, &default_unit)?
-        }
-        LegacyFormat::GenericCsv => {
-            let raw = request
-                .column_map
-                .as_deref()
-                .ok_or_else(|| usage("generic CSV requires column_map", EXAMPLE))?;
-            let mut columns = LegacyColumnMap::parse_toml(raw)?;
-            if !columns.account_mappings.is_empty() {
-                return Err(usage(
-                    "column_map must not contain a second account_map",
-                    "keep column declarations in column_map and every explicit legacy-to-leaf mapping in the intent's account_map object",
-                ));
-            }
-            let declares_default = raw
-                .lines()
-                .filter_map(|line| line.split_once('='))
-                .any(|(key, _)| matches!(key.trim(), "default_unit" | "\"default_unit\""));
-            if declares_default && columns.default_unit != default_unit {
-                return Err(usage(
-                    "column_map default_unit conflicts with the import intent's default or book base unit",
-                    "declare default_unit in the import intent and remove or match the column_map declaration; never silently reinterpret source amounts",
-                ));
-            }
-            // The explicit intent default, or the book's base unit, is the
-            // single default for every format; the generic parser's USD
-            // fallback must not silently reinterpret a non-USD book.
-            columns.default_unit = default_unit;
-            legacy::parse_generic_csv(source_text, &columns, &units, &account_map)?
-        }
-        LegacyFormat::Beancount => {
-            legacy::parse_beancount_ledger(source_text, &units, &account_map)?
-        }
-        LegacyFormat::Hledger => legacy::parse_hledger_journal(source_text, &units, &account_map)?,
+        // The explicit intent default, or the book's base unit, is the
+        // single default for every format; the generic parser's USD
+        // fallback must not silently reinterpret a non-USD book.
+        columns.default_unit = default_unit.to_owned();
+        Some(columns)
+    } else {
+        None
     };
+    let batch = request.format.parse_source(
+        source_text,
+        &units,
+        &account_map,
+        default_unit,
+        columns.as_ref(),
+        timestamps,
+    )?;
     if batch.chunks.len() > MAX_CHUNKS {
         return Err(usage(
             format!("legacy source exceeds {MAX_CHUNKS} complete entries per package"),
@@ -1940,11 +1964,7 @@ fn retained_package(
         }
         // load_package has already reauthorized the complete source and
         // replayed the exact proposals before this private configuration opens.
-        let retained = loaded
-            .package
-            .request
-            .open(&book.context().seal_key, MAX_REQUEST_BYTES)
-            .map_err(|_| invalid("sealed mapping configuration cannot be authenticated"))?;
+        let (retained, _) = loaded.package.open_mapping(book)?;
         if retained != config {
             return Err(usage(
                 "this run already has a retained package with different source or mapping",
@@ -2003,31 +2023,42 @@ fn load_package(book: &mut Book, cap: &Capability, selected: Oid) -> Result<Load
         return Err(invalid("migration run body differs from the package"));
     }
     let trial_balances = trial_balance_documents(book, cap, &run)?;
-    let config = package
-        .request
-        .open(&book.context().seal_key, MAX_REQUEST_BYTES)
-        .map_err(|_| invalid("sealed mapping configuration cannot be authenticated"))?;
+    let (config, exact_timestamps) = package.open_mapping(book)?;
     let mut request = ImportRequest::parse(package.book_id, &config)?;
-    if request.run != package.run
-        || request.source != package.source
-        || package.request.subject_ref().is_some()
-    {
+    if request.run != package.run || request.source != package.source {
         return Err(invalid(
             "mapping configuration does not bind the selected run and source",
         ));
     }
-    let batch = parse_source(book, &mut request, &run, &source)?;
-    let period = opening_period(book, &run, false)?;
-    let routes = source_routes(book, &request, &run, &batch, &period)?;
-    source_replay(
-        book,
-        &package,
-        &batch,
-        &run,
-        &period,
-        evidence(&source, &trial_balances),
-        &routes,
-    )?;
+    request.resolve_default_unit(book)?;
+    let replay = |timestamps| -> Result<(LegacyImportBatch, String), Fail> {
+        let batch = parse_source(book, &request, &run, &source, timestamps)?;
+        let period = opening_period(book, &run, false)?;
+        let routes = source_routes(book, &request, &run, &batch, &period)?;
+        source_replay(
+            book,
+            &package,
+            &batch,
+            &run,
+            &period,
+            evidence(&source, &trial_balances),
+            &routes,
+        )?;
+        Ok((batch, period))
+    };
+    // Unmarked V1 mappings were produced under both timestamp parsers. A
+    // single interpretation must reconstruct every retained proposal exactly.
+    let (batch, period) = replay(LegacyTimestampProfile::ExactNanoseconds).or_else(|error| {
+        if exact_timestamps
+            || matches!(
+                request.format,
+                LegacyFormat::Beancount | LegacyFormat::Hledger
+            )
+        {
+            return Err(error);
+        }
+        replay(LegacyTimestampProfile::HistoricalV1).or(Err(error))
+    })?;
     let tie = recorded_chunks(book, &run, &package)?;
     let loaded = Loaded {
         document,
@@ -2260,7 +2291,7 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let tie = book.migration_tie_out(&run, None)?;
         let source = full_document(&mut book, &cap, request.source)?;
         let trial_balances = trial_balance_documents(&mut book, &cap, &run)?;
-        let batch = parse_source(&book, &mut request, &run, &source)?;
+        request.resolve_default_unit(&book)?;
         let config = request.canonical_text();
         if config.len() > MAX_REQUEST_BYTES {
             return Err(usage(
@@ -2283,6 +2314,20 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "resume with the original native migration plans; use a new empty run for a legacy source import",
                 ));
             }
+            let sealed_config = format!("{EXACT_TIMESTAMP_MAPPING_PREFIX}{config}");
+            if sealed_config.len() > MAX_REQUEST_BYTES {
+                return Err(usage(
+                    "normalized import configuration including its timestamp profile exceeds its 1 MiB bound",
+                    "reduce the explicit mapping and split the source into separate complete runs",
+                ));
+            }
+            let batch = parse_source(
+                &book,
+                &request,
+                &run,
+                &source,
+                LegacyTimestampProfile::ExactNanoseconds,
+            )?;
             let period = opening_period(&book, &run, true)?;
             let routes = source_routes(&book, &request, &run, &batch, &period)?;
             let kind = PackageKind::for_run(&run);
@@ -2304,7 +2349,7 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 run_body_digest: run.body.digest().map_err(BookError::Kernel)?,
                 source: source.oid(),
                 source_commit: source.doc_commit(),
-                request: book.seal_text(&config)?,
+                request: book.seal_text(&sealed_config)?,
                 proposals,
             };
             let (kind, grade) = package_tags()?;

@@ -363,10 +363,10 @@ offsetting-out,2025-12-31,{LEGACY_EQUITY},50.00,,USD,Offsetting equity reversal,
     prove_source_report(&fixture, true);
 }
 
-/// Encode the unchanged v1 package and upload it using the original native
-/// preparation operations, without the newly added BindSource publication.
-/// This creates a real historical compatibility fixture, not a deleted binding.
-fn unbound_package(fixture: &Fixture) -> (String, Vec<EntryPayload>) {
+/// Encode the original v1 package and upload it without BindSource. The
+/// optional parser input represents the historical whole-second interpretation
+/// of the source timestamps. The package still binds the original Document.
+fn unbound_package(fixture: &Fixture, parsed_source: Option<&str>) -> (String, Vec<EntryPayload>) {
     let mut book = fixture.open();
     let cap = Capability::embedded(
         fa_model::principal_vid("operator"),
@@ -391,7 +391,7 @@ fn unbound_package(fixture: &Fixture) -> (String, Vec<EntryPayload>) {
     mappings.insert(LEGACY_CASH, "1000");
     mappings.insert(LEGACY_EQUITY, "3000");
     let batch = fa_formats::legacy::parse_quickbooks_csv(
-        std::str::from_utf8(&source.bytes).unwrap(),
+        parsed_source.unwrap_or_else(|| std::str::from_utf8(&source.bytes).unwrap()),
         &fa_formats::UnitCatalog::embedded().unwrap(),
         &mappings,
         "USD",
@@ -461,7 +461,7 @@ fn unbound_package(fixture: &Fixture) -> (String, Vec<EntryPayload>) {
 fn empty_retained_packages_resume_binding_without_regeneration_or_invalid_selection_writes() {
     for resume in ["prepare", "stage"] {
         let fixture = Fixture::quickbooks();
-        let (package, proposals) = unbound_package(&fixture);
+        let (package, proposals) = unbound_package(&fixture, None);
         let shown = fixture.show(&package);
         assert_eq!(data(&shown).get("source_binding"), Some(&Json::Null));
         let before = head(&fixture.book);
@@ -604,9 +604,170 @@ fn empty_retained_packages_resume_binding_without_regeneration_or_invalid_select
 }
 
 #[test]
+fn historical_timestamp_packages_replay_and_stage_original_approved_bytes() {
+    for second_row in [
+        "2025-12-20T12:30:00.123456789Z",
+        "2025-12-20T12:30:00.123456790Z",
+    ] {
+        let source = QB
+            .replacen("2025-12-20T12:30:00Z", "2025-12-20T12:30:00.123456789Z", 1)
+            .replacen("2025-12-20T12:30:00Z", second_row, 1);
+        let fixture = Fixture::new(
+            "quickbooks-csv",
+            &source,
+            "USD",
+            "Spreadsheet",
+            "2026-07-01",
+        );
+        let path = fixture.file("historical-import.json", &fixture.intent().render());
+        if second_row.ends_with(".123456790Z") {
+            let before = head(&fixture.book);
+            let (status, refused) = run(
+                &fixture.book,
+                &[
+                    "migrate", "import", "--action", "prepare", "--intent", &path,
+                ],
+            );
+            assert_eq!(status, 2, "{refused:?}");
+            assert!(refused.render().contains("conflicting recorded timestamp"));
+            assert_eq!(head(&fixture.book), before);
+        }
+        let (package, proposals) = unbound_package(&fixture, Some(QB));
+        let before = head(&fixture.book);
+        let (prepare_status, prepared) = run(
+            &fixture.book,
+            &[
+                "migrate", "import", "--action", "prepare", "--intent", &path,
+            ],
+        );
+        let (show_status, shown) = run(
+            &fixture.book,
+            &[
+                "migrate",
+                "import",
+                "--action",
+                "show",
+                "--package",
+                &package,
+            ],
+        );
+        assert_eq!(
+            (prepare_status, show_status),
+            (0, 0),
+            "{prepared:?}\n{shown:?}"
+        );
+        assert_eq!(text(data(&prepared), "package_oid"), package);
+        assert_eq!(
+            data(&prepared).get("already_recorded"),
+            Some(&Json::Bool(true))
+        );
+        assert_eq!(data(&prepared).get("chunks"), data(&shown).get("chunks"));
+        assert_eq!(head(&fixture.book), before);
+        for (row, proposal) in rows(data(&shown), "chunks").iter().zip(&proposals) {
+            assert_eq!(
+                text(row, "proposal_digest"),
+                hex(&proposal.proposal_digest().unwrap())
+            );
+        }
+        let approved = approvals(&fixture, &shown);
+        prepare_bound(&fixture);
+        stage_group(&fixture, &package, &[0, 1], &approved);
+        let vid = VId(u128::from_str_radix(
+            text(&rows(data(&shown), "chunks")[0], "entry_vid"),
+            16,
+        )
+        .unwrap());
+        let (entry, _) = fixture.open().read_entry(vid).unwrap().unwrap();
+        assert_eq!(entry.proposal, proposals[0]);
+        assert_eq!(fixture.cash(None), "0.00 USD");
+        fixture.finalize("historical-timestamp-finalize.plan");
+        assert_eq!(fixture.cash(None), "125.50 USD");
+    }
+}
+
+#[test]
+fn exact_timestamp_packages_reject_mixed_or_wrong_timestamp_interpretations() {
+    let source = QB
+        .replace("2025-12-20T12:30:00Z", "2025-12-20T12:30:00.123456789Z")
+        .replace("2025-12-29T09:00:00Z", "2025-12-29T09:00:00.987654321Z");
+    for marked in [false, true] {
+        let fixture = Fixture::new(
+            "quickbooks-csv",
+            &source,
+            "USD",
+            "Spreadsheet",
+            "2026-07-01",
+        );
+        let package = if marked {
+            let prepared = fixture.prepare();
+            text(data(&prepared), "package_oid").to_owned()
+        } else {
+            unbound_package(&fixture, None).0
+        };
+        let shown = fixture.show(&package);
+        let before = head(&fixture.book);
+        let retry = fixture.prepare();
+        assert_eq!(text(data(&retry), "package_oid"), package);
+        assert_eq!(data(&retry).get("chunks"), data(&shown).get("chunks"));
+        assert_eq!(head(&fixture.book), before);
+
+        let forged = rewrite_package(&fixture, &package, |_, proposals| {
+            // A marked package must not accept historical truncation even
+            // when it reproduces every timestamp. For an unmarked package
+            // only one complete interpretation is valid across all chunks.
+            let count = if marked { 2 } else { 1 };
+            for proposal in proposals.iter_mut().take(count) {
+                let fa_model::EntryOrigin::Migration {
+                    source_recorded_at_ns: Some(timestamp),
+                    ..
+                } = &mut proposal.origin
+                else {
+                    panic!("exact native migration timestamp");
+                };
+                *timestamp -= timestamp.rem_euclid(1_000_000_000);
+            }
+        });
+        assert_ne!(forged, package);
+        let before_refusal = head(&fixture.book);
+        for action in ["show", "stage"] {
+            let mut args = vec![
+                "migrate",
+                "import",
+                "--action",
+                action,
+                "--package",
+                &forged,
+            ];
+            if action == "stage" {
+                args.extend(["--chunk", "0"]);
+            }
+            let (status, refused) = run(&fixture.book, &args);
+            assert_eq!(status, 8, "{refused:?}");
+            assert!(refused.render().contains("retained proposal structure"));
+            assert_eq!(head(&fixture.book), before_refusal);
+        }
+
+        let approved = approvals(&fixture, &shown);
+        prepare_bound(&fixture);
+        stage_group(&fixture, &package, &[0, 1], &approved);
+        let first = &rows(data(&shown), "chunks")[0];
+        let vid = VId(u128::from_str_radix(text(first, "entry_vid"), 16).unwrap());
+        let (entry, _) = fixture.open().read_entry(vid).unwrap().unwrap();
+        let fa_model::EntryOrigin::Migration {
+            source_recorded_at_ns,
+            ..
+        } = entry.proposal.origin
+        else {
+            panic!("native migration provenance");
+        };
+        assert_eq!(source_recorded_at_ns, Some(1_766_233_800_123_456_789));
+    }
+}
+
+#[test]
 fn staged_legacy_unbound_packages_keep_retry_and_finalization_without_retroactive_binding() {
     let fixture = Fixture::quickbooks();
-    let (package, proposals) = unbound_package(&fixture);
+    let (package, proposals) = unbound_package(&fixture, None);
     let shown = fixture.show(&package);
     let approved = approvals(&fixture, &shown);
     let mut book = fixture.open();

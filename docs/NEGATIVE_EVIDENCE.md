@@ -4,6 +4,24 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-11 — exact timestamp parsing broke replay of retained migration packages
+
+The exact timestamp parser changed the projection of a historical export with
+fractional seconds. The original migration package still held the approved
+whole-second proposal. Rebuilding it with the new parser made prepare retry
+and show return exit 8. A file prepared by the earlier CLI reproduced the
+same rejection. The tests-only baseline ran the complete migration target:
+56 passed and the new compatibility test failed.
+
+New packages record the exact timestamp interpretation in the authenticated
+mapping. For an earlier unmarked package, one supported interpretation must
+reconstruct the entire retained proposal set from its original source,
+mapping, run and evidence. Retry finds the retained package before parsing
+as a new import. The complete migration target passed 58 tests, and the
+formats package passed 184. The fixed CLI reproduced the historical package
+bytes and staged the original proposal using its two existing approvals.
+Staging it again returned the original entry and recorded sequence.
+
 ## 2026-11-10 — exhausted test admission kept submitting the unqualified tail
 
 The full gate kept invoking later test targets after a target exhausted its

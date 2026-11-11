@@ -72,6 +72,76 @@ impl LegacyFormat {
             Self::Hledger => "hledger",
         }
     }
+
+    /// Parse a complete source with the timestamp interpretation recorded by
+    /// its import package. Use `ExactNanoseconds` for newly imported sources.
+    pub fn parse_source(
+        self,
+        source: &str,
+        units: &UnitCatalog,
+        account_map: &AccountMap,
+        default_unit: &str,
+        columns: Option<&LegacyColumnMap>,
+        timestamps: LegacyTimestampProfile,
+    ) -> Result<LegacyImportBatch, FormatError> {
+        let vendor_columns = match self {
+            Self::QuickBooksCsv => quickbooks_csv_columns(default_unit),
+            Self::XeroCsv => xero_csv_columns(default_unit),
+            Self::NetSuiteCsv => netsuite_csv_columns(default_unit),
+            Self::QuickBooksIif => {
+                return parse_iif_with_timestamps(
+                    source,
+                    units,
+                    account_map,
+                    default_unit,
+                    timestamps,
+                );
+            }
+            Self::Beancount => return parse_beancount_ledger(source, units, account_map),
+            Self::Hledger => return parse_hledger_journal(source, units, account_map),
+            Self::GenericCsv => {
+                let columns = columns.ok_or_else(|| FormatError::Parse {
+                    format: self.registry_name(),
+                    detail: "generic CSV requires an explicit column map".into(),
+                })?;
+                let merged_map = columns.apply_to_account_map(account_map.clone());
+                return parse_tabular_csv_with_format(
+                    self,
+                    source,
+                    columns,
+                    units,
+                    &merged_map,
+                    timestamps,
+                );
+            }
+        };
+        parse_tabular_csv_with_format(
+            self,
+            source,
+            &vendor_columns,
+            units,
+            account_map,
+            timestamps,
+        )
+    }
+}
+
+/// Timestamp semantics of a retained legacy import package.
+#[derive(Clone, Copy)]
+pub enum LegacyTimestampProfile {
+    /// Exact signed nanoseconds with complete timestamp syntax.
+    ExactNanoseconds,
+    /// Original V1 semantics, exclusively for replaying an unmarked package.
+    HistoricalV1,
+}
+
+impl LegacyTimestampProfile {
+    fn parse(self, format: &'static str, raw: &str) -> Result<Option<i64>, FormatError> {
+        match self {
+            Self::ExactNanoseconds => parse_legacy_timestamp_ns(format, raw),
+            Self::HistoricalV1 => parse_historical_v1_timestamp(format, raw),
+        }
+    }
 }
 
 /// Account mapping table from legacy account identifiers/names to FrankenAccounting
@@ -1105,6 +1175,53 @@ pub fn parse_legacy_timestamp_ns(
         })
 }
 
+// Freeze the original V1 interpretation for source-bound package replay. Its
+// truncation, saturation, and permissive clock grammar are part of those
+// proposals' durable provenance and approval digests.
+fn parse_historical_v1_timestamp(
+    format: &'static str,
+    raw: &str,
+) -> Result<Option<i64>, FormatError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let bad = || FormatError::Parse {
+        format,
+        detail: format!("invalid historical V1 timestamp {trimmed:?}"),
+    };
+    if trimmed.bytes().all(|byte| byte.is_ascii_digit()) {
+        let value: i64 = trimmed.parse().map_err(|_| bad())?;
+        return Ok(Some(if value < 1_000_000_000_000 {
+            value.saturating_mul(1_000_000_000)
+        } else {
+            value
+        }));
+    }
+    let cleaned = trimmed.trim_end_matches('Z');
+    let (date, time) = cleaned
+        .split_once('T')
+        .or_else(|| cleaned.split_once(' '))
+        .unwrap_or((cleaned, "00:00:00"));
+    let day = parse_date_flexible(format, date)?;
+    let mut clock = time.split(':');
+    let hour: i64 = clock.next().unwrap_or("0").parse().map_err(|_| bad())?;
+    let minute: i64 = clock.next().unwrap_or("0").parse().map_err(|_| bad())?;
+    let second: i64 = clock
+        .next()
+        .unwrap_or("0")
+        .split('.')
+        .next()
+        .unwrap_or("0")
+        .parse()
+        .map_err(|_| bad())?;
+    if !(0..24).contains(&hour) || !(0..60).contains(&minute) || !(0..60).contains(&second) {
+        return Err(bad());
+    }
+    let seconds = i64::from(day.0) * 86_400 + hour * 3_600 + minute * 60 + second;
+    Ok(Some(seconds.saturating_mul(1_000_000_000)))
+}
+
 // Some exports put transaction metadata on just one of its rows. Retain the
 // first supplied value, allow blank rows to inherit it, and refuse contradictory
 // values rather than silently attributing every leg to the first row's author
@@ -1140,6 +1257,22 @@ pub fn parse_quickbooks_iif(
     units: &UnitCatalog,
     account_map: &AccountMap,
     default_unit_code: &str,
+) -> Result<LegacyImportBatch, FormatError> {
+    parse_iif_with_timestamps(
+        src,
+        units,
+        account_map,
+        default_unit_code,
+        LegacyTimestampProfile::ExactNanoseconds,
+    )
+}
+
+fn parse_iif_with_timestamps(
+    src: &str,
+    units: &UnitCatalog,
+    account_map: &AccountMap,
+    default_unit_code: &str,
+    timestamps: LegacyTimestampProfile,
 ) -> Result<LegacyImportBatch, FormatError> {
     const FMT: &str = "quickbooks_iif_v1";
     let (uid, scale) =
@@ -1221,7 +1354,7 @@ pub fn parse_quickbooks_iif(
                     (Side::Credit, -signed)
                 };
                 let memo = get("MEMO");
-                let ts_ns = parse_legacy_timestamp_ns(FMT, get("TIMESTAMP"))?;
+                let ts_ns = timestamps.parse(FMT, get("TIMESTAMP"))?;
 
                 current = Some(LegacyChunkEntry {
                     provenance: MigratedProvenance {
@@ -1296,7 +1429,7 @@ pub fn parse_quickbooks_iif(
                 }
                 merge_provenance_field(
                     &mut entry.provenance.source_recorded_at_ns,
-                    parse_legacy_timestamp_ns(FMT, metadata("TIMESTAMP"))?,
+                    timestamps.parse(FMT, metadata("TIMESTAMP"))?,
                     FMT,
                     line_idx + 1,
                     "recorded timestamp",
@@ -1376,7 +1509,18 @@ pub fn parse_quickbooks_csv(
     account_map: &AccountMap,
     default_unit_code: &str,
 ) -> Result<LegacyImportBatch, FormatError> {
-    let col_map = LegacyColumnMap {
+    LegacyFormat::QuickBooksCsv.parse_source(
+        src,
+        units,
+        account_map,
+        default_unit_code,
+        None,
+        LegacyTimestampProfile::ExactNanoseconds,
+    )
+}
+
+fn quickbooks_csv_columns(default_unit_code: &str) -> LegacyColumnMap {
+    LegacyColumnMap {
         source_system: LegacyFormat::QuickBooksCsv
             .default_source_system()
             .to_owned(),
@@ -1400,14 +1544,7 @@ pub fn parse_quickbooks_csv(
         approved_by_column: None,
         account_mappings: BTreeMap::new(),
         dimension_columns: BTreeMap::new(),
-    };
-    parse_tabular_csv_with_format(
-        LegacyFormat::QuickBooksCsv,
-        src,
-        &col_map,
-        units,
-        account_map,
-    )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1421,7 +1558,18 @@ pub fn parse_xero_csv(
     account_map: &AccountMap,
     default_unit_code: &str,
 ) -> Result<LegacyImportBatch, FormatError> {
-    let col_map = LegacyColumnMap {
+    LegacyFormat::XeroCsv.parse_source(
+        src,
+        units,
+        account_map,
+        default_unit_code,
+        None,
+        LegacyTimestampProfile::ExactNanoseconds,
+    )
+}
+
+fn xero_csv_columns(default_unit_code: &str) -> LegacyColumnMap {
+    LegacyColumnMap {
         source_system: LegacyFormat::XeroCsv.default_source_system().to_owned(),
         default_unit: default_unit_code.to_owned(),
         entry_id_column: "JournalNumber".to_owned(),
@@ -1443,8 +1591,7 @@ pub fn parse_xero_csv(
         approved_by_column: None,
         account_mappings: BTreeMap::new(),
         dimension_columns: BTreeMap::new(),
-    };
-    parse_tabular_csv_with_format(LegacyFormat::XeroCsv, src, &col_map, units, account_map)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1458,7 +1605,18 @@ pub fn parse_netsuite_csv(
     account_map: &AccountMap,
     default_unit_code: &str,
 ) -> Result<LegacyImportBatch, FormatError> {
-    let col_map = LegacyColumnMap {
+    LegacyFormat::NetSuiteCsv.parse_source(
+        src,
+        units,
+        account_map,
+        default_unit_code,
+        None,
+        LegacyTimestampProfile::ExactNanoseconds,
+    )
+}
+
+fn netsuite_csv_columns(default_unit_code: &str) -> LegacyColumnMap {
+    LegacyColumnMap {
         source_system: LegacyFormat::NetSuiteCsv.default_source_system().to_owned(),
         default_unit: default_unit_code.to_owned(),
         entry_id_column: "Internal ID".to_owned(),
@@ -1480,8 +1638,7 @@ pub fn parse_netsuite_csv(
         approved_by_column: Some("Approved By".to_owned()),
         account_mappings: BTreeMap::new(),
         dimension_columns: BTreeMap::new(),
-    };
-    parse_tabular_csv_with_format(LegacyFormat::NetSuiteCsv, src, &col_map, units, account_map)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1495,13 +1652,13 @@ pub fn parse_generic_csv(
     units: &UnitCatalog,
     account_map: &AccountMap,
 ) -> Result<LegacyImportBatch, FormatError> {
-    let merged_map = column_map.apply_to_account_map(account_map.clone());
-    parse_tabular_csv_with_format(
-        LegacyFormat::GenericCsv,
+    LegacyFormat::GenericCsv.parse_source(
         src,
-        column_map,
         units,
-        &merged_map,
+        account_map,
+        &column_map.default_unit,
+        Some(column_map),
+        LegacyTimestampProfile::ExactNanoseconds,
     )
 }
 
@@ -1511,6 +1668,7 @@ fn parse_tabular_csv_with_format(
     column_map: &LegacyColumnMap,
     units: &UnitCatalog,
     account_map: &AccountMap,
+    timestamps: LegacyTimestampProfile,
 ) -> Result<LegacyImportBatch, FormatError> {
     let fmt_name = format.registry_name();
     let header_description = format == LegacyFormat::GenericCsv
@@ -1808,7 +1966,7 @@ fn parse_tabular_csv_with_format(
 
         let desc = get_text(&column_map.description_column);
         let memo = get_text(&column_map.memo_column);
-        let ts_ns = parse_legacy_timestamp_ns(fmt_name, get_opt(&column_map.recorded_at_column))?;
+        let ts_ns = timestamps.parse(fmt_name, get_opt(&column_map.recorded_at_column))?;
         let entered_by = {
             let v = get_text(&column_map.entered_by_column);
             (!v.is_empty()).then(|| v.to_owned())
