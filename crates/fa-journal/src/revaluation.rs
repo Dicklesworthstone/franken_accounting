@@ -1296,7 +1296,7 @@ pub(crate) fn is_source_bound(proposal: &EntryPayload) -> bool {
 
 pub(crate) fn unsupported_batch() -> Refusal {
     unsupported(
-        "source-bound revaluations compose only in native batches or dedicated drafts of intrinsic Revaluation entries with distinct source and valuation accounts; no member may affect another member's source or valuation account, and mixed batches or other execution modes are not supported",
+        "source-bound revaluations compose only in native batches or drafts of intrinsic Revaluation entries with distinct source and valuation accounts, optionally with nonapplying Original or Adjusting companions; keep companions outside every source and valuation account and revaluation offsets outside other members' protected accounts; dependent effects and other execution modes remain unsupported",
     )
 }
 

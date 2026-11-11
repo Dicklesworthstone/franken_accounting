@@ -317,8 +317,8 @@ impl RevaluationBatchFixture {
         Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap()
     }
 
-    fn post_source(&mut self, index: usize, amount: i128, key: &[u8]) {
-        let h = &mut self.h;
+    fn source_proposal(&self, index: usize, amount: i128, key: &[u8]) -> EntryPayload {
+        let h = &self.h;
         let foreign = h.book.units.lookup("EUR").unwrap();
         let proposal = h.proposal(
             vec![
@@ -339,7 +339,7 @@ impl RevaluationBatchFixture {
         let arithmetic = h.root.restrict::<asupersync::cx::cap::None>();
         let mut budget =
             ArithmeticBudget::new(&arithmetic, BudgetLimits::uniform(100_000, 0), 4096);
-        let proposal = value_proposal(
+        value_proposal(
             &mut budget,
             proposal,
             &fa_journal::genesis::read_book_spec(&h.db).unwrap().unwrap(),
@@ -347,8 +347,12 @@ impl RevaluationBatchFixture {
             FxLawId::SpotClose,
             std::slice::from_ref(&self.spot),
         )
-        .unwrap();
-        h.post(h.request(proposal, &["post"])).unwrap();
+        .unwrap()
+    }
+
+    fn post_source(&mut self, index: usize, amount: i128, key: &[u8]) {
+        let proposal = self.source_proposal(index, amount, key);
+        self.h.post(self.h.request(proposal, &["post"])).unwrap();
     }
 
     fn observe(&self, index: usize, allocated: bool) -> PreparedFxRevaluation {
@@ -481,17 +485,360 @@ fn independent_revaluations_publish_atomically_and_replay_each_source_at_later_c
 }
 
 #[test]
+fn independent_revaluations_and_ordinary_companions_share_one_reviewed_publication() {
+    for allocated in [false, true] {
+        for class in [EntryClass::ORIGINAL, EntryClass::ADJUSTING] {
+            for reverse in [false, true] {
+                let mut f = RevaluationBatchFixture::new();
+                // Sharing the unrealized offset is safe: it is not a source
+                // or a dedicated valuation leaf. The literal replay must
+                // still reproduce each revaluation's exact 10/20 USD delta.
+                let companion = f.h.proposal(
+                    vec![
+                        LegPayload::simple(Side::Debit, f.h.rent, Amount::new(f.h.usd, 7)),
+                        LegPayload::simple(
+                            Side::Credit,
+                            account_vid(f.h.book.book_id, "4788"),
+                            Amount::new(f.h.usd, 7),
+                        ),
+                    ],
+                    b"independent-close-companion",
+                    class,
+                );
+                let mut members = vec![
+                    companion,
+                    f.proposal(0, allocated, b"mixed-first-revaluation"),
+                    f.proposal(1, allocated, b"mixed-second-revaluation"),
+                ];
+                if reverse {
+                    members.reverse();
+                }
+                let batch = f.h.batch(b"independent-close-batch", members);
+                let before = f.h.db.frontier().unwrap();
+                let rows = f.h.db.vertices().unwrap();
+                let capability = RevaluationBatchFixture::capability();
+                let plan = f.h.planned_batch(batch.clone(), &capability).unwrap();
+                assert_eq!(plan.prepared_entries().len(), 3);
+                assert_eq!(f.h.db.frontier().unwrap(), before);
+                assert_eq!(f.h.db.vertices().unwrap(), rows);
+                let plan = fa_intents::BatchPlan::decode(&plan.canonical_bytes().unwrap()).unwrap();
+                let posted = if allocated {
+                    f.h.publish_batch_plan(plan.clone(), &capability).unwrap()
+                } else {
+                    f.post_batch(batch.clone()).unwrap()
+                };
+                assert!(!posted.already_recorded);
+                assert_eq!(posted.entries.len(), 3);
+                assert_eq!(posted.recorded_at.0, before.0 + 1);
+                for (reference, member) in posted.entries.iter().zip(batch.members()) {
+                    let (entry, at) = read_entry(&f.h.db, reference.vid).unwrap().unwrap();
+                    assert_eq!(entry.proposal, *member.proposal());
+                    assert_eq!(at, posted.recorded_at);
+                }
+                assert!(verify(&f.h, posted.recorded_at).is_green());
+                for (index, (native, adjustment, carrying)) in
+                    [(100, 10, 120), (200, 20, 240)].into_iter().enumerate()
+                {
+                    let observed = f.observe(index, allocated);
+                    assert!(observed.is_noop());
+                    assert_eq!(observed.source_native_net().mantissa, native);
+                    assert_eq!(observed.prior_adjustment_net().mantissa, adjustment);
+                    assert_eq!(observed.current_carrying_net().mantissa, carrying);
+                }
+                let later = f.h.proposal(
+                    f.h.rent_legs(9),
+                    b"later-independent-close-activity",
+                    EntryClass::ORIGINAL,
+                );
+                f.h.post(f.h.request(later, &["post"])).unwrap();
+                let after = f.h.db.frontier().unwrap();
+                let rows = f.h.db.vertices().unwrap();
+                let retry = if allocated {
+                    f.h.publish_batch_plan(plan, &capability).unwrap()
+                } else {
+                    f.post_batch(batch).unwrap()
+                };
+                assert!(retry.already_recorded);
+                assert_eq!(retry.entries, posted.entries);
+                assert_eq!(retry.recorded_at, posted.recorded_at);
+                assert_eq!(f.h.db.frontier().unwrap(), after);
+                assert_eq!(f.h.db.vertices().unwrap(), rows);
+                assert!(verify(&f.h, after).is_green());
+            }
+        }
+    }
+}
+
+#[test]
+fn revaluation_companions_cannot_touch_any_source_or_valuation_account_in_either_order() {
+    for source in [false, true] {
+        for reverse in [false, true] {
+            let mut f = RevaluationBatchFixture::new();
+            let revaluation = f.proposal(0, true, b"protected-revaluation");
+            let companion = if source {
+                f.source_proposal(0, 10, b"source-changing-companion")
+            } else {
+                f.h.proposal(
+                    vec![
+                        LegPayload::simple(
+                            Side::Debit,
+                            account_vid(f.h.book.book_id, "1298"),
+                            Amount::new(f.h.usd, 10),
+                        ),
+                        LegPayload::simple(Side::Credit, f.h.cash, Amount::new(f.h.usd, 10)),
+                    ],
+                    b"valuation-changing-companion",
+                    EntryClass::ADJUSTING,
+                )
+            };
+            let mut members = vec![revaluation, companion];
+            if reverse {
+                members.reverse();
+            }
+            let batch = f.h.batch(b"protected-revaluation-batch", members);
+            let outcome = fa_journal::batch::outcome_vid(&f.h.book, &batch);
+            let before = f.h.db.frontier().unwrap();
+            let rows = f.h.db.vertices().unwrap();
+            let edges = f.h.db.edges().unwrap();
+            let capability = RevaluationBatchFixture::capability();
+            for refused in [
+                f.h.planned_batch(batch.clone(), &capability).unwrap_err(),
+                f.post_batch(batch).unwrap_err(),
+            ] {
+                assert_eq!(refused.code, code::CLASS_NOT_IMPLEMENTED, "{refused}");
+                assert!(
+                    refused.message.contains("source and valuation"),
+                    "{refused}"
+                );
+            }
+            assert_eq!(f.h.db.frontier().unwrap(), before);
+            assert_eq!(f.h.db.vertices().unwrap(), rows);
+            assert_eq!(f.h.db.edges().unwrap(), edges);
+            assert!(f.h.db.vertex(outcome).unwrap().is_none());
+            assert_eq!(f.observe(0, true).delta().mantissa, 10);
+        }
+    }
+}
+
+#[test]
+fn revaluation_batches_refuse_other_application_protocols_without_consuming_the_item() {
+    for reverse in [false, true] {
+        let mut f = RevaluationBatchFixture::new();
+        let invoice = f.h.invoice(30, b"unrelated-companion-invoice");
+        let target =
+            f.h.post(f.h.request(invoice, &["post"]))
+                .unwrap()
+                .entry_ref();
+        let receipt = f.h.receipt(
+            10,
+            vec![settle(target, 0, f.h.usd, 10)],
+            b"unrelated-application-companion",
+        );
+        let mut members = vec![
+            f.proposal(0, false, b"application-mixed-revaluation"),
+            receipt.clone(),
+        ];
+        if reverse {
+            members.reverse();
+        }
+        let batch = f.h.batch(b"application-mixed-close", members);
+        let before = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let refused = f.post_batch(batch).unwrap_err();
+        assert_eq!(refused.code, code::CLASS_NOT_IMPLEMENTED, "{refused}");
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        assert_eq!(f.h.applied_to(target.vid, 0), 0);
+        // The companion itself is a valid application. It needs its ordinary
+        // publication protocol, not admission as an independent close effect.
+        f.h.post(f.h.request(receipt, &["post"])).unwrap();
+        assert_eq!(f.h.applied_to(target.vid, 0), 10);
+    }
+}
+
+#[test]
+fn mixed_revaluation_plans_keep_the_complete_publication_frontier_guard() {
+    let mut f = RevaluationBatchFixture::new();
+    let companion = f.h.proposal(
+        f.h.rent_legs(7),
+        b"guarded-revaluation-companion",
+        EntryClass::ADJUSTING,
+    );
+    let batch = f.h.batch(
+        b"guarded-mixed-close",
+        vec![companion, f.proposal(0, false, b"guarded-revaluation")],
+    );
+    let outcome = fa_journal::batch::outcome_vid(&f.h.book, &batch);
+    let capability = RevaluationBatchFixture::capability();
+    let plan = f.h.planned_batch(batch, &capability).unwrap();
+    // Even an unrelated intervening commit cannot silently refresh a
+    // previously reviewed aggregate transaction's publication frontier.
+    let later = f.h.proposal(
+        f.h.rent_legs(1),
+        b"after-reviewed-mixed-close",
+        EntryClass::ORIGINAL,
+    );
+    f.h.post(f.h.request(later, &["post"])).unwrap();
+    let before = f.h.db.frontier().unwrap();
+    let rows = f.h.db.vertices().unwrap();
+    let refused = f.h.publish_batch_plan(plan, &capability).unwrap_err();
+    assert_eq!(refused.code, code::PLAN_INVALIDATED, "{refused}");
+    assert_eq!(f.h.db.frontier().unwrap(), before);
+    assert_eq!(f.h.db.vertices().unwrap(), rows);
+    assert!(f.h.db.vertex(outcome).unwrap().is_none());
+    assert_eq!(f.observe(0, false).delta().mantissa, 10);
+}
+
+#[test]
+fn mixed_revaluation_batches_require_source_read_authority_before_source_observation() {
+    for reverse in [false, true] {
+        let mut f = RevaluationBatchFixture::new();
+        let companion = f.h.proposal(
+            f.h.rent_legs(7),
+            b"unprivileged-close-companion",
+            EntryClass::ORIGINAL,
+        );
+        let mut members = vec![companion, f.proposal(0, false, b"unprivileged-revaluation")];
+        if reverse {
+            members.reverse();
+        }
+        let batch = f.h.batch(b"unprivileged-mixed-close", members);
+        // Any attempted source reconstruction would now report corruption.
+        // Posting authority on the ordinary member must not bypass the
+        // revaluation member's independent Read requirement in either order.
+        let rate = f.closing.evidence_ref(f.h.book.book_id).unwrap();
+        let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+        damage.set_vertex_property(
+            document_vid(&rate.document_oid),
+            property::FA_PAYLOAD,
+            Some(CanonicalScalar::bytes(vec![0]).unwrap()),
+        );
+        f.h.write_raw(damage);
+        let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+        let before = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let planned = f.h.planned_batch(batch.clone(), &capability).unwrap_err();
+        assert_eq!(planned.code, code::CAPABILITY, "{planned}");
+        let cx = f.h.ctx();
+        let refused =
+            f.h.runtime
+                .block_on(fa_journal::post_batch(
+                    &mut f.h.db,
+                    &cx,
+                    &f.h.book,
+                    capability,
+                    batch,
+                ))
+                .unwrap()
+                .unwrap_err();
+        assert_eq!(refused.code, code::CAPABILITY, "{refused}");
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+    }
+}
+
+#[test]
+fn mixed_revaluation_drafts_keep_each_planners_authority_and_refuse_changed_sources() {
+    for reverse in [false, true] {
+        for changed in [false, true] {
+            let mut f = RevaluationBatchFixture::new();
+            let name = "reviewed-revaluation-with-accrual";
+            let agent = f.h.agent_capability();
+            let write_only = Capability::new(
+                AGENT,
+                fa_policy::Profile::Agent,
+                &[fa_policy::Op::Post],
+                PRINCIPAL,
+            )
+            .unwrap();
+            f.h.open_draft(agent.clone(), name).unwrap();
+            let mut revaluation = f.proposal(0, true, b"drafted-mixed-revaluation");
+            revaluation.principal_ref = AGENT;
+            let mut companion = f.h.agent_rent(7, b"drafted-close-accrual");
+            companion.class = EntryClass::ADJUSTING;
+            let mut members = vec![
+                (write_only.clone(), companion),
+                (agent.clone(), revaluation),
+            ];
+            if reverse {
+                members.reverse();
+            }
+            let mut preview = None;
+            for (capability, proposal) in &members {
+                preview =
+                    f.h.plan_draft(capability.clone(), name, proposal.clone())
+                        .unwrap()
+                        .plan;
+            }
+            let preview = preview.unwrap();
+            let expected: Vec<_> = preview
+                .members()
+                .iter()
+                .map(|member| {
+                    member.entry.entry_ref(entry_vid(
+                        f.h.book.book_id,
+                        &AGENT.0.to_le_bytes(),
+                        &member.entry.proposal.idempotency_key,
+                    ))
+                })
+                .collect();
+            let retained = f.h.draft(name);
+            assert_eq!(retained.intents.len(), 2);
+            for (saved, (capability, proposal)) in retained.intents.iter().zip(&members) {
+                assert_eq!(&saved.capability, capability);
+                assert_eq!(saved.intent.proposal(), proposal);
+            }
+            assert!(fa_policy::admit_read(&write_only, AGENT, f.h.book.book_id).is_err());
+            for reference in &expected {
+                assert!(read_entry(&f.h.db, reference.vid).unwrap().is_none());
+            }
+            if changed {
+                f.post_source(0, 100, b"source-changed-after-close-draft");
+            }
+            let before = f.h.db.frontier().unwrap();
+            let rows = f.h.db.vertices().unwrap();
+            let promoted = f.h.promote(f.h.approver_capability(), name);
+            if changed {
+                let refused = promoted.unwrap_err();
+                assert_eq!(refused.code, code::PLAN_INVALIDATED, "{refused}");
+                assert_eq!(f.h.db.frontier().unwrap(), before);
+                assert_eq!(f.h.db.vertices().unwrap(), rows);
+                assert_eq!(f.h.draft(name).state, DraftState::Open);
+                for reference in &expected {
+                    assert!(read_entry(&f.h.db, reference.vid).unwrap().is_none());
+                }
+                continue;
+            }
+            let promoted = promoted.unwrap();
+            assert_eq!(promoted.entries, expected);
+            assert_eq!(promoted.recorded_at.0, before.0 + 1);
+            for (reference, (_, proposal)) in expected.iter().zip(&members) {
+                let (entry, at) = read_entry(&f.h.db, reference.vid).unwrap().unwrap();
+                assert_eq!(&entry.proposal, proposal);
+                assert_eq!(at, promoted.recorded_at);
+            }
+            assert!(verify(&f.h, promoted.recorded_at).is_green());
+            assert!(f.observe(0, true).is_noop());
+            let rows = f.h.db.vertices().unwrap();
+            let retry = f.h.promote(f.h.approver_capability(), name).unwrap();
+            assert!(retry.already_recorded);
+            assert_eq!(retry.entries, expected);
+            assert_eq!(retry.recorded_at, promoted.recorded_at);
+            assert_eq!(f.h.db.vertices().unwrap(), rows);
+        }
+    }
+}
+
+#[test]
 fn revaluation_batches_refuse_shared_sources_and_mixed_members_without_publication() {
     for mixed in [false, true] {
         for reverse in [false, true] {
             let mut f = RevaluationBatchFixture::new();
             let first = f.proposal(0, false, b"isolated-first");
             let second = if mixed {
-                f.h.proposal(
-                    f.h.rent_legs(10),
-                    b"ordinary-companion",
-                    EntryClass::ORIGINAL,
-                )
+                // Ordinary isolated postings now compose; reservation and
+                // lifecycle effects still require a separate source law.
+                f.h.pending(f.h.rent_legs(10), b"reservation-companion")
             } else {
                 f.proposal(0, false, b"same-source-second")
             };
@@ -537,7 +884,13 @@ fn a_changed_later_revaluation_basis_or_effect_refuses_the_whole_atomic_batch() 
             }
             _ => unreachable!(),
         }
-        let batch = f.h.batch(b"rollback-revaluations", vec![first, second]);
+        let companion = f.h.proposal(
+            f.h.rent_legs(7),
+            b"rollback-ordinary-companion",
+            EntryClass::ADJUSTING,
+        );
+        let batch =
+            f.h.batch(b"rollback-revaluations", vec![companion, first, second]);
         let outcome = fa_journal::batch::outcome_vid(&f.h.book, &batch);
         let before = f.h.db.frontier().unwrap();
         let vertices = f.h.db.vertices().unwrap();
@@ -548,7 +901,7 @@ fn a_changed_later_revaluation_basis_or_effect_refuses_the_whole_atomic_batch() 
             code::PLAN_INVALIDATED,
             "{mutation}: {refused}"
         );
-        assert!(refused.message.contains("member 1"), "{refused}");
+        assert!(refused.message.contains("member 2"), "{refused}");
         assert_eq!(f.h.db.frontier().unwrap(), before);
         assert_eq!(f.h.db.vertices().unwrap(), vertices);
         assert_eq!(f.h.db.edges().unwrap(), edges);
