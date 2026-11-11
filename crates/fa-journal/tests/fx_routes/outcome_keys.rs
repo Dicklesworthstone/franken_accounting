@@ -1,6 +1,9 @@
 //! FX configuration participates in the same successful-intent namespace as
 //! monetary posts and batches, including retained retries and legacy births.
 
+#[path = "outcome_keys/closing.rs"]
+mod closing;
+
 use super::*;
 use fa_model::symbols::label;
 use fa_model::{EntryRef, Supersession, SupersessionKind, entry_vid, intent_outcome_vid};

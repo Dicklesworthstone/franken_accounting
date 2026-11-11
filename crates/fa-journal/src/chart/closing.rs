@@ -232,6 +232,12 @@ fn recorded_or_conflict<V: Vfs + Clone>(
         ));
     }
     let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
+    if !stored.approvals.is_empty()
+        || stored.plan_certificate.is_some()
+        || !crate::outcome::verify_control_recorded(db, row, &stored)?
+    {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
     let same = stored.proposal_digest == *proposal_digest
         || match (
             stored.proposal.semantic_digest(&book.seal_key),
@@ -267,6 +273,7 @@ struct PreparedRoutes {
     capability: Capability,
     control_entry: VId,
     digest: [u8; 32],
+    proposal: fa_model::EntryPayload,
 }
 
 impl PreparedRoutes {
@@ -274,6 +281,7 @@ impl PreparedRoutes {
         mut self,
         db: &mut Database<V>,
         cx: &PurposeContexts,
+        book: &BookContext,
     ) -> Outcome<ClosingRoutesRecorded> {
         if let Err(denial) = fa_policy::current(&self.capability, db.frontier()?) {
             self.txn.abort();
@@ -291,6 +299,19 @@ impl PreparedRoutes {
                     "closing-map witness changed before publication: {detail}"
                 ))))
             }
+            Err(WriteTxnError::Write(
+                fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+            )) => match db.vertex(self.control_entry)? {
+                Some(row) => recorded_or_conflict(
+                    db,
+                    book,
+                    &row,
+                    &self.proposal,
+                    &self.proposal.proposal_digest()?,
+                    self.digest,
+                ),
+                None => Ok(Err(crate::outcome::key_conflict())),
+            },
             Err(error) => Err(error.into()),
         }
     }
@@ -338,12 +359,32 @@ fn prepare<V: Vfs + Clone>(
         return Ok(Err(refusal));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
+    if let Err(refusal) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        request.principal,
+        &request.idempotency_key,
+        control_entry,
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, control_entry)? {
         txn.abort();
         return Ok(
             recorded_or_conflict(db, book, &row, &proposal, &proposal_digest, digest)?
                 .map(Preparation::Recorded),
         );
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     let Some(root) = txn.vertex(db, book_root())? else {
         txn.abort();
@@ -387,6 +428,7 @@ fn prepare<V: Vfs + Clone>(
     }
     let mut batch = WriteBatch::new(relation::CHILD_OF);
     batch.create_vertex(control_entry, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, control_entry)?;
     if let Err(error) = txn.write(db, batch) {
         txn.abort();
         return Err(error.into());
@@ -396,6 +438,7 @@ fn prepare<V: Vfs + Clone>(
         capability: capability.clone(),
         control_entry,
         digest,
+        proposal,
     }))))
 }
 
@@ -409,10 +452,24 @@ pub async fn set_closing_routes<V: Vfs + Clone>(
     capability: &Capability,
     request: ClosingRoutesRequest,
 ) -> Outcome<ClosingRoutesRecorded> {
+    if let Some(refusal) = admit_schema_change(db, book, request.principal, capability)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = crate::policy::current_at(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    cx.query()
+        .checkpoint()
+        .map_err(WriteTxnError::Interrupted)?;
+    // Authenticate original retry births and recovered key coverage after a
+    // durable reopen. Current schema authority precedes this history read.
+    if let Err(refusal) = crate::scratch::ensure_history(db, cx).await? {
+        return Ok(Err(refusal));
+    }
     match prepare(db, cx, book, capability, request)? {
         Err(refusal) => Ok(Err(refusal)),
         Ok(Preparation::Recorded(recorded)) => Ok(Ok(recorded)),
-        Ok(Preparation::Ready(prepared)) => prepared.commit(db, cx).await,
+        Ok(Preparation::Ready(prepared)) => prepared.commit(db, cx, book).await,
     }
 }
 
@@ -772,7 +829,10 @@ mod tests {
                 h.runtime.block_on(h.db.write(&cx.commit(), batch)).unwrap();
             }
             let head = h.db.frontier().unwrap();
-            let result = h.runtime.block_on(prepared.commit(&mut h.db, &cx)).unwrap();
+            let result = h
+                .runtime
+                .block_on(prepared.commit(&mut h.db, &cx, &h.book))
+                .unwrap();
             assert_eq!(result.unwrap_err().code, code::CONFLICT);
             assert_eq!(h.db.frontier().unwrap(), head);
             assert!(h.selected(day(12, 31), head).is_none());
