@@ -13,7 +13,10 @@
 //! vertex and edge, pending holds and staged migration chunks included. A
 //! balance is a fold, read with `CALL fa.trial_balance` or the report
 //! verbs, never a sum of these rows presented as one. Authorization is the
-//! caller's, before this runs: a query is a whole-book read.
+//! caller's, before this runs: a query is a whole-book read at its selected
+//! recorded sequence. A known-at ceiling admits an explicit historical
+//! sequence; account, period, effective-date and class caveats still refuse
+//! a native graph query because its complete reach is not established.
 
 use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
@@ -451,6 +454,34 @@ fn execute<V: Vfs + Clone>(
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Run an explicitly selected historical query under current caller
+    /// authority. The recorded sequence is admitted before any protected
+    /// observation; later expiry or revocation still refuses the read.
+    /// Native graph queries reach every account, period and class, regardless
+    /// of apparent predicates in the statement. Other scoped caveats are
+    /// refused, never implemented as result filters.
+    pub fn query_native_for(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        native: &Native,
+        known_at: CommitSeq,
+        period: Option<&str>,
+    ) -> Result<Result<QueryRows, Refusal>, BookError> {
+        if let Err(refusal) = certificate::authorize(
+            self,
+            cx,
+            principal,
+            capability,
+            fa_policy::Observes::At(known_at),
+            false,
+        )? {
+            return Ok(Err(refusal));
+        }
+        self.query_native(cx, native, known_at, period)
+    }
+
     /// Run `native` at `known_at` (at most the head). With `period`, the
     /// period must exist at that sequence.
     pub fn query_native(

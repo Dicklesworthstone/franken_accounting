@@ -9,8 +9,9 @@
 //! certified there (certify it AS KNOWN AT that sequence).
 //!
 //! A query reads the whole graph, so it is admitted as a whole-book read
-//! before anything is observed: a token carrying any scope caveat is
-//! refused, never filtered. `AT BRANCH 'scenario:<name>'` or
+//! before anything is observed: an explicit `AS KNOWN AT <seq>` may satisfy
+//! a token's known-at ceiling. Other scoped graph caveats remain refused,
+//! never filtered. `AT BRANCH 'scenario:<name>'` or
 //! `'draft:<name>'` (or the same `--branch`) reads that replay, admitted on
 //! trunk.
 //!
@@ -161,6 +162,9 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     )?;
     let mut book = ctx.books.open_admitted(args, |book| {
         if certify {
+            // CLI certification retains an artifact at HEAD. The library's
+            // read-only certification can honor a historical pin, but a
+            // historical query does not grant this separate current write.
             admit_whole_book_read(
                 book,
                 &capability,
@@ -168,9 +172,23 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "certifying a query",
             )
         } else {
-            admit_whole_book_read(book, &capability, &[], "querying the book's graph")
+            let mut reach = fa_policy::Reach::whole_book(true);
+            if let QueryKnownAt::Seq(seq) = &profiled.known_at {
+                reach.observes = fa_policy::Observes::At(CommitSeq(*seq));
+            }
+            fa_policy::admit_read(&capability, capability.holder(), book.context().book_id)
+                .and_then(|()| fa_policy::reach(&capability, &reach, None))
+                .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+            book.read_scope(capability.holder(), &capability)??;
+            Ok(())
         }
     })?;
+    if let QueryKnownAt::Seq(seq) = &profiled.known_at {
+        // Admission permitted this recorded sequence, not disclosure of the
+        // current frontier. Keep failures (such as a missing historical
+        // period or a native parse refusal) at that same authorized coordinate.
+        ctx.out.known_at(CommitSeq(*seq));
+    }
     let known_at = match &profiled.known_at {
         QueryKnownAt::Head => book.head()?,
         QueryKnownAt::Seq(seq) => CommitSeq(*seq),
@@ -250,7 +268,23 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         );
         return Ok(());
     }
-    let rows = book.query_native(&native, known_at, profiled.period.as_deref())??;
+    let rows = if args
+        .flag("--branch")
+        .is_some_and(|branch| branch != "trunk")
+    {
+        // The replay's authority history is not current authority. The
+        // whole-book HEAD admission above checked trunk before materializing
+        // this scenario or draft; historical pins never reach this branch.
+        book.query_native(&native, known_at, profiled.period.as_deref())??
+    } else {
+        book.query_native_for(
+            capability.holder(),
+            &capability,
+            &native,
+            known_at,
+            profiled.period.as_deref(),
+        )??
+    };
     render(
         &ctx.out,
         text,

@@ -462,15 +462,18 @@ impl QueryCertificate {
     }
 }
 
-fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
+pub(super) fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
     book: &AsyncBook<V, B>,
     cx: &PurposeContexts,
     principal: VId,
     capability: &Capability,
+    observes: fa_policy::Observes,
     produce: bool,
 ) -> Outcome<()> {
+    let mut reach = fa_policy::Reach::whole_book(true);
+    reach.observes = observes;
     let admitted = fa_policy::admit_read(capability, principal, book.context().book_id)
-        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .and_then(|()| fa_policy::reach(capability, &reach, None))
         .and_then(|()| {
             if produce {
                 fa_policy::require(capability, Op::Produce, "certifying a query")
@@ -495,7 +498,10 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Run `statement` and certify exactly the result it returned. The
     /// statement's own selector picks the sequence (the head when it names
-    /// none); an instant is refused, naming the sequence to certify at.
+    /// none); an instant is refused, naming the sequence to certify at. An
+    /// explicit sequence may be within a known-at ceiling, but no other
+    /// scoped graph predicate is inferred from the statement. Authority is
+    /// still checked at the current head before either historical read.
     pub fn certify_query(
         &self,
         cx: &PurposeContexts,
@@ -503,8 +509,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         statement: &str,
     ) -> Outcome<CertifiedQuery> {
-        if let Err(refusal) = authorize(self, cx, principal, capability, true)? {
-            return Ok(Err(refusal));
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context().book_id) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         let profiled = match fa_query::rewrite(statement) {
             Ok(profiled) => profiled,
@@ -550,6 +556,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 )));
             }
         };
+        // Compilation and selector validation are pure. Only after they
+        // establish the complete read coordinate may current authority touch
+        // the book and admit the historical source and native reads.
+        let observes = requested.map_or(fa_policy::Observes::Head, fa_policy::Observes::At);
+        if let Err(refusal) = authorize(self, cx, principal, capability, observes, true)? {
+            return Ok(Err(refusal));
+        }
         let (seq, day) = self.query(cx, |db, book| {
             let seq = fa_registers::resolve_known_at(db, requested)?;
             Ok((seq, last_day(db, book, seq)?))
@@ -606,7 +619,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// retained snapshot, regenerating a pipeline's parameters from the
     /// historical journal. The recomputed result must equal the
     /// certified bytes. A later write never moves it; current authority
-    /// cannot be taken from the certificate.
+    /// cannot be taken from the certificate. A known-at ceiling may cover
+    /// this supplied certificate's exact sequence. Looking up a retained
+    /// generic artifact or comparing status is a separate current-head read.
     pub fn replay_query(
         &self,
         cx: &PurposeContexts,
@@ -614,7 +629,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         certificate: &QueryCertificate,
     ) -> Outcome<QueryRows> {
-        if let Err(refusal) = authorize(self, cx, principal, capability, false)? {
+        if let Err(refusal) = authorize(
+            self,
+            cx,
+            principal,
+            capability,
+            fa_policy::Observes::At(certificate.known_at()),
+            false,
+        )? {
             return Ok(Err(refusal));
         }
         if certificate.book_id() != self.context().book_id {
@@ -729,6 +751,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         certificate: &QueryCertificate,
     ) -> Outcome<QueryCertificateStatus> {
+        // Status compares with today's data, unlike replay. Reject a pinned
+        // reader before replaying even the historical half of that comparison.
+        if let Err(refusal) = authorize(
+            self,
+            cx,
+            principal,
+            capability,
+            fa_policy::Observes::Head,
+            false,
+        )? {
+            return Ok(Err(refusal));
+        }
         let original = match self.replay_query(cx, principal, capability, certificate)? {
             Ok(rows) => rows,
             Err(refusal) => return Ok(Err(refusal)),

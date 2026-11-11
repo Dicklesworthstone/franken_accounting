@@ -258,3 +258,157 @@ fn hosted_mcp_admission_errors_stop_before_socket_time_evidence_or_spawn() {
         assert!(book.checkpoints().unwrap().is_empty());
     }
 }
+
+#[test]
+fn historical_query_tokens_keep_the_same_authority_over_the_real_daemon_socket() {
+    use fa_cli::json::{self, Json};
+
+    let dir = tmp("historical-query");
+    let (book_dir, _) = book(&dir);
+    let b = book_dir.display().to_string();
+    let current_head = || {
+        let info = json::parse(&ok(&["book", "info", "--book", &b, "--json"])).unwrap();
+        match info.get("coordinate").unwrap().get("known_at").unwrap() {
+            Json::Int(seq) => u64::try_from(*seq).unwrap(),
+            other => panic!("known_at: {other:?}"),
+        }
+    };
+    let pin = current_head();
+    let statement = format!("MATCH (p:Period) RETURN COUNT(*) AS periods AS KNOWN AT {pin}");
+    let token = dir.join("history-reader.token").display().to_string();
+    let issued = json::parse(&ok(&[
+        "capability",
+        "issue",
+        "--book",
+        &b,
+        "--holder",
+        "history-reader",
+        "--profile",
+        "agent",
+        "--op",
+        "read",
+        "--known-at-most",
+        &pin.to_string(),
+        "--out",
+        &token,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--json",
+    ]))
+    .unwrap();
+    ok(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2027",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let expected = json::parse(&ok(&[
+        "query", &statement, "--token", &token, "--book", &b, "--via", "direct", "--json",
+    ]))
+    .unwrap();
+    let mut daemon = start(&book_dir);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let before = current_head();
+        let served = json::parse(&ok(&[
+            "query", &statement, "--token", &token, "--book", &b, "--via", "fad", "--json",
+        ]))
+        .unwrap();
+        assert_eq!(served.get("data"), expected.get("data"));
+        assert_eq!(served.get("coordinate"), expected.get("coordinate"));
+        assert_eq!(served.get("authority"), expected.get("authority"));
+        assert_eq!(
+            current_head(),
+            before + 1,
+            "exactly one admitted access receipt"
+        );
+        for denied_statement in [
+            "MATCH (p:Period) RETURN COUNT(*) AS periods".to_string(),
+            format!(
+                "MATCH (p:Period) RETURN COUNT(*) AS periods AS KNOWN AT {}",
+                pin + 1
+            ),
+            "MATCH (p:Period) RETURN COUNT(*) AS periods AT BRANCH 'draft:unreadable'".to_string(),
+        ] {
+            let (exit, stdout, stderr) = fa(&[
+                "query",
+                &denied_statement,
+                "--token",
+                &token,
+                "--book",
+                &b,
+                "--via",
+                "fad",
+                "--json",
+            ]);
+            assert_eq!(exit, 7, "{stdout}{stderr}");
+            let denied = json::parse(stdout.trim()).unwrap();
+            assert_eq!(
+                denied
+                    .get("data")
+                    .unwrap()
+                    .get("refusal_id")
+                    .and_then(Json::as_str),
+                Some("FA-REF-011")
+            );
+            assert_eq!(denied.get("book"), Some(&Json::Null));
+            assert_eq!(denied.get("coordinate"), Some(&Json::Null));
+            assert_eq!(
+                current_head(),
+                before + 1,
+                "a refused read is never published"
+            );
+        }
+        ok(&[
+            "capability",
+            "revoke",
+            "--book",
+            &b,
+            "--commitment",
+            issued
+                .get("data")
+                .unwrap()
+                .get("commitment")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "--grant",
+            "issue_capability",
+            "--yes",
+            "--via",
+            "fad",
+            "--json",
+        ]);
+        let revoked_head = current_head();
+        let (exit, stdout, stderr) = fa(&[
+            "query", &statement, "--token", &token, "--book", &b, "--via", "fad", "--json",
+        ]);
+        assert_eq!(exit, 7, "{stdout}{stderr}");
+        let denied = json::parse(stdout.trim()).unwrap();
+        assert_eq!(
+            denied
+                .get("data")
+                .unwrap()
+                .get("refusal_id")
+                .and_then(Json::as_str),
+            Some("FA-REF-023")
+        );
+        assert_eq!(denied.get("book"), Some(&Json::Null));
+        assert_eq!(denied.get("coordinate"), Some(&Json::Null));
+        assert_eq!(current_head(), revoked_head);
+    }));
+    let (exit, stdout, stderr) = fad(&["stop", "--book", &b, "--json"]);
+    if exit != 0 && daemon.child.try_wait().ok().flatten().is_none() {
+        let _ = daemon.child.kill();
+    }
+    let (daemon_exit, rest) = daemon.finish();
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+    assert_eq!(exit, 0, "{stdout}{stderr}");
+    assert_eq!(daemon_exit, 0, "{rest}");
+}

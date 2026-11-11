@@ -5523,6 +5523,224 @@ fn the_query_cluster_runs_the_clis_profile_statement() {
     );
 }
 
+/// fa-5c1/fa-0x0: an issued historical reader can ask the exact same native
+/// query through CLI and MCP after HEAD has advanced. Neither transport turns
+/// the pin into permission for current selectors, branch metadata or retained
+/// artifact lookup, and current revocation still wins over historical access.
+#[test]
+fn historical_query_tokens_bind_cli_and_mcp_to_the_selected_snapshot() {
+    let dir = tmp("query-historical-token");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Historical Query Co",
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let pin = head(&b);
+    let statement = format!("MATCH (p:Period) RETURN COUNT(*) AS periods AS KNOWN AT {pin}");
+    let parse = |text: &str| -> JsonValue { fastmcp_rust::serde_json::from_str(text).unwrap() };
+    let expected = parse(&cli_data(&["query", &statement, "--book", &b, "--json"]));
+    let token = dir.join("historical-reader.token").display().to_string();
+    let issued = parse(&cli_data(&[
+        "capability",
+        "issue",
+        "--book",
+        &b,
+        "--holder",
+        "historical-reader",
+        "--profile",
+        "agent",
+        "--op",
+        "read",
+        "--op",
+        "produce",
+        "--known-at-most",
+        &pin.to_string(),
+        "--out",
+        &token,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "produce",
+        "--json",
+    ]));
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2027",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let current = parse(&cli_data(&[
+        "query",
+        "MATCH (p:Period) RETURN COUNT(*) AS periods",
+        "--book",
+        &b,
+        "--json",
+    ]));
+    assert_ne!(
+        current["rows"], expected["rows"],
+        "the protected graph changed"
+    );
+    let before_cli = head(&b);
+    let direct = parse(&cli_data(&[
+        "query", &statement, "--token", &token, "--book", &b, "--json",
+    ]));
+    assert_eq!(direct, expected, "the CLI binds the historical coordinate");
+    assert_eq!(
+        access_receipts_since(&b, before_cli, "historical-reader"),
+        ["query"]
+    );
+
+    let session_start = head(&b);
+    let mut mcp = Mcp::start_with(&book, &["--token", &token, "--cluster", "fa.query"]);
+    mcp.discover();
+    let (error, text, result) =
+        call_tool(&mut mcp, "fa_query_gql", json!({"statement": statement}));
+    assert!(!error, "explicit historical query: {text}");
+    assert_eq!(parse(&text), expected);
+    let envelope = parse(result["content"][1]["text"].as_str().unwrap());
+    assert_eq!(envelope["coordinate"]["known_at"], json!(pin));
+    assert_eq!(envelope["authority"]["principal"], "historical-reader");
+    let after_read = head(&b);
+    for forbidden in [
+        "MATCH (p:Period) RETURN COUNT(*) AS periods".to_string(),
+        "MATCH (p:Period) RETURN COUNT(*) AS periods AS KNOWN AT HEAD".to_string(),
+        format!(
+            "MATCH (p:Period) RETURN COUNT(*) AS periods AS KNOWN AT {}",
+            pin + 1
+        ),
+        "MATCH (p:Period) RETURN COUNT(*) AS periods AS KNOWN AT '2026-03-15T12:00:00Z'"
+            .to_string(),
+        "MATCH (l:Leg) RETURN COUNT(*) AS legs FOR PERIOD 'FY2026-P03' AS ORIGINALLY REPORTED"
+            .to_string(),
+        "MATCH (p:Period) RETURN COUNT(*) AS periods AT BRANCH 'scenario:unreadable'".to_string(),
+    ] {
+        let (error, text, result) =
+            call_tool(&mut mcp, "fa_query_gql", json!({"statement": forbidden}));
+        assert!(error, "{forbidden}: {text}");
+        assert_eq!(
+            structured_error(&text)["refusal_id"],
+            "FA-REF-011",
+            "{text}"
+        );
+        assert_eq!(result["content"].as_array().unwrap().len(), 1);
+        let (exit, refused) = cli(&[
+            "query", &forbidden, "--token", &token, "--book", &b, "--json",
+        ]);
+        assert_eq!(exit, 7, "{refused}");
+        let refused = parse(refused.trim());
+        assert_eq!(refused["data"]["refusal_id"], "FA-REF-011");
+        assert!(refused["book"].is_null(), "{refused}");
+        assert!(refused["coordinate"].is_null(), "{refused}");
+        assert_eq!(
+            head(&b),
+            after_read,
+            "refused reads do not publish access receipts"
+        );
+    }
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_query_gql",
+        json!({"statement": statement, "certify": true}),
+    );
+    assert!(error, "CLI certification retains at HEAD: {text}");
+    assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-011");
+    let (exit, refused) = cli(&[
+        "replay",
+        "C:0000000000000000000000000000000000000000000000000000000000000000",
+        "--token",
+        &token,
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(exit, 7, "{refused}");
+    let refused = parse(refused.trim());
+    assert_eq!(refused["data"]["refusal_id"], "FA-REF-011");
+    assert!(refused["book"].is_null());
+    assert!(refused["coordinate"].is_null());
+    assert_eq!(
+        access_receipts_since(&b, session_start, "historical-reader"),
+        ["query"]
+    );
+
+    // A permitted historical attempt can still fail on data absent then.
+    // Its failure envelope must never substitute today's HEAD for the pin.
+    let missing_period =
+        format!("MATCH (l:Leg) RETURN COUNT(*) AS legs FOR PERIOD 'FY2027-P03' AS KNOWN AT {pin}");
+    let before_failed_read = head(&b);
+    let (exit, failed) = cli(&[
+        "query",
+        &missing_period,
+        "--token",
+        &token,
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(exit, 3, "{failed}");
+    let failed = parse(failed.trim());
+    assert_eq!(failed["data"]["refusal_id"], "FA-REF-188");
+    assert_eq!(failed["coordinate"]["known_at"], json!(pin));
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_query_gql",
+        json!({"statement": missing_period}),
+    );
+    assert!(
+        error,
+        "the period was created after the selected snapshot: {text}"
+    );
+    assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-188");
+    assert_eq!(
+        access_receipts_since(&b, before_failed_read, "historical-reader"),
+        ["query", "query"]
+    );
+
+    cli_data(&[
+        "capability",
+        "revoke",
+        "--book",
+        &b,
+        "--commitment",
+        issued["commitment"].as_str().unwrap(),
+        "--grant",
+        "issue_capability",
+        "--yes",
+        "--json",
+    ]);
+    let revoked_head = head(&b);
+    let (error, text, result) =
+        call_tool(&mut mcp, "fa_query_gql", json!({"statement": statement}));
+    assert!(
+        error,
+        "a past snapshot never resurrects revoked authority: {text}"
+    );
+    assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-023");
+    assert_eq!(result["content"].as_array().unwrap().len(), 1);
+    assert_eq!(head(&b), revoked_head);
+    assert_eq!(mcp.finish(), 0);
+}
+
 /// fa-75j4: once a Revision case is Posted (on the host: its posting needs
 /// restate), the fa.case cluster's read tool returns what the Post changed
 /// in each affected statement, as `fa case diff <case> --statements`: March's
