@@ -5357,6 +5357,12 @@ impl Book {
     /// for later contributing entries. Cash-flow families require independent
     /// replay expectations; neither a saved producer nor its digest grants
     /// authority. A status check publishes no object.
+    ///
+    /// Scratch rehearsal families require mutable synchronous replay and
+    /// return Current/Changed rather than entry provenance. Use
+    /// [`Self::draft_diff_status`] or [`Self::close_run_rehearsal_status`]
+    /// for those complete reviews; the async-backed entry-status adapter
+    /// cannot infer their freshness from the monetary source alone.
     pub fn report_artifact_status(
         &self,
         principal: VId,

@@ -153,13 +153,29 @@ fn retained_atomic_draft_review_replays_after_more_plans_checkpoint_and_promotio
         &original_draft,
     );
 
+    let locator = format!("C:{digest}");
+    let retained_at = head(&f.book);
+    for input in [&locator, &certificate_path] {
+        let status = ok(&f.book, &["certificate", "status", input]);
+        assert_eq!(text(&status, "event"), "certificate_status");
+        assert_eq!(text(&status, "status"), "Current");
+        assert_eq!(integer(&status, "known_at"), before);
+        assert_eq!(integer(&status, "checked_at"), retained_at);
+    }
+    assert_eq!(
+        head(&f.book),
+        retained_at,
+        "freshness checks publish nothing"
+    );
     plan(&f, "expense-later", "Original", "6000", "1000", "10.00");
     ok(&f.book, &["checkpoint", "create", "--grant", "witness"]);
     let current = ok(&f.book, &dry_run());
     assert_eq!(integer(&current, "plans"), 3);
     assert_eq!(text(&balances(&current, "6000"), "delta"), "30.00 USD");
-    let locator = format!("C:{digest}");
     let replay_before = head(&f.book);
+    let changed = ok(&f.book, &["certificate", "status", &locator]);
+    assert_eq!(text(&changed, "status"), "Changed");
+    assert_eq!(integer(&changed, "checked_at"), replay_before);
     let replayed = ok(&f.book, &["replay", &locator]);
     assert_eq!(get(&replayed, "data"), get(&report, "data"));
     assert_eq!(head(&f.book), replay_before);
@@ -179,6 +195,9 @@ fn retained_atomic_draft_review_replays_after_more_plans_checkpoint_and_promotio
     );
     let promoted_rows = rows(&f.book);
     let promoted_head = head(&f.book);
+    let changed = ok(&f.book, &["certificate", "status", &locator]);
+    assert_eq!(text(&changed, "status"), "Changed");
+    assert_eq!(integer(&changed, "checked_at"), promoted_head);
     let result_path = f.dir.join("replayed-draft.bin").display().to_string();
     let (code, replayed) = many(&f.book, &["replay", &locator, "--output", &result_path]);
     assert_eq!(code, 0, "{replayed:?}");

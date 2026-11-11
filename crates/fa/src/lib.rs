@@ -101,6 +101,7 @@ pub mod projections;
 pub mod proof;
 pub mod query;
 pub mod recurring;
+mod rehearsal_status;
 pub mod report_artifact;
 pub mod roll_forward;
 pub mod rule;
@@ -131,6 +132,7 @@ pub use close_rehearsal::{
 pub use close_run::{
     CloseRunExecution, CloseRunStop, CloseRunTransition, ReviewedCloseAction, ReviewedCloseTask,
 };
+pub use rehearsal_status::RehearsalCertificateStatus;
 
 pub use aging::{
     AGING_CERTIFICATE_FORMAT, AGING_OUTPUT_FORMAT, AgedOpenItem, AgingAmounts, AgingBand,

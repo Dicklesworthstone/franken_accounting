@@ -6,7 +6,7 @@
 use fa::{
     Book, BookKeys, CLOSE_RUN_REHEARSAL_CERTIFICATE_FORMAT, CloseRunRehearsalCertificate,
     CloseTaskRehearsalOutcome, Entropy, MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES,
-    ReviewedCloseAction, ReviewedCloseTask,
+    RehearsalCertificateStatus, ReviewedCloseAction, ReviewedCloseTask,
 };
 use fa_intents::PostIntent;
 use fa_journal::{
@@ -629,6 +629,14 @@ fn changed_draft_membership_refuses_current_rehearsal_but_preserves_original_rep
         .unwrap();
     f.plan(FIRST, 70, b"later-unreviewed-member");
     let head = f.book.head().unwrap();
+    assert_eq!(
+        f.book
+            .close_run_rehearsal_status(REVIEWER, &cap(REVIEWER, &["read"]), &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        RehearsalCertificateStatus::Changed { checked_at: head },
+        "a changed native membership is successful stale evidence, not a corrupt historical certificate",
+    );
     let refusal = f
         .book
         .close_run_rehearsal(REVIEWER, &cap(REVIEWER, &["read"]), RUN)
@@ -817,6 +825,16 @@ fn rehashed_graph_source_map_and_amount_substitutions_fail_historical_replay() {
             fa::certificate::code::CERTIFICATE_INVALID,
             "{change}: {refusal}"
         );
+        let refusal = f
+            .book
+            .close_run_rehearsal_status(REVIEWER, &cap(REVIEWER, &["read"]), &forged)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            refusal.code,
+            fa::certificate::code::CERTIFICATE_INVALID,
+            "{change}: {refusal}"
+        );
         assert_eq!(f.book.head().unwrap(), head, "{change}");
     }
 }
@@ -894,6 +912,104 @@ fn terminal_only_review_preserves_pending_transition_and_never_claims_completion
 }
 
 #[test]
+fn pending_transition_freshness_tracks_period_control_and_matches_execution() {
+    let mut f = Fixture::new(None);
+    f.book
+        .start_close_run(
+            executor(),
+            RUN,
+            PERIOD,
+            vec![ReviewedCloseTask {
+                id: "period".into(),
+                depends_on: Vec::new(),
+                action: ReviewedCloseAction::PeriodTransition(PeriodTransition::Close),
+            }],
+            "Pending close depends on the original period state",
+        )
+        .unwrap()
+        .unwrap();
+    let certified = f
+        .book
+        .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
+        .unwrap()
+        .unwrap();
+    f.book
+        .retain_close_run_rehearsal(REVIEWER, &producer(), &certified.certificate)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        f.book
+            .close_run_rehearsal_status(REVIEWER, &cap(REVIEWER, &["read"]), &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        RehearsalCertificateStatus::Current {
+            checked_at: f.book.head().unwrap()
+        },
+    );
+    f.book
+        .transition_period(
+            PERIOD,
+            PeriodTransition::SoftClose,
+            ADMIN,
+            1,
+            b"external-soft-close",
+            &cap(ADMIN, &["close"]),
+        )
+        .unwrap()
+        .unwrap();
+    let checked_at = f.book.head().unwrap();
+    assert!(matches!(
+        f.book
+            .certificate_status(certified.certificate.trunk())
+            .unwrap()
+            .unwrap(),
+        fa::CertificateStatus::Current { .. },
+    ));
+    assert!(
+        !f.book
+            .close_run_status(RUN, &executor())
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .complete
+    );
+    assert_eq!(
+        f.book
+            .close_run_rehearsal_status(REVIEWER, &cap(REVIEWER, &["read"]), &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        RehearsalCertificateStatus::Changed { checked_at },
+        "unchanged monetary rows and the same pending tag do not hide a period transition",
+    );
+    let refused = f
+        .book
+        .execute_reviewed_close_run(
+            RUN,
+            executor(),
+            "An old period basis cannot execute",
+            &certified.certificate,
+            None,
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, fa_journal::refusal::code::PLAN_INVALIDATED);
+    assert_eq!(f.book.head().unwrap(), checked_at);
+    let current = f
+        .book
+        .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        f.book
+            .close_run_rehearsal_status(REVIEWER, &cap(REVIEWER, &["read"]), &current.certificate)
+            .unwrap()
+            .unwrap(),
+        RehearsalCertificateStatus::Current { checked_at },
+        "a fresh review binds the changed period basis",
+    );
+}
+
+#[test]
 fn certificate_provenance_does_not_replace_current_read_or_produce_authority() {
     let mut f = Fixture::new(None);
     f.start(1_000, 250, false);
@@ -923,6 +1039,12 @@ fn certificate_provenance_does_not_replace_current_read_or_produce_authority() {
     let refusal = f
         .book
         .replay_close_run_rehearsal(REVIEWER, &reader, &certified.certificate)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-023", "{refusal}");
+    let refusal = f
+        .book
+        .close_run_rehearsal_status(REVIEWER, &reader, &certified.certificate)
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, "FA-REF-023", "{refusal}");
@@ -958,6 +1080,15 @@ fn reviewed_close_execution_accepts_retention_and_an_independent_certificate_pro
         .unwrap();
     let retained_at = f.book.head().unwrap();
     assert!(retained_at > certified.certificate.known_at());
+    assert_eq!(
+        f.book
+            .close_run_rehearsal_status(REVIEWER, &cap(REVIEWER, &["read"]), &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        RehearsalCertificateStatus::Current {
+            checked_at: retained_at
+        },
+    );
     let execution = f
         .book
         .execute_reviewed_close_run(
@@ -983,6 +1114,15 @@ fn reviewed_close_execution_accepts_retention_and_an_independent_certificate_pro
     ));
     assert!(!execution.run.complete);
     assert_eq!(f.book.head().unwrap(), CommitSeq(retained_at.0 + 2));
+    assert_eq!(
+        f.book
+            .close_run_rehearsal_status(REVIEWER, &cap(REVIEWER, &["read"]), &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        RehearsalCertificateStatus::Changed {
+            checked_at: f.book.head().unwrap()
+        },
+    );
     assert_eq!(execution.run.reviews.len(), 1);
     assert_eq!(
         execution.run.reviews[0].certificate,
@@ -1019,6 +1159,18 @@ fn reviewed_close_execution_rejects_offsetting_posted_and_pending_baseline_chang
         f.later_entry(b"later-outflow", false, pending);
         f.later_entry(b"later-inflow", true, pending);
         let head = f.book.head().unwrap();
+        assert_eq!(
+            f.book
+                .close_run_rehearsal_status(
+                    REVIEWER,
+                    &cap(REVIEWER, &["read"]),
+                    &certified.certificate
+                )
+                .unwrap()
+                .unwrap(),
+            RehearsalCertificateStatus::Changed { checked_at: head },
+            "offsetting posted or pending gross activity invalidates the monetary baseline",
+        );
         let baseline = f.book.trial_balance(&[PERIOD.into()]).unwrap();
         let cash = baseline.rows.iter().find(|row| row.code == "1000").unwrap();
         assert_eq!(cash.debits, cash.credits, "posted net is unchanged");
@@ -1270,6 +1422,16 @@ fn reviewed_close_execution_preserves_native_approvals_and_receipt_only_freshnes
         unreachable!();
     };
     approvals.push(approval);
+    assert_eq!(
+        f.book
+            .close_run_rehearsal_status(REVIEWER, &cap(REVIEWER, &["read"]), &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        RehearsalCertificateStatus::Current {
+            checked_at: f.book.head().unwrap()
+        },
+        "independent native approvals do not replace or invalidate the combined review",
+    );
     let execution = f
         .book
         .execute_reviewed_close_run(
@@ -1284,6 +1446,16 @@ fn reviewed_close_execution_preserves_native_approvals_and_receipt_only_freshnes
     assert!(execution.run.complete);
     assert_eq!(execution.completed.len(), 1);
     let completed_at = f.book.head().unwrap();
+    assert_eq!(
+        f.book
+            .close_run_rehearsal_status(REVIEWER, &cap(REVIEWER, &["read"]), &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        RehearsalCertificateStatus::Changed {
+            checked_at: completed_at
+        },
+        "a transition completion is a changed receipt even with no monetary effect",
+    );
     assert!(matches!(
         f.book
             .certificate_status(certified.certificate.trunk())
