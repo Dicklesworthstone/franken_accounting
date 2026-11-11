@@ -3386,6 +3386,79 @@ Invoice 100
     }
 
     #[test]
+    fn mt940_information_keeps_valid_projection_and_line_endings() {
+        let units = UnitCatalog::embedded().unwrap();
+        let expected = parse_mt940(STANDARD_MT940, &units).unwrap();
+        let padded = STANDARD_MT940.replace(
+            ":86:Acme Customer\nInvoice 100\n",
+            ":86:  Acme Customer  \n  Invoice 100  \n",
+        );
+        let boundary_line = format!(" {} ", "x".repeat(63));
+        let boundary_note = std::iter::repeat_n(boundary_line.as_str(), 6)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let final_note = format!("{padded}:86:{boundary_note}\n");
+        for source in [padded, final_note] {
+            assert_eq!(parse_mt940(&source, &units).unwrap(), expected);
+            assert_eq!(
+                parse_mt940(&source.replace('\n', "\r\n"), &units).unwrap(),
+                expected
+            );
+        }
+        let transaction_note = STANDARD_MT940.replace(
+            ":86:Acme Customer\nInvoice 100\n",
+            &format!(":86:{boundary_note}\n"),
+        );
+        let mut expected = expected;
+        expected.lines[0].counterparty = std::iter::repeat_n("x".repeat(63), 6)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(parse_mt940(&transaction_note, &units).unwrap(), expected);
+        assert_eq!(
+            parse_mt940(&transaction_note.replace('\n', "\r\n"), &units).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn mt940_information_checks_physical_lines_before_normalizing() {
+        let units = UnitCatalog::embedded().unwrap();
+        let invalid = [
+            "\tFirst".to_owned(),
+            "First\t".to_owned(),
+            "First\n\tSecond".to_owned(),
+            "First\nSecond\t".to_owned(),
+            "\u{b}First".to_owned(),
+            "First\u{85}".to_owned(),
+            format!(" {}", "x".repeat(65)),
+            format!("{} ", "x".repeat(65)),
+            format!("First\n {}", "x".repeat(65)),
+            format!("First\n{} ", "x".repeat(65)),
+            "First\n\nSecond".to_owned(),
+            "First\n   \nSecond".to_owned(),
+            "First\n\t\nSecond".to_owned(),
+            "1\n2\n3\n\n4\n5\n6".to_owned(),
+            "First\n".to_owned(),
+        ];
+        let mut accepted = Vec::new();
+        for (index, note) in invalid.iter().enumerate() {
+            let transaction = STANDARD_MT940.replace(
+                ":86:Acme Customer\nInvoice 100\n",
+                &format!(":86:{note}\n"),
+            );
+            let final_note = format!("{STANDARD_MT940}:86:{note}\n");
+            for (location, source) in [("transaction", transaction), ("final", final_note)] {
+                for (ending, source) in [("LF", source.clone()), ("CRLF", source.replace('\n', "\r\n"))] {
+                    if parse_mt940(&source, &units).is_ok() {
+                        accepted.push((index, location, ending));
+                    }
+                }
+            }
+        }
+        assert!(accepted.is_empty(), "accepted malformed physical information: {accepted:?}");
+    }
+
+    #[test]
     fn mt940_final_statement_information_refuses_invalid_text_and_record_order() {
         let units = UnitCatalog::embedded().unwrap();
         let valid = format!("{STANDARD_MT940}:86:Statement information\n");
