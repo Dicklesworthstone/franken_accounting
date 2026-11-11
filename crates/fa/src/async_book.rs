@@ -5959,8 +5959,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 | crate::ReportSelection::FunctionalConsolidation { .. }
         );
         let registries = if requires_registry_closure
-            || matches!(&certificate.selection, crate::ReportSelection::Statement(_))
-        {
+            || matches!(
+                &certificate.selection,
+                crate::ReportSelection::Statement(_)
+                    | crate::ReportSelection::DimensionTrialBalance { .. }
+            ) {
             match crate::certificate::offline_report_registries_at(
                 &self.db,
                 &cx.query(),

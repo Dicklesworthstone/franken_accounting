@@ -990,14 +990,15 @@ fn registry_digest(selection: &ReportSelection) -> Result<[u8; 32], Refusal> {
     )
 }
 
-/// The registry-bearing native profiles, including a summary trial balance's
-/// stock/activity source and the closing-stock source inside a roll-forward.
+/// The registry-bearing native profiles, including dimension slices, a summary
+/// trial balance's stock/activity source and the closing-stock source inside a roll-forward.
 /// Outer-certificate routing determines which composed reports require these
 /// registries; bare trial-balance bundle routing remains unchanged.
 fn offline_registry_profile(certificate: &ReportCertificate) -> bool {
     matches!(
         &certificate.selection,
         ReportSelection::Statement(_)
+            | ReportSelection::DimensionTrialBalance { .. }
             | ReportSelection::OpenItems { .. }
             | ReportSelection::ExplainBalance { .. }
     ) || (certificate.branch_id == Id128::TRUNK
@@ -1014,8 +1015,8 @@ fn offline_registry_profile(certificate: &ReportCertificate) -> bool {
         ))
 }
 
-/// Canonical registry inputs carried by native statements, open items,
-/// explanations and sequence-selected native trial-balance sources for
+/// Canonical registry inputs carried by native statements, dimension slices,
+/// open items, explanations and sequence-selected native trial-balance sources for
 /// summaries and roll-forwards.
 /// The closure must be the one this certificate actually names. A historical
 /// or custom book unit table cannot be replaced by the executable's defaults:
@@ -1026,7 +1027,7 @@ pub(crate) fn offline_report_registries(
 ) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
     if !offline_registry_profile(certificate) {
         return Err(invalid(
-            "portable report registries require a native statement, open-item, balance-explanation, sequence-selected native or functional trial-balance, functional or custom statement, or one-book consolidation certificate",
+            "portable report registries require a native statement, dimension-filtered trial-balance, open-item, balance-explanation, sequence-selected native or functional trial-balance, functional or custom statement, or one-book consolidation certificate",
         ));
     }
     let sources = report_registries(&certificate.selection);
@@ -1072,7 +1073,7 @@ pub(crate) fn offline_report_registries_at<V: Vfs + Clone>(
 ) -> Outcome<Vec<(String, Vec<u8>)>> {
     if !offline_registry_profile(certificate) {
         return Ok(Err(invalid(
-            "portable report registries require a native statement, open-item, balance-explanation, sequence-selected native or functional trial-balance, functional or custom statement, or one-book consolidation certificate",
+            "portable report registries require a native statement, dimension-filtered trial-balance, open-item, balance-explanation, sequence-selected native or functional trial-balance, functional or custom statement, or one-book consolidation certificate",
         )));
     }
     match registry_epoch::resolve(db, cx, book, certificate)? {

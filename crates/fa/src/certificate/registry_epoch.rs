@@ -1,5 +1,6 @@
-//! Immutable source registries for retained native trial balances, open items,
-//! statements, custom layouts, functional reports and balance explanations.
+//! Immutable source registries for retained native trial balances (including
+//! dimension slices), open items, statements, custom layouts, functional reports
+//! and balance explanations.
 //!
 //! The epoch archives source text, not executable code or an authorization grant.
 //! Its semantic closure is the digest the original certificate already binds.
@@ -95,6 +96,7 @@ pub(crate) fn supports(selection: &ReportSelection) -> bool {
     matches!(
         selection,
         ReportSelection::TrialBalance(_)
+            | ReportSelection::DimensionTrialBalance { .. }
             | ReportSelection::OpenItems { .. }
             | ReportSelection::Statement(_)
             | ReportSelection::CustomStatement(_)
@@ -655,6 +657,91 @@ mod tests {
             .certificate
     }
 
+    fn declare_epoch_dimension(h: &mut Harness, code: &str, parent: Option<&str>) {
+        let cx = h.cx();
+        h.runtime
+            .block_on(h.book.create_dimension_value(
+                &cx,
+                &crate::dimension::DimensionValueSpec {
+                    dimension: "fund".into(),
+                    code: code.into(),
+                    name: code.into(),
+                    parent: parent.map(str::to_owned),
+                    valid_from: None,
+                    valid_to: None,
+                },
+                VId(1),
+                format!("epoch-dimension:{code}").as_bytes(),
+                &fa_journal::Capability::embedded(VId(1), &["schema_change"]).unwrap(),
+            ))
+            .unwrap()
+            .unwrap();
+    }
+
+    fn dimension_fixture() -> (Harness, ReportCertificate) {
+        let (mut h, _) = Harness::with_posts(1);
+        for (code, parent) in [("ROOT", None), ("CHILD", Some("ROOT")), ("OTHER", None)] {
+            declare_epoch_dimension(&mut h, code, parent);
+        }
+        let mut proposal = fa_registers::entries_at(&h.book.db, h.book.context(), h.head())
+            .unwrap()
+            .into_iter()
+            .find(|(_, entry, _)| entry.proposal.class == EntryClass::ORIGINAL)
+            .unwrap()
+            .1
+            .proposal;
+        proposal.idempotency_key = b"epoch-tagged-post".to_vec();
+        proposal.origin = EntryOrigin::Intent {
+            intent_oid: fa_model::Oid([0xd8; 32]),
+            intent_kind: 1,
+        };
+        let book = h.book.context().book_id;
+        let kind = fa_model::dimension_kind("fund").unwrap();
+        for (leg, value) in proposal.legs.iter_mut().zip(["CHILD", "OTHER"]) {
+            leg.amount.mantissa = 250;
+            leg.dimension_set = vec![(
+                kind.id,
+                fa_model::dimension_value_vid(book, kind.code, value),
+            )];
+        }
+        proposal.unit_totals = fa_model::EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+        let cx = h.cx();
+        h.runtime
+            .block_on(h.book.post(
+                &cx,
+                fa_journal::PostRequest {
+                    proposal,
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: fa_journal::Capability::embedded(VId(1), &["post"]).unwrap(),
+                },
+            ))
+            .unwrap()
+            .unwrap();
+        let certified = h
+            .book
+            .certify_report(
+                &cx,
+                ReportSelection::DimensionTrialBalance {
+                    selection: TrialBalanceSelection::Periods(vec!["FY2026-P01".into()]),
+                    dimension: "fund".into(),
+                    value: "ROOT".into(),
+                },
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let ReportOutput::DimensionTrialBalance(report) = &certified.report else {
+            panic!("expected the selected native dimension slice");
+        };
+        assert_eq!(report.values, ["CHILD", "ROOT"]);
+        assert_eq!(report.trial_balance.rows.len(), 1);
+        assert_eq!(report.trial_balance.rows[0].code, "1000");
+        assert_eq!(report.trial_balance.rows[0].debits, 250);
+        assert_eq!(report.trial_balance.rows[0].credits, 0);
+        (h, certified.certificate)
+    }
+
     fn custom_selection(functional: bool) -> crate::CustomStatementSelection {
         let mut definition = crate::CustomStatementDefinition::from_builtin(
             &crate::StatementDefinition::embedded("income-statement").unwrap(),
@@ -1177,6 +1264,212 @@ mod tests {
             let replay = h.book.replay_report(&h.cx(), &saved).unwrap().unwrap();
             assert_eq!(replay.canonical_bytes().unwrap(), expected.output);
         }
+    }
+
+    #[test]
+    fn native_dimension_epochs_publish_atomically_and_replay_after_reopen() {
+        let (mut h, original) = dimension_fixture();
+        let encoded = original.canonical_bytes().unwrap();
+        assert!(encoded.starts_with(DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT));
+        let root = vid(h.book.context().book_id, &original.registry_digest);
+        let before = h.head();
+        assert!(h.book.db.vertex_at(root, before).unwrap().is_none());
+        let ack = h.retain(&original).unwrap();
+        assert_eq!(ack.recorded_at.0, before.0 + 1);
+        assert_eq!(
+            h.book.db.vertex(root).unwrap().unwrap().created_at,
+            ack.recorded_at
+        );
+        assert_eq!(
+            resolve(&h.book.db, &h.cx().query(), h.book.context(), &original)
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            Epoch::current(h.book.context().book_id).unwrap()
+        );
+        assert_eq!(h.retain(&original).unwrap(), ack);
+        assert_eq!(h.head(), ack.recorded_at);
+
+        let mut h = h.reopen();
+        declare_epoch_dimension(&mut h, "LATER", Some("ROOT"));
+        let saved = h.read(&original.digest).unwrap();
+        assert_eq!(saved.canonical_bytes().unwrap(), encoded);
+        let before_replay = h.head();
+        let replay = h.book.replay_report(&h.cx(), &saved).unwrap().unwrap();
+        assert_eq!(replay.canonical_bytes().unwrap(), original.output);
+        let current = h
+            .book
+            .certify_report(&h.cx(), original.selection, None)
+            .unwrap()
+            .unwrap();
+        let ReportOutput::DimensionTrialBalance(current) = current.report else {
+            panic!("expected the current native dimension slice");
+        };
+        assert_eq!(current.values, ["CHILD", "LATER", "ROOT"]);
+        assert_eq!(
+            h.head(),
+            before_replay,
+            "replay and certification publish nothing"
+        );
+    }
+
+    #[test]
+    fn native_dimension_epochs_export_archived_sources_after_reopen() {
+        let (mut h, original) = dimension_fixture();
+        // A synthetic prior foundation transcript isolates upgrade-compatible
+        // provenance from accounting meanings; actual native reads still replay.
+        let epoch = historical_epoch(h.book.context().book_id);
+        let historical = original.resealed_under(epoch.closure);
+        assert_ne!(historical.registry_digest, original.registry_digest);
+        let before = h.head();
+        assert_eq!(
+            h.retain(&historical).unwrap_err().code,
+            code::CERTIFICATE_REGISTRY_UNAVAILABLE
+        );
+        assert_eq!(
+            h.head(),
+            before,
+            "missing original sources cannot be invented"
+        );
+        publish_epoch(&mut h, &epoch);
+        h.retain(&historical).unwrap();
+        let mut h = h.reopen();
+        let saved = h.read(&historical.digest).unwrap();
+        let replay = h.book.replay_report(&h.cx(), &saved).unwrap().unwrap();
+        assert_eq!(replay.canonical_bytes().unwrap(), original.output);
+        let registries =
+            offline_report_registries_at(&h.book.db, &h.cx().query(), h.book.context(), &saved)
+                .unwrap()
+                .unwrap();
+        assert_eq!(registries.len(), 4);
+        assert_eq!(
+            registries[3].1,
+            document("foundations", &epoch.sources[3].1)
+                .unwrap()
+                .canonical_bytes()
+        );
+        let current_foundations = document("foundations", REPORT_REGISTRIES[3].1)
+            .unwrap()
+            .canonical_bytes();
+        assert_ne!(registries[3].1, current_foundations);
+
+        let cx = h.cx();
+        let producer =
+            fa_journal::Capability::embedded(VId(1), &["read", "produce", "witness"]).unwrap();
+        let checkpoint = h
+            .runtime
+            .block_on(h.book.checkpoint(&cx, VId(1), &producer))
+            .unwrap()
+            .unwrap();
+        let state = checkpoint.checkpoint.checkpoint.body.state_oid;
+        let before_export = h.head();
+        let produced = h
+            .runtime
+            .block_on(
+                h.book
+                    .produce_report_bundle(&cx, VId(1), &producer, Some(state), &saved),
+            )
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            h.head(),
+            before_export,
+            "export does not replace archived sources"
+        );
+        let key = h.book.checkpoint_public_key();
+        let anchor = fa_verify::verify_checkpoint(&produced.checkpoint.bytes, &[key]).unwrap();
+        let verified = fa_verify::report::verify_report_expected(
+            &produced.bundle.bytes,
+            &[key],
+            Some(&anchor.checkpoint),
+            Some(&produced.receipt),
+            Some(&saved.digest),
+        )
+        .unwrap();
+        assert_eq!(verified.unit_universe_source, "authenticated-registry");
+        assert_eq!(verified.output, original.output);
+        assert_eq!(verified.certificate_digest, saved.digest);
+        assert_eq!(verified.known_at, saved.known_at.0);
+        assert_eq!(verified.dimension.unwrap().values, ["CHILD", "ROOT"]);
+        assert_eq!(verified.rows.len(), 1);
+        assert_eq!(
+            (verified.rows[0].debits, verified.rows[0].credits),
+            (250, 0)
+        );
+
+        // A checkpoint authenticates journal membership, not a replacement
+        // executable's registry transcript. Keep the real recipient pin and
+        // omit the receipt so this negative reaches the registry predicate.
+        let mut changed = produced.bundle.bytes.clone();
+        let offset = changed
+            .windows(registries[3].1.len())
+            .position(|bytes| bytes == registries[3].1)
+            .unwrap();
+        assert_eq!(registries[3].1.len(), current_foundations.len());
+        changed[offset..offset + current_foundations.len()].copy_from_slice(&current_foundations);
+        assert_eq!(
+            fa_verify::report::verify_report_expected(
+                &changed,
+                &[key],
+                Some(&anchor.checkpoint),
+                None,
+                Some(&saved.digest),
+            )
+            .unwrap_err()
+            .predicate,
+            "registry_closure"
+        );
+    }
+
+    #[test]
+    fn native_dimension_epochs_refuse_changed_meanings_and_native_hierarchy_inputs() {
+        let (mut h, original) = dimension_fixture();
+        h.retain(&original).unwrap();
+        let mut changed_input = original.clone();
+        let hierarchy = changed_input
+            .inputs
+            .iter_mut()
+            .find(|input| input.statement.contains("MATCH (n:DimensionValue)"))
+            .unwrap();
+        hierarchy.result_digest.0[0] ^= 1;
+        let changed_input = changed_input.resealed_under(original.registry_digest);
+        let refusal = h
+            .book
+            .replay_report(&h.cx(), &changed_input)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, code::CERTIFICATE_INVALID);
+        assert!(
+            refusal.message.contains("native input"),
+            "{}",
+            refusal.message
+        );
+
+        let mut sources = historical_epoch(h.book.context().book_id).sources;
+        assert!(sources[2].1.contains("scale = 2"));
+        sources[2].1 = sources[2].1.replacen("scale = 2", "scale = 3", 1);
+        let incompatible = Epoch::new(h.book.context().book_id, sources).unwrap();
+        publish_epoch(&mut h, &incompatible);
+        let changed_meaning = original.resealed_under(incompatible.closure);
+        let before = h.head();
+        assert_eq!(
+            h.book
+                .replay_report(&h.cx(), &changed_meaning)
+                .unwrap()
+                .unwrap_err()
+                .code,
+            code::CERTIFICATE_REGISTRY_UNAVAILABLE
+        );
+        assert_eq!(
+            h.retain(&changed_meaning).unwrap_err().code,
+            code::CERTIFICATE_REGISTRY_UNAVAILABLE
+        );
+        assert_eq!(
+            h.head(),
+            before,
+            "incompatible unit meanings cannot be retained"
+        );
     }
 
     #[test]
