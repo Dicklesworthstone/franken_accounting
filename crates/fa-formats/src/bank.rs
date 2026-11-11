@@ -1885,6 +1885,8 @@ pub(crate) fn bank_csv_records_with(
 /// 2000-2099; an MMDD entry date must resolve uniquely within the opening/closing
 /// date interval. Without MMDD, the value date is also the booking date.
 /// Transaction :86: narratives are retained in the counterparty projection.
+/// One final :86: after the balances is validated as statement information
+/// and excluded from transaction counterparties.
 /// Multipart statements, envelopes and supplementary :61: lines need explicit
 /// conversion upstream. The original pipe-separated ISO-date profile remains
 /// supported, but profiles cannot be mixed within one statement.
@@ -2083,6 +2085,16 @@ fn mt940_text(text: &str, maximum: usize) -> bool {
         && !text.chars().any(char::is_control)
 }
 
+fn mt940_information(text: &str) -> Result<(), FormatError> {
+    if !(1..=6).contains(&text.lines().count()) || text.lines().any(|line| !mt940_text(line, 65)) {
+        return Err(camt_error(
+            "swift_mt940",
+            "MT940 :86: needs at most six nonempty 65-character lines",
+        ));
+    }
+    Ok(())
+}
+
 fn parse_mt940_standard(
     text: &str,
     units: &UnitCatalog,
@@ -2149,14 +2161,7 @@ fn parse_mt940_standard(
         let (mut line, entry_date) = mt940_standard_line(&raw, &currency, units)?;
         if records.peek().is_some_and(|(tag, _)| *tag == "86") {
             let description = mt940_required(&mut records, "86")?;
-            if !(1..=6).contains(&description.lines().count())
-                || description.lines().any(|part| !mt940_text(part, 65))
-            {
-                return Err(camt_error(
-                    FMT,
-                    "MT940 :86: needs at most six nonempty 65-character lines",
-                ));
-            }
+            mt940_information(&description)?;
             line.counterparty = description;
         }
         pending.push((line, entry_date));
@@ -2173,10 +2178,21 @@ fn parse_mt940_standard(
     // Available balances are metadata, never replacement booked balances.
     let mut available_seen = false;
     let mut forward_seen = false;
+    let mut statement_information_seen = false;
     for (tag, body) in records {
         match tag {
-            "64" if !available_seen && !forward_seen => available_seen = true,
-            "65" => forward_seen = true,
+            "64" if !available_seen && !forward_seen && !statement_information_seen => {
+                available_seen = true;
+            }
+            "65" if !statement_information_seen => forward_seen = true,
+            // A final :86: describes the whole statement. Its original bytes
+            // remain in the source Document and never become a transaction's
+            // counterparty or change its booked amount.
+            "86" if !statement_information_seen => {
+                mt940_information(&body)?;
+                statement_information_seen = true;
+                continue;
+            }
             _ => {
                 return Err(camt_error(
                     FMT,
@@ -3331,6 +3347,66 @@ Invoice 100
         assert!(parse_mt940(&source.replace("25,", "25,0"), &units).is_err());
         assert!(mt940_amount("2,", 38).is_err());
         assert!(mt940_amount("0,", 39).is_err());
+    }
+
+    #[test]
+    fn mt940_final_statement_information_preserves_every_booked_field() {
+        let units = UnitCatalog::embedded().unwrap();
+        let expected = parse_mt940(STANDARD_MT940, &units).unwrap();
+        let without_available = STANDARD_MT940
+            .replace(":64:C260131USD1300,\n", "")
+            .replace(":65:C260202USD1400,\n", "");
+        let boundary_note = std::iter::repeat_n("x".repeat(65), 6)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for balances in [STANDARD_MT940, without_available.as_str()] {
+            for note in [
+                "Statement information",
+                "NAME ACCOUNT OWNER: Demo\nACCOUNT DESCRIPTION: CURRENT ACCOUNT\nIBAN: ACCOUNT-1",
+                boundary_note.as_str(),
+            ] {
+                let source = format!("{balances}:86:{note}\n");
+                assert_eq!(parse_mt940(&source, &units).unwrap(), expected);
+                assert_eq!(
+                    parse_mt940(&source.replace('\n', "\r\n"), &units).unwrap(),
+                    expected
+                );
+                let unbalanced = source.replace("C260131USD1385,", "C260131USD1386,");
+                assert!(matches!(
+                    parse_mt940(&unbalanced, &units),
+                    Err(FormatError::BankContinuity { .. })
+                ));
+            }
+        }
+        let empty = ":20:EMPTY\n:25:ACCT-001\n:28C:2\n:60F:C260201USD1385,\n:62F:C260228USD1385,\n";
+        assert_eq!(
+            parse_mt940(&format!("{empty}:86:No activity\n"), &units).unwrap(),
+            parse_mt940(empty, &units).unwrap()
+        );
+    }
+
+    #[test]
+    fn mt940_final_statement_information_refuses_invalid_text_and_record_order() {
+        let units = UnitCatalog::embedded().unwrap();
+        let valid = format!("{STANDARD_MT940}:86:Statement information\n");
+        let invalid = [
+            format!("{STANDARD_MT940}:86:\n"),
+            format!("{STANDARD_MT940}:86:{}\n", "x".repeat(66)),
+            format!("{STANDARD_MT940}:86:1\n2\n3\n4\n5\n6\n7\n"),
+            format!("{STANDARD_MT940}:86:Bank\0note\n"),
+            format!("{STANDARD_MT940}:86:Bank\tnote\n"),
+            format!("{valid}:86:Duplicate statement note\n"),
+            format!("{valid}:64:C260131USD1300,\n"),
+            format!("{valid}:65:C260202USD1400,\n"),
+            format!("{valid}:61:260131C1,NTRFLATE\n"),
+            format!("{valid}:99:UNKNOWN\n"),
+        ];
+        for (index, source) in invalid.iter().enumerate() {
+            assert!(
+                parse_mt940(source, &units).is_err(),
+                "accepted invalid final MT940 information case {index}"
+            );
+        }
     }
 
     #[test]

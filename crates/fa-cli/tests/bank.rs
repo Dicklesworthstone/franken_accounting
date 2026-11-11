@@ -2413,6 +2413,8 @@ fn every_format_imports_via_cli() {
 :60F:C|2026-03-01|USD|0.00\n\
 :61:2026-03-05|C|125.00|WIRE-125|Customer\n\
 :62F:C|2026-03-31|USD|125.00\n";
+    let mt940_with_note =
+        format!("{mt940}:86:NAME ACCOUNT OWNER: Demo\nACCOUNT DESCRIPTION: CURRENT ACCOUNT\n");
     for (name, format, raw) in [
         ("statement.csv", "csv", csv.as_str()),
         ("statement.camt053.xml", "camt053", camt),
@@ -2421,6 +2423,7 @@ fn every_format_imports_via_cli() {
         ("statement-iso.bai2", "bai2", bai2_iso),
         ("statement.ofx", "ofx", ofx),
         ("statement.mt940", "mt940", mt940),
+        ("statement-note.mt940", "mt940", mt940_with_note.as_str()),
         ("statement-pipe.mt940", "mt940", mt940_pipe),
     ] {
         let imported = f.import(name, format, raw);

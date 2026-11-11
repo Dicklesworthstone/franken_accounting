@@ -4,6 +4,36 @@ This record is required by the engineering doctrine. It names observed
 counterexamples and the code that prevents their recurrence; it is not a
 release certificate.
 
+## 2026-11-11 — unrelated Workpapers blocked valid migration preparation
+
+Discovery fully decoded every Human-uploaded migration Workpaper before
+checking which run it named. An unrelated mislabelled document made a valid
+QuickBooks migration fail preparation with exit 8. The original CLI failure
+and unchanged source book are retained in the discovery fixture.
+
+Discovery now reads the fixed book/run identity header first. A candidate
+for the selected run still requires complete decoding, authenticated mapping,
+source replay and proposal verification. Truncated matching candidates and
+unknown versions still refuse without publication. The complete migration
+suite passed 60 tests. The fixed CLI prepared, retried, staged and finalized
+the original fixture under independent approvals; its trial balance contains
+Cash 125.50 USD and Equity -125.50 USD. The unrelated Workpaper remains
+retained byte for byte, and retries preserve the package and entry identities.
+
+## 2026-11-11 — valid final MT940 statement information was rejected
+
+The MT940 parser refused a final statement-level `:86:` after closing and
+optional available balances. A complete formats baseline ran 185 passing
+tests and one failing positive regression; an actual CLI import refused the
+same source with exit 2.
+
+The parser now validates one final information record under the existing
+six-line, 65-character rule. It never adds a transaction or changes booked
+fields. Duplicate notes, later balance records, invalid text and a broken
+closing balance still refuse. All 186 formats tests and 43 CLI bank tests
+passed. The fixed CLI imported the unchanged source and retained its exact
+bytes; retry preserved object identities, recorded sequence and journal head.
+
 ## 2026-11-11 — exact timestamp parsing broke replay of retained migration packages
 
 The exact timestamp parser changed the projection of a historical export with
