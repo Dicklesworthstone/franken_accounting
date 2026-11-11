@@ -2086,7 +2086,9 @@ fn mt940_text(text: &str, maximum: usize) -> bool {
 }
 
 fn mt940_information(text: &str) -> Result<(), FormatError> {
-    if !(1..=6).contains(&text.lines().count()) || text.lines().any(|line| !mt940_text(line, 65)) {
+    if !(1..=6).contains(&text.split('\n').count())
+        || text.split('\n').any(|line| !mt940_text(line, 65))
+    {
         return Err(camt_error(
             "swift_mt940",
             "MT940 :86: needs at most six nonempty 65-character lines",
@@ -2102,21 +2104,33 @@ fn parse_mt940_standard(
     const FMT: &str = "swift_mt940";
     let mut records: Vec<(&str, String)> = Vec::new();
     for raw in text.lines() {
-        let line = raw.trim();
+        let line = raw.trim_start();
         if line.is_empty() {
+            if let Some((tag, body)) = records.last_mut()
+                && *tag == "86"
+            {
+                body.push('\n');
+            }
             continue;
         }
         if let Some(field) = line.strip_prefix(':') {
             let (tag, body) = field
                 .split_once(':')
                 .ok_or_else(|| camt_error(FMT, "malformed MT940 record tag"))?;
-            records.push((tag, body.trim().to_owned()));
+            records.push((
+                tag,
+                if tag == "86" {
+                    body.to_owned()
+                } else {
+                    body.trim().to_owned()
+                },
+            ));
         } else if let Some((tag, body)) = records.last_mut() {
             if *tag != "86" {
                 return Err(camt_error(FMT, "unsupported MT940 continuation record"));
             }
             body.push('\n');
-            body.push_str(line);
+            body.push_str(raw);
         } else {
             return Err(camt_error(FMT, "MT940 needs an unwrapped statement body"));
         }
@@ -2162,7 +2176,13 @@ fn parse_mt940_standard(
         if records.peek().is_some_and(|(tag, _)| *tag == "86") {
             let description = mt940_required(&mut records, "86")?;
             mt940_information(&description)?;
-            line.counterparty = description;
+            // Keep the established projection only after validating all
+            // original physical lines; normalization cannot hide invalid input.
+            line.counterparty = description
+                .lines()
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .join("\n");
         }
         pending.push((line, entry_date));
     }
