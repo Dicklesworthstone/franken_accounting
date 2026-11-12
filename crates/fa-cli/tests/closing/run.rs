@@ -699,6 +699,9 @@ fn combined_close_rehearsal_retains_and_replays_after_real_execution() {
         before + 1,
         "only complete certificate retention publishes"
     );
+    let current = ok(&f.book, &["certificate", "status", &oid]);
+    assert_eq!(text(&current, "status"), "Current");
+    assert_eq!(integer(&current, "checked_at"), before + 1);
     assert_eq!(
         get(task(&status(&f, "combined"), "first"), "completion"),
         &Json::Null
@@ -855,11 +858,10 @@ fn combined_close_rehearsal_retains_and_replays_after_real_execution() {
     );
     assert_eq!(std::fs::read(output_path).unwrap(), certificate.output());
     assert_eq!(head(&f.book), after, "replay is a read");
-    assert_ne!(
-        run(&f.book, &["certificate", "status", &oid]).0,
-        0,
-        "native baseline freshness cannot claim current close readiness"
-    );
+    let changed = ok(&f.book, &["certificate", "status", &oid]);
+    assert_eq!(text(&changed, "status"), "Changed");
+    assert_eq!(integer(&changed, "checked_at"), after);
+    assert_eq!(head(&f.book), after, "complete freshness is read-only");
 }
 
 #[test]

@@ -4,7 +4,8 @@
 
 use fa::{
     Book, BookKeys, DRAFT_DIFF_CERTIFICATE_FORMAT, DraftDiffCertificate, Entropy,
-    MAX_DRAFT_DIFF_CERTIFICATE_BYTES, ReportArtifact, ReportArtifactFamily,
+    MAX_DRAFT_DIFF_CERTIFICATE_BYTES, RehearsalCertificateStatus, ReportArtifact,
+    ReportArtifactFamily,
 };
 use fa_intents::PostIntent;
 use fa_journal::{AccountSpec, BookSpec, Document, DraftRehearsalSource, DraftState, UnitPolicy};
@@ -185,6 +186,102 @@ impl Fixture {
 }
 
 #[test]
+fn freshness_distinguishes_retention_from_changed_membership_lifecycle_and_authority() {
+    for change in ["plan", "discard", "promote", "planner-revoked", "period"] {
+        let mut f = Fixture::new();
+        let certified = f
+            .book
+            .certify_draft_diff(REVIEWER, &producer(), DRAFT, PERIOD)
+            .unwrap()
+            .unwrap();
+        f.book
+            .retain_draft_diff(REVIEWER, &producer(), &certified.certificate)
+            .unwrap()
+            .unwrap();
+        let retained_at = f.book.head().unwrap();
+        assert_eq!(
+            f.book
+                .draft_diff_status(REVIEWER, &cap(REVIEWER, &["read"]), &certified.certificate)
+                .unwrap()
+                .unwrap(),
+            RehearsalCertificateStatus::Current {
+                checked_at: retained_at
+            },
+            "retention alone preserves the complete review",
+        );
+        assert_eq!(f.book.head().unwrap(), retained_at);
+        match change {
+            "plan" => f.plan(70, b"later-plan"),
+            "discard" => {
+                f.book
+                    .discard_draft(planner(), DRAFT, day(), "Changed draft decision")
+                    .unwrap()
+                    .unwrap();
+            }
+            "promote" => {
+                f.book
+                    .promote_draft(
+                        cap(ADMIN, &["approve"]),
+                        DRAFT,
+                        day(),
+                        "Execute reviewed work",
+                    )
+                    .unwrap()
+                    .unwrap();
+            }
+            "planner-revoked" => {
+                f.book
+                    .revoke_capability(
+                        cap(ADMIN, &["issue_capability"]),
+                        planner().commitment().unwrap(),
+                        day(),
+                        b"revoke-original-planner",
+                        "The original planner no longer has authority",
+                    )
+                    .unwrap()
+                    .unwrap();
+            }
+            "period" => {
+                f.book
+                    .transition_period(
+                        PERIOD,
+                        PeriodTransition::SoftClose,
+                        ADMIN,
+                        1,
+                        b"later-period-state",
+                        &cap(ADMIN, &["close"]),
+                    )
+                    .unwrap()
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let checked_at = f.book.head().unwrap();
+        assert_eq!(
+            f.book
+                .draft_diff_status(REVIEWER, &cap(REVIEWER, &["read"]), &certified.certificate)
+                .unwrap()
+                .unwrap(),
+            RehearsalCertificateStatus::Changed { checked_at },
+            "{change}",
+        );
+        assert_eq!(
+            f.book
+                .replay_draft_diff(REVIEWER, &cap(REVIEWER, &["read"]), &certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.report,
+            "{change}: freshness never replaces the immutable historical result",
+        );
+        assert_eq!(
+            f.book.head().unwrap(),
+            checked_at,
+            "{change}: status is read-only"
+        );
+    }
+}
+
+#[test]
 fn atomic_batch_draft_review_counts_members_and_replays_after_promotion() {
     let mut f = Fixture::new();
     let view = f.book.draft(DRAFT).unwrap().unwrap();
@@ -347,6 +444,10 @@ fn retained_review_replays_under_a_historical_ceiling_but_requires_current_autho
     // separate HEAD operations deliberately retain their narrower contract.
     for refusal in [
         f.book
+            .draft_diff_status(REVIEWER, &reader, &certificate)
+            .unwrap()
+            .unwrap_err(),
+        f.book
             .draft_diff(REVIEWER, &reader, DRAFT, PERIOD)
             .unwrap()
             .unwrap_err(),
@@ -383,6 +484,15 @@ fn retained_review_replays_under_a_historical_ceiling_but_requires_current_autho
         .unwrap()
         .unwrap_err();
     assert_eq!(refusal.code, "FA-REF-023", "{refusal}");
+    let refusal = f
+        .book
+        .draft_diff_status(REVIEWER, &reader, &certificate)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        refusal.code, "FA-REF-023",
+        "status must check current authority: {refusal}"
+    );
     assert_eq!(f.book.head().unwrap(), revoked_at);
 }
 
@@ -445,6 +555,10 @@ fn replay_and_retention_refuse_rehashed_source_map_or_output_substitution() {
         let certificate = forged(&certified.certificate, change);
         assert_ne!(certificate.digest(), certified.certificate.digest());
         for refusal in [
+            f.book
+                .draft_diff_status(REVIEWER, &cap(REVIEWER, &["read"]), &certificate)
+                .unwrap()
+                .unwrap_err(),
             f.book
                 .replay_draft_diff(REVIEWER, &cap(REVIEWER, &["read"]), &certificate)
                 .unwrap()

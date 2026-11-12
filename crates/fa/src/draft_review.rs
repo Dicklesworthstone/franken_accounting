@@ -17,8 +17,8 @@ use fa_registers::TrialBalance;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{
-    Book, Outcome, ReportCertificate, ReportOutput, ReportSelection, RetainedCertificate,
-    TrialBalanceSelection,
+    Book, CertificateStatus, Outcome, RehearsalCertificateStatus, ReportCertificate, ReportOutput,
+    ReportSelection, RetainedCertificate, TrialBalanceSelection,
 };
 
 pub const DRAFT_DIFF_CERTIFICATE_FORMAT: &[u8] = b"fa:draft-diff-certificate:v1";
@@ -630,6 +630,79 @@ impl Book {
         };
         let draft = scratch.trial_balance_at(&[certificate.period().to_string()], None)?;
         Ok(check_replay(certificate, &rehearsal, &trunk, &draft))
+    }
+
+    /// Replay the complete original review before comparing it with the
+    /// currently open draft, its exact immutable membership and native result.
+    /// Retention and unrelated approval publications may move the scratch
+    /// coordinates; they cannot replace any source identity, amount or receipt.
+    /// This requires current whole-book Read authority and publishes nothing.
+    pub fn draft_diff_status(
+        &mut self,
+        principal: VId,
+        capability: &Capability,
+        certificate: &DraftDiffCertificate,
+    ) -> Outcome<RehearsalCertificateStatus> {
+        if let Err(refusal) = authorize(self, principal, capability, None, false)? {
+            return Ok(Err(refusal));
+        }
+        let reviewed = match self.replay_draft_diff(principal, capability, certificate)? {
+            Ok(reviewed) => reviewed,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let checked_at = self.head()?;
+        match self.certificate_status(certificate.trunk())? {
+            Ok(CertificateStatus::Current { .. }) => {}
+            Ok(CertificateStatus::SupersededBy { .. }) => {
+                return Ok(Ok(RehearsalCertificateStatus::Changed { checked_at }));
+            }
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+        match self.rehearsal_period_is_current(
+            principal,
+            capability,
+            certificate.period(),
+            certificate.known_at(),
+        )? {
+            Ok(true) => {}
+            Ok(false) => return Ok(Ok(RehearsalCertificateStatus::Changed { checked_at })),
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+        let mut current = match self.draft_diff(
+            principal,
+            capability,
+            certificate.name(),
+            certificate.period(),
+        )? {
+            Ok(current) => current,
+            Err(refusal) => {
+                // Recheck the caller before interpreting a native planner or
+                // lifecycle refusal as changed work, never as lost authority.
+                if let Err(refusal) = authorize(self, principal, capability, None, false)? {
+                    return Ok(Err(refusal));
+                }
+                return if crate::rehearsal_status::changed_by_current_refusal(&refusal) {
+                    Ok(Ok(RehearsalCertificateStatus::Changed { checked_at }))
+                } else {
+                    Ok(Err(refusal))
+                };
+            }
+        };
+        // Rebind only the observation frontier of the original complete
+        // source. Ignoring its digest would hide a replaced or added plan.
+        let mut expected_source = certificate.source().clone();
+        expected_source.known_at = current.source_known_at;
+        if current.source_digest != expected_source.digest()? {
+            return Ok(Ok(RehearsalCertificateStatus::Changed { checked_at }));
+        }
+        current.source_known_at = reviewed.source_known_at;
+        current.source_digest = reviewed.source_digest;
+        current.seq_map_digest = reviewed.seq_map_digest;
+        current.rehearsal_known_at = reviewed.rehearsal_known_at;
+        Ok(Ok(RehearsalCertificateStatus::at(
+            checked_at,
+            current == reviewed,
+        )))
     }
 
     /// Reperform the complete historical review before retaining its original

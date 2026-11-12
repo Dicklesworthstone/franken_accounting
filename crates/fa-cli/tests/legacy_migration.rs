@@ -3128,6 +3128,114 @@ fn recomputed_package_and_entry_hashes_do_not_authorize_changed_amounts_or_priva
     assert_eq!(fixture.cash(None), "0.00 USD");
 }
 
+#[test]
+fn unrelated_malformed_workpapers_do_not_block_preparing_a_migration_package() {
+    let fixture = Fixture::quickbooks();
+    let book_id = fixture.open().context().book_id;
+    let selected_run = u128::from_str_radix(&fixture.run_vid, 16).unwrap();
+    for (index, (domain, mime)) in [
+        (
+            b"FA-LEGACY-OPENING-IMPORT\0".as_slice(),
+            "application/vnd.frankenaccounting.legacy-opening-import.v1",
+        ),
+        (
+            b"FA-LEGACY-PERIOD-BALANCES-IMPORT\0".as_slice(),
+            "application/vnd.frankenaccounting.legacy-period-balances-import.v1",
+        ),
+        (
+            b"FA-LEGACY-FULL-DETAIL-IMPORT\0".as_slice(),
+            "application/vnd.frankenaccounting.legacy-full-detail-import.v1",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut other_book = book_id.0;
+        other_book[0] ^= 1;
+        let mut bodies = vec![b"unrelated mislabelled Workpaper".to_vec(), domain.to_vec()];
+        for (book, run) in [(other_book, selected_run), (book_id.0, selected_run ^ 1)] {
+            let mut writer = Writer::new();
+            writer.fixed(domain).u16(1).fixed(&book).u128(run);
+            bodies.push(writer.finish().unwrap());
+        }
+        for (body_index, body) in bodies.into_iter().enumerate() {
+            let path = fixture
+                .dir
+                .join(format!("unrelated-{index}-{body_index}.bin"));
+            std::fs::write(&path, body).unwrap();
+            ok(
+                &fixture.book,
+                &[
+                    "document",
+                    "add",
+                    path.to_str().unwrap(),
+                    "--kind",
+                    "Workpaper",
+                    "--mime",
+                    mime,
+                    "--grade",
+                    "HumanUpload",
+                ],
+            );
+        }
+    }
+    let prepared = fixture.prepare();
+    let package = text(data(&prepared), "package_oid");
+    let before_retry = head(&fixture.book);
+    let retry = fixture.prepare();
+    assert_eq!(text(data(&retry), "package_oid"), package);
+    assert_eq!(
+        data(&retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(head(&fixture.book), before_retry);
+    assert_eq!(
+        data(&fixture.show(package)).get("chunks"),
+        data(&prepared).get("chunks")
+    );
+}
+
+#[test]
+fn a_malformed_candidate_for_the_selected_run_prevents_regenerating_a_package() {
+    for version in [1, 2] {
+        let fixture = Fixture::quickbooks();
+        let book_id = fixture.open().context().book_id;
+        let selected_run = u128::from_str_radix(&fixture.run_vid, 16).unwrap();
+        let mut writer = Writer::new();
+        writer
+            .fixed(b"FA-LEGACY-OPENING-IMPORT\0")
+            .u16(version)
+            .fixed(&book_id.0)
+            .u128(selected_run);
+        let path = fixture.dir.join("selected-invalid-package.bin");
+        std::fs::write(&path, writer.finish().unwrap()).unwrap();
+        ok(
+            &fixture.book,
+            &[
+                "document",
+                "add",
+                path.to_str().unwrap(),
+                "--kind",
+                "Workpaper",
+                "--mime",
+                "application/vnd.frankenaccounting.legacy-opening-import.v1",
+                "--grade",
+                "HumanUpload",
+            ],
+        );
+        let before = head(&fixture.book);
+        let intent = fixture.file("selected-invalid-import.json", &fixture.intent().render());
+        let (status, refused) = run(
+            &fixture.book,
+            &[
+                "migrate", "import", "--action", "prepare", "--intent", &intent,
+            ],
+        );
+        assert_eq!(status, 8, "{}", refused.render());
+        assert_eq!(head(&fixture.book), before);
+    }
+}
+
 /// A stock trial balance's non-zero rows as `(code, net without the unit)`.
 fn stock_lines(book: &Path, period: &str) -> Vec<(String, String)> {
     let result = ok(book, &["tb", "--period", period]);

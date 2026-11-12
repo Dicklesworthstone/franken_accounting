@@ -524,6 +524,12 @@ enum PackageKind {
 }
 
 impl PackageKind {
+    fn from_prefix(bytes: &[u8]) -> Option<Self> {
+        [Self::OpeningOnly, Self::PeriodBalances, Self::FullDetail]
+            .into_iter()
+            .find(|kind| bytes.starts_with(kind.domain()))
+    }
+
     fn for_run(run: &Run) -> Self {
         match run.body.mode {
             RunMode::OpeningOnly => Self::OpeningOnly,
@@ -569,6 +575,26 @@ struct Package {
 }
 
 impl Package {
+    /// Select a discovery candidate using only the fixed identity header.
+    /// A matching candidate still requires the complete decoder and source
+    /// replay, including its version, before preparation can proceed.
+    fn names_run(bytes: &[u8], book: Id128, run: VId) -> bool {
+        let Some(kind) = PackageKind::from_prefix(bytes) else {
+            return false;
+        };
+        let mut reader = Reader::new(&bytes[kind.domain().len()..]);
+        if reader.u16("legacy_import.version").is_err() {
+            return false;
+        }
+        let Ok(header_book) = reader.fixed::<16>("legacy_import.book") else {
+            return false;
+        };
+        let Ok(header_run) = reader.u128("legacy_import.run") else {
+            return false;
+        };
+        header_book == book.0 && header_run == run.0
+    }
+
     fn open_mapping(&self, book: &Book) -> Result<(String, bool), Fail> {
         if self.request.subject_ref().is_some() {
             return Err(invalid(
@@ -616,15 +642,8 @@ impl Package {
         if bytes.len() > MAX_PACKAGE_BYTES {
             return Err(invalid("package exceeds 16 MiB"));
         }
-        let kind = if bytes.starts_with(PACKAGE_DOMAIN) {
-            PackageKind::OpeningOnly
-        } else if bytes.starts_with(PERIOD_BALANCES_DOMAIN) {
-            PackageKind::PeriodBalances
-        } else if bytes.starts_with(FULL_DETAIL_DOMAIN) {
-            PackageKind::FullDetail
-        } else {
-            return Err(invalid("unsupported package domain"));
-        };
+        let kind =
+            PackageKind::from_prefix(bytes).ok_or_else(|| invalid("unsupported package domain"))?;
         let mut reader = Reader::new(&bytes[kind.domain().len()..]);
         let decode = |error: fa_model::DecodeError| invalid(error.to_string());
         if reader.u16("legacy_import.version").map_err(decode)? != PACKAGE_VERSION {
@@ -1951,8 +1970,7 @@ fn retained_package(
             continue;
         }
         let document = full_document(book, cap, summary.oid)?;
-        let package = Package::decode(&document.bytes)?;
-        if package.run != run.vid {
+        if !Package::names_run(&document.bytes, book.context().book_id, run.vid) {
             continue;
         }
         let loaded = load_package(book, cap, summary.oid)?;

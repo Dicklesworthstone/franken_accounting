@@ -158,9 +158,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// its control reconciliations/portfolios, and direct, indirect, split and
     /// policy cash flow.
     /// Other families refuse until their distinct relevance law is implemented.
-    /// In particular, a historical draft rehearsal is never declared Current
-    /// from its trunk trial-balance certificate alone; its full replay uses the
-    /// sync facade and this slice supplies no draft freshness verdict.
+    /// In particular, a historical draft or close rehearsal is never declared
+    /// Current from its trunk trial-balance certificate alone. Their complete
+    /// scratch comparisons use [`crate::Book::draft_diff_status`] and
+    /// [`crate::Book::close_run_rehearsal_status`] on the mutable sync facade;
+    /// this async-backed entry-provenance adapter cannot run that scratch work.
     pub fn report_artifact_status(
         &self,
         cx: &PurposeContexts,

@@ -1551,6 +1551,29 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             let certificate = fa::ScenarioDiffCertificate::decode(&bytes)?;
             entry_status(book.scenario_diff_status(principal, &capability, &certificate)??)
         }
+        ReportArtifactFamily::DraftDiff | ReportArtifactFamily::CloseRunRehearsal => {
+            if args.flag("--expect").is_some() {
+                return Err(usage(
+                    "rehearsal status compares the certificate's complete native source and current work and does not accept report-policy expectations",
+                    "fa certificate status C:<rehearsal-certificate> --json",
+                ));
+            }
+            let status = if artifact.family() == ReportArtifactFamily::DraftDiff {
+                let certificate = fa::DraftDiffCertificate::decode(&bytes)?;
+                book.draft_diff_status(principal, &capability, &certificate)??
+            } else {
+                let certificate = fa::CloseRunRehearsalCertificate::decode(&bytes)?;
+                book.close_run_rehearsal_status(principal, &capability, &certificate)??
+            };
+            match status {
+                fa::RehearsalCertificateStatus::Current { checked_at } => {
+                    ("Current", checked_at, Vec::new(), Vec::new())
+                }
+                fa::RehearsalCertificateStatus::Changed { checked_at } => {
+                    ("Changed", checked_at, Vec::new(), Vec::new())
+                }
+            }
+        }
         _ => {
             let expected = expectations::parse(args, &book, principal, &capability)?;
             // The shared verifier replays aging as supplied. Bind a supplied
@@ -1625,10 +1648,18 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             )
         })
         .collect::<String>();
-    let status_detail = if artifact.family() == ReportArtifactFamily::Procedure {
-        "procedure findings, population, work and decision evidence compared".to_owned()
-    } else {
-        format!("{} later entries in its selector", later_entries.len())
+    let status_detail = match artifact.family() {
+        ReportArtifactFamily::Procedure => {
+            "procedure findings, population, work and decision evidence compared".to_owned()
+        }
+        ReportArtifactFamily::DraftDiff => {
+            "complete draft source, lifecycle and native rehearsal compared".to_owned()
+        }
+        ReportArtifactFamily::CloseRunRehearsal => {
+            "complete close graph, period lifecycle, task receipts and native rehearsal compared"
+                .to_owned()
+        }
+        _ => format!("{} later entries in its selector", later_entries.len()),
     };
     ctx.out.event_with_certificate(
         "certificate_status",

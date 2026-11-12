@@ -2413,6 +2413,8 @@ fn every_format_imports_via_cli() {
 :60F:C|2026-03-01|USD|0.00\n\
 :61:2026-03-05|C|125.00|WIRE-125|Customer\n\
 :62F:C|2026-03-31|USD|125.00\n";
+    let mt940_with_note =
+        format!("{mt940}:86:NAME ACCOUNT OWNER: Demo\nACCOUNT DESCRIPTION: CURRENT ACCOUNT\n");
     for (name, format, raw) in [
         ("statement.csv", "csv", csv.as_str()),
         ("statement.camt053.xml", "camt053", camt),
@@ -2421,6 +2423,7 @@ fn every_format_imports_via_cli() {
         ("statement-iso.bai2", "bai2", bai2_iso),
         ("statement.ofx", "ofx", ofx),
         ("statement.mt940", "mt940", mt940),
+        ("statement-note.mt940", "mt940", mt940_with_note.as_str()),
         ("statement-pipe.mt940", "mt940", mt940_pipe),
     ] {
         let imported = f.import(name, format, raw);
@@ -2475,6 +2478,97 @@ fn every_format_imports_via_cli() {
         rows(data(&projections), "drift").is_empty(),
         "{projections:?}"
     );
+}
+
+#[test]
+fn mt940_physical_information_limits_preserve_valid_replay_and_refuse_before_publication() {
+    let f = Fixture::new();
+    f.post(
+        "mt940-physical",
+        "2026-03-05",
+        "debit",
+        "125.00",
+        "WIRE-125",
+    );
+    let boundary = std::iter::repeat_n(format!(" {} ", "x".repeat(63)), 6)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let source = format!(
+        ":20:MARCH\n:25:ACCOUNT-1\n:28C:1\n:60F:C260301USD0,\n\
+         :61:2603050305C125,NTRFWIRE-125\n:86:  Customer  \n  Deposit  \n\
+         :62F:C260331USD125,\n:86:{boundary}\n"
+    );
+    let imported = f.import("physical-valid.mt940", "mt940", &source);
+    let receipt = data(&imported);
+    let published = head(&f.book);
+    let retained = ok_privileged(
+        &f.book,
+        &["document", "read", text(receipt, "statement_oid")],
+    );
+    assert_eq!(
+        text(data(&retained).get("text").unwrap(), "untrusted_content"),
+        source
+    );
+    let matched = ok_privileged(
+        &f.book,
+        &["bank", "match", "--import", text(receipt, "manifest_oid")],
+    );
+    let proposals = rows(data(&matched), "proposals");
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(text(&proposals[0], "amount"), "125.00 USD");
+    assert_eq!(
+        text(
+            proposals[0].get("counterparty").unwrap(),
+            "untrusted_content"
+        ),
+        "Customer\nDeposit"
+    );
+    for (index, note) in [
+        "\tInformation".to_owned(),
+        "Information\t".to_owned(),
+        "First\n\tSecond".to_owned(),
+        format!(" {}", "x".repeat(65)),
+        format!("{} ", "x".repeat(65)),
+        "First\n\nSecond".to_owned(),
+        "First\n   \nSecond".to_owned(),
+        "1\n2\n3\n\n4\n5\n6".to_owned(),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let transaction =
+            source.replace(":86:  Customer  \n  Deposit  \n", &format!(":86:{note}\n"));
+        let final_note = source.replace(&format!(":86:{boundary}\n"), &format!(":86:{note}\n"));
+        for (location, invalid) in [("transaction", transaction), ("final", final_note)] {
+            let path = f.file(
+                &format!("physical-invalid-{location}-{index}.mt940"),
+                &invalid,
+            );
+            let (status, refused) = run(
+                &f.book,
+                &[
+                    "bank",
+                    "import",
+                    &path,
+                    "--bank-format",
+                    "mt940",
+                    "--account",
+                    "1000",
+                ],
+            );
+            assert_eq!(status, 2, "{location}/{index}: {}", refused.render());
+            assert_eq!(head(&f.book), published);
+        }
+    }
+    let retry = f.import("physical-valid-retry.mt940", "mt940", &source);
+    assert_eq!(
+        data(&retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    for field in ["manifest_oid", "statement_oid", "line_oids", "recorded_at"] {
+        assert_eq!(data(&retry).get(field), receipt.get(field));
+    }
+    assert_eq!(head(&f.book), published);
 }
 
 /// Real saved-statement intake selects the economic role at the scoped CAMT

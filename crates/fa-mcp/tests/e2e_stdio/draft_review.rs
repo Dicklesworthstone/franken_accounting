@@ -430,15 +430,23 @@ fn draft_rehearsal_over_stdio_preserves_agent_plans_and_retained_replay() {
         &["--principal", "cold-draft-review-reader", "--grant", "read"],
     );
     cold_reader.discover();
-    for (locator, expected_report, coordinate) in retained {
+    for (locator, expected_report, coordinate) in &retained {
+        let (error, status, result) = call_tool(
+            &mut cold_reader,
+            "fa_read_certificate_status",
+            json!({"certificate": locator}),
+        );
+        assert!(!error, "cold retained freshness: {status}");
+        assert_eq!(wire(&status)["status"], json!("Current"));
+        assert_eq!(envelope(&result)["events"], json!(["certificate_status"]));
         let (error, replayed, result) = call_tool(
             &mut cold_reader,
             "fa_read_replay",
             json!({"certificate": locator}),
         );
         assert!(!error, "cold retained replay: {replayed}");
-        assert_eq!(wire(&replayed), wire(&expected_report));
-        assert_eq!(envelope(&result)["coordinate"], coordinate);
+        assert_eq!(wire(&replayed), wire(expected_report));
+        assert_eq!(&envelope(&result)["coordinate"], coordinate);
     }
     assert_eq!(cold_reader.finish(), 0);
 
@@ -451,4 +459,42 @@ fn draft_rehearsal_over_stdio_preserves_agent_plans_and_retained_replay() {
         assert_eq!(fixture.draft(name), original_drafts[index]);
         fixture.assert_unposted(entries[index]);
     }
+
+    cli_data(&[
+        "draft",
+        "promote",
+        human_name,
+        "--as",
+        "independent-controller",
+        "--yes",
+        "--book",
+        &fixture.book_arg,
+        "--json",
+    ]);
+    let mut status_reader = Mcp::start_with(
+        &fixture.book,
+        &[
+            "--principal",
+            "current-draft-review-reader",
+            "--grant",
+            "read",
+        ],
+    );
+    status_reader.discover();
+    let (locator, original, _) = &retained[0];
+    let (error, status, _) = call_tool(
+        &mut status_reader,
+        "fa_read_certificate_status",
+        json!({"certificate": locator}),
+    );
+    assert!(!error, "changed retained freshness: {status}");
+    assert_eq!(wire(&status)["status"], json!("Changed"));
+    let (error, replayed, _) = call_tool(
+        &mut status_reader,
+        "fa_read_replay",
+        json!({"certificate": locator}),
+    );
+    assert!(!error, "the original review remains replayable: {replayed}");
+    assert_eq!(wire(&replayed), wire(original));
+    assert_eq!(status_reader.finish(), 0);
 }

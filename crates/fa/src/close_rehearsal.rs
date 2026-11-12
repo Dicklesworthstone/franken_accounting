@@ -25,8 +25,9 @@ use fa_registers::TrialBalance;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{
-    Book, DraftDiff, DraftDiffCertificate, DraftDiffRow, Outcome, ReportArtifactFamily,
-    ReportCertificate, ReportOutput, ReportSelection, TrialBalanceSelection,
+    Book, CertificateStatus, DraftDiff, DraftDiffCertificate, DraftDiffRow, Outcome,
+    RehearsalCertificateStatus, ReportArtifactFamily, ReportCertificate, ReportOutput,
+    ReportSelection, TrialBalanceSelection,
 };
 
 pub const CLOSE_RUN_REHEARSAL_CERTIFICATE_FORMAT: &[u8] = b"fa:close-run-rehearsal-certificate:v1";
@@ -574,20 +575,31 @@ fn check_combined_batch(
     expected: &DraftDiff,
     rehearsal: &DraftRehearsalStep,
     source_at: CommitSeq,
+    checking_freshness: bool,
 ) -> Result<(), Refusal> {
     let mut source = rehearsal.source.clone();
     source.known_at = certificate.source().known_at;
-    if source != *certificate.source()
-        || rehearsal.source.known_at != source_at
+    if source != *certificate.source() || rehearsal.batch.entries != expected.entries {
+        let refusal = if checking_freshness {
+            Refusal::new(
+                fa_journal::refusal::code::PLAN_INVALIDATED,
+                exit::CONFLICT,
+                "the current combined task has different draft membership or native effects",
+                "plan §7.5 (the complete current source must match the reviewed close)",
+                "review the changed draft and create a new close run with its retained review",
+            )
+        } else {
+            invalid("the combined task changed its original membership or reviewed effects")
+        };
+        return Err(in_task(&task.id, refusal));
+    }
+    if rehearsal.source.known_at != source_at
         || rehearsal.batch.already_recorded
         || source_at.0.checked_add(1) != Some(rehearsal.batch.recorded_at.0)
-        || rehearsal.batch.entries != expected.entries
     {
         return Err(in_task(
             &task.id,
-            invalid(
-                "the combined task changed its original membership, reviewed effects or publication coordinates",
-            ),
+            invalid("the combined task changed its reviewed publication coordinates"),
         ));
     }
     Ok(())
@@ -682,6 +694,7 @@ impl Book {
         view: &CloseRunView,
         trunk: &TrialBalance,
         reviews: &[(DraftDiffCertificate, DraftDiff)],
+        checking_freshness: bool,
     ) -> Outcome<CloseRunRehearsal> {
         let source_at = trunk.known_at;
         if view.opened_at > source_at || source_at > self.head()? {
@@ -828,9 +841,14 @@ impl Book {
                             "the native rehearsal omitted a complete draft",
                         )));
                     };
-                    if let Err(refusal) =
-                        check_combined_batch(task, certificate, expected, &rehearsal, rehearsal_at)
-                    {
+                    if let Err(refusal) = check_combined_batch(
+                        task,
+                        certificate,
+                        expected,
+                        &rehearsal,
+                        rehearsal_at,
+                        checking_freshness,
+                    ) {
                         return Ok(Err(refusal));
                     }
                     rehearsal_at = rehearsal.batch.recorded_at;
@@ -894,6 +912,16 @@ impl Book {
         capability: &Capability,
         name: &str,
     ) -> Outcome<CloseRunRehearsal> {
+        self.close_run_rehearsal_at_head(principal, capability, name, false)
+    }
+
+    fn close_run_rehearsal_at_head(
+        &mut self,
+        principal: VId,
+        capability: &Capability,
+        name: &str,
+        checking_freshness: bool,
+    ) -> Outcome<CloseRunRehearsal> {
         if let Err(refusal) = authorize(self, principal, capability, false)? {
             return Ok(Err(refusal));
         }
@@ -908,7 +936,14 @@ impl Book {
         };
         let trunk =
             self.trial_balance_at(std::slice::from_ref(&view.body.period), Some(known_at))?;
-        self.rehearse_close_view(principal, capability, &view, &trunk, &reviews)
+        self.rehearse_close_view(
+            principal,
+            capability,
+            &view,
+            &trunk,
+            &reviews,
+            checking_freshness,
+        )
     }
 
     pub fn certify_close_run_rehearsal(
@@ -943,11 +978,12 @@ impl Book {
                 "the close baseline is not a native trial balance",
             )));
         };
-        let report =
-            match self.rehearse_close_view(principal, capability, &view, &trunk, &reviews)? {
-                Ok(report) => report,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
+        let report = match self
+            .rehearse_close_view(principal, capability, &view, &trunk, &reviews, false)?
+        {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let seal = || -> Result<CloseRunRehearsalCertificate, Refusal> {
             let mut certificate = CloseRunRehearsalCertificate {
                 trunk: certified.certificate,
@@ -1041,11 +1077,12 @@ impl Book {
             Ok(reviews) => reviews,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let report =
-            match self.rehearse_close_view(principal, capability, &view, &trunk, &reviews)? {
-                Ok(report) => report,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
+        let report = match self
+            .rehearse_close_view(principal, capability, &view, &trunk, &reviews, false)?
+        {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         match report.canonical_bytes() {
             Ok(output) if output == certificate.output => Ok(Ok(report)),
             Ok(_) => Ok(Err(invalid(
@@ -1053,5 +1090,80 @@ impl Book {
             ))),
             Err(refusal) => Ok(Err(refusal)),
         }
+    }
+
+    /// Replay the complete historical graph and every retained draft review,
+    /// then compare the current baseline, period lifecycle, task receipts and
+    /// exact combined rehearsal. This is the same freshness law enforced by
+    /// reviewed close execution. Retention or approval alone does not make a
+    /// review stale; completing a task or changing pending work does.
+    pub fn close_run_rehearsal_status(
+        &mut self,
+        principal: VId,
+        capability: &Capability,
+        certificate: &CloseRunRehearsalCertificate,
+    ) -> Outcome<RehearsalCertificateStatus> {
+        if let Err(refusal) = authorize(self, principal, capability, false)? {
+            return Ok(Err(refusal));
+        }
+        let reviewed = match self.replay_close_run_rehearsal(principal, capability, certificate)? {
+            Ok(reviewed) => reviewed,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let checked_at = self.head()?;
+        Ok(self
+            .close_rehearsal_is_current(principal, capability, certificate, &reviewed)?
+            .map(|current| RehearsalCertificateStatus::at(checked_at, current)))
+    }
+
+    /// The caller must first replay the complete historical certificate. Both
+    /// the public status surface and execution use this one current comparison;
+    /// neither may substitute native trial-balance relevance for the graph.
+    pub(crate) fn close_rehearsal_is_current(
+        &mut self,
+        principal: VId,
+        capability: &Capability,
+        certificate: &CloseRunRehearsalCertificate,
+        reviewed: &CloseRunRehearsal,
+    ) -> Outcome<bool> {
+        if let Err(refusal) = authorize(self, principal, capability, false)? {
+            return Ok(Err(refusal));
+        }
+        match self.certificate_status(certificate.trunk())? {
+            Ok(CertificateStatus::Current { .. }) => {}
+            Ok(CertificateStatus::SupersededBy { .. }) => return Ok(Ok(false)),
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+        match self.rehearsal_period_is_current(
+            principal,
+            capability,
+            certificate.period(),
+            certificate.known_at(),
+        )? {
+            Ok(true) => {}
+            Ok(false) => return Ok(Ok(false)),
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+        let current = match self.close_run_rehearsal_at_head(
+            principal,
+            capability,
+            certificate.name(),
+            true,
+        )? {
+            Ok(current) => current,
+            Err(refusal) => {
+                if let Err(refusal) = authorize(self, principal, capability, false)? {
+                    return Ok(Err(refusal));
+                }
+                return if crate::rehearsal_status::changed_by_current_refusal(&refusal) {
+                    Ok(Ok(false))
+                } else {
+                    Ok(Err(refusal))
+                };
+            }
+        };
+        Ok(Ok(crate::close_run::same_reviewed_rehearsal(
+            reviewed, current,
+        )))
     }
 }

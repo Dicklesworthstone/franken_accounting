@@ -12,8 +12,8 @@ use fa_policy::{Capability, Intent, Op, Reach};
 use fa_time::PeriodTransition;
 
 use crate::{
-    Book, BookError, CertificateStatus, CloseRunRehearsal, CloseRunRehearsalCertificate,
-    CloseTaskRehearsalOutcome, Outcome,
+    Book, BookError, CloseRunRehearsal, CloseRunRehearsalCertificate, CloseTaskRehearsalOutcome,
+    Outcome,
 };
 
 /// The independently selected evidence or period action for a close task.
@@ -126,7 +126,10 @@ fn review_invalidated(name: &str, message: &str) -> Refusal {
 /// changing the reviewed accounting work. Only those source/scratch coordinates
 /// may differ: task order, native identities, completed receipts, every posted
 /// and pending row, and completion/transition states remain exact.
-fn same_reviewed_rehearsal(reviewed: &CloseRunRehearsal, mut current: CloseRunRehearsal) -> bool {
+pub(crate) fn same_reviewed_rehearsal(
+    reviewed: &CloseRunRehearsal,
+    mut current: CloseRunRehearsal,
+) -> bool {
     if current.seq_map_digest.is_some() != reviewed.seq_map_digest.is_some() {
         return false;
     }
@@ -323,25 +326,20 @@ impl Book {
                 Err(refusal) => return Ok(Err(refusal)),
             };
         if require_current {
-            match self.certificate_status(rehearsal.trunk())? {
-                Ok(CertificateStatus::Current { .. }) => {}
-                Ok(CertificateStatus::SupersededBy { .. }) => {
+            match self.close_rehearsal_is_current(
+                capability.holder(),
+                capability,
+                rehearsal,
+                &reviewed,
+            )? {
+                Ok(true) => {}
+                Ok(false) => {
                     return Ok(Err(review_invalidated(
                         name,
-                        "the selected close rehearsal's monetary baseline has later relevant entries",
+                        "the current close baseline, period lifecycle, tasks or exact monetary result differ from the selected combined rehearsal",
                     )));
                 }
                 Err(refusal) => return Ok(Err(refusal)),
-            }
-            let current = match self.close_run_rehearsal(capability.holder(), capability, name)? {
-                Ok(current) => current,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
-            if !same_reviewed_rehearsal(&reviewed, current) {
-                return Ok(Err(review_invalidated(
-                    name,
-                    "the current close tasks, completion receipts or exact monetary result differ from the selected combined rehearsal",
-                )));
             }
         }
         let bytes = match rehearsal.canonical_bytes() {
