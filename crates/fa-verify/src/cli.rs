@@ -2398,6 +2398,17 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                     ),
                 ));
             }
+            crate::report::VerifiedProcedureStatistic::DaysApart { earlier, later, .. } => {
+                details.push((
+                    "entries",
+                    Json::List(
+                        [earlier, later]
+                            .into_iter()
+                            .map(|entry| s(format!("{entry:032x}")))
+                            .collect(),
+                    ),
+                ));
+            }
             crate::report::VerifiedProcedureStatistic::FirstDigitPopulation { counts }
             | crate::report::VerifiedProcedureStatistic::FirstDigitMad { counts, .. } => {
                 details.push((

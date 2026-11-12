@@ -702,3 +702,270 @@ fn direct_procedure_certificate_output_refusals_publish_no_findings_or_metadata(
         0
     );
 }
+
+#[test]
+fn different_date_duplicate_certificate_replays_and_verifies_its_original_population_offline() {
+    let fixture = Fixture::new();
+    let evidence = fixture.chart_and_evidence();
+    let first = fixture.post("different-first", "2026-03-01", "12.34", &evidence);
+    let same_day = fixture.post("different-same-day", "2026-03-01", "12.34", &evidence);
+    let later = fixture.post("different-later-first", "2026-03-03", "12.34", &evidence);
+    let later_same_day = fixture.post("different-later-second", "2026-03-03", "12.34", &evidence);
+    let last = fixture.post("different-last", "2026-03-05", "12.34", &evidence);
+    fixture.post("different-outside-window", "2026-03-08", "12.34", &evidence);
+    fixture.post("different-amount", "2026-03-03", "20.00", &evidence);
+    let reversed = fixture.post("different-reversed", "2026-03-02", "12.34", &evidence);
+    ok(
+        &fixture.book,
+        &[
+            "reverse",
+            text(&reversed, "vid"),
+            "--reason",
+            "WrongAmount",
+            "--evidence",
+            &evidence,
+        ],
+    );
+    let known_at = fixture.head();
+    let certificate_path = fixture.dir.join("different-dates.certificate");
+    let (report, metadata) = certified(
+        &fixture,
+        &[
+            "procedure",
+            "run",
+            "duplicates.same_same_different@1",
+            "--param",
+            "window_days=2",
+            "--certificate-out",
+            certificate_path.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(integer(&report, "finding_count"), 4);
+    let certificate = fa::procedure_certificate::ProcedureCertificate::decode(&bytes(&metadata))
+        .expect("retained different-date duplicate certificate");
+    assert_eq!(certificate.known_at().0, known_at);
+    assert_eq!(certificate.report().version, 1);
+    let locator = format!("C:{}", text(&metadata, "oid"));
+
+    fixture.post(
+        "different-later-backdated",
+        "2026-03-02",
+        "12.34",
+        &evidence,
+    );
+    assert_eq!(
+        integer(
+            &ok(
+                &fixture.book,
+                &[
+                    "procedure",
+                    "run",
+                    "duplicates.same_same_different",
+                    "--param",
+                    "window_days=2",
+                ],
+            ),
+            "finding_count",
+        ),
+        5,
+    );
+    for source in [locator.as_str(), certificate_path.to_str().unwrap()] {
+        let replayed = ok(&fixture.book, &["replay", source]);
+        assert_eq!(replayed.get("data"), report.get("data"));
+        assert_eq!(replayed.get("coordinate"), report.get("coordinate"));
+    }
+    assert_eq!(
+        text(
+            &ok(&fixture.book, &["certificate", "status", &locator]),
+            "status",
+        ),
+        "Changed",
+    );
+    let state = fixture.checkpoint();
+    let signed = exported(
+        &fixture.book,
+        &["signed-checkpoint", "--state", text(&state, "oid")],
+    );
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    let anchor = fa_verify::verify_checkpoint(&bytes(&signed), &[key]).unwrap();
+    let before_export = fixture.head();
+    let produced = ok(
+        &fixture.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &locator,
+            "--state",
+            text(&state, "oid"),
+        ],
+    );
+    let bundle = bytes(&produced);
+    let receipt = unhex(text(&produced, "receipt"));
+    let verified = fa_verify::report::verify_report_expected(
+        &bundle,
+        &[key],
+        Some(&anchor.checkpoint),
+        Some(&receipt),
+        Some(certificate.digest()),
+    )
+    .expect("independent duplicate replay over the original authenticated population");
+    assert_eq!(verified.output, certificate.output());
+    assert_eq!(verified.known_at, known_at);
+    let independent = verified.procedure.unwrap();
+    assert_eq!(independent.live_entries, 7);
+    assert_eq!(independent.live_legs, 14);
+    assert_eq!(
+        independent.comparisons,
+        certificate.report().work.comparisons
+    );
+    let mut actual: Vec<_> = independent
+        .findings
+        .iter()
+        .map(|finding| {
+            let fa_verify::report::VerifiedProcedureStatistic::DaysApart {
+                earlier,
+                later,
+                days,
+            } = finding.statistic
+            else {
+                panic!("different-date finding");
+            };
+            assert_eq!(finding.population, 7);
+            (earlier, later, days)
+        })
+        .collect();
+    let identity = |entry: &Json| u128::from_str_radix(text(entry, "vid"), 16).unwrap();
+    let mut expected = vec![
+        (identity(&first), identity(&later), 2),
+        (identity(&same_day), identity(&later), 2),
+        (identity(&later), identity(&last), 2),
+        (identity(&later_same_day), identity(&last), 2),
+    ];
+    actual.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(actual, expected);
+
+    // Removing a genuine contributing entry fails completeness under the same
+    // recipient authority even when no detached receipt is supplied.
+    fa_verify::report::verify_report_expected(
+        &bundle,
+        &[key],
+        None,
+        None,
+        Some(certificate.digest()),
+    )
+    .unwrap();
+    let omitted_digest: [u8; 32] = unhex(text(&later, "entry_digest")).try_into().unwrap();
+    let mut reader = fa_model::Reader::new(&bundle);
+    reader.bytes(64, "format").unwrap();
+    assert_eq!(reader.u16("major").unwrap(), 2);
+    reader.u16("minor").unwrap();
+    let certificate_bytes = reader.bytes(64 * 1024 * 1024, "certificate").unwrap();
+    let certificate_end = reader.offset();
+    let certificate_start = certificate_end - certificate_bytes.len();
+    reader.bytes(64 * 1024 * 1024, "checkpoint").unwrap();
+    reader.bytes(64 * 1024 * 1024, "prefix").unwrap();
+    let count_at = reader.offset();
+    let count = reader.u32("record count").unwrap();
+    let mut omitted = None;
+    for _ in 0..count {
+        let start = reader.offset();
+        reader.u32("proposal length").unwrap();
+        let payload = reader.bytes(64 * 1024 * 1024, "record").unwrap();
+        if let Ok(entry) = fa_model::Entry::decode(payload)
+            && entry.entry_digest == omitted_digest
+        {
+            assert!(omitted.replace((start, reader.offset())).is_none());
+        }
+    }
+    let (start, end) = omitted.expect("the contributing posting is included in full");
+    let mut missing = bundle[..start].to_vec();
+    missing.extend_from_slice(&bundle[end..]);
+    missing[count_at..count_at + 4].copy_from_slice(&(count - 1).to_le_bytes());
+    assert_eq!(
+        fa_verify::report::verify_report_expected(
+            &missing,
+            &[key],
+            None,
+            None,
+            Some(certificate.digest()),
+        )
+        .unwrap_err()
+        .predicate,
+        "record_completeness",
+    );
+
+    // A self-consistent new certificate digest cannot make a false narrative
+    // true. Keep every signed source byte, alter only a result, and rehash its
+    // wrapper so refusal must come from independent computation.
+    let mut forged_certificate = certificate_bytes.to_vec();
+    let narrative = b"two entries share the same legs 2 day(s) apart (window 2)";
+    let narrative_at = forged_certificate
+        .windows(narrative.len())
+        .position(|part| part == narrative)
+        .expect("the actual procedure result is retained");
+    let numeral_at = narrative.iter().position(|byte| *byte == b'2').unwrap();
+    forged_certificate[narrative_at + numeral_at] = b'1';
+    let digest_at = forged_certificate.len() - 32;
+    let new_digest = fa_verify::blake3::hash_parts(
+        b"fa:procedure-certificate-digest:v1",
+        &[
+            &u32::try_from(digest_at).unwrap().to_le_bytes(),
+            &forged_certificate[..digest_at],
+        ],
+    );
+    forged_certificate[digest_at..].copy_from_slice(&new_digest);
+    let mut forged = bundle.clone();
+    forged[certificate_start..certificate_end].copy_from_slice(&forged_certificate);
+    assert_eq!(
+        fa_verify::report::verify_report_expected(&forged, &[key], None, None, Some(&new_digest),)
+            .unwrap_err()
+            .predicate,
+        "procedure_recomputation",
+    );
+
+    let pin = fa_verify::blake3::hex(certificate.digest());
+    for (name, payload, expected_exit) in [
+        ("different-dates.fab", &bundle, 0),
+        ("missing-posting.fab", &missing, 8),
+    ] {
+        let result = fa_verify::cli::run(
+            &[
+                "report",
+                name,
+                "--key",
+                text(&signed, "checkpoint_public_key"),
+                "--expect",
+                &pin,
+                "--json",
+            ]
+            .map(str::to_string),
+            &|path| {
+                assert_eq!(path, name, "the verifier cannot open the live book");
+                Ok(payload.to_vec())
+            },
+        );
+        eprintln!(
+            "different-date proof input={name} exit={} stdout={} stderr={}",
+            result.exit, result.stdout, result.stderr,
+        );
+        assert_eq!(result.exit, expected_exit, "{}", result.stdout);
+        if expected_exit == 0 {
+            assert!(
+                result
+                    .stdout
+                    .contains("\"procedure\":\"duplicates.same_same_different\"")
+            );
+            assert!(result.stdout.contains("\"evidence\":\"FA-EVID-L08\""));
+            assert!(result.stdout.contains("\"statistic\":\"days_apart\""));
+        }
+    }
+    assert_eq!(
+        fixture.head(),
+        before_export,
+        "proof exports do not post entries"
+    );
+}

@@ -517,12 +517,16 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
             "jet.period_end_timing" => ("FA-EVID-L02", Some(("window_days", i128::from(u32::MAX)))),
             "jet.post_closing" => ("FA-EVID-L03", None),
             "duplicates.same_same_same" => ("FA-EVID-L07", None),
+            "duplicates.same_same_different" => {
+                ("FA-EVID-L08", Some(("window_days", i128::from(u32::MAX))))
+            }
             "benford.first_digit" => ("FA-EVID-L10", None),
             _ => return Ok(false),
         };
         let version = output.u16("procedure version")?;
         if !matches!(version, 1 | 2)
             || (benford && version != 2)
+            || (id == "duplicates.same_same_different" && version != 1)
             || (!benford && parameter.is_none() && version != 1)
             || output.u8("procedure claim")? != 0
             || output.str(128, "procedure evidence")? != evidence
