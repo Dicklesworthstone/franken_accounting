@@ -34,8 +34,9 @@ pub fn leaf_hash(envelope_bytes: &[u8]) -> Digest {
     hash(LEAF_DOMAIN, &[envelope_bytes])
 }
 
+#[cfg(test)]
 #[must_use]
-pub fn node_hash(left: &Digest, right: &Digest) -> Digest {
+pub(crate) fn node_hash(left: &Digest, right: &Digest) -> Digest {
     hash(NODE_DOMAIN, &[left, right])
 }
 

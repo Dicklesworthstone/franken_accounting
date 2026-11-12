@@ -25,7 +25,9 @@ use fa_lantern::jet::{
     PeriodEndTiming, PostClosing, RoundAmounts, SelfApproved, ThinDescriptions, Weekend,
 };
 use fa_lantern::numbers::{RoundAmountDensity, SequenceGaps};
-use fa_lantern::projection::{documents, money_flow, preparers};
+use fa_lantern::projection::{
+    ApprovalRow, PreparerRow, Preparers, documents, money_flow, preparers,
+};
 use fa_lantern::trace::{Law, Trace};
 use fa_lantern::witness;
 use fa_lantern::witness::determinism;
@@ -1332,9 +1334,9 @@ fn projections_conserve_credits_under_the_allocation_law() {
         flow.digest
     );
 
-    let p = preparers(&snapshot).unwrap();
+    let p: Preparers = preparers(&snapshot).unwrap();
     assert_eq!(p.rows.len(), 5, "one row per (preparer, account, unit)");
-    let rent = p
+    let rent: &PreparerRow = p
         .rows
         .iter()
         .find(|r| r.account == h.account("6000"))
@@ -1344,12 +1346,9 @@ fn projections_conserve_credits_under_the_allocation_law() {
         (PREPARER, 3033, 0, 2)
     );
     assert_eq!(p.approvals.len(), 1);
+    let approval: &ApprovalRow = &p.approvals[0];
     assert_eq!(
-        (
-            p.approvals[0].approver,
-            p.approvals[0].preparer,
-            p.approvals[0].entries
-        ),
+        (approval.approver, approval.preparer, approval.entries),
         (REVIEWER, PREPARER, 1)
     );
 
@@ -8538,4 +8537,45 @@ mod party_master_changes_scaling {
         assert_eq!(work.work().legs, 0);
         assert_eq!(work.work().comparisons, 1);
     }
+}
+
+#[test]
+fn snapshot_read_single_pass_matches_independent_projections_and_preserves_digest() {
+    let (h, _) = posted_corpus();
+    let cutoff = day(2026, 3, 25);
+    let snap_a =
+        Snapshot::read(&h.db, &h.ctx().query(), &h.book, None, Some(cutoff)).expect("snapshot a");
+    let snap_b = Snapshot::read(
+        &h.db,
+        &h.ctx().query(),
+        &h.book,
+        Some(snap_a.coordinate.known_at),
+        Some(cutoff),
+    )
+    .expect("snapshot b");
+    assert_eq!(snap_a.inputs_digest, snap_b.inputs_digest);
+
+    let mut expected_entries =
+        fa_registers::entries_at(&h.db, &h.book, snap_a.coordinate.known_at).expect("entries_at");
+    expected_entries.sort_by_key(|(vid, _, _)| *vid);
+    let actual_entries: Vec<_> = snap_a
+        .entries
+        .iter()
+        .map(|e| (e.vid, e.entry.clone(), e.recorded_at))
+        .collect();
+    assert_eq!(actual_entries, expected_entries);
+
+    let expected_rea = fa_journal::rea::read_rea_at(&h.db, &h.book, snap_a.coordinate.known_at)
+        .expect("read_rea_at");
+    assert_eq!(snap_a.rea, expected_rea);
+
+    let expected_open_items = fa_registers::open_items::history::open_items_as_of(
+        &h.db,
+        &h.book,
+        None,
+        cutoff,
+        Some(snap_a.coordinate.known_at),
+    )
+    .expect("open_items_as_of");
+    assert_eq!(snap_a.open_items_as_of, Some(expected_open_items));
 }

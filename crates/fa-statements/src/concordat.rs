@@ -64,6 +64,23 @@ pub enum BookToBookReasonCode {
 }
 
 impl BookToBookReasonCode {
+    pub const ALL: &[Self] = &[
+        Self::M1PermanentMealsEntertainment,
+        Self::M1PermanentTaxExemptIncome,
+        Self::M1PermanentPenaltiesFines,
+        Self::M1TemporaryDepreciation,
+        Self::M1TemporaryBadDebtAllowance,
+        Self::M1TemporaryUnearnedRevenue,
+        Self::M3TemporaryStockCompensation,
+        Self::StatutoryReclassification,
+        Self::ManagementCostAllocation,
+    ];
+
+    #[must_use]
+    pub fn parse(code: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|c| c.as_str() == code)
+    }
+
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {

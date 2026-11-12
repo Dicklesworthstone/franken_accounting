@@ -24,8 +24,6 @@ pub const SEQ_MAP_DOMAIN: &[u8] = b"fa:seq-map:v1";
 pub const SEQ_MAP_VERSION: u16 = 1;
 /// The scope a scratch book replays: accounting objects only (§15.2).
 pub const SCOPE_ACCOUNTING_OBJECTS_ONLY: u8 = 1;
-/// Domain tag for restatement diff certificates (plan §8.4).
-pub const RESTATEMENT_DIFF_CERT_DOMAIN: &[u8] = b"fa:restatement-diff-cert:v1";
 
 /// One replayed source commit and the scratch commit that reproduces it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -283,8 +281,6 @@ pub enum PalimpsestError {
         replacement_vid: VId,
         target_vid: VId,
     },
-    /// A restatement diff certificate could not be encoded.
-    InvalidRestatementCase(String),
     /// Overflow while computing net positions.
     Overflow,
 }
@@ -313,7 +309,6 @@ impl std::fmt::Display for PalimpsestError {
                 "unpaired Replacement {:032x} targeting {:032x} without a paired Reversal",
                 replacement_vid.0, target_vid.0
             ),
-            Self::InvalidRestatementCase(m) => write!(f, "invalid restatement case: {m}"),
             Self::Overflow => write!(f, "arithmetic overflow in lineage fold"),
         }
     }
@@ -913,147 +908,6 @@ pub fn explain_lineage(
     }))
 }
 
-// ---------------------------------------------------------------------------
-// Restatement diff certificates (plan §8.3)
-// ---------------------------------------------------------------------------
-
-/// One `(period, account, unit)` balance observation at a known-at coordinate.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PeriodPosition {
-    pub period_code: String,
-    pub account_ref: VId,
-    pub unit: UnitId,
-    pub net_debit: i128,
-}
-
-/// One changed line in a `RestatementDiffCertificate` (plan §8.4).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RestatementDiffLine {
-    pub period_code: String,
-    pub account_ref: VId,
-    pub unit: UnitId,
-    pub as_reported_net: i128,
-    pub as_restated_net: i128,
-    pub delta_net: i128,
-}
-
-/// Replayable certificate of the exact `as-originally-reported` vs `as-restated`
-/// balance differences of a restatement (plan §8.3); the journaled case
-/// itself is fa-journal `case` (fa-75j4).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RestatementDiffCertificate {
-    pub case_id: Id128,
-    pub book_id: Id128,
-    pub as_reported_seq: CommitSeq,
-    pub as_restated_seq: CommitSeq,
-    pub lines: Vec<RestatementDiffLine>,
-    pub certificate_digest: [u8; 32],
-}
-
-impl RestatementDiffCertificate {
-    pub fn compute(
-        case_id: Id128,
-        book_id: Id128,
-        as_reported_seq: CommitSeq,
-        as_restated_seq: CommitSeq,
-        as_reported: &[PeriodPosition],
-        as_restated: &[PeriodPosition],
-    ) -> Result<Self, PalimpsestError> {
-        let mut keys = BTreeSet::new();
-        let mut rep_map = BTreeMap::new();
-        let mut res_map = BTreeMap::new();
-        for p in as_reported {
-            let k = (p.period_code.clone(), p.account_ref, p.unit);
-            keys.insert(k.clone());
-            rep_map.insert(k, p.net_debit);
-        }
-        for p in as_restated {
-            let k = (p.period_code.clone(), p.account_ref, p.unit);
-            keys.insert(k.clone());
-            res_map.insert(k, p.net_debit);
-        }
-
-        let mut lines = Vec::new();
-        for (period_code, account_ref, unit) in keys {
-            let before = rep_map
-                .get(&(period_code.clone(), account_ref, unit))
-                .copied()
-                .unwrap_or(0);
-            let after = res_map
-                .get(&(period_code.clone(), account_ref, unit))
-                .copied()
-                .unwrap_or(0);
-            let delta = after.checked_sub(before).ok_or(PalimpsestError::Overflow)?;
-            if delta != 0 {
-                lines.push(RestatementDiffLine {
-                    period_code,
-                    account_ref,
-                    unit,
-                    as_reported_net: before,
-                    as_restated_net: after,
-                    delta_net: delta,
-                });
-            }
-        }
-
-        let certificate_digest =
-            Self::digest(case_id, book_id, as_reported_seq, as_restated_seq, &lines)
-                .map_err(|e| PalimpsestError::InvalidRestatementCase(e.to_string()))?;
-
-        Ok(Self {
-            case_id,
-            book_id,
-            as_reported_seq,
-            as_restated_seq,
-            lines,
-            certificate_digest,
-        })
-    }
-
-    pub fn digest(
-        case_id: Id128,
-        book_id: Id128,
-        as_reported_seq: CommitSeq,
-        as_restated_seq: CommitSeq,
-        lines: &[RestatementDiffLine],
-    ) -> Result<[u8; 32], EncodeError> {
-        let mut w = Writer::new();
-        w.u16(1)
-            .fixed(&case_id.0)
-            .fixed(&book_id.0)
-            .u64(as_reported_seq.0)
-            .u64(as_restated_seq.0)
-            .list(lines, |w, l| {
-                w.str(&l.period_code)
-                    .u128(l.account_ref.0)
-                    .u32(l.unit.0)
-                    .i128(l.as_reported_net)
-                    .i128(l.as_restated_net)
-                    .i128(l.delta_net);
-            });
-        Ok(domain_digest(RESTATEMENT_DIFF_CERT_DOMAIN, &[&w.finish()?]))
-    }
-
-    /// Recompute the diff from the two snapshots and verify the certificate digest byte-for-byte.
-    pub fn verify_replay(
-        &self,
-        as_reported: &[PeriodPosition],
-        as_restated: &[PeriodPosition],
-    ) -> bool {
-        let Ok(recomputed) = Self::compute(
-            self.case_id,
-            self.book_id,
-            self.as_reported_seq,
-            self.as_restated_seq,
-            as_reported,
-            as_restated,
-        ) else {
-            return false;
-        };
-        *self == recomputed
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1484,54 +1338,6 @@ mod tests {
         let err = validate_reclassification(&e1.proposal, e1_ref, &back)
             .expect_err("a move back is no reclassification");
         assert!(err.to_string().contains("moves amount back"), "{err}");
-    }
-
-    #[test]
-    fn restatement_diff_certificate_replays_exactly_and_refuses_another_snapshot() {
-        let usd = UnitId(1);
-        let case_id = Id128([0xAA; 16]);
-        let book_id = Id128([0xBB; 16]);
-        let before = vec![
-            PeriodPosition {
-                period_code: "FY2026-P02".into(),
-                account_ref: VId(6000),
-                unit: usd,
-                net_debit: 1_000,
-            },
-            PeriodPosition {
-                period_code: "FY2026-P02".into(),
-                account_ref: VId(2000),
-                unit: usd,
-                net_debit: -1_000,
-            },
-        ];
-        let after = vec![
-            PeriodPosition {
-                period_code: "FY2026-P02".into(),
-                account_ref: VId(6000),
-                unit: usd,
-                net_debit: 1_500,
-            },
-            PeriodPosition {
-                period_code: "FY2026-P02".into(),
-                account_ref: VId(2000),
-                unit: usd,
-                net_debit: -1_500,
-            },
-        ];
-        let cert = RestatementDiffCertificate::compute(
-            case_id,
-            book_id,
-            CommitSeq(10),
-            CommitSeq(13),
-            &before,
-            &after,
-        )
-        .expect("diff certificate");
-        assert_eq!(cert.lines.len(), 2);
-        assert!(cert.lines.iter().all(|l| l.delta_net.abs() == 500));
-        assert!(cert.verify_replay(&before, &after));
-        assert!(!cert.verify_replay(&before, &before));
     }
 
     /// A Replacement that keeps the native legs but values them at a

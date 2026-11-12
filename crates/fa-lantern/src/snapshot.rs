@@ -14,8 +14,8 @@ use fa_journal::genesis::BookContext;
 use fa_journal::rows::{AccountRow, PeriodRow, bytes, prop};
 use fa_model::symbols::{label, property};
 use fa_model::{ControlPayload, Entry, EntryClass, Oid, Writer};
-use fa_registers::open_items::history::{OpenItemSnapshot, open_items_as_of};
-use fa_registers::{entries_at, entry_period, resolve_known_at};
+use fa_registers::open_items::history::{OpenItemSnapshot, snapshot_of};
+use fa_registers::{entries_from_rows_at, entry_period, resolve_known_at};
 use fa_time::{DateDay, PeriodState};
 use fgdb::Database;
 use fgdb_crypto::Hasher;
@@ -133,9 +133,16 @@ impl Snapshot {
         checkpoint(cx)?;
         let seq = resolve_known_at(db, known_at)?;
         checkpoint(cx)?;
-        let mut entries = Vec::new();
+        let rows = db.vertices_at(seq)?;
+        fa_journal::op_witness::record_snapshot_read(1);
+        checkpoint(cx)?;
+        let raw_entries = entries_from_rows_at(db, book, seq, &rows)?;
+        let raw_entries_for_open_items = effective_through.map(|_| raw_entries.clone());
+        let mut entries = Vec::with_capacity(raw_entries.len());
         let mut transitions: BTreeMap<String, Vec<Transition>> = BTreeMap::new();
-        for (vid, entry, recorded_at) in entries_at(db, book, seq)? {
+        for (vid, entry, recorded_at) in &raw_entries {
+            let vid = *vid;
+            let recorded_at = *recorded_at;
             checkpoint(cx)?;
             if let Some(ControlPayload::PeriodTransition {
                 period_ref,
@@ -161,7 +168,7 @@ impl Snapshot {
                         to,
                     });
             }
-            let period = match entry_period(book, &entry) {
+            let period = match entry_period(book, entry) {
                 Ok(p) => p,
                 Err(_) if entry.proposal.legs.is_empty() => String::new(),
                 Err(e) => return Err(e.into()),
@@ -184,7 +191,7 @@ impl Snapshot {
             approvals.sort_by_key(|(vid, _)| *vid);
             entries.push(SnapshotEntry {
                 vid,
-                entry,
+                entry: entry.clone(),
                 recorded_at,
                 period,
                 approvals,
@@ -203,35 +210,35 @@ impl Snapshot {
         let mut documents = BTreeMap::new();
         let mut supplements: BTreeMap<VId, Vec<(CommitSeq, _)>> = BTreeMap::new();
         let evidence_policy = fa_registry::evidence_policy::EvidencePolicy::embedded()?;
-        for row in db.vertices_at(seq)? {
+        for row in &rows {
             checkpoint(cx)?;
             if row.labels.contains(&label::ACCOUNT) {
                 let same_book = matches!(
-                    prop(&row, property::BOOK_ID),
+                    prop(row, property::BOOK_ID),
                     Some(CanonicalScalar::Bytes(b)) if b.as_slice() == &book.book_id.0[..]
                 );
                 if same_book {
-                    let a = AccountRow::decode(&row)?;
+                    let a = AccountRow::decode(row)?;
                     accounts.insert(a.vid, a);
                 }
             } else if row.labels.contains(&label::PERIOD) {
-                let p = PeriodRow::decode(&row)?;
+                let p = PeriodRow::decode(row)?;
                 if p.calendar_id == book.calendar.id {
                     periods.insert(p.code.clone(), p);
                 }
             } else if row.labels.contains(&label::ATTESTATION) {
                 let same_book = matches!(
-                    prop(&row, property::BOOK_ID),
+                    prop(row, property::BOOK_ID),
                     Some(CanonicalScalar::Bytes(b)) if b.as_slice() == &book.book_id.0[..]
                 );
                 if same_book {
-                    let payload = bytes(&row, property::FA_PAYLOAD, "attestation.payload")?;
+                    let payload = bytes(row, property::FA_PAYLOAD, "attestation.payload")?;
                     let att = fa_journal::attestation::StoredAttestation::decode(&payload)?;
                     attestations.insert(row.vid, att);
                 }
             } else if row.labels.contains(&label::DOCUMENT) {
                 let doc =
-                    fa_journal::evidence::verify_row(&row, &evidence_policy).map_err(|why| {
+                    fa_journal::evidence::verify_row(row, &evidence_policy).map_err(|why| {
                         KernelError::Corrupt(format!("document vertex {:032x}: {why}", row.vid.0))
                     })?;
                 if doc.book_id == book.book_id {
@@ -245,7 +252,7 @@ impl Snapshot {
                     );
                 }
             } else if row.labels.contains(&label::SUPPLEMENTAL_EVIDENCE) {
-                let s = fa_journal::evidence::stored_supplement(&row, None)?;
+                let s = fa_journal::evidence::stored_supplement(row, None)?;
                 if s.book_id == book.book_id {
                     supplements
                         .entry(s.entry_ref.vid)
@@ -262,7 +269,8 @@ impl Snapshot {
                 (entry, list.into_iter().map(|(_, s)| s).collect())
             })
             .collect();
-        let declared_entities = match fa_journal::genesis::read_book_spec_at(db, seq)? {
+        let book_spec = fa_journal::genesis::read_book_spec_at(db, seq)?;
+        let declared_entities = match book_spec.as_ref() {
             Some(spec) => {
                 if spec.book_id != book.book_id {
                     return Err(KernelError::Corrupt(
@@ -282,26 +290,32 @@ impl Snapshot {
             }
             None => BTreeMap::new(),
         };
-        let rea = match fa_journal::rea::read_rea_at(db, book, seq) {
-            Ok(s) => s,
-            Err(KernelError::Corrupt(msg)) if msg.contains("no book spec") => {
-                fa_journal::rea::ReaSnapshot {
-                    known_at: seq,
-                    parties: BTreeMap::new(),
-                    instruments: BTreeMap::new(),
-                    legal_entities: BTreeMap::new(),
-                    external_ids: BTreeMap::new(),
-                    relationships: Vec::new(),
-                    events: BTreeMap::new(),
-                    deposit_profiles: Vec::new(),
-                }
-            }
-            Err(e) => return Err(e.into()),
+        let rea = match book_spec.as_ref() {
+            Some(spec) => fa_journal::rea::read_rea_from_rows_at(
+                db,
+                book,
+                seq,
+                spec,
+                &rows,
+                Some(&raw_entries),
+            )?,
+            None => fa_journal::rea::ReaSnapshot {
+                known_at: seq,
+                parties: BTreeMap::new(),
+                instruments: BTreeMap::new(),
+                legal_entities: BTreeMap::new(),
+                external_ids: BTreeMap::new(),
+                relationships: Vec::new(),
+                events: BTreeMap::new(),
+                deposit_profiles: Vec::new(),
+            },
         };
         checkpoint(cx)?;
-        let open_items_as_of = match effective_through {
-            Some(through) => Some(open_items_as_of(db, book, None, through, Some(seq))?),
-            None => None,
+        let open_items_as_of = match (effective_through, raw_entries_for_open_items) {
+            (Some(through), Some(raw_entries)) => {
+                Some(snapshot_of(book, raw_entries, None, through, seq)?)
+            }
+            _ => None,
         };
         checkpoint(cx)?;
         let inputs_digest = {

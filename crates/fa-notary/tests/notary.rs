@@ -1398,6 +1398,24 @@ fn balance_proofs_refold_exactly_the_register_balances_and_refuse_tampering() {
             // Legacy v1 omits the out-of-scope payloads, so the verifier cannot
             // derive its scope itself (23f9118b, fa-n6fh): membership only.
             assert_eq!(report.scope, "membership_only");
+            // Explicit legacy v2 migration-aware balance proof also verifies under membership_only.
+            let explicit_v2 = fa_notary::migration_balance::prove_balance_with_migrations(
+                &h.db,
+                &h.book,
+                &a.state,
+                account,
+                h.usd.0,
+                Some(cutoff.0),
+            )
+            .unwrap()
+            .unwrap();
+            let explicit_v2 =
+                fa_verify::verify_balance(&explicit_v2, &trusted).expect("v2 refolds");
+            assert_eq!(
+                (explicit_v2.claim.debits, explicit_v2.claim.credits),
+                expected
+            );
+            assert_eq!(explicit_v2.scope, "membership_only");
             // The payload-complete v3 producer is the §13.3 recomputation proof.
             let complete = fa_notary::migration_balance::prove_balance_complete(
                 &h.db,
@@ -5245,6 +5263,73 @@ fn accumulator_shared_observation_requires_a_complete_retained_delta_window() {
     assert_eq!(restored, before);
     assert_eq!(work.shared_prefixes, 2, "{work:?}");
     assert_eq!(work.journal_full_reads, 1, "{work:?}");
+}
+
+#[test]
+fn sequential_checkpoints_share_single_journal_scan_and_tampered_predecessor_falls_back_to_refusal()
+{
+    let mut h = harness();
+    h.post(h.rent, 100, b"cp-shared-1");
+    let ctx = h.ctx();
+    let (first_res, first_work) = h
+        .runtime
+        .block_on(fa_notary::checkpoint_counted(
+            &mut h.db, &ctx, &h.book, &h.signer,
+        ))
+        .unwrap();
+    let first = first_res.expect("first checkpoint succeeds");
+    assert_eq!(first_work.journal_full_reads, 1, "{first_work:?}");
+    assert_eq!(first_work.shared_prefixes, 0, "{first_work:?}");
+
+    h.post(h.utilities, 250, b"cp-shared-2");
+    let (second_res, second_work) = h
+        .runtime
+        .block_on(fa_notary::checkpoint_counted(
+            &mut h.db, &ctx, &h.book, &h.signer,
+        ))
+        .unwrap();
+    let second = second_res.expect("second checkpoint succeeds");
+    assert!(second.stored.state.leaf_count > first.stored.state.leaf_count);
+    assert_eq!(second_work.journal_full_reads, 1, "{second_work:?}");
+    assert_eq!(second_work.shared_prefixes, 1, "{second_work:?}");
+    assert_eq!(second_work.literal_prefixes, 0, "{second_work:?}");
+
+    // Tamper with the stored checkpoint signature of the latest state: the
+    // shared predecessor check rejects it, falls back to the literal verifier,
+    // and refuses publication with exit 8 (CHECKPOINT_INVALID).
+    let cp_vid = checkpoint_vid(&second.stored.oid);
+    let cp_row = h.db.vertex(cp_vid).unwrap().expect("stored checkpoint");
+    let mut tampered_bytes = match cp_row
+        .props
+        .iter()
+        .find(|(k, _)| *k == property::FA_PAYLOAD)
+        .map(|(_, v)| v)
+    {
+        Some(CanonicalScalar::Bytes(bytes)) => bytes.as_slice().to_vec(),
+        other => panic!("unexpected checkpoint payload scalar: {other:?}"),
+    };
+    let last_idx = tampered_bytes.len() - 1;
+    tampered_bytes[last_idx] ^= 0x01;
+    let mut batch = WriteBatch::new(relation::CHECKPOINTS);
+    batch.set_vertex_property(
+        cp_vid,
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(tampered_bytes).unwrap()),
+    );
+    h.write_raw(batch);
+
+    h.post(h.rent, 300, b"cp-shared-3");
+    let (third_res, third_work) = h
+        .runtime
+        .block_on(fa_notary::checkpoint_counted(
+            &mut h.db, &ctx, &h.book, &h.signer,
+        ))
+        .unwrap();
+    let refusal = third_res.expect_err("tampered predecessor checkpoint must refuse");
+    assert_eq!(refusal.code, code::CHECKPOINT_INVALID);
+    assert_eq!(refusal.exit, fa_journal::refusal::exit::VERIFICATION);
+    assert_eq!(third_work.shared_prefixes, 0, "{third_work:?}");
+    assert_eq!(third_work.literal_prefixes, 1, "{third_work:?}");
 }
 
 #[path = "notary/access_events.rs"]

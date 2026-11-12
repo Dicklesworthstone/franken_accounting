@@ -84,6 +84,27 @@ impl LegacyFormat {
         columns: Option<&LegacyColumnMap>,
         timestamps: LegacyTimestampProfile,
     ) -> Result<LegacyImportBatch, FormatError> {
+        if timestamps == LegacyTimestampProfile::ExactNanoseconds {
+            return match self {
+                Self::QuickBooksIif => {
+                    parse_quickbooks_iif(source, units, account_map, default_unit)
+                }
+                Self::QuickBooksCsv => {
+                    parse_quickbooks_csv(source, units, account_map, default_unit)
+                }
+                Self::XeroCsv => parse_xero_csv(source, units, account_map, default_unit),
+                Self::NetSuiteCsv => parse_netsuite_csv(source, units, account_map, default_unit),
+                Self::Beancount => parse_beancount_ledger(source, units, account_map),
+                Self::Hledger => parse_hledger_journal(source, units, account_map),
+                Self::GenericCsv => {
+                    let columns = columns.ok_or_else(|| FormatError::Parse {
+                        format: self.registry_name(),
+                        detail: "generic CSV requires an explicit column map".into(),
+                    })?;
+                    parse_generic_csv(source, columns, units, account_map)
+                }
+            };
+        }
         let vendor_columns = match self {
             Self::QuickBooksCsv => quickbooks_csv_columns(default_unit),
             Self::XeroCsv => xero_csv_columns(default_unit),
@@ -127,7 +148,7 @@ impl LegacyFormat {
 }
 
 /// Timestamp semantics of a retained legacy import package.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LegacyTimestampProfile {
     /// Exact signed nanoseconds with complete timestamp syntax.
     ExactNanoseconds,
@@ -1509,12 +1530,12 @@ pub fn parse_quickbooks_csv(
     account_map: &AccountMap,
     default_unit_code: &str,
 ) -> Result<LegacyImportBatch, FormatError> {
-    LegacyFormat::QuickBooksCsv.parse_source(
+    parse_tabular_csv_with_format(
+        LegacyFormat::QuickBooksCsv,
         src,
+        &quickbooks_csv_columns(default_unit_code),
         units,
         account_map,
-        default_unit_code,
-        None,
         LegacyTimestampProfile::ExactNanoseconds,
     )
 }
@@ -1558,12 +1579,12 @@ pub fn parse_xero_csv(
     account_map: &AccountMap,
     default_unit_code: &str,
 ) -> Result<LegacyImportBatch, FormatError> {
-    LegacyFormat::XeroCsv.parse_source(
+    parse_tabular_csv_with_format(
+        LegacyFormat::XeroCsv,
         src,
+        &xero_csv_columns(default_unit_code),
         units,
         account_map,
-        default_unit_code,
-        None,
         LegacyTimestampProfile::ExactNanoseconds,
     )
 }
@@ -1605,12 +1626,12 @@ pub fn parse_netsuite_csv(
     account_map: &AccountMap,
     default_unit_code: &str,
 ) -> Result<LegacyImportBatch, FormatError> {
-    LegacyFormat::NetSuiteCsv.parse_source(
+    parse_tabular_csv_with_format(
+        LegacyFormat::NetSuiteCsv,
         src,
+        &netsuite_csv_columns(default_unit_code),
         units,
         account_map,
-        default_unit_code,
-        None,
         LegacyTimestampProfile::ExactNanoseconds,
     )
 }
@@ -1652,12 +1673,13 @@ pub fn parse_generic_csv(
     units: &UnitCatalog,
     account_map: &AccountMap,
 ) -> Result<LegacyImportBatch, FormatError> {
-    LegacyFormat::GenericCsv.parse_source(
+    let merged_map = column_map.apply_to_account_map(account_map.clone());
+    parse_tabular_csv_with_format(
+        LegacyFormat::GenericCsv,
         src,
+        column_map,
         units,
-        account_map,
-        &column_map.default_unit,
-        Some(column_map),
+        &merged_map,
         LegacyTimestampProfile::ExactNanoseconds,
     )
 }

@@ -1212,6 +1212,9 @@ pub fn verify_each<V: Vfs + Clone>(
     periods: &[&str],
     known_at: Option<CommitSeq>,
 ) -> Result<Vec<Verification>, RegisterError> {
+    if let [period] = periods {
+        return Ok(vec![verify(db, cx, book, period, known_at)?]);
+    }
     context(cx)?;
     let at = crate::resolve_known_at(db, known_at)?;
     let mut current = None;

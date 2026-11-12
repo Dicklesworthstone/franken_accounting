@@ -712,22 +712,41 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     signer: &dyn CheckpointSigner,
 ) -> Outcome<Checkpointed> {
+    checkpoint_counted(db, ctx, book, signer)
+        .await
+        .map(|(res, _)| res)
+}
+
+/// [`checkpoint`] together with its native journal observation census so tests
+/// and witnesses can verify that clean sequential checkpoints share a single
+/// `Database::vertices_at` read instead of re-scanning the book for the
+/// predecessor prefix.
+pub async fn checkpoint_counted<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    signer: &dyn CheckpointSigner,
+) -> Result<(Result<Checkpointed, Refusal>, AccumulatorReadWork), KernelError> {
+    let mut work = AccumulatorReadWork::default();
     let through = db.frontier()?;
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     let basis = txn.basis();
     if basis != through {
         txn.abort();
-        return Ok(Err(Refusal::new(
-            code::BASIS_MOVED,
-            exit::CONFLICT,
-            format!(
-                "the book moved from {} to {} while the accumulator was computed",
-                through.0, basis.0
-            ),
-            "plan §5.10 (an aggregate basis must equal the head at publication)",
-            "checkpoint again",
-        )));
+        return Ok((
+            Err(Refusal::new(
+                code::BASIS_MOVED,
+                exit::CONFLICT,
+                format!(
+                    "the book moved from {} to {} while the accumulator was computed",
+                    through.0, basis.0
+                ),
+                "plan §5.10 (an aggregate basis must equal the head at publication)",
+                "checkpoint again",
+            )),
+            work,
+        ));
     }
     let Some(root_row) = txn.vertex(db, book_root())? else {
         txn.abort();
@@ -740,19 +759,22 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
     // refused with exit 8, like a predecessor the journal does not extend.
     let prev = match head_of(&root_row) {
         Ok(None) => Ok(None),
-        Ok(Some(oid)) => match txn.vertex(db, state_vid(&oid))? {
-            None => Err(KernelError::Corrupt(
-                "accumulator_head names an absent state".into(),
-            )),
-            Some(row) => stored(&row, &oid).map(Some),
-        },
+        Ok(Some(oid)) => {
+            fa_journal::op_witness::record_point_read(1);
+            match txn.vertex(db, state_vid(&oid))? {
+                None => Err(KernelError::Corrupt(
+                    "accumulator_head names an absent state".into(),
+                )),
+                Some(row) => stored(&row, &oid).map(Some),
+            }
+        }
         Err(e) => Err(e),
     };
     let prev = match prev {
         Ok(prev) => prev,
         Err(KernelError::Corrupt(why)) => {
             txn.abort();
-            return Ok(Err(drift(why)));
+            return Ok((Err(drift(why)), work));
         }
         Err(e) => {
             txn.abort();
@@ -761,38 +783,61 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
     };
     let boundary = chained_boundary(prev.as_ref().map(|p| &p.state));
     let access_boundary = chained_access_boundary(prev.as_ref().map(|p| &p.state));
-    let journal = match Journal::read_with_boundaries(
+    let mut jwork = JournalReadWork {
+        full_reads: 1,
+        ..JournalReadWork::default()
+    };
+    let rows = match db.vertices_at(through) {
+        Ok(rows) => rows,
+        Err(error) => {
+            work.accumulate(jwork);
+            txn.abort();
+            return Err(error.into());
+        }
+    };
+    let protected: BTreeSet<_> = rows
+        .iter()
+        .filter(|row| protected_record_row(row))
+        .map(|row| row.vid)
+        .collect();
+    let read = Journal::from_native_rows(
         db,
         book,
-        Some(through),
+        through,
         Some(boundary),
         Some(access_boundary),
-    ) {
-        Ok(Ok(journal)) => journal,
-        Ok(Err(refusal)) => {
-            txn.abort();
-            return Ok(Err(refusal));
-        }
+        rows,
+        &mut jwork,
+    );
+    work.accumulate(jwork);
+    let journal = match read {
+        Ok(journal) => journal,
         Err(KernelError::Corrupt(why)) => {
             txn.abort();
-            return Ok(Err(drift(why)));
+            return Ok((Err(drift(why)), work));
         }
         Err(KernelError::Model(error)) => {
             txn.abort();
-            return Ok(Err(drift(format!(
-                "the journal contains an invalid record payload: {error}"
-            ))));
+            return Ok((
+                Err(drift(format!(
+                    "the journal contains an invalid record payload: {error}"
+                ))),
+                work,
+            ));
         }
         Err(error) => {
             txn.abort();
             return Err(error);
         }
     };
-    match journal.verify_unchanged_at(db, through) {
+    let prev_leaves = usize::try_from(prev.as_ref().map_or(0, |p| p.state.leaf_count)).unwrap_or(0);
+    let delta_leaves = journal.leaves.len().saturating_sub(prev_leaves);
+    fa_journal::op_witness::record_point_read(u32::try_from(delta_leaves).unwrap_or(u32::MAX));
+    match journal.verify_unchanged_at_counted(db, through, &mut work.immutability_point_reads) {
         Ok(Ok(())) => {}
         Ok(Err(refusal)) => {
             txn.abort();
-            return Ok(Err(refusal));
+            return Ok((Err(refusal), work));
         }
         Err(error) => {
             txn.abort();
@@ -807,54 +852,86 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
         // through that sequence, not a prefix with an advanced sequence).
         if stored_prev.recorded_at <= prev.through_seq {
             txn.abort();
-            return Ok(Err(drift(format!(
-                "the last accumulator state was recorded at {} but claims a prefix through {}",
-                stored_prev.recorded_at.0, prev.through_seq.0
-            ))));
+            return Ok((
+                Err(drift(format!(
+                    "the last accumulator state was recorded at {} but claims a prefix through {}",
+                    stored_prev.recorded_at.0, prev.through_seq.0
+                ))),
+                work,
+            ));
         }
-        let prev_journal = match supported(db, book, prev)? {
-            Ok(j) => j,
-            Err(refusal) => {
+        let shared_ok = match shared_predecessor_check(
+            db,
+            ctx,
+            book,
+            signer,
+            stored_prev,
+            &journal,
+            &protected,
+            through,
+            &mut work,
+        ) {
+            Ok(ok) => ok,
+            Err(error @ KernelError::Txn(WriteTxnError::Interrupted(_))) => {
                 txn.abort();
-                return Ok(Err(drift(format!(
-                    "the last accumulator state is not what the journal reproduces: {}",
-                    refusal.message
-                ))));
+                return Err(error);
             }
+            Err(_) => false,
         };
-        let finding = match load_unchanged_checkpoint(db, stored_prev, through)? {
-            Err(finding) => Some(finding),
-            Ok(stored_cp) => {
-                let expected = expected_checkpoint(
-                    db,
-                    ctx,
-                    book,
-                    &prev_journal,
-                    &stored_prev.oid,
-                    stored_cp.checkpoint.body.time_evidence_oid.is_some(),
-                    signer,
-                )?;
-                (stored_cp.checkpoint != expected).then(|| {
-                    "the last checkpoint is not what the journal and the book's key reproduce"
-                        .to_string()
-                })
+        if shared_ok {
+            work.shared_prefixes = work.shared_prefixes.saturating_add(1);
+        } else {
+            work.literal_prefixes = work.literal_prefixes.saturating_add(1);
+            let prev_journal = match supported_counted(db, book, prev, &mut work)? {
+                Ok(j) => j,
+                Err(refusal) => {
+                    txn.abort();
+                    return Ok((
+                        Err(drift(format!(
+                            "the last accumulator state is not what the journal reproduces: {}",
+                            refusal.message
+                        ))),
+                        work,
+                    ));
+                }
+            };
+            let finding = match load_unchanged_checkpoint(db, stored_prev, through)? {
+                Err(finding) => Some(finding),
+                Ok(stored_cp) => {
+                    let expected = expected_checkpoint(
+                        db,
+                        ctx,
+                        book,
+                        &prev_journal,
+                        &stored_prev.oid,
+                        stored_cp.checkpoint.body.time_evidence_oid.is_some(),
+                        signer,
+                    )?;
+                    (stored_cp.checkpoint != expected).then(|| {
+                        "the last checkpoint is not what the journal and the book's key reproduce"
+                            .to_string()
+                    })
+                }
+            };
+            if let Some(finding) = finding {
+                txn.abort();
+                return Ok((Err(checkpoint_invalid(finding)), work));
             }
-        };
-        if let Some(finding) = finding {
-            txn.abort();
-            return Ok(Err(checkpoint_invalid(finding)));
-        }
-        let extends = prev.book_id == journal.book_id
-            && prev.branch_id == journal.branch_id
-            && prev.through_seq < through
-            && journal.root_at(prev.leaf_count) == Some(prev.root)
-            && journal.peaks_at(prev.leaf_count).as_ref() == Some(&prev.peaks);
-        if !extends {
-            txn.abort();
-            return Ok(Err(drift(format!(
-                "the journal through {} does not extend the last accumulator state ({} leaves through {}): history was rewritten or the state is corrupt",
-                through.0, prev.leaf_count, prev.through_seq.0
-            ))));
+            let extends = prev.book_id == journal.book_id
+                && prev.branch_id == journal.branch_id
+                && prev.through_seq < through
+                && journal.root_at(prev.leaf_count) == Some(prev.root)
+                && journal.peaks_at(prev.leaf_count).as_ref() == Some(&prev.peaks);
+            if !extends {
+                txn.abort();
+                return Ok((
+                    Err(drift(format!(
+                        "the journal through {} does not extend the last accumulator state ({} leaves through {}): history was rewritten or the state is corrupt",
+                        through.0, prev.leaf_count, prev.through_seq.0
+                    ))),
+                    work,
+                ));
+            }
         }
     }
     let prev_oid = prev.map(|p| p.oid);
@@ -927,35 +1004,121 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
     );
     txn.write_ordered(db, vec![batch, checkpoints])?;
     match txn.commit(db, &ctx.commit()).await {
-        Ok(seq) => Ok(Ok(Checkpointed {
-            stored: StoredState {
-                oid,
-                vid: svid,
-                recorded_at: seq,
-                state,
-                bytes: payload,
-            },
-            checkpoint: StoredCheckpoint {
-                oid: cp_oid,
-                vid: cvid,
-                checkpoint: cp,
-                bytes: cp_bytes,
-            },
-            leaf_kinds: journal.leaf_kinds(),
-        })),
+        Ok(seq) => Ok((
+            Ok(Checkpointed {
+                stored: StoredState {
+                    oid,
+                    vid: svid,
+                    recorded_at: seq,
+                    state,
+                    bytes: payload,
+                },
+                checkpoint: StoredCheckpoint {
+                    oid: cp_oid,
+                    vid: cvid,
+                    checkpoint: cp,
+                    bytes: cp_bytes,
+                },
+                leaf_kinds: journal.leaf_kinds(),
+            }),
+            work,
+        )),
         Err(WriteTxnError::Write(
             fgdb::WriteError::FirstCommitterWins { .. }
             | fgdb::WriteError::CompareAndSetMismatch(_)
             | fgdb::WriteError::AlreadyLive { .. },
-        )) => Ok(Err(Refusal::new(
-            code::HEAD_MOVED,
-            exit::CONFLICT,
-            "another accumulator state was published from the same head",
-            "plan §13.2 (prev_state_oid moves under a compare-and-set)",
-            "checkpoint again; the new state will extend the winner",
-        ))),
+        )) => Ok((
+            Err(Refusal::new(
+                code::HEAD_MOVED,
+                exit::CONFLICT,
+                "another accumulator state was published from the same head",
+                "plan §13.2 (prev_state_oid moves under a compare-and-set)",
+                "checkpoint again; the new state will extend the winner",
+            )),
+            work,
+        )),
         Err(e) => Err(e.into()),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn shared_predecessor_check<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    signer: &dyn CheckpointSigner,
+    stored_prev: &StoredState,
+    journal: &Journal,
+    protected: &BTreeSet<VId>,
+    through: CommitSeq,
+    work: &mut AccumulatorReadWork,
+) -> Result<bool, KernelError> {
+    let prev = &stored_prev.state;
+    if prev.book_id != journal.book_id
+        || prev.branch_id != journal.branch_id
+        || prev.through_seq >= through
+    {
+        return Ok(false);
+    }
+    if admit_boundary_chain(db, book, prev, through)?.is_err() {
+        return Ok(false);
+    }
+    if !unchanged_record_history(db, ctx, prev.through_seq, through, protected, work)? {
+        return Ok(false);
+    }
+    let count = journal
+        .leaves
+        .partition_point(|leaf| leaf.envelope.commit_seq <= prev.through_seq);
+    let Some(root) = journal.root_at(count as u64) else {
+        return Ok(false);
+    };
+    let Some(peaks) = journal.peaks_at(count as u64) else {
+        return Ok(false);
+    };
+    let expected = AccumulatorState {
+        book_id: journal.book_id,
+        branch_id: journal.branch_id,
+        through_seq: prev.through_seq,
+        leaf_count: count as u64,
+        root,
+        peaks,
+        prev_state_oid: prev.prev_state_oid,
+        evidence_after: prev.evidence_after,
+        access_after: prev.access_after,
+    };
+    if expected != *prev {
+        return Ok(false);
+    }
+    let Ok(stored_cp) = load_unchanged_checkpoint(db, stored_prev, through)? else {
+        return Ok(false);
+    };
+    let mut latest_time = None;
+    if stored_cp.checkpoint.body.time_evidence_oid.is_some() {
+        for leaf in &journal.leaves[..count] {
+            ctx.query()
+                .checkpoint()
+                .map_err(WriteTxnError::Interrupted)?;
+            if leaf.envelope.is_entry()
+                && let Some(oid) = leaf_time_evidence(journal, leaf)?
+            {
+                latest_time = Some(oid);
+            }
+        }
+    }
+    let body = CheckpointBody {
+        statement: expected.statement(),
+        state_oid: stored_prev.oid,
+        scope_index_root: ScopeIndex::of_leaves(
+            journal.book_id,
+            journal.branch_id,
+            &journal.leaves[..count],
+        )
+        .root(),
+        substrate_chain_commitment: chain_commitment(db, ctx, book, prev.through_seq)?,
+        witness_policy_oid: None,
+        time_evidence_oid: stored_cp.checkpoint.body.time_evidence_oid.and(latest_time),
+    };
+    Ok(sign_checkpoint(body, signer)? == stored_cp.checkpoint)
 }
 
 /// One state's recomputation from the journal prefix it claims.
@@ -1534,17 +1697,30 @@ pub(crate) fn supported<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     state: &AccumulatorState,
 ) -> Outcome<Journal> {
+    supported_counted(db, book, state, &mut AccumulatorReadWork::default())
+}
+
+fn supported_counted<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    state: &AccumulatorState,
+    work: &mut AccumulatorReadWork,
+) -> Outcome<Journal> {
     let observed_at = db.frontier()?;
     if let Err(refusal) = admit_boundary_chain(db, book, state, observed_at)? {
         return Ok(Err(refusal));
     }
-    let journal = match Journal::read_with_boundaries(
+    let mut jwork = JournalReadWork::default();
+    let read = Journal::read_with_boundaries_counted(
         db,
         book,
         Some(state.through_seq),
         state.evidence_after,
         state.access_after,
-    )? {
+        &mut jwork,
+    );
+    work.accumulate(jwork);
+    let journal = match read? {
         Ok(j) => j,
         Err(r) => return Ok(Err(r)),
     };
@@ -1560,7 +1736,9 @@ pub(crate) fn supported<V: asupersync::fs::Vfs + Clone>(
             "run `fa verify accumulator`; no proof is issued against an unsupported state",
         )));
     }
-    if let Err(refusal) = journal.verify_unchanged_at(db, observed_at)? {
+    if let Err(refusal) =
+        journal.verify_unchanged_at_counted(db, observed_at, &mut work.immutability_point_reads)?
+    {
         return Ok(Err(refusal));
     }
     Ok(Ok(journal))

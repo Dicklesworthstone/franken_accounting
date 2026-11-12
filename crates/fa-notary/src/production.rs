@@ -412,7 +412,7 @@ pub struct Fre902Package {
     pub signer_key_id_hex: String,
     pub signer_public_key_hex: String,
     pub produced_at_seq: CommitSeq,
-    pub document_commitments: Vec<(Oid, [u8; 32], Option<String>)>,
+    pub document_commitments: Vec<(Oid, u8, [u8; 32], Option<String>)>,
     pub declaration_template_md: String,
     pub verification_procedure_md: String,
     pub adverse_party_notice_template_md: String,
@@ -421,9 +421,9 @@ pub struct Fre902Package {
 impl Fre902Package {
     /// Construct the FRE 902(13)/(14) technical certification package for a
     /// produced `.fab` [`Bundle`], its [`StoredCheckpoint`], its signed
-    /// [`ProductionReceipt`], the book's Ed25519 `signer_public_key`, and the
-    /// matter's [`BatesAssignment`]s.
-    #[must_use]
+    /// [`ProductionReceipt`], the book's Ed25519 `signer_public_key`, the
+    /// matter's [`BatesAssignment`]s, and each produced document's registered
+    /// native `kind` byte.
     pub fn generate(
         matter_id: impl Into<String>,
         bundle: &Bundle,
@@ -431,7 +431,8 @@ impl Fre902Package {
         receipt: &ProductionReceipt,
         signer_public_key: &[u8; 32],
         assignments: &[BatesAssignment],
-    ) -> Self {
+        document_kinds: &BTreeMap<Oid, u8>,
+    ) -> Result<Self, ProductionError> {
         let matter_id = matter_id.into();
         let stmt = &checkpoint.checkpoint.body.statement;
         let book_id_hex = hex(&stmt.book_id.0);
@@ -447,20 +448,27 @@ impl Fre902Package {
         let leaf_domain = String::from_utf8_lossy(crate::tree::LEAF_DOMAIN);
         let node_domain = String::from_utf8_lossy(crate::tree::NODE_DOMAIN);
 
-        let mut document_commitments: Vec<(Oid, [u8; 32], Option<String>)> = assignments
+        let mut document_commitments: Vec<(Oid, u8, [u8; 32], Option<String>)> = assignments
             .iter()
-            .map(|a| (a.document_oid, a.doc_commit, Some(a.range_label())))
-            .collect();
-        document_commitments.sort_by_key(|(oid, _, _)| *oid);
+            .map(|a| {
+                let kind = document_kinds
+                    .get(&a.document_oid)
+                    .copied()
+                    .ok_or(ProductionError::InvalidField("document_kind"))?;
+                Ok((a.document_oid, kind, a.doc_commit, Some(a.range_label())))
+            })
+            .collect::<Result<Vec<_>, ProductionError>>()?;
+        document_commitments.sort_by_key(|(oid, _, _, _)| *oid);
 
         let mut doc_table = String::new();
         if document_commitments.is_empty() {
-            doc_table.push_str("| *(none)* | *(none)* | *(none)* |\n");
+            doc_table.push_str("| *(none)* | *(none)* | *(none)* | *(none)* |\n");
         } else {
-            for (oid, commit, bates) in &document_commitments {
+            for (oid, kind, commit, bates) in &document_commitments {
                 doc_table.push_str(&format!(
-                    "| `{}` | `{}` | {} |\n",
+                    "| `{}` | `{}` | `{}` | {} |\n",
                     hex(&oid.0),
+                    kind,
                     hex(commit),
                     table_cell(bates.as_deref().unwrap_or("UNSTAMPED")),
                 ));
@@ -487,8 +495,8 @@ impl Fre902Package {
              - **Book Signer Ed25519 Public Key:** `{signer_public_key_hex}`\n\
              \n\
              ## 2. Per-Document BLAKE3 Commitments (`fa:doc:v1`)\n\
-             | Document OID | BLAKE3 Commitment (`doc_commit`) | Matter Bates Range |\n\
-             | :--- | :--- | :--- |\n\
+             | Document OID | Kind | BLAKE3 Commitment (`doc_commit`) | Matter Bates Range |\n\
+             | :--- | :--- | :--- | :--- |\n\
              {doc_table}\n\
              ## 3. Qualified Person Technical Statement (To Be Completed by Declarant)\n\
              1. I, `[NAME AND TITLE OF QUALIFIED PERSON]`, am familiar with the operation of the FrankenAccounting\n\
@@ -533,7 +541,7 @@ impl Fre902Package {
                 - Every document stub rebuilds its `fa:doc:v1` commitment from `(kind, length, chunk_root)`.\n\
                 - Every included balance proof recomputes the exact debit and credit totals from its leaf contributions.\n\
              3. **Native document files produced beside the bundle** are not read by `fa-verify bundle`. Check\n\
-                each against its commitment in the declaration's section 2, with the document's registered kind byte:\n\
+                each against its `Kind` byte and commitment in the declaration's section 2:\n\
                 ```sh\n\
                 fa-verify doc-commit <native file> --kind <kind> --expect <BLAKE3 commitment> --json\n\
                 ```\n\
@@ -557,7 +565,7 @@ impl Fre902Package {
              are provided herewith for inspection and independent cryptographic verification.\n"
         );
 
-        Self {
+        Ok(Self {
             matter_id,
             book_id_hex,
             branch_id_hex,
@@ -572,7 +580,7 @@ impl Fre902Package {
             declaration_template_md,
             verification_procedure_md,
             adverse_party_notice_template_md,
-        }
+        })
     }
 }
 
@@ -613,6 +621,17 @@ pub fn assemble_matter_package(
     )
     .map_err(|e| KernelError::Corrupt(e.to_string()))?;
 
+    let document_kinds: BTreeMap<Oid, u8> = reads
+        .iter()
+        .map(|(oid, read)| {
+            let kind = match read {
+                DocumentRead::Full(doc) => doc.kind,
+                DocumentRead::Redacted(view) => view.kind,
+            };
+            (*oid, kind)
+        })
+        .collect();
+
     let fre902 = Fre902Package::generate(
         matter_id,
         &bundle,
@@ -620,7 +639,9 @@ pub fn assemble_matter_package(
         &receipt,
         signer_public_key,
         &bates_assignments,
-    );
+        &document_kinds,
+    )
+    .map_err(|e| KernelError::Corrupt(e.to_string()))?;
 
     Ok(MatterProductionPackage {
         matter_id: matter_id.to_string(),
@@ -834,6 +855,20 @@ mod tests {
         assert!(!declaration.contains("fa:leaf:v1"), "{declaration}");
         assert!(
             declaration.contains("fa-verify doc-commit"),
+            "{declaration}"
+        );
+        assert!(
+            declaration.contains(
+                "| Document OID | Kind | BLAKE3 Commitment (`doc_commit`) | Matter Bates Range |"
+            ),
+            "{declaration}"
+        );
+        assert!(
+            declaration.contains(&format!(
+                "| `{}` | `1` | `{}` | ACME-SEC-00000010..=ACME-SEC-00000011 |",
+                hex(&doc_redacted_oid.0),
+                hex(&[0x11; 32])
+            )),
             "{declaration}"
         );
         assert!(

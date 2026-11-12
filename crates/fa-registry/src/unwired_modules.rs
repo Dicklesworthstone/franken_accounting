@@ -35,6 +35,8 @@ pub struct VerificationOnly {
 pub struct UnwiredModules {
     pub unwired: Vec<Unwired>,
     pub verification: Vec<VerificationOnly>,
+    pub unwired_items: Vec<Unwired>,
+    pub verification_items: Vec<VerificationOnly>,
 }
 
 impl UnwiredModules {
@@ -50,11 +52,12 @@ impl UnwiredModules {
         if let Some(key) = doc.root.keys().find(|k| *k != "schema_version") {
             return Err(invalid(R, format!("unknown top-level key `{key}`")));
         }
-        if let Some(key) = doc
-            .arrays
-            .keys()
-            .find(|k| *k != "unwired" && *k != "verification")
-        {
+        if let Some(key) = doc.arrays.keys().find(|k| {
+            !matches!(
+                k.as_str(),
+                "unwired" | "verification" | "unwired_item" | "verification_item"
+            )
+        }) {
             return Err(invalid(R, format!("unknown table array `[[{key}]]`")));
         }
         let empty = Vec::new();
@@ -92,17 +95,7 @@ impl UnwiredModules {
         for t in doc.arrays.get("verification").unwrap_or(&empty) {
             only_keys(t, &["path", "consumer", "reason"])?;
             let path = module_path(req_str(R, t, "path")?)?;
-            let consumer = req_str(R, t, "consumer")?.to_string();
-            let relative = !consumer.starts_with('/')
-                && consumer
-                    .split('/')
-                    .all(|s| !s.is_empty() && s != "." && s != "..");
-            if !relative || !consumer.ends_with(".rs") {
-                return Err(invalid(
-                    R,
-                    format!("{path}: consumer `{consumer}` is not a workspace-relative .rs file"),
-                ));
-            }
+            let consumer = validate_consumer(&path, req_str(R, t, "consumer")?)?;
             let reason = reason(&path, t)?;
             if !paths.insert(path.clone()) {
                 return Err(invalid(R, format!("{path} is listed twice")));
@@ -113,11 +106,72 @@ impl UnwiredModules {
                 reason,
             });
         }
+        let mut item_paths = BTreeSet::new();
+        let mut unwired_items = Vec::new();
+        for t in doc.arrays.get("unwired_item").unwrap_or(&empty) {
+            only_keys(t, &["path", "owner_bead", "reason", "expires"])?;
+            let path = item_path(req_str(R, t, "path")?)?;
+            let owner_bead = req_str(R, t, "owner_bead")?.to_string();
+            if !is_bead_id(&owner_bead) {
+                return Err(invalid(
+                    R,
+                    format!("{path}: owner_bead `{owner_bead}` is not a bead id (fa-<id>)"),
+                ));
+            }
+            let reason = reason(&path, t)?;
+            let expires = req_str(R, t, "expires")?.to_string();
+            if parse_date(&expires).is_none() {
+                return Err(invalid(
+                    R,
+                    format!("{path}: expires `{expires}` is not a YYYY-MM-DD date"),
+                ));
+            }
+            if !item_paths.insert(path.clone()) {
+                return Err(invalid(R, format!("{path} is listed twice")));
+            }
+            unwired_items.push(Unwired {
+                path,
+                owner_bead,
+                reason,
+                expires,
+            });
+        }
+        let mut verification_items = Vec::new();
+        for t in doc.arrays.get("verification_item").unwrap_or(&empty) {
+            only_keys(t, &["path", "consumer", "reason"])?;
+            let path = item_path(req_str(R, t, "path")?)?;
+            let consumer = validate_consumer(&path, req_str(R, t, "consumer")?)?;
+            let reason = reason(&path, t)?;
+            if !item_paths.insert(path.clone()) {
+                return Err(invalid(R, format!("{path} is listed twice")));
+            }
+            verification_items.push(VerificationOnly {
+                path,
+                consumer,
+                reason,
+            });
+        }
         Ok(Self {
             unwired,
             verification,
+            unwired_items,
+            verification_items,
         })
     }
+}
+
+fn validate_consumer(path: &str, consumer: &str) -> Result<String, RegistryError> {
+    let relative = !consumer.starts_with('/')
+        && consumer
+            .split('/')
+            .all(|s| !s.is_empty() && s != "." && s != "..");
+    if !relative || !consumer.ends_with(".rs") {
+        return Err(invalid(
+            R,
+            format!("{path}: consumer `{consumer}` is not a workspace-relative .rs file"),
+        ));
+    }
+    Ok(consumer.to_string())
 }
 
 fn only_keys(t: &Table, allowed: &[&str]) -> Result<(), RegistryError> {
@@ -150,6 +204,40 @@ fn module_path(path: &str) -> Result<String, RegistryError> {
         Err(invalid(
             R,
             format!("path `{path}` is not `crate_ident::module::…`"),
+        ))
+    }
+}
+
+/// An item path `crate_ident::…::item_ident`: lowercase module prefix segments
+/// followed by a valid Rust item identifier (`fn`, `struct`, or `enum`).
+fn item_path(path: &str) -> Result<String, RegistryError> {
+    let segs: Vec<&str> = path.split("::").collect();
+    if segs.len() < 2 {
+        return Err(invalid(
+            R,
+            format!("item path `{path}` is not `crate_ident::…::item`"),
+        ));
+    }
+    let mod_ok = segs[..segs.len() - 1].iter().all(|seg| {
+        let mut chars = seg.chars();
+        chars
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    });
+    let leaf_ok = {
+        let mut chars = segs[segs.len() - 1].chars();
+        chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    if mod_ok && leaf_ok {
+        Ok(path.to_string())
+    } else {
+        Err(invalid(
+            R,
+            format!("item path `{path}` is not `crate_ident::…::item`"),
         ))
     }
 }
@@ -195,6 +283,7 @@ mod tests {
     use super::*;
 
     const ROW: &str = "schema_version = 1\n\n[[unwired]]\npath = \"fa_x::y\"\nowner_bead = \"fa-abc\"\nreason = \"why\"\nexpires = \"2026-11-21\"\n";
+    const ITEM_ROW: &str = "schema_version = 1\n\n[[unwired_item]]\npath = \"fa_x::y::SomeType\"\nowner_bead = \"fa-0hs4.14\"\nreason = \"why item\"\nexpires = \"2026-12-15\"\n\n[[verification_item]]\npath = \"fa_x::y::test_helper\"\nconsumer = \"crates/fa-x/tests/it.rs\"\nreason = \"harness only\"\n";
 
     #[test]
     fn the_embedded_registry_loads_with_unique_rows() {
@@ -208,6 +297,16 @@ mod tests {
         assert_eq!(parsed.unwired[0].path, "fa_x::y");
         assert_eq!(parsed.unwired[0].owner_bead, "fa-abc");
         assert_eq!(parsed.unwired[0].expires, "2026-11-21");
+
+        let parsed_items = UnwiredModules::from_text(ITEM_ROW).expect("item rows");
+        assert_eq!(parsed_items.unwired_items.len(), 1);
+        assert_eq!(parsed_items.unwired_items[0].path, "fa_x::y::SomeType");
+        assert_eq!(parsed_items.unwired_items[0].owner_bead, "fa-0hs4.14");
+        assert_eq!(parsed_items.verification_items.len(), 1);
+        assert_eq!(
+            parsed_items.verification_items[0].consumer,
+            "crates/fa-x/tests/it.rs"
+        );
     }
 
     #[test]
@@ -233,6 +332,18 @@ mod tests {
             (
                 format!("{ROW}\n[[unwireds]]\npath = \"fa_z\"\n"),
                 "unknown table",
+            ),
+            (
+                ITEM_ROW.replace("fa_x::y::SomeType", "fa_x"),
+                "is not `crate_ident::…::item`",
+            ),
+            (
+                ITEM_ROW.replace("fa_x::y::SomeType", "fa_x::BadMod::SomeType"),
+                "is not `crate_ident::…::item`",
+            ),
+            (
+                ITEM_ROW.replace("fa_x::y::test_helper", "fa_x::y::SomeType"),
+                "listed twice",
             ),
         ] {
             let err = UnwiredModules::from_text(&planted)

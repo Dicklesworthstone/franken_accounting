@@ -12,7 +12,7 @@ pub use activity::{XbrlIncomeAttribution, XbrlReportInputs, read_xbrl_income_att
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fa_model::AccountType;
+use fa_model::{AccountType, DecodeError, EncodeError, Oid, Reader, Writer, domain_digest};
 use fa_money::UnitId;
 use fa_time::DateDay;
 
@@ -169,6 +169,9 @@ pub fn read_xbrl_equity_attribution(
     Ok(Some(attribution))
 }
 
+pub const STATEMENT_XBRL_MAPPING_FORMAT: &[u8] = b"fa:statement-xbrl-mapping:v1";
+const MAX_XBRL_CONCEPT_BINDINGS: usize = 128;
+
 /// XBRL 2.1 period type for a monetary taxonomy concept (`instant` or `duration`, plan §12.6, `fa-faim`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum XbrlPeriodType {
@@ -176,11 +179,47 @@ pub enum XbrlPeriodType {
     Duration,
 }
 
+impl XbrlPeriodType {
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::Instant => 1,
+            Self::Duration => 2,
+        }
+    }
+
+    pub fn from_tag(tag: u8, r: &Reader<'_>) -> Result<Self, DecodeError> {
+        match tag {
+            1 => Ok(Self::Instant),
+            2 => Ok(Self::Duration),
+            _ => Err(r.bad_tag("xbrl_period_type", tag)),
+        }
+    }
+}
+
 /// XBRL 2.1 natural balance attribute (`debit` or `credit`) on a monetary concept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum XbrlBalanceSide {
     Debit,
     Credit,
+}
+
+impl XbrlBalanceSide {
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::Debit => 1,
+            Self::Credit => 2,
+        }
+    }
+
+    pub fn from_tag(tag: u8, r: &Reader<'_>) -> Result<Self, DecodeError> {
+        match tag {
+            1 => Ok(Self::Debit),
+            2 => Ok(Self::Credit),
+            _ => Err(r.bad_tag("xbrl_balance_side", tag)),
+        }
+    }
 }
 
 /// Maps one statement definition line (`line_code`) to an XBRL taxonomy concept QName (`us-gaap:...`).
@@ -205,6 +244,89 @@ pub struct StatementXbrlMapping {
 }
 
 impl StatementXbrlMapping {
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
+        let mut w = Writer::new();
+        w.fixed(STATEMENT_XBRL_MAPPING_FORMAT)
+            .str(&self.mapping_id)
+            .str(&self.statement_definition_name)
+            .str(&self.taxonomy_namespace)
+            .str(&self.taxonomy_schema_href)
+            .str(&self.role_uri)
+            .list(&self.bindings, |w, b| {
+                w.str(&b.line_code)
+                    .str(&b.concept)
+                    .u8(b.period_type.tag())
+                    .opt(b.balance_side.as_ref(), |w, side| {
+                        w.u8(side.tag());
+                    });
+            });
+        w.finish()
+    }
+
+    pub fn digest(&self) -> Result<Oid, EncodeError> {
+        Ok(Oid(domain_digest(
+            STATEMENT_XBRL_MAPPING_FORMAT,
+            &[&self.canonical_bytes()?],
+        )))
+    }
+
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, FormatError> {
+        let map_decode = |e: DecodeError| FormatError::Parse {
+            format: "statement_xbrl_mapping_v1",
+            detail: e.to_string(),
+        };
+        let mut r = Reader::new(bytes);
+        let magic = r
+            .fixed::<{ STATEMENT_XBRL_MAPPING_FORMAT.len() }>("xbrl_mapping.magic")
+            .map_err(map_decode)?;
+        if magic != STATEMENT_XBRL_MAPPING_FORMAT {
+            return Err(FormatError::Parse {
+                format: "statement_xbrl_mapping_v1",
+                detail: "unknown statement XBRL mapping header".into(),
+            });
+        }
+        let mapping_id = r.str(256, "mapping_id").map_err(map_decode)?.to_string();
+        let statement_definition_name = r
+            .str(256, "statement_definition_name")
+            .map_err(map_decode)?
+            .to_string();
+        let taxonomy_namespace = r
+            .str(256, "taxonomy_namespace")
+            .map_err(map_decode)?
+            .to_string();
+        let taxonomy_schema_href = r
+            .str(256, "taxonomy_schema_href")
+            .map_err(map_decode)?
+            .to_string();
+        let role_uri = r.str(256, "role_uri").map_err(map_decode)?.to_string();
+        let bindings = r
+            .list(MAX_XBRL_CONCEPT_BINDINGS, "bindings", |r| {
+                let line_code = r.str(64, "line_code")?.to_string();
+                let concept = r.str(256, "concept")?.to_string();
+                let period_type_tag = r.u8("period_type")?;
+                let period_type = XbrlPeriodType::from_tag(period_type_tag, r)?;
+                let balance_side = r.opt("balance_side", |r| {
+                    let tag = r.u8("balance_side.tag")?;
+                    XbrlBalanceSide::from_tag(tag, r)
+                })?;
+                Ok(XbrlConceptBinding {
+                    line_code,
+                    concept,
+                    period_type,
+                    balance_side,
+                })
+            })
+            .map_err(map_decode)?;
+        r.finish().map_err(map_decode)?;
+        Ok(Self {
+            mapping_id,
+            statement_definition_name,
+            taxonomy_namespace,
+            taxonomy_schema_href,
+            role_uri,
+            bindings,
+        })
+    }
     /// Standard US-GAAP concept mapping for FrankenAccounting's built-in type-level Balance Sheet.
     ///
     /// Element names are cited from the published FASB US-GAAP Financial Reporting Taxonomy
@@ -2863,6 +2985,35 @@ mod tests {
             .push("noncontrolling_interest".into());
         assert!(matches!(
             wrong_type.fold_balances(),
+            Err(FormatError::Parse { .. })
+        ));
+    }
+
+    #[test]
+    fn statement_xbrl_mappings_round_trip_canonical_bytes_and_refuse_corrupt_headers() {
+        for mapping in [
+            StatementXbrlMapping::us_gaap_type_level_balance_sheet(),
+            StatementXbrlMapping::us_gaap_attributed_balance_sheet(),
+            StatementXbrlMapping::us_gaap_type_level_income_statement(),
+            StatementXbrlMapping::us_gaap_income_activity(),
+            StatementXbrlMapping::us_gaap_small_company_balance_sheet(),
+            StatementXbrlMapping::us_gaap_small_company_income_statement(),
+        ] {
+            let bytes = mapping.canonical_bytes().unwrap();
+            assert_eq!(
+                StatementXbrlMapping::decode_canonical(&bytes).unwrap(),
+                mapping
+            );
+            assert_eq!(
+                mapping.digest().unwrap(),
+                StatementXbrlMapping::decode_canonical(&bytes)
+                    .unwrap()
+                    .digest()
+                    .unwrap()
+            );
+        }
+        assert!(matches!(
+            StatementXbrlMapping::decode_canonical(b"fa:statement-xbrl-mapping:v0"),
             Err(FormatError::Parse { .. })
         ));
     }

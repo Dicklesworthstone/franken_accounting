@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::RegistryError;
-use crate::toml::{self, Document, Value};
+use crate::toml::{self, Value};
 
 const REGISTRY: &str = "foundation_dependencies.toml";
 const LEDGER: &str = include_str!("../../../registries/foundation_dependencies.toml");
@@ -335,7 +335,8 @@ pub fn check_conformance_tests(
 /// Every `(crate, lock rev, Cargo.toml rev)` where a `franken-stack.lock`
 /// foundation's revision differs from the workspace `Cargo.toml` pin of a
 /// crate it ships. Crates the workspace does not pin are not compared.
-pub fn pin_drift(lock: &Document, cargo_toml: &str) -> Vec<(String, String, String)> {
+#[cfg(test)]
+fn pin_drift(lock: &toml::Document, cargo_toml: &str) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     let empty = Vec::new();
     for f in lock.arrays.get("foundation").unwrap_or(&empty) {

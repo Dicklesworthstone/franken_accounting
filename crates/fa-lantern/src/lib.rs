@@ -67,6 +67,11 @@ use fgdb_crypto::Hasher;
 use fgdb_types::context::QueryCx;
 use fgdb_types::{CommitSeq, VId};
 
+pub use conformal::{
+    DetectorThresholdCard, LabeledDetectorMetrics, SplitConformalBound,
+    ThresholdCandidateEvaluation, WilsonIntervalBps, calibrate_detector_threshold,
+    calibrate_split_conformal, wilson_interval_95_bps,
+};
 pub use snapshot::{Snapshot, SnapshotEntry, Transition};
 
 pub const FINDINGS_DIGEST_DOMAIN: &[u8] = b"fa:lantern-findings:v1";

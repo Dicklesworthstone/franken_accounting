@@ -154,16 +154,18 @@ impl RefusalCatalog {
 pub const ORACLE_CRATE: &str = "fa-reference";
 
 /// One `const NAME: &str = "FA-REF-nnn";` in a crate's sources.
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Declaration {
+struct Declaration {
     pub krate: String,
     pub name: String,
     pub code: String,
 }
 
 /// One literal `code::NAME, exit::CLASS` call site.
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Site {
+struct Site {
     pub krate: String,
     pub name: String,
     /// The exit constant's name, lowercased (`refusal`, `usage`, …).
@@ -172,8 +174,9 @@ pub struct Site {
 
 /// Every disagreement between the catalog and the declared code, as
 /// readable lines; empty when they agree.
+#[cfg(test)]
 #[must_use]
-pub fn audit(catalog: &RefusalCatalog, decls: &[Declaration], sites: &[Site]) -> Vec<String> {
+fn audit(catalog: &RefusalCatalog, decls: &[Declaration], sites: &[Site]) -> Vec<String> {
     let mut out = Vec::new();
     // A code means one thing: one constant name across the workspace.
     let mut by_code: std::collections::BTreeMap<&str, BTreeSet<&str>> = Default::default();

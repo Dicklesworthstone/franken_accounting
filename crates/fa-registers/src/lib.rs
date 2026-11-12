@@ -448,6 +448,18 @@ pub fn entries_at<V: asupersync::fs::Vfs + Clone>(
     entries_at_counted(db, book, seq, &mut EntryReadCount::default())
 }
 
+/// [`entries_at`] over an already read `Database::vertices_at(seq)` snapshot
+/// so callers such as Lantern's [`Snapshot::read`] do not re-scan the entire
+/// vertex population.
+pub fn entries_from_rows_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    seq: CommitSeq,
+    rows: &[VertexRow],
+) -> Result<Vec<(VId, Entry, CommitSeq)>, RegisterError> {
+    entries_from_rows_at_counted(db, book, seq, rows, &mut EntryReadCount::default())
+}
+
 /// Work performed by the entry selector itself. Migration run lookups,
 /// storage-fragment authentication reads and subsequent folding are separate
 /// work, not hidden in these counts.
@@ -484,14 +496,25 @@ pub(crate) fn entries_at_counted<V: asupersync::fs::Vfs + Clone>(
     seq: CommitSeq,
     work: &mut EntryReadCount,
 ) -> Result<Vec<(VId, Entry, CommitSeq)>, RegisterError> {
+    let rows = db.vertices_at(seq)?;
+    entries_from_rows_at_counted(db, book, seq, &rows, work)
+}
+
+fn entries_from_rows_at_counted<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    seq: CommitSeq,
+    rows: &[VertexRow],
+    work: &mut EntryReadCount,
+) -> Result<Vec<(VId, Entry, CommitSeq)>, RegisterError> {
     let mut entries = Vec::new();
     let mut runs = BTreeMap::new();
-    for row in db.vertices_at(seq)? {
+    for row in rows {
         work.vertices_read = work.vertices_read.saturating_add(1);
         if row.labels.contains(&label::ENTRY) {
             work.entries_decoded = work.entries_decoded.saturating_add(1);
         }
-        let Some(entry) = entry_from_row(db, &row, book, seq)? else {
+        let Some(entry) = entry_from_row(db, row, book, seq)? else {
             continue;
         };
         if !fa_journal::migration::visible_at(db, &entry, seq, &mut runs)? {
@@ -1537,6 +1560,17 @@ fn verify_period_in<V: asupersync::fs::Vfs + Clone>(
         result.cells_checked = 0;
         reads.load_entry_rows(head, head)?;
         result.lag_entries = reads.entry_rows(head)?.len();
+    } else {
+        let folded_legs: u64 = fold
+            .cells
+            .iter()
+            .chain(fold.pending.iter())
+            .map(|c| c.entry_count)
+            .sum();
+        fa_journal::op_witness::record_verify_cell_reads(
+            u32::try_from(result.cells_checked).unwrap_or(u32::MAX),
+            u32::try_from(folded_legs).unwrap_or(u32::MAX),
+        );
     }
     if basis < head {
         reads.load_entry_rows(basis, head)?;
@@ -1873,6 +1907,66 @@ impl TrialBalance {
             });
         }
         w.finish()
+    }
+
+    /// Decode a [`TrialBalance`] from its canonical bytes (`fa:trial-balance:v1`).
+    pub fn decode(bytes: &[u8]) -> Result<Self, fa_model::DecodeError> {
+        const MAGIC: &[u8; 19] = b"fa:trial-balance:v1";
+        let mut r = fa_model::Reader::new(bytes);
+        let magic: [u8; 19] = r.fixed("trial_balance.magic")?;
+        if &magic != MAGIC {
+            return Err(r.invalid("trial_balance.magic"));
+        }
+        let periods = r.list(65_536, "trial_balance.periods", |r| {
+            Ok(r.str(128, "trial_balance.period")?.to_string())
+        })?;
+        let known_at = CommitSeq(r.u64("trial_balance.known_at")?);
+        let effective_through = r.opt("trial_balance.effective_through", |r| {
+            Ok(DateDay(r.i32("trial_balance.effective_day")?))
+        })?;
+        let activity = r.bool("trial_balance.activity")?;
+        let rows = r.list(65_536, "trial_balance.rows", |r| {
+            Ok(TbRow {
+                account: VId(r.u128("tb_row.account")?),
+                code: r.str(64, "tb_row.code")?.to_string(),
+                name: r.str(256, "tb_row.name")?.to_string(),
+                account_type: AccountType(r.u8("tb_row.account_type")?),
+                unit_id: r.u32("tb_row.unit_id")?,
+                debits: r.i128("tb_row.debits")?,
+                credits: r.i128("tb_row.credits")?,
+                debits_pending: r.i128("tb_row.debits_pending")?,
+                credits_pending: r.i128("tb_row.credits_pending")?,
+            })
+        })?;
+        let read_totals = |r: &mut fa_model::Reader<'_>,
+                           label: &'static str|
+         -> Result<BTreeMap<u32, (i128, i128)>, fa_model::DecodeError> {
+            let items = r.list(1024, label, |r| {
+                let u = r.u32("tb_total.unit")?;
+                let d = r.i128("tb_total.debits")?;
+                let c = r.i128("tb_total.credits")?;
+                Ok((u, (d, c)))
+            })?;
+            let mut map = BTreeMap::new();
+            for (u, pair) in items {
+                if map.insert(u, pair).is_some() {
+                    return Err(r.invalid(label));
+                }
+            }
+            Ok(map)
+        };
+        let unit_totals = read_totals(&mut r, "trial_balance.unit_totals")?;
+        let pending_unit_totals = read_totals(&mut r, "trial_balance.pending_unit_totals")?;
+        r.finish()?;
+        Ok(Self {
+            periods,
+            known_at,
+            effective_through,
+            activity,
+            rows,
+            unit_totals,
+            pending_unit_totals,
+        })
     }
 
     /// FA-INV-01 at the register level: every monetary unit's debits equal its

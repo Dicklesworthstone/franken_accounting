@@ -53,7 +53,7 @@ pub fn open_items_as_of<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// [`open_items_as_of`] over `entries`, the journal's entries at `known_at`.
-pub(crate) fn snapshot_of(
+pub fn snapshot_of(
     book: &BookContext,
     entries: Vec<(VId, Entry, CommitSeq)>,
     account: Option<VId>,

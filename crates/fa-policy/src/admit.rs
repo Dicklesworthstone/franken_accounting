@@ -389,6 +389,63 @@ pub fn admit_read(cap: &Capability, principal: VId, book: Id128) -> Result<(), D
     scope(cap, book)
 }
 
+/// Admit a lifecycle or container operation (`open`, `plan`, `discard`, `show`,
+/// `list`) on the logical draft branch `draft_branch` before storage observation.
+///
+/// When `cap` explicitly carries `branch = Some(draft_branch)` (with
+/// `draft_branch != Id128::TRUNK`), the capability is confined to this named
+/// draft container: container lifecycle records do not publish trunk postings,
+/// while every proposal planned into or promoted from the draft is separately
+/// checked against `cap`'s `accounts`, `periods`, `effective`, `classes`, and
+/// amount ceilings prior to observation (`FA-INV-10`, bead `fa-0hs4.24`).
+/// Unbranched capabilities continue to require whole-book reach so an
+/// unconfined scoped token cannot probe arbitrary draft containers.
+pub fn admit_draft_container(
+    cap: &Capability,
+    principal: VId,
+    op: Op,
+    book: Id128,
+    draft_branch: Id128,
+) -> Result<(), Denial> {
+    if cap.holder() != principal {
+        return Err(Denial::NotHolder {
+            holder: cap.holder(),
+            principal,
+        });
+    }
+    require(cap, op, &format!("draft operation ({op})"))?;
+    if op != Op::Read {
+        admit_direct_write(cap)?;
+    }
+    scope(cap, book)?;
+    if draft_branch == Id128::TRUNK {
+        return Err(out_of_scope(
+            "branch",
+            format!("branch {}", draft_branch.to_hex()),
+        ));
+    }
+    if let Some(pin) = cap.known_at_pin() {
+        return Err(out_of_scope(
+            "known_at",
+            format!(
+                "an act at the book head (the token is pinned at known-at <= {})",
+                pin.0
+            ),
+        ));
+    }
+    if cap.branch() == Some(draft_branch) {
+        return Ok(());
+    }
+    let reach = Reach {
+        branch: Some(draft_branch),
+        ..Reach::whole_book(op == Op::Read)
+    };
+    if op != Op::Read {
+        require_class(cap, None)?;
+    }
+    reach_coordinates(cap, &reach, None)
+}
+
 /// Admit a write that has no verified rehearsal certificate. This is
 /// separate from actor, operation, and reach admission: those checks also
 /// serve read-only preparation, which a rehearsal-required token may do.

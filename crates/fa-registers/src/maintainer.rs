@@ -467,6 +467,7 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
         .collect();
     let mut entries_decoded = 0usize;
     let mut legs_folded = 0u64;
+    let mut touched_cells = BTreeSet::new();
     let mut migration_runs = BTreeMap::new();
     for batch in db
         .delta_since(from)?
@@ -550,6 +551,9 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
                 continue;
             }
             fold.watermark = Some(fold.watermark.map_or(seq, |w| w.max(seq)));
+            for leg in &entry.proposal.legs {
+                touched_cells.insert((leg.account_ref, leg.amount.unit.0));
+            }
             if entry.proposal.class == EntryClass::PENDING {
                 match crate::add_entry(&mut pending, &entry, period, (vid, seq), basis) {
                     Ok(()) => {}
@@ -583,6 +587,9 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
             }
         }
     }
+    fa_journal::op_witness::record_register_cell_touch(
+        u32::try_from(touched_cells.len()).unwrap_or(u32::MAX),
+    );
     fold.cells = cells.into_values().collect();
     fold.pending = pending.into_values().collect();
     fold.fold_digest = crate::digest_of(
@@ -696,7 +703,7 @@ fn checkpoint_cadence<V: asupersync::fs::Vfs + Clone>(
             retention.drifts.join("; ")
         )));
     }
-    for active in retention.active_policies {
+    for active in &retention.active_policies {
         if let fa_journal::retention::RetentionFloor::Commits(floor) = active.policy.floor {
             if floor == 0 {
                 return Err(drift("retention commit floor must be positive"));
@@ -704,6 +711,8 @@ fn checkpoint_cadence<V: asupersync::fs::Vfs + Clone>(
             cadence = cadence.min(floor);
         }
     }
+    fa_journal::retention::check_checkpoint_cadence(&retention.active_policies, cadence, None)
+        .map_err(|refusal| drift(refusal.message))?;
     Ok(cadence)
 }
 

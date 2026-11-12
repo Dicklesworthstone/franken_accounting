@@ -200,6 +200,31 @@ impl RegulatoryScheduleDefinition {
         evaluate_custom(&self.statement_definition, input)
     }
 
+    /// Evaluate this regulatory schedule while enforcing that every declared
+    /// `Instrument` graph attribute `(instrument_kind, attribute_name)` has been
+    /// supplied by the caller's instrument snapshot (plan §12.6, bead `fa-doa9`).
+    pub fn evaluate_with_instrument_attributes(
+        &self,
+        input: &StatementInput,
+        provided_attributes: &BTreeSet<(String, String)>,
+    ) -> Result<Statement, StatementError> {
+        self.validate()?;
+        for spec in &self.declared_instrument_inputs {
+            let key = (spec.instrument_kind.clone(), spec.attribute_name.clone());
+            if !provided_attributes.contains(&key) {
+                return Err(StatementError::Input(format!(
+                    "regulatory schedule {} {} line `{}` requires missing Instrument({}) attribute `{}`",
+                    self.form.as_str(),
+                    self.schedule_code,
+                    spec.line_code,
+                    spec.instrument_kind,
+                    spec.attribute_name
+                )));
+            }
+        }
+        evaluate_custom(&self.statement_definition, input)
+    }
+
     /// FFIEC 041 Schedule RC — Consolidated Report of Condition (Balance Sheet),
     /// instruction version `FFIEC-041-2026Q1`.
     ///
@@ -861,11 +886,11 @@ pub fn regulatory_edits(selector: &str) -> Result<Vec<FfiecEditRule>, StatementE
 pub fn edits_for_schedule(
     schedule: &RegulatoryScheduleDefinition,
 ) -> Result<RegulatoryEditSet, StatementError> {
-    for (name, text) in EDIT_REGISTRIES {
+    for (name, _) in EDIT_REGISTRIES {
         if name.split_once('@').map(|(form, _)| form) != Some(schedule.form.as_str()) {
             continue;
         }
-        let set = parse_edit_set(name, text)?;
+        let set = regulatory_edit_set(name)?;
         if set.instruction_version == schedule.instruction_version {
             let edits = set
                 .edits
@@ -1726,5 +1751,77 @@ mod tests {
             evaluate_regulatory_edits(&hc_stmt, "FRY9C@2026Q1", &hc_edits).unwrap();
         assert_eq!(hc_edit_report.validity_passed, 2);
         assert_eq!(hc_edit_report.validity_failed, 0);
+    }
+
+    #[test]
+    fn missing_instrument_attribute_refused() {
+        let rc = RegulatoryScheduleDefinition::ffiec_041_schedule_rc_2026q1();
+        let accounts: Vec<Account> = [
+            (1, "1110", 1),
+            (2, "1120", 1),
+            (3, "1210", 1),
+            (4, "1220", 1),
+            (5, "1420", 1),
+            (6, "1430", 1),
+            (7, "1600", 1),
+            (8, "2110", 2),
+            (9, "2400", 2),
+            (10, "2600", 2),
+            (11, "3200", 3),
+            (12, "3300", 3),
+            (13, "3400", 3),
+        ]
+        .into_iter()
+        .map(|(id, code, account_type)| Account {
+            id,
+            code: code.into(),
+            name: format!("Acct {code}"),
+            account_type,
+            is_leaf: true,
+        })
+        .collect();
+        let input = StatementInput {
+            book_id: Id128([1; 16]),
+            branch_id: Id128([0; 16]),
+            known_at: 7,
+            accounts,
+            units: vec![1],
+            columns: vec![ColumnInput {
+                label: "2026Q1".into(),
+                periods: vec!["2026-Q1".into()],
+                effective_from: None,
+                effective_through: DateDay::from_ymd(2026, 3, 31).unwrap(),
+                balances: Vec::new(),
+            }],
+        };
+
+        let empty = BTreeSet::new();
+        let err = rc
+            .evaluate_with_instrument_attributes(&input, &empty)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("RCON2122")
+                && err.to_string().contains("call_report_loan_category"),
+            "unexpected error: {err}"
+        );
+
+        let partial = BTreeSet::from([("Loan".into(), "call_report_loan_category".into())]);
+        let err2 = rc
+            .evaluate_with_instrument_attributes(&input, &partial)
+            .unwrap_err();
+        assert!(
+            err2.to_string().contains("RCON2200")
+                && err2.to_string().contains("fdic_part370_orc_code"),
+            "unexpected error: {err2}"
+        );
+
+        let full = BTreeSet::from([
+            ("Loan".into(), "call_report_loan_category".into()),
+            ("Deposit".into(), "fdic_part370_orc_code".into()),
+        ]);
+        let stmt = rc
+            .evaluate_with_instrument_attributes(&input, &full)
+            .expect("all declared instrument attributes provided");
+        assert_eq!(stmt.definition_name, "ffiec_041_schedule_rc_2026q1");
     }
 }
