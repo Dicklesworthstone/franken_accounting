@@ -591,8 +591,20 @@ pub fn verify_kernel_op_witness(
     Ok(())
 }
 
+fn op_count_from_live_witness(raw: (u32, u32, u32, u32, u32, u32)) -> OpCount {
+    let (point_reads, witnesses, cas_moves, edges_written, vertices_written, transactions) = raw;
+    OpCount {
+        point_reads,
+        witnesses,
+        cas_moves,
+        edges_written,
+        vertices_written,
+        transactions,
+    }
+}
+
 /// Run the deterministic in-memory kernel operation harness for `op_id` and return
-/// the counted substrate operations after confirming the real kernel execution succeeded.
+/// the live substrate-measured operation counts (`fa-0hs4.23`).
 pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
     let units = UnitRegistry::embedded().map_err(|e| BenchError::Execution(e.to_string()))?;
     let usd = units
@@ -668,6 +680,51 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
     let rev_vid = account_vid(book_id, "4000");
     let petty_vid = account_vid(book_id, "1030");
 
+    // Warm the book's CarriedHistory capacity memo with one steady-state entry
+    // before entering the measured witness window (mirrors an open production book).
+    let warmup_legs = vec![
+        LegPayload::simple(Side::Debit, cash_vid, Amount::new(usd, 1_000)),
+        LegPayload::simple(Side::Credit, rev_vid, Amount::new(usd, 1_000)),
+    ];
+    let warmup_totals = EntryPayload::fold_unit_totals(&warmup_legs).unwrap();
+    let warmup_prop = EntryPayload {
+        schema_minor: 0,
+        book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::ORIGINAL,
+        effective_date: day,
+        document_date: Some(day),
+        description: book
+            .seal_text("witness warmup")
+            .map_err(|e| BenchError::Execution(e.to_string()))?,
+        effective_period: None,
+        legs: warmup_legs,
+        control: None,
+        unit_totals: warmup_totals,
+        base_totals: None,
+        idempotency_key: b"bench:witness:warmup".to_vec(),
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid(domain_digest(b"fa:intent:v1", &[b"bench:witness:warmup"])),
+            intent_kind: 1,
+        },
+        principal_ref: operator,
+        session_ref: None,
+        evidence: vec![doc.evidence_ref(1)],
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: Vec::new(),
+        tags: Vec::new(),
+    };
+    book.post(PostRequest {
+        proposal: warmup_prop,
+        approvals: Vec::new(),
+        plan_certificate: None,
+        capability: post_cap.clone(),
+    })
+    .map_err(|e| BenchError::Execution(e.to_string()))?
+    .map_err(|r| BenchError::Execution(r.message))?;
+
     match op_id {
         "post" => {
             let legs = vec![
@@ -686,7 +743,7 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                     .seal_text("witness post")
                     .map_err(|e| BenchError::Execution(e.to_string()))?,
                 effective_period: None,
-                legs: legs.clone(),
+                legs,
                 control: None,
                 unit_totals,
                 base_totals: None,
@@ -704,24 +761,19 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 extensions: Vec::new(),
                 tags: Vec::new(),
             };
-            let _posted = book
-                .post(PostRequest {
-                    proposal,
-                    approvals: Vec::new(),
-                    plan_certificate: None,
-                    capability: post_cap,
+            let (_, live) = book
+                .measure_with_op_witness(|b| {
+                    b.post(PostRequest {
+                        proposal,
+                        approvals: Vec::new(),
+                        plan_certificate: None,
+                        capability: post_cap,
+                    })
+                    .map_err(|e| e.to_string())?
+                    .map_err(|r| r.message)
                 })
-                .map_err(|e| BenchError::Execution(e.to_string()))?
-                .map_err(|r| BenchError::Execution(r.message))?;
-            let leg_count = u32::try_from(legs.len()).unwrap();
-            Ok(OpCount {
-                point_reads: 1 + leg_count, // 1 period + 2 leaf accounts
-                witnesses: 1,               // 1 period state witness
-                cas_moves: 0,
-                edges_written: leg_count * 4, // HAS_LEG, POSTS_TO, FOR, IN_UNIT per leg
-                vertices_written: 1 + leg_count, // 1 Entry + 2 Leg vertices
-                transactions: 1,
-            })
+                .map_err(BenchError::Execution)?;
+            Ok(op_count_from_live_witness(live))
         }
         "reserve" | "resolve" => {
             let legs = vec![
@@ -762,6 +814,21 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 extensions: Vec::new(),
                 tags: Vec::new(),
             };
+            if op_id == "reserve" {
+                let (_, live) = book
+                    .measure_with_op_witness(|b| {
+                        b.post(PostRequest {
+                            proposal: hold_prop,
+                            approvals: Vec::new(),
+                            plan_certificate: None,
+                            capability: post_cap,
+                        })
+                        .map_err(|e| e.to_string())?
+                        .map_err(|r| r.message)
+                    })
+                    .map_err(BenchError::Execution)?;
+                return Ok(op_count_from_live_witness(live));
+            }
             let hold = book
                 .post(PostRequest {
                     proposal: hold_prop,
@@ -771,16 +838,6 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 })
                 .map_err(|e| BenchError::Execution(e.to_string()))?
                 .map_err(|r| BenchError::Execution(r.message))?;
-            if op_id == "reserve" {
-                return Ok(OpCount {
-                    point_reads: 4, // 1 period + 2 leaf accounts + 1 LimitCell
-                    witnesses: 2,   // 1 period + 1 LimitCell
-                    cas_moves: 1,   // 1 LimitCell reservation update
-                    edges_written: 8,
-                    vertices_written: 3,
-                    transactions: 1,
-                });
-            }
             let void_prop = EntryPayload {
                 schema_minor: 0,
                 book_id,
@@ -814,42 +871,36 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 extensions: Vec::new(),
                 tags: Vec::new(),
             };
-            book.post(PostRequest {
-                proposal: void_prop,
-                approvals: Vec::new(),
-                plan_certificate: None,
-                capability: post_cap,
-            })
-            .map_err(|e| BenchError::Execution(e.to_string()))?
-            .map_err(|r| BenchError::Execution(r.message))?;
-            Ok(OpCount {
-                point_reads: 3, // 1 period + 1 pending target + 1 LimitCell
-                witnesses: 2,   // 1 period + 1 pending target
-                cas_moves: 1,   // 1 LimitCell release
-                edges_written: 1,
-                vertices_written: 1,
-                transactions: 1,
-            })
+            let (_, live) = book
+                .measure_with_op_witness(|b| {
+                    b.post(PostRequest {
+                        proposal: void_prop,
+                        approvals: Vec::new(),
+                        plan_certificate: None,
+                        capability: post_cap,
+                    })
+                    .map_err(|e| e.to_string())?
+                    .map_err(|r| r.message)
+                })
+                .map_err(BenchError::Execution)?;
+            Ok(op_count_from_live_witness(live))
         }
         "period_transition" => {
-            book.transition_period(
-                "FY2026-P01",
-                PeriodTransition::SoftClose,
-                controller,
-                1,
-                b"bench:softclose:p01",
-                &close_cap,
-            )
-            .map_err(|e| BenchError::Execution(e.to_string()))?
-            .map_err(|r| BenchError::Execution(r.message))?;
-            Ok(OpCount {
-                point_reads: 1,
-                witnesses: 1,
-                cas_moves: 1,
-                edges_written: 1,
-                vertices_written: 2, // PeriodControl and its atomic common-key IntentOutcome
-                transactions: 1,
-            })
+            let (_, live) = book
+                .measure_with_op_witness(|b| {
+                    b.transition_period(
+                        "FY2026-P01",
+                        PeriodTransition::SoftClose,
+                        controller,
+                        1,
+                        b"bench:softclose:p01",
+                        &close_cap,
+                    )
+                    .map_err(|e| e.to_string())?
+                    .map_err(|r| r.message)
+                })
+                .map_err(BenchError::Execution)?;
+            Ok(op_count_from_live_witness(live))
         }
         "document_add" => {
             let doc2 = Document {
@@ -860,35 +911,76 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 retrieved_by: operator,
                 bytes: b"bench-witness-invoice-002".to_vec(),
             };
-            book.add_document(&doc2)
-                .map_err(|e| BenchError::Execution(e.to_string()))?
-                .map_err(|r| BenchError::Execution(r.message))?;
-            Ok(OpCount {
-                point_reads: 1,
-                witnesses: 0,
-                cas_moves: 0,
-                edges_written: 1,
-                vertices_written: 2,
-                transactions: 1,
-            })
+            let (_, live) = book
+                .measure_with_op_witness(|b| {
+                    b.add_document(&doc2)
+                        .map_err(|e| e.to_string())?
+                        .map_err(|r| r.message)
+                })
+                .map_err(BenchError::Execution)?;
+            Ok(op_count_from_live_witness(live))
         }
         "checkpoint" => {
             let witness_cap = Capability::embedded(controller, &["witness"])
                 .map_err(|e| BenchError::Execution(e.to_string()))?;
-            let _cp = book
-                .checkpoint(controller, &witness_cap)
+            book.checkpoint(controller, &witness_cap)
                 .map_err(|e| BenchError::Execution(e.to_string()))?
                 .map_err(|r| BenchError::Execution(r.message))?;
-            Ok(OpCount {
-                point_reads: 2,
-                witnesses: 0,
-                cas_moves: 0,
-                edges_written: 2,
-                vertices_written: 3,
-                transactions: 1,
+            let legs = vec![
+                LegPayload::simple(Side::Debit, cash_vid, Amount::new(usd, 2_500)),
+                LegPayload::simple(Side::Credit, rev_vid, Amount::new(usd, 2_500)),
+            ];
+            let unit_totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+            let cp_entry = EntryPayload {
+                schema_minor: 0,
+                book_id,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ORIGINAL,
+                effective_date: day,
+                document_date: Some(day),
+                description: book
+                    .seal_text("witness checkpoint leaf")
+                    .map_err(|e| BenchError::Execution(e.to_string()))?,
+                effective_period: None,
+                legs,
+                control: None,
+                unit_totals,
+                base_totals: None,
+                idempotency_key: b"bench:witness:cp-leaf".to_vec(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid(domain_digest(b"fa:intent:v1", &[b"bench:witness:cp-leaf"])),
+                    intent_kind: 1,
+                },
+                principal_ref: operator,
+                session_ref: None,
+                evidence: vec![doc.evidence_ref(1)],
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            };
+            book.post(PostRequest {
+                proposal: cp_entry,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: post_cap,
             })
+            .map_err(|e| BenchError::Execution(e.to_string()))?
+            .map_err(|r| BenchError::Execution(r.message))?;
+            let (_, live) = book
+                .measure_with_op_witness(|b| {
+                    b.checkpoint(controller, &witness_cap)
+                        .map_err(|e| e.to_string())?
+                        .map_err(|r| r.message)
+                })
+                .map_err(BenchError::Execution)?;
+            Ok(op_count_from_live_witness(live))
         }
         "fold_per_entry" => {
+            book.advance_registers(operator, &maintain_cap, "FY2026-P01")
+                .map_err(|e| BenchError::Execution(e.to_string()))?
+                .map_err(|r| BenchError::Execution(r.message))?;
             let legs = vec![
                 LegPayload::simple(Side::Debit, cash_vid, Amount::new(usd, 10_000)),
                 LegPayload::simple(Side::Credit, rev_vid, Amount::new(usd, 10_000)),
@@ -931,61 +1023,44 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
             })
             .map_err(|e| BenchError::Execution(e.to_string()))?
             .map_err(|r| BenchError::Execution(r.message))?;
-            let adv = book
-                .advance_registers(operator, &maintain_cap, "FY2026-P01")
-                .map_err(|e| BenchError::Execution(e.to_string()))?
-                .map_err(|r| BenchError::Execution(r.message))?;
-            let cells = u32::try_from(adv.fold.cells.len()).unwrap();
-            Ok(OpCount {
-                point_reads: cells,
-                witnesses: 0,
-                cas_moves: cells,
-                edges_written: 0,
-                vertices_written: 0,
-                transactions: 1,
-            })
+            let (_, live) = book
+                .measure_with_op_witness(|b| {
+                    b.advance_registers(operator, &maintain_cap, "FY2026-P01")
+                        .map_err(|e| e.to_string())?
+                        .map_err(|r| r.message)
+                })
+                .map_err(BenchError::Execution)?;
+            Ok(op_count_from_live_witness(live))
         }
         "verify_per_cell" => {
             let _ = book
                 .materialize_registers(operator, &maintain_cap, "FY2026-P01")
                 .map_err(|e| BenchError::Execution(e.to_string()))?
                 .map_err(|r| BenchError::Execution(r.message))?;
-            let ver = book
-                .verify_registers("FY2026-P01")
-                .map_err(|e| BenchError::Execution(e.to_string()))?;
-            if !ver.drift.is_empty()
-                || !ver.pending_drift.is_empty()
-                || !ver.projection_errors.is_empty()
-            {
+            let (ver, live) = book
+                .measure_with_op_witness(|b| {
+                    b.verify_registers("FY2026-P01").map_err(|e| e.to_string())
+                })
+                .map_err(BenchError::Execution)?;
+            if !ver.is_green() || ver.cells_checked == 0 {
                 return Err(BenchError::Execution("verify_registers drift".into()));
             }
-            Ok(OpCount {
-                point_reads: 2,
-                witnesses: 0,
-                cas_moves: 0,
-                edges_written: 0,
-                vertices_written: 0,
-                transactions: 0,
-            })
+            Ok(op_count_from_live_witness(live))
         }
         "query_procedure" => {
             let proc = RoundAmounts::new().map_err(|e| BenchError::Execution(e.to_string()))?;
-            let _out = book
-                .run_procedure(
-                    &proc,
-                    None,
-                    Some(DateDay::from_ymd(2026, 1, 31).unwrap()),
-                    None,
-                )
-                .map_err(|e| BenchError::Execution(e.to_string()))?;
-            Ok(OpCount {
-                point_reads: 1,
-                witnesses: 0,
-                cas_moves: 0,
-                edges_written: 0,
-                vertices_written: 0,
-                transactions: 0,
-            })
+            let (_, live) = book
+                .measure_with_op_witness(|b| {
+                    b.run_procedure(
+                        &proc,
+                        None,
+                        Some(DateDay::from_ymd(2026, 1, 31).unwrap()),
+                        None,
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .map_err(BenchError::Execution)?;
+            Ok(op_count_from_live_witness(live))
         }
         other => Err(BenchError::Execution(format!(
             "unrecognized kernel_op_witness `{other}`"
@@ -1254,6 +1329,7 @@ pub fn run_all_benchmarks(smoke: bool) -> Result<Vec<BenchOutcome>, BenchError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fa_money::UnitId;
 
     #[test]
     fn all_embedded_manifests_parse_and_none_claims_a_measurement() {
@@ -1322,8 +1398,8 @@ mod tests {
                 BenchError::WitnessDrift {
                     ref op_id,
                     field: "point_reads",
-                    expected: 3,
-                    actual: 4
+                    expected: 13,
+                    actual: 14
                 } if op_id == "post"
             ),
             "{err}"
@@ -1524,6 +1600,948 @@ mod tests {
         assert!(
             matches!(&thin, BenchOutcome::Unmeasured { reason, .. } if reason.contains("incumbent has 9 samples")),
             "{thin:?}"
+        );
+    }
+
+    fn build_witness_test_book(seed: u64, open_months: u8) -> (Book, Id128, UnitId) {
+        let units = UnitRegistry::embedded().expect("units");
+        let usd = units.lookup("USD").expect("USD");
+        let book_id = Id128(*b"FA-BENCH-LIVEWTN");
+        let calendar = FiscalCalendar::monthly("US-FY", 1, 1).expect("calendar");
+        let opening = DateDay::from_ymd(2026, 1, 1).expect("opening");
+        let spec = BookSpec {
+            book_id,
+            name: "Live Witness Test Book".into(),
+            base_unit: usd,
+            calendar,
+            time_zone_policy: Some(TimeZonePolicy::Utc),
+            entities: Vec::new(),
+            opening_date: Some(opening),
+        };
+        let mut book = Book::create_memory(
+            BookKeys::for_development(seed as u8),
+            spec,
+            Entropy::deterministic(seed),
+        )
+        .expect("book");
+        let operator = principal_vid("operator");
+        let controller = principal_vid("controller");
+        let mut chart = us_gaap_smb_accounts(usd);
+        for acct in &mut chart {
+            if acct.code == "1030" {
+                acct.limit = Some(BalanceLimit {
+                    lower: Some(-500_000),
+                    upper: Some(50_000_000),
+                    scope: LimitScope::Lifetime,
+                });
+            }
+        }
+        let schema_cap = Capability::embedded(operator, &["schema_change"]).expect("schema cap");
+        book.install_chart(&chart, operator, opening, b"witness:chart", &schema_cap)
+            .expect("install chart")
+            .expect("chart admitted");
+        book.create_periods(2026, operator, &schema_cap)
+            .expect("create periods")
+            .expect("periods admitted");
+        let close_cap = Capability::embedded(controller, &["close"]).expect("close cap");
+        for m in 1..=open_months {
+            let period = format!("FY2026-P{m:02}");
+            book.transition_period(
+                &period,
+                PeriodTransition::Open,
+                controller,
+                1,
+                format!("witness:open:{period}").as_bytes(),
+                &close_cap,
+            )
+            .expect("open period")
+            .expect("period admitted");
+        }
+        (book, book_id, usd)
+    }
+
+    #[test]
+    fn kernel_op_witness_reads_live_substrate_counters_not_literals() {
+        let (mut book, book_id, usd) = build_witness_test_book(19, 2);
+        let operator = principal_vid("operator");
+        let controller = principal_vid("controller");
+        let post_cap = Capability::embedded(operator, &["post"]).expect("post cap");
+        let maintain_cap =
+            Capability::embedded(operator, &["read", "verify", "maintain"]).expect("maintain cap");
+        let witness_cap = Capability::embedded(controller, &["witness"]).expect("witness cap");
+
+        let doc = Document {
+            book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: operator,
+            bytes: b"live-counter-invoice".to_vec(),
+        };
+        book.add_document(&doc)
+            .expect("doc io")
+            .expect("doc admitted");
+        let day = DateDay::from_ymd(2026, 1, 15).expect("day");
+
+        // Warm CarriedHistory with 1 entry on (1010, 4000).
+        let warm_legs = vec![
+            LegPayload::simple(
+                Side::Debit,
+                account_vid(book_id, "1010"),
+                Amount::new(usd, 1_000),
+            ),
+            LegPayload::simple(
+                Side::Credit,
+                account_vid(book_id, "4000"),
+                Amount::new(usd, 1_000),
+            ),
+        ];
+        let warm_totals = EntryPayload::fold_unit_totals(&warm_legs).unwrap();
+        book.post(PostRequest {
+            proposal: EntryPayload {
+                schema_minor: 0,
+                book_id,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ORIGINAL,
+                effective_date: day,
+                document_date: Some(day),
+                description: book.seal_text("warm").unwrap(),
+                effective_period: None,
+                legs: warm_legs,
+                control: None,
+                unit_totals: warm_totals,
+                base_totals: None,
+                idempotency_key: b"live:warm".to_vec(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid(domain_digest(b"fa:intent:v1", &[b"live:warm"])),
+                    intent_kind: 1,
+                },
+                principal_ref: operator,
+                session_ref: None,
+                evidence: vec![doc.evidence_ref(1)],
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            },
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: post_cap.clone(),
+        })
+        .expect("warm io")
+        .expect("warm admitted");
+
+        // 1. A 4-leg post across 4 distinct leaf accounts dynamically produces
+        // 17 point reads (1 Period + 8 Dimension requirement vertices + 4 Accounts + 4 NativeSubledger bindings),
+        // 6 vertices (1 Entry + 4 Legs + 1 IntentOutcome),
+        // and 14 edges (4 HAS_LEG + 4 POSTS_TO + 4 IN_UNIT + 1 IN_PERIOD + 1 EVIDENCED_BY).
+        let four_legs = vec![
+            LegPayload::simple(
+                Side::Debit,
+                account_vid(book_id, "1010"),
+                Amount::new(usd, 4_000),
+            ),
+            LegPayload::simple(
+                Side::Debit,
+                account_vid(book_id, "5000"),
+                Amount::new(usd, 6_000),
+            ),
+            LegPayload::simple(
+                Side::Credit,
+                account_vid(book_id, "4000"),
+                Amount::new(usd, 7_000),
+            ),
+            LegPayload::simple(
+                Side::Credit,
+                account_vid(book_id, "6000"),
+                Amount::new(usd, 3_000),
+            ),
+        ];
+        let four_totals = EntryPayload::fold_unit_totals(&four_legs).unwrap();
+        let (_, live_four_leg) = book
+            .measure_with_op_witness(|b| {
+                b.post(PostRequest {
+                    proposal: EntryPayload {
+                        schema_minor: 0,
+                        book_id,
+                        branch_id: Id128::TRUNK,
+                        class: EntryClass::ORIGINAL,
+                        effective_date: day,
+                        document_date: Some(day),
+                        description: b.seal_text("four-leg").unwrap(),
+                        effective_period: None,
+                        legs: four_legs,
+                        control: None,
+                        unit_totals: four_totals,
+                        base_totals: None,
+                        idempotency_key: b"live:four-leg".to_vec(),
+                        origin: EntryOrigin::Intent {
+                            intent_oid: Oid(domain_digest(b"fa:intent:v1", &[b"live:four-leg"])),
+                            intent_kind: 1,
+                        },
+                        principal_ref: operator,
+                        session_ref: None,
+                        evidence: vec![doc.evidence_ref(1)],
+                        supersession: Vec::new(),
+                        pending: None,
+                        external_ids: Vec::new(),
+                        extensions: Vec::new(),
+                        tags: Vec::new(),
+                    },
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: post_cap.clone(),
+                })
+                .map_err(|e| e.to_string())?
+                .map_err(|r| r.message)
+            })
+            .expect("four-leg witness");
+        let four_leg_ops = op_count_from_live_witness(live_four_leg);
+        assert_eq!(
+            four_leg_ops,
+            OpCount {
+                point_reads: 17,
+                witnesses: 1,
+                cas_moves: 0,
+                edges_written: 14,
+                vertices_written: 6,
+                transactions: 1,
+            }
+        );
+
+        // 2. Posting 2 entries on (1010, 4000) in FY2026-P02 yields live
+        // verify_per_cell point_reads == 3 (1 stored cell + 2 folded legs per cell).
+        let feb_day = DateDay::from_ymd(2026, 2, 10).expect("feb");
+        for idx in 0..2u8 {
+            let legs = vec![
+                LegPayload::simple(
+                    Side::Debit,
+                    account_vid(book_id, "1010"),
+                    Amount::new(usd, 2_000),
+                ),
+                LegPayload::simple(
+                    Side::Credit,
+                    account_vid(book_id, "4000"),
+                    Amount::new(usd, 2_000),
+                ),
+            ];
+            let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+            let key = format!("live:p02:{idx}").into_bytes();
+            book.post(PostRequest {
+                proposal: EntryPayload {
+                    schema_minor: 0,
+                    book_id,
+                    branch_id: Id128::TRUNK,
+                    class: EntryClass::ORIGINAL,
+                    effective_date: feb_day,
+                    document_date: Some(feb_day),
+                    description: book.seal_text("p02 entry").unwrap(),
+                    effective_period: None,
+                    legs,
+                    control: None,
+                    unit_totals: totals,
+                    base_totals: None,
+                    origin: EntryOrigin::Intent {
+                        intent_oid: Oid(domain_digest(b"fa:intent:v1", &[&key])),
+                        intent_kind: 1,
+                    },
+                    idempotency_key: key,
+                    principal_ref: operator,
+                    session_ref: None,
+                    evidence: vec![doc.evidence_ref(1)],
+                    supersession: Vec::new(),
+                    pending: None,
+                    external_ids: Vec::new(),
+                    extensions: Vec::new(),
+                    tags: Vec::new(),
+                },
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: post_cap.clone(),
+            })
+            .expect("p02 io")
+            .expect("p02 admitted");
+        }
+        book.materialize_registers(operator, &maintain_cap, "FY2026-P02")
+            .expect("mat io")
+            .expect("mat admitted");
+        let (_, live_verify) = book
+            .measure_with_op_witness(|b| {
+                b.verify_registers("FY2026-P02").map_err(|e| e.to_string())
+            })
+            .expect("verify witness");
+        assert_eq!(op_count_from_live_witness(live_verify).point_reads, 3);
+
+        // 3. Posting 3 entries after a prior checkpoint yields live checkpoint
+        // point_reads == 4 (1 prior AccumulatorState read + 3 new entry leaves).
+        book.checkpoint(controller, &witness_cap)
+            .expect("cp1 io")
+            .expect("cp1 admitted");
+        for idx in 0..3u8 {
+            let legs = vec![
+                LegPayload::simple(
+                    Side::Debit,
+                    account_vid(book_id, "1010"),
+                    Amount::new(usd, 500),
+                ),
+                LegPayload::simple(
+                    Side::Credit,
+                    account_vid(book_id, "4000"),
+                    Amount::new(usd, 500),
+                ),
+            ];
+            let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+            let key = format!("live:cp-delta:{idx}").into_bytes();
+            book.post(PostRequest {
+                proposal: EntryPayload {
+                    schema_minor: 0,
+                    book_id,
+                    branch_id: Id128::TRUNK,
+                    class: EntryClass::ORIGINAL,
+                    effective_date: day,
+                    document_date: Some(day),
+                    description: book.seal_text("cp delta").unwrap(),
+                    effective_period: None,
+                    legs,
+                    control: None,
+                    unit_totals: totals,
+                    base_totals: None,
+                    origin: EntryOrigin::Intent {
+                        intent_oid: Oid(domain_digest(b"fa:intent:v1", &[&key])),
+                        intent_kind: 1,
+                    },
+                    idempotency_key: key,
+                    principal_ref: operator,
+                    session_ref: None,
+                    evidence: vec![doc.evidence_ref(1)],
+                    supersession: Vec::new(),
+                    pending: None,
+                    external_ids: Vec::new(),
+                    extensions: Vec::new(),
+                    tags: Vec::new(),
+                },
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: post_cap.clone(),
+            })
+            .expect("cp delta io")
+            .expect("cp delta admitted");
+        }
+        let (_, live_cp) = book
+            .measure_with_op_witness(|b| {
+                b.checkpoint(controller, &witness_cap)
+                    .map_err(|e| e.to_string())?
+                    .map_err(|r| r.message)
+            })
+            .expect("cp2 witness");
+        assert_eq!(op_count_from_live_witness(live_cp).point_reads, 4);
+    }
+
+    #[test]
+    fn kernel_op_witness_scales_invariantly_between_1k_and_10k_entries() {
+        use fa_journal::{PostBatch, PostIntent};
+
+        let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
+        let (mut book, book_id, usd) = build_witness_test_book(31, 6);
+        let operator = principal_vid("operator");
+        let controller = principal_vid("controller");
+        let post_cap = Capability::embedded(operator, &["post"]).expect("post cap");
+        let close_cap = Capability::embedded(controller, &["close"]).expect("close cap");
+        let maintain_cap =
+            Capability::embedded(operator, &["read", "verify", "maintain"]).expect("maintain cap");
+        let witness_cap = Capability::embedded(controller, &["witness"]).expect("witness cap");
+
+        let doc = Document {
+            book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: operator,
+            bytes: b"scale-invariance-source-doc".to_vec(),
+        };
+        book.add_document(&doc)
+            .expect("doc io")
+            .expect("doc admitted");
+        let ev = doc.evidence_ref(1);
+        let sealed_desc = book.seal_text("scale batch entry").expect("seal");
+
+        let post_single =
+            |book: &mut Book, day: DateDay, debit: &str, credit: &str, cents: i128, key: &[u8]| {
+                let legs = vec![
+                    LegPayload::simple(
+                        Side::Debit,
+                        account_vid(book_id, debit),
+                        Amount::new(usd, cents),
+                    ),
+                    LegPayload::simple(
+                        Side::Credit,
+                        account_vid(book_id, credit),
+                        Amount::new(usd, cents),
+                    ),
+                ];
+                let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+                book.post(PostRequest {
+                    proposal: EntryPayload {
+                        schema_minor: 0,
+                        book_id,
+                        branch_id: Id128::TRUNK,
+                        class: EntryClass::ORIGINAL,
+                        effective_date: day,
+                        document_date: Some(day),
+                        description: sealed_desc.clone(),
+                        effective_period: None,
+                        legs,
+                        control: None,
+                        unit_totals: totals,
+                        base_totals: None,
+                        origin: EntryOrigin::Intent {
+                            intent_oid: Oid(domain_digest(b"fa:intent:v1", &[key])),
+                            intent_kind: 1,
+                        },
+                        idempotency_key: key.to_vec(),
+                        principal_ref: operator,
+                        session_ref: None,
+                        evidence: vec![ev],
+                        supersession: Vec::new(),
+                        pending: None,
+                        external_ids: Vec::new(),
+                        extensions: Vec::new(),
+                        tags: Vec::new(),
+                    },
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: post_cap.clone(),
+                })
+                .expect("post io")
+                .expect("post admitted")
+            };
+
+        let populate_batches = |book: &mut Book, start_idx: usize, total_entries: usize| {
+            let feb_day = DateDay::from_ymd(2026, 2, 15).expect("feb");
+            let pairs = [("1010", "4000"), ("5000", "1010"), ("6000", "1010")];
+            let chunk_size = 100usize;
+            let mut offset = 0usize;
+            while offset < total_entries {
+                let take = (total_entries - offset).min(chunk_size);
+                let mut members = Vec::with_capacity(take);
+                for j in 0..take {
+                    let idx = start_idx + offset + j;
+                    let (d, c) = pairs[idx % pairs.len()];
+                    let cents = 1_000 + i128::try_from(idx % 50_000).unwrap();
+                    let legs = vec![
+                        LegPayload::simple(
+                            Side::Debit,
+                            account_vid(book_id, d),
+                            Amount::new(usd, cents),
+                        ),
+                        LegPayload::simple(
+                            Side::Credit,
+                            account_vid(book_id, c),
+                            Amount::new(usd, cents),
+                        ),
+                    ];
+                    let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+                    let key = format!("scale:member:{idx}").into_bytes();
+                    let proposal = EntryPayload {
+                        schema_minor: 0,
+                        book_id,
+                        branch_id: Id128::TRUNK,
+                        class: EntryClass::ORIGINAL,
+                        effective_date: feb_day,
+                        document_date: Some(feb_day),
+                        description: sealed_desc.clone(),
+                        effective_period: None,
+                        legs,
+                        control: None,
+                        unit_totals: totals,
+                        base_totals: None,
+                        origin: EntryOrigin::Intent {
+                            intent_oid: Oid(domain_digest(b"fa:intent:v1", &[&key])),
+                            intent_kind: 1,
+                        },
+                        idempotency_key: key,
+                        principal_ref: operator,
+                        session_ref: None,
+                        evidence: vec![ev],
+                        supersession: Vec::new(),
+                        pending: None,
+                        external_ids: Vec::new(),
+                        extensions: Vec::new(),
+                        tags: Vec::new(),
+                    };
+                    members.push(PostIntent::new(proposal, Vec::new()).expect("intent"));
+                }
+                let batch_key = format!("scale:batch:{start_idx}:{offset}").into_bytes();
+                let batch = PostBatch::new(batch_key, members).expect("batch");
+                let res = book
+                    .post_batch(batch, &post_cap)
+                    .expect("batch io")
+                    .expect("batch admitted");
+                assert!(!res.already_recorded);
+                assert_eq!(res.entries.len(), take);
+                offset += take;
+            }
+        };
+
+        // Seed 1 entry in P01 (for fold_per_entry), 1 in P05 (for 1k verify_per_cell),
+        // and 1 in P06 (for 10k verify_per_cell).
+        let jan_day = DateDay::from_ymd(2026, 1, 15).expect("jan");
+        let may_day = DateDay::from_ymd(2026, 5, 15).expect("may");
+        let jun_day = DateDay::from_ymd(2026, 6, 15).expect("jun");
+        post_single(&mut book, jan_day, "1010", "4000", 1_000, b"scale:p01:seed");
+        post_single(&mut book, may_day, "1010", "4000", 1_000, b"scale:p05:seed");
+        post_single(&mut book, jun_day, "1010", "4000", 1_000, b"scale:p06:seed");
+        book.materialize_registers(operator, &maintain_cap, "FY2026-P05")
+            .expect("mat p05")
+            .expect("p05 ok");
+        book.materialize_registers(operator, &maintain_cap, "FY2026-P06")
+            .expect("mat p06")
+            .expect("p06 ok");
+
+        let measure_suite = |book: &mut Book,
+                             tag: &str,
+                             close_period: &str,
+                             verify_period: &str|
+         -> Vec<(String, OpCount)> {
+            let mut out = Vec::new();
+
+            // 1. post
+            let post_key = format!("scale:{tag}:post").into_bytes();
+            let (_, live_post) = book
+                .measure_with_op_witness(|b| {
+                    let legs = vec![
+                        LegPayload::simple(
+                            Side::Debit,
+                            account_vid(book_id, "1010"),
+                            Amount::new(usd, 2_500),
+                        ),
+                        LegPayload::simple(
+                            Side::Credit,
+                            account_vid(book_id, "4000"),
+                            Amount::new(usd, 2_500),
+                        ),
+                    ];
+                    let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+                    b.post(PostRequest {
+                        proposal: EntryPayload {
+                            schema_minor: 0,
+                            book_id,
+                            branch_id: Id128::TRUNK,
+                            class: EntryClass::ORIGINAL,
+                            effective_date: jan_day,
+                            document_date: Some(jan_day),
+                            description: sealed_desc.clone(),
+                            effective_period: None,
+                            legs,
+                            control: None,
+                            unit_totals: totals,
+                            base_totals: None,
+                            origin: EntryOrigin::Intent {
+                                intent_oid: Oid(domain_digest(b"fa:intent:v1", &[&post_key])),
+                                intent_kind: 1,
+                            },
+                            idempotency_key: post_key,
+                            principal_ref: operator,
+                            session_ref: None,
+                            evidence: vec![ev],
+                            supersession: Vec::new(),
+                            pending: None,
+                            external_ids: Vec::new(),
+                            extensions: Vec::new(),
+                            tags: Vec::new(),
+                        },
+                        approvals: Vec::new(),
+                        plan_certificate: None,
+                        capability: post_cap.clone(),
+                    })
+                    .map_err(|e| e.to_string())?
+                    .map_err(|r| r.message)
+                })
+                .expect("post witness");
+            out.push(("post".into(), op_count_from_live_witness(live_post)));
+
+            // 2. reserve & 3. resolve
+            let res_key = format!("scale:{tag}:reserve").into_bytes();
+            let (hold, live_reserve) = book
+                .measure_with_op_witness(|b| {
+                    let legs = vec![
+                        LegPayload::simple(
+                            Side::Debit,
+                            account_vid(book_id, "1010"),
+                            Amount::new(usd, 3_000),
+                        ),
+                        LegPayload::simple(
+                            Side::Credit,
+                            account_vid(book_id, "1030"),
+                            Amount::new(usd, 3_000),
+                        ),
+                    ];
+                    let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+                    b.post(PostRequest {
+                        proposal: EntryPayload {
+                            schema_minor: 0,
+                            book_id,
+                            branch_id: Id128::TRUNK,
+                            class: EntryClass::PENDING,
+                            effective_date: jan_day,
+                            document_date: Some(jan_day),
+                            description: sealed_desc.clone(),
+                            effective_period: None,
+                            legs,
+                            control: None,
+                            unit_totals: totals,
+                            base_totals: None,
+                            origin: EntryOrigin::Intent {
+                                intent_oid: Oid(domain_digest(b"fa:intent:v1", &[&res_key])),
+                                intent_kind: 2,
+                            },
+                            idempotency_key: res_key,
+                            principal_ref: operator,
+                            session_ref: None,
+                            evidence: vec![ev],
+                            supersession: Vec::new(),
+                            pending: Some(Pending {
+                                timeout_ns: None,
+                                resolution_of: None,
+                                disposition: None,
+                            }),
+                            external_ids: Vec::new(),
+                            extensions: Vec::new(),
+                            tags: Vec::new(),
+                        },
+                        approvals: Vec::new(),
+                        plan_certificate: None,
+                        capability: post_cap.clone(),
+                    })
+                    .map_err(|e| e.to_string())?
+                    .map_err(|r| r.message)
+                })
+                .expect("reserve witness");
+            out.push(("reserve".into(), op_count_from_live_witness(live_reserve)));
+
+            let void_key = format!("scale:{tag}:resolve").into_bytes();
+            let (_, live_resolve) = book
+                .measure_with_op_witness(|b| {
+                    b.post(PostRequest {
+                        proposal: EntryPayload {
+                            schema_minor: 0,
+                            book_id,
+                            branch_id: Id128::TRUNK,
+                            class: EntryClass::RESOLUTION,
+                            effective_date: jan_day,
+                            document_date: Some(jan_day),
+                            description: sealed_desc.clone(),
+                            effective_period: None,
+                            legs: Vec::new(),
+                            control: Some(ControlPayload::ReservationRelease),
+                            unit_totals: Vec::new(),
+                            base_totals: None,
+                            origin: EntryOrigin::Intent {
+                                intent_oid: Oid(domain_digest(b"fa:intent:v1", &[&void_key])),
+                                intent_kind: 3,
+                            },
+                            idempotency_key: void_key,
+                            principal_ref: operator,
+                            session_ref: None,
+                            evidence: Vec::new(),
+                            supersession: Vec::new(),
+                            pending: Some(Pending {
+                                timeout_ns: None,
+                                resolution_of: Some(hold.entry_ref()),
+                                disposition: Some(Disposition::Voids),
+                            }),
+                            external_ids: Vec::new(),
+                            extensions: Vec::new(),
+                            tags: Vec::new(),
+                        },
+                        approvals: Vec::new(),
+                        plan_certificate: None,
+                        capability: post_cap.clone(),
+                    })
+                    .map_err(|e| e.to_string())?
+                    .map_err(|r| r.message)
+                })
+                .expect("resolve witness");
+            out.push(("resolve".into(), op_count_from_live_witness(live_resolve)));
+
+            // 4. period_transition
+            let close_key = format!("scale:{tag}:softclose").into_bytes();
+            let (_, live_pt) = book
+                .measure_with_op_witness(|b| {
+                    b.transition_period(
+                        close_period,
+                        PeriodTransition::SoftClose,
+                        controller,
+                        1,
+                        &close_key,
+                        &close_cap,
+                    )
+                    .map_err(|e| e.to_string())?
+                    .map_err(|r| r.message)
+                })
+                .expect("period_transition witness");
+            out.push((
+                "period_transition".into(),
+                op_count_from_live_witness(live_pt),
+            ));
+
+            // 5. document_add
+            let fresh_doc = Document {
+                book_id,
+                kind: 1,
+                mime: "text/plain".into(),
+                grade: 3,
+                retrieved_by: operator,
+                bytes: format!("scale-doc-{tag}").into_bytes(),
+            };
+            let (_, live_doc) = book
+                .measure_with_op_witness(|b| {
+                    b.add_document(&fresh_doc)
+                        .map_err(|e| e.to_string())?
+                        .map_err(|r| r.message)
+                })
+                .expect("document_add witness");
+            out.push(("document_add".into(), op_count_from_live_witness(live_doc)));
+
+            // 6. checkpoint (over 1 new entry leaf after caught-up predecessor)
+            book.checkpoint(controller, &witness_cap)
+                .expect("cp catchup io")
+                .expect("cp catchup ok");
+            post_single(
+                book,
+                jan_day,
+                "1010",
+                "4000",
+                1_500,
+                format!("scale:{tag}:cp-leaf").as_bytes(),
+            );
+            let (_, live_cp) = book
+                .measure_with_op_witness(|b| {
+                    b.checkpoint(controller, &witness_cap)
+                        .map_err(|e| e.to_string())?
+                        .map_err(|r| r.message)
+                })
+                .expect("checkpoint witness");
+            out.push(("checkpoint".into(), op_count_from_live_witness(live_cp)));
+
+            // 7. fold_per_entry (over 1 new entry on caught-up FY2026-P01)
+            book.advance_registers(operator, &maintain_cap, "FY2026-P01")
+                .expect("adv catchup io")
+                .expect("adv catchup ok");
+            post_single(
+                book,
+                jan_day,
+                "1010",
+                "4000",
+                1_750,
+                format!("scale:{tag}:fold").as_bytes(),
+            );
+            let (_, live_fold) = book
+                .measure_with_op_witness(|b| {
+                    b.advance_registers(operator, &maintain_cap, "FY2026-P01")
+                        .map_err(|e| e.to_string())?
+                        .map_err(|r| r.message)
+                })
+                .expect("fold_per_entry witness");
+            out.push((
+                "fold_per_entry".into(),
+                op_count_from_live_witness(live_fold),
+            ));
+
+            // 8. verify_per_cell
+            let (_, live_ver) = book
+                .measure_with_op_witness(|b| {
+                    b.verify_registers(verify_period).map_err(|e| e.to_string())
+                })
+                .expect("verify_per_cell witness");
+            out.push((
+                "verify_per_cell".into(),
+                op_count_from_live_witness(live_ver),
+            ));
+
+            // 9. query_procedure
+            let proc = RoundAmounts::new().expect("proc");
+            let (_, live_proc) = book
+                .measure_with_op_witness(|b| {
+                    b.run_procedure(
+                        &proc,
+                        None,
+                        Some(DateDay::from_ymd(2026, 1, 31).unwrap()),
+                        None,
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .expect("query_procedure witness");
+            out.push((
+                "query_procedure".into(),
+                op_count_from_live_witness(live_proc),
+            ));
+
+            out
+        };
+
+        // Populate 1,000 real entries into FY2026-P02 and measure all 9 operations.
+        populate_batches(&mut book, 0, 1_000);
+        let ops_1k = measure_suite(&mut book, "1k", "FY2026-P03", "FY2026-P05");
+        assert_eq!(ops_1k.len(), 9);
+        for (id, count) in &ops_1k {
+            verify_kernel_op_witness(id, count, &op_costs)
+                .unwrap_or_else(|e| panic!("1k witness drift on {id}: {e}"));
+        }
+
+        // Populate 9,000 more real entries (10,000+ total) and re-measure all 9 operations.
+        populate_batches(&mut book, 1_000, 9_000);
+        let ops_10k = measure_suite(&mut book, "10k", "FY2026-P04", "FY2026-P06");
+        assert_eq!(
+            ops_1k, ops_10k,
+            "O(1) kernel witnesses must stay scale-invariant between 1k and 10k entries"
+        );
+        for (id, count) in &ops_10k {
+            verify_kernel_op_witness(id, count, &op_costs)
+                .unwrap_or_else(|e| panic!("10k witness drift on {id}: {e}"));
+        }
+    }
+
+    #[test]
+    fn injected_vertex_scan_trips_operation_cost_ceiling() {
+        let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
+        let (mut book, book_id, usd) = build_witness_test_book(43, 1);
+        let operator = principal_vid("operator");
+        let post_cap = Capability::embedded(operator, &["post"]).expect("post cap");
+        let doc = Document {
+            book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: operator,
+            bytes: b"scan-injection-doc".to_vec(),
+        };
+        book.add_document(&doc).expect("doc io").expect("doc ok");
+        let day = DateDay::from_ymd(2026, 1, 15).expect("day");
+
+        // Warm CarriedHistory first.
+        let warm_legs = vec![
+            LegPayload::simple(
+                Side::Debit,
+                account_vid(book_id, "1010"),
+                Amount::new(usd, 1_000),
+            ),
+            LegPayload::simple(
+                Side::Credit,
+                account_vid(book_id, "4000"),
+                Amount::new(usd, 1_000),
+            ),
+        ];
+        let warm_totals = EntryPayload::fold_unit_totals(&warm_legs).unwrap();
+        book.post(PostRequest {
+            proposal: EntryPayload {
+                schema_minor: 0,
+                book_id,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ORIGINAL,
+                effective_date: day,
+                document_date: Some(day),
+                description: book.seal_text("warm").unwrap(),
+                effective_period: None,
+                legs: warm_legs,
+                control: None,
+                unit_totals: warm_totals,
+                base_totals: None,
+                idempotency_key: b"scan:warm".to_vec(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid(domain_digest(b"fa:intent:v1", &[b"scan:warm"])),
+                    intent_kind: 1,
+                },
+                principal_ref: operator,
+                session_ref: None,
+                evidence: vec![doc.evidence_ref(1)],
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            },
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: post_cap.clone(),
+        })
+        .expect("warm io")
+        .expect("warm ok");
+
+        // Inject a real frontier `db.vertices_at` scan during `post` and assert
+        // that `verify_kernel_op_witness` fails loudly with `WitnessDrift`.
+        let (scanned, live) = book
+            .measure_with_op_witness(|b| {
+                let scanned = b.inject_vertex_scan_for_test().map_err(|e| e.to_string())?;
+                let legs = vec![
+                    LegPayload::simple(
+                        Side::Debit,
+                        account_vid(book_id, "1010"),
+                        Amount::new(usd, 5_000),
+                    ),
+                    LegPayload::simple(
+                        Side::Credit,
+                        account_vid(book_id, "4000"),
+                        Amount::new(usd, 5_000),
+                    ),
+                ];
+                let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+                b.post(PostRequest {
+                    proposal: EntryPayload {
+                        schema_minor: 0,
+                        book_id,
+                        branch_id: Id128::TRUNK,
+                        class: EntryClass::ORIGINAL,
+                        effective_date: day,
+                        document_date: Some(day),
+                        description: b.seal_text("scanned post").unwrap(),
+                        effective_period: None,
+                        legs,
+                        control: None,
+                        unit_totals: totals,
+                        base_totals: None,
+                        idempotency_key: b"scan:post".to_vec(),
+                        origin: EntryOrigin::Intent {
+                            intent_oid: Oid(domain_digest(b"fa:intent:v1", &[b"scan:post"])),
+                            intent_kind: 1,
+                        },
+                        principal_ref: operator,
+                        session_ref: None,
+                        evidence: vec![doc.evidence_ref(1)],
+                        supersession: Vec::new(),
+                        pending: None,
+                        external_ids: Vec::new(),
+                        extensions: Vec::new(),
+                        tags: Vec::new(),
+                    },
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: post_cap,
+                })
+                .map_err(|e| e.to_string())?
+                .map_err(|r| r.message)?;
+                Ok(scanned)
+            })
+            .expect("scanned post witness");
+        assert!(
+            scanned > 30,
+            "real book frontier has >30 vertices, got {scanned}"
+        );
+        let actual = op_count_from_live_witness(live);
+        let err = verify_kernel_op_witness("post", &actual, &op_costs)
+            .expect_err("injected vertex scan must trip operation_costs ceiling");
+        assert!(
+            matches!(
+                err,
+                BenchError::WitnessDrift {
+                    ref op_id,
+                    field: "point_reads",
+                    expected: 13,
+                    actual: got,
+                } if op_id == "post" && got > 30
+            ),
+            "{err}"
         );
     }
 }
