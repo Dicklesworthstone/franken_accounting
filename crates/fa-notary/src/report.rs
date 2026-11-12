@@ -470,7 +470,7 @@ fn lots_certificate(certificate: &[u8]) -> bool {
     header().unwrap_or(false)
 }
 
-/// Route only bounded JET, exact-duplicate and first-digit Benford profiles.
+/// Route bounded JET, duplicate, round-density and first-digit Benford profiles.
 /// This checks framing and selection; producer replay and the verifier authenticate
 /// the complete source, commitments and reproduced output.
 fn procedure_certificate(certificate: &[u8]) -> bool {
@@ -512,6 +512,7 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
         }
         let id = output.str(128, "procedure id")?;
         let benford = id == "benford.first_digit";
+        let density = id == "numbers.round_amount_density";
         let (evidence, parameter) = match id {
             "jet.round_amounts" => ("FA-EVID-L01", Some(("round_power", 30))),
             "jet.period_end_timing" => ("FA-EVID-L02", Some(("window_days", i128::from(u32::MAX)))),
@@ -521,6 +522,7 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
                 ("FA-EVID-L08", Some(("window_days", i128::from(u32::MAX))))
             }
             "benford.first_digit" => ("FA-EVID-L10", None),
+            "numbers.round_amount_density" => ("FA-EVID-L64", None),
             _ => return Ok(false),
         };
         let version = output.u16("procedure version")?;
@@ -543,20 +545,28 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
             _ => return Ok(false),
         }
         let count = output.u32("procedure parameters")?;
-        if benford {
-            let bounds = [
-                ("account_type", 0, 8),
-                ("currency_iso4217", 1, 999),
-                ("mad_acceptable", 0, i128::from(u32::MAX)),
-                ("mad_close", 0, i128::from(u32::MAX)),
-                ("mad_marginal", 0, i128::from(u32::MAX)),
-                ("min_population", 0, i128::from(u32::MAX)),
-                ("side", 0, 1),
-            ];
+        if benford || density {
+            let bounds: &[(&str, i128, i128)] = if density {
+                &[
+                    ("min_legs", 0, i128::from(u32::MAX)),
+                    ("round_power", 0, 30),
+                    ("z_squared", 1, i128::from(u32::MAX)),
+                ]
+            } else {
+                &[
+                    ("account_type", 0, 8),
+                    ("currency_iso4217", 1, 999),
+                    ("mad_acceptable", 0, i128::from(u32::MAX)),
+                    ("mad_close", 0, i128::from(u32::MAX)),
+                    ("mad_marginal", 0, i128::from(u32::MAX)),
+                    ("min_population", 0, i128::from(u32::MAX)),
+                    ("side", 0, 1),
+                ]
+            };
             if count as usize != bounds.len() {
                 return Ok(false);
             }
-            for (name, low, high) in bounds {
+            for &(name, low, high) in bounds {
                 if output.str(128, "procedure parameter")? != name
                     || !(low..=high).contains(&output.i128("procedure parameter value")?)
                 {

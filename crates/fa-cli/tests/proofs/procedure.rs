@@ -969,3 +969,333 @@ fn different_date_duplicate_certificate_replays_and_verifies_its_original_popula
         "proof exports do not post entries"
     );
 }
+
+#[test]
+fn round_density_certificate_replays_its_account_populations_and_verifies_offline() {
+    let fixture = Fixture::new();
+    let evidence = fixture.chart_and_evidence();
+    let chart = write(
+        &fixture.dir,
+        "density-background-chart.json",
+        r#"{"accounts":[{"code":"1100","name":"Other cash","type":"Asset","unit":"USD"},{"code":"4100","name":"Other revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(&fixture.book, &["chart", "import", &chart]);
+    let mut round_entries = Vec::new();
+    let mut baseline = Vec::new();
+    for index in 0..4 {
+        // Recording order and effective order deliberately disagree.
+        round_entries.push(fixture.post(
+            &format!("density-round-{index}"),
+            &format!("2026-03-{:02}", 4 - index),
+            "100.00",
+            &evidence,
+        ));
+        let intent = write(
+            &fixture.dir,
+            &format!("density-background-{index}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-05","idempotency_key":"density-background-{index}","legs":[{{"side":"debit","account":"1100","amount":"1.23 USD"}},{{"side":"credit","account":"4100","amount":"1.23 USD"}}]}}"#
+            ),
+        );
+        baseline.push(ok(
+            &fixture.book,
+            &["post", "--intent", &intent, "--evidence", &evidence],
+        ));
+    }
+    let known_at = fixture.head();
+    let certificate_path = fixture.dir.join("round-density.certificate");
+    let (report, metadata) = certified(
+        &fixture,
+        &[
+            "procedure",
+            "run",
+            "numbers.round_amount_density@1",
+            "--param",
+            "min_legs=4",
+            "--param",
+            "round_power=2",
+            "--param",
+            "z_squared=4",
+            "--certificate-out",
+            certificate_path.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(integer(&report, "finding_count"), 2);
+    let certificate = fa::procedure_certificate::ProcedureCertificate::decode(&bytes(&metadata))
+        .expect("retained account round-density certificate");
+    assert_eq!(certificate.known_at().0, known_at);
+    assert_eq!(certificate.report().version, 1);
+    assert_eq!(
+        certificate.report().parameters,
+        vec![
+            ("min_legs".into(), 4),
+            ("round_power".into(), 2),
+            ("z_squared".into(), 4)
+        ]
+    );
+    assert_eq!(std::fs::read(&certificate_path).unwrap(), bytes(&metadata));
+    let locator = format!("C:{}", text(&metadata, "oid"));
+
+    // The original two accounts each have x/n=4/4 versus X/N=8/16, z^2=4.
+    // One later backdated nonround posting lowers each score below four.
+    fixture.post("density-later-backdated", "2026-03-02", "1.23", &evidence);
+    let fresh = ok(
+        &fixture.book,
+        &[
+            "procedure",
+            "run",
+            "numbers.round_amount_density",
+            "--param",
+            "min_legs=4",
+            "--param",
+            "round_power=2",
+            "--param",
+            "z_squared=4",
+        ],
+    );
+    assert_eq!(integer(&fresh, "finding_count"), 0);
+    for source in [locator.as_str(), certificate_path.to_str().unwrap()] {
+        let replayed = ok(&fixture.book, &["replay", source]);
+        assert_eq!(replayed.get("data"), report.get("data"));
+        assert_eq!(replayed.get("coordinate"), report.get("coordinate"));
+    }
+    assert_eq!(
+        text(
+            &ok(&fixture.book, &["certificate", "status", &locator]),
+            "status"
+        ),
+        "Changed"
+    );
+    let state = fixture.checkpoint();
+    let signed = exported(
+        &fixture.book,
+        &["signed-checkpoint", "--state", text(&state, "oid")],
+    );
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    let anchor = fa_verify::verify_checkpoint(&bytes(&signed), &[key]).unwrap();
+    let before_export = fixture.head();
+    let produced = ok(
+        &fixture.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &locator,
+            "--state",
+            text(&state, "oid"),
+        ],
+    );
+    let bundle = bytes(&produced);
+    let receipt = unhex(text(&produced, "receipt"));
+    let verified = fa_verify::report::verify_report_expected(
+        &bundle,
+        &[key],
+        Some(&anchor.checkpoint),
+        Some(&receipt),
+        Some(certificate.digest()),
+    )
+    .expect("independent account counts and book baseline over the retained population");
+    assert_eq!(verified.output, certificate.output());
+    assert_eq!(verified.known_at, known_at);
+    let independent = verified.procedure.unwrap();
+    assert_eq!(
+        (
+            independent.live_entries,
+            independent.live_legs,
+            independent.comparisons
+        ),
+        (8, 16, 4)
+    );
+    assert_eq!(
+        independent.comparisons,
+        certificate.report().work.comparisons
+    );
+    let mut accounts = [
+        account_vid(BOOK_ID, "1000").0,
+        account_vid(BOOK_ID, "4000").0,
+    ];
+    accounts.sort_by_key(|account| account.to_le_bytes());
+    assert_eq!(independent.findings.len(), accounts.len());
+    for (finding, expected_account) in independent.findings.iter().zip(accounts) {
+        let fa_verify::report::VerifiedProcedureStatistic::AccountRoundLegs {
+            account,
+            count,
+            legs,
+        } = &finding.statistic
+        else {
+            panic!("account round-density finding");
+        };
+        assert_eq!(
+            (*account, *count, finding.population, finding.severity),
+            (expected_account, 4, 4, 2)
+        );
+        assert_eq!(finding.entry, None);
+        let ordinal = if *account == account_vid(BOOK_ID, "1000").0 {
+            0
+        } else {
+            1
+        };
+        let expected: Vec<_> = round_entries
+            .iter()
+            .map(|entry| {
+                (
+                    u128::from_str_radix(text(entry, "vid"), 16).unwrap(),
+                    ordinal,
+                )
+            })
+            .collect();
+        assert_eq!(legs, &expected);
+    }
+
+    // An uncited, nonround posting still establishes the baseline. Omitting it
+    // would move z^2 from four to three, and must fail prefix completeness.
+    let omitted_digest: [u8; 32] = unhex(text(&baseline[0], "entry_digest"))
+        .try_into()
+        .unwrap();
+    let mut reader = fa_model::Reader::new(&bundle);
+    reader.bytes(64, "format").unwrap();
+    assert_eq!(reader.u16("major").unwrap(), 2);
+    reader.u16("minor").unwrap();
+    let certificate_bytes = reader.bytes(64 * 1024 * 1024, "certificate").unwrap();
+    let certificate_end = reader.offset();
+    let certificate_start = certificate_end - certificate_bytes.len();
+    reader.bytes(64 * 1024 * 1024, "checkpoint").unwrap();
+    reader.bytes(64 * 1024 * 1024, "prefix").unwrap();
+    let count_at = reader.offset();
+    let count = reader.u32("record count").unwrap();
+    let mut omitted = None;
+    for _ in 0..count {
+        let start = reader.offset();
+        reader.u32("proposal length").unwrap();
+        let payload = reader.bytes(64 * 1024 * 1024, "record").unwrap();
+        if let Ok(entry) = fa_model::Entry::decode(payload)
+            && entry.entry_digest == omitted_digest
+        {
+            assert!(omitted.replace((start, reader.offset())).is_none());
+        }
+    }
+    let (start, end) = omitted.expect("the uncited baseline posting is retained");
+    let mut missing = bundle[..start].to_vec();
+    missing.extend_from_slice(&bundle[end..]);
+    missing[count_at..count_at + 4].copy_from_slice(&(count - 1).to_le_bytes());
+    assert_eq!(
+        fa_verify::report::verify_report_expected(
+            &missing,
+            &[key],
+            None,
+            None,
+            Some(certificate.digest())
+        )
+        .unwrap_err()
+        .predicate,
+        "record_completeness"
+    );
+
+    // Alter the numerical finding, then recompute its outer commitment and
+    // supply that new expected digest. Signed inputs remain unchanged, so the
+    // false count can fail only after the result is independently recomputed.
+    let mut output = fa_model::Reader::new(certificate.output());
+    output.bytes(64, "output format").unwrap();
+    output.str(128, "procedure id").unwrap();
+    output.u16("version").unwrap();
+    output.u8("claim").unwrap();
+    output.str(128, "evidence").unwrap();
+    output.fixed::<16>("book").unwrap();
+    output.u64("known at").unwrap();
+    assert_eq!(output.u8("cutoff").unwrap(), 0);
+    assert_eq!(output.u32("parameters").unwrap(), 3);
+    for _ in 0..3 {
+        output.str(64, "parameter").unwrap();
+        output.i128("value").unwrap();
+    }
+    assert_eq!(output.u32("handles").unwrap(), 0);
+    output.fixed::<32>("parameters digest").unwrap();
+    output.fixed::<32>("inputs digest").unwrap();
+    for field in ["population", "entries", "legs", "comparisons"] {
+        output.u64(field).unwrap();
+    }
+    assert_eq!(output.u32("findings").unwrap(), 2);
+    output.str(128, "finding procedure").unwrap();
+    output.u16("finding version").unwrap();
+    output.u8("severity").unwrap();
+    assert_eq!(output.str(64, "statistic").unwrap(), "round_legs");
+    let statistic_at = output.offset();
+    assert_eq!(output.i128("round count").unwrap(), 4);
+    let mut forged_certificate = certificate_bytes.to_vec();
+    let digest_at = forged_certificate.len() - 32;
+    let output_start = digest_at - certificate.output().len();
+    assert_eq!(
+        &forged_certificate[output_start..digest_at],
+        certificate.output()
+    );
+    forged_certificate[output_start + statistic_at..output_start + statistic_at + 16]
+        .copy_from_slice(&3i128.to_le_bytes());
+    let new_digest = fa_verify::blake3::hash_parts(
+        b"fa:procedure-certificate-digest:v1",
+        &[
+            &u32::try_from(digest_at).unwrap().to_le_bytes(),
+            &forged_certificate[..digest_at],
+        ],
+    );
+    forged_certificate[digest_at..].copy_from_slice(&new_digest);
+    let mut forged = bundle.clone();
+    forged[certificate_start..certificate_end].copy_from_slice(&forged_certificate);
+    assert_eq!(
+        fa_verify::report::verify_report_expected(&forged, &[key], None, None, Some(&new_digest))
+            .unwrap_err()
+            .predicate,
+        "procedure_recomputation"
+    );
+
+    let pin = fa_verify::blake3::hex(certificate.digest());
+    let forged_pin = fa_verify::blake3::hex(&new_digest);
+    for (name, payload, expected, expected_exit) in [
+        ("round-density.fab", &bundle, &pin, 0),
+        ("missing-density-baseline.fab", &missing, &pin, 8),
+        ("forged-density-count.fab", &forged, &forged_pin, 8),
+    ] {
+        let result = fa_verify::cli::run(
+            &[
+                "report",
+                name,
+                "--key",
+                text(&signed, "checkpoint_public_key"),
+                "--expect",
+                expected,
+                "--json",
+            ]
+            .map(str::to_string),
+            &|path| {
+                assert_eq!(path, name, "the verifier cannot read the source book");
+                Ok(payload.to_vec())
+            },
+        );
+        eprintln!(
+            "round-density proof input={name} exit={} stdout={} stderr={}",
+            result.exit, result.stdout, result.stderr,
+        );
+        assert_eq!(result.exit, expected_exit, "{}", result.stdout);
+        if expected_exit == 0 {
+            assert!(
+                result
+                    .stdout
+                    .contains("\"procedure\":\"numbers.round_amount_density\"")
+            );
+            assert!(result.stdout.contains("\"evidence\":\"FA-EVID-L64\""));
+            assert!(result.stdout.contains("\"statistic\":\"round_legs\""));
+            assert!(
+                result
+                    .stdout
+                    .contains(&format!("\"account\":\"{:032x}\"", accounts[0]))
+            );
+            assert!(result.stdout.contains("\"legs\":["));
+        }
+    }
+    assert_eq!(
+        fixture.head(),
+        before_export,
+        "proof export does not post entries"
+    );
+}

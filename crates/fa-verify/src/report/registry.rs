@@ -542,6 +542,11 @@ pub(super) fn verify_procedure(
         profile,
         super::procedure::VerifiedProcedureParameters::FirstDigit { .. }
     );
+    let uncalibrated = benford
+        || matches!(
+            profile,
+            super::procedure::VerifiedProcedureParameters::RoundAmountDensity { .. }
+        );
     if integer(row, "version")? != i128::from(version)
         || if profile.supports_cutoff(version) {
             string(row, "effective_through")? != "optional"
@@ -552,8 +557,13 @@ pub(super) fn verify_procedure(
         || string(row, "evidence")? != profile.evidence()
         || string(row, "tie_break")? != if benford { "none" } else { "entry_vid" }
         || string(row, "complexity")? != profile.complexity()
-        || string(row, "calibration")? != if benford { "uncalibrated" } else { "corpus" }
-        || if benford {
+        || string(row, "calibration")?
+            != if uncalibrated {
+                "uncalibrated"
+            } else {
+                "corpus"
+            }
+        || if uncalibrated {
             row.contains_key("artifact")
         } else {
             string(row, "artifact")? != "FA-ART-CAL-01"

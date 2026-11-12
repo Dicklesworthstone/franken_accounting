@@ -2383,6 +2383,24 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                     ),
                 ));
             }
+            crate::report::VerifiedProcedureStatistic::AccountRoundLegs {
+                account, legs, ..
+            } => {
+                details.push(("account", s(format!("{account:032x}"))));
+                details.push((
+                    "legs",
+                    Json::List(
+                        legs.iter()
+                            .map(|(entry, ordinal)| {
+                                Json::Obj(vec![
+                                    ("entry", s(format!("{entry:032x}"))),
+                                    ("ordinal", n(u64::from(*ordinal))),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ));
+            }
             crate::report::VerifiedProcedureStatistic::DaysToPeriodEnd { period, .. }
             | crate::report::VerifiedProcedureStatistic::CommitsAfterClose { period, .. } => {
                 details.push(("period", s(period)));
