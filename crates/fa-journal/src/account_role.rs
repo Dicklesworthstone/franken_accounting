@@ -301,18 +301,38 @@ pub async fn record_account_role<V: Vfs + Clone>(
     };
     let (proposal, entry) = role_control(book, spec, principal, key, description)?;
     let evid = entry_vid(book.book_id, &principal.0.to_le_bytes(), key);
+    if let Err(refusal) = crate::policy::capability_admitted(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
     let mut txn = db.begin(&ctx.txn())?;
     if let Err(refusal) = crate::policy::capability_witness(&txn, db, book, capability)? {
         txn.abort();
         return Ok(Err(refusal));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
+    if let Err(refusal) =
+        crate::outcome::witness_named_key(&txn, db, book.book_id, principal, key, evid)?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
         if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
             return Ok(Err(crate::outcome::key_conflict()));
         }
         let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
+        if row.labels.as_slice() != [label::ENTRY]
+            || row.props != entry_mirrors(&stored)?
+            || !stored.approvals.is_empty()
+            || stored.plan_certificate.is_some()
+            || !crate::outcome::verify_control_recorded(db, &row, &stored)?
+        {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
         if stored.proposal.semantic_digest(&book.seal_key)?
             != proposal.semantic_digest(&book.seal_key)?
         {
@@ -341,6 +361,15 @@ pub async fn record_account_role<V: Vfs + Clone>(
             },
             already_recorded: true,
         }));
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     let Some(account) = txn.vertex(db, spec.account)? else {
         txn.abort();
@@ -412,6 +441,7 @@ pub async fn record_account_role<V: Vfs + Clone>(
     }
     let mut batch = WriteBatch::new(fa_model::symbols::relation::IN_BOOK);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     if let Err(error) = txn.write(db, batch) {
         txn.abort();
         return Err(error.into());
