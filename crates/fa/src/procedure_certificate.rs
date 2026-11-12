@@ -184,7 +184,7 @@ fn offline_unsupported(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §11.1/13.3 (independent procedure replay requires its complete supported input and policy closure)",
-        "export JET round-amount/period-end v1 or v2, exact duplicates v1, or first-digit Benford v2 with the original canonical registry closure and no input handles; only JET v2 permits an effective cutoff; replay other profiles in their original book",
+        "export JET round-amount/period-end v1 or v2, post-closing v1, exact duplicates v1, round-amount density v1, or first-digit Benford v2 with the original canonical registry closure and no input handles; only JET round-amount/period-end v2 permits an effective cutoff; replay other profiles in their original book",
     )
 }
 
@@ -898,51 +898,37 @@ fn decode_run(bytes: &[u8]) -> Result<ProcedureRun, Refusal> {
 }
 
 impl ProcedureCertificate {
-    /// Independent replay accepts bounded JET, exact-duplicate and Benford profiles.
+    /// Independent replay accepts the producer transport's bounded profiles.
     /// Native replay continues to support the wider catalog and legacy hashes.
     pub(crate) fn check_offline_profile(&self) -> Result<(), Refusal> {
-        let duplicates = self.report.procedure == "duplicates.same_same_same";
-        let benford = self.report.procedure == "benford.first_digit";
-        let post_closing = self.report.procedure == "jet.post_closing";
-        let supported = match self.report.procedure.as_str() {
-            "jet.round_amounts" | "jet.period_end_timing" => matches!(self.report.version, 1 | 2),
-            "jet.post_closing" | "duplicates.same_same_same" => {
-                self.report.version == 1 && self.report.parameters.is_empty()
-            }
-            "benford.first_digit" => {
-                let bounds = [
-                    ("account_type", 0, 8),
-                    ("currency_iso4217", 1, 999),
-                    ("mad_acceptable", 0, i128::from(u32::MAX)),
-                    ("mad_close", 0, i128::from(u32::MAX)),
-                    ("mad_marginal", 0, i128::from(u32::MAX)),
-                    ("min_population", 0, i128::from(u32::MAX)),
-                    ("side", 0, 1),
-                ];
-                self.report.version == 2
-                    && self.report.parameters.len() == bounds.len()
-                    && self.report.parameters.iter().zip(bounds).all(
-                        |((name, value), (expected, low, high))| {
-                            name == expected && (low..=high).contains(value)
-                        },
-                    )
-            }
-            _ => false,
-        };
+        let parameters: Vec<_> = self
+            .report
+            .parameters
+            .iter()
+            .map(|(name, value)| (name.as_str(), *value))
+            .collect();
+        let evidence = fa_notary::report::offline_procedure_profile(
+            &self.report.procedure,
+            self.report.version,
+            self.report.coordinate.effective_through.map(|day| day.0),
+            &parameters,
+            self.report.inputs.len(),
+        );
         if self.format() != PROCEDURE_CERTIFICATE_FORMAT
-            || !supported
-            || ((self.report.version == 1 || benford)
-                && self.report.coordinate.effective_through.is_some())
-            || !self.report.inputs.is_empty()
+            || self.report.claim != Claim::Statistical
+            || evidence != Some(self.report.evidence.as_str())
         {
             return Err(offline_unsupported(
-                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, exact duplicates v1, and first-digit Benford v2 with its complete parameter inventory; only round-amount/period-end v2 supports an effective cutoff and no profile supports input handles",
+                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, exact duplicates v1, round-amount density v1, and first-digit Benford v2 with their complete parameter inventories; only round-amount/period-end v2 supports an effective cutoff and no profile supports input handles",
             ));
         }
+        let jet = matches!(
+            self.report.procedure.as_str(),
+            "jet.round_amounts" | "jet.period_end_timing"
+        );
         if canonical_registry_document(&self.registry)?.is_none()
-            || !registry_versions(&self.registry)?.is_some_and(|versions| {
-                duplicates || benford || post_closing || versions.0 == self.report.version
-            })
+            || !registry_versions(&self.registry)?
+                .is_some_and(|versions| !jet || versions.0 == self.report.version)
         {
             return Err(offline_unsupported(
                 "portable procedures require their version's original canonical procedure registry closure; legacy raw-text commitments cannot be substituted",

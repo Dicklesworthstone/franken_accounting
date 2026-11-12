@@ -5,6 +5,9 @@
 use super::*;
 use fa_verify::report::{VerifiedReport, verify_report_expected};
 
+#[path = "offline/profile_admission.rs"]
+mod profile_admission;
+
 fn round_request(f: &Fixture, power: i128, through: Option<DateDay>) -> ProcedureRequest {
     let mut request =
         ProcedureRequest::new("jet.round_amounts", catalog::Inputs::default()).unwrap();

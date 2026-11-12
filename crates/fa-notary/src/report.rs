@@ -1,6 +1,6 @@
 //! Portable native and dimension-filtered trial balances, statements, open
 //! items, summary accounts, balance explanations, aging, native subledger
-//! reconciliations, roll-forwards, JET, exact-duplicate and first-digit Benford procedures,
+//! reconciliations, roll-forwards, JET, duplicate, round-density and Benford procedures,
 //! and direct cash flow over
 //! a payload-complete checkpoint.
 //!
@@ -36,6 +36,9 @@ pub use explanation::check_scope as check_explanation_scope;
 mod open_items;
 pub use open_items::check_scope as check_open_items_scope;
 
+mod procedure;
+pub use procedure::profile as offline_procedure_profile;
+
 pub const REPORT_BUNDLE_FORMAT: &[u8] = b"fa:report-bundle:v1";
 pub const MAX_REPORT_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -45,7 +48,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, summary trial-balance, native-subledger reconciliation, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, v11/v12 custom statement, native statement-diff, v6/v7 one-book consolidation, JET round-amount/period-end v1/v2, post-closing v1, exact duplicates v1 or first-digit Benford v2 procedure, effective-date aging, roll-forward, equity roll-forward or equity comparison, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, summary trial-balance, native-subledger reconciliation, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, v11/v12 custom statement, native statement-diff, v6/v7 one-book consolidation, JET round-amount/period-end v1/v2, post-closing v1, exact duplicates v1, round-amount density v1 or first-digit Benford v2 procedure, effective-date aging, roll-forward, equity roll-forward or equity comparison, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -141,14 +144,14 @@ pub fn assemble(
 /// control is carried in the authenticated prefix; independent reconstruction
 /// checks its definition and chart commitments without promoting the native
 /// approval or definition-object reads into separate membership proofs.
-/// The bounded jet.round_amounts and jet.period_end_timing v1/v2 profiles and
-/// post-closing v1, exact duplicates v1 and first-digit Benford v2 keep their outer certificate and append
-/// procedures and sod_policy to the four native
-/// documents. Those definitions support independent reproduction of the
-/// findings, exact work and complete decision card. Version 1 takes no effective
-/// cutoff; version 2 takes an optional inclusive cutoff. Post-closing and exact duplicates v1
-/// take neither a cutoff nor parameters. Other procedures and input handles
-/// are not part of this profile.
+/// The bounded JET round-amount/period-end v1/v2, post-closing v1,
+/// exact duplicates v1, round-amount density v1 and first-digit Benford v2
+/// profiles keep their outer certificate and append procedures and sod_policy
+/// to the four native documents. Those definitions support independent
+/// reproduction of the findings, exact work and complete decision card.
+/// Only JET round-amount/period-end v2 accepts an effective cutoff. Every
+/// procedure requires its complete explicit parameter inventory; no portable
+/// profile accepts input handles.
 /// Native subledger reconciliations retain their exact outer certificate and
 /// native AsOf source, appending control_payload and symbols to the four native
 /// registry documents. The shared entry_classes document belongs to both
@@ -239,7 +242,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, dimension-filtered and summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, five including rounding_laws for custom statements, six including procedures and sod_policy for JET round-amount/period-end v1/v2, post-closing v1, exact duplicates v1 or first-digit Benford v2, or six including control_payload and symbols for native subledger reconciliation",
+            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, dimension-filtered and summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, five including rounding_laws for custom statements, six including procedures and sod_policy for JET round-amount/period-end v1/v2, post-closing v1, exact duplicates v1, round-amount density v1 or first-digit Benford v2, or six including control_payload and symbols for native subledger reconciliation",
         )));
     }
     assemble_inner(
@@ -511,80 +514,32 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
             return Ok(false);
         }
         let id = output.str(128, "procedure id")?;
-        let benford = id == "benford.first_digit";
-        let density = id == "numbers.round_amount_density";
-        let (evidence, parameter) = match id {
-            "jet.round_amounts" => ("FA-EVID-L01", Some(("round_power", 30))),
-            "jet.period_end_timing" => ("FA-EVID-L02", Some(("window_days", i128::from(u32::MAX)))),
-            "jet.post_closing" => ("FA-EVID-L03", None),
-            "duplicates.same_same_same" => ("FA-EVID-L07", None),
-            "duplicates.same_same_different" => {
-                ("FA-EVID-L08", Some(("window_days", i128::from(u32::MAX))))
-            }
-            "benford.first_digit" => ("FA-EVID-L10", None),
-            "numbers.round_amount_density" => ("FA-EVID-L64", None),
-            _ => return Ok(false),
-        };
         let version = output.u16("procedure version")?;
-        if !matches!(version, 1 | 2)
-            || (benford && version != 2)
-            || (id == "duplicates.same_same_different" && version != 1)
-            || (!benford && parameter.is_none() && version != 1)
-            || output.u8("procedure claim")? != 0
-            || output.str(128, "procedure evidence")? != evidence
-            || output.fixed::<16>("procedure book")? != book
+        if output.u8("procedure claim")? != 0 {
+            return Ok(false);
+        }
+        let evidence = output.str(128, "procedure evidence")?;
+        if output.fixed::<16>("procedure book")? != book
             || output.u64("procedure known-at")? != known_at
         {
             return Ok(false);
         }
-        match output.u8("procedure effective cutoff")? {
-            0 => {}
-            1 if version == 2 && !benford => {
-                output.i32("procedure effective cutoff")?;
-            }
+        let effective_through = match output.u8("procedure effective cutoff")? {
+            0 => None,
+            1 => Some(output.i32("procedure effective cutoff")?),
             _ => return Ok(false),
-        }
-        let count = output.u32("procedure parameters")?;
-        if benford || density {
-            let bounds: &[(&str, i128, i128)] = if density {
-                &[
-                    ("min_legs", 0, i128::from(u32::MAX)),
-                    ("round_power", 0, 30),
-                    ("z_squared", 1, i128::from(u32::MAX)),
-                ]
-            } else {
-                &[
-                    ("account_type", 0, 8),
-                    ("currency_iso4217", 1, 999),
-                    ("mad_acceptable", 0, i128::from(u32::MAX)),
-                    ("mad_close", 0, i128::from(u32::MAX)),
-                    ("mad_marginal", 0, i128::from(u32::MAX)),
-                    ("min_population", 0, i128::from(u32::MAX)),
-                    ("side", 0, 1),
-                ]
-            };
-            if count as usize != bounds.len() {
-                return Ok(false);
-            }
-            for &(name, low, high) in bounds {
-                if output.str(128, "procedure parameter")? != name
-                    || !(low..=high).contains(&output.i128("procedure parameter value")?)
-                {
-                    return Ok(false);
-                }
-            }
-        } else if let Some((parameter, bound)) = parameter {
-            if count != 1 || output.str(128, "procedure parameter")? != parameter {
-                return Ok(false);
-            }
-            let value = output.i128("procedure parameter value")?;
-            if !(0..=bound).contains(&value) {
-                return Ok(false);
-            }
-        } else if count != 0 {
-            return Ok(false);
-        }
-        Ok(output.u32("procedure input handles")? == 0)
+        };
+        let parameters = output.list(7, "procedure parameters", |reader| {
+            Ok((
+                reader.str(128, "procedure parameter")?,
+                reader.i128("procedure parameter value")?,
+            ))
+        })?;
+        let input_count = output.u32("procedure input handles")? as usize;
+        Ok(
+            offline_procedure_profile(id, version, effective_through, &parameters, input_count)
+                == Some(evidence),
+        )
     };
     certificate.len() <= MAX_REPORT_BUNDLE_BYTES && header().unwrap_or(false)
 }
