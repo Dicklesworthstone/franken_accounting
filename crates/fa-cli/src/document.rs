@@ -2670,6 +2670,10 @@ fn retention_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             // Enforce capability admission (including rule_change, book_id, expiry, and revocation)
             // before reading any host plan file or observing storage.
             let mut book = ctx.books.open_admitted(args, |book| {
+                if !is_dry {
+                    fa_policy::admit_direct_write(&capability)
+                        .map_err(|d| Fail::Refusal(fa_journal::policy::refusal(&d)))?;
+                }
                 fa_policy::admit_class(
                     &capability,
                     &fa_policy::Intent {
@@ -2682,7 +2686,7 @@ fn retention_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     fa_model::EntryClass::POLICY_CONTROL,
                 )
                 .map_err(|d| Fail::Refusal(fa_journal::policy::refusal(&d)))?;
-                let _ = book.read_scope(who, &capability)??;
+                book.admit_current(&capability)??;
                 Ok(())
             })?;
 

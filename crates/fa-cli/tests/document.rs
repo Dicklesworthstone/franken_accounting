@@ -1723,7 +1723,11 @@ fn retention_policy_dual_control_cut_cadence_and_verify_end_to_end() -> std::io:
         "{verified}"
     );
     let whole_book = ok(&book, &["verify", "book", "--json"]);
-    assert_eq!(field(&whole_book, "status"), Some("ok"), "{whole_book}");
+    assert!(
+        whole_book.contains("\"event\":\"book_verification\"")
+            && whole_book.contains("\"green\":true"),
+        "{whole_book}"
+    );
 
     // 5. Checkpoint cadence check: 30 days <= 365 days passes; 400 days > 365 days refuses FA-REF-200.
     let cad_ok = ok(
@@ -1789,7 +1793,9 @@ fn retention_policy_dual_control_cut_cadence_and_verify_end_to_end() -> std::io:
         7,
     );
 
-    let cut_ok = ok(
+    // Once the retention floor clears (2028-01-02 > 2026-01-01 + 365d), `retention_cut`
+    // clears `FA-REF-199` and reaches Appendix H R-ERASE (`FA-REF-088`, exit 3).
+    refused(
         &book,
         &[
             "document",
@@ -1804,13 +1810,9 @@ fn retention_policy_dual_control_cut_cadence_and_verify_end_to_end() -> std::io:
             "erase",
             "--json",
         ],
+        "FA-REF-088",
+        3,
     );
-    assert_eq!(
-        field(&cut_ok, "event"),
-        Some("retention_cut_evaluated"),
-        "{cut_ok}"
-    );
-    assert_eq!(field(&cut_ok, "admissible"), Some("true"), "{cut_ok}");
 
     let hold_out = ok(
         &book,
