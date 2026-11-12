@@ -124,13 +124,6 @@ fn planning_admission(book: &BookContext, name: &str) -> Admission {
     Admission::PlanDraft(Planning(fa_model::draft_branch(book.book_id, name)))
 }
 
-fn draft_reach(book: &BookContext, name: &str) -> fa_policy::Reach<'static> {
-    fa_policy::Reach {
-        branch: Some(fa_model::draft_branch(book.book_id, name)),
-        ..fa_policy::Reach::whole_book(false)
-    }
-}
-
 /// Authority for a source-derived draft preparation, never a general read.
 /// Only [`admit_sources`] constructs this value, from a Post capability with
 /// an explicit branch caveat naming its own open draft. Every use rechecks
@@ -297,20 +290,12 @@ pub fn admit_sources_for_branch<V: asupersync::fs::Vfs + Clone>(
             value: "source-derived review requires an explicit draft branch".into(),
         })));
     };
-    if let Err(error) = fa_policy::admit_within(
+    if let Err(error) = fa_policy::admit_draft_container(
         capability,
-        &Intent {
-            principal: capability.holder(),
-            trunk: false,
-            op: Op::Post,
-            book: book.book_id,
-            legs: &[],
-        },
-        &fa_policy::Reach {
-            branch: Some(branch),
-            ..fa_policy::Reach::whole_book(false)
-        },
-        None,
+        capability.holder(),
+        Op::Post,
+        book.book_id,
+        branch,
     ) {
         return Ok(Err(denial(&error)));
     }
@@ -828,6 +813,24 @@ fn record_proposal(
     })
 }
 
+/// Pre-observation base admission for `promote_draft` (`FA-INV-10`,
+/// `fa-0hs4.24`): requires a `Human` principal holding `approve`, `trunk`
+/// branch reach, unpinned `known_at`, no `requires_dry_run` caveat, and
+/// current unrevoked authority on `book`. Proposal-union reach across every
+/// member of the `DraftSet` on `Id128::TRUNK` is enforced in [`promote_draft`]
+/// before staging or observing member sources.
+pub fn admit_promote<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    name: &str,
+) -> Outcome<()> {
+    if let Err(r) = check_name(name) {
+        return Ok(Err(r));
+    }
+    admit(db, book, capability, Kind::Promote, name)
+}
+
 /// Authority before any read (doctrine 8): the `DraftControl` row's preparer
 /// op for `kind`, held by the acting principal, current at the head. A
 /// draft record is not a trunk entry, so an Agent may open, plan into and
@@ -847,25 +850,42 @@ fn admit<V: asupersync::fs::Vfs + Clone>(
                 kind.transition()
             ))
         })?;
-    // An intent-log lifecycle act reaches its named logical draft. Promotion
-    // still requires the original whole-book promoter authority; the private
-    // Promoting token below binds each planner's separate branch confinement.
-    let reach = if matches!(kind, Kind::Promote) {
-        fa_policy::Reach::whole_book(false)
-    } else {
-        draft_reach(book, name)
-    };
-    if let Err(d) = fa_policy::admit_within(
+    if matches!(kind, Kind::Promote) {
+        if let Err(d) = fa_policy::admit_base(
+            capability,
+            &Intent {
+                principal: capability.holder(),
+                trunk: true,
+                op,
+                book: book.book_id,
+                legs: &[],
+            },
+        ) {
+            return Ok(Err(denial(&d)));
+        }
+        if let Some(held) = capability.branch()
+            && held != Id128::TRUNK
+        {
+            return Ok(Err(denial(&Denial::OutOfScope {
+                caveat: "branch",
+                value: format!("branch {}", Id128::TRUNK.to_hex()),
+            })));
+        }
+        if let Some(pin) = capability.known_at_pin() {
+            return Ok(Err(denial(&Denial::OutOfScope {
+                caveat: "known_at",
+                value: format!(
+                    "an act at the book head (the token is pinned at known-at <= {})",
+                    pin.0
+                ),
+            })));
+        }
+    } else if let Err(d) = fa_policy::admit_draft_container(
         capability,
-        &Intent {
-            principal: capability.holder(),
-            trunk: false,
-            op,
-            book: book.book_id,
-            legs: &[],
-        },
-        &reach,
-        None,
+        capability.holder(),
+        op,
+        book.book_id,
+        fa_model::draft_branch(book.book_id, name),
     ) {
         return Ok(Err(denial(&d)));
     }
@@ -1309,9 +1329,6 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
     // Every retained planner is admitted before loading native history; a
     // caller's authority cannot replace a previous member's capability.
     for (intent, capability) in batch.members().iter().zip(&capabilities) {
-        if let Err(d) = fa_policy::reach(capability, &draft_reach(book, &view.body.name), None) {
-            return Ok(Err(denial(&d)));
-        }
         let request = crate::post::PostRequest {
             proposal: intent.proposal().clone(),
             approvals: intent.approvals().to_vec(),
@@ -1562,6 +1579,22 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
             ),
             "plan Original, Adjusting, Reversal, Pending or Resolution entries; post allocations and migration chunks through their own verbs",
         )));
+    }
+    // Enforce proposal payload reach (accounts, periods, effective dates,
+    // classes, ceilings, and operations) prior to observing the draft
+    // container (FA-INV-10, bead fa-0hs4.24).
+    if let Err(refusal) = crate::post::authorize_request(
+        db,
+        book,
+        &crate::post::PostRequest {
+            proposal: p.clone(),
+            approvals: intent.approvals().to_vec(),
+            capability: req.capability.clone(),
+            plan_certificate: None,
+        },
+        planning_admission(book, name),
+    )? {
+        return Ok(Err(refusal));
     }
     let Some(view) = read_draft(db, &ctx.query(), book, name)? else {
         return Ok(Err(unknown(name)));
@@ -1845,6 +1878,57 @@ async fn promote_draft_in<V: asupersync::fs::Vfs + Clone>(
         .intents
         .iter()
         .any(|planned| planned.intent.proposal().class == EntryClass::CLOSING);
+    let promoter_current = match crate::policy::current_at(db, book, &req.capability)? {
+        Ok(current) => current,
+        Err(r) => return Ok(Err(r)),
+    };
+    let promoter_scope = crate::policy::account_scope(db, book, &promoter_current)?;
+    if view.intents.is_empty() {
+        if let Err(d) = fa_policy::reach(
+            &req.capability,
+            &fa_policy::Reach::whole_book(false),
+            promoter_scope.as_ref(),
+        )
+        .and_then(|()| fa_policy::require_class(&req.capability, None))
+        {
+            return Ok(Err(denial(&d)));
+        }
+    } else {
+        // Promotion stays fail-closed unless the promoting Human capability
+        // covers the union of all accounts, periods, effective dates, classes,
+        // and amount ceilings across every proposal in the DraftSet on Trunk
+        // (FA-INV-10, bead fa-0hs4.24).
+        for (index, planned) in view.intents.iter().enumerate() {
+            let prop = planned.intent.proposal();
+            let leg_tuples: Vec<(fa_money::UnitId, i128)> = prop
+                .legs
+                .iter()
+                .map(|leg| (leg.amount.unit, leg.amount.mantissa))
+                .collect();
+            if let Err(d) = fa_policy::admit_base_for_post(
+                &req.capability,
+                &Intent {
+                    principal: req.capability.holder(),
+                    trunk: true,
+                    op: Op::Approve,
+                    book: book.book_id,
+                    legs: &leg_tuples,
+                },
+            )
+            .and_then(|()| fa_policy::require_class(&req.capability, Some(prop.class)))
+            .and_then(|()| {
+                crate::policy::payload_reach_in_branch(
+                    &req.capability,
+                    book,
+                    prop,
+                    promoter_scope.as_ref(),
+                    Id128::TRUNK,
+                )
+            }) {
+                return Ok(Err(denial(&d).at("member", index)));
+            }
+        }
+    }
     if closing {
         if let Err(d) = fa_policy::require(
             &req.capability,
@@ -2084,6 +2168,109 @@ pub(crate) fn capture_close_source<V: asupersync::fs::Vfs + Clone>(
     rehearsal::capture(db, cx, book, request)
 }
 
+/// Admit and read the draft `name` (`FA-INV-10`, bead `fa-0hs4.24`).
+///
+/// Unscoped `Read` capabilities inspect any draft in the book; a capability
+/// confined by `branch = Draft(id)` inspects only its holder's named draft
+/// (unless it also holds `approve`), even when narrowed by `accounts`,
+/// `periods`, `effective`, or `classes` caveats.
+pub fn read_draft_admitted<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    capability: &Capability,
+    name: &str,
+) -> Outcome<Option<DraftView>> {
+    if let Err(r) = check_name(name) {
+        return Ok(Err(r));
+    }
+    if let Err(d) = fa_policy::admit_draft_container(
+        capability,
+        capability.holder(),
+        Op::Read,
+        book.book_id,
+        fa_model::draft_branch(book.book_id, name),
+    ) {
+        return Ok(Err(denial(&d)));
+    }
+    if let Err(r) = crate::policy::current_at(db, book, capability)? {
+        return Ok(Err(r));
+    }
+    let Some(view) = read_draft(db, cx, book, name)? else {
+        return Ok(Ok(None));
+    };
+    if capability.branch().is_some()
+        && view.body.owner != capability.holder()
+        && !capability.holds(Op::Approve)
+    {
+        return Ok(Err(Refusal::new(
+            code::CAPABILITY,
+            exit::SAFETY,
+            format!(
+                "draft `{name}` belongs to principal {:032x}; a confined draft capability inspects only its owner's draft",
+                view.body.owner.0
+            ),
+            "plan §15.2 (a draft is its owner's intent log)",
+            "open or inspect your own draft",
+        )));
+    }
+    Ok(Ok(Some(view)))
+}
+
+/// Admit and list drafts visible to `capability` (`FA-INV-10`, bead `fa-0hs4.24`).
+///
+/// When `capability` carries `branch = Draft(id)`, performs a single `O(1)`
+/// point lookup on that draft container and never scans or filters other drafts
+/// in the book. Unbranched capabilities require whole-book `Read` reach.
+pub fn list_drafts_admitted<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    capability: &Capability,
+) -> Outcome<Vec<DraftView>> {
+    if let Some(branch) = capability.branch().filter(|b| *b != Id128::TRUNK) {
+        if let Err(d) = fa_policy::admit_draft_container(
+            capability,
+            capability.holder(),
+            Op::Read,
+            book.book_id,
+            branch,
+        ) {
+            return Ok(Err(denial(&d)));
+        }
+        if let Err(r) = crate::policy::current_at(db, book, capability)? {
+            return Ok(Err(r));
+        }
+        let vid = VId(u128::from_be_bytes(branch.0));
+        let Some(row) = db.vertex(vid)? else {
+            return Ok(Ok(Vec::new()));
+        };
+        if !row.labels.contains(&label::DRAFT_SET) {
+            return Err(KernelError::Corrupt(format!(
+                "draft identity {:032x} holds a vertex that is not a DraftSet",
+                vid.0
+            )));
+        }
+        let view = view_of(db, cx, &row)?;
+        if view.body.book_id != book.book_id {
+            return Ok(Ok(Vec::new()));
+        }
+        if view.body.owner != capability.holder() && !capability.holds(Op::Approve) {
+            return Ok(Ok(Vec::new()));
+        }
+        return Ok(Ok(vec![view]));
+    }
+    if let Err(d) = fa_policy::admit_read(capability, capability.holder(), book.book_id)
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+    {
+        return Ok(Err(denial(&d)));
+    }
+    if let Err(r) = crate::policy::current_at(db, book, capability)? {
+        return Ok(Err(r));
+    }
+    Ok(Ok(list_drafts(db, cx, book)?))
+}
+
 /// The draft `name` as its records state it at the head.
 pub fn read_draft<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
@@ -2134,15 +2321,14 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let mut intents = Vec::new();
     let mut opened_at = None;
     let mut closed = None;
-    for edge in db.edges_at(seq)? {
-        let e = &edge.entry;
-        if e.dst != draft
-            || e.relation != relation::IN_CASE
-            || e.eid != edge_id(relation::IN_CASE, e.src, draft)
+    for src_vid in db.in_neighbours_at(draft, relation::IN_CASE, seq)? {
+        if db
+            .edge_at(edge_id(relation::IN_CASE, src_vid, draft), seq)?
+            .is_none()
         {
             continue;
         }
-        let Some(src) = db.vertex_at(e.src, seq)? else {
+        let Some(src) = db.vertex_at(src_vid, seq)? else {
             continue;
         };
         if !src.labels.contains(&label::ENTRY) {
@@ -2164,7 +2350,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         else {
             return Err(KernelError::Corrupt(format!(
                 "draft record {:032x} carries no LifecycleTransition",
-                e.src.0
+                src_vid.0
             )));
         };
         if *object_ref != draft {
@@ -2182,14 +2368,14 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                 else {
                     return Err(KernelError::Corrupt(format!(
                         "draft Plan record {:032x} carries no intent",
-                        e.src.0
+                        src_vid.0
                     )));
                 };
                 for (intent, capability, resolved_entry_digest, resolved_entry) in
                     decode_plan_record(ext)?.members
                 {
                     intents.push(PlannedIntent {
-                        record: e.src,
+                        record: src_vid,
                         recorded_at,
                         intent,
                         capability,
@@ -2206,13 +2392,13 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                     let Some(TypedRef::Vertex(outcome)) = proof_refs.first() else {
                         return Err(KernelError::Corrupt(format!(
                             "draft Promote record {:032x} names no outcome",
-                            e.src.0
+                            src_vid.0
                         )));
                     };
                     let Some((body, _)) = read_outcome(db, cx, *outcome)? else {
                         return Err(KernelError::Corrupt(format!(
                             "draft Promote record {:032x} names a missing outcome",
-                            e.src.0
+                            src_vid.0
                         )));
                     };
                     Some((*outcome, body.entries))
@@ -2220,7 +2406,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                     None
                 };
                 closed = Some(DraftClosure {
-                    record: e.src,
+                    record: src_vid,
                     recorded_at,
                     by: entry.proposal.principal_ref,
                     promoted,
@@ -2229,7 +2415,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
             _ => {
                 return Err(KernelError::Corrupt(format!(
                     "draft record {:032x} names transition {from} -> {to}",
-                    e.src.0
+                    src_vid.0
                 )));
             }
         }
@@ -2586,5 +2772,551 @@ mod tests {
             None
         );
         assert_eq!(DraftState::from_scalar(None), None);
+    }
+
+    struct ScopedDraftFixture {
+        runtime: asupersync::runtime::Runtime,
+        root: asupersync::Cx,
+        db: Database<fgdb::MemVfs>,
+        book: BookContext,
+        usd: fa_money::UnitId,
+        evidence: fa_model::entry::EvidenceRef,
+    }
+
+    impl ScopedDraftFixture {
+        const AGENT: VId = VId(71);
+        const APPROVER: VId = VId(72);
+        const OWNER: VId = VId(1);
+
+        fn new() -> Self {
+            use asupersync::runtime::RuntimeBuilder;
+            use fa_model::{AccountType, SealKey, SymbolTable};
+            use fa_money::UnitRegistry;
+            use fa_time::{FiscalCalendar, PeriodTransition};
+            use fgdb::DatabaseKeys;
+            use fgdb_types::ids::DatabaseSecurityNamespaceId;
+
+            let runtime = RuntimeBuilder::new().build().unwrap();
+            let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+            let ctx = PurposeContexts::narrow_runtime_root(&root);
+            let mut db = runtime
+                .block_on(Database::open_memory(
+                    &ctx.commit(),
+                    DatabaseKeys::new([191; 32], DatabaseSecurityNamespaceId([192; 32]), [193; 32]),
+                ))
+                .unwrap();
+            let units = UnitRegistry::with_defaults();
+            let usd = units.lookup("USD").unwrap();
+            let book = BookContext {
+                book_id: Id128([194; 16]),
+                calendar: FiscalCalendar::monthly("scoped-draft-test", 1, 1).unwrap(),
+                units: units.clone(),
+                seal_key: SealKey([195; 32]),
+                symbols: SymbolTable::compiled(),
+            };
+            let spec = crate::BookSpec {
+                book_id: book.book_id,
+                name: "Scoped Draft Authority".into(),
+                base_unit: usd,
+                calendar: book.calendar.clone(),
+                time_zone_policy: None,
+                entities: Vec::new(),
+                opening_date: None,
+            };
+            runtime
+                .block_on(crate::create_book(
+                    &mut db,
+                    &ctx,
+                    &spec,
+                    &units,
+                    &book.symbols,
+                ))
+                .unwrap();
+            let desc = Erasable::seal(
+                &"scoped draft setup".to_string(),
+                None,
+                &book.seal_key,
+                [11; 32],
+                [12; 24],
+            );
+            let accounts = [
+                ("1000", AccountType::ASSET),
+                ("4000", AccountType::REVENUE),
+                ("5000", AccountType::EXPENSE),
+            ]
+            .into_iter()
+            .map(|(code, kind)| crate::AccountSpec {
+                code: code.into(),
+                name: code.into(),
+                account_type: kind.0,
+                normal_balance: u8::from(kind == AccountType::REVENUE),
+                is_leaf: true,
+                unit_policy: crate::UnitPolicy::Single(usd),
+                parent_code: None,
+                limit: None,
+            })
+            .collect::<Vec<_>>();
+            runtime
+                .block_on(crate::install_chart(
+                    &mut db,
+                    &ctx,
+                    &book,
+                    &accounts,
+                    Self::OWNER,
+                    DateDay::from_ymd(2026, 3, 1).unwrap(),
+                    b"scoped-chart",
+                    desc.clone(),
+                    &Capability::embedded(Self::OWNER, &["schema_change"]).unwrap(),
+                ))
+                .unwrap()
+                .unwrap();
+            runtime
+                .block_on(crate::create_periods(
+                    &mut db,
+                    &ctx,
+                    &book,
+                    2026,
+                    Self::OWNER,
+                    desc.clone(),
+                    &Capability::embedded(Self::OWNER, &["schema_change"]).unwrap(),
+                ))
+                .unwrap()
+                .unwrap();
+            for (period, key) in [
+                ("FY2026-P03", b"open-p03".as_slice()),
+                ("FY2026-P04", b"open-p04".as_slice()),
+            ] {
+                runtime
+                    .block_on(crate::transition_period(
+                        &mut db,
+                        &ctx,
+                        &book,
+                        period,
+                        PeriodTransition::Open,
+                        Self::OWNER,
+                        1,
+                        key,
+                        desc.clone(),
+                        &Capability::embedded(Self::OWNER, &["close", "post"]).unwrap(),
+                        &[],
+                    ))
+                    .unwrap()
+                    .unwrap();
+            }
+            let doc = crate::Document {
+                book_id: book.book_id,
+                kind: 1,
+                mime: "text/plain".into(),
+                grade: 3,
+                retrieved_by: Self::OWNER,
+                bytes: b"Reviewed source invoice #401".to_vec(),
+            };
+            let added = runtime
+                .block_on(crate::add_document(&mut db, &ctx, &book, &doc))
+                .unwrap()
+                .unwrap();
+            Self {
+                runtime,
+                root,
+                db,
+                book,
+                usd,
+                evidence: fa_model::entry::EvidenceRef {
+                    document_oid: added.oid,
+                    doc_commit: added.doc_commit,
+                    role: 1,
+                },
+            }
+        }
+
+        fn ctx(&self) -> PurposeContexts {
+            PurposeContexts::narrow_runtime_root(&self.root)
+        }
+
+        fn intent(
+            &self,
+            principal: VId,
+            debit_code: &str,
+            credit_code: &str,
+            day: DateDay,
+            cents: i128,
+            key: &[u8],
+        ) -> PostIntent {
+            use fa_model::{LegPayload, Oid, account_vid};
+            use fa_money::{Amount, Side};
+
+            let legs = vec![
+                LegPayload::simple(
+                    Side::Debit,
+                    account_vid(self.book.book_id, debit_code),
+                    Amount::new(self.usd, cents),
+                ),
+                LegPayload::simple(
+                    Side::Credit,
+                    account_vid(self.book.book_id, credit_code),
+                    Amount::new(self.usd, cents),
+                ),
+            ];
+            let proposal = EntryPayload {
+                schema_minor: fa_model::entry::SCHEMA_MINOR,
+                book_id: self.book.book_id,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ORIGINAL,
+                effective_date: day,
+                document_date: None,
+                description: Erasable::seal(
+                    &"scoped draft proposal".to_string(),
+                    None,
+                    &self.book.seal_key,
+                    [31; 32],
+                    [32; 24],
+                ),
+                effective_period: None,
+                unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+                legs,
+                control: None,
+                base_totals: None,
+                idempotency_key: key.to_vec(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid([33; 32]),
+                    intent_kind: 1,
+                },
+                principal_ref: principal,
+                session_ref: None,
+                evidence: vec![self.evidence],
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            };
+            PostIntent::new(proposal, Vec::new()).unwrap()
+        }
+    }
+
+    fn scoped_req(
+        book: &BookContext,
+        capability: Capability,
+        day: DateDay,
+        label: &str,
+    ) -> DraftRequest {
+        DraftRequest {
+            capability,
+            effective_date: day,
+            description: Erasable::seal(
+                &label.to_string(),
+                None,
+                &book.seal_key,
+                [21; 32],
+                [22; 24],
+            ),
+        }
+    }
+
+    #[test]
+    fn scoped_agent_capability_admits_in_scope_draft_open_plan_and_discard() {
+        let mut f = ScopedDraftFixture::new();
+        let name = "q1-sales";
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        let agent = Capability::new(
+            ScopedDraftFixture::AGENT,
+            fa_policy::Profile::Agent,
+            &[Op::Read, Op::Post],
+            ScopedDraftFixture::OWNER,
+        )
+        .unwrap()
+        .on_branch(fa_model::draft_branch(f.book.book_id, name))
+        .unwrap()
+        .for_accounts(&["1000", "4000"])
+        .unwrap()
+        .for_periods(&["FY2026-P03"])
+        .unwrap()
+        .effective_through(DateDay::from_ymd(2026, 3, 31).unwrap());
+
+        let ctx = f.ctx();
+        let open_req = scoped_req(&f.book, agent.clone(), day, "open scoped draft");
+        let opened = f
+            .runtime
+            .block_on(open_draft(&mut f.db, &ctx, &f.book, name, open_req))
+            .unwrap()
+            .unwrap();
+        assert!(!opened.already_recorded);
+
+        let intent = f.intent(
+            ScopedDraftFixture::AGENT,
+            "1000",
+            "4000",
+            day,
+            25_000,
+            b"scoped-sale-1",
+        );
+        let plan_req = scoped_req(&f.book, agent.clone(), day, "plan scoped sale");
+        let planned = f
+            .runtime
+            .block_on(plan_into_draft(
+                &mut f.db, &ctx, &f.book, name, intent, plan_req,
+            ))
+            .unwrap()
+            .unwrap();
+        assert_eq!(planned.plan.as_ref().unwrap().members().len(), 1);
+        let member_vid = entry_vid(
+            f.book.book_id,
+            &ScopedDraftFixture::AGENT.0.to_le_bytes(),
+            b"scoped-sale-1",
+        );
+        assert!(
+            f.db.vertex(member_vid).unwrap().is_none(),
+            "draft planning must never publish to trunk"
+        );
+
+        let shown = read_draft_admitted(&f.db, &ctx.query(), &f.book, &agent, name)
+            .unwrap()
+            .unwrap()
+            .expect("confined draft view");
+        assert_eq!(shown.state, DraftState::Open);
+        assert_eq!(shown.intents.len(), 1);
+        let listed = list_drafts_admitted(&f.db, &ctx.query(), &f.book, &agent)
+            .unwrap()
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].body.name, name);
+
+        let discard_req = scoped_req(&f.book, agent.clone(), day, "discard scoped draft");
+        let discarded = f
+            .runtime
+            .block_on(discard_draft(&mut f.db, &ctx, &f.book, name, discard_req))
+            .unwrap()
+            .unwrap();
+        assert!(!discarded.already_recorded);
+        let after = read_draft_admitted(&f.db, &ctx.query(), &f.book, &agent, name)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.state, DraftState::Discarded);
+    }
+
+    #[test]
+    fn scoped_agent_capability_refuses_out_of_scope_account_or_period_in_draft() {
+        let mut f = ScopedDraftFixture::new();
+        let name = "q1-sales";
+        let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+        let agent = Capability::new(
+            ScopedDraftFixture::AGENT,
+            fa_policy::Profile::Agent,
+            &[Op::Read, Op::Post],
+            ScopedDraftFixture::OWNER,
+        )
+        .unwrap()
+        .on_branch(fa_model::draft_branch(f.book.book_id, name))
+        .unwrap()
+        .for_accounts(&["1000", "4000"])
+        .unwrap()
+        .for_periods(&["FY2026-P03"])
+        .unwrap()
+        .effective_through(DateDay::from_ymd(2026, 3, 20).unwrap());
+
+        let ctx = f.ctx();
+        let open_req = scoped_req(&f.book, agent.clone(), day, "open");
+        let opened = f
+            .runtime
+            .block_on(open_draft(&mut f.db, &ctx, &f.book, name, open_req))
+            .unwrap()
+            .unwrap();
+
+        // Corrupt the DraftSet payload so any post-observation check would fail
+        // with KernelError::Corrupt instead of pre-observation FA-INV-10 refusal.
+        let mut poison = WriteBatch::new(relation::IN_CASE);
+        poison.set_vertex_property(
+            opened.draft,
+            property::FA_PAYLOAD,
+            Some(crate::rows::scalar_bytes("poison", vec![0xde, 0xad]).unwrap()),
+        );
+        f.runtime
+            .block_on(f.db.write(&ctx.commit(), poison))
+            .unwrap();
+        assert!(
+            read_draft(&f.db, &ctx.query(), &f.book, name).is_err(),
+            "trap must trip if DraftSet is observed"
+        );
+
+        let head = f.db.frontier().unwrap();
+        for (bad_intent, expected_axis) in [
+            (
+                f.intent(
+                    ScopedDraftFixture::AGENT,
+                    "5000",
+                    "1000",
+                    day,
+                    1_000,
+                    b"bad-acct",
+                ),
+                "accounts",
+            ),
+            (
+                f.intent(
+                    ScopedDraftFixture::AGENT,
+                    "1000",
+                    "4000",
+                    DateDay::from_ymd(2026, 4, 5).unwrap(),
+                    1_000,
+                    b"bad-period",
+                ),
+                "periods",
+            ),
+            (
+                f.intent(
+                    ScopedDraftFixture::AGENT,
+                    "1000",
+                    "4000",
+                    DateDay::from_ymd(2026, 3, 25).unwrap(),
+                    1_000,
+                    b"bad-effective",
+                ),
+                "effective",
+            ),
+        ] {
+            let plan_req = scoped_req(&f.book, agent.clone(), day, "refused before observation");
+            let refused = f
+                .runtime
+                .block_on(plan_into_draft(
+                    &mut f.db, &ctx, &f.book, name, bad_intent, plan_req,
+                ))
+                .expect("must refuse cleanly before reading poisoned DraftSet")
+                .unwrap_err();
+            assert_eq!(refused.code, code::CAPABILITY, "{expected_axis}: {refused}");
+            assert!(
+                refused.message.contains(expected_axis),
+                "expected `{expected_axis}` in refusal: {refused}"
+            );
+            assert_eq!(f.db.frontier().unwrap(), head);
+        }
+
+        let wrong_req = scoped_req(&f.book, agent, day, "wrong branch");
+        let wrong_branch = f
+            .runtime
+            .block_on(open_draft(
+                &mut f.db,
+                &ctx,
+                &f.book,
+                "other-draft",
+                wrong_req,
+            ))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(wrong_branch.code, code::CAPABILITY);
+        assert!(wrong_branch.message.contains("branch"), "{wrong_branch}");
+        assert_eq!(f.db.frontier().unwrap(), head);
+    }
+
+    #[test]
+    fn promote_draft_requires_trunk_reach_covering_all_draft_proposals() {
+        let mut f = ScopedDraftFixture::new();
+        let name = "union-check";
+        let march = DateDay::from_ymd(2026, 3, 15).unwrap();
+        let april = DateDay::from_ymd(2026, 4, 10).unwrap();
+        let agent = Capability::new(
+            ScopedDraftFixture::AGENT,
+            fa_policy::Profile::Agent,
+            &[Op::Post],
+            ScopedDraftFixture::OWNER,
+        )
+        .unwrap()
+        .on_branch(fa_model::draft_branch(f.book.book_id, name))
+        .unwrap()
+        .for_accounts(&["1000", "4000", "5000"])
+        .unwrap()
+        .for_periods(&["FY2026-P03", "FY2026-P04"])
+        .unwrap();
+
+        let ctx = f.ctx();
+        let open_req = scoped_req(&f.book, agent.clone(), march, "open union draft");
+        f.runtime
+            .block_on(open_draft(&mut f.db, &ctx, &f.book, name, open_req))
+            .unwrap()
+            .unwrap();
+        let p1 = f.intent(
+            ScopedDraftFixture::AGENT,
+            "1000",
+            "4000",
+            march,
+            10_000,
+            b"union-m1",
+        );
+        let p2 = f.intent(
+            ScopedDraftFixture::AGENT,
+            "5000",
+            "1000",
+            april,
+            4_000,
+            b"union-m2",
+        );
+        for (idx, intent) in [p1, p2].into_iter().enumerate() {
+            let plan_req = scoped_req(&f.book, agent.clone(), march, &format!("plan {idx}"));
+            f.runtime
+                .block_on(plan_into_draft(
+                    &mut f.db, &ctx, &f.book, name, intent, plan_req,
+                ))
+                .unwrap()
+                .unwrap();
+        }
+
+        let base_approver = || {
+            Capability::new(
+                ScopedDraftFixture::APPROVER,
+                fa_policy::Profile::Human,
+                &[Op::Read, Op::Approve],
+                ScopedDraftFixture::OWNER,
+            )
+            .unwrap()
+        };
+        let head = f.db.frontier().unwrap();
+        for (narrow_promoter, expected_axis) in [
+            (
+                base_approver().for_accounts(&["1000", "4000"]).unwrap(),
+                "accounts",
+            ),
+            (
+                base_approver().for_periods(&["FY2026-P03"]).unwrap(),
+                "periods",
+            ),
+            (base_approver().effective_through(march), "effective"),
+        ] {
+            let promote_req = scoped_req(&f.book, narrow_promoter, april, "narrow promote");
+            let refused = f
+                .runtime
+                .block_on(promote_draft(&mut f.db, &ctx, &f.book, name, promote_req))
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(refused.code, code::CAPABILITY, "{expected_axis}: {refused}");
+            assert!(
+                refused.message.contains(expected_axis),
+                "expected `{expected_axis}` in refusal: {refused}"
+            );
+            assert_eq!(f.db.frontier().unwrap(), head);
+        }
+
+        let covering_promoter = base_approver()
+            .for_accounts(&["1000", "4000", "5000"])
+            .unwrap()
+            .for_periods(&["FY2026-P03", "FY2026-P04"])
+            .unwrap()
+            .effective_through(DateDay::from_ymd(2026, 4, 30).unwrap());
+        let cover_req = scoped_req(&f.book, covering_promoter, april, "covering promote");
+        let promoted = f
+            .runtime
+            .block_on(promote_draft(&mut f.db, &ctx, &f.book, name, cover_req))
+            .unwrap()
+            .unwrap();
+        assert_eq!(promoted.entries.len(), 2);
+        for entry_ref in &promoted.entries {
+            assert!(f.db.vertex(entry_ref.vid).unwrap().is_some());
+        }
+        assert_eq!(
+            read_draft(&f.db, &ctx.query(), &f.book, name)
+                .unwrap()
+                .unwrap()
+                .state,
+            DraftState::Promoted
+        );
     }
 }

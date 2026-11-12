@@ -450,7 +450,7 @@ fn prepare_creation<V: asupersync::fs::Vfs + Clone>(
             "install a build with the registered CreatePeriods authority checker",
         )));
     };
-    if let Err(denial) = fa_policy::admit_within(
+    if let Err(denial) = fa_policy::admit_within_class(
         capability,
         &Intent {
             principal,
@@ -461,6 +461,7 @@ fn prepare_creation<V: asupersync::fs::Vfs + Clone>(
         },
         &Reach::whole_book(true),
         None,
+        fa_model::EntryClass::SCHEMA_CONTROL,
     ) {
         return Ok(Err(policy::refusal(&denial)));
     }

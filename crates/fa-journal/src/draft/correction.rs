@@ -374,9 +374,6 @@ async fn preview_pair<V: asupersync::fs::Vfs + Clone>(
 ) -> Outcome<DraftPreview> {
     let batch = PostBatch::new(promotion_key(view.vid), members).map_err(intent_error)?;
     for (member, capability) in batch.members().iter().zip(&capabilities) {
-        if let Err(d) = fa_policy::reach(capability, &draft_reach(book, &view.body.name), None) {
-            return Ok(Err(denial(&d)));
-        }
         if let Err(refusal) = crate::post::authorize_request(
             db,
             book,
@@ -485,6 +482,22 @@ pub async fn plan_correction_into_draft<V: asupersync::fs::Vfs + Clone>(
             holder: req.capability.holder(),
             principal: reversal.proposal().principal_ref,
         })));
+    }
+    if let Err(r) = check_name(name) {
+        return Ok(Err(r));
+    }
+    if let Err(r) = admit(db, book, &req.capability, Kind::PlanCorrection, name)? {
+        return Ok(Err(r));
+    }
+    for (index, member) in [&reversal, &replacement].into_iter().enumerate() {
+        if let Err(refusal) = crate::post::authorize_request(
+            db,
+            book,
+            &request(member, &req.capability),
+            planning_admission(book, name),
+        )? {
+            return Ok(Err(refusal.at("member", index)));
+        }
     }
     let view = match owned_draft(db, ctx, book, &req.capability, name)? {
         Ok(view) => view,

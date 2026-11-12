@@ -347,7 +347,7 @@ fn a_prepared_reversal_cannot_take_a_newly_recorded_closing_route_key() {
     assert_eq!(h.db.frontier().unwrap(), head);
     assert_eq!(h.db.vertices().unwrap(), vertices);
     assert!(
-        h.db.vertex(fa_model::reversal_vid(target.vid))
+        h.db.vertex(fa_journal::rows::reversal_vid(target.vid))
             .unwrap()
             .is_none()
     );
@@ -357,7 +357,7 @@ fn a_prepared_reversal_cannot_take_a_newly_recorded_closing_route_key() {
 fn closing_route_claims_survive_compressed_accounting_replay() {
     let mut h = Harness::new();
     let mut maintenance = WriteBatch::new(relation::IN_BOOK);
-    maintenance.create_vertex(VId(0xfeed_227), vec![label::REGISTER], Vec::new());
+    maintenance.create_vertex(VId(0x0fee_d227), vec![label::REGISTER], Vec::new());
     write(&mut h, maintenance);
     let original = request(&h, b"replayed-closing-key");
     let recorded = set(&mut h, original.clone()).unwrap();

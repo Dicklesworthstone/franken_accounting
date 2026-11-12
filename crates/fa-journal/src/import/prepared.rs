@@ -451,7 +451,7 @@ pub(super) fn admit<V: Vfs + Clone>(
             "sod_policy.toml has no import-run rule".into(),
         ));
     };
-    if let Err(denial) = fa_policy::admit(
+    if let Err(denial) = fa_policy::admit_class(
         capability,
         &Intent {
             principal: req.principal,
@@ -460,6 +460,7 @@ pub(super) fn admit<V: Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        fa_model::EntryClass::IMPORT_CONTROL,
     ) {
         return Ok(Err(refusal(&denial)));
     }

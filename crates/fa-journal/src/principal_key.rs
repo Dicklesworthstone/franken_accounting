@@ -277,7 +277,7 @@ pub async fn register_principal_key<V: asupersync::fs::Vfs + Clone>(
     req: PrincipalKeyRequest,
 ) -> Outcome<KeyRegistered> {
     let principal = req.key.principal;
-    if let Err(d) = fa_policy::admit(
+    if let Err(d) = fa_policy::admit_class(
         &req.capability,
         &Intent {
             principal,
@@ -286,6 +286,7 @@ pub async fn register_principal_key<V: asupersync::fs::Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        EntryClass::POLICY_CONTROL,
     ) {
         return Ok(Err(crate::policy::refusal(&d)));
     }

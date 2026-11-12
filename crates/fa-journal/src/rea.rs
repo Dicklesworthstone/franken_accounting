@@ -2412,8 +2412,31 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
     let book_spec = crate::genesis::read_book_spec_at(db, known_at)?
         .ok_or_else(|| corrupt("no book spec at the selected frontier"))?;
     let rows = db.vertices_at(known_at)?;
+    read_rea_from_rows_at(db, book, known_at, &book_spec, &rows, None)
+}
+
+/// [`read_rea_at`] over an already read `BookSpec`, `Database::vertices_at(known_at)`
+/// snapshot, and optional pre-decoded visible entries so callers such as
+/// Lantern's `Snapshot::read` do not re-scan all vertices or re-decode entries.
+pub fn read_rea_from_rows_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    known_at: CommitSeq,
+    book_spec: &crate::genesis::BookSpec,
+    rows: &[VertexRow],
+    decoded_entries: Option<&[(VId, Entry, CommitSeq)]>,
+) -> Result<ReaSnapshot, KernelError> {
+    if known_at > db.frontier()? {
+        return Err(corrupt("requested frontier is beyond the book head"));
+    }
     let stored_edges = db.edges_at(known_at)?;
     let vertices_by_vid: BTreeMap<VId, &VertexRow> = rows.iter().map(|r| (r.vid, r)).collect();
+    let decoded_by_vid: Option<BTreeMap<VId, &Entry>> = decoded_entries.map(|entries| {
+        entries
+            .iter()
+            .map(|(vid, entry, _)| (*vid, entry))
+            .collect()
+    });
 
     let mut legal_entities: BTreeMap<VId, LegalEntityRow> = BTreeMap::new();
     for e in &book_spec.entities {
@@ -2446,11 +2469,21 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
     }
 
     let mut controls = Vec::new();
-    for row in &rows {
+    for row in rows {
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
-        let entry = crate::entry_storage::decode_at(db, row, known_at)?;
+        let owned_entry;
+        let entry = match decoded_by_vid
+            .as_ref()
+            .and_then(|by_vid| by_vid.get(&row.vid).copied())
+        {
+            Some(entry) => entry,
+            None => {
+                owned_entry = crate::entry_storage::decode_at(db, row, known_at)?;
+                &owned_entry
+            }
+        };
         if entry.proposal.class != EntryClass::SCHEMA_CONTROL {
             continue;
         }
@@ -2466,7 +2499,7 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
                 ..
             }
         ) {
-            crate::period_creation::declared_creation(row, book, &book_spec)?;
+            crate::period_creation::declared_creation(row, book, book_spec)?;
             continue;
         }
         if !matches!(
@@ -2729,7 +2762,7 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
     }
 
     // Verify stored PARTY, INSTRUMENT, EXTERNAL_ID, EVENT vertices and CONTROLS edge discipline.
-    for row in &rows {
+    for row in rows {
         if row.labels.contains(&label::PARTY) && !parties.contains_key(&row.vid) {
             return Err(corrupt(format!(
                 "Party vertex {:032x} has no journaled CreateParty declaration",

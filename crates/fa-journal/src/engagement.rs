@@ -1072,7 +1072,7 @@ fn admit<V: asupersync::fs::Vfs + Clone>(
                 kind.transition()
             ))
         })?;
-    if let Err(d) = fa_policy::admit(
+    if let Err(d) = fa_policy::admit_class(
         capability,
         &Intent {
             principal: capability.holder(),
@@ -1081,6 +1081,7 @@ fn admit<V: asupersync::fs::Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        fa_model::EntryClass::ENGAGEMENT_CONTROL,
     ) {
         return Ok(Err(denial(&d)));
     }

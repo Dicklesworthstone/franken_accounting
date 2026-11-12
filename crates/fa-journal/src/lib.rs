@@ -119,9 +119,10 @@ pub use disposal::{LotDisposalRequest, PreparedLotDisposal, prepare_lot_disposal
 pub use draft::{
     DraftBody, DraftClosure, DraftPlanned, DraftPreview, DraftPreviewMember, DraftPromoted,
     DraftRecorded, DraftRehearsal, DraftRehearsalRequest, DraftRehearsalSource, DraftRequest,
-    DraftSourceRecord, DraftState, DraftView, PlannedIntent, discard_draft, draft_entries,
-    list_drafts, open_draft, plan_batch_into_draft, plan_correction_into_draft, plan_into_draft,
-    preview_draft, promote_draft, read_draft, rehearse_draft_into,
+    DraftSourceRecord, DraftState, DraftView, PlannedIntent, admit_promote, discard_draft,
+    draft_entries, list_drafts, list_drafts_admitted, open_draft, plan_batch_into_draft,
+    plan_correction_into_draft, plan_into_draft, preview_draft, promote_draft, read_draft,
+    read_draft_admitted, rehearse_draft_into,
 };
 pub use engagement::{
     AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, Carried,
@@ -266,3 +267,100 @@ pub use upload::{
 pub use usage::{UsageCell, UsageDebit, UsageKey, UsageVerification, verify_usage};
 
 pub use projections::{ProjectionVerification, verify_projections};
+
+/// Live thread-local substrate operation census for `fa-bench` kernel witnesses
+/// (`fa-0hs4.23`). Inactive (`None`) on all ordinary production calls; active
+/// only while an [`op_witness::OpWitnessGuard`] is held on the current thread.
+pub mod op_witness {
+    use core::cell::Cell;
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct RawOpCensus {
+        pub point_reads: u32,
+        pub witnesses: u32,
+        pub vertex_scans: u32,
+        pub scanned_rows: u32,
+        pub register_cell_touches: u32,
+        pub verify_cells_checked: u32,
+        pub verify_legs_folded: u32,
+        pub snapshot_reads: u32,
+    }
+
+    thread_local! {
+        static ACTIVE: Cell<Option<RawOpCensus>> = const { Cell::new(None) };
+    }
+
+    /// RAII scope that collects live substrate operation counts on the current thread.
+    pub struct OpWitnessGuard {
+        previous: Option<RawOpCensus>,
+    }
+
+    impl OpWitnessGuard {
+        #[must_use]
+        pub fn finish(mut self) -> RawOpCensus {
+            let captured = ACTIVE.with(|slot| slot.replace(self.previous.take()));
+            core::mem::forget(self);
+            captured.unwrap_or_default()
+        }
+    }
+
+    impl Drop for OpWitnessGuard {
+        fn drop(&mut self) {
+            let prev = self.previous;
+            ACTIVE.with(|slot| slot.set(prev));
+        }
+    }
+
+    #[must_use]
+    pub fn begin() -> OpWitnessGuard {
+        let previous = ACTIVE.with(|slot| slot.replace(Some(RawOpCensus::default())));
+        OpWitnessGuard { previous }
+    }
+
+    #[inline]
+    fn update(f: impl FnOnce(&mut RawOpCensus)) {
+        ACTIVE.with(|slot| {
+            if let Some(mut census) = slot.get() {
+                f(&mut census);
+                slot.set(Some(census));
+            }
+        });
+    }
+
+    #[inline]
+    pub fn record_point_read(n: u32) {
+        update(|c| c.point_reads = c.point_reads.saturating_add(n));
+    }
+
+    #[inline]
+    pub fn record_witness(n: u32) {
+        update(|c| c.witnesses = c.witnesses.saturating_add(n));
+    }
+
+    #[inline]
+    pub fn record_vertex_scan(rows: usize) {
+        let rows_u32 = u32::try_from(rows).unwrap_or(u32::MAX);
+        update(|c| {
+            c.vertex_scans = c.vertex_scans.saturating_add(1);
+            c.scanned_rows = c.scanned_rows.saturating_add(rows_u32);
+        });
+    }
+
+    #[inline]
+    pub fn record_register_cell_touch(cells: u32) {
+        update(|c| c.register_cell_touches = c.register_cell_touches.saturating_add(cells));
+    }
+
+    #[inline]
+    pub fn record_verify_cell_reads(cells_checked: u32, legs_folded: u32) {
+        update(|c| {
+            c.verify_cells_checked = c.verify_cells_checked.saturating_add(cells_checked);
+            c.verify_legs_folded = c.verify_legs_folded.saturating_add(legs_folded);
+        });
+    }
+
+    #[inline]
+    pub fn record_snapshot_read(n: u32) {
+        update(|c| c.snapshot_reads = c.snapshot_reads.saturating_add(n));
+    }
+}

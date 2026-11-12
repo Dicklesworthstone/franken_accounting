@@ -1174,7 +1174,7 @@ fn human_reviewer(
 /// The capability binding stored with an attestation.
 pub(crate) fn binding(capability: &Capability) -> Result<CapabilityBinding, KernelError> {
     Ok(CapabilityBinding {
-        profile: capability.profile(),
+        profile: capability.sod_profile(),
         capability_commitment: capability
             .commitment()
             .map_err(|e| KernelError::Corrupt(format!("capability: {e}")))?,
@@ -1818,7 +1818,7 @@ pub async fn record_manual_assertion<V: asupersync::fs::Vfs + Clone>(
     }
     // Authorization precedes observation: the assertion is the preparer's,
     // made under the capability that will post the proposal.
-    if let Err(d) = fa_policy::admit(
+    if let Err(d) = fa_policy::admit_class(
         capability,
         &fa_policy::Intent {
             principal: proposal.principal_ref,
@@ -1827,6 +1827,7 @@ pub async fn record_manual_assertion<V: asupersync::fs::Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        proposal.class,
     ) {
         return Ok(Err(crate::policy::refusal(&d)));
     }

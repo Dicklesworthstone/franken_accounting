@@ -267,7 +267,7 @@ pub fn admit_rule_change<V: Vfs + Clone>(
     principal: VId,
     capability: &Capability,
 ) -> Result<Option<Refusal>, KernelError> {
-    if let Err(d) = fa_policy::admit_within(
+    if let Err(d) = fa_policy::admit_within_class(
         capability,
         &Intent {
             principal,
@@ -278,6 +278,7 @@ pub fn admit_rule_change<V: Vfs + Clone>(
         },
         &Reach::whole_book(true),
         None,
+        EntryClass::POLICY_CONTROL,
     ) {
         return Ok(Some(crate::policy::refusal(&d)));
     }
@@ -848,7 +849,7 @@ pub fn admit_rule_activation<V: Vfs + Clone>(
                 "sod_policy.toml registers no PolicyControl ActivateRule rule; the activation is refused, never unconstrained".into(),
             )
         })?;
-    if let Err(d) = fa_policy::admit(
+    if let Err(d) = fa_policy::admit_class(
         capability,
         &Intent {
             principal: capability.holder(),
@@ -857,6 +858,7 @@ pub fn admit_rule_activation<V: Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        EntryClass::POLICY_CONTROL,
     ) {
         return Ok(Err(crate::policy::refusal(&d)));
     }

@@ -1017,7 +1017,7 @@ pub(crate) fn admit_schema_change<V: asupersync::fs::Vfs + Clone>(
     principal_ref: VId,
     capability: &Capability,
 ) -> Result<Option<Refusal>, KernelError> {
-    if let Err(d) = fa_policy::admit_within(
+    if let Err(d) = fa_policy::admit_within_class(
         capability,
         &Intent {
             principal: principal_ref,
@@ -1028,6 +1028,7 @@ pub(crate) fn admit_schema_change<V: asupersync::fs::Vfs + Clone>(
         },
         &Reach::whole_book(true),
         None,
+        EntryClass::SCHEMA_CONTROL,
     ) {
         return Ok(Some(crate::policy::refusal(&d)));
     }

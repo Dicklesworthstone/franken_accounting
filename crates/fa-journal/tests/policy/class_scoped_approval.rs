@@ -615,6 +615,27 @@ fn retained_signed_approvals_recheck_the_actual_payload_scope_at_consumption() {
 
 #[test]
 fn retained_approval_cannot_claim_another_holder_profile_or_operation() {
+    // Wire-level defense in depth: neither Agent nor System can ever decode as
+    // holding `approve`, even before retained-capability matching runs.
+    for forbidden_profile in [Profile::Agent, Profile::System] {
+        let h = harness();
+        let capability = payload_approver(ALICE, 208);
+        let proposal = h.proposal(
+            PREPARER,
+            500,
+            b"forbidden-wire-profile",
+            EntryClass::ORIGINAL,
+        );
+        let digest = proposal.proposal_digest().unwrap();
+        let mut forged = Approval::by(&capability, Op::Approve, h.book.book_id, digest, 0, 0)
+            .unwrap()
+            .unwrap();
+        forged.profile = forbidden_profile;
+        let bytes = forged.record_bytes(None).unwrap();
+        let err = Approval::decode_record(&bytes).unwrap_err();
+        assert_eq!(err.what, "approval.op");
+    }
+
     for mismatch in ["holder", "profile", "operation"] {
         let mut h = harness();
         let capability = payload_approver(ALICE, 208)
@@ -630,7 +651,10 @@ fn retained_approval_cannot_claim_another_holder_profile_or_operation() {
         let approval =
             import_signed_approval_as(&mut h, &capability, &proposal, |approval| match mismatch {
                 "holder" => approval.principal = BOB,
-                "profile" => approval.profile = Profile::Agent,
+                "profile" => {
+                    approval.profile = Profile::Agent;
+                    approval.op = Op::Read;
+                }
                 "operation" => approval.op = Op::Read,
                 _ => unreachable!(),
             });

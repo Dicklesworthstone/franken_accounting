@@ -1897,7 +1897,7 @@ fn admit_control<V: asupersync::fs::Vfs + Clone>(
             "sod_policy.toml has no MigrationControl {transition} rule"
         ))
     })?;
-    if let Err(d) = fa_policy::admit(
+    if let Err(d) = fa_policy::admit_class(
         &req.capability,
         &Intent {
             principal: req.proposal.principal_ref,
@@ -1906,6 +1906,7 @@ fn admit_control<V: asupersync::fs::Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        EntryClass::MIGRATION_CONTROL,
     ) {
         return Ok(Err(denial(&d)));
     }

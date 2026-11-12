@@ -274,24 +274,22 @@ fn admit<V: Vfs + Clone>(
                 })
         })
         .transpose()?;
-    let permission = fa_policy::admit_read(capability, capability.holder(), book.book_id)
-        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
-        .and_then(|()| {
-            if let Some(op) = op {
-                fa_policy::admit(
-                    capability,
-                    &Intent {
-                        principal: capability.holder(),
-                        trunk: true,
-                        op,
-                        book: book.book_id,
-                        legs: &[],
-                    },
-                )
-            } else {
-                Ok(())
-            }
-        });
+    let permission = fa_policy::admit_read(capability, capability.holder(), book.book_id).and_then(
+        |()| match op {
+            Some(op) => fa_policy::admit_class(
+                capability,
+                &Intent {
+                    principal: capability.holder(),
+                    trunk: true,
+                    op,
+                    book: book.book_id,
+                    legs: &[],
+                },
+                EntryClass::CLOSE_CONTROL,
+            ),
+            None => fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None),
+        },
+    );
     if let Err(denial) = permission {
         return Ok(Err(policy::refusal(&denial)));
     }

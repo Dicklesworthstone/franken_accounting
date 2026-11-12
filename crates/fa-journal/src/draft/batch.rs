@@ -189,8 +189,29 @@ pub async fn plan_batch_into_draft<V: asupersync::fs::Vfs + Clone>(
             .at("member", index)));
         }
     }
-    // This includes revocation/expiry and whole-book reach, before the draft
-    // or its original outcome can be observed.
+    if let Err(r) = check_name(name) {
+        return Ok(Err(r));
+    }
+    if let Err(r) = admit(db, book, &req.capability, Kind::PlanBatch, name)? {
+        return Ok(Err(r));
+    }
+    for (index, intent) in batch.members().iter().enumerate() {
+        if let Err(refusal) = crate::post::authorize_request(
+            db,
+            book,
+            &crate::post::PostRequest {
+                proposal: intent.proposal().clone(),
+                approvals: intent.approvals().to_vec(),
+                capability: req.capability.clone(),
+                plan_certificate: None,
+            },
+            planning_admission(book, name),
+        )? {
+            return Ok(Err(refusal.at("member", index)));
+        }
+    }
+    // Container ownership and member history are read only after every batch
+    // member's payload reach and ceilings have been admitted (FA-INV-10).
     let view = match owned_draft(db, ctx, book, &req.capability, name)? {
         Ok(view) => view,
         Err(refusal) => return Ok(Err(refusal)),

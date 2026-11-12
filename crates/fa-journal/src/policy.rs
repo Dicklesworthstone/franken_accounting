@@ -52,6 +52,7 @@ use fa_model::{
     Oid, account_vid, entry_mirrors, entry_vid,
 };
 use fa_policy::principal_key::{KeyError, SCHEME_ED25519};
+use fa_policy::sod::{AuthorityGraph, AuthorityVertex, SodBypassViolation, SodGraphProof};
 use fa_policy::{
     AccountScope, Approval, Approver, Capability, CapabilityError, Denial, Intent, Op, Party,
     PrincipalSignature, Reach, SignatureVerifier, Steward,
@@ -344,7 +345,20 @@ fn authorize_approvals_target<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(refusal(&denial)));
     }
     let excluded = case_preparers.filter(|_| steward.excludes(key, "case_preparer"));
-    let (rule, _) = steward.sod.requirement(key);
+    let (rule, req) = steward.sod.requirement(key);
+    if let Err(r) = prove_sod_authority_graph(
+        book.book_id,
+        rule,
+        req,
+        matrix_approvals,
+        preparer,
+        approvals,
+        &witnessed.approvers,
+        proposal_digest,
+        Op::Post,
+    ) {
+        return Ok(Err(r));
+    }
     authorize_signing_keys(
         txn,
         db,
@@ -357,6 +371,150 @@ fn authorize_approvals_target<V: asupersync::fs::Vfs + Clone>(
                 .flat_map(|principals| principals.iter().copied()),
         ),
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prove_sod_authority_graph(
+    book_id: Id128,
+    rule: &str,
+    req: &fa_registry::sod_policy::SodRequirement,
+    matrix_approvals: u8,
+    preparer: Party,
+    approvals: &[ApprovalRef],
+    approvers: &[Approver],
+    proposal_digest: &[u8; 32],
+    target_op: Op,
+) -> Result<Option<SodGraphProof>, Refusal> {
+    let required_approvals = usize::from(matrix_approvals.max(req.approvers)).max(
+        if preparer.profile == fa_policy::Profile::Agent {
+            usize::from(req.agent_prepared_human_approvers)
+        } else {
+            0
+        },
+    );
+    if required_approvals == 0 && approvals.is_empty() {
+        return Ok(None);
+    }
+    let mut graph = AuthorityGraph::new();
+    let source = graph.add_vertex(AuthorityVertex::Principal {
+        vid: preparer.principal,
+        profile: preparer.profile,
+    });
+    let cap_digest = fa_model::domain_digest(
+        b"fa.sod.cap.v1",
+        &[
+            &book_id.0,
+            &preparer.principal.0.to_le_bytes(),
+            proposal_digest,
+        ],
+    );
+    let mut cap_id = [0_u8; 16];
+    cap_id.copy_from_slice(&cap_digest[..16]);
+    let cap_vid = graph.add_vertex(AuthorityVertex::CapabilityNode {
+        id: Id128(cap_id),
+        holder: preparer.principal,
+        profile: preparer.profile,
+        ops: BTreeSet::from([target_op]),
+    });
+    graph.add_edge(source, cap_vid);
+
+    let effect_digest =
+        fa_model::domain_digest(b"fa.sod.effect.v1", &[&book_id.0, proposal_digest]);
+    let mut effect_bytes = [0_u8; 16];
+    effect_bytes.copy_from_slice(&effect_digest[..16]);
+    let effect_vid = VId(u128::from_le_bytes(effect_bytes));
+    let target = graph.add_vertex(AuthorityVertex::TargetEffect {
+        effect_vid,
+        op: target_op,
+        proposal_digest: *proposal_digest,
+    });
+
+    let mut cursor = cap_vid;
+    for (cited, approver) in approvals.iter().zip(approvers.iter()) {
+        let gate_vid = graph.add_vertex(AuthorityVertex::ApprovalGate {
+            approval_vid: cited.approval_vid,
+            approver: approver.principal,
+            profile: approver.profile,
+            op: approver.op,
+            proposal_digest: cited.approved_digest,
+        });
+        graph.add_edge(cursor, gate_vid);
+        cursor = gate_vid;
+    }
+    graph.add_edge(cursor, target);
+
+    let required_gates = required_approvals.max(1);
+    match graph.prove_sod(source, target, required_gates, required_gates) {
+        Ok(proof) => Ok(Some(proof)),
+        Err(violation) => Err(sod_graph_refusal(rule, &violation)),
+    }
+}
+
+fn sod_graph_refusal(rule: &str, violation: &SodBypassViolation) -> Refusal {
+    let cite = format!("sod_policy.toml#{rule}");
+    let fix = "supply independent Human `approve` approvals bound to this exact proposal digest"
+        .to_string();
+    match violation {
+        SodBypassViolation::MissingEndpoint { endpoint } => Refusal::new(
+            "FA-REF-008",
+            exit::REFUSAL,
+            format!("authority graph missing SoD endpoint {:032x}", endpoint.0),
+            cite,
+            fix,
+        ),
+        SodBypassViolation::UnreachableTarget { source, target } => Refusal::new(
+            "FA-REF-008",
+            exit::REFUSAL,
+            format!(
+                "authority graph target {:032x} is unreachable from principal {:032x}",
+                target.0, source.0
+            ),
+            cite,
+            fix,
+        ),
+        SodBypassViolation::BypassPath {
+            source,
+            target,
+            bypass_path,
+        } => Refusal::new(
+            "FA-REF-008",
+            exit::REFUSAL,
+            format!(
+                "authority path of length {} from {:032x} to {:032x} bypasses admissible Human approval gates",
+                bypass_path.len(),
+                source.0,
+                target.0
+            ),
+            cite,
+            fix,
+        ),
+        SodBypassViolation::InsufficientDominatingApprovals {
+            required,
+            dominating,
+        } => Refusal::new(
+            code::APPROVALS,
+            exit::REFUSAL,
+            format!(
+                "authority graph requires {required} dominating Human approvals, found {}",
+                dominating.len()
+            ),
+            cite,
+            fix,
+        ),
+        SodBypassViolation::InsufficientDistinctHumanApprovers {
+            required,
+            approvers,
+        } => Refusal::new(
+            code::APPROVALS,
+            exit::REFUSAL,
+            format!(
+                "authority graph requires {required} distinct Human approvers, found {}",
+                approvers.len()
+            ),
+            cite,
+            fix,
+        ),
+    }
 }
 
 /// `session_lineage` alone over `approvals` under the posting rule `rule`
@@ -756,10 +914,8 @@ fn approval_base(
         }
         if let ApprovalTarget::Entry(proposal) = target {
             proposal.validate_for_write().map_err(|error| {
-                Refusal::new(
-                    code::STRUCTURE,
-                    exit::USAGE,
-                    error.to_string(),
+                crate::post::proposal_write_refusal(
+                    error,
                     "Appendix A fa:entry:v1 (the complete canonical approval target)",
                     "correct the proposal and obtain a new canonical review",
                 )
@@ -1422,7 +1578,7 @@ pub async fn activate_policy<V: asupersync::fs::Vfs + Clone>(
             "sod_policy.toml has no policy-activate rule".into(),
         ));
     };
-    if let Err(d) = fa_policy::admit(
+    if let Err(d) = fa_policy::admit_class(
         &req.capability,
         &Intent {
             principal: proposal.principal_ref,
@@ -1431,6 +1587,7 @@ pub async fn activate_policy<V: asupersync::fs::Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        EntryClass::POLICY_CONTROL,
     ) {
         return Ok(Err(refusal(&d)));
     }
@@ -2494,7 +2651,7 @@ pub async fn revoke_capability<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: RevocationRequest,
 ) -> Outcome<Revoked> {
-    if let Err(d) = fa_policy::admit(
+    if let Err(d) = fa_policy::admit_class(
         &req.capability,
         &Intent {
             principal: req.capability.holder(),
@@ -2503,6 +2660,7 @@ pub async fn revoke_capability<V: asupersync::fs::Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        EntryClass::POLICY_CONTROL,
     ) {
         return Ok(Err(refusal(&d)));
     }
@@ -2718,6 +2876,16 @@ fn grant_refusal(issuer: &Capability, issued: &Capability) -> Option<Refusal> {
             "issue only ops, units, ceilings, books, a redaction caveat and an expiry within the issuing capability",
         ))
     };
+    if issued.profile() == fa_policy::Profile::Agent
+        && let Some(op) = issued
+            .ops()
+            .iter()
+            .find(|op| !fa_policy::ProfileTemplate::Agent.ops_ceiling().contains(op))
+    {
+        return widen(format!(
+            "it grants `{op}` to an Agent capability beyond ProfileTemplate::Agent's ceiling"
+        ));
+    }
     if let Some(op) = issued.ops().iter().find(|op| !issuer.holds(**op)) {
         return widen(format!("it grants `{op}`, which the issuer does not hold"));
     }
@@ -2837,7 +3005,7 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: IssuanceRequest,
 ) -> Outcome<Issued> {
-    if let Err(d) = fa_policy::admit(
+    if let Err(d) = fa_policy::admit_class(
         &req.capability,
         &Intent {
             principal: req.capability.holder(),
@@ -2846,6 +3014,7 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        EntryClass::POLICY_CONTROL,
     ) {
         return Ok(Err(refusal(&d)));
     }

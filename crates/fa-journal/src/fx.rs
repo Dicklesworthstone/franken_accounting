@@ -874,6 +874,9 @@ pub(crate) fn admit_structure(
     };
 
     // Preserve exact FA-REF-102 behavior for unvalued base_totals or unregistered fx_law_oid.
+    if !is_registered_fx_law_oid(&bt.fx_law_oid) {
+        return Err(not_implemented("base_totals"));
+    }
     let Some(law) = FxLawId::from_oid(&bt.fx_law_oid) else {
         return Err(not_implemented("base_totals"));
     };

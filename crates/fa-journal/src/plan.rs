@@ -637,6 +637,42 @@ pub async fn commit_plan<V: Vfs + Clone>(
             certificate.snapshot_seq.0,
         ))));
     }
+    let mut judgment_bytes = [0_u8; 16];
+    judgment_bytes.copy_from_slice(&digest[..16]);
+    let judgment_id = Id128(judgment_bytes);
+    let judgment = fa_policy::sod::CachedJudgment {
+        judgment_id,
+        book_id: book.book_id,
+        payload_digest: certificate.proposal_digest,
+        planned_at: certificate.snapshot_seq,
+        security_policy_epoch: certificate.security_policy_epoch,
+        watched_keys: std::collections::BTreeSet::from([
+            certificate.proposal_digest,
+            certificate.effects_digest,
+        ]),
+    };
+    let mut judgment_cache = fa_policy::sod::JudgmentCache::new();
+    judgment_cache.insert_judgment(judgment.clone());
+    let permit_holder = capability.holder();
+    let permit = match fa_policy::sod::SingleUsePermit::issue(
+        &capability,
+        Id128(cvid.0.to_le_bytes()),
+        fa_policy::Op::Post,
+        &judgment,
+        head,
+    )
+    .map_err(|e| KernelError::Corrupt(format!("steward permit: {e}")))?
+    {
+        Ok(permit) => permit,
+        Err(fa_policy::sod::PermitDenial::Policy(denial)) => {
+            return Ok(Err(policy::refusal(&denial)));
+        }
+        Err(denial) => {
+            return Ok(Err(invalidated(format!(
+                "steward permit refused commit_plan: {denial:?}"
+            ))));
+        }
+    };
     let mut fresh = None;
     let (reconciliation, capacity) = match carried {
         Some(carried) => (&mut carried.reconciliation, Some(&mut carried.capacity)),
@@ -674,6 +710,45 @@ pub async fn commit_plan<V: Vfs + Clone>(
             "the current production transaction does not reproduce the planned proposal, policy, period, or native effects",
         )));
     }
+    let emptiness: fa_policy::sod::EmptinessWitness = match judgment_cache.verify_emptiness(
+        judgment_id,
+        head,
+        prepared.security_policy_epoch(),
+    ) {
+        Ok(witness) => witness,
+        Err(denial) => {
+            prepared.abort();
+            return Ok(Err(invalidated(format!(
+                "steward emptiness witness refused commit_plan: {denial:?}"
+            ))));
+        }
+    };
+    let mut permit_gate = fa_policy::sod::PermitGate::new();
+    let closure: fa_policy::sod::DecisionClosure = match permit_gate.consume(
+        &permit,
+        &fa_policy::sod::PermitTarget {
+            book_id: book.book_id,
+            actor: permit_holder,
+            op: fa_policy::Op::Post,
+            payload_digest: certificate.proposal_digest,
+            commit_at: head,
+            current_epoch: prepared.security_policy_epoch(),
+        },
+        &judgment_cache,
+    ) {
+        Ok(closure) => closure,
+        Err(fa_policy::sod::PermitDenial::Policy(denial)) => {
+            prepared.abort();
+            return Ok(Err(policy::refusal(&denial)));
+        }
+        Err(denial) => {
+            prepared.abort();
+            return Ok(Err(invalidated(format!(
+                "steward permit gate refused commit_plan: {denial:?}"
+            ))));
+        }
+    };
+    debug_assert_eq!(closure.emptiness_witness_digest, emptiness.witness_digest);
     let evid = match planned_entry_vid(&plan) {
         Ok(vid) => vid,
         Err(refusal) => {

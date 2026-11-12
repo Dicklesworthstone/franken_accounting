@@ -520,7 +520,9 @@ pub fn list_documents<V: asupersync::fs::Vfs + Clone>(
 ) -> Outcome<Vec<DocumentSummary>> {
     let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let mut out = Vec::new();
-    for row in db.vertices_at(seq)? {
+    let all_rows = db.vertices_at(seq)?;
+    crate::op_witness::record_vertex_scan(all_rows.len());
+    for row in all_rows {
         if !row.labels.contains(&label::DOCUMENT) {
             continue;
         }
@@ -799,6 +801,7 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
     let commit = doc.doc_commit();
     let oid = document_oid(book.book_id, &commit);
     let vid = document_vid(&oid);
+    crate::op_witness::record_point_read(1);
     if let Some(row) = db.vertex(vid)? {
         return added_from_row(&row, &policy, &oid, true);
     }
@@ -1059,6 +1062,7 @@ where
     let commit = doc.doc_commit();
     let oid = document_oid(book.book_id, &commit);
     let vid = document_vid(&oid);
+    crate::op_witness::record_point_read(1);
     if let Some(row) = db.vertex(vid)? {
         return added_from_row(&row, &policy, &oid, true);
     }

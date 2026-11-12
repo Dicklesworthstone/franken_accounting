@@ -605,7 +605,7 @@ pub(crate) fn admit<V: asupersync::fs::Vfs + Clone>(
                 "sod_policy.toml registers no HoldControl {transition} rule; the hold is refused, never unconstrained"
             ))
         })?;
-    if let Err(d) = fa_policy::admit(
+    if let Err(d) = fa_policy::admit_class(
         capability,
         &Intent {
             principal,
@@ -614,6 +614,7 @@ pub(crate) fn admit<V: asupersync::fs::Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        fa_model::EntryClass::HOLD_CONTROL,
     ) {
         return Ok(Err(refusal(&d)));
     }

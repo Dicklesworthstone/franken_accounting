@@ -761,7 +761,7 @@ pub async fn unmatch_bank_match<V: Vfs + Clone>(
         book_id: book.book_id,
         target: request.target,
         unmatched_by: capability.holder(),
-        unmatching_profile: capability.profile(),
+        unmatching_profile: profile,
         capability_commitment: capability.commitment().map_err(corrupt)?,
         security_policy_epoch: epoch,
     };

@@ -3850,3 +3850,91 @@ fn revoking_an_issuer_cascades_to_revoke_its_issued_children_and_grandchildren()
         assert_eq!(info.revoked_at, Some(revoked.recorded_at));
     }
 }
+
+/// fa-7yiz: `ProfileTemplate::Agent`'s ops ceiling is structural across
+/// `Capability::new`, `Capability::decode`, and issuance, and a Human-profile
+/// token narrowed to `OperatorKind::Agent` (`sod_profile() == Profile::Agent`)
+/// cannot act as a Human-only recurring template owner or record a Human
+/// attestation binding.
+#[test]
+fn an_agent_capability_beyond_its_template_ceiling_is_refused() {
+    let mut h = harness();
+    let head = h.db.frontier().unwrap();
+
+    for forbidden in [
+        Op::PostSoftclosed,
+        Op::PostClosed,
+        Op::Hold,
+        Op::Witness,
+        Op::Migrate,
+        Op::Maintain,
+    ] {
+        let err = Capability::new(ALICE, Profile::Agent, &[Op::Read, forbidden], PREPARER)
+            .expect_err("Agent capability beyond ProfileTemplate::Agent ceiling must fail");
+        assert_eq!(
+            err,
+            fa_policy::CapabilityError::ForbiddenOp {
+                profile: Profile::Agent,
+                op: forbidden,
+            }
+        );
+    }
+
+    let admitted_agent = Capability::new(
+        ALICE,
+        Profile::Agent,
+        fa_policy::ProfileTemplate::Agent.ops_ceiling(),
+        PREPARER,
+    )
+    .expect("Agent ceiling ops are structurally valid")
+    .holder_bound(possession_digest(&[0x33; 32]));
+    let issuer = human(
+        PREPARER,
+        &[
+            "read",
+            "post",
+            "reconcile",
+            "verify",
+            "produce",
+            "partial_view",
+            "issue_capability",
+        ],
+    );
+    let issued = h
+        .issue(&issuer, &admitted_agent, b"issue-agent-at-ceiling")
+        .expect("Agent grant within ceiling is admitted");
+    assert_eq!(issued.commitment, admitted_agent.commitment().unwrap());
+    assert!(h.db.frontier().unwrap() > head);
+
+    // A Human-profile Preparer with OperatorKind::Agent evaluates as Agent for
+    // SoD and Human-only recurring template ownership (`fa-7yiz`).
+    let mcp_preparer = Capability::new(
+        ALICE,
+        Profile::Human,
+        &[Op::Read, Op::Post, Op::Reconcile],
+        PREPARER,
+    )
+    .unwrap()
+    .holder_bound(possession_digest(&[0x44; 32]))
+    .with_operator_kind(fa_policy::OperatorKind::Agent)
+    .unwrap();
+    assert_eq!(mcp_preparer.sod_profile(), Profile::Agent);
+    h.issue(&issuer, &mcp_preparer, b"issue-mcp-preparer")
+        .expect("Human-profile Preparer narrowed to OperatorKind::Agent is issuable");
+
+    let spec = fa_journal::recurring::RecurringSpec {
+        name: "rent-monthly".to_string(),
+        template: h.proposal(ALICE, 1_000, b"recurring-template", EntryClass::ORIGINAL),
+        every_months: 1,
+        month_end: fa_time::MonthEndPolicy::ClampToMonthEnd,
+        end: None,
+    };
+    let ctx = h.ctx();
+    let refused = fa_journal::recurring::plan_recurring(&h.db, &ctx, &h.book, &mcp_preparer, spec)
+        .unwrap()
+        .expect_err("AI operator on Human-profile Preparer cannot own a recurring template");
+    assert!(
+        refused.message.contains("Human-owned"),
+        "unexpected refusal: {refused}"
+    );
+}

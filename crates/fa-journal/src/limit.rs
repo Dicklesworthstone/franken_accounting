@@ -863,6 +863,14 @@ fn judge_movement<V: asupersync::fs::Vfs + Clone>(
         .limit
         .ok_or_else(|| KernelError::Corrupt("judged account has no limit".into()))?;
     let cvid = cell_vid(account.vid, period);
+    crate::op_witness::record_point_read(1);
+    if movement.posted_debits != 0
+        || movement.posted_credits != 0
+        || movement.reserved_debits != 0
+        || movement.reserved_credits != 0
+    {
+        crate::op_witness::record_witness(1);
+    }
     let row = txn
         .vertex(db, cvid)?
         .filter(|r| r.labels.contains(&label::LIMIT_CELL))

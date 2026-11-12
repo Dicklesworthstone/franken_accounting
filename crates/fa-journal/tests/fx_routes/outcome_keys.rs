@@ -363,7 +363,7 @@ fn a_prepared_reversal_cannot_take_a_newly_recorded_route_key() {
     assert_eq!(h.db.frontier().unwrap(), head);
     assert_eq!(h.db.vertices().unwrap(), vertices);
     assert!(
-        h.db.vertex(fa_model::reversal_vid(target.vid))
+        h.db.vertex(fa_journal::rows::reversal_vid(target.vid))
             .unwrap()
             .is_none()
     );
@@ -373,7 +373,7 @@ fn a_prepared_reversal_cannot_take_a_newly_recorded_route_key() {
 fn route_claims_and_original_results_survive_compressed_accounting_replay() {
     let mut h = Harness::new();
     let mut maintenance = WriteBatch::new(relation::IN_BOOK);
-    maintenance.create_vertex(VId(0xfeed_221), vec![label::REGISTER], Vec::new());
+    maintenance.create_vertex(VId(0x0fee_d221), vec![label::REGISTER], Vec::new());
     write(&mut h, maintenance);
     let request = h.request(&[("1200", "1290", "4000")], day(1, 1), b"replayed-fx-key");
     let recorded = h.set(&authority(), request.clone()).unwrap().unwrap();

@@ -444,7 +444,7 @@ pub fn admit<V: asupersync::fs::Vfs + Clone>(
                 "sod_policy.toml registers no IssuanceControl Issue rule; the record is refused, never unconstrained".into(),
             )
         })?;
-    if let Err(d) = fa_policy::admit(
+    if let Err(d) = fa_policy::admit_class(
         capability,
         &Intent {
             principal: capability.holder(),
@@ -453,6 +453,7 @@ pub fn admit<V: asupersync::fs::Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        fa_model::EntryClass::ISSUANCE_CONTROL,
     ) {
         return Ok(Err(denial(&d)));
     }

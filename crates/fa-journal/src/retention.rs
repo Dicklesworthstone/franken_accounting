@@ -575,7 +575,7 @@ pub async fn activate_retention_policy<V: asupersync::fs::Vfs + Clone>(
             "sod_policy.toml has no policy-activate rule".into(),
         ));
     };
-    if let Err(d) = fa_policy::admit(
+    if let Err(d) = fa_policy::admit_class(
         &req.capability,
         &Intent {
             principal: proposal.principal_ref,
@@ -584,6 +584,7 @@ pub async fn activate_retention_policy<V: asupersync::fs::Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        EntryClass::POLICY_CONTROL,
     ) {
         return Ok(Err(refusal(&d)));
     }

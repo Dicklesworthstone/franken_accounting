@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{ControlPayload, Entry, EntryClass, EntryOrigin, EntryRef, Id128, ScheduleTrigger};
+use fa_policy::sod::{ConservedRightsPool, RightViolation};
 use fgdb::{Database, WriteTxnError};
 use fgdb_delta_types::{DeltaRow, ElementId, RelationId};
 use fgdb_types::context::PurposeContexts;
@@ -291,12 +292,13 @@ fn verify<V: Vfs + Clone>(
                 }
             }
         }
-        receipts.push((debit, created));
+        receipts.push((vid, debit, created));
     }
-    receipts.sort_by_key(|(debit, _)| (debit.key, debit.generation));
+    receipts.sort_by_key(|(_, debit, _)| (debit.key, debit.generation));
     let mut expected = BTreeMap::<UsageKey, (UsageCell, CommitSeq)>::new();
+    let mut receipts_by_key = BTreeMap::<UsageKey, Vec<(VId, i128)>>::new();
     let mut source_units = BTreeSet::new();
-    for (debit, created) in receipts {
+    for (vid, debit, created) in receipts {
         checkpoint(cx)?;
         if !source_units.insert((debit.entry.vid, debit.key.unit)) {
             report.drift.push(format!(
@@ -318,6 +320,10 @@ fn verify<V: Vfs + Clone>(
                 debit.generation
             ));
         }
+        receipts_by_key
+            .entry(debit.key)
+            .or_default()
+            .push((vid, debit.gross_debits));
         expected.insert(
             debit.key,
             (
@@ -343,6 +349,37 @@ fn verify<V: Vfs + Clone>(
                 "usage cell {:032x} differs from the complete immutable gross-debit refold",
                 id.0
             )),
+        }
+        let root_vid = policy::issuance_vid(book.book_id, &key.root_issuance);
+        if let Some(root_row) = db.vertex_at(root_vid, known_at)?
+            && let Ok((root_cap, _)) =
+                issued_capability(&root_row, book.book_id, &key.root_issuance)
+            && let Some(&root_bound) = root_cap.daily_totals().get(&key.unit)
+        {
+            let pool_check: Result<(), RightViolation> = (|| {
+                let mut pool = ConservedRightsPool::new(key.root_issuance, key.unit, root_bound)?;
+                if let Some(charges) = receipts_by_key.get(&key) {
+                    for &(receipt_vid, amount) in charges {
+                        pool.spend_direct(Id128(receipt_vid.0.to_le_bytes()), amount)?;
+                    }
+                }
+                pool.check_invariant()?;
+                if pool.spent() != cell.gross_debits || pool.held() != 0 {
+                    return Err(RightViolation::ConservationBroken {
+                        held: pool.held(),
+                        available: pool.available(),
+                        spent: pool.spent(),
+                        total: pool.total(),
+                    });
+                }
+                Ok(())
+            })();
+            if let Err(violation) = pool_check {
+                report.drift.push(format!(
+                    "usage cell {:032x} conserved-rights violation: {violation:?}",
+                    id.0
+                ));
+            }
         }
     }
     for id in cells.keys() {

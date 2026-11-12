@@ -832,8 +832,8 @@ fn unbalanced_entry_is_refused_with_exit_3_and_nothing_written() {
 
 /// fa-hoi5: a balanced proposal that claims a schema minor this build does
 /// not know, carrying an extension no reader registered, is refused at
-/// admission (FA-REF-100, naming `schema_minor`) and writes nothing. At its
-/// own minor the same proposal is the ordinary unregistered-tag refusal.
+/// admission (FA-REF-208, exit 3, naming `schema_minor`) and writes nothing. At
+/// its own minor the same proposal is the ordinary unregistered-tag refusal.
 #[test]
 fn a_proposal_claiming_a_future_schema_minor_is_refused() {
     let mut h = harness();
@@ -842,7 +842,11 @@ fn a_proposal_claiming_a_future_schema_minor_is_refused() {
     proposal.schema_minor = fa_model::entry::SCHEMA_MINOR + 1;
     proposal.extensions = vec![(999, vec![1, 2, 3])];
     let r = h.post(h.request(proposal.clone(), &["post"])).unwrap_err();
-    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert_eq!((r.code, r.exit), ("FA-REF-208", exit::REFUSAL), "{r}");
+    assert_eq!(
+        r.fix,
+        "write the minor this build knows; register the extension first"
+    );
     assert!(r.message.contains("schema_minor"), "{}", r.message);
     assert_eq!(h.db.frontier().unwrap(), before);
     let vid = fa_model::entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"future-minor");
@@ -12377,4 +12381,46 @@ fn reclassification_partial_negation_balances() {
     let r = h.post(h.request(late, &["post"])).unwrap_err();
     assert_eq!(r.code, "FA-REF-185", "{r}");
     assert!(r.message.contains("reversed"), "{r}");
+
+    // Reclassifying a Reclassification whose base Original was later reversed is
+    // refused by unreversed-ancestry validation, while reversing the dangling
+    // Reclassification itself still succeeds.
+    let chain_orig = h
+        .post(h.request(
+            h.proposal(h.rent_legs(80), b"rent-chain", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .expect("chain original");
+    let (chain_orig_ref, _) = committed(&chain_orig).expect("committed");
+    let mut chain_rc1 = reclass(&h, 30, b"rc-chain-1", rent, receivable);
+    chain_rc1.supersession[0].target = chain_orig_ref;
+    let chain_rc1_out = h
+        .post(h.request(chain_rc1, &["post"]))
+        .expect("first reclass on chain original");
+    let (chain_rc1_ref, _) = committed(&chain_rc1_out).expect("committed");
+    h.post(h.request(
+        h.reversal_of(chain_orig_ref, 80, b"rev-chain-orig"),
+        &["post"],
+    ))
+    .expect("reverse chain original");
+    let mut chain_rc2 = reclass(&h, 10, b"rc-chain-2", receivable, rent);
+    chain_rc2.supersession[0].target = chain_rc1_ref;
+    let r_anc = h.post(h.request(chain_rc2, &["post"])).unwrap_err();
+    assert_eq!(r_anc.code, "FA-REF-185", "{r_anc}");
+    assert!(r_anc.message.contains("ancestor"), "{r_anc}");
+    let mut rev_dangling = h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, rent, Amount::new(h.usd, 30)),
+            LegPayload::simple(Side::Credit, receivable, Amount::new(h.usd, 30)),
+        ],
+        b"rev-dangling-rc1",
+        EntryClass::REVERSAL,
+    );
+    rev_dangling.supersession = vec![Supersession {
+        target: chain_rc1_ref,
+        kind: SupersessionKind::Reverses,
+        reason_code: 1,
+    }];
+    h.post(h.request(rev_dangling, &["post"]))
+        .expect("reversing the dangling reclassification itself remains admissible");
 }

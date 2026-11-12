@@ -684,7 +684,7 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
             "sod_policy.toml has no time-tick rule".into(),
         ));
     };
-    if let Err(d) = fa_policy::admit(
+    if let Err(d) = fa_policy::admit_class(
         &req.capability,
         &Intent {
             principal: req.principal_ref,
@@ -693,6 +693,7 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
             book: book.book_id,
             legs: &[],
         },
+        fa_model::EntryClass::TIME_CONTROL,
     ) {
         return Ok(Err(policy::refusal(&d)));
     }

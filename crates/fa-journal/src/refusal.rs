@@ -502,6 +502,9 @@ pub mod code {
     /// A preparer-chosen dimension value is outside its posting account's
     /// allowlist or is explicitly forbidden by that account's policy.
     pub const DIMENSION_FORBIDDEN: &str = "FA-REF-207";
+    /// A new proposal claims a `schema_minor` above `fa_model::entry::SCHEMA_MINOR`,
+    /// which would journal extension tags this writer never validated (fa-hoi5).
+    pub const FUTURE_SCHEMA_MINOR: &str = "FA-REF-208";
     /// A Canon rule source the checker refuses (a parse, unit, law, name or
     /// balance-proof failure), or an evaluation that cannot be computed
     /// exactly over the event it was given (plan §10.3).

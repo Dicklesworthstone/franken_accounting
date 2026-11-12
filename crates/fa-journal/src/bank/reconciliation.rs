@@ -1074,7 +1074,7 @@ pub fn prepare_bank_reconciliation_with_outstanding<V: Vfs + Clone>(
         claim: AttestationClaim::Reconciled(Box::new(claim.clone())),
     };
     let binding = CapabilityBinding {
-        profile: capability.profile(),
+        profile: capability.sod_profile(),
         capability_commitment: capability
             .commitment()
             .map_err(|error| KernelError::Corrupt(format!("reconciliation capability: {error}")))?,

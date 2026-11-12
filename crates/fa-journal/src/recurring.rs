@@ -343,7 +343,7 @@ fn checked_spec(spec: &RecurringSpec, capability: &Capability) -> Result<(), Ref
             "a schedule name is 1..=128 bytes without surrounding whitespace or control characters",
         ));
     }
-    if capability.profile() != Profile::Human
+    if capability.sod_profile() != Profile::Human
         || p.principal_ref != capability.holder()
         || p.branch_id != Id128::TRUNK
         || p.class != EntryClass::ORIGINAL

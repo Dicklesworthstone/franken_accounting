@@ -1335,14 +1335,42 @@ pub(crate) fn authorize_effects_in_branch<V: asupersync::fs::Vfs + Clone>(
     Ok(Ok(scope))
 }
 
-/// Reject malformed or foreign intents before admission observes policy or
-/// hydrates history, including through the asynchronous compound entrypoints.
-fn validate_post_coordinate(book: &BookContext, proposal: &EntryPayload) -> Result<(), Refusal> {
-    proposal.validate_for_write().map_err(|error| {
+pub(crate) fn proposal_write_refusal(
+    error: fa_model::EntryError,
+    structure_cite: &'static str,
+    structure_fix: &'static str,
+) -> Refusal {
+    if matches!(
+        error,
+        fa_model::EntryError::Invalid {
+            what: "schema_minor",
+            ..
+        }
+    ) {
+        Refusal::new(
+            code::FUTURE_SCHEMA_MINOR,
+            exit::REFUSAL,
+            error.to_string(),
+            "Appendix A fa:entry:v1 additive-minor law (fa-hoi5: only entries written at schema minors this build knows may be sealed)",
+            "write the minor this build knows; register the extension first",
+        )
+    } else {
         Refusal::new(
             code::STRUCTURE,
             exit::USAGE,
             error.to_string(),
+            structure_cite,
+            structure_fix,
+        )
+    }
+}
+
+/// Reject malformed or foreign intents before admission observes policy or
+/// hydrates history, including through the asynchronous compound entrypoints.
+fn validate_post_coordinate(book: &BookContext, proposal: &EntryPayload) -> Result<(), Refusal> {
+    proposal.validate_for_write().map_err(|error| {
+        proposal_write_refusal(
+            error,
             "Appendix A fa:entry:v1",
             "fix the named field and resubmit",
         )
@@ -3383,6 +3411,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     //    `check_history` verified at its Open, so a chunk never reaches a
     //    live period.)
     let pvid = period_vid(&book.calendar.id, &period.code);
+    crate::op_witness::record_point_read(1);
+    crate::op_witness::record_witness(1);
     let state_scalar = txn.vertex_property(db, pvid, property::STATE)?;
     let state = state_from_scalar(state_scalar.as_ref())
         .ok_or_else(|| KernelError::Corrupt(format!("period `{}` state mirror", period.code)))?;
@@ -3889,7 +3919,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         proposal.class,
         proposal.effective_date,
         &proposal.legs,
-        |vid| Ok(txn.vertex(db, vid)?),
+        |vid| {
+            crate::op_witness::record_point_read(1);
+            Ok(txn.vertex(db, vid)?)
+        },
     )? {
         Ok(accounts) => accounts,
         Err(refusal) => {
@@ -4643,6 +4676,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     let mut hold: Option<EntryPayload> = None;
     let mut hold_seq: Option<CommitSeq> = None;
     if let Some((target, disposition)) = &resolution {
+        crate::op_witness::record_point_read(1);
+        crate::op_witness::record_witness(1);
         let Some(row) = txn.vertex(db, target.vid)? else {
             txn.abort();
             return Ok(Err(no_resolution_target(target.vid)));
@@ -5854,6 +5889,58 @@ fn entry_stands<V: asupersync::fs::Vfs + Clone>(
     Ok(stands)
 }
 
+/// Walk `target_vid`'s additive/partial supersession ancestors (`Reclassifies`,
+/// `Revises`, `Restates`) inside `txn` and verify via `fa_palimpsest` that
+/// neither `target_vid` nor any ancestor in that chain stands reversed.
+fn unreversed_ancestry_stands<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    target_vid: VId,
+) -> Result<Result<(), VId>, KernelError> {
+    let mut nodes = BTreeMap::new();
+    let mut reversed_targets = BTreeSet::new();
+    let mut cursor = Some(target_vid);
+    let mut seen = BTreeSet::new();
+    while let Some(vid) = cursor {
+        if !seen.insert(vid) {
+            return Err(KernelError::Corrupt(format!(
+                "the supersession lineage of {:032x} cycles",
+                vid.0
+            )));
+        }
+        let Some(row) = txn.vertex(db, vid)? else {
+            break;
+        };
+        let (entry, _) = checked_entry_staged(txn, db, &row)?;
+        if !entry_stands(txn, db, vid, &mut BTreeSet::new())? {
+            reversed_targets.insert(vid);
+        }
+        let parent = entry.proposal.supersession.iter().find_map(|s| {
+            matches!(
+                s.kind,
+                SupersessionKind::Reclassifies
+                    | SupersessionKind::Revises
+                    | SupersessionKind::Restates
+            )
+            .then_some(s.target.vid)
+        });
+        nodes.insert(
+            vid,
+            fa_palimpsest::SupersessionNode {
+                vid,
+                class: entry.proposal.class,
+                supersedes: parent,
+            },
+        );
+        cursor = parent;
+    }
+    Ok(fa_palimpsest::validate_unreversed_ancestry(
+        &nodes,
+        &reversed_targets,
+        target_vid,
+    ))
+}
+
 /// A Reclassification of `target` (plan §8.2) against what its earlier live
 /// reclassifications left, every read through `txn`.
 fn reclassification_admissible<V: asupersync::fs::Vfs + Clone>(
@@ -5884,11 +5971,19 @@ fn reclassification_admissible<V: asupersync::fs::Vfs + Clone>(
             target.vid.0
         ))));
     }
-    if !entry_stands(txn, db, target.vid, &mut BTreeSet::new())? {
-        return Ok(Err(reclassification_shape(format!(
-            "the Reclassification's target {:032x} is reversed: a reversed entry leaves nothing to reclassify",
-            target.vid.0
-        ))));
+    if let Err(reversed_vid) = unreversed_ancestry_stands(txn, db, target.vid)? {
+        let detail = if reversed_vid == target.vid {
+            format!(
+                "the Reclassification's target {:032x} is reversed: a reversed entry leaves nothing to reclassify",
+                target.vid.0
+            )
+        } else {
+            format!(
+                "the Reclassification's target {:032x} has reversed supersession ancestor {:032x}: an adjustment whose base entry was reversed leaves nothing to reclassify",
+                target.vid.0, reversed_vid.0
+            )
+        };
+        return Ok(Err(reclassification_shape(detail)));
     }
     let mut prior = Vec::new();
     for evid in txn.in_neighbours(db, target.vid, relation::SUPERSEDES)? {
@@ -6014,11 +6109,18 @@ fn revision_admissible<V: asupersync::fs::Vfs + Clone>(
         ))
         .at("target", at)));
     }
-    if !entry_stands(txn, db, target.vid, &mut BTreeSet::new())? {
-        return Ok(Err(shape(format!(
-            "the {class}'s target {at} is reversed: a reversed entry has nothing left to correct"
-        ))
-        .at("target", at)));
+    if let Err(reversed_vid) = unreversed_ancestry_stands(txn, db, target.vid)? {
+        let detail = if reversed_vid == target.vid {
+            format!(
+                "the {class}'s target {at} is reversed: a reversed entry has nothing left to correct"
+            )
+        } else {
+            format!(
+                "the {class}'s target {at} has reversed supersession ancestor {:032x}: an adjustment whose base entry was reversed has nothing left to correct",
+                reversed_vid.0
+            )
+        };
+        return Ok(Err(shape(detail).at("target", at)));
     }
     Ok(Ok(()))
 }
@@ -6099,10 +6201,8 @@ pub(crate) fn prepare_replacement_pair_admitted<V: asupersync::fs::Vfs + Clone>(
     // other request would otherwise disclose a more specific refusal.
     for request in [&reversal_req, &replacement_req] {
         if let Err(error) = request.proposal.validate_for_write() {
-            return Ok(Err(Refusal::new(
-                code::STRUCTURE,
-                exit::USAGE,
-                error.to_string(),
+            return Ok(Err(proposal_write_refusal(
+                error,
                 "Appendix A fa:entry:v1",
                 "fix the named field and resubmit",
             )));
@@ -6213,7 +6313,9 @@ pub fn explain_entry_lineage<V: asupersync::fs::Vfs + Clone>(
         None => db.frontier()?,
     };
     let mut entries = Vec::new();
-    for row in db.vertices_at(seq)? {
+    let all_rows = db.vertices_at(seq)?;
+    crate::op_witness::record_vertex_scan(all_rows.len());
+    for row in all_rows {
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }
