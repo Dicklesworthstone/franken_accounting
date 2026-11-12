@@ -528,7 +528,9 @@ pub fn regulatory_edits_of(
     statement: &Statement,
     only: &[String],
 ) -> Result<RegulatoryEdits, Refusal> {
-    use fa_statements::regulatory::{EditSource, edits_for_schedule, evaluate_regulatory_edits};
+    use fa_statements::regulatory::{
+        EditSource, edits_for_schedule, evaluate_regulatory_edits, regulatory_edits,
+    };
     let set = edits_for_schedule(schedule).map_err(|error| schedule_refusal(error.to_string()))?;
     let quarter = set
         .form_at_quarter
@@ -539,11 +541,16 @@ pub fn regulatory_edits_of(
         schedule.form.as_str(),
         schedule.schedule_code
     );
+    let schedule_edits =
+        regulatory_edits(&selector).map_err(|error| schedule_refusal(error.to_string()))?;
     if let Some(unknown) = only
         .iter()
-        .find(|id| !set.edits.iter().any(|edit| edit.edit_id == **id))
+        .find(|id| !schedule_edits.iter().any(|edit| edit.edit_id == **id))
     {
-        let registered: Vec<&str> = set.edits.iter().map(|edit| edit.edit_id.as_str()).collect();
+        let registered: Vec<&str> = schedule_edits
+            .iter()
+            .map(|edit| edit.edit_id.as_str())
+            .collect();
         return Err(Refusal::new(
             STATEMENT_INVALID,
             exit::REFUSAL,
@@ -555,11 +562,9 @@ pub fn regulatory_edits_of(
             ),
         ));
     }
-    let edits: Vec<_> = set
-        .edits
-        .iter()
+    let edits: Vec<_> = schedule_edits
+        .into_iter()
         .filter(|edit| only.is_empty() || only.contains(&edit.edit_id))
-        .cloned()
         .collect();
     let report = evaluate_regulatory_edits(statement, &selector, &edits)
         .map_err(|error| invalid(error.to_string()))?;

@@ -43,12 +43,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(refusal) = self.authorize_bank(cx, capability)? {
             return Ok(Err(refusal));
         }
-        if capability.profile() != Profile::Human {
+        let profile = capability.sod_profile();
+        if profile != Profile::Human {
             return Ok(Err(fa_journal::policy::refusal(
                 &fa_policy::Denial::ApproverProfile {
                     rule: "bank_statement_reconciler".into(),
                     approver: capability.holder(),
-                    profile: capability.profile(),
+                    profile,
                     allowed: vec!["Human".into()],
                 },
             )));
@@ -66,6 +67,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(verified) => verified,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        if let Err(err) = check_reconciled_through_lock(
+            Some(verified.manifest.statement_date),
+            verified.manifest.statement_date,
+            verified.manifest.book_id,
+            capability.holder(),
+            capability,
+        ) {
+            return Ok(Err(Refusal::new(
+                code::CAPABILITY,
+                exit::SAFETY,
+                err.to_string(),
+                "plan §15.9 (reconciled_through soft-lock requires Reconcile authority)",
+                "present a capability holding Op::Reconcile for this book",
+            )));
+        }
         let predecessors = match self
             .verify_bank_predecessors(cx, capability, &verified, seq)
             .await?

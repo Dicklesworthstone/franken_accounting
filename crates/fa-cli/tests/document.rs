@@ -1507,3 +1507,346 @@ fn a_receivership_fork_holds_the_pre_appointment_trunk_and_opens_the_estate_bran
     );
     Ok(())
 }
+
+/// Retention floor policies as two-person PolicyControl objects honoring legal holds
+/// and bounding checkpoint cadences (plan §8.5; beads fa-v6di, fa-9xf9).
+#[test]
+fn retention_policy_dual_control_cut_cadence_and_verify_end_to_end() -> std::io::Result<()> {
+    let dir = tmp("retention")?;
+    let book = dir.join("book");
+    ok(
+        &book,
+        &["book", "create", "--name", "Retention Co", "--json"],
+    );
+    let authority_file = write(
+        &dir,
+        "retention_schedule.txt",
+        b"CORPORATE RECORD RETENTION SCHEDULE v1: 365-day minimum retention floor",
+    );
+    let out = ok(
+        &book,
+        &[
+            "document",
+            "add",
+            &authority_file,
+            "--kind",
+            "Contract",
+            "--grade",
+            "HumanUpload",
+            "--json",
+        ],
+    );
+    let authority = field(&out, "oid").expect("authority oid").to_string();
+
+    let invoice_file = write(&dir, "inv_ret.txt", b"INVOICE 9001: Cloud hosting 500 USD");
+    let out = ok(
+        &book,
+        &[
+            "document",
+            "add",
+            &invoice_file,
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+            "--json",
+        ],
+    );
+    let invoice = field(&out, "oid").expect("invoice oid").to_string();
+
+    // 1. Dry-run retention activation plan under rule_change.
+    let plan_path = dir.join("retention.plan").display().to_string();
+    let planned = ok(
+        &book,
+        &[
+            "document",
+            "retention",
+            "activate",
+            "--authority",
+            &authority,
+            "--scope",
+            "book",
+            "--floor-days",
+            "365",
+            "--from",
+            "2026-01-01",
+            "--dry-run",
+            "--plan-out",
+            &plan_path,
+            "--grant",
+            "rule_change",
+            "--as",
+            "operator",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        field(&planned, "event"),
+        Some("retention_policy_planned"),
+        "{planned}"
+    );
+    let policy_oid = field(&planned, "policy_oid")
+        .expect("policy_oid")
+        .to_string();
+    let proposal_digest = field(&planned, "proposal_digest")
+        .expect("proposal_digest")
+        .to_string();
+
+    // 2. Planted negative: single approval is refused by policy-activate dual control.
+    let app1_out = ok(
+        &book,
+        &[
+            "approve",
+            "--proposal",
+            &proposal_digest,
+            "--as",
+            "controller",
+            "--json",
+        ],
+    );
+    let app1 = field(&app1_out, "approval_vid")
+        .expect("approval_vid 1")
+        .to_string();
+    let (single_code, single_out, _) = fa(
+        &book,
+        &[
+            "document",
+            "retention",
+            "activate",
+            "--plan",
+            &plan_path,
+            "--approval",
+            &app1,
+            "--grant",
+            "rule_change",
+            "--as",
+            "operator",
+            "--json",
+        ],
+    );
+    assert_ne!(
+        single_code, 0,
+        "single approval must be refused: {single_out}"
+    );
+
+    // 3. Second independent Human approval activates the retention policy.
+    let app2_out = ok(
+        &book,
+        &[
+            "approve",
+            "--proposal",
+            &proposal_digest,
+            "--as",
+            "auditor",
+            "--json",
+        ],
+    );
+    let app2 = field(&app2_out, "approval_vid")
+        .expect("approval_vid 2")
+        .to_string();
+    let activated = ok(
+        &book,
+        &[
+            "document",
+            "retention",
+            "activate",
+            "--plan",
+            &plan_path,
+            "--approval",
+            &app1,
+            "--approval",
+            &app2,
+            "--grant",
+            "rule_change",
+            "--as",
+            "operator",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        field(&activated, "event"),
+        Some("retention_policy_activated"),
+        "{activated}"
+    );
+    assert_eq!(
+        field(&activated, "policy_oid"),
+        Some(policy_oid.as_str()),
+        "{activated}"
+    );
+    assert_eq!(
+        field(&activated, "already_recorded"),
+        Some("false"),
+        "{activated}"
+    );
+
+    // Idempotent replay returns already_recorded = true.
+    let replay = ok(
+        &book,
+        &[
+            "document",
+            "retention",
+            "activate",
+            "--plan",
+            &plan_path,
+            "--approval",
+            &app1,
+            "--approval",
+            &app2,
+            "--grant",
+            "rule_change",
+            "--as",
+            "operator",
+            "--json",
+        ],
+    );
+    assert_eq!(field(&replay, "already_recorded"), Some("true"), "{replay}");
+
+    // 4. List + verify retention + verify book.
+    let listed = ok(&book, &["document", "retention", "list", "--json"]);
+    assert_eq!(
+        field(&listed, "event"),
+        Some("retention_policies"),
+        "{listed}"
+    );
+    assert_eq!(field(&listed, "count"), Some("1"), "{listed}");
+    assert!(listed.contains(&policy_oid), "{listed}");
+
+    let verified = ok(&book, &["verify", "retention", "--json"]);
+    assert_eq!(
+        field(&verified, "event"),
+        Some("retention_verified"),
+        "{verified}"
+    );
+    assert_eq!(
+        field(&verified, "policies_checked"),
+        Some("1"),
+        "{verified}"
+    );
+    let whole_book = ok(&book, &["verify", "book", "--json"]);
+    assert_eq!(field(&whole_book, "status"), Some("ok"), "{whole_book}");
+
+    // 5. Checkpoint cadence check: 30 days <= 365 days passes; 400 days > 365 days refuses FA-REF-200.
+    let cad_ok = ok(
+        &book,
+        &[
+            "document",
+            "retention",
+            "cadence",
+            "--cadence-commits",
+            "50",
+            "--cadence-days",
+            "30",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        field(&cad_ok, "event"),
+        Some("retention_cadence_checked"),
+        "{cad_ok}"
+    );
+    refused(
+        &book,
+        &[
+            "document",
+            "retention",
+            "cadence",
+            "--cadence-commits",
+            "50",
+            "--cadence-days",
+            "400",
+            "--json",
+        ],
+        "FA-REF-200",
+        3,
+    );
+
+    // 6. Retention cut inside floor refuses FA-REF-199; outside floor succeeds; legal hold overrides with FA-REF-117.
+    let floor_refused = refused(
+        &book,
+        &[
+            "document",
+            "retention",
+            "cut",
+            &invoice,
+            "--seq",
+            "999999",
+            "--day",
+            "2026-06-01",
+            "--grant",
+            "erase",
+            "--json",
+        ],
+        "FA-REF-199",
+        7,
+    );
+    assert!(floor_refused.contains(&policy_oid), "{floor_refused}");
+
+    // Erasure check without corroborated tick past floor also hits FA-REF-199 before FA-REF-088.
+    refused(
+        &book,
+        &["document", "erase", &invoice, "--grant", "erase", "--json"],
+        "FA-REF-199",
+        7,
+    );
+
+    let cut_ok = ok(
+        &book,
+        &[
+            "document",
+            "retention",
+            "cut",
+            &invoice,
+            "--seq",
+            "999999",
+            "--day",
+            "2028-01-02",
+            "--grant",
+            "erase",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        field(&cut_ok, "event"),
+        Some("retention_cut_evaluated"),
+        "{cut_ok}"
+    );
+    assert_eq!(field(&cut_ok, "admissible"), Some("true"), "{cut_ok}");
+
+    let hold_out = ok(
+        &book,
+        &[
+            "document",
+            "hold",
+            "place",
+            "--authority",
+            &authority,
+            "--subject",
+            &invoice,
+            "--json",
+        ],
+    );
+    let hold_vid = field(&hold_out, "hold_vid").expect("hold_vid").to_string();
+    let hold_refused = refused(
+        &book,
+        &[
+            "document",
+            "retention",
+            "cut",
+            &invoice,
+            "--seq",
+            "999999",
+            "--day",
+            "2028-01-02",
+            "--grant",
+            "erase",
+            "--json",
+        ],
+        "FA-REF-117",
+        7,
+    );
+    assert!(
+        hold_refused.contains(&hold_vid) && hold_refused.contains(&policy_oid),
+        "legal hold refusal must cite both active hold and active retention policy: {hold_refused}"
+    );
+    Ok(())
+}

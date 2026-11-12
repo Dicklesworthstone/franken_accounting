@@ -718,7 +718,7 @@ fn check_run(run: &ProcedureRun) -> Result<(), Refusal> {
             ));
         }
         // Check aggregate size before encoding all findings into a single buffer.
-        let bytes = finding.canonical_bytes().map_err(encode_error)?;
+        let bytes = fa_lantern::finding_bytes(finding).map_err(lantern_error)?;
         finding_bytes = finding_bytes
             .checked_add(bytes.len())
             .ok_or_else(|| invalid("finding size overflow"))?;

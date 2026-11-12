@@ -20,7 +20,9 @@ use fa_model::{AccountType, EntryClass, IntakeSource, Oid, domain_digest};
 use fa_money::{Side, UnitId};
 use fa_policy::{Capability, Op, Profile, Reach};
 use fa_registers::reconciliation::{
-    BankStatementLine, BookCandidateEntry, MatcherConfig, ReconciliationMatch, match_bank_lines,
+    BankStatementLine, BookCandidateEntry, MatcherConfig, ReconciliationMatch,
+    check_reconciled_through_lock, fold_reconciliation_register, match_bank_lines,
+    verify_reconciliation_register,
 };
 use fa_registry::evidence_policy::EvidencePolicy;
 use fa_time::DateDay;
@@ -42,6 +44,7 @@ pub use fa_journal::bank::{
     BankOutstandingItem, BankOutstandingLeg, BankReconciliationRecorded, BankReconciliationState,
     BankReconciliationStatus, BankUnmatchRecorded, BankUnmatchRequest,
 };
+pub use fa_registers::reconciliation::{ReconciliationRegister, UnpostedResidualFinding};
 pub use reconciliation::BankReconciliationRequest;
 
 const PARSER_REVISION: u16 = 1;
@@ -159,6 +162,7 @@ pub struct BankMatchReport {
     /// account remapping. Keys are original statement identities and ordinals.
     pub occupied_bank_lines: Vec<(Oid, u32)>,
     pub proposals: Vec<ReconciliationMatch>,
+    pub unposted_residuals: Vec<UnpostedResidualFinding>,
     pub book_closing_balance: i128,
     /// Statement closing less posted book closing, in the bound unit.
     pub closing_difference: i128,
@@ -1275,10 +1279,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .filter(|line| !occupied_bank_lines.contains(&(line.statement_oid, line.line_ordinal)))
             .cloned()
             .collect();
-        let mut available_proposals =
+        let available_proposal_list =
             match_bank_lines(&available_lines, &native, &config, proposer)
-                .map_err(|e| corrupt(e.to_string()))?
-                .into_iter();
+                .map_err(|e| corrupt(e.to_string()))?;
+        let mut available_proposals = available_proposal_list.iter().cloned();
         let mut proposals = Vec::with_capacity(lines.len());
         for line in &lines {
             let proposal = if occupied_bank_lines.contains(&(line.statement_oid, line.line_ordinal))
@@ -1333,12 +1337,66 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                             .map_err(|_| corrupt("invalid candidate ordinal"))?,
                     )
                     .ok_or_else(|| corrupt("missing selected candidate"))?;
+                fa_policy::bank_matching::verify_match_preserves_committed_amounts(
+                    &candidate.candidate,
+                    candidate.candidate.amount,
+                    &proposal.decision_card,
+                )
+                .map_err(|e| corrupt(e.to_string()))?;
                 selected.insert(candidate.candidate.entry_ref, candidate.candidate.clone());
             }
             proposal
                 .validate(decision_epoch, &bank_by_id, &selected)
                 .map_err(|e| corrupt(e.to_string()))?;
         }
+        let unique_entry_refs = native
+            .iter()
+            .map(|c| c.entry_ref)
+            .collect::<BTreeSet<_>>()
+            .len()
+            == native.len();
+        let unposted_residuals = if unique_entry_refs {
+            let register: ReconciliationRegister = fold_reconciliation_register(
+                manifest.account,
+                format!("statement-{}", manifest.sequence_number),
+                unit,
+                fa_money::Amount::new(unit, manifest.opening_balance),
+                fa_money::Amount::new(unit, book_closing_balance),
+                fa_money::Amount::new(unit, manifest.opening_balance),
+                fa_money::Amount::new(unit, manifest.closing_balance),
+                &available_lines,
+                &native,
+                &available_proposal_list,
+                decision_epoch,
+                seq,
+            )
+            .map_err(|e| corrupt(e.to_string()))?;
+            if register.is_reconciled && register.unposted_residuals.is_empty() {
+                verify_reconciliation_register(
+                    &register,
+                    &available_lines,
+                    &native,
+                    &available_proposal_list,
+                    decision_epoch,
+                )
+                .map_err(|e| corrupt(e.to_string()))?;
+            }
+            register.unposted_residuals
+        } else {
+            let mut residuals = Vec::new();
+            for (line, proposal) in available_lines.iter().zip(&available_proposal_list) {
+                if proposal.book_entry_refs.is_empty() {
+                    residuals.push(UnpostedResidualFinding {
+                        bank_line_id: line.oid().map_err(|e| corrupt(e.to_string()))?,
+                        booking_date: line.booking_date,
+                        signed_cash_delta: line.signed_cash_delta(),
+                        counterparty: line.counterparty.clone(),
+                        reference: line.reference.clone(),
+                    });
+                }
+            }
+            residuals
+        };
         let closing_difference = manifest
             .closing_balance
             .checked_sub(book_closing_balance)
@@ -1369,6 +1427,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             consumed_cash_legs: consumed_cash_legs.into_iter().collect(),
             occupied_bank_lines: occupied_bank_lines.into_iter().collect(),
             proposals,
+            unposted_residuals,
             book_closing_balance,
             closing_difference,
             progress,

@@ -124,6 +124,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("search", search_cmd),
     ("diff", crate::diff::diff_cmd),
     ("consolidate", crate::consolidate::consolidate_cmd),
+    ("recon", crate::consolidate::recon_cmd),
     ("query", crate::query::query_cmd),
     ("rule", crate::rule::rule_cmd),
     ("procedure", procedure_cmd),
@@ -2409,6 +2410,7 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
             | "replace"
     ) || (verb == "close" && args.positional.get(1).map(String::as_str) == Some("year-end"))
         || (verb == "fx" && args.positional.get(1).map(String::as_str) == Some("revalue"))
+        || (verb == "recon" && args.positional.get(1).map(String::as_str) == Some("post"))
         || (verb == "rule"
             && args.positional.get(1).map(String::as_str) == Some("derive")
             && args.flag_all("--rule").len() <= 1
@@ -2515,8 +2517,25 @@ fn bound_scope_refusal(
     class: Option<EntryClass>,
     command: &str,
 ) -> Result<(), Refusal> {
-    if judged || ops.is_empty() {
+    if ops.is_empty() {
         return Ok(());
+    }
+    if judged {
+        // Confined `branch = Draft(id)` readers inspect only their own draft
+        // container; unbranched scoped tokens still reach the whole book on
+        // `draft list` and `draft show` and are refused before opening the book.
+        let unbranched_draft_read = matches!(command, "draft list" | "draft show")
+            && (capability.branch().is_none()
+                || capability.branch() == Some(fa_model::Id128::TRUNK)
+                || capability.known_at_pin().is_some());
+        let invalid_draft_promote = command == "draft promote"
+            && (capability
+                .branch()
+                .is_some_and(|b| b != fa_model::Id128::TRUNK)
+                || capability.known_at_pin().is_some());
+        if !unbranched_draft_read && !invalid_draft_promote {
+            return Ok(());
+        }
     }
     let reach = fa_policy::Reach::whole_book(true);
     let admission = match class {
@@ -2554,13 +2573,44 @@ fn bound_scope_refusal(
 
 /// These handlers always construct their registered control payload. Naming its class
 /// narrows no other coordinate: the front door still judges whole-book reach
-/// before the handler reads the period to derive its default key.
+/// before the handler reads the book to derive defaults or validate state.
 fn bound_payload_class(verb: &str, args: &Args) -> Option<EntryClass> {
-    match (verb, args.positional.get(1).map(String::as_str)) {
+    let sub = args.positional.get(1).map(String::as_str);
+    let sub2 = args.positional.get(2).map(String::as_str);
+    match (verb, sub) {
         ("period", Some("open" | "soft-close" | "close" | "lock" | "reopen")) => {
             Some(EntryClass::PERIOD_CONTROL)
         }
-        ("cash-policy", Some("define" | "activate")) => Some(EntryClass::POLICY_CONTROL),
+        ("period", Some("add")) => Some(EntryClass::SCHEMA_CONTROL),
+        ("chart", Some("import" | "open" | "close" | "promote" | "role")) => {
+            Some(EntryClass::SCHEMA_CONTROL)
+        }
+        ("chart", Some("lot-policy")) if sub2 == Some("set") => Some(EntryClass::SCHEMA_CONTROL),
+        ("cash-policy", Some("define" | "activate"))
+        | ("rule", Some("define" | "activate"))
+        | ("statement", Some("define" | "activate"))
+        | ("capability", Some("issue" | "revoke"))
+        | ("close", Some("map")) => Some(EntryClass::POLICY_CONTROL),
+        ("document", Some("retention")) if sub2 == Some("activate") => {
+            Some(EntryClass::POLICY_CONTROL)
+        }
+        ("principal", Some("key")) if sub2 == Some("add") => Some(EntryClass::POLICY_CONTROL),
+        ("statement", Some("issue")) => Some(EntryClass::ISSUANCE_CONTROL),
+        ("hold", Some("place" | "release")) => Some(EntryClass::HOLD_CONTROL),
+        (
+            "case",
+            Some("open" | "determine" | "rehearse" | "approve" | "post" | "disclose" | "close"),
+        ) => Some(EntryClass::CASE_CONTROL),
+        ("schedule", Some("cancel")) => Some(EntryClass::SCHEDULE_CONTROL),
+        ("schedule", Some("recurring")) if matches!(sub2, Some("create" | "cancel")) => {
+            Some(EntryClass::SCHEDULE_CONTROL)
+        }
+        ("schedule", Some("asset")) if sub2 == Some("create") => Some(EntryClass::SCHEMA_CONTROL),
+        ("scenario", Some("open" | "discard")) => Some(EntryClass::SCENARIO_CONTROL),
+        ("engagement", Some("open" | "file" | "complete" | "carry-forward")) => {
+            Some(EntryClass::ENGAGEMENT_CONTROL)
+        }
+        ("close", Some("start" | "step" | "run")) => Some(EntryClass::CLOSE_CONTROL),
         _ => None,
     }
 }
@@ -6021,8 +6071,23 @@ pub(crate) fn admit_whole_book_read(
     ops: &[fa_policy::Op],
     purpose: &str,
 ) -> Result<(), Fail> {
+    admit_whole_book_read_class(book, capability, ops, purpose, None)
+}
+
+pub(crate) fn admit_whole_book_read_class(
+    book: &Book,
+    capability: &Capability,
+    ops: &[fa_policy::Op],
+    purpose: &str,
+    class: Option<EntryClass>,
+) -> Result<(), Fail> {
     fa_policy::admit_read(capability, capability.holder(), book.context().book_id)
-        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .and_then(|()| match class {
+            Some(class) => {
+                fa_policy::reach_class(capability, &fa_policy::Reach::whole_book(true), None, class)
+            }
+            None => fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None),
+        })
         .and_then(|()| {
             for op in ops {
                 fa_policy::require(capability, *op, purpose)?;
@@ -6042,11 +6107,12 @@ fn capability_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let revoked_commitment = parse_digest(commitment_text, "--commitment")?;
             let capability = ctx.capability(args, &["read"])?;
             let mut book = ctx.books.open_admitted(args, |book| {
-                admit_whole_book_read(
+                admit_whole_book_read_class(
                     book,
                     &capability,
                     &[fa_policy::Op::IssueCapability],
                     "revoking a capability",
+                    Some(EntryClass::POLICY_CONTROL),
                 )
             })?;
             let default_date = book
@@ -6402,11 +6468,12 @@ fn capability_issue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mut opening = args.clone();
     opening.flags.remove("--branch");
     let mut book = ctx.books.open_admitted(&opening, |book| {
-        admit_whole_book_read(
+        admit_whole_book_read_class(
             book,
             &issuer,
             &[fa_policy::Op::IssueCapability],
             "issuing a capability",
+            Some(EntryClass::POLICY_CONTROL),
         )
     })?;
     // The token is written only after the issuance commits; refuse an
@@ -6725,20 +6792,12 @@ pub(crate) fn draft_intent_json(book: &Book, planned: &fa_journal::PlannedIntent
 /// Admit the named logical branch before a lifecycle command discloses the
 /// book coordinate. The native lifecycle still checks ownership and state.
 fn admit_named_draft_write(book: &Book, capability: &Capability, name: &str) -> Result<(), Fail> {
-    fa_policy::admit_within(
+    fa_policy::admit_draft_container(
         capability,
-        &fa_policy::Intent {
-            principal: capability.holder(),
-            trunk: false,
-            op: fa_policy::Op::Post,
-            book: book.context().book_id,
-            legs: &[],
-        },
-        &fa_policy::Reach {
-            branch: Some(fa_model::draft_branch(book.context().book_id, name)),
-            ..fa_policy::Reach::whole_book(false)
-        },
-        None,
+        capability.holder(),
+        fa_policy::Op::Post,
+        book.context().book_id,
+        fa_model::draft_branch(book.context().book_id, name),
     )
     .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     book.admit_current(capability)??;
@@ -6785,9 +6844,21 @@ fn draft_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             plan_document_into_draft(ctx, args, &name, None, &doc)
         }
         Some("list") => {
-            let book = ctx.books.open(args)?;
-            let drafts = book.drafts()?;
-            ctx.out.at_book(&book)?;
+            let drafts = if ctx.authority.is_some() || args.flag("--token").is_some() {
+                let capability = ctx.capability(args, &["read"])?;
+                let mut result = Vec::new();
+                let book = ctx.books.open_admitted(args, |book| {
+                    result = book.drafts_admitted(&capability)??;
+                    Ok(())
+                })?;
+                ctx.out.at_book(&book)?;
+                result
+            } else {
+                let book = ctx.books.open(args)?;
+                let drafts = book.drafts()?;
+                ctx.out.at_book(&book)?;
+                drafts
+            };
             let human = if drafts.is_empty() {
                 "no drafts in this book".to_string()
             } else {
@@ -6814,9 +6885,23 @@ fn draft_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         Some("show") => {
             let name = draft_name(args, "show")?.to_string();
-            let book = ctx.books.open(args)?;
-            let Some(view) = book.draft(&name)? else {
-                return Err(draft_unknown(&name));
+            let (book, view) = if ctx.authority.is_some() || args.flag("--token").is_some() {
+                let capability = ctx.capability(args, &["read"])?;
+                let mut found = None;
+                let book = ctx.books.open_admitted(args, |book| {
+                    found = book.draft_admitted(&capability, &name)??;
+                    Ok(())
+                })?;
+                let Some(view) = found else {
+                    return Err(draft_unknown(&name));
+                };
+                (book, view)
+            } else {
+                let book = ctx.books.open(args)?;
+                let Some(view) = book.draft(&name)? else {
+                    return Err(draft_unknown(&name));
+                };
+                (book, view)
             };
             ctx.out.at_book(&book)?;
             let intents: Vec<Json> = view
@@ -6854,7 +6939,10 @@ fn draft_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("promote") => {
             let name = draft_name(args, "promote")?.to_string();
             let capability = ctx.capability(args, &["approve"])?;
-            let mut book = ctx.books.open(args)?;
+            let mut book = ctx.books.open_admitted(args, |book| {
+                book.admit_draft_promote(&capability, &name)??;
+                Ok(())
+            })?;
             let date = control_date(args, &book)?;
             let default_desc = format!("promote draft {name}");
             let description = args.flag("--description").unwrap_or(&default_desc);
@@ -8221,6 +8309,21 @@ struct BuiltPost {
     class_name: String,
     typed_reversal: bool,
     reversal_detail: Option<(String, Reason)>,
+}
+
+/// Build an adjustment-layer `PostRequest` (`Original` or `Adjusting`) with
+/// the ordinary entry parser so `fa recon post` can attach its sealed
+/// Schedule M-1/M-3 / statutory reason-code tag before planning or posting.
+pub(crate) fn build_recon_post_request(
+    out: &Out,
+    book: &mut Book,
+    args: &Args,
+    doc: &Json,
+    principal: VId,
+    capability: Capability,
+) -> Result<(PostRequest, String), Fail> {
+    let built = build_post_request(out, book, args, None, doc, principal, capability)?;
+    Ok((built.request, built.class_name))
 }
 
 /// Build a typed operation's Original member with the ordinary entry parser.
@@ -13370,7 +13473,8 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let rendering = render
         .as_ref()
         .map(|request| {
-            let rendering = render_trial_balance_document(&book, &tb, &selection, request)?;
+            let rendering =
+                render_trial_balance_document(&book, &ctx.files, &tb, &selection, request)?;
             write_rendering(&ctx.files, request, &rendering)?;
             Ok::<_, Fail>(rendering)
         })
@@ -13407,6 +13511,7 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// credits and net, exactly as `fa tb` reports them.
 fn render_trial_balance_document(
     book: &Book,
+    files: &Files,
     tb: &fa_registers::TrialBalance,
     selection: &TrialBalanceSelection,
     request: &RenderRequest<'_>,
@@ -13452,7 +13557,7 @@ fn render_trial_balance_document(
     };
     let ir = fa::render_trial_balance_ir(&input, &specs)
         .map_err(|e| Fail::Internal(format!("trial balance IR: {e}")))?;
-    render_ir(book, request, &ir)
+    render_ir(book, files, request, &ir)
 }
 
 pub(crate) fn render_summary_trial_balance(
@@ -14195,7 +14300,7 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                     .push_str(&format!(" (functional {unit}; retained base amounts)"));
                 ir.markdown.push_str(&format!("\nValuation basis: functional currency {unit}, from retained base amounts verified under their original laws.\n"));
             }
-            let rendering = render_ir(&book, request, &ir)?;
+            let rendering = render_ir(&book, &ctx.files, request, &ir)?;
             write_rendering(&ctx.files, request, &rendering)?;
             Some(rendering)
         }
@@ -15319,23 +15424,33 @@ fn validate_trial_balance_units(
     Ok(())
 }
 
-/// A report's `--render md|html|svg|pdf|pdfa [--out <new-file>]` request
-/// (fa-cet), checked before the book is read.
-struct RenderRequest<'a> {
-    format: fa::StatementRenderFormat,
-    out: Option<&'a str>,
+/// A report's `--render md|html|svg|pdf|pdfa [--out <new-file>] [--fmd-bin <path>]`
+/// request (fa-cet), checked before the book is read.
+pub(crate) struct RenderRequest<'a> {
+    pub(crate) format: fa::StatementRenderFormat,
+    pub(crate) out: Option<&'a str>,
+    pub(crate) fmd_bin: Option<&'a str>,
 }
 
-fn render_request<'a>(args: &'a Args, example: &str) -> Result<Option<RenderRequest<'a>>, Fail> {
-    if args.flag_all("--render").len() > 1 || args.flag_all("--out").len() > 1 {
+pub(crate) fn render_request<'a>(
+    args: &'a Args,
+    example: &str,
+) -> Result<Option<RenderRequest<'a>>, Fail> {
+    if args.flag_all("--render").len() > 1
+        || args.flag_all("--out").len() > 1
+        || args.flag_all("--fmd-bin").len() > 1
+    {
         return Err(usage(
-            "--render and --out may each be supplied only once",
+            "--render, --out and --fmd-bin may each be supplied only once",
             example,
         ));
     }
     let Some(raw) = args.flag("--render") else {
         if args.flag("--out").is_some() {
             return Err(usage("--out names the file --render writes", example));
+        }
+        if args.flag("--fmd-bin").is_some() {
+            return Err(usage("--fmd-bin requires --render and --out", example));
         }
         return Ok(None);
     };
@@ -15348,7 +15463,11 @@ fn render_request<'a>(args: &'a Args, example: &str) -> Result<Option<RenderRequ
             example,
         ));
     }
-    if out.is_none() && format != fa::StatementRenderFormat::Markdown {
+    let fmd_bin = args.flag("--fmd-bin");
+    if fmd_bin.is_some_and(|path| path.is_empty()) {
+        return Err(usage("--fmd-bin names a franken_markdown binary", example));
+    }
+    if out.is_none() && (format != fa::StatementRenderFormat::Markdown || fmd_bin.is_some()) {
         return Err(usage(
             format!(
                 "--render {} writes a document file: name a new one with --out",
@@ -15357,11 +15476,15 @@ fn render_request<'a>(args: &'a Args, example: &str) -> Result<Option<RenderRequ
             example,
         ));
     }
-    Ok(Some(RenderRequest { format, out }))
+    Ok(Some(RenderRequest {
+        format,
+        out,
+        fmd_bin,
+    }))
 }
 
 /// The registered display metadata (code, scale) of each unit `ids` names.
-fn unit_format_specs(
+pub(crate) fn unit_format_specs(
     units: &fa_money::UnitRegistry,
     ids: impl IntoIterator<Item = u32>,
 ) -> Result<Vec<fa::UnitFormatSpec>, Fail> {
@@ -15390,31 +15513,91 @@ fn unit_format_specs(
 /// the wall clock, so one report renders to the same bytes whenever it is
 /// rendered; with no such tick only Markdown, which carries no date,
 /// renders. A PDF/A is checked by the PDF/A-2b validator.
-struct Rendering {
-    bytes: Vec<u8>,
-    tick: Option<fa_journal::Tick>,
-    pdfa_valid: bool,
-    ir_digest: [u8; 32],
-    markdown: String,
+pub(crate) struct Rendering {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) tick: Option<fa_journal::Tick>,
+    pub(crate) pdfa_valid: bool,
+    pub(crate) ir_digest: [u8; 32],
+    pub(crate) markdown: String,
+    pub(crate) already_written: bool,
 }
 
-fn render_ir(
+pub(crate) fn render_ir(
     book: &Book,
+    files: &Files,
     request: &RenderRequest<'_>,
     ir: &fa::StatementMarkdownIr,
 ) -> Result<Rendering, Fail> {
     use fa::StatementRenderFormat as Format;
-    type Renderer = fn(&fa::StatementMarkdownIr, u64) -> Result<Vec<u8>, fa::StatementError>;
-    let dated = |render: Renderer| -> Result<(Vec<u8>, Option<fa_journal::Tick>), Fail> {
-        let tick = book
-            .corroborated_tick_at(CommitSeq(ir.known_at))?
+    let require_tick = || -> Result<fa_journal::Tick, Fail> {
+        book.corroborated_tick_at(CommitSeq(ir.known_at))?
             .ok_or_else(|| {
                 Fail::Environment(format!(
                     "--render {} dates the document by the book's latest corroborated clock tick known at {}, and none is retained; render Markdown (--render md), which carries no date, or let fad's timed work journal TimeEvidence ticks first",
                     request.format.as_str(),
                     ir.known_at
                 ))
+            })
+    };
+    if let Some(bin_raw) = request.fmd_bin {
+        let out_str = request
+            .out
+            .ok_or_else(|| usage("--fmd-bin requires --out <new-file>", "--out <new-file>"))?;
+        let out_resolved = files.resolve(out_str);
+        if out_resolved.exists() {
+            return Err(usage(
+                format!("cannot create rendering file {out_str}: file already exists"),
+                "choose a new --out path; an existing file is never overwritten",
+            ));
+        }
+        let tick = if request.format == Format::Markdown {
+            None
+        } else {
+            Some(require_tick()?)
+        };
+        let epoch_secs = tick
+            .as_ref()
+            .map_or(0, |t| t.observed_utc_ns / 1_000_000_000);
+        let bin_path = std::path::Path::new(bin_raw);
+        let resolved_bin = if bin_path.components().count() > 1 {
+            Some(files.resolve(bin_raw))
+        } else {
+            Some(bin_path.to_path_buf())
+        };
+        let receipt: fa::FmdRenderReceipt = fa::invoke_fmd_render(
+            ir,
+            request.format,
+            epoch_secs,
+            &out_resolved,
+            resolved_bin.as_deref(),
+        )
+        .map_err(|e| Fail::Environment(e.to_string()))?;
+        let pdfa_valid = receipt.format == Format::Pdfa2b;
+        if pdfa_valid {
+            fa::validate_pdfa2b(&receipt.output_bytes).map_err(|e| Fail::Verification {
+                message: format!("the rendered PDF/A-2b fails its validator: {e}"),
+                detail: Json::Null,
+                cite: Some("ISO 19005-2 (PDF/A-2b), fa-cet".into()),
+                fix: Some("render --render pdf instead, and report this as a defect".into()),
             })?;
+        }
+        let _ = (
+            &receipt.output_digest,
+            &receipt.output_path,
+            receipt.source_date_epoch,
+        );
+        return Ok(Rendering {
+            bytes: receipt.output_bytes,
+            tick,
+            pdfa_valid,
+            ir_digest: receipt.ir_digest.0,
+            markdown: ir.markdown.clone(),
+            already_written: true,
+        });
+    }
+    type Renderer = fn(&fa::StatementMarkdownIr, u64) -> Result<Vec<u8>, fa::StatementError>;
+    let dated = |render: Renderer| -> Result<(Vec<u8>, Option<fa_journal::Tick>), Fail> {
+        let tick = require_tick()?;
         let bytes = render(ir, tick.observed_utc_ns / 1_000_000_000)
             .map_err(|e| Fail::Internal(format!("rendering {}: {e}", request.format.as_str())))?;
         Ok((bytes, Some(tick)))
@@ -15445,17 +15628,21 @@ fn render_ir(
         pdfa_valid,
         ir_digest,
         markdown: ir.markdown.clone(),
+        already_written: false,
     })
 }
 
 /// Write a rendering to its new `--out` file, before the report is emitted
 /// or its certificate retained, so a path that cannot be written refuses
 /// the whole command.
-fn write_rendering(
+pub(crate) fn write_rendering(
     files: &Files,
     request: &RenderRequest<'_>,
     rendering: &Rendering,
 ) -> Result<(), Fail> {
+    if rendering.already_written {
+        return Ok(());
+    }
     match request.out {
         Some(path) => write_new_output_file(files, path, &rendering.bytes, "rendering", "--out"),
         None => Ok(()),
@@ -15464,7 +15651,7 @@ fn write_rendering(
 
 /// Emit `rendered` after the report; without `--out` (Markdown only) the
 /// document travels inline.
-fn emit_rendering(out: &Out, request: &RenderRequest<'_>, rendering: Rendering) {
+pub(crate) fn emit_rendering(out: &Out, request: &RenderRequest<'_>, rendering: Rendering) {
     let digest = fa_model::domain_digest(b"fa:rendering-file:v1", &[&rendering.bytes]);
     let inline = request.out.is_none().then_some(rendering.markdown);
     let human = match (&inline, request.out) {
@@ -16179,6 +16366,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("export") => crate::export::verify_export(ctx, args),
         Some("fx-conversion") => verify_fx_conversion(ctx, args),
         Some("search") => verify_search(ctx, args),
+        Some("retention") => verify_retention(ctx, args),
         Some("accumulator") => notary::verify_accumulator(ctx, args),
         Some("close") => crate::closing::verify_close(ctx, args),
         Some("usage") => {
@@ -16798,6 +16986,14 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 pub(crate) fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const RENDER_EXAMPLE: &str = "fa open-items --account 1200 [--render md | --render pdfa --out open-items.pdf] --book <dir>";
+    let render_req = render_request(args, RENDER_EXAMPLE)?;
+    if render_req.is_some() && args.flag("--account").is_none() {
+        return Err(usage(
+            "`fa open-items --render` renders one account's open-items schedule: pass --account <code>",
+            RENDER_EXAMPLE,
+        ));
+    }
     let who = ctx.principal(args);
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     let read_cap = ctx.capability(
@@ -16922,6 +17118,65 @@ pub(crate) fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
         (book.open_items_report(account, known_at)?, None)
     };
     validate_open_items_report(&report, &book.context().units)?;
+    let rendering = render_req
+        .as_ref()
+        .map(|request| {
+            let acc_vid = account.ok_or_else(|| {
+                usage(
+                    "`fa open-items --render` requires --account <code>",
+                    RENDER_EXAMPLE,
+                )
+            })?;
+            let acc_row = report.accounts.get(&acc_vid).ok_or_else(|| {
+                Fail::Internal(format!(
+                    "open-items report omits account {:032x}",
+                    acc_vid.0
+                ))
+            })?;
+            let mut item_units: std::collections::BTreeSet<u32> =
+                report.items.iter().map(|i| i.unit_id).collect();
+            let unit_id = match item_units.len() {
+                0 => book.spec()?.base_unit.0,
+                1 => item_units.pop_first().unwrap(),
+                _ => {
+                    return Err(usage(
+                        "`fa open-items --render` requires a single-currency open-items set",
+                        RENDER_EXAMPLE,
+                    ));
+                }
+            };
+            let specs = unit_format_specs(&book.context().units, [unit_id])?;
+            let mut ir_items = Vec::with_capacity(report.items.len());
+            for item in &report.items {
+                let settled = item
+                    .original
+                    .checked_sub(item.open)
+                    .ok_or_else(|| Fail::Internal("open-items settled amount overflow".into()))?;
+                ir_items.push(fa::OpenItemIrRow {
+                    item_vid_hex: format!("{:032x}:{}", item.entry.0, item.ordinal),
+                    effective_date: item.effective_date.render(),
+                    counterparty_or_memo: format!("leg {}", item.ordinal),
+                    original_amount: item.original,
+                    settled_amount: settled,
+                    open_amount: item.open,
+                });
+            }
+            let input = fa::OpenItemsIrInput {
+                book_id: book.context().book_id,
+                branch_id: Id128::TRUNK,
+                known_at: report.known_at.0,
+                account_code: acc_row.code.clone(),
+                account_name: acc_row.name.clone(),
+                unit_id,
+                items: ir_items,
+            };
+            let ir = fa::render_open_items_ir(&input, &specs)
+                .map_err(|e| Fail::Internal(format!("open-items IR: {e}")))?;
+            let rendering = render_ir(&book, &ctx.files, request, &ir)?;
+            write_rendering(&ctx.files, request, &rendering)?;
+            Ok::<_, Fail>(rendering)
+        })
+        .transpose()?;
     // The same report as text CSV (fa-registers' exact exporters): every
     // item with its original, applied and open mantissas, and every
     // application against those items, undone ones included. New files only,
@@ -16964,6 +17219,9 @@ pub(crate) fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
     render_open_items(out, &book, &report, digest.as_deref())?;
     if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
         notary::emit_report_certificate(out, args, certificate, &bytes, &retained);
+    }
+    if let (Some(request), Some(rendering)) = (render_req.as_ref(), rendering) {
+        emit_rendering(out, request, rendering);
     }
     Ok(())
 }
@@ -21584,6 +21842,17 @@ pub(crate) fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ));
         }
     }
+    if sub.is_some_and(|sub| sub != "register" && sub != "lineage") {
+        let render_only = ["--render", "--out", "--fmd-bin"]
+            .into_iter()
+            .find(|flag| args.flag(flag).is_some());
+        if let Some(flag) = render_only {
+            return Err(usage(
+                format!("{flag} applies only to `fa explain register` and `fa explain lineage`"),
+                "fa explain register 1000 --period FY2026-P01 --render md, or fa explain lineage <vid> --render svg --out lineage.svg",
+            ));
+        }
+    }
     match sub {
         Some("balance") => explain_balance_cmd(ctx, args),
         Some("entry") => explain_entry_cmd(ctx, args),
@@ -21800,7 +22069,20 @@ fn explain_entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 fn explain_lineage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
-    let example = "fa explain lineage <vid|E:vid> [--as-known-at HEAD|<seq>] --book <dir>";
+    let example = "fa explain lineage <vid|E:vid> [--as-known-at HEAD|<seq>] [--render md | --render svg --out <new-file>] --book <dir>";
+    let render_req = render_request(args, example)?;
+    if let Some(req) = render_req.as_ref()
+        && (req.fmd_bin.is_some()
+            || !matches!(
+                req.format,
+                fa::StatementRenderFormat::Markdown | fa::StatementRenderFormat::Svg
+            ))
+    {
+        return Err(usage(
+            "`fa explain lineage --render` renders Markdown (`md`) or SVG (`svg`) exhibits without --fmd-bin",
+            example,
+        ));
+    }
     let raw = args
         .positional
         .get(2)
@@ -21892,6 +22174,76 @@ fn explain_lineage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("net", s(net_str)),
         ]));
     }
+    let rendering = render_req
+        .as_ref()
+        .map(|request| {
+            let mut nodes = Vec::with_capacity(report.entries.len());
+            let mut edges = Vec::new();
+            for st in &report.entries {
+                let vid_hex = format!("{:032x}", st.vid.0);
+                let amount_summary = book
+                    .read_entry(st.vid)?
+                    .and_then(|(entry, _)| {
+                        let leg = entry.proposal.legs.first()?;
+                        render_amount(leg.amount, units).ok()
+                    })
+                    .unwrap_or_else(|| "0".to_string());
+                nodes.push(fa::LineageDiagramNode {
+                    entry_vid_hex: vid_hex.clone(),
+                    entry_class: st.class.name().unwrap_or("?").to_string(),
+                    effective_date: st.effective_date.render(),
+                    recorded_at: st.recorded_at.0,
+                    live: st.live,
+                    amount_summary,
+                });
+                for sup in &st.supersedes {
+                    edges.push(fa::LineageDiagramEdge {
+                        from_entry_vid_hex: vid_hex.clone(),
+                        to_entry_vid_hex: format!("{:032x}", sup.target_vid.0),
+                        kind: fa::LineageEdgeKind::Supersedes,
+                        detail: format!("{:?}", sup.kind),
+                    });
+                }
+                if let Some((entry, _)) = book.read_entry(st.vid)?
+                    && let Some(pending) = entry.proposal.pending.as_ref()
+                    && let Some(resolved) = pending.resolution_of.as_ref()
+                {
+                    edges.push(fa::LineageDiagramEdge {
+                        from_entry_vid_hex: vid_hex,
+                        to_entry_vid_hex: format!("{:032x}", resolved.vid.0),
+                        kind: fa::LineageEdgeKind::Resolves,
+                        detail: "resolution".into(),
+                    });
+                }
+            }
+            let diagram: fa::LineageDiagramIr = fa::render_lineage_diagram(
+                book.context().book_id,
+                seq.0,
+                &format!("{:032x}", report.root_vid.0),
+                &nodes,
+                &edges,
+            )
+            .map_err(|e| Fail::Internal(format!("lineage diagram: {e}")))?;
+            let (bytes, tick) = match request.format {
+                fa::StatementRenderFormat::Markdown => (diagram.markdown.as_bytes().to_vec(), None),
+                fa::StatementRenderFormat::Svg => {
+                    let tick = book.corroborated_tick_at(seq)?;
+                    (diagram.svg.as_bytes().to_vec(), tick)
+                }
+                _ => unreachable!(),
+            };
+            let rendering = Rendering {
+                bytes,
+                tick,
+                pdfa_valid: false,
+                ir_digest: diagram.digest.0,
+                markdown: diagram.markdown,
+                already_written: false,
+            };
+            write_rendering(&ctx.files, request, &rendering)?;
+            Ok::<_, Fail>(rendering)
+        })
+        .transpose()?;
     let human = format!(
         "lineage of entry {:032x} (root {:032x}) at {} · {} step(s) · fully_reversed={} · {} net cell(s)",
         vid.0,
@@ -21919,6 +22271,9 @@ fn explain_lineage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ],
         &human,
     );
+    if let (Some(request), Some(rendering)) = (render_req.as_ref(), rendering) {
+        emit_rendering(out, request, rendering);
+    }
     Ok(())
 }
 
@@ -22499,7 +22854,8 @@ fn explain_period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 fn explain_register_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
-    let example = "fa explain register 1000 --period FY2026-P01 [--unit USD] [--as-known-at HEAD|<seq>] --book <dir>";
+    let example = "fa explain register 1000 --period FY2026-P01 [--unit USD] [--as-known-at HEAD|<seq>] [--render md | --render pdfa --out register.pdf] --book <dir>";
+    let render_req = render_request(args, example)?;
     let code = args
         .positional
         .get(2)
@@ -22671,6 +23027,64 @@ fn explain_register_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let decision_card_digest = decision_card
         .digest()
         .map_err(|e| Fail::Internal(e.to_string()))?;
+    let rendering = render_req
+        .as_ref()
+        .map(|request| {
+            let unit_id = if let Some((uid, _)) = unit_filter.as_ref() {
+                *uid
+            } else {
+                match by_unit.len() {
+                    0 => book.spec()?.base_unit.0,
+                    1 => *by_unit.keys().next().unwrap(),
+                    _ => {
+                        return Err(usage(
+                            "`fa explain register --render` over a multi-currency account requires --unit <CODE>",
+                            example,
+                        ));
+                    }
+                }
+            };
+            let specs = unit_format_specs(units, [unit_id])?;
+            let rows: Vec<fa::RegisterIrRow> = ex
+                .contributions
+                .iter()
+                .filter(|c| c.unit_id == unit_id && c.column.name() == "posted")
+                .map(|c| {
+                    let (debit, credit) = match c.side {
+                        Side::Debit => (c.mantissa, 0),
+                        Side::Credit => (0, c.mantissa),
+                    };
+                    fa::RegisterIrRow {
+                        recorded_at: c.recorded_at.0,
+                        effective_date: c.effective_date.render(),
+                        entry_vid_hex: format!("{:032x}", c.entry.0),
+                        description: format!(
+                            "{} leg {}",
+                            c.class.name().unwrap_or("posting"),
+                            c.ordinal
+                        ),
+                        debit,
+                        credit,
+                    }
+                })
+                .collect();
+            let input = fa::RegisterIrInput {
+                book_id: book.context().book_id,
+                branch_id: Id128::TRUNK,
+                known_at: ex.known_at.0,
+                account_code: account_row.code.clone(),
+                account_name: account_row.name.clone(),
+                unit_id,
+                opening_balance: 0,
+                rows,
+            };
+            let ir = fa::render_register_ir(&input, &specs)
+                .map_err(|e| Fail::Internal(format!("register IR: {e}")))?;
+            let rendering = render_ir(&book, &ctx.files, request, &ir)?;
+            write_rendering(&ctx.files, request, &rendering)?;
+            Ok::<_, Fail>(rendering)
+        })
+        .transpose()?;
     let human = format!(
         "register {} {} ({type_name}) in {} · cache_status={cache_status} · green={} · stale={} · lag={} · decision_card={}",
         account_row.code,
@@ -22716,6 +23130,9 @@ fn explain_register_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ],
         &human,
     );
+    if let (Some(request), Some(rendering)) = (render_req.as_ref(), rendering) {
+        emit_rendering(out, request, rendering);
+    }
     Ok(())
 }
 
@@ -24158,8 +24575,29 @@ pub(crate) fn finding_json(f: &fa_lantern::Finding) -> Json {
 /// registered tracing procedure's suffix (`libr`, `pro-rata`,
 /// `network-fifo`, `restitution-order`, ...); every flag is procedure run's.
 fn trace_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    const FIX: &str =
-        "fa trace libr --account 1000 --source <entry vid> --effective-through 2026-03-31 --json";
+    const FIX: &str = "fa trace libr --account 1000 --source <entry vid> --effective-through 2026-03-31 [--render md | --render svg --out <new-file>] --json";
+    let render_req = render_request(args, FIX)?;
+    if let Some(req) = render_req.as_ref() {
+        if req.fmd_bin.is_some()
+            || !matches!(
+                req.format,
+                fa::StatementRenderFormat::Markdown | fa::StatementRenderFormat::Svg
+            )
+        {
+            return Err(usage(
+                "`fa trace --render` renders Markdown (`md`) or SVG (`svg`) flow-of-funds exhibits without --fmd-bin",
+                FIX,
+            ));
+        }
+        if let Some(out_str) = req.out
+            && ctx.files.resolve(out_str).exists()
+        {
+            return Err(usage(
+                format!("cannot create rendering file {out_str}: file already exists"),
+                "choose a new --out path; an existing file is never overwritten",
+            ));
+        }
+    }
     let [_, law] = args.positional.as_slice() else {
         return Err(usage("fa trace takes one tracing law", FIX));
     };
@@ -24182,8 +24620,70 @@ fn trace_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let mut run = args.clone();
+    run.flags.remove("--render");
+    run.flags.remove("--out");
+    run.flags.remove("--fmd-bin");
     run.positional = vec!["procedure".into(), "run".into(), id];
-    procedure_cmd(ctx, &run)
+    let rendering = render_req
+        .as_ref()
+        .map(|request| {
+            let account_code = args
+                .flag("--account")
+                .ok_or_else(|| usage("`fa trace` requires --account <code>", FIX))?;
+            let source_raw = args
+                .flag("--source")
+                .ok_or_else(|| usage("`fa trace` requires --source <entry vid>", FIX))?;
+            let source_vid = parse_vid(
+                source_raw.strip_prefix("E:").unwrap_or(source_raw),
+                "--source",
+            )?;
+            let effective_through = args
+                .flag("--effective-through")
+                .map(DateDay::parse)
+                .transpose()
+                .map_err(|e| usage(format!("--effective-through: {e:?}"), FIX))?;
+            let who = ctx.principal(args);
+            let read_cap = ctx.capability(args, &["read"])?;
+            let book = ctx.books.open_admitted(args, |book| {
+                book.read_scope(who, &read_cap)??;
+                Ok(())
+            })?;
+            let (known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
+            if requested_utc_ns.is_some() {
+                return Err(usage(
+                    "procedures run at a recorded sequence, not at an instant",
+                    "--known-at HEAD or --known-at <commit sequence>",
+                ));
+            }
+            book.read_scope(who, &read_cap)??
+                .admit_whole_book(known_at)??;
+            let account = account_vid(book.context().book_id, account_code);
+            let exhibit: fa::FlowOfFundsExhibit =
+                book.flow_of_funds_exhibit(account, source_vid, known_at, effective_through)?;
+            let (bytes, tick) = match request.format {
+                fa::StatementRenderFormat::Markdown => (exhibit.markdown.as_bytes().to_vec(), None),
+                fa::StatementRenderFormat::Svg => {
+                    let tick = book.corroborated_tick_at(CommitSeq(exhibit.known_at))?;
+                    (exhibit.svg.as_bytes().to_vec(), tick)
+                }
+                _ => unreachable!(),
+            };
+            Ok::<_, Fail>(Rendering {
+                bytes,
+                tick,
+                pdfa_valid: false,
+                ir_digest: exhibit.digest.0,
+                markdown: exhibit.markdown,
+                already_written: false,
+            })
+        })
+        .transpose()?;
+    procedure_cmd(ctx, &run)?;
+    if let (Some(request), Some(rendering)) = (render_req.as_ref(), rendering) {
+        write_rendering(&ctx.files, request, &rendering)?;
+        emit_rendering(&ctx.out, request, rendering);
+    }
+    Ok(())
 }
 
 /// `fa jet [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD]
@@ -24614,6 +25114,266 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                     &retained,
                 );
             }
+            Ok(())
+        }
+        Some("calibrate") => {
+            const CAL_EXAMPLE: &str = "fa procedure calibrate <procedure_id> --parameter <name> --file <calibration.json|-> [--alpha-bps 500] [--delta-bps 500] [--policy-epoch <64-hex>] --book <dir> --json";
+            let selector = args
+                .positional
+                .get(2)
+                .ok_or_else(|| usage("procedure calibrate needs a procedure id", CAL_EXAMPLE))?;
+            let (id, _version) = procedure_selector(selector)?;
+            if let Some(extra) = args.positional.get(3) {
+                return Err(usage(format!("unexpected argument `{extra}`"), CAL_EXAMPLE));
+            }
+            let param_name = args.require("--parameter", "<parameter_name>")?;
+            let file_path = args.require("--file", "<calibration.json|->")?;
+            let alpha_bps: u32 = match args.flag("--alpha-bps") {
+                Some(raw) => raw.parse::<u32>().map_err(|_| {
+                    usage(
+                        format!("--alpha-bps `{raw}` is not an integer in 1..=9999"),
+                        CAL_EXAMPLE,
+                    )
+                })?,
+                None => 500,
+            };
+            let delta_bps: u32 = match args.flag("--delta-bps") {
+                Some(raw) => raw.parse::<u32>().map_err(|_| {
+                    usage(
+                        format!("--delta-bps `{raw}` is not an integer in 1..=9999"),
+                        CAL_EXAMPLE,
+                    )
+                })?,
+                None => 500,
+            };
+            let requested_epoch = match args.flag("--policy-epoch") {
+                Some(raw) => Some(document::hex32(raw, "--policy-epoch")?),
+                None => None,
+            };
+            let capability = ctx.capability(args, &["read"])?;
+            let book = ctx.books.open_admitted(args, |book| {
+                admit_whole_book_read(book, &capability, &[], "calibrating a procedure threshold")
+            })?;
+            let json_doc = parse_json(file_path, &ctx.files.read_text(file_path)?)?;
+            let Json::Obj(fields) = &json_doc else {
+                return Err(usage(
+                    format!(
+                        "{file_path} must be a JSON object with `clean_scores` and `labeled_items`"
+                    ),
+                    CAL_EXAMPLE,
+                ));
+            };
+            for (k, _) in fields {
+                if !matches!(
+                    k.as_str(),
+                    "clean_scores" | "labeled_items" | "candidate_thresholds"
+                ) {
+                    return Err(usage(
+                        format!("unknown field `{k}` in calibration input"),
+                        "allowed fields: clean_scores, labeled_items, candidate_thresholds",
+                    ));
+                }
+            }
+            let clean_arr = fields
+                .iter()
+                .find(|(k, _)| k == "clean_scores")
+                .and_then(|(_, v)| match v {
+                    Json::Arr(items) => Some(items),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    usage(
+                        "`clean_scores` must be a non-empty array of integers",
+                        CAL_EXAMPLE,
+                    )
+                })?;
+            let mut clean_scores = Vec::with_capacity(clean_arr.len());
+            for item in clean_arr {
+                let Json::Int(v) = item else {
+                    return Err(usage(
+                        "`clean_scores` elements must be exact integers",
+                        CAL_EXAMPLE,
+                    ));
+                };
+                clean_scores.push(*v);
+            }
+            let labeled_arr = fields
+                .iter()
+                .find(|(k, _)| k == "labeled_items")
+                .and_then(|(_, v)| match v {
+                    Json::Arr(items) => Some(items),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    usage(
+                        "`labeled_items` must be an array of `{\"score\": <int>, \"anomaly\": <bool>}` objects",
+                        CAL_EXAMPLE,
+                    )
+                })?;
+            let mut labeled_items = Vec::with_capacity(labeled_arr.len());
+            for item in labeled_arr {
+                let Json::Obj(item_fields) = item else {
+                    return Err(usage(
+                        "each `labeled_items` entry must be `{\"score\": <int>, \"anomaly\": <bool>}`",
+                        CAL_EXAMPLE,
+                    ));
+                };
+                let score = item_fields
+                    .iter()
+                    .find(|(k, _)| k == "score")
+                    .and_then(|(_, v)| match v {
+                        Json::Int(n) => Some(*n),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        usage(
+                            "each `labeled_items` entry needs an integer `score`",
+                            CAL_EXAMPLE,
+                        )
+                    })?;
+                let anomaly = item_fields
+                    .iter()
+                    .find(|(k, _)| k == "anomaly")
+                    .and_then(|(_, v)| match v {
+                        Json::Bool(b) => Some(*b),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        usage(
+                            "each `labeled_items` entry needs a boolean `anomaly`",
+                            CAL_EXAMPLE,
+                        )
+                    })?;
+                labeled_items.push((score, anomaly));
+            }
+            let mut candidate_thresholds = Vec::new();
+            if let Some((_, val)) = fields.iter().find(|(k, _)| k == "candidate_thresholds") {
+                let Json::Arr(items) = val else {
+                    return Err(usage(
+                        "`candidate_thresholds` must be an array of integers",
+                        CAL_EXAMPLE,
+                    ));
+                };
+                for item in items {
+                    let Json::Int(n) = item else {
+                        return Err(usage(
+                            "`candidate_thresholds` elements must be exact integers",
+                            CAL_EXAMPLE,
+                        ));
+                    };
+                    candidate_thresholds.push(*n);
+                }
+            }
+            let card = book.calibrate_procedure_threshold(
+                id,
+                param_name,
+                &clean_scores,
+                &labeled_items,
+                &candidate_thresholds,
+                alpha_bps,
+                delta_bps,
+                requested_epoch,
+            )?;
+            out.at_book(&book)?;
+            let wilson_json = |w: &fa_lantern::WilsonIntervalBps| {
+                obj(vec![
+                    ("successes", Json::Int(i128::from(w.successes))),
+                    ("trials", Json::Int(i128::from(w.trials))),
+                    ("point_bps", Json::Int(i128::from(w.point_estimate_bps))),
+                    ("lower_bps", Json::Int(i128::from(w.lower_bps))),
+                    ("upper_bps", Json::Int(i128::from(w.upper_bps))),
+                ])
+            };
+            let metrics_json = |m: &fa_lantern::LabeledDetectorMetrics| {
+                obj(vec![
+                    ("true_positives", Json::Int(i128::from(m.true_positives))),
+                    ("false_positives", Json::Int(i128::from(m.false_positives))),
+                    ("true_negatives", Json::Int(i128::from(m.true_negatives))),
+                    ("false_negatives", Json::Int(i128::from(m.false_negatives))),
+                    ("precision", wilson_json(&m.precision)),
+                    ("recall", wilson_json(&m.recall)),
+                    ("clean_fpr", wilson_json(&m.clean_fpr)),
+                ])
+            };
+            let candidates_json: Vec<Json> = card
+                .candidates
+                .iter()
+                .map(|c| {
+                    obj(vec![
+                        ("threshold", Json::Int(c.threshold)),
+                        (
+                            "satisfies_conformal_bound",
+                            Json::Bool(c.satisfies_conformal_bound),
+                        ),
+                        ("metrics", metrics_json(&c.metrics)),
+                    ])
+                })
+                .collect();
+            let card_digest_hex = hex(&card.decision_card_digest);
+            out.event(
+                "procedure_calibrated",
+                vec![
+                    ("procedure", s(&card.procedure_id)),
+                    ("parameter", s(&card.parameter_name)),
+                    ("claim_class", s(card.claim_class.name())),
+                    (
+                        "pinned_fallback_threshold",
+                        Json::Int(card.pinned_fallback_threshold),
+                    ),
+                    ("selected_threshold", Json::Int(card.selected_threshold)),
+                    ("used_fallback", Json::Bool(card.decision_card.used_fallback())),
+                    ("decision_card_digest", s(&card_digest_hex)),
+                    (
+                        "conformal_bound",
+                        obj(vec![
+                            (
+                                "calibration_n",
+                                Json::Int(card.conformal_bound.calibration_n as i128),
+                            ),
+                            (
+                                "target_alpha_bps",
+                                Json::Int(i128::from(card.conformal_bound.target_alpha_bps)),
+                            ),
+                            (
+                                "delta_bps",
+                                Json::Int(i128::from(card.conformal_bound.delta_bps)),
+                            ),
+                            (
+                                "quantile_rank_1based",
+                                Json::Int(card.conformal_bound.quantile_rank_1based as i128),
+                            ),
+                            (
+                                "calibrated_threshold",
+                                Json::Int(card.conformal_bound.calibrated_threshold),
+                            ),
+                            (
+                                "marginal_fpr_bound_bps",
+                                Json::Int(i128::from(
+                                    card.conformal_bound.marginal_fpr_bound_bps,
+                                )),
+                            ),
+                            (
+                                "empirical_clean_fpr_bps",
+                                Json::Int(i128::from(
+                                    card.conformal_bound.empirical_clean_fpr_bps,
+                                )),
+                            ),
+                        ]),
+                    ),
+                    ("selected_metrics", metrics_json(&card.selected_metrics)),
+                    ("candidates", Json::Arr(candidates_json)),
+                ],
+                &format!(
+                    "{} ({}): selected threshold {} (fallback {}, used_fallback={}, marginal FPR bound {} bps, card {})",
+                    card.procedure_id,
+                    card.parameter_name,
+                    card.selected_threshold,
+                    card.pinned_fallback_threshold,
+                    card.decision_card.used_fallback(),
+                    card.conformal_bound.marginal_fpr_bound_bps,
+                    card_digest_hex
+                ),
+            );
             Ok(())
         }
         _ => Err(unhandled("procedure", sub)),
@@ -25732,6 +26492,74 @@ fn verify_search(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ),
     );
     Ok(())
+}
+
+fn verify_retention(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa verify retention --book <dir> --json";
+    if args.positional.len() != 2
+        || args.flag("--period").is_some()
+        || args.flag("--fiscal-year").is_some()
+    {
+        return Err(usage(
+            "verify retention checks all active retention policies at current head and takes no period filter",
+            EXAMPLE,
+        ));
+    }
+    let capability = ctx.capability(args, &["read", "verify"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        admit_whole_book_read(
+            book,
+            &capability,
+            &[fa_policy::Op::Verify],
+            "verifying retention policies",
+        )
+    })?;
+    let ev_policy = fa_registry::evidence_policy::EvidencePolicy::embedded()
+        .map_err(|e| Fail::Internal(format!("the embedded evidence policy: {e}")))?;
+    let verified = book.verify_retention_policies()?;
+    let policies_json: Vec<Json> = verified
+        .active_policies
+        .iter()
+        .map(|a| document::retention_policy_row_json(a, &ev_policy))
+        .collect();
+    if verified.is_green() {
+        ctx.out.at_book(&book)?;
+        ctx.out.event(
+            "retention_verified",
+            vec![
+                ("policies_checked", Json::Int(policies_json.len() as i128)),
+                ("policies", Json::Arr(policies_json)),
+            ],
+            &format!(
+                "retention policies verified: {} active policy(ies) green",
+                verified.active_policies.len()
+            ),
+        );
+        Ok(())
+    } else {
+        Err(Fail::Verification {
+            message: format!(
+                "retention policy verification found {} drift(s): {}",
+                verified.drifts.len(),
+                verified.drifts.join("; ")
+            ),
+            detail: obj(vec![
+                ("policies", Json::Arr(policies_json)),
+                (
+                    "drifts",
+                    Json::Arr(verified.drifts.iter().map(s).collect()),
+                ),
+            ]),
+            cite: Some(
+                "plan §8.5 (retention floors are registered Policy objects bound to verified authority documents)"
+                    .into(),
+            ),
+            fix: Some(
+                "retain this finding: inspect the cited PolicyControl entry, policy vertex and authority document"
+                    .into(),
+            ),
+        })
+    }
 }
 
 /// `fa search <query> [--kind entry|document|finding|all]` (plan §9, fa-qip):

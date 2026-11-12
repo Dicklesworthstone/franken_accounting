@@ -738,10 +738,6 @@ fn every_plan_leaf_present_or_registered() {
             "fa-waow: today fa finding review --action dismiss; fa.findings is at its 7-tool cluster cap and MCP parity admits only host-only exclusions, so a CLI-only subcommand cannot land",
         ),
         ("fa gen book", "fa-ykbp"),
-        (
-            "fa recon book-to-book",
-            "fa-259c: the multi-book bridge; fa-statements reconcile_book_to_book has no surface",
-        ),
         ("fa unit add", "fa-waow"),
         (
             "fa verify bundle",

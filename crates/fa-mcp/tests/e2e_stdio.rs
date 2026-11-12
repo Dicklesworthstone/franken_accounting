@@ -6151,3 +6151,262 @@ fn fa_orient_next_offers_audit_program_matching_cli_next() {
     );
     assert_eq!(mcp.finish(), 0);
 }
+
+#[test]
+fn scoped_agent_draft_and_human_promotion_roundtrip() {
+    let dir = tmp("scoped-agent-draft");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    let created: JsonValue = fastmcp_rust::serde_json::from_str(&cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Scoped Agent Draft MCP",
+        "--json",
+    ]))
+    .unwrap();
+    let book_hex = created["book_id"].as_str().unwrap();
+    let book_id = fa::Id128(u128::from_str_radix(book_hex, 16).unwrap().to_be_bytes());
+
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"5000","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    )
+    .unwrap();
+    cli_data(&[
+        "chart",
+        "import",
+        chart.to_str().unwrap(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    cli_data(&["period", "open", "FY2026-P04", "--book", &b, "--json"]);
+    let evidence = source_document(&dir, &b);
+
+    let draft_name = "agent-q1-sales";
+    let draft_branch_hex = fa::draft_branch(book_id, draft_name).to_hex();
+    let agent_token = dir.join("scoped-agent.token");
+    let agent_token_str = agent_token.display().to_string();
+    cli_data(&[
+        "capability",
+        "issue",
+        "--holder",
+        "scoped-mcp-agent",
+        "--profile",
+        "agent",
+        "--op",
+        "read",
+        "--op",
+        "post",
+        "--branch",
+        &draft_branch_hex,
+        "--account",
+        "1000",
+        "--account",
+        "4000",
+        "--period",
+        "FY2026-P03",
+        "--effective-through",
+        "2026-03-31",
+        "--out",
+        &agent_token_str,
+        "--as",
+        "steward",
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "post",
+        "--book",
+        &b,
+        "--json",
+    ]);
+
+    let mut mcp = Mcp::start_with(
+        &book,
+        &["--cluster", "fa.draft", "--token", &agent_token_str],
+    );
+    mcp.discover();
+
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_draft_manage",
+        json!({"action": "new", "name": draft_name}),
+    );
+    assert!(
+        !is_error,
+        "scoped Agent must open its confined draft: {text}"
+    );
+
+    // Out-of-scope account (5000) is refused prior to modifying the draft.
+    let (is_error, err_text, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({
+            "draft": draft_name,
+            "evidence": [evidence],
+            "intent": {
+                "class": "Original",
+                "effective_date": "2026-03-15",
+                "description": "Out-of-scope expense",
+                "idempotency_key": "mcp-out-of-scope-acct",
+                "legs": [
+                    {"side": "debit", "account": "5000", "amount": "50.00 USD"},
+                    {"side": "credit", "account": "1000", "amount": "50.00 USD"}
+                ]
+            }
+        }),
+    );
+    assert!(is_error, "out-of-scope account must be refused: {err_text}");
+    assert!(err_text.contains("FA-REF-011"), "{err_text}");
+
+    // In-scope proposal (1000 / 4000 in FY2026-P03) succeeds.
+    let (is_error, planned_text, _) = call_tool(
+        &mut mcp,
+        "fa_post_post",
+        json!({
+            "draft": draft_name,
+            "evidence": [evidence],
+            "intent": {
+                "class": "Original",
+                "effective_date": "2026-03-15",
+                "description": "In-scope March revenue",
+                "idempotency_key": "mcp-in-scope-sale",
+                "legs": [
+                    {"side": "debit", "account": "1000", "amount": "125.00 USD"},
+                    {"side": "credit", "account": "4000", "amount": "125.00 USD"}
+                ]
+            }
+        }),
+    );
+    assert!(
+        !is_error,
+        "in-scope draft plan must succeed: {planned_text}"
+    );
+    let planned_json: JsonValue = fastmcp_rust::serde_json::from_str(&planned_text).unwrap();
+    let planned_entry = planned_json["entry"].as_str().unwrap().to_string();
+
+    let (is_error, shown_text, _) = call_tool(
+        &mut mcp,
+        "fa_draft_manage",
+        json!({"action": "show", "name": draft_name}),
+    );
+    assert!(
+        !is_error,
+        "scoped Agent must inspect its confined draft: {shown_text}"
+    );
+    let shown_json: JsonValue = fastmcp_rust::serde_json::from_str(&shown_text).unwrap();
+    assert_eq!(shown_json["intents"].as_array().unwrap().len(), 1);
+    assert_eq!(mcp.finish(), 0);
+
+    // Narrow Human promoter missing account 4000 fails closed on trunk promotion.
+    let narrow_token = dir.join("narrow-promoter.token");
+    let narrow_token_str = narrow_token.display().to_string();
+    cli_data(&[
+        "capability",
+        "issue",
+        "--holder",
+        "narrow-controller",
+        "--profile",
+        "approver",
+        "--op",
+        "read",
+        "--op",
+        "approve",
+        "--account",
+        "1000",
+        "--account",
+        "5000",
+        "--period",
+        "FY2026-P03",
+        "--out",
+        &narrow_token_str,
+        "--as",
+        "steward",
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "approve",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let (exit_code, narrow_out) = cli(&[
+        "--token",
+        &narrow_token_str,
+        "draft",
+        "promote",
+        draft_name,
+        "--yes",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(exit_code, 7, "{narrow_out}");
+    assert!(narrow_out.contains("FA-REF-011"), "{narrow_out}");
+
+    // Covering Human promoter promotes cleanly to trunk.
+    let covering_token = dir.join("covering-promoter.token");
+    let covering_token_str = covering_token.display().to_string();
+    cli_data(&[
+        "capability",
+        "issue",
+        "--holder",
+        "covering-controller",
+        "--profile",
+        "approver",
+        "--op",
+        "read",
+        "--op",
+        "approve",
+        "--account",
+        "1000",
+        "--account",
+        "4000",
+        "--period",
+        "FY2026-P03",
+        "--out",
+        &covering_token_str,
+        "--as",
+        "steward",
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "approve",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    let promoted: JsonValue = fastmcp_rust::serde_json::from_str(&cli_data(&[
+        "--token",
+        &covering_token_str,
+        "draft",
+        "promote",
+        draft_name,
+        "--yes",
+        "--book",
+        &b,
+        "--json",
+    ]))
+    .unwrap();
+    assert_eq!(promoted["entries"], json!([planned_entry]));
+}

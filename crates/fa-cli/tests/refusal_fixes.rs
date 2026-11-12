@@ -1920,6 +1920,10 @@ const UNTRIGGERED_WITH_REASON: &[(&str, &str)] = &[
         "FA-REF-206",
         "keyed principal attestation signing and rotation; exercised in cli/principal_key.rs, outside this single-step loop",
     ),
+    (
+        "FA-REF-208",
+        "library/wire EntryPayload claiming schema_minor > SCHEMA_MINOR; CLI JSON intents stamp known schema minors; exercised in fa-journal/tests/genesis.rs",
+    ),
 ];
 
 #[test]

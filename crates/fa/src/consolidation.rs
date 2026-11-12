@@ -31,11 +31,14 @@ use fa_model::{Id128, RelationshipKind, Writer, legal_entity_vid, period_vid};
 use fa_money::UnitId;
 use fa_money::rounding::RoundingLaw;
 use fa_policy::Capability;
+pub use fa_statements::concordat::{
+    AdjustmentLayerLeg, BOOK_TO_BOOK_BRIDGE_FORMAT, BookKind, BookToBookBridge,
+    BookToBookBridgeRow, BookToBookInput, BookToBookReasonCode, BridgeExplanation,
+    ConsolidatedEquityReconciliation, ConsolidationRun, EliminationEntry, EliminationLeg,
+    reconcile_book_to_book,
+};
 use fa_statements::concordat::{
     ConcordatError, ConsolidationInput, EntityMemberInput, IncomeInput, OwnershipSpec, consolidate,
-};
-pub use fa_statements::concordat::{
-    ConsolidatedEquityReconciliation, ConsolidationRun, EliminationEntry, EliminationLeg,
 };
 use fa_statements::{Account, AccountBalance};
 use fa_time::DateDay;
@@ -863,4 +866,690 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         Ok(result)
     }
+
+    /// Anchor this book as an `AdjustmentLayer` (tax, statutory, or management)
+    /// referencing `parent_book_id` at committed sequence `parent_known_at`
+    /// (plan §12.2, bead `fa-259c`). Re-anchoring to a higher `parent_known_at`
+    /// propagates a parent restatement; switching `parent_book_id` or regressing
+    /// `parent_known_at` is refused.
+    pub async fn anchor_adjustment_layer(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        parent_book_id: Id128,
+        parent_known_at: CommitSeq,
+    ) -> Outcome<AdjustmentLayerAnchored> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        if let Err(denial) = fa_policy::require(
+            capability,
+            fa_policy::Op::SchemaChange,
+            "anchoring an adjustment-layer book",
+        )
+        .and_then(|()| fa_policy::scope(capability, self.context.book_id))
+        .and_then(|()| fa_policy::admit_direct_write(capability))
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let head = match fa_journal::policy::current_at(&self.db, &self.context, capability)? {
+            Ok(current) => current.at(),
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if parent_book_id == self.context.book_id {
+            return Ok(Err(refusal_book_to_book(
+                "a book cannot anchor to itself as its own parent book",
+                "create a dedicated adjustment-layer book (`fa book create`) and anchor it to the distinct parent book",
+            )));
+        }
+        if parent_known_at.0 == 0 {
+            return Ok(Err(refusal_book_to_book(
+                "parent_known_at must be a committed sequence >= 1",
+                "supply the parent book's committed known-at sequence (e.g. from `fa book info` or a parent trial-balance certificate)",
+            )));
+        }
+        if let BookKind::AdjustmentLayer {
+            parent_book_id: existing_parent,
+            parent_known_at: existing_seq,
+        } = book_kind_at_db(&self.db, &self.context, head)?
+        {
+            if existing_parent != parent_book_id {
+                return Ok(Err(refusal_book_to_book(
+                    format!(
+                        "this book is already anchored to parent book {}; an adjustment-layer book cannot switch parents",
+                        existing_parent.to_hex()
+                    ),
+                    "create a separate adjustment-layer book for another parent book",
+                )));
+            }
+            if parent_known_at.0 < existing_seq {
+                return Ok(Err(refusal_book_to_book(
+                    format!(
+                        "parent_known_at {} precedes the existing adjustment-layer anchor {}",
+                        parent_known_at.0, existing_seq
+                    ),
+                    "advance parent_known_at monotonically when propagating a parent restatement, or read an earlier snapshot via --as-known-at",
+                )));
+            }
+        }
+        let policy = fa_registry::evidence_policy::EvidencePolicy::embedded()
+            .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+        let grade = fa_journal::upload::upload_grade(&policy, capability.sod_profile())?;
+        let bytes =
+            encode_adjustment_layer_anchor(self.context.book_id, parent_book_id, parent_known_at.0)
+                .map_err(|e| KernelError::Model(e.into()))?;
+        let doc = fa_journal::Document {
+            book_id: self.context.book_id,
+            kind: ADJUSTMENT_LAYER_DOCUMENT_KIND,
+            mime: ADJUSTMENT_LAYER_MIME.to_string(),
+            grade,
+            retrieved_by: capability.holder(),
+            bytes,
+        };
+        let added = match self.add_document(cx, &doc).await? {
+            Ok(added) => added,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(Ok(AdjustmentLayerAnchored {
+            document_oid: added.oid,
+            doc_commit: added.doc_commit,
+            parent_book_id,
+            parent_known_at,
+            recorded_at: added.recorded_at,
+            already_recorded: added.already_recorded,
+        }))
+    }
+
+    /// Read this book's [`BookKind`] (`Primary` or `AdjustmentLayer`) as known
+    /// at `known_at` (`HEAD` when `None`).
+    pub fn book_kind_at(
+        &self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+        capability: &Capability,
+    ) -> Outcome<BookKind> {
+        self.query(cx, |db, book| {
+            let at = match crate::subledger::admitted_at(db, book, capability, known_at)? {
+                Ok(at) => at,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            Ok(Ok(book_kind_at_db(db, book, at)?))
+        })
+    }
+
+    /// Attach a sealed Schedule M-1/M-3 / statutory / management reason-code
+    /// and rule-version tag (`fa.book_to_book`) to an adjustment entry proposal
+    /// before planning or posting it in an `AdjustmentLayer` book (plan §12.2).
+    pub fn attach_book_to_book_tag(
+        &self,
+        cx: &PurposeContexts,
+        proposal: &mut fa_model::EntryPayload,
+        reason_code: BookToBookReasonCode,
+        rule_version_oid: fa_model::Oid,
+    ) -> Result<(), BookError> {
+        let bytes = encode_book_to_book_tag(reason_code, rule_version_oid)
+            .map_err(|e| KernelError::Model(e.into()))?;
+        let sealed = self.seal_tag_bytes(cx, bytes)?;
+        proposal.tags.retain(|t| t.key != BOOK_TO_BOOK_TAG_KEY);
+        proposal.tags.push(fa_model::Tag {
+            key: BOOK_TO_BOOK_TAG_KEY.to_string(),
+            value: sealed,
+        });
+        proposal.tags.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(())
+    }
+
+    /// Reconcile this `AdjustmentLayer` book against its parent book's stock
+    /// trial balance at `period` or `as_of`, producing a deterministic,
+    /// round-trip-verified [`BookToBookReconciliation`] (`recon.book_to_book`,
+    /// plan §12.2, FA-INV-13, bead `fa-259c`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconcile_book_to_book(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        parent_book_id: Id128,
+        parent_known_at: CommitSeq,
+        parent_tb: &fa_registers::TrialBalance,
+        period: Option<&str>,
+        as_of: Option<DateDay>,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<BookToBookReconciliation> {
+        self.query(cx, |db, book| {
+            if let Err(denial) =
+                fa_policy::require(capability, fa_policy::Op::Reconcile, "book-to-book bridge")
+            {
+                return Ok(Err(fa_journal::policy::refusal(&denial)));
+            }
+            let at = match crate::subledger::admitted_at(db, book, capability, known_at)? {
+                Ok(at) => at,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            reconcile_book_to_book_at(
+                db,
+                book,
+                at,
+                parent_book_id,
+                parent_known_at,
+                parent_tb,
+                period,
+                as_of,
+            )
+        })
+    }
+}
+
+pub const ADJUSTMENT_LAYER_DOCUMENT_KIND: u8 = 21;
+pub const ADJUSTMENT_LAYER_MIME: &str = "application/vnd.franken.adjustment-layer.v1";
+pub const ADJUSTMENT_LAYER_ANCHOR_DOMAIN: &[u8] = b"fa:adjustment-layer:v1";
+pub const BOOK_TO_BOOK_TAG_KEY: &str = "fa.book_to_book";
+pub const BOOK_TO_BOOK_TAG_DOMAIN: &[u8] = b"fa:book-to-book-tag:v1";
+
+const BOOK_TO_BOOK_CITE: &str =
+    "plan §12.2, FA-INV-13 (multi-book adjustment layers and book-to-book reconciliation bridges)";
+
+/// Receipt from anchoring a book as an `AdjustmentLayer` (plan §12.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdjustmentLayerAnchored {
+    pub document_oid: fa_model::Oid,
+    pub doc_commit: [u8; 32],
+    pub parent_book_id: Id128,
+    pub parent_known_at: CommitSeq,
+    pub recorded_at: CommitSeq,
+    pub already_recorded: bool,
+}
+
+/// Deterministic, verified book-to-book reconciliation result (`recon.book_to_book`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BookToBookReconciliation {
+    pub effective_through: DateDay,
+    pub period: Option<String>,
+    pub bridge: BookToBookBridge,
+    pub bridge_digest: fa_model::Oid,
+    pub unit_codes: BTreeMap<u32, String>,
+}
+
+fn refusal_book_to_book(why: impl Into<String>, fix: impl Into<String>) -> Refusal {
+    Refusal::new(
+        CONSOLIDATION_REFUSED,
+        exit::REFUSAL,
+        why,
+        BOOK_TO_BOOK_CITE,
+        fix,
+    )
+}
+
+pub fn encode_book_to_book_tag(
+    reason_code: BookToBookReasonCode,
+    rule_version_oid: fa_model::Oid,
+) -> Result<Vec<u8>, fa_model::EncodeError> {
+    let mut w = Writer::new();
+    w.fixed(BOOK_TO_BOOK_TAG_DOMAIN)
+        .str(reason_code.as_str())
+        .fixed(&rule_version_oid.0);
+    w.finish()
+}
+
+pub fn decode_book_to_book_tag(
+    bytes: &[u8],
+) -> Result<(BookToBookReasonCode, fa_model::Oid), fa_model::DecodeError> {
+    let mut r = fa_model::Reader::new(bytes);
+    let magic = r.fixed::<{ BOOK_TO_BOOK_TAG_DOMAIN.len() }>("book_to_book_tag.magic")?;
+    if magic != BOOK_TO_BOOK_TAG_DOMAIN {
+        return Err(r.invalid("book-to-book tag header"));
+    }
+    let code_str = r.str(64, "book_to_book_tag.reason_code")?;
+    let Some(reason_code) = BookToBookReasonCode::parse(code_str) else {
+        return Err(r.invalid("book-to-book reason code"));
+    };
+    let rule_version_oid = fa_model::Oid(r.fixed::<32>("book_to_book_tag.rule_version_oid")?);
+    r.finish()?;
+    Ok((reason_code, rule_version_oid))
+}
+
+fn encode_adjustment_layer_anchor(
+    book_id: Id128,
+    parent_book_id: Id128,
+    parent_known_at: u64,
+) -> Result<Vec<u8>, fa_model::EncodeError> {
+    let mut w = Writer::new();
+    w.fixed(ADJUSTMENT_LAYER_ANCHOR_DOMAIN)
+        .fixed(&book_id.0)
+        .fixed(&parent_book_id.0)
+        .u64(parent_known_at);
+    w.finish()
+}
+
+fn decode_adjustment_layer_anchor(
+    bytes: &[u8],
+) -> Result<(Id128, Id128, u64), fa_model::DecodeError> {
+    let mut r = fa_model::Reader::new(bytes);
+    let magic =
+        r.fixed::<{ ADJUSTMENT_LAYER_ANCHOR_DOMAIN.len() }>("adjustment_layer_anchor.magic")?;
+    if magic != ADJUSTMENT_LAYER_ANCHOR_DOMAIN {
+        return Err(r.invalid("adjustment-layer anchor header"));
+    }
+    let book_id = Id128(r.fixed::<16>("adjustment_layer_anchor.book_id")?);
+    let parent_book_id = Id128(r.fixed::<16>("adjustment_layer_anchor.parent_book_id")?);
+    let parent_known_at = r.u64("adjustment_layer_anchor.parent_known_at")?;
+    r.finish()?;
+    Ok((book_id, parent_book_id, parent_known_at))
+}
+
+pub(crate) fn book_kind_at_db<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    at: CommitSeq,
+) -> Result<BookKind, BookError> {
+    let policy = fa_registry::evidence_policy::EvidencePolicy::embedded()
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let mut anchors: Vec<(CommitSeq, u64, fa_model::Oid, Id128)> = Vec::new();
+    for row in db.vertices_at(at).map_err(KernelError::from)? {
+        if !row.labels.contains(&label::DOCUMENT) {
+            continue;
+        }
+        let doc = fa_journal::evidence::verify_row(&row, &policy)
+            .map_err(|why| KernelError::Corrupt(format!("document {:032x}: {why}", row.vid.0)))?;
+        if doc.book_id != book.book_id || doc.mime != ADJUSTMENT_LAYER_MIME {
+            continue;
+        }
+        let fa_journal::evidence::Storage::Inline(ref payload) = doc.storage else {
+            return Err(
+                KernelError::Corrupt("adjustment-layer anchor must be inline".into()).into(),
+            );
+        };
+        let (anchor_book, parent_book_id, parent_known_at) =
+            decode_adjustment_layer_anchor(payload)
+                .map_err(|e| KernelError::Corrupt(format!("adjustment-layer anchor: {e}")))?;
+        if anchor_book != book.book_id || parent_book_id == book.book_id || parent_known_at == 0 {
+            return Err(KernelError::Corrupt(
+                "adjustment-layer anchor carries invalid book or sequence metadata".into(),
+            )
+            .into());
+        }
+        let oid = doc.oid();
+        let receipt_vid = fa_journal::custody::custody_vid(doc.book_id, &oid, 0);
+        let intake = db
+            .vertex_at(receipt_vid, at)
+            .map_err(KernelError::from)?
+            .ok_or_else(|| {
+                KernelError::Corrupt("adjustment-layer anchor lacks custody receipt".into())
+            })?;
+        anchors.push((intake.created_at, parent_known_at, oid, parent_book_id));
+    }
+    if anchors.is_empty() {
+        return Ok(BookKind::Primary);
+    }
+    anchors.sort_by_key(|(rec, seq, oid, _)| (*rec, *seq, *oid));
+    let first_parent = anchors[0].3;
+    let mut prev_seq = 0u64;
+    for (_, seq, _, parent) in &anchors {
+        if *parent != first_parent || *seq < prev_seq {
+            return Err(KernelError::Corrupt(
+                "adjustment-layer anchor history changed parent or regressed parent_known_at"
+                    .into(),
+            )
+            .into());
+        }
+        prev_seq = *seq;
+    }
+    let &(_, latest_parent_known_at, _, parent_book_id) =
+        anchors.last().expect("non-empty anchors");
+    Ok(BookKind::AdjustmentLayer {
+        parent_book_id,
+        parent_known_at: latest_parent_known_at,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconcile_book_to_book_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    at: CommitSeq,
+    parent_book_id: Id128,
+    parent_known_at: CommitSeq,
+    parent_tb: &fa_registers::TrialBalance,
+    period: Option<&str>,
+    as_of: Option<DateDay>,
+) -> Outcome<BookToBookReconciliation> {
+    crate::certificate::context_at(db, book, at)?;
+    let (through, resolved_period) = match (period, as_of) {
+        (Some(p), None) => {
+            let Some(period_row) = db
+                .vertex_at(period_vid(&book.calendar.id, p), at)
+                .map_err(KernelError::from)?
+                .filter(|row| row.labels.contains(&label::PERIOD))
+            else {
+                return Ok(Err(refusal_book_to_book(
+                    format!("unknown period `{p}` at sequence {}", at.0),
+                    "name a period of the adjustment-layer book's calendar (fa period list)",
+                )));
+            };
+            let period_row = PeriodRow::decode(&period_row)?;
+            let day = DateDay(
+                period_row
+                    .end
+                    .0
+                    .checked_sub(1)
+                    .ok_or_else(|| KernelError::Corrupt("period end underflow".into()))?,
+            );
+            (day, Some(p.to_string()))
+        }
+        (None, Some(day)) => (day, None),
+        _ => {
+            return Ok(Err(refusal_book_to_book(
+                "book-to-book reconciliation requires exactly one of --period or --as-of",
+                "pass --period <code> or --as-of YYYY-MM-DD",
+            )));
+        }
+    };
+    if parent_tb.activity {
+        return Ok(Err(refusal_book_to_book(
+            "parent trial balance is period activity rather than cumulative stock",
+            "certify or read a cumulative stock trial balance (omit --activity) for the parent book",
+        )));
+    }
+    if parent_tb.known_at != parent_known_at {
+        return Ok(Err(refusal_book_to_book(
+            format!(
+                "parent trial balance known-at {} differs from supplied parent known-at {}",
+                parent_tb.known_at.0, parent_known_at.0
+            ),
+            "supply the exact parent known-at that produced the parent trial balance",
+        )));
+    }
+    if parent_tb.effective_through != Some(through) {
+        return Ok(Err(refusal_book_to_book(
+            format!(
+                "parent trial balance cutoff ({}) does not match layered cutoff {}",
+                parent_tb
+                    .effective_through
+                    .map_or_else(|| "none".into(), |d| d.render()),
+                through.render()
+            ),
+            "select the same period or --as-of cutoff date in both the parent book and the adjustment-layer book",
+        )));
+    }
+
+    let layered_kind = book_kind_at_db(db, book, at)?;
+    let mut chart = Vec::new();
+    let mut code_to_vid: BTreeMap<String, u128> = BTreeMap::new();
+    let mut vid_to_meta: BTreeMap<u128, (String, String)> = BTreeMap::new();
+    for row in db.vertices_at(at).map_err(KernelError::from)? {
+        if !row.labels.contains(&label::ACCOUNT) {
+            continue;
+        }
+        if bytes(&row, property::BOOK_ID, "book-to-book account book")? != book.book_id.0 {
+            return Err(KernelError::Corrupt(
+                "book-to-book account belongs to another book".into(),
+            )
+            .into());
+        }
+        let account = AccountRow::decode(&row)?;
+        code_to_vid.insert(account.code.clone(), account.vid.0);
+        vid_to_meta.insert(account.vid.0, (account.code.clone(), account.name.clone()));
+        chart.push(Account {
+            id: account.vid.0,
+            code: account.code,
+            name: account.name,
+            account_type: account.account_type,
+            is_leaf: account.is_leaf,
+        });
+    }
+    chart.sort_by(|a, b| a.code.cmp(&b.code).then(a.id.cmp(&b.id)));
+
+    let mut units_set: BTreeSet<u32> = BTreeSet::new();
+    let mut unit_codes: BTreeMap<u32, String> = BTreeMap::new();
+    for (unit_id, unit) in book.units.iter() {
+        units_set.insert(unit_id.0);
+        unit_codes.insert(unit_id.0, unit.code.clone());
+    }
+
+    let mut parent_cells: BTreeMap<(u128, u32), (i128, i128)> = BTreeMap::new();
+    for row in &parent_tb.rows {
+        if row.debits == 0 && row.credits == 0 {
+            continue;
+        }
+        let Some(&layered_acct_id) = code_to_vid.get(&row.code) else {
+            return Ok(Err(refusal_book_to_book(
+                format!(
+                    "parent book carries non-zero balance on account `{}`, which is absent from the adjustment-layer book's chart",
+                    row.code
+                ),
+                format!(
+                    "install or add matching account `{}` in the adjustment-layer book (fa chart add / fa chart install)",
+                    row.code
+                ),
+            )));
+        };
+        if !units_set.contains(&row.unit_id) {
+            return Ok(Err(refusal_book_to_book(
+                format!(
+                    "parent trial balance references unit id {} absent from the adjustment-layer book",
+                    row.unit_id
+                ),
+                "ensure the adjustment-layer book declares every unit used by its parent book",
+            )));
+        }
+        let slot = parent_cells
+            .entry((layered_acct_id, row.unit_id))
+            .or_default();
+        slot.0 = slot
+            .0
+            .checked_add(row.debits)
+            .ok_or(fa_registers::RegisterError::Overflow)
+            .map_err(BookError::from)?;
+        slot.1 = slot
+            .1
+            .checked_add(row.credits)
+            .ok_or(fa_registers::RegisterError::Overflow)
+            .map_err(BookError::from)?;
+    }
+
+    let layered_own =
+        fa_registers::balance_as_of(db, book, through, Some(at)).map_err(BookError::from)?;
+    let mut layered_cells = parent_cells.clone();
+    for row in &layered_own.rows {
+        if row.debits == 0 && row.credits == 0 {
+            continue;
+        }
+        units_set.insert(row.unit_id);
+        let slot = layered_cells
+            .entry((row.account.0, row.unit_id))
+            .or_default();
+        slot.0 = slot
+            .0
+            .checked_add(row.debits)
+            .ok_or(fa_registers::RegisterError::Overflow)
+            .map_err(BookError::from)?;
+        slot.1 = slot
+            .1
+            .checked_add(row.credits)
+            .ok_or(fa_registers::RegisterError::Overflow)
+            .map_err(BookError::from)?;
+    }
+
+    let parent_balances: Vec<AccountBalance> = parent_cells
+        .iter()
+        .map(
+            |(&(account_id, unit_id), &(debits, credits))| AccountBalance {
+                account_id,
+                unit_id,
+                debits,
+                credits,
+            },
+        )
+        .collect();
+    let layered_balances: Vec<AccountBalance> = layered_cells
+        .iter()
+        .map(
+            |(&(account_id, unit_id), &(debits, credits))| AccountBalance {
+                account_id,
+                unit_id,
+                debits,
+                credits,
+            },
+        )
+        .collect();
+
+    // Extract reason-coded adjustment legs from visible posted entries in the
+    // adjustment-layer book through `through` at `at`. Any monetary entry
+    // lacking a `fa.book_to_book` tag moves `layered_balances` without adding
+    // an `AdjustmentLayerLeg`, so `reconcile_book_to_book` refuses with
+    // `UnexplainedBookDifference`.
+    let mut adjustments = Vec::new();
+    let mut runs = BTreeMap::new();
+    let mut visible_entries = Vec::new();
+    for row in db.vertices_at(at).map_err(KernelError::from)? {
+        if !row.labels.contains(&label::ENTRY) {
+            continue;
+        }
+        let entry = fa_journal::entry_storage::decode_at(db, &row, at)?;
+        if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
+            continue;
+        }
+        if !fa_journal::migration::visible_at(db, &entry, at, &mut runs)? {
+            continue;
+        }
+        if entry.proposal.control.is_some()
+            || entry.proposal.pending.is_some()
+            || entry.proposal.effective_date > through
+        {
+            continue;
+        }
+        visible_entries.push((row.created_at, row.vid, entry));
+    }
+    visible_entries.sort_by_key(|(created_at, vid, _)| (*created_at, vid.0));
+
+    for (_, vid, entry) in visible_entries {
+        let Some(tag) = entry
+            .proposal
+            .tags
+            .iter()
+            .find(|t| t.key == BOOK_TO_BOOK_TAG_KEY)
+        else {
+            continue;
+        };
+        let tag_val = tag
+            .value
+            .open(&book.seal_key, 256)
+            .map_err(|e| KernelError::Corrupt(format!("open fa.book_to_book tag: {e}")))?;
+        let fa_model::TagValue::Bytes(raw) = tag_val else {
+            return Err(KernelError::Corrupt("fa.book_to_book tag must carry bytes".into()).into());
+        };
+        let (reason_code, rule_version_oid) = decode_book_to_book_tag(&raw)
+            .map_err(|e| KernelError::Corrupt(format!("decode fa.book_to_book tag: {e}")))?;
+        for leg in &entry.proposal.legs {
+            let (debits, credits) = match leg.side {
+                fa_money::Side::Debit => (leg.amount.mantissa, 0),
+                fa_money::Side::Credit => (0, leg.amount.mantissa),
+            };
+            adjustments.push(AdjustmentLayerLeg {
+                entry_id: vid.0,
+                rule_version_oid,
+                reason_code,
+                account_id: leg.account_ref.0,
+                unit_id: leg.amount.unit.0,
+                debits,
+                credits,
+            });
+        }
+    }
+
+    let input = BookToBookInput {
+        parent_book_id,
+        parent_known_at: parent_known_at.0,
+        layered_book_id: book.book_id,
+        layered_kind,
+        layered_known_at: at.0,
+        accounts: chart,
+        units: units_set.into_iter().collect(),
+        parent_balances,
+        layered_balances,
+        adjustments,
+    };
+    let bridge = match reconcile_book_to_book(&input) {
+        Ok(bridge) => bridge,
+        Err(err) => {
+            let fix = match &err {
+                ConcordatError::ParentBookMismatch { .. } => {
+                    "anchor the layered book to its parent book first (`fa recon anchor --parent-book <dir> ...`)"
+                }
+                ConcordatError::ParentBookRestated { .. } => {
+                    "propagate any required tax/statutory adjustment into the layered book, then advance its anchor (`fa recon anchor --parent-book <dir>`)"
+                }
+                ConcordatError::UnexplainedBookDifference { .. } => {
+                    "every adjustment entry in a layered book must carry a Schedule M-1/M-3 or statutory reason code (`fa recon post --reason-code <code> ...`); reverse the unattributed entry and repost via `fa recon post`"
+                }
+                _ => {
+                    "correct the adjustment-layer inputs or accounts and rerun `fa recon book-to-book`"
+                }
+            };
+            return Ok(Err(concordat_book_to_book_refusal(
+                &err,
+                &vid_to_meta,
+                &book.units,
+                fix,
+            )));
+        }
+    };
+    let encoded = bridge
+        .canonical_bytes()
+        .map_err(|e| KernelError::Model(e.into()))?;
+    if !encoded.starts_with(BOOK_TO_BOOK_BRIDGE_FORMAT) {
+        return Err(
+            KernelError::Corrupt("book-to-book bridge canonical header mismatch".into()).into(),
+        );
+    }
+    let decoded = BookToBookBridge::decode(&encoded)
+        .map_err(|e| KernelError::Corrupt(format!("book-to-book bridge decode drift: {e}")))?;
+    if decoded != bridge {
+        return Err(KernelError::Corrupt(
+            "book-to-book bridge canonical round-trip drifted".into(),
+        )
+        .into());
+    }
+    let bridge_digest = bridge.digest().map_err(|e| KernelError::Model(e.into()))?;
+    Ok(Ok(BookToBookReconciliation {
+        effective_through: through,
+        period: resolved_period,
+        bridge,
+        bridge_digest,
+        unit_codes,
+    }))
+}
+
+fn concordat_book_to_book_refusal(
+    error: &ConcordatError,
+    accounts: &BTreeMap<u128, (String, String)>,
+    units: &fa_money::UnitRegistry,
+    fix: &str,
+) -> Refusal {
+    let why = match error {
+        ConcordatError::UnexplainedBookDifference {
+            account_code,
+            unit_id,
+            parent_net,
+            adjustments_net,
+            layered_net,
+            residual,
+        } => {
+            let fmt_amt =
+                |m: i128| fa_money::Amount::new(fa_money::UnitId(*unit_id), m).render(units);
+            format!(
+                "unexplained book-to-book difference on account `{account_code}`: parent ({}) + reason-coded adjustments ({}) != layered ({}), residual = {}",
+                fmt_amt(*parent_net),
+                fmt_amt(*adjustments_net),
+                fmt_amt(*layered_net),
+                fmt_amt(*residual),
+            )
+        }
+        other => {
+            let mut msg = other.to_string();
+            for (id, (code, _)) in accounts {
+                msg = msg.replace(&format!("{id:032x}"), code);
+            }
+            msg
+        }
+    };
+    refusal_book_to_book(why, fix)
 }

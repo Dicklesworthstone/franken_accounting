@@ -495,12 +495,13 @@ fn authorize_reviewer<V: Vfs + Clone, B: Vfs + Clone>(
     ) {
         return Ok(Err(fa_journal::policy::refusal(&d)));
     }
-    if capability.profile() != Profile::Human {
+    let profile = capability.sod_profile();
+    if profile != Profile::Human {
         return Ok(Err(fa_journal::policy::refusal(
             &fa_policy::Denial::ApproverProfile {
                 rule: "finding_reviewer".into(),
                 approver: principal,
-                profile: capability.profile(),
+                profile,
                 allowed: vec!["Human".into()],
             },
         )));

@@ -40,7 +40,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_formats::load_file::{
-    self, BatesRange as LoadFileBates, ConfidentialityDesignation, LoadFileRecord,
+    self, BatesRange as LoadFileBates, ConfidentialityDesignation,
+    LoadFileFormat as FormatsLoadFileFormat, LoadFileRecord,
 };
 use fa_journal::refusal::{KernelError, Refusal, code, exit};
 use fa_journal::{
@@ -48,9 +49,11 @@ use fa_journal::{
 };
 use fa_model::Oid;
 use fa_notary::production::{
-    BatesAssignment, ConfidentialityDesignation as NotaryDesignation, Fre902Package, PrivilegeLog,
-    PrivilegeLogRow, PrivilegeTreatment,
+    Fre902Package, LoadFileFormat as NotaryLoadFileFormat, MatterProductionPackage, PrivilegeLog,
+    PrivilegeLogRow, PrivilegeMetadata, PrivilegeTreatment, assemble_matter_package,
+    bates_assignments_from_produced,
 };
+pub use fa_notary::production::{LoadFileFormat, bates_assignments_from_view};
 use fa_registry::evidence_policy::EvidencePolicy;
 use fa_registry::redaction_contracts::RedactionContracts;
 use fa_time::DateDay;
@@ -188,7 +191,9 @@ fn native_prefix(prefix: &str) -> Result<(), Refusal> {
 /// A document-named production delivers Concordance DAT/OPT: EDRM XML binds
 /// a bundle digest, which only a bundle-scoped production has.
 fn documents_mode_format(profile: &ProductionProfile) -> Result<(), Refusal> {
-    if profile.load_file_format != 1 {
+    if NotaryLoadFileFormat::from_tag(profile.load_file_format)
+        != Some(NotaryLoadFileFormat::ConcordanceDatOpt)
+    {
         return Err(usage(
             format!(
                 "matter `{}` delivers EDRM XML (load-file format {}), which binds the production bundle's digest",
@@ -343,7 +348,10 @@ impl Book {
         if let Err(refusal) = native_prefix(&view.profile.bates_prefix) {
             return Ok(Err(refusal));
         }
-        let dat_opt = matches!(view.profile.load_file_format, 1 | 3);
+        let dat_opt = matches!(
+            FormatsLoadFileFormat::from_tag(view.profile.load_file_format),
+            Some(FormatsLoadFileFormat::ConcordanceDatOpt | FormatsLoadFileFormat::Both)
+        );
         let metadata_format = if dat_opt {
             "concordance_dat_v1"
         } else {
@@ -545,41 +553,54 @@ impl Book {
             BookError::Kernel(KernelError::Corrupt(format!("production receipt: {e}")))
         })?;
         let checkpoint_public_key = self.checkpoint_public_key();
-        let assignments = produced
-            .ranges
-            .iter()
-            .map(|r| {
-                Ok(BatesAssignment {
-                    document_oid: r.range.document,
-                    doc_commit: r.range.doc_commit,
-                    matter_id: produced.profile.matter.clone(),
-                    bates_prefix: produced.profile.bates_prefix.clone(),
-                    start_number: r.range.start,
-                    end_number: r.range.end,
-                    page_count: r.range.pages(),
-                    designation: NotaryDesignation::from_tag(r.range.designation).ok_or_else(
-                        || {
-                            BookError::Kernel(KernelError::Corrupt(format!(
-                                "Bates range designation {} is not registered",
-                                r.range.designation
-                            )))
-                        },
-                    )?,
-                })
-            })
-            .collect::<Result<Vec<_>, BookError>>()?;
-        let fre902 = Fre902Package::generate(
-            produced.profile.matter.clone(),
-            &bundle.bundle,
+        let assignments = bates_assignments_from_produced(&produced).map_err(|e| {
+            BookError::Kernel(KernelError::Corrupt(format!("Bates assignment: {e}")))
+        })?;
+        let summaries = match self.held_documents()? {
+            Ok(held) => held,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut reads = BTreeMap::new();
+        for range in &produced.ranges {
+            let read = match self.read_document_for(capability, &range.range.document)? {
+                Ok(read) => read,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            reads.insert(range.range.document, read);
+        }
+        let mut privilege_metadata = BTreeMap::new();
+        for (oid, claim) in &claims.metadata {
+            if let Some(summary) = summaries.get(oid) {
+                privilege_metadata.insert(
+                    *oid,
+                    PrivilegeMetadata {
+                        document_oid: *oid,
+                        doc_commit: summary.doc_commit,
+                        date: claim.date,
+                        author: claim.author.clone(),
+                        recipients: claim.recipients.clone(),
+                        description: claim.description.clone(),
+                        basis: claim.basis.clone(),
+                    },
+                );
+            }
+        }
+        let package: MatterProductionPackage = assemble_matter_package(
+            &produced.profile.matter,
+            bundle.bundle.clone(),
             &bundle.checkpoint,
-            &receipt,
+            receipt,
             &checkpoint_public_key,
-            &assignments,
-        );
+            &reads,
+            assignments,
+            &claims.withheld,
+            &privilege_metadata,
+        )
+        .map_err(BookError::Kernel)?;
         let delivery = BundleDelivery {
             bundle,
             checkpoint_public_key,
-            fre902,
+            fre902: package.fre902,
         };
         Ok(self
             .render_volume(capability, &produced, claims, volume, Some(delivery))?
@@ -760,25 +781,43 @@ impl Book {
             });
         }
         rows.sort_by_key(|r| r.document_oid);
-        let dat_opt = matches!(profile.load_file_format, 1 | 3);
+        let format = FormatsLoadFileFormat::from_tag(profile.load_file_format);
+        let dat_opt = matches!(
+            format,
+            Some(FormatsLoadFileFormat::ConcordanceDatOpt | FormatsLoadFileFormat::Both)
+        );
         let (dat, opt) = if dat_opt {
+            let dat_str = load_file::write_concordance_dat(&records).map_err(format_failure)?;
+            let round_trip = load_file::parse_concordance_dat(&dat_str).map_err(format_failure)?;
+            if round_trip != records {
+                return Err(BookError::Kernel(KernelError::Corrupt(
+                    "Concordance DAT load file failed lossless round-trip".into(),
+                )));
+            }
             (
-                Some(load_file::write_concordance_dat(&records).map_err(format_failure)?),
+                Some(dat_str),
                 Some(load_file::write_opticon_opt(volume, &records).map_err(format_failure)?),
             )
         } else {
             (None, None)
         };
         let edrm = match &bundle {
-            Some(delivery) if matches!(profile.load_file_format, 2 | 3) => Some(
-                load_file::write_edrm_xml(
-                    volume,
-                    &profile.matter,
-                    &hex(&delivery.bundle.bundle.digest),
-                    &records,
+            Some(delivery)
+                if matches!(
+                    format,
+                    Some(FormatsLoadFileFormat::EdrmXml | FormatsLoadFileFormat::Both)
+                ) =>
+            {
+                Some(
+                    load_file::write_edrm_xml(
+                        volume,
+                        &profile.matter,
+                        &hex(&delivery.bundle.bundle.digest),
+                        &records,
+                    )
+                    .map_err(format_failure)?,
                 )
-                .map_err(format_failure)?,
-            ),
+            }
             _ => None,
         };
         Ok(Ok(ProductionVolume {

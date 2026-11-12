@@ -406,6 +406,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(seal(cx, &self.entropy, &self.context.seal_key, text)?)
     }
 
+    /// Seal a binary tag payload using this book's explicitly supplied entropy capability.
+    pub fn seal_tag_bytes(
+        &self,
+        cx: &PurposeContexts,
+        bytes: Vec<u8>,
+    ) -> Result<Erasable<fa_model::TagValue>, BookError> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let mut salt = [0; 32];
+        let mut nonce = [0; 24];
+        self.entropy.fill(&mut salt)?;
+        self.entropy.fill(&mut nonce)?;
+        Ok(Erasable::seal(
+            &fa_model::TagValue::Bytes(bytes),
+            None,
+            &self.context.seal_key,
+            salt,
+            nonce,
+        ))
+    }
+
     /// Journal a complete effective-dated Revenue/Expense-to-Equity routing map.
     /// The kernel retains schema, account, capability and policy witnesses in
     /// the same transaction as the immutable SchemaChange control.
@@ -2025,6 +2045,53 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Outcome<fa_journal::DraftRecorded> {
         let req = self.draft_request(cx, capability, effective_date, description)?;
         Ok(fa_journal::discard_draft(&mut self.db, cx, &self.context, name, req).await?)
+    }
+
+    /// Pre-observation base admission for `promote_draft` (`FA-INV-10`,
+    /// `fa-0hs4.24`).
+    pub fn admit_draft_promote(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        name: &str,
+    ) -> Outcome<()> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::admit_promote(db, context, capability, name)?)
+        })
+    }
+
+    /// Admit and read the draft `name` (`FA-INV-10`, `fa-0hs4.24`).
+    pub fn draft_admitted(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        name: &str,
+    ) -> Outcome<Option<fa_journal::DraftView>> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::read_draft_admitted(
+                db,
+                &cx.query(),
+                context,
+                capability,
+                name,
+            )?)
+        })
+    }
+
+    /// Admit and list drafts visible to `capability` (`FA-INV-10`, `fa-0hs4.24`).
+    pub fn drafts_admitted(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Vec<fa_journal::DraftView>> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::list_drafts_admitted(
+                db,
+                &cx.query(),
+                context,
+                capability,
+            )?)
+        })
     }
 
     /// The draft `name` as its records state it.
@@ -4313,6 +4380,154 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Build the sealed `PolicyControl` proposal that activates `policy`
+    /// without committing; two independent Human approvers bind its
+    /// `proposal_digest()` before [`AsyncBook::activate_retention_policy`].
+    pub fn prepare_retention_activation(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        policy: &fa_journal::RetentionPolicy,
+        idempotency_key: &[u8],
+        description: &str,
+    ) -> Result<fa_model::EntryPayload, BookError> {
+        let description = self.seal_text(cx, description)?;
+        Ok(fa_journal::retention_activation_proposal(
+            &self.context,
+            principal,
+            policy,
+            idempotency_key,
+            description,
+        )?)
+    }
+
+    /// Activate a [`fa_journal::RetentionPolicy`] with dual control (plan §8.5, §14.3).
+    pub async fn activate_retention_policy(
+        &mut self,
+        cx: &PurposeContexts,
+        req: fa_journal::RetentionActivationRequest,
+    ) -> Outcome<fa_journal::RetentionPolicyActivated> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::activate_retention_policy(&mut self.db, cx, &self.context, req).await?)
+    }
+
+    /// Read all active [`fa_journal::RetentionPolicy`] objects recorded in this book.
+    pub fn active_retention_policies(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<Vec<fa_journal::ActiveRetentionPolicy>, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::active_retention_policies(db, book.book_id)?)
+        })
+    }
+
+    /// Verify all retention policies recorded in this book against their
+    /// `PolicyControl` entries, canonical policy bodies, and authority documents.
+    /// Calibrate a registered Lantern procedure's threshold parameter on clean
+    /// nonconformity scores and labeled evaluation items under this book's
+    /// current security policy epoch (plan §11.9, bead fa-4psc), returning a
+    /// replay-verified [`fa_lantern::DetectorThresholdCard`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn calibrate_procedure_threshold(
+        &self,
+        cx: &PurposeContexts,
+        procedure_id: &str,
+        parameter_name: &str,
+        clean_calibration_scores: &[i128],
+        labeled_eval_items: &[(i128, bool)],
+        candidate_thresholds: &[i128],
+        target_alpha_bps: u32,
+        delta_bps: u32,
+        requested_policy_epoch: Option<[u8; 32]>,
+    ) -> Result<fa_lantern::DetectorThresholdCard, BookError> {
+        self.query(cx, |db, book| {
+            let epoch = fa_journal::policy::security_policy_epoch(db)?;
+            let policy_oid = fa_policy::Steward::embedded()
+                .map_err(|e| KernelError::Corrupt(e.to_string()))?
+                .policy_oid;
+            let enforced_policy_epoch = fa_model::domain_digest(
+                b"fa:lantern:policy-epoch:v1",
+                &[&policy_oid, &epoch.to_le_bytes()],
+            );
+            let subject = VId(u128::from_le_bytes(book.book_id.0));
+            let card = fa_lantern::calibrate_detector_threshold(
+                procedure_id,
+                parameter_name,
+                clean_calibration_scores,
+                labeled_eval_items,
+                candidate_thresholds,
+                target_alpha_bps,
+                delta_bps,
+                Some(requested_policy_epoch.unwrap_or(enforced_policy_epoch)),
+                enforced_policy_epoch,
+                subject,
+            )?;
+            let replayed = card
+                .decision_card
+                .verify_replay(enforced_policy_epoch)
+                .map_err(|e| KernelError::Corrupt(format!("decision card replay drift: {e:?}")))?;
+            if replayed != card.decision_card_digest {
+                return Err(KernelError::Corrupt(
+                    "calibrated decision card digest differed on replay".into(),
+                )
+                .into());
+            }
+            Ok(card)
+        })
+    }
+
+    pub fn verify_retention_policies(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<fa_journal::RetentionVerification, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::verify_retention_policies(db, book.book_id)?)
+        })
+    }
+
+    /// Evaluate a retention cut on `subject` at `(cut_at_seq, cut_at_day)`,
+    /// honoring active legal holds before active retention floors (plan §8.5).
+    pub fn retention_cut(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        subject: VId,
+        cut_at_seq: CommitSeq,
+        cut_at_day: DateDay,
+    ) -> Outcome<()> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::retention_cut(
+                db, book, capability, subject, cut_at_seq, cut_at_day,
+            )?)
+        })
+    }
+
+    /// Check that a register checkpoint cadence does not exceed any active
+    /// retention floor in this book (plan §8.5, bead fa-9xf9).
+    pub fn check_checkpoint_cadence(
+        &self,
+        cx: &PurposeContexts,
+        cadence_commits: u64,
+        cadence_days: Option<u32>,
+    ) -> Outcome<Vec<fa_journal::ActiveRetentionPolicy>> {
+        self.query(cx, |db, book| {
+            let verified = fa_journal::verify_retention_policies(db, book.book_id)?;
+            if !verified.drifts.is_empty() {
+                return Err(KernelError::Corrupt(format!(
+                    "retention policy drift prevents cadence check: {}",
+                    verified.drifts.join("; ")
+                ))
+                .into());
+            }
+            Ok(fa_journal::check_checkpoint_cadence(
+                &verified.active_policies,
+                cadence_commits,
+                cadence_days,
+            )
+            .map(|()| verified.active_policies))
+        })
+    }
+
     /// Journal the authorized view using the caller's filesystem and context.
     pub async fn derive_redacted_view(
         &mut self,
@@ -4969,6 +5184,25 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )?)
         })? {
             return Ok(Err(refusal));
+        }
+        let prev_through = self.query(cx, |db, book| match fa_notary::latest(db, None) {
+            Ok(Some(prev))
+                if prev.state.book_id == book.book_id
+                    && prev.state.branch_id == fa_model::Id128::TRUNK
+                    && prev.recorded_at > prev.state.through_seq =>
+            {
+                Ok(Some(prev.state.through_seq))
+            }
+            Ok(_) | Err(KernelError::Corrupt(_)) => Ok(None),
+            Err(error) => Err(error.into()),
+        })?;
+        if let Some(prev_through) = prev_through
+            && let Err(fgdb::RebuildError::Interrupted(error)) = self
+                .db
+                .ensure_delta_window(&cx.commit(), prev_through)
+                .await
+        {
+            return Err(BookError::Context(error));
         }
         Ok(fa_notary::checkpoint(&mut self.db, cx, &self.context, &self.signer).await?)
     }
@@ -6933,6 +7167,148 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 budget,
                 Some(&cx.query()),
             )?)
+        })
+    }
+
+    /// Build a deterministic flow-of-funds exhibit (Markdown flowchart + zero-float SVG)
+    /// over the money-flow projection anchored at `account` and `source` (`fa-cet`, `fa-949`).
+    pub fn flow_of_funds_exhibit(
+        &self,
+        cx: &PurposeContexts,
+        account: VId,
+        source: VId,
+        known_at: Option<CommitSeq>,
+        effective_through: Option<fa_time::DateDay>,
+    ) -> Result<fa_statements::render::FlowOfFundsExhibit, BookError> {
+        self.query(cx, |db, book| {
+            let snapshot =
+                fa_lantern::Snapshot::read(db, &cx.query(), book, known_at, effective_through)?;
+            let mut legs = fa_lantern::projection::flow_legs(&snapshot)?;
+            let source_legs: Vec<_> = legs
+                .iter()
+                .filter(|leg| leg.entry == source && (leg.to == account || leg.from == account))
+                .cloned()
+                .collect();
+            let Some(first_source) = source_legs.first() else {
+                return Err(BookError::Lantern(fa_lantern::LanternError::Parameter {
+                    procedure: "trace".into(),
+                    name: "source".into(),
+                    message: "source entry has no flow leg touching the traced account".into(),
+                }));
+            };
+            let unit_id = first_source.unit_id;
+            let source_date = first_source.effective_date;
+            let unit = book.units.get(fa_money::UnitId(unit_id)).ok_or_else(|| {
+                BookError::Lantern(fa_lantern::LanternError::Parameter {
+                    procedure: "trace".into(),
+                    name: "unit".into(),
+                    message: format!("unregistered unit {unit_id}"),
+                })
+            })?;
+            legs.sort_by_key(|leg| {
+                (
+                    leg.effective_date,
+                    leg.recorded,
+                    leg.entry,
+                    leg.from,
+                    leg.to,
+                )
+            });
+            let mut reachable = std::collections::BTreeSet::from([account]);
+            for leg in &source_legs {
+                reachable.insert(leg.from);
+                reachable.insert(leg.to);
+            }
+            let mut selected = Vec::new();
+            for leg in legs {
+                if leg.unit_id != unit_id || leg.effective_date < source_date {
+                    continue;
+                }
+                if leg.entry == source || leg.to == account || reachable.contains(&leg.from) {
+                    reachable.insert(leg.from);
+                    reachable.insert(leg.to);
+                    selected.push(leg);
+                }
+            }
+            let code_and_label = |vid: VId| -> (String, String) {
+                snapshot
+                    .accounts
+                    .get(&vid)
+                    .map(|row| (row.code.clone(), row.name.clone()))
+                    .unwrap_or_else(|| (format!("{:032x}", vid.0), "account".to_string()))
+            };
+            let mut edge_map: std::collections::BTreeMap<
+                (String, String),
+                (i128, std::collections::BTreeSet<VId>),
+            > = std::collections::BTreeMap::new();
+            let mut node_map: std::collections::BTreeMap<String, (String, i128, i128)> =
+                std::collections::BTreeMap::new();
+            for leg in selected {
+                let (from_code, from_label) = code_and_label(leg.from);
+                let (to_code, to_label) = code_and_label(leg.to);
+                let from_node = node_map
+                    .entry(from_code.clone())
+                    .or_insert_with(|| (from_label, 0, 0));
+                from_node.2 = from_node
+                    .2
+                    .checked_add(leg.mantissa)
+                    .ok_or(BookError::Lantern(fa_lantern::LanternError::Overflow(
+                        "flow-of-funds outflow overflow",
+                    )))?;
+                let to_node = node_map
+                    .entry(to_code.clone())
+                    .or_insert_with(|| (to_label, 0, 0));
+                to_node.1 = to_node
+                    .1
+                    .checked_add(leg.mantissa)
+                    .ok_or(BookError::Lantern(fa_lantern::LanternError::Overflow(
+                        "flow-of-funds inflow overflow",
+                    )))?;
+                let edge = edge_map
+                    .entry((from_code, to_code))
+                    .or_insert_with(|| (0, std::collections::BTreeSet::new()));
+                edge.0 = edge.0.checked_add(leg.mantissa).ok_or(BookError::Lantern(
+                    fa_lantern::LanternError::Overflow("flow-of-funds edge overflow"),
+                ))?;
+                edge.1.insert(leg.entry);
+            }
+            let nodes: Vec<fa_statements::render::FlowOfFundsNode> = node_map
+                .into_iter()
+                .map(|(code, (label, total_inflow, total_outflow))| {
+                    fa_statements::render::FlowOfFundsNode {
+                        code,
+                        label,
+                        total_inflow,
+                        total_outflow,
+                    }
+                })
+                .collect();
+            let edges: Vec<fa_statements::render::FlowOfFundsEdge> = edge_map
+                .into_iter()
+                .map(|((from_code, to_code), (amount_mantissa, entries))| {
+                    fa_statements::render::FlowOfFundsEdge {
+                        from_code,
+                        to_code,
+                        amount_mantissa,
+                        entry_count: entries.len() as u64,
+                    }
+                })
+                .collect();
+            fa_statements::render::render_flow_of_funds_diagram(
+                book.book_id,
+                snapshot.coordinate.known_at.0,
+                &unit.code,
+                unit.scale,
+                &nodes,
+                &edges,
+            )
+            .map_err(|e| {
+                BookError::Lantern(fa_lantern::LanternError::Parameter {
+                    procedure: "trace".into(),
+                    name: "render".into(),
+                    message: e.to_string(),
+                })
+            })
         })
     }
 

@@ -692,3 +692,342 @@ fn large_comparative_pdfa_keeps_exact_values_on_a_wide_page() {
         assert_eq!(head(&book), before, "rendering does not write the journal");
     }
 }
+
+#[test]
+fn register_open_items_lineage_trace_and_case_diff_render_end_to_end() {
+    let dir = temporary();
+    let book = book(&dir);
+
+    let sale_intent = dir.join("sale-trace.json");
+    std::fs::write(
+        &sale_intent,
+        r#"{"idempotency_key":"sale-trace","effective_date":"2026-03-12","legs":[{"side":"debit","account":"1000","amount":"40.00 USD"},{"side":"credit","account":"4000","amount":"40.00 USD"}]}"#,
+    )
+    .unwrap();
+    let src = dir.join("sale-trace.txt");
+    std::fs::write(&src, b"Traceable sale receipt").unwrap();
+    let doc = ok(
+        &book,
+        &[
+            "document",
+            "add",
+            src.to_str().unwrap(),
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let doc_oid = text(data(&doc[0]), "oid").to_string();
+    let posted_sale = ok(
+        &book,
+        &[
+            "post",
+            "--intent",
+            sale_intent.to_str().unwrap(),
+            "--evidence",
+            &doc_oid,
+        ],
+    );
+    let sale_vid = text(data(&posted_sale[0]), "vid").to_string();
+
+    // Close March and post a Revision case against sale_vid so both lineage and case diff have real supersession/restatement deltas.
+    ok(
+        &book,
+        &[
+            "period",
+            "close",
+            "FY2026-P03",
+            "--reason",
+            "Scheduled",
+            "--yes",
+        ],
+    );
+    ok(
+        &book,
+        &[
+            "case",
+            "open",
+            "--kind",
+            "Revision",
+            "--periods",
+            "FY2026-P03",
+            "--determined-on",
+            "2026-04-02",
+            "--authority",
+            &doc_oid,
+        ],
+    );
+    ok(&book, &["scenario", "fork", "revised", "--as", "analyst"]);
+    let rev_intent = dir.join("revision.json");
+    std::fs::write(
+        &rev_intent,
+        format!(
+            r#"{{"class":"Revision","revises":"{sale_vid}","reason":"WrongAmount","idempotency_key":"rev-sale","legs":[{{"side":"debit","account":"1000","amount":"10.00 USD"}},{{"side":"credit","account":"4000","amount":"10.00 USD"}}]}}"#
+        ),
+    )
+    .unwrap();
+    ok(
+        &book,
+        &[
+            "scenario",
+            "run",
+            "revised",
+            "--intent",
+            rev_intent.to_str().unwrap(),
+            "--as",
+            "analyst",
+            "--grant",
+            "restate",
+        ],
+    );
+    let rehearsal = dir.join("rehearsal.cert");
+    ok(
+        &book,
+        &[
+            "scenario",
+            "diff",
+            "revised",
+            "--period",
+            "FY2026-P03",
+            "--certificate-out",
+            rehearsal.to_str().unwrap(),
+        ],
+    );
+    ok(
+        &book,
+        &[
+            "case",
+            "rehearse",
+            "1",
+            "--certificate",
+            rehearsal.to_str().unwrap(),
+        ],
+    );
+    let manifest = ok(&book, &["case", "approve", "1", "--dry-run"]);
+    let manifest_digest = text(data(&manifest[0]), "digest").to_string();
+    let app1 = text(
+        data(
+            &ok(
+                &book,
+                &[
+                    "approve",
+                    "--proposal",
+                    &manifest_digest,
+                    "--as",
+                    "controller",
+                ],
+            )[0],
+        ),
+        "approval_vid",
+    )
+    .to_string();
+    let app2 = text(
+        data(
+            &ok(
+                &book,
+                &["approve", "--proposal", &manifest_digest, "--as", "auditor"],
+            )[0],
+        ),
+        "approval_vid",
+    )
+    .to_string();
+    ok(
+        &book,
+        &[
+            "case",
+            "approve",
+            "1",
+            "--approval",
+            &app1,
+            "--approval",
+            &app2,
+        ],
+    );
+    // Record corroborated TimeEvidence ticks BEFORE `case post 1` so dated HTML/PDF/A renders
+    // have a retained tick known at BOTH the case's Post sequence and HEAD.
+    record_ticks(&book);
+    ok(&book, &["case", "post", "1"]);
+
+    // 1. Register IR + PDF/A-2b via `fa explain register --render`.
+    refused(&book, &["explain", "entry", &sale_vid, "--render", "md"], 2);
+    let reg_pdfa = dir.join("register-1000.pdf");
+    let reg_events = ok(
+        &book,
+        &[
+            "explain",
+            "register",
+            "1000",
+            "--period",
+            "FY2026-P03",
+            "--render",
+            "pdfa",
+            "--out",
+            reg_pdfa.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        reg_events
+            .iter()
+            .map(|e| text(e, "event"))
+            .collect::<Vec<_>>(),
+        ["register_explained", "rendered"]
+    );
+    fa::validate_pdfa2b(&std::fs::read(&reg_pdfa).unwrap()).unwrap();
+
+    // 2. Open-items IR + HTML via `fa open-items --account 1000 --render`.
+    refused(&book, &["open-items", "--render", "md"], 2);
+    let oi_html = dir.join("open-items-1000.html");
+    let oi_events = ok(
+        &book,
+        &[
+            "open-items",
+            "--account",
+            "1000",
+            "--render",
+            "html",
+            "--out",
+            oi_html.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        oi_events
+            .iter()
+            .map(|e| text(e, "event"))
+            .collect::<Vec<_>>(),
+        ["open_items", "rendered"]
+    );
+    let oi_body = std::fs::read_to_string(&oi_html).unwrap();
+    assert!(
+        oi_body.contains("Statement: open-items:1000")
+            && oi_body.contains("Total Open Items (1000)"),
+        "{oi_body}"
+    );
+
+    // 3. Lineage SVG exhibit via `fa explain lineage <vid> --render svg --out`.
+    let lineage_svg = dir.join("lineage.svg");
+    let lin_events = ok(
+        &book,
+        &[
+            "explain",
+            "lineage",
+            &sale_vid,
+            "--render",
+            "svg",
+            "--out",
+            lineage_svg.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        lin_events
+            .iter()
+            .map(|e| text(e, "event"))
+            .collect::<Vec<_>>(),
+        ["lineage_explained", "rendered"]
+    );
+    let lin_body = std::fs::read_to_string(&lineage_svg).unwrap();
+    assert!(
+        lin_body.contains("<svg ")
+            && lin_body.contains("Lineage Exhibit:")
+            && lin_body.contains("SUPERSEDES")
+            && lin_body.contains("Revises"),
+        "{lin_body}"
+    );
+
+    // 4. Flow-of-funds SVG exhibit via `fa trace libr ... --render svg --out`.
+    let fof_svg = dir.join("flow-of-funds.svg");
+    let trace_events = ok(
+        &book,
+        &[
+            "trace",
+            "libr",
+            "--account",
+            "1000",
+            "--source",
+            &sale_vid,
+            "--effective-through",
+            "2026-03-31",
+            "--render",
+            "svg",
+            "--out",
+            fof_svg.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        trace_events
+            .iter()
+            .map(|e| text(e, "event"))
+            .collect::<Vec<_>>(),
+        ["procedure_run", "rendered"]
+    );
+    let fof_body = std::fs::read_to_string(&fof_svg).unwrap();
+    assert!(
+        fof_body.contains("Flow-of-Funds Exhibit") && fof_body.contains("4000"),
+        "{fof_body}"
+    );
+
+    // 5. Case restatement diff Markdown IR + semantic HTML diff (`<del>` / `<ins>`).
+    let diff_md_events = ok(
+        &book,
+        &[
+            "case",
+            "diff",
+            "1",
+            "--statements",
+            "--period",
+            "FY2026-P03",
+            "--definition",
+            "income-statement",
+            "--render",
+            "md",
+        ],
+    );
+    let diff_md = text(rendered(&diff_md_events), "markdown");
+    assert!(
+        diff_md.contains("As Originally Reported") && diff_md.contains("As Currently Stated"),
+        "{diff_md}"
+    );
+    let diff_html = dir.join("case-diff.html");
+    let diff_html_events = ok(
+        &book,
+        &[
+            "case",
+            "diff",
+            "1",
+            "--statements",
+            "--period",
+            "FY2026-P03",
+            "--definition",
+            "income-statement",
+            "--render",
+            "html",
+            "--out",
+            diff_html.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(text(diff_html_events.last().unwrap(), "event"), "rendered");
+    let diff_html_body = std::fs::read_to_string(&diff_html).unwrap();
+    assert!(
+        diff_html_body.contains("<del>") && diff_html_body.contains("<ins>"),
+        "{diff_html_body}"
+    );
+
+    // 6. `--fmd-bin` missing binary refuses cleanly with exit 4 (environment) without creating `--out`.
+    let missing_out = dir.join("missing-fmd.html");
+    refused(
+        &book,
+        &[
+            "tb",
+            "--period",
+            "FY2026-P03",
+            "--render",
+            "html",
+            "--out",
+            missing_out.to_str().unwrap(),
+            "--fmd-bin",
+            dir.join("no-such-fmd-binary").to_str().unwrap(),
+        ],
+        4,
+    );
+    assert!(!missing_out.exists());
+}

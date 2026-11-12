@@ -1480,6 +1480,61 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::Read, Op::SchemaChange],
             Reaches,
         ),
+        row(
+            &["document", "retention", "activate", "--plan", "junk.plan"],
+            &[Op::RuleChange],
+            Reaches,
+        ),
+        row(
+            &[
+                "document",
+                "retention",
+                "cut",
+                document,
+                "--seq",
+                "1",
+                "--day",
+                DAY,
+            ],
+            &[Op::Erase],
+            Reaches,
+        ),
+        row(
+            &[
+                "recon",
+                "anchor",
+                "--parent-book-id",
+                "00000000000000000000000000000001",
+                "--parent-known-at",
+                "1",
+            ],
+            &[Op::SchemaChange],
+            Reaches,
+        ),
+        row(
+            &[
+                "recon",
+                "post",
+                "--reason-code",
+                "M1-PERM-MEALS",
+                "--intent",
+                "junk.json",
+            ],
+            &[Op::Post],
+            Reaches,
+        ),
+        row(
+            &[
+                "recon",
+                "book-to-book",
+                "--period",
+                "FY2026-P03",
+                "--parent-certificate",
+                ZERO_DIGEST,
+            ],
+            &[Op::Read, Op::Reconcile],
+            Reaches,
+        ),
     ];
     let mut produce = row(
         &[

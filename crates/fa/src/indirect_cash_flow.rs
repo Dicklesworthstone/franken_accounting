@@ -27,13 +27,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_journal::{Refusal, exit};
 use fa_model::{AccountType, EntryClass};
 use fa_money::wide::U256;
-use fa_statements::Statement;
+use fa_statements::cash_flow::{
+    CashFlowClassification, CashFlowInput, CashFlowStatement, CashFlowUnitReport, CashLegMovement,
+    IndirectAdjustmentCategory, IndirectAdjustmentLeg, evaluate_cash_flow,
+};
+use fa_statements::{AccountBalance, Statement};
 use fgdb_types::QueryCx;
 
 use crate::general_ledger::{GeneralLedger, MAX_GENERAL_LEDGER_LINES};
 use crate::{
-    BookError, CashFlowBasis, CashFlowBasisDefinition, CashFlowBasisKind, Outcome,
-    RollForwardRequest,
+    BookError, CashFlowActivity, CashFlowBasis, CashFlowBasisDefinition, CashFlowBasisKind,
+    Outcome, RollForwardRequest,
 };
 
 pub const INDIRECT_CASH_FLOW_FORMAT: &str = "fa:indirect-cash-flow:v1";
@@ -142,6 +146,23 @@ impl IndirectCashFlow {
     #[must_use]
     pub fn definition(&self) -> &IndirectCashFlowDefinition {
         &self.definition
+    }
+    /// Evaluate the canonical `fa_statements::cash_flow::CashFlowStatement` view
+    /// when the basis classifies whole cash legs over leaf Asset cash accounts.
+    pub fn statement_view(&self) -> Result<Option<CashFlowStatement>, Refusal> {
+        let mut earnings = BTreeMap::new();
+        for line in &self.income.lines {
+            if line.code == "net_income" && line.amounts.len() == 1 {
+                earnings.insert(line.unit_id, line.amounts[0]);
+            }
+        }
+        build_statement_cash_flow(
+            &self.cash,
+            self.non_cash_source.as_ref(),
+            &self.definition,
+            &earnings,
+            &self.units,
+        )
     }
     #[must_use]
     pub fn contributions(&self) -> &[IndirectCashFlowContribution] {
@@ -569,6 +590,13 @@ fn project(
                 closing: direct.closing,
             });
         }
+        build_statement_cash_flow(
+            &cash,
+            non_cash_source.as_ref(),
+            &definition,
+            &earnings,
+            &units,
+        )?;
         query.checkpoint().map_err(BookError::Context)?;
         Ok(IndirectCashFlow {
             cash,
@@ -580,6 +608,226 @@ fn project(
         })
     };
     outcome(build())
+}
+
+fn split_balance(account_id: u128, unit_id: u32, net: i128) -> Result<AccountBalance, Refusal> {
+    if net >= 0 {
+        Ok(AccountBalance {
+            account_id,
+            unit_id,
+            debits: net,
+            credits: 0,
+        })
+    } else {
+        let credits = net
+            .checked_neg()
+            .ok_or_else(|| invalid("cash balance magnitude overflow"))?;
+        Ok(AccountBalance {
+            account_id,
+            unit_id,
+            debits: 0,
+            credits,
+        })
+    }
+}
+
+fn verify_unit_report_matches(
+    report: &CashFlowUnitReport,
+    unit: &IndirectCashFlowUnit,
+) -> Result<(), Refusal> {
+    if report.unit_id != unit.unit_id
+        || report.opening_cash != unit.opening
+        || report.operating.net != unit.direct_operating
+        || report.investing.net != unit.investing
+        || report.financing.net != unit.financing
+        || report.exchange_effects.net != unit.exchange_effects
+        || report.net_income != unit.net_income
+        || report.non_cash_adjustments != unit.non_cash
+        || report.working_capital_changes != unit.working_capital
+        || report.non_operating_adjustments != unit.non_operating
+        || report.indirect_operating_cash != unit.operating
+        || report.direct_vs_indirect_residual != 0
+        || report.net_cash_change != unit.net_change
+        || report.closing_cash != unit.closing
+        || report.cash_tie_out_residual != 0
+    {
+        return Err(invalid(format!(
+            "statement cash-flow cross-check drifted in unit {}",
+            unit.unit_id
+        )));
+    }
+    Ok(())
+}
+
+fn build_statement_cash_flow(
+    cash: &CashFlowBasis,
+    non_cash_source: Option<&GeneralLedger>,
+    definition: &IndirectCashFlowDefinition,
+    earnings: &BTreeMap<u32, i128>,
+    units: &[IndirectCashFlowUnit],
+) -> Result<Option<CashFlowStatement>, Refusal> {
+    let Some(cf) = (match cash {
+        CashFlowBasis::Explicit(cf) => Some(cf),
+        CashFlowBasis::Policy(policy) => Some(policy.report()),
+        CashFlowBasis::Split(_) => None,
+    }) else {
+        return Ok(None);
+    };
+    let source = cf.source();
+    if cf.definition().cash_accounts.is_empty()
+        || source.units().is_empty()
+        || source.effective_from() > source.effective_through()
+        || !source
+            .accounts()
+            .iter()
+            .all(|a| a.is_leaf && a.account_type == AccountType::ASSET.0)
+    {
+        return Ok(None);
+    }
+    let label = if !source.label().trim().is_empty() && source.label().len() <= 256 {
+        source.label().to_string()
+    } else if !definition.name.trim().is_empty() && definition.name.len() <= 256 {
+        definition.name.clone()
+    } else {
+        return Ok(None);
+    };
+    if !source.lines().iter().all(|line| {
+        line.recorded_seq > 0
+            && line.recorded_seq <= source.known_at().0
+            && line.effective_day >= source.effective_from()
+            && line.effective_day <= source.effective_through()
+            && line.debits >= 0
+            && line.credits >= 0
+            && ((line.debits > 0) != (line.credits > 0))
+    }) {
+        return Ok(None);
+    }
+
+    let mut account_map = BTreeMap::new();
+    for account in source.accounts() {
+        account_map.insert(account.id, account.clone());
+    }
+    let mut non_cash_legs = BTreeMap::new();
+    if let Some(detail) = non_cash_source {
+        for account in detail.accounts() {
+            account_map.insert(account.id, account.clone());
+        }
+        for leg in detail.lines() {
+            let Some(cell) = detail.cells().get(leg.cell_index as usize) else {
+                return Ok(None);
+            };
+            non_cash_legs.insert((leg.entry_digest, leg.leg_index), (leg, cell));
+        }
+    }
+
+    let mut assignments = BTreeMap::new();
+    for assignment in &cf.definition().assignments {
+        let cls = match assignment.activity {
+            CashFlowActivity::Operating => CashFlowClassification::Operating,
+            CashFlowActivity::Investing => CashFlowClassification::Investing,
+            CashFlowActivity::Financing => CashFlowClassification::Financing,
+            CashFlowActivity::ExchangeEffect => CashFlowClassification::ExchangeEffect,
+            CashFlowActivity::InternalTransfer => CashFlowClassification::InternalTransfer,
+        };
+        assignments.insert((assignment.entry_digest, assignment.leg_index), cls);
+    }
+
+    let mut opening_cash_balances = Vec::with_capacity(source.cells().len());
+    let mut closing_cash_balances = Vec::with_capacity(source.cells().len());
+    for cell in source.cells() {
+        opening_cash_balances.push(split_balance(cell.account_id, cell.unit_id, cell.opening)?);
+        closing_cash_balances.push(split_balance(cell.account_id, cell.unit_id, cell.closing)?);
+    }
+
+    let mut cash_movements = Vec::with_capacity(source.lines().len());
+    for line in source.lines() {
+        let Some(cell) = source.cells().get(line.cell_index as usize) else {
+            return Ok(None);
+        };
+        let Some(&classification) = assignments.get(&(line.entry_digest, line.leg_index)) else {
+            return Ok(None);
+        };
+        cash_movements.push(CashLegMovement {
+            entry_digest: line.entry_digest,
+            leg_index: line.leg_index,
+            recorded_seq: line.recorded_seq,
+            effective_day: line.effective_day,
+            account_id: cell.account_id,
+            unit_id: cell.unit_id,
+            classification,
+            debits: line.debits,
+            credits: line.credits,
+        });
+    }
+
+    let mut indirect_adjustments = Vec::with_capacity(definition.adjustments.len());
+    for adj in &definition.adjustments {
+        let Some(&(leg, cell)) = non_cash_legs.get(&(adj.entry_digest, adj.leg_index)) else {
+            return Ok(None);
+        };
+        let Some(acct) = account_map.get(&cell.account_id) else {
+            return Ok(None);
+        };
+        if !acct.is_leaf
+            || leg.recorded_seq == 0
+            || leg.recorded_seq > source.known_at().0
+            || leg.effective_day < source.effective_from()
+            || leg.effective_day > source.effective_through()
+            || leg.debits < 0
+            || leg.credits < 0
+            || ((leg.debits > 0) == (leg.credits > 0))
+        {
+            return Ok(None);
+        }
+        let category = match adj.category {
+            AdjustmentCategory::NonCash => IndirectAdjustmentCategory::NonCash,
+            AdjustmentCategory::WorkingCapital => IndirectAdjustmentCategory::WorkingCapital,
+            AdjustmentCategory::NonOperating => IndirectAdjustmentCategory::NonOperating,
+        };
+        indirect_adjustments.push(IndirectAdjustmentLeg {
+            entry_digest: adj.entry_digest,
+            leg_index: adj.leg_index,
+            recorded_seq: leg.recorded_seq,
+            effective_day: leg.effective_day,
+            account_id: cell.account_id,
+            unit_id: cell.unit_id,
+            category,
+            debit_minus_credit: matches!(adj.sign, AdjustmentSign::DebitMinusCredit),
+            debits: leg.debits,
+            credits: leg.credits,
+        });
+    }
+
+    let cf_input = CashFlowInput {
+        book_id: source.book_id(),
+        branch_id: source.branch_id(),
+        known_at: source.known_at().0,
+        label,
+        effective_from: source.effective_from(),
+        effective_through: source.effective_through(),
+        accounts: account_map.into_values().collect(),
+        cash_account_ids: cf.definition().cash_accounts.clone(),
+        units: source.units().to_vec(),
+        opening_cash_balances,
+        closing_cash_balances,
+        net_income_by_unit: earnings.clone(),
+        cash_movements,
+        indirect_adjustments,
+    };
+    let statement = evaluate_cash_flow(&cf_input)
+        .map_err(|e| invalid(format!("statement cash-flow cross-check failed: {e}")))?;
+    let encoded = statement
+        .canonical_bytes()
+        .map_err(|e| invalid(format!("statement cash-flow encode failed: {e}")))?;
+    let decoded = CashFlowStatement::decode(&encoded)
+        .map_err(|e| invalid(format!("statement cash-flow decode failed: {e}")))?;
+    if decoded != statement || statement.units.len() != units.len() {
+        return Err(invalid("statement cash-flow canonical round-trip drifted"));
+    }
+    for (report, unit) in statement.units.iter().zip(units) {
+        verify_unit_report_matches(report, unit)?;
+    }
+    Ok(Some(statement))
 }
 
 #[cfg(test)]

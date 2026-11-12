@@ -26,7 +26,12 @@ pub(super) fn validate_options(args: &Args, sub: Option<&str>) -> Result<(), Fai
         ));
     }
     for flag in SELECTION_FLAGS {
-        if !args.flag_all(flag).is_empty() && !(sub == Some("diff") && args.switch("--equity")) {
+        let allowed_on_statements =
+            *flag == "--period" && sub == Some("diff") && args.switch("--statements");
+        if !args.flag_all(flag).is_empty()
+            && !(sub == Some("diff") && args.switch("--equity"))
+            && !allowed_on_statements
+        {
             return Err(usage(
                 format!("{flag} requires case diff --equity"),
                 EXAMPLE,
@@ -72,11 +77,12 @@ pub(super) fn admit_disclosure(book: &Book, cap: &Capability) -> Result<(), Fail
     )
     .and_then(|()| fa_policy::require_class(cap, Some(fa_model::EntryClass::CASE_CONTROL)))
     .map_err(|denial| fa_journal::policy::refusal(&denial))?;
-    crate::cli::admit_whole_book_read(
+    crate::cli::admit_whole_book_read_class(
         book,
         cap,
         &[Op::Restate],
         "disclosing a case with independently selected comparisons",
+        Some(fa_model::EntryClass::CASE_CONTROL),
     )
 }
 

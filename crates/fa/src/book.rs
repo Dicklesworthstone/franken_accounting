@@ -36,6 +36,8 @@ use fgdb_types::{CommitSeq, VId};
 use crate::AsyncBook;
 use crate::async_book::{ScratchReplayMode, rooted_path, sync_file};
 
+type LiveOpWitnessCounts = (u32, u32, u32, u32, u32, u32);
+
 /// fa-notary's strict Ed25519 verification (RFC 8032 §5.1.7), the
 /// kernel's verifier for principals' signatures (plan §14.5, fa-kae).
 #[derive(Debug)]
@@ -802,6 +804,125 @@ impl Book {
     /// `coordinate.known_at`, plan Appendix D). Read-only.
     pub fn head(&self) -> Result<CommitSeq, BookError> {
         with_store!(&self.store, core => core.head(&self.purposes()))
+    }
+
+    /// Execute a closure while observing real substrate point reads, conflict
+    /// witnesses, full-table scans, and committed Chronicle `DeltaBatch`
+    /// mutations (`fa-0hs4.23`). Returns `(output, (point_reads, witnesses,
+    /// cas_moves, edges_written, vertices_written, transactions))`.
+    #[doc(hidden)]
+    pub fn measure_with_op_witness<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<(T, LiveOpWitnessCounts), String> {
+        let before_seq = self.head().map_err(|e| e.to_string())?;
+        let guard = fa_journal::op_witness::begin();
+        let out = f(self)?;
+        let raw = guard.finish();
+        let after_seq = self.head().map_err(|e| e.to_string())?;
+
+        let mut transactions = 0u32;
+        let mut vertices_written = 0u32;
+        let mut edges_written = 0u32;
+        let mut cas_moves = 0u32;
+        if after_seq > before_seq {
+            with_store!(&self.store, core => {
+                let batches = core.db.delta_since(before_seq).map_err(|e| format!("{e:?}"))?;
+                for batch in batches {
+                    let seq = batch.commit_seq();
+                    if seq <= before_seq || seq > after_seq {
+                        continue;
+                    }
+                    transactions = transactions.saturating_add(1);
+                    let prev_seq = CommitSeq(seq.0.saturating_sub(1));
+                    let mut register_cells_moved = std::collections::BTreeSet::new();
+                    let mut non_register_cas = std::collections::BTreeSet::new();
+                    for coord in batch.coordinate_entries() {
+                        for row in &coord.rows {
+                            match row {
+                                fgdb_delta_types::DeltaRow::CreateVertex { .. } => {
+                                    vertices_written = vertices_written.saturating_add(1);
+                                }
+                                fgdb_delta_types::DeltaRow::CreateEdge { .. } => {
+                                    edges_written = edges_written.saturating_add(1);
+                                }
+                                fgdb_delta_types::DeltaRow::Property {
+                                    elem: fgdb_delta_types::ElementId::Vertex(vid),
+                                    property: prop_key,
+                                    before,
+                                    after,
+                                } => {
+                                    let prop = *prop_key;
+                                    if prop == fa_model::symbols::property::GENERATION
+                                        || prop == fa_model::symbols::property::STATE
+                                        || prop == fa_model::symbols::property::ACCUMULATOR_HEAD
+                                        || prop == fa_model::symbols::property::APPLIED
+                                    {
+                                        let existed = core
+                                            .db
+                                            .vertex_at(*vid, prev_seq)
+                                            .map_err(|e| e.to_string())?
+                                            .is_some();
+                                        if existed {
+                                            non_register_cas.insert((*vid, prop));
+                                        }
+                                    } else if (prop == fa_model::symbols::property::ENTRY_COUNT
+                                        || prop == fa_model::symbols::property::PENDING_COUNT)
+                                        && before.is_some()
+                                        && before != after
+                                    {
+                                        register_cells_moved.insert(*vid);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    let batch_cas = u32::try_from(non_register_cas.len() + register_cells_moved.len())
+                        .unwrap_or(u32::MAX);
+                    cas_moves = cas_moves.saturating_add(batch_cas);
+                }
+                Ok::<(), String>(())
+            })?;
+        }
+
+        let verify_reads = raw
+            .verify_cells_checked
+            .saturating_add(raw.verify_legs_folded)
+            .checked_div(raw.verify_cells_checked)
+            .unwrap_or(0);
+        let point_reads = raw
+            .point_reads
+            .saturating_add(raw.register_cell_touches)
+            .saturating_add(verify_reads)
+            .saturating_add(raw.snapshot_reads)
+            .saturating_add(raw.scanned_rows);
+        let witnesses = raw.witnesses;
+        Ok((
+            out,
+            (
+                point_reads,
+                witnesses,
+                cas_moves,
+                edges_written,
+                vertices_written,
+                transactions,
+            ),
+        ))
+    }
+
+    /// Execute a real full-frontier `Database::vertices_at` scan on this book's
+    /// substrate and record its scanned row count in the active operation
+    /// witness (`fa-0hs4.23` falsifiability probe).
+    #[doc(hidden)]
+    pub fn inject_vertex_scan_for_test(&self) -> Result<usize, BookError> {
+        with_store!(&self.store, core => {
+            let frontier = core.db.frontier().map_err(KernelError::from)?;
+            let rows = core.db.vertices_at(frontier).map_err(KernelError::from)?;
+            let count = rows.len();
+            fa_journal::op_witness::record_vertex_scan(count);
+            Ok(count)
+        })
     }
 
     fn purposes(&self) -> PurposeContexts {
@@ -1986,6 +2107,33 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.discard_draft(
             &purposes, capability, name, effective_date, description,
         )))
+    }
+
+    /// Pre-observation base admission for `promote_draft` (`FA-INV-10`,
+    /// `fa-0hs4.24`).
+    pub fn admit_draft_promote(
+        &self,
+        capability: &fa_journal::Capability,
+        name: &str,
+    ) -> Outcome<()> {
+        with_store!(&self.store, core => core.admit_draft_promote(&self.purposes(), capability, name))
+    }
+
+    /// Admit and read the draft `name` (`FA-INV-10`, `fa-0hs4.24`).
+    pub fn draft_admitted(
+        &self,
+        capability: &fa_journal::Capability,
+        name: &str,
+    ) -> Outcome<Option<fa_journal::DraftView>> {
+        with_store!(&self.store, core => core.draft_admitted(&self.purposes(), capability, name))
+    }
+
+    /// Admit and list drafts visible to `capability` (`FA-INV-10`, `fa-0hs4.24`).
+    pub fn drafts_admitted(
+        &self,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Vec<fa_journal::DraftView>> {
+        with_store!(&self.store, core => core.drafts_admitted(&self.purposes(), capability))
     }
 
     /// The draft `name` as its records state it.
@@ -4506,6 +4654,174 @@ impl Book {
     /// The legal hold placed as `hold`, with its release if one is recorded.
     pub fn legal_hold(&self, hold: VId) -> Result<Option<fa_journal::LegalHold>, BookError> {
         with_store!(&self.store, core => core.legal_hold(&self.purposes(), hold))
+    }
+
+    /// Build the sealed `PolicyControl` proposal that activates `policy`
+    /// without committing; two independent Human approvers bind its
+    /// `proposal_digest()` before [`Book::activate_retention_policy`].
+    pub fn prepare_retention_activation(
+        &self,
+        principal: VId,
+        policy: &fa_journal::RetentionPolicy,
+        idempotency_key: &[u8],
+        description: &str,
+    ) -> Result<fa_model::EntryPayload, BookError> {
+        with_store!(&self.store, core => core.prepare_retention_activation(
+            &self.purposes(), principal, policy, idempotency_key, description,
+        ))
+    }
+
+    /// Activate a [`fa_journal::RetentionPolicy`] with dual control (plan §8.5, §14.3).
+    pub fn activate_retention_policy(
+        &mut self,
+        req: fa_journal::RetentionActivationRequest,
+    ) -> Outcome<fa_journal::RetentionPolicyActivated> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.activate_retention_policy(&purposes, req)
+        ))
+    }
+
+    /// Read all active [`fa_journal::RetentionPolicy`] objects recorded in this book.
+    pub fn active_retention_policies(
+        &self,
+    ) -> Result<Vec<fa_journal::ActiveRetentionPolicy>, BookError> {
+        with_store!(&self.store, core => core.active_retention_policies(&self.purposes()))
+    }
+
+    /// Calibrate a registered Lantern procedure's threshold parameter on clean
+    /// nonconformity scores and labeled evaluation items under this book's
+    /// current security policy epoch (plan §11.9, bead fa-4psc).
+    #[allow(clippy::too_many_arguments)]
+    pub fn calibrate_procedure_threshold(
+        &self,
+        procedure_id: &str,
+        parameter_name: &str,
+        clean_calibration_scores: &[i128],
+        labeled_eval_items: &[(i128, bool)],
+        candidate_thresholds: &[i128],
+        target_alpha_bps: u32,
+        delta_bps: u32,
+        requested_policy_epoch: Option<[u8; 32]>,
+    ) -> Result<fa_lantern::DetectorThresholdCard, BookError> {
+        with_store!(&self.store, core => core.calibrate_procedure_threshold(
+            &self.purposes(),
+            procedure_id,
+            parameter_name,
+            clean_calibration_scores,
+            labeled_eval_items,
+            candidate_thresholds,
+            target_alpha_bps,
+            delta_bps,
+            requested_policy_epoch,
+        ))
+    }
+
+    /// Verify all retention policies recorded in this book against their
+    /// `PolicyControl` entries, canonical policy bodies, and authority documents.
+    pub fn verify_retention_policies(
+        &self,
+    ) -> Result<fa_journal::RetentionVerification, BookError> {
+        with_store!(&self.store, core => core.verify_retention_policies(&self.purposes()))
+    }
+
+    /// Seal a binary tag payload using this book's explicitly supplied entropy capability.
+    pub fn seal_tag_bytes(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<Erasable<fa_model::TagValue>, BookError> {
+        with_store!(&self.store, core => core.seal_tag_bytes(&self.purposes(), bytes))
+    }
+
+    /// Anchor this book as an `AdjustmentLayer` referencing `parent_book_id`
+    /// at committed sequence `parent_known_at` (plan §12.2, bead `fa-259c`).
+    pub fn anchor_adjustment_layer(
+        &mut self,
+        capability: &fa_policy::Capability,
+        parent_book_id: fa_model::Id128,
+        parent_known_at: CommitSeq,
+    ) -> Outcome<crate::consolidation::AdjustmentLayerAnchored> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.anchor_adjustment_layer(&purposes, capability, parent_book_id, parent_known_at)
+        ))
+    }
+
+    /// Read this book's [`crate::BookKind`] (`Primary` or `AdjustmentLayer`)
+    /// as known at `known_at` (`HEAD` when `None`).
+    pub fn book_kind_at(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::BookKind> {
+        with_store!(&self.store, core => core.book_kind_at(&self.purposes(), known_at, capability))
+    }
+
+    /// Attach a sealed `fa.book_to_book` reason-code and rule-version tag to an
+    /// adjustment entry proposal before planning or posting in an `AdjustmentLayer` book.
+    pub fn attach_book_to_book_tag(
+        &self,
+        proposal: &mut fa_model::EntryPayload,
+        reason_code: crate::BookToBookReasonCode,
+        rule_version_oid: fa_model::Oid,
+    ) -> Result<(), BookError> {
+        with_store!(&self.store, core => core.attach_book_to_book_tag(
+            &self.purposes(),
+            proposal,
+            reason_code,
+            rule_version_oid,
+        ))
+    }
+
+    /// Reconcile this `AdjustmentLayer` book against its parent book's stock
+    /// trial balance at `period` or `as_of` (`recon.book_to_book`, plan §12.2, FA-INV-13).
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconcile_book_to_book(
+        &self,
+        capability: &fa_policy::Capability,
+        parent_book_id: fa_model::Id128,
+        parent_known_at: CommitSeq,
+        parent_tb: &fa_registers::TrialBalance,
+        period: Option<&str>,
+        as_of: Option<fa_time::DateDay>,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::consolidation::BookToBookReconciliation> {
+        with_store!(&self.store, core => core.reconcile_book_to_book(
+            &self.purposes(),
+            capability,
+            parent_book_id,
+            parent_known_at,
+            parent_tb,
+            period,
+            as_of,
+            known_at,
+        ))
+    }
+
+    /// Evaluate a retention cut on `subject` at `(cut_at_seq, cut_at_day)`,
+    /// honoring active legal holds before active retention floors (plan §8.5).
+    pub fn retention_cut(
+        &self,
+        capability: &fa_journal::Capability,
+        subject: VId,
+        cut_at_seq: CommitSeq,
+        cut_at_day: DateDay,
+    ) -> Outcome<()> {
+        with_store!(&self.store, core => core.retention_cut(
+            &self.purposes(), capability, subject, cut_at_seq, cut_at_day,
+        ))
+    }
+
+    /// Check that a register checkpoint cadence does not exceed any active
+    /// retention floor in this book (plan §8.5, bead fa-9xf9).
+    pub fn check_checkpoint_cadence(
+        &self,
+        cadence_commits: u64,
+        cadence_days: Option<u32>,
+    ) -> Outcome<Vec<fa_journal::ActiveRetentionPolicy>> {
+        with_store!(&self.store, core => core.check_checkpoint_cadence(
+            &self.purposes(), cadence_commits, cadence_days,
+        ))
     }
 
     /// Derive and record the redacted view of `oid` under the contract
@@ -7736,6 +8052,18 @@ impl Book {
         budget: Option<u64>,
     ) -> Result<fa_lantern::ProcedureRun, BookError> {
         with_store!(&self.store, core => core.run_procedure(&self.purposes(), procedure, known_at, effective_through, budget))
+    }
+
+    /// Build a deterministic flow-of-funds exhibit over the money-flow projection
+    /// anchored at `account` and `source` (`fa-cet`, `fa-949`).
+    pub fn flow_of_funds_exhibit(
+        &self,
+        account: VId,
+        source: VId,
+        known_at: Option<CommitSeq>,
+        effective_through: Option<fa_time::DateDay>,
+    ) -> Result<fa_statements::render::FlowOfFundsExhibit, BookError> {
+        with_store!(&self.store, core => core.flow_of_funds_exhibit(&self.purposes(), account, source, known_at, effective_through))
     }
 
     /// Admit explicit current procedure scope before loading its native history.

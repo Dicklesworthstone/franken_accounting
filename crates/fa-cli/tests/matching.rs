@@ -319,3 +319,367 @@ fn three_way_matching_requires_launch_reconcile_before_book_observation() {
         "refused launch did not create or open a book"
     );
 }
+
+#[test]
+fn book_to_book_schedule_m1_bridge_and_planted_negatives() {
+    static NEXT_RECON: AtomicU64 = AtomicU64::new(0);
+    let dir = loop {
+        let d = std::env::temp_dir().join(format!(
+            "fa-recon-cli-{}-{}",
+            std::process::id(),
+            NEXT_RECON.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::create_dir(&d) {
+            Ok(()) => break d,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => panic!("create {}: {e}", d.display()),
+        }
+    };
+    let gaap = dir.join("gaap");
+    let tax = dir.join("tax");
+    ok(&gaap, &["book", "create", "--name", "GAAP Primary"]);
+    ok(
+        &tax,
+        &["book", "create", "--name", "Tax Schedule M-1 Layer"],
+    );
+
+    let chart_path = dir.join("chart.json");
+    std::fs::write(
+        &chart_path,
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"1500","name":"Accumulated Depreciation","type":"Asset","unit":"USD"},
+            {"code":"3100","name":"Schedule M-1 Tax Clearing","type":"Equity","unit":"USD"},
+            {"code":"5000","name":"Depreciation Expense","type":"Expense","unit":"USD"},
+            {"code":"6200","name":"Meals and Entertainment","type":"Expense","unit":"USD"}
+        ]}"#,
+    )
+    .unwrap();
+    for b in [&gaap, &tax] {
+        ok(b, &["chart", "import", chart_path.to_str().unwrap()]);
+        ok(b, &["period", "create", "--fiscal-year", "2026"]);
+        ok(b, &["period", "open", "FY2026-P03"]);
+    }
+
+    let doc_path = dir.join("workpaper.txt");
+    std::fs::write(&doc_path, "Q1 2026 fixed-asset and meals schedule").unwrap();
+    let gaap_doc = text(
+        data(&ok(
+            &gaap,
+            &[
+                "document",
+                "add",
+                doc_path.to_str().unwrap(),
+                "--kind",
+                "Memo",
+                "--grade",
+                "HumanUpload",
+            ],
+        )),
+        "oid",
+    )
+    .to_string();
+    let tax_doc = text(
+        data(&ok(
+            &tax,
+            &[
+                "document",
+                "add",
+                doc_path.to_str().unwrap(),
+                "--kind",
+                "Memo",
+                "--grade",
+                "HumanUpload",
+            ],
+        )),
+        "oid",
+    )
+    .to_string();
+
+    // Post GAAP primary entries: 100.00 USD depreciation + 80.00 USD meals.
+    let gaap_entry = dir.join("gaap_q1.json");
+    std::fs::write(
+        &gaap_entry,
+        r#"{
+            "idempotency_key": "gaap-q1",
+            "effective_date": "2026-03-31",
+            "description": "GAAP Q1 depreciation and meals",
+            "legs": [
+                {"side": "debit", "account": "5000", "amount": "100.00 USD"},
+                {"side": "credit", "account": "1500", "amount": "100.00 USD"},
+                {"side": "debit", "account": "6200", "amount": "80.00 USD"},
+                {"side": "credit", "account": "1000", "amount": "80.00 USD"}
+            ]
+        }"#,
+    )
+    .unwrap();
+    ok(
+        &gaap,
+        &[
+            "post",
+            "--intent",
+            gaap_entry.to_str().unwrap(),
+            "--evidence",
+            &gaap_doc,
+        ],
+    );
+
+    // Anchor Tax book to GAAP book at current head.
+    let anchored = ok(
+        &tax,
+        &[
+            "recon",
+            "anchor",
+            "--parent-book",
+            gaap.to_str().unwrap(),
+            "--grant",
+            "schema_change",
+        ],
+    );
+    assert_eq!(text(&anchored, "event"), "adjustment_layer_anchored");
+    assert_eq!(
+        data(&anchored).get("already_recorded"),
+        Some(&Json::Bool(false))
+    );
+
+    // Post coded Schedule M-1 temporary & permanent adjustments into the Tax layer.
+    let m1_depr = dir.join("m1_depr.json");
+    std::fs::write(
+        &m1_depr,
+        r#"{
+            "idempotency_key": "m1-macrs-depr",
+            "effective_date": "2026-03-31",
+            "description": "MACRS bonus depreciation excess over book",
+            "legs": [
+                {"side": "debit", "account": "5000", "amount": "50.00 USD"},
+                {"side": "credit", "account": "1500", "amount": "50.00 USD"}
+            ]
+        }"#,
+    )
+    .unwrap();
+    ok(
+        &tax,
+        &[
+            "recon",
+            "post",
+            "--reason-code",
+            "M1-TEMP-DEPRECIATION",
+            "--intent",
+            m1_depr.to_str().unwrap(),
+            "--evidence",
+            &tax_doc,
+        ],
+    );
+
+    let m1_meals = dir.join("m1_meals.json");
+    std::fs::write(
+        &m1_meals,
+        r#"{
+            "idempotency_key": "m1-meals-50pct",
+            "effective_date": "2026-03-31",
+            "description": "IRC 274(n) 50% non-deductible meals",
+            "legs": [
+                {"side": "debit", "account": "3100", "amount": "40.00 USD"},
+                {"side": "credit", "account": "6200", "amount": "40.00 USD"}
+            ]
+        }"#,
+    )
+    .unwrap();
+    ok(
+        &tax,
+        &[
+            "recon",
+            "post",
+            "--reason-code",
+            "M1-PERM-MEALS",
+            "--intent",
+            m1_meals.to_str().unwrap(),
+            "--evidence",
+            &tax_doc,
+        ],
+    );
+
+    // Reconcile via --parent-book and decode canonical BookToBookBridge bytes.
+    let reconciled = ok(
+        &tax,
+        &[
+            "recon",
+            "book-to-book",
+            "--period",
+            "FY2026-P03",
+            "--parent-book",
+            gaap.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(text(&reconciled, "event"), "book_to_book_reconciled");
+    let bridge_data = data(&reconciled);
+    let bridge_digest = text(bridge_data, "bridge_digest").to_string();
+    let bridge_hex = text(bridge_data, "bytes");
+    let bridge_bytes: Vec<u8> = bridge_hex
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let decoded = fa::BookToBookBridge::decode(&bridge_bytes).expect("decode BookToBookBridge");
+    assert_eq!(decoded.canonical_bytes().unwrap(), bridge_bytes);
+
+    let rows = bridge_data.get("rows").and_then(Json::as_arr).unwrap();
+    let depr_row = rows.iter().find(|r| text(r, "code") == "5000").unwrap();
+    assert_eq!(text(depr_row, "parent_net"), "100.00 USD");
+    assert_eq!(text(depr_row, "adjustments_net"), "50.00 USD");
+    assert_eq!(text(depr_row, "layered_net"), "150.00 USD");
+    let depr_exp = &depr_row.get("explanations").and_then(Json::as_arr).unwrap()[0];
+    assert_eq!(text(depr_exp, "reason_code"), "M1-TEMP-DEPRECIATION");
+    assert_eq!(depr_exp.get("permanent"), Some(&Json::Bool(false)));
+
+    let meals_row = rows.iter().find(|r| text(r, "code") == "6200").unwrap();
+    assert_eq!(text(meals_row, "parent_net"), "80.00 USD");
+    assert_eq!(text(meals_row, "adjustments_net"), "-40.00 USD");
+    assert_eq!(text(meals_row, "layered_net"), "40.00 USD");
+    let meals_exp = &meals_row
+        .get("explanations")
+        .and_then(Json::as_arr)
+        .unwrap()[0];
+    assert_eq!(text(meals_exp, "reason_code"), "M1-PERM-MEALS");
+    assert_eq!(meals_exp.get("permanent"), Some(&Json::Bool(true)));
+
+    // Also reconcile via certified parent trial balance hex (--parent-certificate, the MCP path).
+    let cert_out = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(&gaap)
+        .args(["tb", "--period", "FY2026-P03", "--certify", "--json"])
+        .env_remove("FA_BOOK")
+        .env_remove("FA_TOKEN")
+        .output()
+        .expect("certify parent tb");
+    assert!(cert_out.status.success());
+    let cert_stdout = String::from_utf8(cert_out.stdout).unwrap();
+    let cert_line = cert_stdout
+        .lines()
+        .map(|l| json::parse(l).unwrap())
+        .find(|j| text(j, "event") == "report_certificate")
+        .expect("report_certificate event");
+    let cert_hex = text(data(&cert_line), "bytes");
+    let via_cert = ok(
+        &tax,
+        &[
+            "recon",
+            "book-to-book",
+            "--period",
+            "FY2026-P03",
+            "--parent-certificate",
+            cert_hex,
+        ],
+    );
+    assert_eq!(text(data(&via_cert), "bridge_digest"), bridge_digest);
+
+    // Planted negative 1 (ParentBookRestated): advancing GAAP parent without re-anchoring refuses.
+    let gaap_late = dir.join("gaap_late.json");
+    std::fs::write(
+        &gaap_late,
+        r#"{
+            "idempotency_key": "gaap-late-meals",
+            "effective_date": "2026-03-31",
+            "description": "Late Q1 meal receipt",
+            "legs": [
+                {"side": "debit", "account": "6200", "amount": "20.00 USD"},
+                {"side": "credit", "account": "1000", "amount": "20.00 USD"}
+            ]
+        }"#,
+    )
+    .unwrap();
+    ok(
+        &gaap,
+        &[
+            "post",
+            "--intent",
+            gaap_late.to_str().unwrap(),
+            "--evidence",
+            &gaap_doc,
+        ],
+    );
+    let (restated_exit, restated_err) = run(
+        &tax,
+        &[
+            "recon",
+            "book-to-book",
+            "--period",
+            "FY2026-P03",
+            "--parent-book",
+            gaap.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(restated_exit, 3, "{}", restated_err.render());
+    assert_eq!(text(data(&restated_err), "refusal_id"), "FA-REF-194");
+
+    // Re-anchoring Tax to the new GAAP frontier restores reconciliation.
+    ok(
+        &tax,
+        &[
+            "recon",
+            "anchor",
+            "--parent-book",
+            gaap.to_str().unwrap(),
+            "--grant",
+            "schema_change",
+        ],
+    );
+    let reanchored = ok(
+        &tax,
+        &[
+            "recon",
+            "book-to-book",
+            "--period",
+            "FY2026-P03",
+            "--parent-book",
+            gaap.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(text(&reanchored, "event"), "book_to_book_reconciled");
+
+    // Planted negative 2 (UnexplainedBookDifference): uncoded `fa post` in Tax layer refuses.
+    let uncoded = dir.join("tax_uncoded.json");
+    std::fs::write(
+        &uncoded,
+        r#"{
+            "idempotency_key": "tax-uncoded-diff",
+            "effective_date": "2026-03-31",
+            "description": "Uncoded manual tax plug",
+            "legs": [
+                {"side": "debit", "account": "5000", "amount": "10.00 USD"},
+                {"side": "credit", "account": "1500", "amount": "10.00 USD"}
+            ]
+        }"#,
+    )
+    .unwrap();
+    ok(
+        &tax,
+        &[
+            "post",
+            "--intent",
+            uncoded.to_str().unwrap(),
+            "--evidence",
+            &tax_doc,
+        ],
+    );
+    let (unexp_exit, unexp_err) = run(
+        &tax,
+        &[
+            "recon",
+            "book-to-book",
+            "--period",
+            "FY2026-P03",
+            "--parent-book",
+            gaap.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(unexp_exit, 3, "{}", unexp_err.render());
+    assert_eq!(text(data(&unexp_err), "refusal_id"), "FA-REF-194");
+    assert!(
+        text(data(&unexp_err), "message").contains("unexplained book-to-book difference"),
+        "{}",
+        unexp_err.render()
+    );
+}

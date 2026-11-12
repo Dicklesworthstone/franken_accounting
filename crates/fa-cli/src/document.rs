@@ -45,6 +45,8 @@ const EVIDENCE_EXAMPLE: &str = r#""evidence": ["<document oid hex>"] or [{"docum
 const DEFAULT_ROLE: &str = "Source";
 const HOLD_PLAN_DOMAIN: &[u8; 20] = b"fa:hold-release-plan";
 const HOLD_PLAN_VERSION: u16 = 1;
+const RETENTION_PLAN_DOMAIN: &[u8; 20] = b"fa:retention-plan:v1";
+const RETENTION_PLAN_VERSION: u16 = 1;
 
 fn policy() -> Result<EvidencePolicy, Fail> {
     EvidencePolicy::embedded()
@@ -133,7 +135,7 @@ fn named(what: &str, given: &str, names: &[&str]) -> Fail {
     )
 }
 
-/// `fa document <add|read|redact|disclose|custody|erase|hold|attest|attach|extract|import|list> ...`.
+/// `fa document <add|read|redact|disclose|custody|erase|hold|retention|attest|attach|extract|import|list|show> ...`.
 pub(crate) fn document_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // Dispatch has already refused a subcommand verbs.toml does not register.
     match args.positional.get(1).map(String::as_str) {
@@ -144,6 +146,7 @@ pub(crate) fn document_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("custody") => custody_doc(ctx, args),
         Some("erase") => erase_doc(ctx, args),
         Some("hold") => hold_doc(ctx, args),
+        Some("retention") => retention_doc(ctx, args),
         Some("attest") => attest_doc(ctx, args),
         Some("attach") => attach_doc(ctx, args),
         Some("extract") => extract_doc(ctx, args),
@@ -2458,6 +2461,551 @@ fn import_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 other.map_or_else(String::new, |o| format!(" (got `{o}`)"))
             ),
             "fa import run|receipt ...",
+        )),
+    }
+}
+
+fn encode_retention_plan(
+    policy: &fa_journal::RetentionPolicy,
+    proposal: &fa_model::EntryPayload,
+) -> Result<Vec<u8>, Fail> {
+    let policy_bytes = policy
+        .canonical_bytes()
+        .map_err(|e| Fail::Internal(format!("retention policy encode: {e}")))?;
+    let entry_bytes = proposal
+        .clone()
+        .seal(Vec::new(), None)
+        .and_then(|e| e.encode())
+        .map_err(|e| Fail::Internal(format!("retention proposal encode: {e}")))?;
+    let mut w = Writer::new();
+    w.fixed(RETENTION_PLAN_DOMAIN)
+        .u16(RETENTION_PLAN_VERSION)
+        .bytes(&policy_bytes)
+        .bytes(&entry_bytes);
+    w.finish()
+        .map_err(|e| Fail::Internal(format!("retention plan encode: {e}")))
+}
+
+fn decode_retention_plan(
+    bytes: &[u8],
+) -> Result<(fa_journal::RetentionPolicy, fa_model::EntryPayload), Fail> {
+    let mut r = Reader::new(bytes);
+    let (policy, proposal) = (|| -> Result<
+        (fa_journal::RetentionPolicy, fa_model::EntryPayload),
+        fa_model::DecodeError,
+    > {
+        let domain: [u8; 20] = r.fixed("retention_plan.domain")?;
+        if domain != *RETENTION_PLAN_DOMAIN {
+            return Err(r.invalid("retention_plan.domain"));
+        }
+        if r.u16("retention_plan.version")? != RETENTION_PLAN_VERSION {
+            return Err(r.invalid("retention_plan.version"));
+        }
+        let policy_bytes =
+            r.bytes(fa::MAX_PLAN_BYTES, "retention_plan.policy")?.to_vec();
+        let entry_bytes =
+            r.bytes(fa::MAX_PLAN_BYTES, "retention_plan.proposal")?.to_vec();
+        let policy = fa_journal::RetentionPolicy::decode(&policy_bytes)?;
+        let entry = fa_model::Entry::decode(&entry_bytes)
+            .map_err(|_| r.invalid("retention_plan.proposal"))?;
+        if !entry.approvals.is_empty() || entry.plan_certificate.is_some() {
+            return Err(r.invalid("retention_plan.proposal"));
+        }
+        Ok((policy, entry.proposal))
+    })()
+    .and_then(|decoded| {
+        r.finish()?;
+        Ok(decoded)
+    })
+    .map_err(|e| {
+        usage(
+            format!("invalid retention policy activation plan: {e}"),
+            "plan first with `fa document retention activate ... --dry-run --plan-out <file>`",
+        )
+    })?;
+    Ok((policy, proposal))
+}
+
+fn parse_retention_scope(
+    args: &Args,
+    ev_policy: &EvidencePolicy,
+) -> Result<fa_journal::RetentionScope, Fail> {
+    const FIX: &str = "fa document retention activate --authority <document_oid> (--scope book|class:<EntryClass>|kind:<Kind> | --subject <vid|oid>...) (--floor-days <N> | --floor-commits <N>) --from YYYY-MM-DD --book <dir> --json";
+    let subject_flags = args.flag_all("--subject");
+    let scope_flags = args.flag_all("--scope");
+    if !subject_flags.is_empty() && !scope_flags.is_empty() {
+        return Err(usage(
+            "a retention policy names either `--scope book|class:<Class>|kind:<Kind>` or `--subject <vid|oid>...`, not both",
+            FIX,
+        ));
+    }
+    if !subject_flags.is_empty() {
+        let mut subjects = Vec::with_capacity(subject_flags.len());
+        for s_flag in subject_flags {
+            subjects.push(parse_subject_vid(s_flag, "--subject")?);
+        }
+        subjects.sort_by_key(|v| v.0);
+        subjects.dedup();
+        return Ok(fa_journal::RetentionScope::Subjects(subjects));
+    }
+    let [spec] = scope_flags.as_slice() else {
+        return Err(usage(
+            "`fa document retention activate` requires exactly one `--scope book|class:<EntryClass>|kind:<Kind>` or at least one `--subject <vid|oid>`",
+            FIX,
+        ));
+    };
+    if *spec == "book" {
+        return Ok(fa_journal::RetentionScope::Book);
+    }
+    if let Some(class_name) = spec.strip_prefix("class:") {
+        let class = fa_model::EntryClass::from_name(class_name).ok_or_else(|| {
+            let names: Vec<&str> = fa_model::EntryClass::ALL
+                .iter()
+                .map(|(_, n, _)| *n)
+                .collect();
+            named("entry class", class_name, &names)
+        })?;
+        return Ok(fa_journal::RetentionScope::EntryClass(class));
+    }
+    if let Some(kind_name) = spec.strip_prefix("kind:") {
+        if let Ok(tag) = kind_name.parse::<u8>()
+            && ev_policy.kind_by_tag(tag).is_some()
+        {
+            return Ok(fa_journal::RetentionScope::DocumentKind(tag));
+        }
+        let kind = ev_policy
+            .kinds
+            .iter()
+            .find(|k| k.name == kind_name)
+            .ok_or_else(|| {
+                let names: Vec<&str> = ev_policy.kinds.iter().map(|k| k.name.as_str()).collect();
+                named("document kind", kind_name, &names)
+            })?;
+        return Ok(fa_journal::RetentionScope::DocumentKind(kind.tag));
+    }
+    if let Some(subj_text) = spec.strip_prefix("subject:") {
+        let vid = parse_subject_vid(subj_text, "--scope subject")?;
+        return Ok(fa_journal::RetentionScope::Subjects(vec![vid]));
+    }
+    Err(usage(
+        format!(
+            "unknown retention `--scope {spec}`; expected `book`, `class:<EntryClass>`, `kind:<DocumentKind>`, or `subject:<vid|oid>`"
+        ),
+        FIX,
+    ))
+}
+
+fn retention_scope_parts(
+    scope: &fa_journal::RetentionScope,
+    ev_policy: &EvidencePolicy,
+) -> (String, Vec<Json>) {
+    match scope {
+        fa_journal::RetentionScope::Book => ("book".into(), Vec::new()),
+        fa_journal::RetentionScope::EntryClass(class) => (
+            format!("class:{}", class.name().unwrap_or("unknown")),
+            Vec::new(),
+        ),
+        fa_journal::RetentionScope::DocumentKind(tag) => {
+            let name = ev_policy
+                .kind_by_tag(*tag)
+                .map_or_else(|| tag.to_string(), |k| k.name.clone());
+            (format!("kind:{name}"), Vec::new())
+        }
+        fa_journal::RetentionScope::Subjects(subjects) => (
+            format!("subjects:{}", subjects.len()),
+            subjects
+                .iter()
+                .map(|v| s(format!("{:032x}", v.0)))
+                .collect(),
+        ),
+    }
+}
+
+pub(crate) fn retention_policy_row_json(
+    active: &fa_journal::ActiveRetentionPolicy,
+    ev_policy: &EvidencePolicy,
+) -> Json {
+    let (scope_label, subjects_json) = retention_scope_parts(&active.policy.scope, ev_policy);
+    let (floor_kind, floor_value) = match active.policy.floor {
+        fa_journal::RetentionFloor::Days(days) => ("days", Json::Int(i128::from(days))),
+        fa_journal::RetentionFloor::Commits(commits) => ("commits", Json::Int(i128::from(commits))),
+    };
+    let effective_to = if active.policy.effective_to == fa_journal::policy::OPEN_END {
+        Json::Null
+    } else {
+        s(active.policy.effective_to.render())
+    };
+    obj(vec![
+        ("policy_oid", s(hex(&active.policy_oid.0))),
+        (
+            "control_entry",
+            s(format!("{:032x}", active.control_entry.0)),
+        ),
+        ("activated_at", Json::Int(i128::from(active.activated_at.0))),
+        ("authority", s(hex(&active.policy.authority.0))),
+        ("scope", s(&scope_label)),
+        ("subjects", Json::Arr(subjects_json)),
+        ("floor_kind", s(floor_kind)),
+        ("floor_value", floor_value),
+        ("effective_from", s(active.policy.effective_from.render())),
+        ("effective_to", effective_to),
+    ])
+}
+
+fn retention_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let ev_policy = policy()?;
+    match args.positional.get(2).map(String::as_str) {
+        Some("activate") => {
+            const FIX: &str = "fa document retention activate --authority <document_oid> --scope book|class:<Class>|kind:<Kind> (--floor-days <N> | --floor-commits <N>) --from YYYY-MM-DD [--to YYYY-MM-DD] [--key K] [--dry-run [--plan-out <file>]] | fa document retention activate --plan <file|-> --approval <vid> --approval <vid>";
+            let who = ctx.principal(args);
+            let capability = ctx.capability(args, &["rule_change"])?;
+            let approval_flags = args.flag_all("--approval");
+            let is_dry = args.switch("--dry-run") || args.flag("--plan-out").is_some();
+            if is_dry && (args.flag("--plan").is_some() || !approval_flags.is_empty()) {
+                return Err(usage(
+                    "--dry-run / --plan-out prepares a retention activation plan and commits nothing",
+                    "commit with `fa document retention activate --plan <file> --approval <vid> --approval <vid>`",
+                ));
+            }
+            // Enforce capability admission (including rule_change, book_id, expiry, and revocation)
+            // before reading any host plan file or observing storage.
+            let mut book = ctx.books.open_admitted(args, |book| {
+                fa_policy::admit_class(
+                    &capability,
+                    &fa_policy::Intent {
+                        principal: who,
+                        trunk: true,
+                        op: fa_policy::Op::RuleChange,
+                        book: book.context().book_id,
+                        legs: &[],
+                    },
+                    fa_model::EntryClass::POLICY_CONTROL,
+                )
+                .map_err(|d| Fail::Refusal(fa_journal::policy::refusal(&d)))?;
+                let _ = book.read_scope(who, &capability)??;
+                Ok(())
+            })?;
+
+            let (ret_policy, proposal) = if let Some(plan_path) = args.flag("--plan") {
+                let bytes = read_plan_bytes(
+                    &ctx.files,
+                    plan_path,
+                    RETENTION_PLAN_DOMAIN,
+                    "retention policy activation",
+                )?;
+                decode_retention_plan(&bytes)?
+            } else {
+                let authority_text = args.require("--authority", "<authority_document_oid>")?;
+                let authority = Oid(hex32(authority_text, "--authority")?);
+                let scope = parse_retention_scope(args, &ev_policy)?;
+                let floor = match (args.flag("--floor-days"), args.flag("--floor-commits")) {
+                    (Some(days), None) => {
+                        let n = days.parse::<u32>().map_err(|_| {
+                            usage(
+                                format!("--floor-days `{days}` is not a positive 32-bit integer"),
+                                FIX,
+                            )
+                        })?;
+                        fa_journal::RetentionFloor::Days(n)
+                    }
+                    (None, Some(commits)) => {
+                        let n = commits.parse::<u64>().map_err(|_| {
+                            usage(
+                                format!(
+                                    "--floor-commits `{commits}` is not a positive 64-bit integer"
+                                ),
+                                FIX,
+                            )
+                        })?;
+                        fa_journal::RetentionFloor::Commits(n)
+                    }
+                    (Some(_), Some(_)) => {
+                        return Err(usage(
+                            "specify either `--floor-days <N>` or `--floor-commits <N>`, not both",
+                            FIX,
+                        ));
+                    }
+                    (None, None) => {
+                        return Err(usage(
+                            "`fa document retention activate` requires `--floor-days <N>` or `--floor-commits <N>`",
+                            FIX,
+                        ));
+                    }
+                };
+                let from_text = args
+                    .flag("--from")
+                    .or_else(|| args.flag("--effective"))
+                    .ok_or_else(|| {
+                        usage(
+                            "`fa document retention activate` requires `--from YYYY-MM-DD`",
+                            FIX,
+                        )
+                    })?;
+                let effective_from = DateDay::parse(from_text).map_err(|e| {
+                    usage(format!("--from `{from_text}`: {e:?}"), "--from YYYY-MM-DD")
+                })?;
+                let effective_to = match args.flag("--to") {
+                    Some(to_text) => DateDay::parse(to_text).map_err(|e| {
+                        usage(format!("--to `{to_text}`: {e:?}"), "--to YYYY-MM-DD")
+                    })?,
+                    None => fa_journal::policy::OPEN_END,
+                };
+                let mut ret_policy = fa_journal::RetentionPolicy::new(
+                    book.context().book_id,
+                    scope,
+                    floor,
+                    authority,
+                    effective_from,
+                );
+                ret_policy.effective_to = effective_to;
+                if let Err(why) = ret_policy.validate() {
+                    return Err(usage(format!("retention policy is invalid: {why}"), FIX));
+                }
+                let policy_oid = ret_policy
+                    .policy_oid()
+                    .map_err(|e| Fail::Internal(format!("retention policy oid: {e}")))?;
+                let key = args
+                    .flag("--key")
+                    .map(|k| k.as_bytes().to_vec())
+                    .unwrap_or_else(|| {
+                        let oid_hex = hex(&policy_oid.0);
+                        format!("retention:activate:{}", &oid_hex[..32]).into_bytes()
+                    });
+                let description = args.flag("--description").unwrap_or("");
+                let proposal =
+                    book.prepare_retention_activation(who, &ret_policy, &key, description)?;
+                (ret_policy, proposal)
+            };
+
+            let policy_oid = ret_policy
+                .policy_oid()
+                .map_err(|e| Fail::Internal(format!("retention policy oid: {e}")))?;
+            let digest = proposal
+                .proposal_digest()
+                .map_err(|e| Fail::Internal(format!("retention proposal digest: {e}")))?;
+
+            if is_dry {
+                let bytes = encode_retention_plan(&ret_policy, &proposal)?;
+                let plan_out = args.flag("--plan-out");
+                if let Some(path) = plan_out {
+                    write_post_plan(&ctx.files, path, &bytes)?;
+                }
+                ctx.out.at_book(&book)?;
+                let policy_hex = hex(&policy_oid.0);
+                let digest_hex = hex(&digest);
+                let (scope_label, _) = retention_scope_parts(&ret_policy.scope, &ev_policy);
+                ctx.out.event(
+                    "retention_policy_planned",
+                    vec![
+                        ("policy_oid", s(&policy_hex)),
+                        ("proposal_digest", s(&digest_hex)),
+                        ("scope", s(&scope_label)),
+                        ("floor", s(ret_policy.floor.describe())),
+                        ("effective_from", s(ret_policy.effective_from.render())),
+                        ("bytes", s(hex(&bytes))),
+                        ("plan", plan_out.map_or(Json::Null, s)),
+                    ],
+                    &format!(
+                        "planned retention policy {policy_hex} ({scope_label}, floor {}); two Human approvers bind proposal {digest_hex}",
+                        ret_policy.floor.describe()
+                    ),
+                );
+                return Ok(());
+            }
+
+            let approvals = approval_flags
+                .iter()
+                .map(|v| {
+                    Ok(ApprovalRef {
+                        approval_vid: parse_vid_arg(v, "--approval")?,
+                        approved_digest: digest,
+                    })
+                })
+                .collect::<Result<Vec<_>, Fail>>()?;
+            let activated =
+                book.activate_retention_policy(fa_journal::RetentionActivationRequest {
+                    policy: ret_policy.clone(),
+                    proposal,
+                    capability,
+                    approvals,
+                })??;
+            ctx.out.at_book(&book)?;
+            let policy_hex = hex(&activated.policy_oid.0);
+            let entry_hex = format!("{:032x}", activated.control_entry.0);
+            ctx.out.event(
+                "retention_policy_activated",
+                vec![
+                    ("policy_oid", s(&policy_hex)),
+                    ("control_entry", s(&entry_hex)),
+                    (
+                        "recorded_at",
+                        Json::Int(i128::from(activated.recorded_at.0)),
+                    ),
+                    (
+                        "security_policy_epoch",
+                        Json::Int(i128::from(activated.security_policy_epoch)),
+                    ),
+                    ("already_recorded", Json::Bool(activated.already_recorded)),
+                ],
+                &format!(
+                    "activated retention policy {policy_hex} (entry {entry_hex}, recorded at {})",
+                    activated.recorded_at.0
+                ),
+            );
+            Ok(())
+        }
+        Some("list") => {
+            if args.positional.len() != 3 {
+                return Err(usage(
+                    "`fa document retention list` takes no positional arguments",
+                    "fa document retention list --book <dir> --json",
+                ));
+            }
+            let who = ctx.principal(args);
+            let cap = ctx.capability(args, &["read"])?;
+            let book = ctx
+                .books
+                .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+            let active = book.active_retention_policies()?;
+            ctx.out.at_book(&book)?;
+            let rows: Vec<Json> = active
+                .iter()
+                .map(|a| retention_policy_row_json(a, &ev_policy))
+                .collect();
+            let human = if active.is_empty() {
+                "no active retention policies".to_string()
+            } else {
+                active
+                    .iter()
+                    .map(|a| {
+                        let (scope_label, _) = retention_scope_parts(&a.policy.scope, &ev_policy);
+                        format!(
+                            "{}  entry {:032x}  {}  floor {}  from {}",
+                            hex(&a.policy_oid.0),
+                            a.control_entry.0,
+                            scope_label,
+                            a.policy.floor.describe(),
+                            a.policy.effective_from.render(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            ctx.out.event(
+                "retention_policies",
+                vec![
+                    ("count", Json::Int(rows.len() as i128)),
+                    ("policies", Json::Arr(rows)),
+                ],
+                &human,
+            );
+            Ok(())
+        }
+        Some("cut") => {
+            const FIX: &str = "fa document retention cut <subject_vid_or_oid> --seq <commit_seq> --day YYYY-MM-DD --book <dir> --json";
+            let subject_text = args
+                .positional
+                .get(3)
+                .map(String::as_str)
+                .or_else(|| args.flag("--subject"))
+                .ok_or_else(|| {
+                    usage(
+                        "`fa document retention cut` needs a subject vid or document oid",
+                        FIX,
+                    )
+                })?;
+            let subject = parse_subject_vid(subject_text, "retention cut subject")?;
+            let seq_text = args.require("--seq", "<commit_seq>")?;
+            let cut_seq =
+                CommitSeq(seq_text.parse::<u64>().map_err(|_| {
+                    usage(format!("--seq `{seq_text}` is not a commit sequence"), FIX)
+                })?);
+            let day_text = args.require("--day", "YYYY-MM-DD")?;
+            let cut_day = DateDay::parse(day_text)
+                .map_err(|e| usage(format!("--day `{day_text}`: {e:?}"), "--day YYYY-MM-DD"))?;
+            let capability = ctx.capability(args, &["erase"])?;
+            let book = ctx.books.open_admitted(args, |book| {
+                fa_policy::require(
+                    &capability,
+                    fa_policy::Op::Erase,
+                    "evaluating a retention cut",
+                )
+                .and_then(|()| fa_policy::scope(&capability, book.context().book_id))
+                .and_then(|()| {
+                    fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None)
+                })
+                .map_err(|d| Fail::Refusal(fa_journal::policy::refusal(&d)))?;
+                book.admit_current(&capability)??;
+                Ok(())
+            })?;
+            book.retention_cut(&capability, subject, cut_seq, cut_day)??;
+            ctx.out.at_book(&book)?;
+            let subj_hex = format!("{:032x}", subject.0);
+            ctx.out.event(
+                "retention_cut_evaluated",
+                vec![
+                    ("subject", s(&subj_hex)),
+                    ("cut_seq", Json::Int(i128::from(cut_seq.0))),
+                    ("cut_day", s(cut_day.render())),
+                    ("admissible", Json::Bool(true)),
+                ],
+                &format!(
+                    "retention cut for subject {subj_hex} at seq {} / day {} is admissible",
+                    cut_seq.0,
+                    cut_day.render()
+                ),
+            );
+            Ok(())
+        }
+        Some("cadence") => {
+            const FIX: &str = "fa document retention cadence --cadence-commits <N> [--cadence-days <N>] --book <dir> --json";
+            let commits_text = args.require("--cadence-commits", "<N>")?;
+            let cadence_commits = commits_text.parse::<u64>().map_err(|_| {
+                usage(
+                    format!("--cadence-commits `{commits_text}` is not a positive 64-bit integer"),
+                    FIX,
+                )
+            })?;
+            let cadence_days = match args.flag("--cadence-days") {
+                Some(days_text) => Some(days_text.parse::<u32>().map_err(|_| {
+                    usage(
+                        format!("--cadence-days `{days_text}` is not a positive 32-bit integer"),
+                        FIX,
+                    )
+                })?),
+                None => None,
+            };
+            let who = ctx.principal(args);
+            let cap = ctx.capability(args, &["read"])?;
+            let book = ctx
+                .books
+                .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+            let active = book.check_checkpoint_cadence(cadence_commits, cadence_days)??;
+            ctx.out.at_book(&book)?;
+            ctx.out.event(
+                "retention_cadence_checked",
+                vec![
+                    ("cadence_commits", Json::Int(i128::from(cadence_commits))),
+                    (
+                        "cadence_days",
+                        cadence_days.map_or(Json::Null, |d| Json::Int(i128::from(d))),
+                    ),
+                    ("policies_checked", Json::Int(active.len() as i128)),
+                ],
+                &format!(
+                    "checkpoint cadence ({cadence_commits} commits{}) satisfies all {} active retention floor(s)",
+                    cadence_days.map_or_else(String::new, |d| format!(", {d} days")),
+                    active.len()
+                ),
+            );
+            Ok(())
+        }
+        other => Err(usage(
+            format!(
+                "`fa document retention` needs `activate`, `list`, `cut`, or `cadence`{}",
+                other.map_or_else(String::new, |o| format!(" (got `{o}`)"))
+            ),
+            "fa document retention activate|list|cut|cadence ...",
         )),
     }
 }

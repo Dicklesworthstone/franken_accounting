@@ -9,6 +9,7 @@
 //! each fully readable document's native. A document the capability reads
 //! only through its redacted view is listed as redacted and ships no bytes.
 
+use fa::production::{LoadFileFormat, bates_assignments_from_view};
 use fa_journal::refusal::{Refusal, code, exit};
 use fa_journal::{
     ProducedDocument, ProductionProfile, ProductionView, RecordedExhibit, RecordedRange,
@@ -77,11 +78,11 @@ fn seq(v: fgdb_types::CommitSeq) -> Json {
 }
 
 fn load_file_name(tag: u8) -> &'static str {
-    match tag {
-        1 => "dat",
-        2 => "edrm",
-        3 => "both",
-        _ => "unregistered",
+    match LoadFileFormat::from_tag(tag) {
+        Some(LoadFileFormat::ConcordanceDatOpt) => "dat",
+        Some(LoadFileFormat::EdrmXml) => "edrm",
+        Some(LoadFileFormat::Both) => "both",
+        None => "unregistered",
     }
 }
 
@@ -231,11 +232,11 @@ fn open(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         })?,
     };
     let load_file_format = match one_flag(args, "--load-file", OPEN_EXAMPLE)? {
-        None | Some("dat") => 1,
+        None | Some("dat") => LoadFileFormat::ConcordanceDatOpt.tag(),
         // EDRM XML binds the bundle digest: such a matter produces through
         // `fa produce --bundle`.
-        Some("edrm") => 2,
-        Some("both") => 3,
+        Some("edrm") => LoadFileFormat::EdrmXml.tag(),
+        Some("both") => LoadFileFormat::Both.tag(),
         Some(other) => {
             return Err(usage(
                 format!("--load-file `{other}` is not a load-file format"),
@@ -342,13 +343,14 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         view.profile.label(view.next_bates),
         view.ranges.len()
     )];
-    for r in &view.ranges {
+    let assignments = bates_assignments_from_view(&view)
+        .map_err(|e| Fail::Internal(format!("Bates assignment projection: {e}")))?;
+    for (r, assignment) in view.ranges.iter().zip(&assignments) {
         human.push(format!(
-            "  {}..={} {} ({} pages, {})",
-            view.profile.label(r.range.start),
-            view.profile.label(r.range.end),
+            "  {} {} ({} pages, {})",
+            assignment.range_label(),
             hex(&r.range.document.0),
-            r.range.pages(),
+            assignment.page_count,
             designation_name(r.range.designation)
         ));
     }

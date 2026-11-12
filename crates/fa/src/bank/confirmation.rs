@@ -143,12 +143,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(refusal) = self.authorize_bank(cx, capability)? {
             return Ok(Err(refusal));
         }
-        if capability.profile() != Profile::Human {
+        let profile = capability.sod_profile();
+        if profile != Profile::Human {
             return Ok(Err(fa_journal::policy::refusal(
                 &fa_policy::Denial::ApproverProfile {
                     rule: "bank_match_confirmer".into(),
                     approver: capability.holder(),
-                    profile: capability.profile(),
+                    profile,
                     allowed: vec!["Human".into()],
                 },
             )));

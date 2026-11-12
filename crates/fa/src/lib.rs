@@ -182,7 +182,13 @@ pub use certificate::{
     StatementMetadata, TrialBalanceSelection,
 };
 pub use certificate_store::{MAX_INLINE_CERTIFICATE_BYTES, RetainedCertificate};
-pub use consolidation::FunctionalConsolidation;
+pub use consolidation::{
+    ADJUSTMENT_LAYER_ANCHOR_DOMAIN, ADJUSTMENT_LAYER_DOCUMENT_KIND, ADJUSTMENT_LAYER_MIME,
+    AdjustmentLayerAnchored, AdjustmentLayerLeg, BOOK_TO_BOOK_BRIDGE_FORMAT, BOOK_TO_BOOK_TAG_KEY,
+    BookKind, BookToBookBridge, BookToBookBridgeRow, BookToBookInput, BookToBookReasonCode,
+    BookToBookReconciliation, BridgeExplanation, FunctionalConsolidation, decode_book_to_book_tag,
+    encode_book_to_book_tag, reconcile_book_to_book,
+};
 pub use custom_statement::{CustomStatementReport, CustomStatementSelection};
 pub use dimension::FunctionalDimensionTrialBalance;
 pub use disposal::{
@@ -229,19 +235,27 @@ pub use fa_journal::closing::{
     YearEndCloseVerification,
 };
 pub use fa_journal::{
-    AccountEffectivity, AccountLifecycleRecorded, AllocationPosting, AllocationTargetCell,
-    DocumentEvidenceSummary, EventRow, EvidenceExplanation, ExhibitMarkedOutcome, ExternalIdRow,
-    InstantSelection, InstrumentRow, LegalEntityRow, LineageEdgeSummary, LineageEntrySummary,
-    LineageReport, ManualAssertionSummary, NetPosition, NettingLaw, PartyRow, PeriodBalance,
-    PeriodCheck, PeriodHistoryVerification, PeriodTransitionRecord, PeriodVerification,
-    ReaControlRecorded, ReaSnapshot, RecordedExhibit, RelatedPartyHit, RelationshipRow,
-    ReviewedSummary, RevocationRequest, Revoked, Run, RunBody, RunChunk, RunControlRequest,
-    RunControlled, RunMode, RunState, ScheduleVerification, SupplementSummary, TieOut, TieOutLine,
-    TrialBalanceLine, UploadRequest, UsageVerification,
+    AccountEffectivity, AccountLifecycleRecorded, ActiveRetentionPolicy, AllocationPosting,
+    AllocationTargetCell, DocumentEvidenceSummary, EventRow, EvidenceExplanation,
+    ExhibitMarkedOutcome, ExternalIdRow, InstantSelection, InstrumentRow, LegalEntityRow,
+    LineageEdgeSummary, LineageEntrySummary, LineageReport, ManualAssertionSummary, NetPosition,
+    NettingLaw, PartyRow, PeriodBalance, PeriodCheck, PeriodHistoryVerification,
+    PeriodTransitionRecord, PeriodVerification, RETENTION_CADENCE_EXCEEDS_FLOOR,
+    RETENTION_FLOOR_ACTIVE, RETENTION_POLICY_DOMAIN, RETENTION_POLICY_VERSION, ReaControlRecorded,
+    ReaSnapshot, RecordedExhibit, RelatedPartyHit, RelationshipRow, RetentionActivationRequest,
+    RetentionFloor, RetentionPolicy, RetentionPolicyActivated, RetentionScope,
+    RetentionVerification, ReviewedSummary, RevocationRequest, Revoked, Run, RunBody, RunChunk,
+    RunControlRequest, RunControlled, RunMode, RunState, ScheduleVerification, SupplementSummary,
+    TieOut, TieOutLine, TrialBalanceLine, UploadRequest, UsageVerification,
+};
+pub use fa_lantern::conformal::{
+    DetectorThresholdCard, LabeledDetectorMetrics, SplitConformalBound,
+    ThresholdCandidateEvaluation, WilsonIntervalBps, calibrate_detector_threshold,
+    calibrate_split_conformal, wilson_interval_95_bps,
 };
 pub use fa_model::{
-    EventKind, EventResource, EventSpec, InstrumentKind, InstrumentSpec, PartyKind, PartySpec,
-    event_vid, instrument_vid, party_vid,
+    EventKind, EventResource, EventSpec, Id128, InstrumentKind, InstrumentSpec, PartyKind,
+    PartySpec, draft_branch, event_vid, instrument_vid, party_vid,
 };
 pub use fa_money::allocation::{
     AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,
@@ -278,13 +292,19 @@ pub use fa_statements::custom::{
     apply_presentation_rounding,
 };
 pub use fa_statements::markdown::{
-    StatementMarkdownIr, TrialBalanceIrInput, TrialBalanceIrRow, UnitFormatSpec,
-    render_statement_ir, render_trial_balance_ir,
+    OpenItemIrRow, OpenItemsIrInput, RegisterIrInput, RegisterIrRow, StatementMarkdownIr,
+    TrialBalanceIrInput, TrialBalanceIrRow, UnitFormatSpec, render_open_items_ir,
+    render_register_ir, render_restatement_diff_ir, render_statement_ir, render_trial_balance_ir,
 };
-pub use fa_statements::regulatory::RegulatoryScheduleDefinition;
+pub use fa_statements::regulatory::{
+    RegulatoryEditSet, RegulatoryScheduleDefinition, regulatory_edit_set, regulatory_edits,
+};
 pub use fa_statements::render::{
-    StatementRenderFormat, format_utc_epoch_iso8601, render_html, render_pdf, render_pdfa,
-    render_svg, validate_pdfa2b,
+    FlowOfFundsEdge, FlowOfFundsExhibit, FlowOfFundsNode, FmdRenderReceipt, LineageDiagramEdge,
+    LineageDiagramIr, LineageDiagramNode, LineageEdgeKind, StatementRenderFormat,
+    format_utc_epoch_iso8601, invoke_fmd_render, render_flow_of_funds_diagram, render_html,
+    render_lineage_diagram, render_pdf, render_pdfa, render_semantic_diff_html, render_svg,
+    validate_pdfa2b,
 };
 pub use fa_statements::{
     AccountMapping, Column as StatementColumn, Statement, StatementDefinition, StatementError,

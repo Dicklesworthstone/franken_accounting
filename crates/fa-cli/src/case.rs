@@ -53,6 +53,16 @@ pub(crate) fn case_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             STATEMENTS_EXAMPLE,
         ));
     }
+    if !(sub == Some("diff") && args.switch("--statements"))
+        && let Some(flag) = ["--definition", "--render", "--out", "--fmd-bin"]
+            .into_iter()
+            .find(|flag| !args.flag_all(flag).is_empty())
+    {
+        return Err(usage(
+            format!("{flag} belongs to fa case diff --statements"),
+            STATEMENTS_EXAMPLE,
+        ));
+    }
     equity::validate_options(args, sub)?;
     match sub {
         Some("open") => open(ctx, args),
@@ -624,7 +634,14 @@ fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let flag = verb
             .flags
             .iter()
-            .filter(|flag| flag.as_str() != "--grant")
+            .filter(|flag| {
+                flag.as_str() != "--grant"
+                    && !(statements
+                        && matches!(
+                            flag.as_str(),
+                            "--period" | "--definition" | "--render" | "--out" | "--fmd-bin"
+                        ))
+            })
             .find(|flag| !args.flag_all(flag.as_str()).is_empty())
             .or_else(|| {
                 verb.switches
@@ -638,7 +655,12 @@ fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         if let Some(flag) = flag {
             return Err(usage(
                 format!("`fa case diff` takes only the case number, not {flag}"),
-                if flag == "--certify" {
+                if flag == "--certify"
+                    || matches!(
+                        flag.as_str(),
+                        "--period" | "--definition" | "--render" | "--out" | "--fmd-bin"
+                    )
+                {
                     STATEMENTS_EXAMPLE
                 } else {
                     DIFF_EXAMPLE
@@ -690,6 +712,13 @@ fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// labels the fallback for periods that had never been issued or locked.
 /// With --certify each diff is retained and `fa replay` re-executes it.
 fn posted_statements(ctx: &mut Ctx<'_>, args: &Args, ordinal: u32) -> Result<(), Fail> {
+    let render_req = crate::cli::render_request(args, STATEMENTS_EXAMPLE)?;
+    if args.flag_all("--period").len() > 1 || args.flag_all("--definition").len() > 1 {
+        return Err(usage(
+            "--period and --definition may each be supplied at most once",
+            STATEMENTS_EXAMPLE,
+        ));
+    }
     let certify = args.switch("--certify");
     let who = ctx.principal(args);
     let cap = ctx.capability(
@@ -712,7 +741,57 @@ fn posted_statements(ctx: &mut Ctx<'_>, args: &Args, ordinal: u32) -> Result<(),
             "comparing a case's statements across its Post",
         )
     })?;
-    let selected = book.case_statement_diff_requests(who, &cap, ordinal, None)??;
+    let mut selected = book.case_statement_diff_requests(who, &cap, ordinal, None)??;
+    if let Some(period_filter) = args.flag("--period") {
+        selected.retain(|item| item.period == period_filter);
+        if selected.is_empty() {
+            return Err(usage(
+                format!(
+                    "restatement case {ordinal} has no affected statement matching --period `{period_filter}`"
+                ),
+                STATEMENTS_EXAMPLE,
+            ));
+        }
+    }
+    if let Some(def_filter) = args.flag("--definition") {
+        let mut filtered = Vec::new();
+        for item in selected {
+            let meta = item
+                .request
+                .selection
+                .statement_metadata()
+                .map_err(|error| Fail::Internal(format!("case statement metadata: {error}")))?
+                .ok_or_else(|| Fail::Internal("case selected a non-statement report".into()))?;
+            let matches_def = meta.definition_name == def_filter
+                || (def_filter == "balance-sheet" && meta.kind == fa::StatementKind::BalanceSheet)
+                || (def_filter == "income-statement"
+                    && meta.kind == fa::StatementKind::IncomeStatement);
+            if matches_def {
+                filtered.push(item);
+            }
+        }
+        if filtered.is_empty() {
+            return Err(usage(
+                format!(
+                    "restatement case {ordinal} has no affected statement matching --definition `{def_filter}`"
+                ),
+                STATEMENTS_EXAMPLE,
+            ));
+        }
+        selected = filtered;
+    }
+    if let Some(req) = render_req.as_ref()
+        && req.out.is_some()
+        && selected.len() != 1
+    {
+        return Err(usage(
+            format!(
+                "`fa case diff {ordinal} --statements --render` with `--out` requires selecting one statement comparison ({} matched): narrow with `--period <code>` and `--definition balance-sheet|income-statement`",
+                selected.len()
+            ),
+            STATEMENTS_EXAMPLE,
+        ));
+    }
     if let Some(before) = selected
         .iter()
         .map(|selected| selected.request.before)
@@ -776,26 +855,109 @@ fn posted_statements(ctx: &mut Ctx<'_>, args: &Args, ordinal: u32) -> Result<(),
                 ]);
             }
         }
-        ctx.out.event(
-            "case_statement_basis",
-            fields,
-            &format!(
-                "case {ordinal} {} {}: {} at {} → Post at {}",
-                selected.period,
-                metadata.definition_name,
-                selected.basis.name(),
-                request.before.0,
-                request.after.unwrap().0
-            ),
-        );
+        let build_case_diff_rendering = |book: &fa::Book,
+                                         files: &crate::cli::Files,
+                                         diff: &fa::StatementDiff,
+                                         req: &crate::cli::RenderRequest<'_>|
+         -> Result<crate::cli::Rendering, Fail> {
+            if diff.is_custom() {
+                return Err(usage(
+                    "`fa case diff --statements --render` supports built-in statement layouts only",
+                    STATEMENTS_EXAMPLE,
+                ));
+            }
+            let def = fa::StatementDefinition::decode(&diff.after().definition_bytes)
+                .map_err(|e| Fail::Internal(format!("case statement definition decode: {e}")))?;
+            let specs = crate::cli::unit_format_specs(
+                &book.context().units,
+                diff.lines().iter().map(|line| line.unit_id),
+            )?;
+            let diff_ir = fa::render_restatement_diff_ir(diff.before(), diff.after(), &def, &specs)
+                .map_err(|e| Fail::Internal(format!("restatement diff IR: {e}")))?;
+            if req.fmd_bin.is_none() && req.format == fa::StatementRenderFormat::Html {
+                let tick = book
+                        .corroborated_tick_at(fgdb_types::CommitSeq(diff_ir.known_at))?
+                        .ok_or_else(|| {
+                            Fail::Environment(format!(
+                                "--render html dates the document by the book's latest corroborated clock tick known at {}, and none is retained; render Markdown (--render md), which carries no date, or let fad's timed work journal TimeEvidence ticks first",
+                                diff_ir.known_at
+                            ))
+                        })?;
+                let orig_ir = fa::render_statement_ir(diff.before(), &def, &specs)
+                    .map_err(|e| Fail::Internal(format!("original statement IR: {e}")))?;
+                let curr_ir = fa::render_statement_ir(diff.after(), &def, &specs)
+                    .map_err(|e| Fail::Internal(format!("restated statement IR: {e}")))?;
+                let bytes = fa::render_semantic_diff_html(
+                    &orig_ir,
+                    &curr_ir,
+                    tick.observed_utc_ns / 1_000_000_000,
+                )
+                .map_err(|e| Fail::Internal(format!("semantic diff HTML: {e}")))?;
+                let ir_digest = diff_ir
+                    .digest()
+                    .map_err(|e| Fail::Internal(format!("restatement diff IR digest: {e}")))?
+                    .0;
+                let rendering = crate::cli::Rendering {
+                    bytes,
+                    tick: Some(tick),
+                    pdfa_valid: false,
+                    ir_digest,
+                    markdown: diff_ir.markdown,
+                    already_written: false,
+                };
+                crate::cli::write_rendering(files, req, &rendering)?;
+                return Ok(rendering);
+            }
+            let rendering = crate::cli::render_ir(book, files, req, &diff_ir)?;
+            crate::cli::write_rendering(files, req, &rendering)?;
+            Ok(rendering)
+        };
         if certify {
             let certified = book.certify_case_statement_diff(who, &cap, &selected)??;
+            let rendering = render_req
+                .as_ref()
+                .map(|req| build_case_diff_rendering(&book, &ctx.files, &certified.report, req))
+                .transpose()?;
+            ctx.out.event(
+                "case_statement_basis",
+                fields,
+                &format!(
+                    "case {ordinal} {} {}: {} at {} → Post at {}",
+                    selected.period,
+                    metadata.definition_name,
+                    selected.basis.name(),
+                    request.before.0,
+                    request.after.unwrap().0
+                ),
+            );
             crate::cli::emit_certified_statement_diff(
                 &ctx.out, &ctx.files, args, &mut book, &cap, &certified,
             )?;
+            if let (Some(req), Some(rendering)) = (render_req.as_ref(), rendering) {
+                crate::cli::emit_rendering(&ctx.out, req, rendering);
+            }
         } else {
             let diff = book.case_statement_diff(who, &cap, &selected)??;
+            let rendering = render_req
+                .as_ref()
+                .map(|req| build_case_diff_rendering(&book, &ctx.files, &diff, req))
+                .transpose()?;
+            ctx.out.event(
+                "case_statement_basis",
+                fields,
+                &format!(
+                    "case {ordinal} {} {}: {} at {} → Post at {}",
+                    selected.period,
+                    metadata.definition_name,
+                    selected.basis.name(),
+                    request.before.0,
+                    request.after.unwrap().0
+                ),
+            );
             crate::cli::render_statement_diff(&ctx.out, &book, &diff, None)?;
+            if let (Some(req), Some(rendering)) = (render_req.as_ref(), rendering) {
+                crate::cli::emit_rendering(&ctx.out, req, rendering);
+            }
         }
     }
     Ok(())

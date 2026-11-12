@@ -807,6 +807,7 @@ mod tests {
         assert!(text.contains("franken_networkx@9d710b1c"), "{text}");
         assert!(text.contains("fastmcp-rust@=0.12.0"), "{text}");
         assert!(text.contains("frankensympy@bd1ad68a"), "{text}");
+        assert!(text.contains("franken_markdown@7d0472b2"), "{text}");
         assert!(text.contains("registries: schema_v=1, epochs=15"), "{text}");
 
         let meta = cli::version_metadata_json("fad");
@@ -815,7 +816,7 @@ mod tests {
             .get("foundations")
             .and_then(Json::as_arr)
             .expect("foundations array");
-        assert_eq!(foundations.len(), 5);
+        assert_eq!(foundations.len(), 8);
         let epochs = meta
             .get("registry_epochs")
             .and_then(Json::as_arr)

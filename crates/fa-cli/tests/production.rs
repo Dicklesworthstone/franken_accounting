@@ -1026,9 +1026,68 @@ fn a_bundle_production_numbers_the_cited_documents_and_delivers_the_bundle_edrm_
     assert!(declaration.contains(digest), "{declaration}");
     assert!(declaration.contains("MB-00000001"), "{declaration}");
     assert!(declaration.contains("M-B"), "{declaration}");
+    assert!(
+        declaration.contains(
+            "| Document OID | Kind | BLAKE3 Commitment (`doc_commit`) | Matter Bates Range |"
+        ),
+        "{declaration}"
+    );
+    let doc_row = declaration
+        .lines()
+        .find(|line| line.starts_with(&format!("| `{lease}` |")))
+        .expect("declaration Section 2 row for produced lease document");
+    let cells: Vec<&str> = doc_row
+        .split('|')
+        .map(str::trim)
+        .filter(|cell| !cell.is_empty())
+        .collect();
+    assert_eq!(cells.len(), 4, "{doc_row}");
+    let declared_kind = cells[1].trim_matches('`');
+    let declared_commit = cells[2].trim_matches('`');
+    let native_path = format!("{out}/NATIVES/MB-00000001.txt");
     assert_eq!(
-        std::fs::read(format!("{out}/NATIVES/MB-00000001.txt")).expect("native"),
+        std::fs::read(&native_path).expect("native"),
         b"OFFICE LEASE, MARCH RENT"
+    );
+    let verify_ok = fa_verify::cli::run(
+        &[
+            "doc-commit".into(),
+            native_path.clone(),
+            "--kind".into(),
+            declared_kind.into(),
+            "--expect".into(),
+            declared_commit.into(),
+            "--json".into(),
+        ],
+        &|p| std::fs::read(p),
+    );
+    assert_eq!(
+        verify_ok.exit,
+        fa_verify::cli::EXIT_VERIFIED,
+        "{}",
+        verify_ok.stdout
+    );
+    let tampered_path = format!("{out}/tampered-native.txt");
+    let mut tampered = std::fs::read(&native_path).expect("native");
+    tampered[0] ^= 0x01;
+    std::fs::write(&tampered_path, &tampered).expect("write tampered native");
+    let verify_tampered = fa_verify::cli::run(
+        &[
+            "doc-commit".into(),
+            tampered_path,
+            "--kind".into(),
+            declared_kind.into(),
+            "--expect".into(),
+            declared_commit.into(),
+            "--json".into(),
+        ],
+        &|p| std::fs::read(p),
+    );
+    assert_eq!(
+        verify_tampered.exit,
+        fa_verify::cli::EXIT_FAILED,
+        "{}",
+        verify_tampered.stdout
     );
 
     // The identical production is its recorded outcome; the bundle is the

@@ -91,10 +91,23 @@ fn options(args: &Args, flags: &[&str], switches: &[&str]) -> Result<(), Fail> {
 fn admit(book: &Book, capability: &Capability, op: Op) -> Result<(), Fail> {
     fa_policy::admit_read(capability, capability.holder(), book.context().book_id)
         .and_then(|()| fa_policy::require(capability, op, "asset schedules and charges"))
-        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .and_then(|()| {
+            if op == Op::SchemaChange {
+                fa_policy::reach_class(
+                    capability,
+                    &fa_policy::Reach::whole_book(true),
+                    None,
+                    fa_model::EntryClass::SCHEMA_CONTROL,
+                )
+            } else {
+                fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
+            }
+        })
         .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
-    book.read_scope(capability.holder(), capability)??
-        .admit_whole_book(None)??;
+    let scope = book.read_scope(capability.holder(), capability)??;
+    if op != Op::SchemaChange {
+        scope.admit_whole_book(None)??;
+    }
     Ok(())
 }
 

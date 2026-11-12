@@ -449,5 +449,140 @@ fn circular_flow_budget_refuses_inside_search_without_partial_output_or_head_cha
     assert_eq!(head(), before);
 }
 
+#[test]
+fn procedure_calibrate_emits_statistical_conformal_bound_and_fallback_card() {
+    let dir = temp();
+    let path = dir.join("book");
+    ok(
+        &path,
+        &["book", "create", "--name", "Conformal Calibration Co"],
+    );
+    let cal_json = r#"{
+        "clean_scores": [0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 4],
+        "labeled_items": [
+            {"score": 0, "anomaly": false},
+            {"score": 1, "anomaly": false},
+            {"score": 2, "anomaly": false},
+            {"score": 2, "anomaly": false},
+            {"score": 3, "anomaly": true},
+            {"score": 4, "anomaly": true},
+            {"score": 5, "anomaly": true},
+            {"score": 6, "anomaly": true}
+        ],
+        "candidate_thresholds": [1, 2, 3, 4]
+    }"#;
+    let cal_file = dir.join("calibration.json");
+    std::fs::write(&cal_file, cal_json).unwrap();
+
+    let events = ok(
+        &path,
+        &[
+            "procedure",
+            "calibrate",
+            "jet.round_amounts",
+            "--parameter",
+            "round_power",
+            "--file",
+            cal_file.to_str().unwrap(),
+            "--alpha-bps",
+            "1500",
+            "--delta-bps",
+            "500",
+        ],
+    );
+    assert_eq!(events.len(), 1);
+    assert_eq!(text(&events[0], "event"), "procedure_calibrated");
+    let d = data(&events[0]);
+    assert_eq!(text(d, "procedure"), "jet.round_amounts");
+    assert_eq!(text(d, "parameter"), "round_power");
+    assert_eq!(text(d, "claim_class"), "statistical");
+    assert_eq!(number(d, "pinned_fallback_threshold"), 3);
+    assert_eq!(d.get("used_fallback"), Some(&Json::Bool(false)));
+    let digest = text(d, "decision_card_digest").to_string();
+    assert_eq!(digest.len(), 64);
+
+    let metrics = d.get("selected_metrics").unwrap();
+    for interval_key in ["precision", "recall", "clean_fpr"] {
+        let iv = metrics.get(interval_key).unwrap();
+        let lower = number(iv, "lower_bps");
+        let point = number(iv, "point_bps");
+        let upper = number(iv, "upper_bps");
+        assert!(
+            0 <= lower && lower <= point && point <= upper && upper <= 10_000,
+            "{interval_key}: {iv:?}"
+        );
+    }
+
+    // Inline stdin replay (`--file -`) produces the exact same decision_card_digest.
+    let (exit, stdin_out, stdin_events) = call(
+        &path,
+        &[
+            "procedure",
+            "calibrate",
+            "jet.round_amounts",
+            "--parameter",
+            "round_power",
+            "--file",
+            "-",
+            "--alpha-bps",
+            "1500",
+            "--delta-bps",
+            "500",
+        ],
+        Some(cal_json.as_bytes()),
+    );
+    assert_eq!(exit, 0, "{stdin_out}");
+    assert_eq!(text(data(&stdin_events[0]), "decision_card_digest"), digest);
+
+    // Impossible conformal target on candidates strictly below empirical max forces deterministic fallback.
+    let tight_json = r#"{
+        "clean_scores": [4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
+        "labeled_items": [
+            {"score": 4, "anomaly": false},
+            {"score": 5, "anomaly": true}
+        ],
+        "candidate_thresholds": [1, 2]
+    }"#;
+    let (fb_exit, fb_out, fb_events) = call(
+        &path,
+        &[
+            "procedure",
+            "calibrate",
+            "jet.round_amounts",
+            "--parameter",
+            "round_power",
+            "--file",
+            "-",
+            "--alpha-bps",
+            "500",
+        ],
+        Some(tight_json.as_bytes()),
+    );
+    assert_eq!(fb_exit, 0, "{fb_out}");
+    let fb = data(&fb_events[0]);
+    assert_eq!(fb.get("used_fallback"), Some(&Json::Bool(true)));
+    assert_eq!(
+        number(fb, "selected_threshold"),
+        number(fb, "pinned_fallback_threshold")
+    );
+
+    // Floating-point scores are refused at CLI input parsing (exactness is constitutional).
+    let float_json = r#"{"clean_scores":[1.5],"labeled_items":[{"score":1,"anomaly":false}]}"#;
+    let (fl_exit, fl_out, _) = call(
+        &path,
+        &[
+            "procedure",
+            "calibrate",
+            "jet.round_amounts",
+            "--parameter",
+            "round_power",
+            "--file",
+            "-",
+        ],
+        Some(float_json.as_bytes()),
+    );
+    assert_eq!(fl_exit, 2, "{fl_out}");
+}
+
 #[path = "procedure_replay/extended.rs"]
 mod extended;

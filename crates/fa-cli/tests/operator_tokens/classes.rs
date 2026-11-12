@@ -173,6 +173,48 @@ fn a_class_scoped_token_writes_no_control_of_another_class() {
         assert_eq!(state(&f), fa_time::PeriodState::Closed);
         assert!(f.book.head().unwrap() > before);
     }
+
+    // Exercise whole-book control admission via admit_within_class / admit_class
+    // (`SchemaControl` chart open): a token scoped to `Original` is refused
+    // naming the target control class, while a token scoped to `SchemaControl`
+    // succeeds.
+    let mut schema_f = Fixture::new(0xe5);
+    let account_file = schema_f.dir.join("new-account.json");
+    std::fs::write(
+        &account_file,
+        r#"{"code":"6250","name":"Supplies","type":"Expense","unit":"USD"}"#,
+    )
+    .unwrap();
+    let open_args = [
+        "chart",
+        "open",
+        "new-account.json",
+        "--opened",
+        "2026-03-01",
+        "--key",
+        "class-scoped-schema-open",
+    ];
+    let wrong_schema = issue(
+        &mut schema_f,
+        "original-only-schema",
+        "schema_change",
+        Some("Original"),
+    );
+    let schema_refused = denied_for_classes(&mut schema_f, &wrong_schema, &open_args);
+    assert!(
+        text(&schema_refused, "message").contains("SchemaControl"),
+        "{}",
+        schema_refused.render()
+    );
+
+    let right_schema = issue(
+        &mut schema_f,
+        "schema-only-controller",
+        "schema_change",
+        Some("SchemaControl"),
+    );
+    let added = schema_f.ok(&right_schema, &open_args, None);
+    assert_eq!(text(&added, "action"), "open");
 }
 
 #[test]
