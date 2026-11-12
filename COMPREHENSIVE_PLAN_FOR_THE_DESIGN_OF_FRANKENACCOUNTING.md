@@ -1282,6 +1282,143 @@ This section records an audit and remaining work; it neither changes the target
 contracts above nor closes implementation beads. The generated workflow scoreboard
 is a sample of commands, not a percentage of the complete product delivered.
 
+#### Current-cut refresh (2026-11-11)
+
+**Assessment: kernel discipline, exactness laws, and standalone proof machinery are
+unusually strong, and 280 commits since 2026-11-04 closed real transport, PDF/A-2b,
+draft-isolation, functional-register, and offline-verifier gaps — yet `HEAD`
+(`3f944175f266`) currently fails `--all-targets` compilation/Clippy in `fa-journal`
+integration tests, `docs_sync_check.sh` and `tier0.sh` fail on `main` due to script
+defects, zero full Tier-1 `fa-verdict` PASS notes have landed in 17 days, and the
+complete six-bet 1.0 product remains unqualified (`G1`–`G4` UNMET).**
+
+All 368 lines of `AGENTS.md` (50,524 bytes), all 2,840 lines of `README.md`, and all
+2,654 lines of this plan were read byte-for-byte on canonical `main` at
+`3f944175f2662315053fdb50ab9cfcdfdee045b2` (tree
+`023a0cab330097f0d268fa201e1f7d18fa27d5c4`), alongside a three-subagent source audit
+covering all 33 workspace crates (481,622 LOC across 1,311 Rust files), registries,
+proof scripts, formal specs, and all 496 pre-audit `.beads/issues.jsonl` records. No
+branch or worktree was created, no gate was weakened, and no file was deleted.
+
+**Live execution receipts on `3f944175f266` (exact separation of PASS, FAIL, UNRUN):**
+
+- **PASS (`exit 0`):**
+  - `cargo fmt --all --check` (`exit 0`).
+  - `cargo metadata --format-version 1 --no-deps` (`exit 0`, 33 workspace members; 5 planned crates — `fa-types`, `fa-claim`, `fa-sim-harness`, `fa-concordat`, `fa-sim` — remain uncreated).
+  - `bash scripts/doctrine_check.sh` (`exit 0`, 6/6 checks: 40/40 `#![forbid(unsafe_code)]` roots, 0 floats across 15 amount crates, 0 durable `serde` derives, 0 detached `std::thread::spawn`, single `fnx-classes`, 0 `todo!`/`unimplemented!`).
+  - `bash scripts/topology_check.sh` (`exit 0`, 35/35 checks incl. `facade-bytes`).
+  - `bash scripts/check-forbidden-deps.sh` (`exit 0`, 27 foundation IDs in `fa`/`fa-cli`/`fad`, 36 in `fa-mcp`, single shared `Cx` identity).
+  - `cargo run -p registry-check --quiet` (`exit 0`: 84 TOML files, 72/83 live invariant clauses, 155 refusals, 88 verbs, 132 MCP tools, 72 doc markers, 5 evidence artifacts).
+  - `cargo test -p fa-verify -- --nocapture` (`exit 0`: **1,002 passed, 0 failed**, 7 APFS non-UTF-8 filename `EILSEQ` ignored across 32 test binaries, incl. 700 `lib` unit tests).
+  - Standalone `target/debug/fa-verify` (`sha256:6372f008093677efad020c0329055719b28158768ec07ddacd3e488c96391c27`, zero external deps) over retained public-ledger bundles: `university_source_bound` **91/91 checks (`verified`, `exit 0`)**, `museum_recovered_source_bound` **37/37 checks (`verified`, `exit 0`)**, 1-byte tampered `university` copy **`failed` (`exit 8` on `record_derivation`)**.
+  - `bash scripts/local_proof_selftest.sh` (`exit 0`, including the 762,597-byte / 20,000-test inventory controls added in `000d6d29`).
+- **FAIL (genuine repository and gate defects reproduced live):**
+  - `rch exec -- cargo clippy --workspace --all-targets -- -D warnings` (`ovh-b`, 779.8s across 329+ crates) → **`exit 101` (RED)**. The Nov 4 `crates/fa/src/proof.rs:220` `too_many_arguments` failure is fixed, and every library crate compiles cleanly, **except** `fa-journal` integration test `fx_routes`, which fails to compile in commits `93531d67` and `3f944175` (pushed without a Tier-0 note after local `asupersync` `SIGKILL`): two `E0425` errors (`fa_model::reversal_vid` at `crates/fa-journal/tests/fx_routes/outcome_keys/closing.rs:350` and `crates/fa-journal/tests/fx_routes/outcome_keys.rs:366`; the function lives at `fa_journal::rows::reversal_vid`) and two `clippy::unusual_byte_groupings` errors (`0xfeed_227` at `closing.rs:360`, `0xfeed_221` at `outcome_keys.rs:376`).
+  - `bash scripts/docs_sync_check.sh` → **`exit 1`** (`3 passed, 1 failed: readme-status-date`). `scripts/docs_sync_check.sh:299-314` reads `git notes --ref=refs/notes/fa-verdict list` and takes `splitlines()[-1]`; because `git notes list` sorts by **40-hex target OID** rather than chronologically (`gate_health.sh:195` fixed this in `8849fdbe`, leaving `docs_sync_check.sh` broken), `ea34e8dfdea0` (`2026-10-25`) overrides `README.md:16` (`fb0e12018d10`, `2026-11-01`) and fails against `README.md:24` (`2026-11-05`, 11 days > 7 days), while `registry-check` passes on the same files.
+  - `bash scripts/tier0.sh --no-note` → **`exit 1` (false-RED script bug)**. After remote RCH admission refusal (`exit 103` on `hz3`/`hz4`), local fallback runs `RCH_CARGO_WRAPPER_BYPASS=1 "$CARGO_BIN" check ...` (`scripts/tier0.sh:305-319`), resolving `cargo` to `~/.rch/shims/cargo`, which aborts pre-Cargo (`exit 1`, `refusing caller-set RCH_CARGO_WRAPPER_BYPASS=1 while RCH_REQUIRE_REMOTE is enabled`), and `tier0.sh:318` misclassifies that shim refusal as compilation `FAIL` (`verdict=red`) instead of `UNRUN` (`exit 2`).
+  - `bash scripts/gate_health.sh` → **`exit 1`**: `vmi1152480` PASS; `hz2` FAIL on `pressure=critical` memory pressure despite 80.3 GB free disk (misleadingly reported as `"below disk threshold"`). `origin/refs/notes/fa-verdict` (`f609f00ce2a3`) remains at `ba456b5553d1` (`2026-10-25`, 17 days stale).
+- **UNRUN:** Full 205-target workspace `cargo test`, the 20 inactive `slo.toml` rows, the 11 dormant formal/model lanes (`proof_lanes.toml`), and external schema/oracle binaries absent on this host (`bean-check`, `hledger`, `ledger`, `verapdf`; `lean` is installed at `~/.elan/bin/lean`).
+
+**Substantive progress in the 280 commits since 2026-11-04 (`d46d0662` → `3f944175`):**
+
+1. **Verdict transport & fanout backpressure (`fa-0hs4.19`, `fa-abhg`):** `scripts/local_proof_verify.sh:98-154` (`000d6d29`) streams `git cat-file blob` via `subprocess.Popen` stdin (verified at 762 KB / 20,000 tests); `scripts/check.sh:570-611` (`7fd0fa52`) halts test fanout on RCH `E330` admission exhaustion and records unsubmitted targets as `UNRUN` (`exit 2`); `scripts/tier0.sh:254` (`c2d9375b`) marks unconfirmed remote completion as `UNRUN` without replay.
+2. **Shared `IntentOutcome`, query authority & functional maintenance (`fa-nl7`, `fa-5c1`, `fa-715`):** `set_fx_route` and `set_closing_route` co-publish shared `IntentOutcome` claims (`fa:vid:intent-outcome:v1`; test binary compilation pending `fa-0hs4.20`); historical `AS KNOWN AT` capability bounds, certified `open_amount` pipelines, and registered Lantern `CALL` procedures landed across library/CLI/daemon/MCP; `fad` maintains native and functional register cells round-robin via `delta_since` and reuses persisted functional TB history.
+3. **PDF/A-2b, atomic lot-relieving sales, confined draft prep & Canon (`fa-cet`, `fa-qh60`, `fa-txgy.5`, `fa-txgy.7`, `fa-canon`):** Self-contained PDF/A-2b reports (`fmd-font` CMU Typewriter + `/ToUnicode` + XMP + sRGB ICC, container `verapdf` 5,987 checks) and presentation-rounded statements landed; sales invoices relieve native inventory lots atomically; `branch`-confined drafts prepare FX, subledger, and lot-disposal proposals without whole-book `Op::Read`; Canon added source-defined `Accrue`/`Defer` adjusting rules, atomic multi-rule event batches, and canonical-version-bound `RuleAuthority`.
+4. **Standalone `fa-verify` & migration hardening (`fa-verify`, `fa-5woj`):** `fa-verify` grew to 122,546 LOC / 1,002 passing tests, adding offline replay for 5 of 70 Lantern procedures (`jet.round_amounts`, `jet.period_end_timing`, `jet.post_closing`, `duplicates.same_same_same`, `benford.first_digit`), attributed lot schedules, item FX revaluation, allocated FX settlements, and migrated statement traces; migration/import hardened nanosecond legacy timestamps, unit-scale guards, Beancount grammar, and contra-account plaintext TB parity.
+
+**Newly uncovered architectural & verification defects (beyond known open beads):**
+
+1. **Broken `HEAD` `--all-targets` build (`fa-0hs4.20`) & unhooked push path (`fa-0hs4.3`):** `3f944175` and `93531d67` pushed directly without Tier-0 notes; in this canonical macOS clone `git config core.hooksPath` is unset, `remote.origin.fetch` omits `+refs/notes/*:refs/notes/*` (`0/150` recent first-parent commits have local `fa-tier0` notes), and `GOV-03` (`registries/scoreboard.toml:1122`) cites nonexistent `.githooks/pre-commit, .githooks/pre-push` instead of `scripts/hooks/pre-push`.
+2. **Gate & closure script bugs (`fa-0hs4.21`, `fa-0hs4.22`):** Beyond `tier0.sh:305-319`, `docs_sync_check.sh:299-314`, and `gate_health.sh`, `scripts/close_bead.sh` passes `"$decision_json"` in `sys.argv[1]` (`L661-665`, `MAX_ARG_STRLEN` `E2BIG` hazard), uses unanchored `git log --grep="$bead_id"` (`L642`), matches ambiguous OID prefixes across `<blob> <commit>` (`L319,615`), and strips `<crate>::` in `matches_inventory` (`L362-368`); `scripts/local_proof.sh` swallows `git notes`/`git push` errors (`L315-319`), recursively nests `sources/` on `--resume-from` (`L120-126`), and uses `errors="replace"` (`L252,282`) where `local_proof_verify.sh:228,565` requires strict UTF-8.
+3. **Tautological `OpCount` smoke witness (`fa-0hs4.23`):** `crates/fa-bench/src/lib.rs:596-994` (`measure_kernel_op_witness`) executes `Book` calls and then returns hardcoded `OpCount` struct literals / arithmetic formulas (`point_reads: 4, witnesses: 2, cas_moves: 1` at `L775-782`) instead of reading live `fgdb` operation counters — explaining why `fa-bench --smoke` stays green despite remaining `O(N)` kernel scans. Only 4 of 19 §17 workloads (`FA-BENCH-01`, `02`, `06`, `11`) have timed runners.
+4. **Scoped `Agent` draft caveat incompatibility (`fa-0hs4.24`):** `draft_reach` (`crates/fa-journal/src/draft.rs:853-870`) sets `periods: None, through: None, accounts: None`, which `admit_within` (`crates/fa-policy/src/admit.rs:289-345`) treats as whole-book reach and unconditionally refuses whenever an `Agent` capability carries `accounts`, `periods`, or `effective` caveats required by Plan §14.4.
+5. **Exact remaining 100k-entry `O(N)` / `O(D²)` scan sites (`fa-0hs4.6`):** (a) RAM-only `CarriedHistory` (`crates/fa/src/async_book.rs:122`) + warm `Resolution`/`Replacement` bypass (`crates/fa-journal/src/post.rs:583-637`) trigger full-book `CapacityHistory::summarize` (`register_capacity.rs:270,702`) on every cold CLI `fa post`; (b) `draft.rs:1566,2112-2137` calls `db.edges_at(seq)?` (400k+ edges) instead of `in_neighbours(..., IN_CASE)` and rehearses `1..=D` (`O(D²)`); (c) `fa-registers/src/lib.rs:2051,2084,2247,2293` scans `vertices_at` for chart/period metadata, decodes every `Entry` on any unmaterialized empty period (`period_has_postings_at`), scans `vertices()`/`edges()` in `maintainer.rs:356,398,1200`, and calls `entries_at` on `balance_as_of`/`open_items`/`aging`/`lots`; (d) `fa-notary/src/state.rs:709-846` performs **two** full-journal scans + MMR/`ScopeIndex` rebuilds on every `fa checkpoint create`.
+6. **Unwired library islands (`fa-0hs4.14`), closed-owner scoreboard rows (`fa-0hs4.4`), and work-graph jam:** `fa-registers/src/fx.rs` (`remeasure_temporal` L2065, `plan_remeasurement_entry` L2441, `translate_current_rate` L1413, `plan_cta_deconsolidation_recycling` L1902 — while `fa-journal/src/fx.rs:756` refuses fresh `Translation`/`Remeasurement` with `FA-REF-001`), `fa-policy/src/sod.rs` (`ConservedRightsPool`, `EmptinessWitness`, `JudgmentCache`, `SingleUsePermit`), `fa-policy/src/decision.rs` (`BundleEvidenceInlining`, `TrainBatchSize`), and `fa-statements/src/concordat.rs` (`BookKind::AdjustmentLayer`, `reconcile_book_to_book`) have zero non-test callers. `registries/scoreboard.toml` points UNMET `G2-08` (`L895`) and `G4-02` (`L1041`) to **closed** `fa-3ock` and UNMET `G3-08` (`L1015`) to **closed** `fa-nmk4`; `FA-INV-01.dimensions`, `FA-INV-10.post-evaluation`, and `FA-INV-10.access-log` have live code while still marked `dormant` in `invariants.toml`. Across the work graph, `242/242` historical closures remain in closure debt, `103/110` `in_progress` claims are stale (>24h) across 5 WIP-limit violations (up to 51 on one agent), and `123/254` pre-audit open/in-progress beads (incl. 52 P0/P1) lack `acceptance-tests` blocks.
+
+**Vision checklist refresh (`V01`–`V40`).** No 1.0 goal is promoted to `WORKING` without a current full-gate verdict and its end-to-end acceptance criteria satisfied.
+
+| Goal | Current reality and remaining completion condition | Active owners |
+|---|---|---|
+| V01 Immutable N-leg posting | PARTIAL real posting/fragments/refusals; full regression baseline (`fx_routes` broken at HEAD) and capacity bounds remain | fa-0hs4.20, fa-0hs4.2, fa-7mhm |
+| V02 Derived state equals journal | PARTIAL register/projection verification; unmaterialized-period `verify book` exit-8 bug and corruption/recovery campaign remain | fa-0hs4.5, fa-jmh, fa-0fl |
+| V03 Incremental reports | PARTIAL native + functional `delta_since` daemon maintenance and TB history reuse landed; chart/empty-period vertex scans and non-TB folds remain | fa-715, fa-0hs4.6, fa-9xf9 |
+| V04 Period/calendar law | PARTIAL commit-time matrix/witnesses; calendar/time-zone edges and full crash/race campaign remain | fa-94qd, fa-7uhr, fa-0fl |
+| V05 Bitemporal and issuance reads | PARTIAL historical capability query bounds and issuance/certificate views; `TimeEvidence` token expiry and full query composition remain | fa-5c1, fa-vdc |
+| V06 Corrections/restatement | PARTIAL lifecycle, lineage, equity roll-forward work in flight; full case disclosure binding and signed approval contracts remain | fa-0hs4.7, fa-0hs4.8, fa-75j4, fa-651f |
+| V07 Close orchestration | PARTIAL reviewed `CloseRun` DAG/resume/combined rehearsal; automatic close-task generation, full package, and global review gate remain | fa-4o0 |
+| V08 Holds/availability | PARTIAL proportional resolution, limits, timed sweeps; paged sweep index advance and race/capacity closure remain | fa-0hs4.10, fa-0hs4.11, fa-0fl, fa-7mhm |
+| V09 Scheduled effects | PARTIAL committed-tick reversal, recurrence, asset and `Accrue`/`Defer` rules; `Recognize` multi-period schedules and lab campaign remain | fa-0bi, fa-c34, fa-0fl |
+| V10 Atomic intents/retries | PARTIAL post/reversal/batch/FX/closing `IntentOutcome` claims; HEAD `fx_routes` test compile fix, durable admitted refusals, 8 `SchemaChange` kinds, and governance/migration outcomes remain | fa-0hs4.20, fa-nl7, fa-we7 |
+| V11 Source-bound migration | PARTIAL public-data staged/finalized runs, fragments, nanosecond legacy timestamps; streaming bulk loader and capacity/visibility closure remain | fa-zddh, fa-nd7g, fa-mv0f |
+| V12 Exact amounts/FX/units | PARTIAL exact arithmetic, carrying-value settlement, item revaluation; wiring `fa-registers/src/fx.rs` translation/remeasurement (`IAS29`), post-genesis unit evolution, and `fa-types` remain | fa-pvt7, fa-thp, fa-ryvp, fa-0hs4.14 |
+| V13 Dimensions/subledgers | PARTIAL native attribution, hierarchies, atomic invoice lot relief; external detail/clause/manifest acceptance remains | fa-ficc, fa-03s, fa-vz7e |
+| V14 Evidence closure | PARTIAL originals, custody, source/rule closures; complete artifact/principal/approval provenance and FRE 902(11) template remain | fa-ge0y, fa-81lu, fa-c34 |
+| V15 Bank/aging | PARTIAL BAI2/CAMT/MT940/OFX/CSV matching and contractual aging; NACHA, due-date offline aging closure, and continuity drift remain | fa-0hs4.13, fa-nwgf, fa-5woj |
+| V16 Offline reports | PARTIAL 1,002 passing `fa-verify` tests, PDF/A-2b, 5/70 Lantern procedures, public bundles (`91/91`, `37/37`); unified 14-tag certificate contract, remaining 65 procedures, GQL cert replay, and counterfactual bundles remain | fa-70h4, fa-oimc, fa-0m9r |
+| V17 Witnessed history | PARTIAL signed/cosigned checkpoints; double full-journal scan in `checkpoint create` and unjournaled `WitnessPolicy`/`KeyRotation` remain | fa-qtfd, fa-u3zf, fa-0hs4.6 |
+| V18 Privacy/retention | PARTIAL guarded disclosure and legal holds; subject-key lifecycle and `ErasureCut` (`FA-REF-088`) remain unavailable | fa-v74 |
+| V19 Authority/SoD | PARTIAL caveats, key signatures, canonical `RuleAuthority`; `Approval` `effects_digest`/`target_coordinate`, keyless `--as` SoD bypass, and unwired `sod.rs` primitives remain | fa-z46b, fa-kae, fa-651f, fa-0x0, fa-mg2j |
+| V20 Access audit | PARTIAL bound-session records and accumulator leaves; whole-entry `accounts` read rules, owner posture, and offline certified access extracts remain | fa-0hs4.12, fa-7dw, fa-ohe |
+| V21 Canon | PARTIAL typed compiler, `Accrue`/`Defer`, multi-rule event batches; top-level `rules/` golden corpus, `Recognize`, and full intent families remain | fa-c34, fa-651f |
+| V22 Plans/drafts/scenarios | PARTIAL portable plans and confined draft FX/subledger/lot prep (`fa-txgy.7`); scoped `Agent` `draft_reach` refusal bug, `O(D²)`/`edges_at` draft scan, confirmation exchange, and offline scenarios remain | fa-0hs4.24, fa-s7x, fa-we7, fa-k07b, fa-0m9r |
+| V23 Three postures | PARTIAL embedded/CLI/daemon/MCP parity (88 verbs, 132 MCP tools); complete transport/authority/confirmation parity remains | fa-z5u, fa-2iu5, fa-ohe |
+| V24 Agent ergonomics | PARTIAL walkthrough, guidance, refusal catalog (155 codes); complete refusal-fix executability and fresh-agent gauntlet (`G3-08` re-homed from closed `fa-nmk4`) remain | fa-wgsj, fa-y6eu, fa-0hs4.4 |
+| V25 Query profile | PARTIAL historical capability bounds, `open_amount`, and Lantern `CALL`; offline GQL certificate verification, `accounts`-scoped whole-entry reads, and full runtime graph remain | fa-5c1, fa-2zf5 |
+| V26 Statements | PARTIAL PDF/A-2b, SVG font metrics, presentation rounding, diffs/traces; equity roll-forward prior-period line and unified family certificates remain | fa-qh60, fa-0hs4.8, fa-nzix, fa-y1vr, fa-oimc |
+| V27 Multi-book/consolidation | PARTIAL single-book shared-unit consolidation; wiring `concordat.rs` cross-book adjustment layers, `fa-registers/src/fx.rs` translation/CTA, paired intercompany posting, and `fa-concordat` crate remain | fa-259c, fa-22v5, fa-76hy, fa-q3cx, fa-0hs4.14 |
+| V28 Forensic observations | PARTIAL 70 deterministic procedures and 5 offline `fa-verify` replays; remaining offline procedure verifiers, input semantics, and 10M-leg scale bounds remain | fa-3afh, fa-b6xs, fa-m35p, fa-wwip |
+| V29 Calibration/sampling | PARTIAL seeded MUS/classical sampling and 12-procedure synthetic confusion matrix; full 70-procedure statistical calibration and near-miss controls remain | fa-4psc, fa-m35p |
+| V30 Audit/litigation | PARTIAL engagements, SUD, Bates/load-file productions; FRE 902(11), carry-forward provenance, and full reader qualification remain | fa-zgn, fa-ge0y, fa-wwip |
+| V31 Standards/regulatory | PARTIAL Beancount/hledger/contra-account oracle subsets and regulatory surfaces; SAP IDoc/`ACDOCA`, XAF/SIE4/FEC/GoBD, `ledger` CLI, external XSD/XBRL taxonomy validation, and scoreboard re-homing from closed `fa-3ock` remain | fa-sa4w, fa-ipom, fa-p370, fa-doa9, fa-0hs4.4 |
+| V32 Reference/simulation | PARTIAL `fa-reference` arithmetic/folds and fault/history tests; `fa-sim`/`fa-sim-harness`, 1,000-seed DPOR/chaos, and full barrier/race campaign remain | fa-2ihd, fa-0fl |
+| V33 Formal/model/fuzz | UNPROVEN 0/11 formal/model lanes active in CI (`lean` present locally) and bounded fuzz campaign not yet qualified | fa-09q8, fa-dj6j, fa-apde, fa-yrhb |
+| V34 Performance | UNPROVEN 0/20 `slo.toml` rows active, 4/19 timed runners, and `measure_kernel_op_witness` uses hardcoded `OpCount` literals (`fa-0hs4.23`) | fa-0hs4.23, fa-ykbp, fa-7mhm |
+| V35 Qualification/governance | RED on `HEAD` `clippy --all-targets` (`fa-0hs4.20`), `docs_sync_check.sh`, and `tier0.sh` (`fa-0hs4.21`); 17-day `fa-verdict` drought, `close_bead.sh` bugs (`fa-0hs4.22`), 242/242 closure debt, and closed-owner scoreboard pointers remain | fa-0hs4.20, fa-0hs4.21, fa-0hs4.22, fa-0hs4.1, fa-0hs4.2, fa-0hs4.3, fa-0hs4.4, fa-8jcr, fa-ubl0 |
+| V36 Release/publications | UNPROVEN distinct-builder reproducibility, symbol linkage audit, offline installer matrix, and composed 6-reader release campaign | fa-nfq2, fa-wwip, fa-q5kx, fa-rdid |
+| V37 Lots/assets | PARTIAL atomic sales-invoice lot relief, attributed lot schedules in `fa-verify`, asset schedules; full dimension/FX/method/certificate closure remains | fa-0hs4.9, fa-c34, fa-y1vr |
+| V38 Real-book operability | UNPROVEN 100k-entry cold CLI + resident `fad` with substrate-counted `O(1)`/`O(tail)` work across the 5 remaining scan sites | fa-0hs4.23, fa-0hs4.6, fa-q7vt, fa-rcw1, fa-wo2n, fa-rbs3, fa-vr7q |
+| V39 Public-record cases | PARTIAL Oklahoma/HMRC/House/Enron/WorldCom/Satriale/Autonomy artifacts; runnable `BLMIS` and `Merger` cases and release-binary receipts remain | fa-yugf, fa-wwip |
+| V40 Scope-aware controls/API | PARTIAL registered controls and `AsyncBook` `&Cx`; optional posting dates on `EntryPayload`, undated Book-control closure, and universal `&Cx`/`Coordinate` surface remain | fa-0hs4.18, fa-zc5w |
+
+**Would completing all pre-audit open/in-progress beads reach 100%?** **No, not without
+the 5 newly filed bug beads (`fa-0hs4.20`–`fa-0hs4.24`) and scoreboard/acceptance-block
+re-homing.** Specifically: (1) `HEAD`'s broken `fx_routes` test target (`fa-0hs4.20`)
+and the `tier0.sh` / `docs_sync_check.sh` / `close_bead.sh` defects (`fa-0hs4.21`,
+`fa-0hs4.22`) were actively preventing Tier-0/Tier-1 gates from passing or closing work
+truthfully; (2) `fa-bench`'s hardcoded `OpCount` smoke witness (`fa-0hs4.23`) would have
+allowed `O(N)` scans to pass smoke verification undetected; (3) `draft_reach`'s whole-book
+`None` caveat mismatch (`fa-0hs4.24`) broke Plan §14.4 scoped `Agent` drafts; and (4)
+`scoreboard.toml` pointed three UNMET gate rows (`G2-08`, `G3-08`, `G4-02`) at already
+closed beads (`fa-3ock`, `fa-nmk4`). With `fa-0hs4.20`–`fa-0hs4.24` added and `fa-0hs4.4`
+updated, every `V01`–`V40` gap and `G0`–`G4` clause has an active owner, though 123
+pre-existing beads still need `acceptance-tests` blocks under `fa-8jcr` and 103 stale
+`in_progress` claims require WIP hygiene.
+
+**Prioritized bridge plan (refined through 3 Ambition passes and 5 Plan-Space Refinement passes):**
+
+- *Ambition upgrades applied:* (A1) Replace brittle single-shot 205-target gate runs and hardcoded `OpCount` literals with deterministic exact-tree shard-union proof assembly (`--resume-from`) plus live substrate `fgdb` operation counters; (A2) Replace warm-daemon-only RAM caches with journal-recoverable checkpointed carry/chart/non-empty-period watermarks (`FA-INV-04`), `IN_CASE` draft adjacency, incremental open-item/aging/lot folds, and incremental `prev_state_oid` Notary checkpoints so cold CLI and warm `fad` both meet 100k-entry `O(1)`/`O(tail)` bounds; (A3) Close the four end-to-end composition seams together — scoped `Agent` draft caveats (`§14.4`), signed `effects_digest`/`target_coordinate` `Approval`s, universal `IntentOutcome`s (incl. durable admitted refusals), and unified 14-tag certificate retention + multi-book `Concordat`/FX wiring + family-grouped `fa-verify` procedure/GQL replay.
+
+1. **Tier 0 — Unbreak `HEAD`, truthful gates & shard-union Tier-1 baseline (`fa-0hs4.20`, `fa-0hs4.21`, `fa-0hs4.22`, `fa-0hs4.2`, `fa-0hs4.3`, `fa-abhg`, `fa-0hs4.4`):** Fix `fx_routes` compile/Clippy at `HEAD`; fix `tier0.sh` RCH-shim `UNRUN` classification, `docs_sync_check.sh` chronological `fa-verdict` selection, `gate_health.sh` pressure reporting, and `close_bead.sh`/`local_proof*.sh` hazards; enforce `install-hooks.sh` (`core.hooksPath` + `+refs/notes/*:refs/notes/*`); re-home closed scoreboard pointers (`G2-08`, `G3-08`, `G4-02`, `GOV-03`); execute all 205 test targets across exact-tree RCH waves via `--resume-from` and publish the first genuine full-scope v3 `fa-verdict` PASS note, unblocking `close_bead.sh` and draining the 103 stale `in_progress` claims.
+2. **Tier 1 — Substrate-counted 100k-entry operability across cold CLI & resident `fad` (`fa-0hs4.23`, `fa-0hs4.6`, `fa-0hs4.5`, `fa-0hs4.11`):** Wire real `fgdb` storage counters into `measure_kernel_op_witness`; persist recoverable capacity/chart/non-empty-period watermarks bounded by `delta_since`; switch `draft.rs` from `edges_at` + `O(D²)` rehearsal to `in_neighbours(..., IN_CASE)` + incremental snapshot; extend incremental register maintenance to open-items/aging/lots and fix `verify book` on unmaterialized empty periods; make `fa-notary` extend checkpoints incrementally from `prev_state_oid`; prove 10k vs 100k invariance with an injected-scan negative control.
+3. **Tier 2 — Complete authority, scoped drafts & universal `IntentOutcome` (`fa-0hs4.24`, `fa-z46b`, `fa-kae`, `fa-nl7`, `fa-we7`, `fa-0hs4.18`, `fa-zc5w`):** Admit `accounts`/`periods`/`effective` caveats on `draft_reach` while checking per-proposal targets before observation; bind `Approval` to `effects_digest` + `target_coordinate` and refuse keyless `--as` dual-control satisfaction; complete `IntentOutcome` across durable admitted refusals, the remaining 8 `SchemaChange` kinds, migrations, and governance controls; finish optional posting dates for undated `Book` controls (`fa-0hs4.18`) and universal `&Cx`/`Coordinate` embedded signatures (`fa-zc5w`).
+4. **Tier 3 — Multi-book Concordat, FX/Canon & unified outsider verification (`fa-0hs4.14`, `fa-oimc`, `fa-70h4`, `fa-qtfd`, `fa-259c`, `fa-22v5`, `fa-76hy`, `fa-c34`, `fa-4o0`):** Wire `fa-registers/src/fx.rs` temporal remeasurement + current-rate translation/CTA (`IAS29`) and `concordat.rs` cross-book adjustment layers into `fa`/`fa-cli`/`fad`/`fa-mcp`; finish Canon `Recognize` schedules, top-level `rules/` corpus, and automatic `CloseRun` packages; unify retention/replay/status across all 14 certificate tags (`fa-oimc`), journal `WitnessPolicy`/`KeyRotation` (`fa-qtfd`), and complete family-grouped offline `fa-verify` replay for Lantern procedures and GQL certificates.
+5. **Tier 4 — Independent differential, formal/model/fuzz & empirical SLO activation (`fa-sa4w`, `fa-ipom`, `fa-2ihd`, `fa-0fl`, `fa-09q8`, `fa-dj6j`, `fa-apde`, `fa-yrhb`, `fa-ykbp`, `fa-7mhm`, `fa-0hs4.15`):** Provision gate-host `bean-check`, `hledger`, `ledger`, XSD/XBRL validators, Lean, and TLC (`fa-0hs4.17`); add SAP IDoc/`ACDOCA`, NACHA, and XAF/SIE4/FEC/GoBD adapters; run the 1,000-seed lab DPOR/chaos + `fa-reference` differential campaign, the 38 kernel-law mutants, and the 11 formal/model lanes; implement the remaining 15 timed §17 benchmarks against live pinned incumbents and activate all 20 `slo.toml` rows.
+6. **Tier 5 — Six-reader acceptance, runnable public cases & reproducible release (`fa-yugf`, `fa-y6eu`, `fa-wgsj`, `fa-wwip`, `fa-nfq2`):** Finish runnable `BLMIS` and `Merger` case harnesses, run the fresh-agent ergonomics campaign, execute all six reader workflows end-to-end on candidate release binaries with standalone `fa-verify`, and qualify distinct-builder reproducibility, linkage, and offline installation across all `G0`–`G4` gates.
+
+**Tracker publication (2026-11-11).** Pre-mutation snapshot retained in session scratch
+(`issues.pre-20261111.jsonl`, 496 records). Five focused bug beads were created under
+`fa-0hs4` with machine-readable `acceptance-tests` blocks (`fa-0hs4.20` P0, `fa-0hs4.21`
+P0, `fa-0hs4.22` P1, `fa-0hs4.23` P1, `fa-0hs4.24` P1), wired cleanly to downstream
+owners (`fa-0hs4.2`, `fa-nl7`, `fa-0hs4.3`, `fa-0hs4.1`, `fa-8jcr`, `fa-ykbp`, `fa-0hs4.6`,
+`fa-s7x`, `fa-txgy.7`), with dated source-evidence comments added to `fa-0hs4`,
+`fa-0hs4.2`, `fa-0hs4.3`, `fa-0hs4.4`, `fa-0hs4.6`, `fa-0hs4.14`, `fa-0hs4.19`, and
+`fa-nl7`. The exported `.beads/issues.jsonl` has **501 records (`149 open`, `110 in_progress`,
+`242 closed`)**, **1,199 dependencies (`113 actionable`, `146 blocked` non-closed)**,
+and **zero active cycles** (`br --no-db dep cycles --json` = `0`). Automated field-by-field
+verification confirms 100% preservation of all 496 prior records, statuses, titles,
+descriptions, acceptance criteria, notes, dependencies, and comments; zero issues were
+closed.
+
 #### Current-cut refresh (2026-11-04, DustyIbis)
 
 **Assessment: substantial accounting software with independently checked public-data

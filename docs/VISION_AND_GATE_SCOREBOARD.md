@@ -111,7 +111,7 @@
 | `G2-05` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `evidence_explained` | `—` | documents, custody, attestations, balance assertions |
 | `G2-06` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `accumulator_verified` | `—` | accumulator continuity and witnessed checkpoints |
 | `G2-07` | `G2` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-0x0` | FA-INV-03/07/08/10/14 live |
-| `G2-08` | `G2` | `external-oracle` | `external-oracle` | `—` | `absent` | `2` | `error` | `fa-3ock` | the Beancount/hledger differential green on all fixtures |
+| `G2-08` | `G2` | `external-oracle` | `external-oracle` | `—` | `absent` | `2` | `error` | `fa-sa4w` | the Beancount/hledger differential green on all fixtures |
 | `G2-09` | `G2` | `differential` | `differential` | `—` | `absent` | `2` | `error` | `fa-c34` | Canon rules with golden corpora and backtests |
 | `G2-10` | `G2` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-we7` | dry-run plans with `confirm_plan` |
 | `G3-01` | `G3` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-z5u` | the full verb registry across CLI/daemon/MCP with the parity gate green |
@@ -121,9 +121,9 @@
 | `G3-05` | `G3` | `measurement` | `measurement` | `FA-ART-CAL-01` | `works` | `0` | `measurement_ok` | `—` | Lantern's procedures with evidence rows and measured precision/recall |
 | `G3-06` | `G3` | `cli` | `cli` | `—` | `works` | `0` | `exports_with_proofs_ok` | `—` | ADS/SAF-T exports with proofs |
 | `G3-07` | `G3` | `cli` | `cli` | `—` | `works` | `0` | `demo_initialized` | `—` | `fa demo init` scenarios |
-| `G3-08` | `G3` | `agent-campaign` | `agent-campaign` | `—` | `absent` | `2` | `error` | `fa-nmk4` | the gauntlet's surface-parity and ergonomics scorecards published |
+| `G3-08` | `G3` | `agent-campaign` | `agent-campaign` | `—` | `absent` | `2` | `error` | `fa-y6eu` | the gauntlet's surface-parity and ergonomics scorecards published |
 | `G4-01` | `G4` | `measurement` | `measurement` | `—` | `absent` | `2` | `error` | `fa-ykbp` | all activated §17 manifests green and public |
-| `G4-02` | `G4` | `external-oracle` | `external-oracle` | `—` | `absent` | `2` | `error` | `fa-3ock` | conformance matrices (ADS, SAF-T, XBRL, Beancount/hledger, TigerBeetle corpus) published with documented divergences |
+| `G4-02` | `G4` | `external-oracle` | `external-oracle` | `—` | `absent` | `2` | `error` | `fa-ipom` | conformance matrices (ADS, SAF-T, XBRL, Beancount/hledger, TigerBeetle corpus) published with documented divergences |
 | `G4-03` | `G4` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-09q8` | every FA-INV clause live or its capability absent from the manifest |
 | `G4-04` | `G4` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-rdid` | the papers match the proven scope |
 | `G4-05` | `G4` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-q5kx` | `fa-verify` released as a static binary with golden proofs |
@@ -135,4 +135,4 @@
 |---|---|---|---|---|---:|---|---|
 | `GOV-01` | `closure_debt` | `registry` | `registry` | `absent` | `2` | `fa-8jcr` | Zero unbacked closed beads without a machine-verified acceptance-tests block and verdict note (pre-fa-8jcr closures remain in debt until backfilled) |
 | `GOV-02` | `verdict_freshness` | `registry` | `registry` | `absent` | `2` | `fa-ygj2` | Published PASS verdict note in refs/notes/fa-verdict is present and within the 7-day freshness window |
-| `GOV-03` | `tier0_coverage` | `registry` | `registry` | `absent` | `2` | `fa-0hs4.3` | Unskippable Tier-0 gate hooks (.githooks/pre-commit, .githooks/pre-push) and scripts/tier0.sh are installed and active |
+| `GOV-03` | `tier0_coverage` | `registry` | `registry` | `absent` | `2` | `fa-0hs4.3` | Unskippable Tier-0 gate hook (scripts/hooks/pre-push via scripts/install-hooks.sh) and scripts/tier0.sh are installed and active |
