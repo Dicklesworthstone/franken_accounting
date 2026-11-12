@@ -131,9 +131,14 @@ commands:
                                                 native AR/AP party/control reconciliation, account roll-forwards,
                                                 direct cash flows, changes in equity and their comparisons, lot schedules,
                                                 native/functional one-book consolidated group statements,
-                                                and jet.round_amounts / jet.period_end_timing v1/v2 statistical procedures.
-                                                V1 requires no effective cutoff; v2 accepts an inclusive cutoff.
-                                                Both profiles require no input handles;
+                                                and bounded statistical procedures: JET round-amount/period-end v1/v2,
+                                                post-closing v1, exact same-day/different-date duplicates v1,
+                                                round-amount density v1, first-digit Benford v2 and one-account LIBR v2.
+                                                JET round-amount/period-end v2 accepts an inclusive effective cutoff;
+                                                LIBR v2 requires a claim date and canonical account/source handles,
+                                                and checks its declared intraday and evidence-replenishment laws
+                                                within the source-selected native unit and legal entity.
+                                                All other profiles require no cutoff or input handles;
                                                 Replacement histories require current target-derived identities and later
                                                 authenticated references resolving every corrected entry; unresolved and
                                                 legacy identities refuse. Exact statistical and decision-card
@@ -2326,6 +2331,22 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
             summary.push((parameter, n(u64::from(value))));
         }
     }
+    for (name, identity) in report.parameters.inputs() {
+        summary.push((name, s(identity)));
+    }
+    if matches!(
+        report.parameters,
+        crate::report::VerifiedProcedureParameters::TraceLibr { .. }
+    ) {
+        summary.extend([
+            (
+                "trace_scope",
+                s("one account, source-selected native unit and legal entity"),
+            ),
+            ("legal_entitlement", s("not_judged")),
+            ("source_document_truth", s("not_judged")),
+        ]);
+    }
     summary.extend([
         ("population", n(report.population)),
         ("live_entries", n(report.live_entries)),
@@ -2349,6 +2370,17 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
         summary,
     )];
     for finding in &report.findings {
+        let value = finding.statistic.value();
+        let rendered_value = if matches!(
+            finding.statistic,
+            crate::report::VerifiedProcedureStatistic::TracedAmount { .. }
+        ) {
+            amount(value)
+        } else {
+            // Preserve the existing count JSON: integers through i64::MAX,
+            // exact decimal strings above it. Traced money is always a string.
+            i64::try_from(value).map_or_else(|_| amount(value), Json::Int)
+        };
         let mut details = vec![
             (
                 "entry",
@@ -2367,7 +2399,7 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 }),
             ),
             ("statistic", s(finding.statistic.name())),
-            ("value", n(finding.statistic.value())),
+            ("value", rendered_value),
             ("scale", n(u64::from(finding.statistic.scale()))),
             ("population", n(finding.population)),
         ];
@@ -2397,6 +2429,24 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                                     ("ordinal", n(u64::from(*ordinal))),
                                 ])
                             })
+                            .collect(),
+                    ),
+                ));
+            }
+            crate::report::VerifiedProcedureStatistic::TracedAmount {
+                account,
+                unit,
+                entries,
+                ..
+            } => {
+                details.push(("account", s(format!("{account:032x}"))));
+                details.push(("unit", n(u64::from(*unit))));
+                details.push((
+                    "entries",
+                    Json::List(
+                        entries
+                            .iter()
+                            .map(|entry| s(format!("{entry:032x}")))
                             .collect(),
                     ),
                 ));

@@ -1,4 +1,4 @@
-//! Independent replay of JET, duplicate, round-density and Benford procedures.
+//! Independent replay of JET, duplicate, density, LIBR and Benford procedures.
 //!
 //! The complete journal prefix supplies the population; native read witnesses
 //! and the producer's findings supply no arithmetic or period metadata. These
@@ -12,8 +12,10 @@
 //! account's nonzero legs with the book's rate using exact integer thresholds.
 //! Post-closing v1
 //! reconstructs the first journaled close of each period and compares it with
-//! each live posting's recording sequence. No profile
-//! accepts input handles. The cutoff selects postings before reversal liveness
+//! each live posting's recording sequence. LIBR v2 requires its account/source
+//! handles and effective claim date, and reconstructs one native-unit/entity
+//! stream under its declared intraday and replenishment laws. The cutoff selects
+//! postings before reversal liveness
 //! while the input commitment retains every visible entry at the frontier.
 //! Replacement identities require a later authenticated reversal, replacement,
 //! or non-migration settlement reference; the ambiguous historical key namespace
@@ -29,6 +31,7 @@ use crate::codec::{Reader, Writer};
 
 mod benford;
 mod different_dates;
+mod libr;
 mod post_closing;
 mod round_density;
 pub(super) use post_closing::period_transitions;
@@ -60,6 +63,12 @@ pub enum VerifiedProcedureParameters {
         round_power: u32,
         z_squared: u32,
     },
+    TraceLibr {
+        intraday_order: u32,
+        replenishment: u32,
+        account: u128,
+        source: u128,
+    },
     FirstDigit {
         account_type: u32,
         currency_iso4217: u32,
@@ -80,6 +89,7 @@ impl VerifiedProcedureParameters {
             Self::SameSameSame => "duplicates.same_same_same",
             Self::SameSameDifferent { .. } => "duplicates.same_same_different",
             Self::RoundAmountDensity { .. } => "numbers.round_amount_density",
+            Self::TraceLibr { .. } => "trace.libr",
             Self::FirstDigit { .. } => "benford.first_digit",
         }
     }
@@ -92,6 +102,7 @@ impl VerifiedProcedureParameters {
             Self::SameSameSame => "FA-EVID-L07",
             Self::SameSameDifferent { .. } => "FA-EVID-L08",
             Self::RoundAmountDensity { .. } => "FA-EVID-L64",
+            Self::TraceLibr { .. } => "FA-EVID-L15",
             Self::FirstDigit { .. } => "FA-EVID-L10",
         }
     }
@@ -113,6 +124,14 @@ impl VerifiedProcedureParameters {
                 ("round_power", round_power),
                 ("z_squared", z_squared),
             ],
+            Self::TraceLibr {
+                intraday_order,
+                replenishment,
+                ..
+            } => vec![
+                ("intraday_order", intraday_order),
+                ("replenishment", replenishment),
+            ],
             Self::FirstDigit {
                 account_type,
                 currency_iso4217,
@@ -133,6 +152,29 @@ impl VerifiedProcedureParameters {
         }
     }
 
+    /// Exact native input bindings in lexical name order.
+    pub(crate) fn inputs(self) -> Vec<(&'static str, String)> {
+        if let Self::TraceLibr {
+            account, source, ..
+        } = self
+        {
+            vec![
+                ("account", format!("{account:032x}")),
+                ("source", format!("{source:032x}")),
+            ]
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub(super) fn input_definitions(self) -> &'static [(&'static str, &'static str)] {
+        if matches!(self, Self::TraceLibr { .. }) {
+            &libr::INPUTS
+        } else {
+            &[]
+        }
+    }
+
     pub(super) fn parameter_defaults(self) -> &'static [(&'static str, u32)] {
         match self {
             Self::RoundAmounts { .. } => &[("round_power", 3)],
@@ -140,6 +182,7 @@ impl VerifiedProcedureParameters {
             Self::SameSameDifferent { .. } => &[("window_days", 30)],
             Self::PostClosing | Self::SameSameSame => &[],
             Self::RoundAmountDensity { .. } => &round_density::DEFAULTS,
+            Self::TraceLibr { .. } => &libr::DEFAULTS,
             Self::FirstDigit { .. } => &benford::DEFAULTS,
         }
     }
@@ -148,7 +191,7 @@ impl VerifiedProcedureParameters {
         version == 2
             && matches!(
                 self,
-                Self::RoundAmounts { .. } | Self::PeriodEndTiming { .. }
+                Self::RoundAmounts { .. } | Self::PeriodEndTiming { .. } | Self::TraceLibr { .. }
             )
     }
 
@@ -161,6 +204,7 @@ impl VerifiedProcedureParameters {
             | Self::SameSameDifferent { .. }
             | Self::RoundAmountDensity { .. } => "O(legs log legs)",
             Self::FirstDigit { .. } => "O(legs)",
+            Self::TraceLibr { .. } => "O(posting_legs log entities + movements log movements)",
         }
     }
 }
@@ -191,6 +235,14 @@ pub enum VerifiedProcedureStatistic {
         account: u128,
         count: u64,
         legs: Vec<(u128, u16)>,
+    },
+    /// Full native-unit amount; entry citations start with the selected source.
+    TracedAmount {
+        account: u128,
+        unit: u32,
+        mantissa: i128,
+        scale: u8,
+        entries: Vec<u128>,
     },
     DaysToPeriodEnd {
         period: String,
@@ -230,6 +282,7 @@ impl VerifiedProcedureStatistic {
         match self {
             Self::RoundLegs { .. } | Self::AccountRoundLegs { .. } => "round_legs",
             Self::DaysToPeriodEnd { .. } => "days_to_period_end",
+            Self::TracedAmount { .. } => "traced_mantissa",
             Self::CommitsAfterClose { .. } => "commits_after_close",
             Self::DuplicateEntries { .. } => "entries",
             Self::DaysApart { .. } => "days_apart",
@@ -238,24 +291,27 @@ impl VerifiedProcedureStatistic {
         }
     }
 
-    pub(crate) fn value(&self) -> u64 {
+    pub(crate) fn value(&self) -> i128 {
         match self {
-            Self::RoundLegs { ordinals } => ordinals.len() as u64,
-            Self::AccountRoundLegs { count, .. } => *count,
-            Self::DaysToPeriodEnd { days, .. } => u64::from(*days),
-            Self::CommitsAfterClose { commits, .. } => *commits,
-            Self::DuplicateEntries { count, .. } => *count,
-            Self::DaysApart { days, .. } => u64::from(*days),
-            Self::FirstDigitPopulation { counts } => counts.iter().sum(),
-            Self::FirstDigitMad { mad_1e9, .. } => *mad_1e9,
+            Self::RoundLegs { ordinals } => ordinals.len() as i128,
+            Self::AccountRoundLegs { count, .. } => i128::from(*count),
+            Self::TracedAmount { mantissa, .. } => *mantissa,
+            Self::DaysToPeriodEnd { days, .. } => i128::from(*days),
+            Self::CommitsAfterClose { commits, .. } => i128::from(*commits),
+            Self::DuplicateEntries { count, .. } => i128::from(*count),
+            Self::DaysApart { days, .. } => i128::from(*days),
+            Self::FirstDigitPopulation { counts } => {
+                counts.iter().map(|&count| i128::from(count)).sum()
+            }
+            Self::FirstDigitMad { mad_1e9, .. } => i128::from(*mad_1e9),
         }
     }
 
     pub(crate) fn scale(&self) -> u8 {
-        if matches!(self, Self::FirstDigitMad { .. }) {
-            9
-        } else {
-            0
+        match self {
+            Self::FirstDigitMad { .. } => 9,
+            Self::TracedAmount { scale, .. } => *scale,
+            _ => 0,
         }
     }
 }
@@ -278,7 +334,8 @@ impl VerifiedProcedureFinding {
     /// Its canonical tag and little-endian identity determine citation order.
     fn first_citation(&self) -> Option<(u8, [u8; 16])> {
         match &self.statistic {
-            VerifiedProcedureStatistic::AccountRoundLegs { account, .. } => {
+            VerifiedProcedureStatistic::AccountRoundLegs { account, .. }
+            | VerifiedProcedureStatistic::TracedAmount { account, .. } => {
                 Some((3, account.to_le_bytes()))
             }
             _ => self.entry.map(|entry| (1, entry.to_le_bytes())),
@@ -349,11 +406,27 @@ pub(super) struct Entry {
     pub transition: Option<PeriodTransition>,
 }
 
+/// Tracing-only metadata decoded from the complete authenticated source.
+#[derive(Clone, Default)]
+pub(super) struct TraceContext {
+    pub account_normal_balances: BTreeMap<u128, u8>,
+    pub entries: BTreeMap<u128, TraceEntryFacts>,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct TraceEntryFacts {
+    /// All legal-entity values per original leg; live replay rejects duplicates.
+    pub entities: Vec<Vec<u128>>,
+    /// Original evidence OIDs, never inferred from findings or document text.
+    pub evidence: BTreeSet<[u8; 32]>,
+}
+
 pub(super) struct Registry {
     pub unit_scales: BTreeMap<u32, u8>,
     pub unit_currencies: BTreeMap<u32, u16>,
     /// From authenticated historical chart controls, populated after replay.
     pub account_types: BTreeMap<u128, u8>,
+    pub trace: Option<TraceContext>,
     pub policy_oid: [u8; 32],
 }
 
@@ -408,11 +481,12 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "duplicates.same_same_same" => ("FA-EVID-L07", None),
         "duplicates.same_same_different" => ("FA-EVID-L08", Some(("window_days", u32::MAX))),
         "numbers.round_amount_density" => ("FA-EVID-L64", None),
+        "trace.libr" => ("FA-EVID-L15", None),
         "benford.first_digit" => ("FA-EVID-L10", None),
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, exact duplicates and round-amount density v1, and first-digit Benford v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, exact duplicates and round-amount density v1, first-digit Benford v2, and one-account LIBR v2",
             ));
         }
     };
@@ -425,7 +499,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "duplicates.same_same_different"
                 | "numbers.round_amount_density"
         ) && version != 1)
-        || (id == "benford.first_digit" && version != 2)
+        || (matches!(id, "benford.first_digit" | "trace.libr") && version != 2)
         || question.u8("procedure.claim")? != 0
         || text(&mut question, 128, "procedure.evidence")? != evidence
     {
@@ -447,7 +521,15 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             "this procedure version does not support an effective-date cutoff",
         ));
     }
-    let parameters = if id == "benford.first_digit" {
+    if id == "trace.libr" && effective_through.is_none() {
+        return Err(failed(
+            "procedure_profile",
+            "LIBR requires an effective claim date",
+        ));
+    }
+    let parameters = if id == "trace.libr" {
+        libr::decode(&mut question)?
+    } else if id == "benford.first_digit" {
         benford::decode(&mut question)?
     } else if id == "numbers.round_amount_density" {
         round_density::decode(&mut question)?
@@ -489,7 +571,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             VerifiedProcedureParameters::SameSameSame
         }
     };
-    if question.count(0, 8, "procedure.inputs")? != 0 {
+    if !matches!(parameters, VerifiedProcedureParameters::TraceLibr { .. })
+        && question.count(0, 8, "procedure.inputs")? != 0
+    {
         return Err(failed(
             "procedure_profile",
             "procedure input handles are unsupported",
@@ -518,6 +602,14 @@ fn parameters(w: &mut Writer, value: VerifiedProcedureParameters) {
     }
 }
 
+fn input_handles(w: &mut Writer, value: VerifiedProcedureParameters) {
+    let inputs = value.inputs();
+    w.count(inputs.len());
+    for (name, identity) in inputs {
+        w.bytes(name.as_bytes()).bytes(identity.as_bytes());
+    }
+}
+
 fn cutoff(w: &mut Writer, effective_through: Option<i32>) {
     if let Some(day) = effective_through {
         w.u8(1).i32(day);
@@ -541,7 +633,7 @@ fn finding(
         .u16(version)
         .u8(value.severity)
         .bytes(value.statistic.name().as_bytes())
-        .i128(i128::from(value.statistic.value()))
+        .i128(value.statistic.value())
         .u8(value.statistic.scale())
         .u64(value.population);
     match &value.statistic {
@@ -561,6 +653,14 @@ fn finding(
             w.count(legs.len() + 1).u8(3).u128(*account);
             for &(entry, ordinal) in legs {
                 w.u8(2).u128(entry).u16(ordinal);
+            }
+        }
+        VerifiedProcedureStatistic::TracedAmount {
+            account, entries, ..
+        } => {
+            w.count(entries.len() + 1).u8(3).u128(*account);
+            for entry in entries {
+                w.u8(1).u128(*entry);
             }
         }
         VerifiedProcedureStatistic::DaysToPeriodEnd { period, .. }
@@ -1141,7 +1241,7 @@ fn recompute_version(
     let mut params = Writer::default();
     params.bytes(profile.id().as_bytes()).u16(version);
     parameters(&mut params, profile);
-    params.count(0);
+    input_handles(&mut params, profile);
     let parameters_digest = hash_parts(b"fa:lantern-parameters:v1", &[&params.buf]);
     let factor = match profile {
         VerifiedProcedureParameters::RoundAmounts { round_power } => 10i128
@@ -1152,6 +1252,7 @@ fn recompute_version(
         | VerifiedProcedureParameters::SameSameSame
         | VerifiedProcedureParameters::SameSameDifferent { .. }
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
+        | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::FirstDigit { .. } => 1,
     };
     let mut live_entries = 0u64;
@@ -1260,6 +1361,7 @@ fn recompute_version(
             VerifiedProcedureParameters::SameSameSame
             | VerifiedProcedureParameters::SameSameDifferent { .. }
             | VerifiedProcedureParameters::RoundAmountDensity { .. }
+            | VerifiedProcedureParameters::TraceLibr { .. }
             | VerifiedProcedureParameters::FirstDigit { .. } => {
                 grouped_population.push(entry);
                 None
@@ -1286,6 +1388,12 @@ fn recompute_version(
     ) {
         (findings, live_legs, comparisons) =
             round_density::replay(profile, &grouped_population, registry)?;
+    } else if matches!(profile, VerifiedProcedureParameters::TraceLibr { .. }) {
+        let (finding, legs, compared) =
+            libr::replay(profile, effective_through, &grouped_population, registry)?;
+        findings.push(finding);
+        live_legs = legs;
+        comparisons = compared;
     } else if matches!(profile, VerifiedProcedureParameters::FirstDigit { .. }) {
         let (finding, legs) = benford::replay(profile, &grouped_population, registry)?;
         findings.push(finding);
@@ -1298,7 +1406,8 @@ fn recompute_version(
         | VerifiedProcedureParameters::SameSameSame
         | VerifiedProcedureParameters::SameSameDifferent { .. } => Some(live_entries),
         VerifiedProcedureParameters::FirstDigit { .. }
-        | VerifiedProcedureParameters::RoundAmountDensity { .. } => None,
+        | VerifiedProcedureParameters::RoundAmountDensity { .. }
+        | VerifiedProcedureParameters::TraceLibr { .. } => None,
     };
     if let Some(population) = statistic_population {
         for finding in &mut findings {
@@ -1345,8 +1454,8 @@ fn recompute_version(
         .bytes(profile.evidence().as_bytes());
     coordinate(&mut output, &book, known_at, effective_through);
     parameters(&mut output, profile);
+    input_handles(&mut output, profile);
     output
-        .count(0)
         .fixed(&parameters_digest)
         .fixed(&inputs_digest)
         .u64(population)
@@ -1395,6 +1504,7 @@ mod tests {
             unit_scales: BTreeMap::from([(1, 2), (2, 0)]),
             unit_currencies: BTreeMap::from([(1, 840), (2, 392)]),
             account_types: BTreeMap::from([(0, 1), (1, 3)]),
+            trace: None,
             policy_oid: [7; 32],
         }
     }

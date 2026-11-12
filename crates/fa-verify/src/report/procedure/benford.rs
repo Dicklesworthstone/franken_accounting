@@ -318,7 +318,7 @@ mod tests {
             assert_eq!(result.severity, severity);
             assert_eq!(result.statistic.name(), "mad");
             assert_eq!(result.statistic.scale(), 9);
-            assert_eq!(result.statistic.value(), expected.0);
+            assert_eq!(result.statistic.value(), i128::from(expected.0));
             assert_eq!(result.population, counts.iter().sum::<u64>());
         }
         assert_eq!(statistics(&[0; 9]).unwrap(), (0, 0, Some(0)));

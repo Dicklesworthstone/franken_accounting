@@ -184,7 +184,7 @@ fn offline_unsupported(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §11.1/13.3 (independent procedure replay requires its complete supported input and policy closure)",
-        "export JET round-amount/period-end v1 or v2, post-closing v1, exact duplicates v1, round-amount density v1, or first-digit Benford v2 with the original canonical registry closure and no input handles; only JET round-amount/period-end v2 permits an effective cutoff; replay other profiles in their original book",
+        "export JET round-amount/period-end v1 or v2, post-closing v1, exact duplicates v1, round-amount density v1, first-digit Benford v2, or one-account LIBR v2 with the original canonical registry closure; LIBR requires a claim date and canonical account/source handles, JET round-amount/period-end v2 permits an optional effective cutoff, and the other profiles require neither a cutoff nor input handles; replay other profiles in their original book",
     )
 }
 
@@ -907,19 +907,25 @@ impl ProcedureCertificate {
             .iter()
             .map(|(name, value)| (name.as_str(), *value))
             .collect();
+        let inputs: Vec<_> = self
+            .report
+            .inputs
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
         let evidence = fa_notary::report::offline_procedure_profile(
             &self.report.procedure,
             self.report.version,
             self.report.coordinate.effective_through.map(|day| day.0),
             &parameters,
-            self.report.inputs.len(),
+            &inputs,
         );
         if self.format() != PROCEDURE_CERTIFICATE_FORMAT
             || self.report.claim != Claim::Statistical
             || evidence != Some(self.report.evidence.as_str())
         {
             return Err(offline_unsupported(
-                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, exact duplicates v1, round-amount density v1, and first-digit Benford v2 with their complete parameter inventories; only round-amount/period-end v2 supports an effective cutoff and no profile supports input handles",
+                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, exact duplicates v1, round-amount density v1, first-digit Benford v2, and LIBR v2 with their complete parameter inventories; JET v2 permits an optional cutoff, while LIBR v2 requires a claim date and canonical account/source handles",
             ));
         }
         let jet = matches!(

@@ -89,7 +89,13 @@
 //!
 //! ProcedureCertificate v1 additionally replays `jet.round_amounts` and
 //! `jet.period_end_timing` v1/v2, `duplicates.same_same_same` v1 and first-digit
-//! Benford v2 from the complete native history. `jet.post_closing` v1 additionally
+//! Benford v2 from the complete native history. Different-date duplicate v1
+//! and round-amount density v1 reproduce their nearest eligible pairs and exact
+//! account populations. LIBR v2 reconstructs one account/source/unit/entity
+//! stream through a required claim date, including signed overdrafts, declared
+//! intraday order and evidence-linked replenishment. Tracing proves the named
+//! calculation, not legal entitlement or source-document truth.
+//! `jet.post_closing` v1 additionally
 //! reconstructs the first journaled close of each period and the recording
 //! distance of every live posting after it, including reopened periods.
 //! Exact duplicates reconstruct the full
@@ -2175,6 +2181,18 @@ fn verify_report_with_native_subledger_input(
                 } else {
                     BTreeMap::new()
                 };
+            let mut tracing = matches!(
+                request.parameters,
+                procedure::VerifiedProcedureParameters::TraceLibr { .. }
+            )
+            .then(|| procedure::TraceContext {
+                account_normal_balances: schema
+                    .accounts
+                    .iter()
+                    .map(|(&identity, account)| (identity, account.normal_balance))
+                    .collect(),
+                entries: BTreeMap::new(),
+            });
             let entries = infos
                 .iter()
                 .filter(|(index, _)| {
@@ -2202,6 +2220,27 @@ fn verify_report_with_native_subledger_input(
                     } else {
                         None
                     };
+                    let details = crate::envelope::proposal_leg_details(
+                        &records[index].1[..records[index].0],
+                    )?;
+                    if let Some(context) = &mut tracing {
+                        context.entries.insert(
+                            info.identity,
+                            procedure::TraceEntryFacts {
+                                entities: details
+                                    .iter()
+                                    .map(|leg| {
+                                        leg.dimensions
+                                            .iter()
+                                            .filter(|(kind, _)| *kind == 1)
+                                            .map(|(_, entity)| *entity)
+                                            .collect()
+                                    })
+                                    .collect(),
+                                evidence: info.evidence.iter().map(|(oid, _, _)| *oid).collect(),
+                            },
+                        );
+                    }
                     Ok(procedure::Entry {
                         identity: info.identity,
                         digest: envelopes[index].record_digest,
@@ -2217,16 +2256,14 @@ fn verify_report_with_native_subledger_input(
                             .map(|leg| (leg.account, leg.debit))
                             .collect(),
                         supersession: info.supersession.clone(),
-                        settlements: crate::envelope::proposal_leg_details(
-                            &records[index].1[..records[index].0],
-                        )?
-                        .into_iter()
-                        .flat_map(|leg| {
-                            leg.settlements
-                                .into_iter()
-                                .map(|reference| (reference.target, reference.digest))
-                        })
-                        .collect(),
+                        settlements: details
+                            .into_iter()
+                            .flat_map(|leg| {
+                                leg.settlements
+                                    .into_iter()
+                                    .map(|reference| (reference.target, reference.digest))
+                            })
+                            .collect(),
                         period,
                         transition: period_transitions.get(&index).cloned(),
                     })
@@ -2245,6 +2282,7 @@ fn verify_report_with_native_subledger_input(
                     .map(|(&identity, account)| (identity, account.account_type))
                     .collect();
             }
+            definitions.trace = tracing;
             let (verified, output) =
                 procedure::replay(request, cert.book, cert.known_at, entries, definitions)?;
             (Some(verified), output)

@@ -546,9 +546,15 @@ pub(super) fn verify_procedure(
         || matches!(
             profile,
             super::procedure::VerifiedProcedureParameters::RoundAmountDensity { .. }
+                | super::procedure::VerifiedProcedureParameters::TraceLibr { .. }
         );
     if integer(row, "version")? != i128::from(version)
-        || if profile.supports_cutoff(version) {
+        || if matches!(
+            profile,
+            super::procedure::VerifiedProcedureParameters::TraceLibr { .. }
+        ) {
+            string(row, "effective_through")? != "required"
+        } else if profile.supports_cutoff(version) {
             string(row, "effective_through")? != "optional"
         } else {
             row.contains_key("effective_through")
@@ -589,10 +595,25 @@ pub(super) fn verify_procedure(
             "unsupported procedure parameter inventory or defaults",
         ));
     }
-    // A future input declaration cannot be silently ignored under v1.
+    let mut declared_inputs = procedures
+        .arrays
+        .get("input")
+        .into_iter()
+        .flatten()
+        .filter(|row| matches!(row.get("procedure"), Some(Value::Text(id)) if id == profile.id()))
+        .map(|row| Ok((string(row, "name")?, string(row, "kind")?)))
+        .collect::<Result<Vec<_>, ReportError>>()?;
+    declared_inputs.sort_unstable();
+    if declared_inputs.as_slice() != profile.input_definitions() {
+        return Err(invalid(
+            "unsupported procedure input inventory or handle kinds",
+        ));
+    }
+    // Every selected input has an independently implemented interpretation.
     if procedures.arrays.iter().any(|(name, rows)| {
         name != "procedure"
             && name != "parameter"
+            && name != "input"
             && rows.iter().any(
                 |row| matches!(row.get("procedure"), Some(Value::Text(id)) if id == profile.id()),
             )
@@ -628,6 +649,7 @@ pub(super) fn verify_procedure(
         unit_scales,
         unit_currencies,
         account_types: BTreeMap::new(),
+        trace: None,
         policy_oid: procedure_policy_oid(&document(inputs[5].1)?)?,
     })
 }
@@ -1543,3 +1565,6 @@ pub(super) fn verify_consolidation(
         functional,
     })
 }
+
+#[cfg(test)]
+mod procedure_tests;

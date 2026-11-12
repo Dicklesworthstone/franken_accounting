@@ -5,6 +5,8 @@
 use super::*;
 use fa_verify::report::{VerifiedReport, verify_report_expected};
 
+#[path = "offline/libr.rs"]
+mod libr;
 #[path = "offline/profile_admission.rs"]
 mod profile_admission;
 

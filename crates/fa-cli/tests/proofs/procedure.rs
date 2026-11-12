@@ -3,6 +3,9 @@
 
 use super::*;
 
+#[path = "procedure/trace.rs"]
+mod trace;
+
 fn invoke(fixture: &Fixture, arguments: &[&str]) -> (i32, Vec<Json>) {
     let output = Command::new(env!("CARGO_BIN_EXE_fa"))
         .arg("--book")

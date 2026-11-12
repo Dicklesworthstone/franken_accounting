@@ -241,6 +241,7 @@ mod tests {
             unit_scales: BTreeMap::from([(1, 2), (2, 0), (3, 38)]),
             unit_currencies: BTreeMap::new(),
             account_types: BTreeMap::new(),
+            trace: None,
             policy_oid: [7; 32],
         }
     }
