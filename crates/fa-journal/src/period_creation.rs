@@ -26,7 +26,7 @@ use crate::rows::{book_root, bytes, edge_id, kind_tag, scalar_bytes, scalar_text
 
 /// Additive SchemaChange subkind; independent of the ControlPayload tag.
 pub const SCHEMA_CHANGE_CREATE_PERIODS: u16 = 13;
-const DOMAIN: &[u8; 21] = b"fa:period-creation:v1";
+pub(crate) const DOMAIN: &[u8; 21] = b"fa:period-creation:v1";
 
 /// Canonical birth facts, before any subsequent period transition.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -423,14 +423,16 @@ pub async fn create_periods<V: asupersync::fs::Vfs + Clone>(
         principal,
         description,
         capability,
-    )? {
+    )
+    .await?
+    {
         Err(refusal) => Ok(Err(refusal)),
         Ok(CreationPreparation::Recorded(sequence, periods)) => Ok(Ok((sequence, periods))),
         Ok(CreationPreparation::Ready(prepared)) => (*prepared).commit(db, ctx).await,
     }
 }
 
-fn prepare_creation<V: asupersync::fs::Vfs + Clone>(
+async fn prepare_creation<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
@@ -482,6 +484,9 @@ fn prepare_creation<V: asupersync::fs::Vfs + Clone>(
             "plan §7.2 (a fiscal calendar generates the periods of the years it defines)",
             "create a fiscal year the calendar defines; `fa calendar show --json` describes it",
         )));
+    }
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
     }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
@@ -551,13 +556,99 @@ fn prepare_creation<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(refusal));
     }
     let evid = creation_vid(book, fiscal_year);
+    let entry = proposal.seal(Vec::new(), None)?;
+    let claimed = match crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        principal,
+        &entry.proposal.idempotency_key,
+        evid,
+    )? {
+        Ok(claimed) => claimed,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
+    // The year bytes remain the registered scoped key. The book has one
+    // immutable calendar, checked above, while its birth target is shared
+    // across creators. A pre-protocol normal-key Entry still reserves its key.
+    let normal = fa_model::entry_vid(
+        book.book_id,
+        &principal.0.to_le_bytes(),
+        &entry.proposal.idempotency_key,
+    );
+    if normal != evid && txn.vertex_has_label(db, normal, label::ENTRY)?.is_some() {
+        txn.abort();
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         let recorded = declared_creation(&row, book, &spec)?;
+        let (stored, _) = crate::post::entry_of(&row)?;
+        if !crate::outcome::verify_period_creation_recorded(db, book, &row, &stored)? {
+            txn.abort();
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        if stored.proposal.principal_ref == principal {
+            // The original scoped key binds its complete semantic request.
+            // Fresh encryption salts do not change a request's meaning.
+            if stored.proposal_digest != entry.proposal_digest {
+                match (
+                    stored.proposal.semantic_digest(&book.seal_key),
+                    entry.proposal.semantic_digest(&book.seal_key),
+                ) {
+                    (Ok(a), Ok(b)) if a == b => {}
+                    (Ok(_), Ok(_)) => {
+                        txn.abort();
+                        return Ok(Err(crate::outcome::key_conflict()));
+                    }
+                    (Err(fa_model::EntryError::Sealed(_)), _)
+                    | (_, Err(fa_model::EntryError::Sealed(_))) => {
+                        txn.abort();
+                        return Ok(Err(Refusal::new(
+                            code::EQUIVALENCE_UNVERIFIABLE,
+                            exit::CONFLICT,
+                            "the retained period creation cannot be opened to compare this retry",
+                            "plan §8.5 (no plaintext equivalence over destroyed secrets)",
+                            "resubmit the original prepared request bytes",
+                        )));
+                    }
+                    (Err(error), _) | (_, Err(error)) => return Err(error.into()),
+                }
+            }
+        } else {
+            // Another admitted creator may observe this existing target, but
+            // only through an unused scoped key. It must not inherit either
+            // the first creator's claim or a legacy monetary key reservation.
+            if claimed {
+                txn.abort();
+                return Ok(Err(crate::outcome::key_conflict()));
+            }
+            if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+                &txn,
+                db,
+                book,
+                crate::outcome::entry_outcome_vid(&entry.proposal),
+            )? {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
+        }
         // A successful retry must not hide lost or rewritten projections.
         verify_recorded_projection(&txn, db, book, &recorded)?;
         let result = CreationPreparation::Recorded(row.created_at, recorded.definitions());
         txn.abort();
         return Ok(Ok(result));
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&entry.proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     // Old books never retained a creator or a birth control. An authorized
     // retry may return their original, validated projection sequence, but
@@ -595,9 +686,9 @@ fn prepare_creation<V: asupersync::fs::Vfs + Clone>(
             )));
         }
     }
-    let entry = proposal.seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_period_creation_control(&mut batch, book, &entry, evid)?;
     batch.add_edge(
         edge_id(relation::IN_BOOK, evid, book_root()),
         evid,
@@ -788,17 +879,19 @@ mod tests {
         fn prepare(&mut self, year: i32, capability: &Capability) -> PreparedCreation {
             let ctx = self.ctx();
             let description = self.description(2);
-            match prepare_creation(
-                &mut self.db,
-                &ctx,
-                &self.book,
-                year,
-                PRINCIPAL,
-                description,
-                capability,
-            )
-            .unwrap()
-            .unwrap()
+            match self
+                .runtime
+                .block_on(prepare_creation(
+                    &mut self.db,
+                    &ctx,
+                    &self.book,
+                    year,
+                    PRINCIPAL,
+                    description,
+                    capability,
+                ))
+                .unwrap()
+                .unwrap()
             {
                 CreationPreparation::Ready(prepared) => *prepared,
                 CreationPreparation::Recorded(..) => panic!("fresh year already recorded"),
@@ -945,22 +1038,75 @@ mod tests {
         /// A version-1 wire fixture: its immutable Periods were written by
         /// the old projection-only format, which had no creator record.
         fn legacy_year(&mut self, year: i32) -> (CommitSeq, Vec<PeriodDef>) {
-            let result = self.create(year);
-            let root = self.db.vertex(book_root()).unwrap().unwrap();
-            let mut payload = bytes(&root, property::FA_PAYLOAD, "book").unwrap();
-            payload[..2].copy_from_slice(&1_u16.to_le_bytes());
-            assert!(BookSpec::decode(&payload).is_ok());
-            let control = creation_vid(&self.book, year);
+            assert_eq!(self.db.frontier().unwrap(), CommitSeq(1));
+            let mut producer = Harness::new();
+            let (source_sequence, periods) = producer.create(year);
+            let ctx = self.ctx();
+            let mut legacy = self
+                .runtime
+                .block_on(Database::open_memory(
+                    &ctx.commit(),
+                    DatabaseKeys::new(
+                        [0x71; 32],
+                        DatabaseSecurityNamespaceId([0x72; 32]),
+                        [0x73; 32],
+                    ),
+                ))
+                .unwrap();
+            let mut genesis = WriteBatch::new(relation::IN_BOOK);
+            let mut rows = self.db.vertices().unwrap();
+            rows.sort_by_key(|row| row.birth_ordinal);
+            for row in rows {
+                if row.vid == crate::outcome::coverage_vid(self.book.book_id) {
+                    continue;
+                }
+                let mut props = row.props;
+                if row.vid == book_root() {
+                    let (_, payload) = props
+                        .iter_mut()
+                        .find(|(key, _)| *key == property::FA_PAYLOAD)
+                        .unwrap();
+                    let CanonicalScalar::Bytes(raw) = payload else {
+                        panic!("genesis payload");
+                    };
+                    let mut version_one = raw.to_vec();
+                    version_one[..2].copy_from_slice(&1_u16.to_le_bytes());
+                    assert!(BookSpec::decode(&version_one).is_ok());
+                    *payload = scalar_bytes("book", version_one).unwrap();
+                }
+                genesis.create_vertex(row.vid, row.labels, props);
+            }
+            let mut edges = BTreeMap::new();
+            for edge in self.db.edges_at(CommitSeq(1)).unwrap() {
+                edges
+                    .entry(edge.entry.relation)
+                    .or_insert_with(|| WriteBatch::new(edge.entry.relation))
+                    .add_edge(edge.entry.eid, edge.entry.src, edge.entry.dst, edge.props);
+            }
+            let mut txn = legacy.begin(&ctx.txn()).unwrap();
+            let mut batches = vec![genesis];
+            batches.extend(edges.into_values());
+            txn.write_ordered(&mut legacy, batches).unwrap();
+            self.runtime
+                .block_on(txn.commit(&mut legacy, &ctx.commit()))
+                .unwrap();
+            self.db = legacy;
+            // The old publication contains only its Period projections. A
+            // modern control or claim has never existed in this history.
             let mut fixture = WriteBatch::new(relation::IN_BOOK);
-            fixture.set_vertex_property(
-                book_root(),
-                property::FA_PAYLOAD,
-                Some(scalar_bytes("book", payload).unwrap()),
-            );
-            fixture.delete_edge(edge_id(relation::IN_BOOK, control, book_root()));
-            fixture.delete_vertex(control);
-            self.write_raw(fixture);
-            result
+            for row in producer.db.vertices_at(source_sequence).unwrap() {
+                if row.created_at == source_sequence && row.labels.as_slice() == [label::PERIOD] {
+                    fixture.create_vertex(row.vid, row.labels, row.props);
+                    fixture.add_edge(
+                        edge_id(relation::IN_BOOK, row.vid, book_root()),
+                        row.vid,
+                        book_root(),
+                        vec![],
+                    );
+                }
+            }
+            let sequence = self.write_raw(fixture);
+            (sequence, periods)
         }
     }
 
@@ -1039,6 +1185,16 @@ mod tests {
         let control = h.db.vertex(creation_vid(&h.book, 2026)).unwrap().unwrap();
         let entry =
             Entry::decode(&bytes(&control, property::FA_PAYLOAD, "control").unwrap()).unwrap();
+        let claim =
+            h.db.vertex(crate::outcome::entry_outcome_vid(&entry.proposal))
+                .unwrap()
+                .unwrap();
+        assert_eq!(claim.created_at, sequence);
+        assert_eq!(claim.labels.as_slice(), [label::INTENT_OUTCOME]);
+        assert!(
+            crate::outcome::verify_period_creation_recorded(&h.db, &h.book, &control, &entry)
+                .unwrap()
+        );
         assert_eq!(entry.proposal.principal_ref, PRINCIPAL);
         assert_eq!(entry.proposal.class, EntryClass::SCHEMA_CONTROL);
         assert!(entry.proposal.effective_period.is_none());
@@ -1139,6 +1295,43 @@ mod tests {
             assert_eq!(refusal.code, expected, "{case}: {refusal:?}");
             assert_eq!(h.db.frontier().unwrap(), head, "{case}");
         }
+    }
+
+    #[test]
+    fn prepared_period_creation_loses_to_a_control_reserving_the_same_scoped_key() {
+        let mut h = Harness::new();
+        let account = h.limited_account();
+        let prepared = h.prepare(2026, &schema());
+        let ctx = h.ctx();
+        let description = h.description(8);
+        let role = crate::account_role::AccountRoleSpec {
+            account,
+            role: "suspense".into(),
+            assigned: true,
+        };
+        let epoch = policy::security_policy_epoch(&h.db).unwrap();
+        h.runtime
+            .block_on(crate::account_role::record_account_role(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                &role,
+                PRINCIPAL,
+                &2026_i32.to_le_bytes(),
+                description,
+                &schema(),
+            ))
+            .unwrap()
+            .unwrap();
+        assert_eq!(policy::security_policy_epoch(&h.db).unwrap(), epoch);
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let refusal = h.commit(prepared).unwrap().unwrap_err();
+        assert_eq!(refusal.exit, exit::CONFLICT);
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        assert!(h.db.vertex(creation_vid(&h.book, 2026)).unwrap().is_none());
+        assert!(births_at(&h.db, &h.book, head).unwrap().is_empty());
     }
 
     #[test]
@@ -1262,7 +1455,16 @@ mod tests {
                     .unwrap()
                     .is_green()
             );
-            assert!(h.create_with(2026, PRINCIPAL, &schema(), 2).is_err());
+            let retry = h.create_with(2026, PRINCIPAL, &schema(), 2);
+            if planted == "birth-control" {
+                let refusal = retry.unwrap().unwrap_err();
+                assert_eq!(
+                    (refusal.code, refusal.exit),
+                    (code::IDEMPOTENCY_CONFLICT, exit::CONFLICT)
+                );
+            } else {
+                assert!(matches!(retry, Err(KernelError::Corrupt(_))), "{planted}");
+            }
             assert_eq!(h.db.frontier().unwrap(), head);
             if planted == "all-periods" {
                 assert_eq!(
@@ -1282,8 +1484,37 @@ mod tests {
         let old = crate::period::verify_periods(&h.db, &h.book, None).unwrap();
         assert!(old.is_green(), "{:?}", old.drift);
         assert_eq!(old.legacy_periods, legacy.1.len());
-        assert_eq!(h.create(2026), legacy);
+        // A projection-only year has no sealed creator request that could
+        // authenticate an exception to the common-key coverage requirement.
+        let refusal = h
+            .create_with(2026, PRINCIPAL, &schema(), 1)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (code::PLAN_INVALIDATED, exit::CONFLICT)
+        );
         assert_eq!(h.db.frontier().unwrap(), old_head);
+        let ctx = h.ctx();
+        let prepared = h
+            .runtime
+            .block_on(crate::outcome::prepare_outcome_rebuild(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                Capability::embedded(PRINCIPAL, &["read", "schema_change"]).unwrap(),
+            ))
+            .unwrap()
+            .unwrap();
+        h.runtime
+            .block_on(crate::outcome::publish_outcome_rebuild(
+                &mut h.db, &ctx, &h.book, prepared,
+            ))
+            .unwrap()
+            .unwrap();
+        let recovered = h.db.frontier().unwrap();
+        assert_eq!(h.create(2026), legacy);
+        assert_eq!(h.db.frontier().unwrap(), recovered);
         let (new_sequence, new_periods) = h.create(2027);
         let transitioned = h.open(&legacy.1[0]);
         let mixed = crate::period::verify_periods(&h.db, &h.book, None).unwrap();

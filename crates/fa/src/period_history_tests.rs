@@ -306,6 +306,26 @@ fn genuine_legacy_baseline_is_valid_but_losing_its_sole_cutover_control_is_not()
         assert!(legacy.is_green(), "{:?}", legacy.periods.drift);
         assert_eq!(legacy.history.entries_checked, 0);
         assert_eq!(legacy.periods.legacy_periods, 15);
+        let cx = h.cx();
+        let refusal = h
+            .runtime
+            .block_on(
+                h.book
+                    .create_periods(&cx, 2026, PRINCIPAL, &cap(&["schema_change"])),
+            )
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, fa_journal::refusal::code::PLAN_INVALIDATED);
+        assert_eq!(h.head(), legacy_at, "creation cannot silently recover keys");
+        let recovered = h
+            .runtime
+            .block_on(
+                h.book
+                    .rebuild_outcomes(&cx, cap(&["read", "schema_change"])),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(recovered.wrote);
         let (cutover, _) = h.create(2026);
         let mixed = h.verify(&verifier(), Some(cutover)).unwrap().unwrap();
         assert!(mixed.is_green(), "{:?}", mixed.periods.drift);

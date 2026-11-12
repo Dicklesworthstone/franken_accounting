@@ -71,6 +71,8 @@ mod migration_limit_tests;
 mod outcome_batch_integrity_tests;
 #[path = "genesis/outcome_keys.rs"]
 mod outcome_key_tests;
+#[path = "genesis/period_outcome_keys.rs"]
+mod period_outcome_keys;
 #[path = "genesis/policy_outcome_keys.rs"]
 mod policy_outcome_keys;
 #[path = "genesis/prior_period_adjustment.rs"]
@@ -655,27 +657,31 @@ fn harness_configured_coverage(
         vec!["1", "1000", "1200", "4000", "6000"]
     );
 
-    let (_, periods) = runtime
-        .block_on(async {
-            create_periods(
-                &mut db,
-                &ctx,
-                &book,
-                2026,
-                PRINCIPAL,
-                fa_model::Erasable::seal(
-                    &"periods".to_string(),
-                    None,
-                    &book.seal_key,
-                    [1; 32],
-                    [2; 24],
-                ),
-                &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
-            )
-            .await
-        })
-        .expect("periods")
-        .expect("admitted");
+    let (_, periods) = if coverage {
+        runtime
+            .block_on(async {
+                create_periods(
+                    &mut db,
+                    &ctx,
+                    &book,
+                    2026,
+                    PRINCIPAL,
+                    fa_model::Erasable::seal(
+                        &"periods".to_string(),
+                        None,
+                        &book.seal_key,
+                        [1; 32],
+                        [2; 24],
+                    ),
+                    &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+                )
+                .await
+            })
+            .expect("periods")
+            .expect("admitted")
+    } else {
+        period_outcome_keys::write_legacy_bootstrap(&runtime, &mut db, &ctx, &book)
+    };
     let march = periods
         .iter()
         .find(|p| {

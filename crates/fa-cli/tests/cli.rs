@@ -18377,7 +18377,6 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
         r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
     );
     ok(&["chart", "import", &chart, "--json"]);
-    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
     let evidence = source_doc(&dir, &book);
     let intent = write(
         &dir,
@@ -18392,19 +18391,19 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
         &evidence,
         "--json",
     ];
-    // A period transition reserves the book's shared outcome key as a post
-    // does (4df0d52c0), so the first write that needs coverage here is the
-    // open: it is refused before anything is written and names the recovery.
+    // Fiscal-year creation reserves the same scoped key as posting, so it
+    // now needs verified coverage before publishing any birth projections.
+    let create = ["period", "create", "--fiscal-year", "2026", "--json"];
     let open = ["period", "open", "FY2026-P03", "--json"];
     let before = head();
-    let (code, out, err) = fa(Some(&book), &open);
+    let (code, out, err) = fa(Some(&book), &create);
     assert_eq!(code, 6, "{out}\n{err}");
     assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-034");
     assert!(text(&doc(&out), "fix").contains("fa recover outcomes"));
     assert_eq!(
         head(),
         before,
-        "a transition must not silently rebuild coverage"
+        "period creation must not silently rebuild coverage"
     );
 
     let dry_run = ["recover", "outcomes", "--dry-run", "--json"];
@@ -18418,7 +18417,7 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     assert_eq!(int(&planned, "basis"), Some(i128::from(before.0)));
     assert_eq!(ok(&dry_run), preview, "legacy preview is deterministic");
     assert_eq!(head(), before, "legacy preview publishes nothing");
-    assert_eq!(fa(Some(&book), &open).0, 6, "preview grants no coverage");
+    assert_eq!(fa(Some(&book), &create).0, 6, "preview grants no coverage");
     assert_eq!(head(), before);
 
     let basis = before.0.to_string();
@@ -18437,9 +18436,12 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     assert_eq!(covered.get("already_covered"), Some(&Json::Bool(true)));
     assert_eq!(head(), recovered);
 
+    ok(&create);
+    let created = head();
+    assert_eq!(created.0, recovered.0 + 1);
     ok(&open);
     let opened = head();
-    assert_eq!(opened.0, recovered.0 + 1);
+    assert_eq!(opened.0, created.0 + 1);
     let posted = ok(&post);
     assert_eq!(field(&posted, "event"), Some("posted"));
     let entry_vid = field(&posted, "vid").unwrap();

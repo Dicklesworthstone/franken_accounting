@@ -37,7 +37,7 @@ fn account_lifecycle_claims_do_not_admit_other_schema_controls_or_target_identit
         let mut claimed = WriteBatch::new(relation::IN_BOOK);
         assert_eq!(
             stage_control(&mut claimed, &entry, normal).is_ok(),
-            matches!(kind, 2..=4 | 12 | 14 | 15 | 17),
+            matches!(kind, 2..=4 | 12 | 14..=19),
         );
         let target = crate::policy::revocation_vid(h.book.book_id, &[kind as u8; 32]);
         assert!(stage_control(&mut WriteBatch::new(relation::IN_BOOK), &entry, target).is_err());
@@ -54,7 +54,7 @@ fn account_lifecycle_claims_do_not_admit_other_schema_controls_or_target_identit
         h.write(legacy);
         assert_eq!(
             verify_control_recorded(&h.db, &h.db.vertex(normal).unwrap().unwrap(), &entry).unwrap(),
-            matches!(kind, 2..=4 | 12 | 14 | 15 | 17),
+            matches!(kind, 2..=4 | 12 | 14..=19),
         );
         assert!(
             !verify_control_recorded(&h.db, &h.db.vertex(target).unwrap().unwrap(), &entry)
@@ -116,6 +116,147 @@ fn a_target_derived_control_cannot_use_the_normal_key_legacy_exception() {
     h.write(batch);
     let row = h.db.vertex(normal).unwrap().unwrap();
     assert!(!verify_control_recorded(&h.db, &row, &entry).unwrap());
+}
+
+#[test]
+fn period_creation_claims_require_their_registered_target_and_original_envelope() {
+    let mut h = Harness::source("period creation claim shape");
+    let spec = crate::genesis::BookSpec {
+        book_id: h.book.book_id,
+        name: "Period claim fixture".into(),
+        base_unit: h.book.units.lookup("USD").unwrap(),
+        calendar: h.book.calendar.clone(),
+        time_zone_policy: None,
+        entities: Vec::new(),
+        opening_date: None,
+    };
+    let creation = crate::period_creation::PeriodCreation::from_spec(&spec, 2027).unwrap();
+    let body = creation.canonical_bytes().unwrap();
+    let mut proposal = crate::chart::schema_control_proposal(
+        &h.book,
+        crate::period_creation::SCHEMA_CHANGE_CREATE_PERIODS,
+        body.clone(),
+        VId(116),
+        fa_time::DateDay(0),
+        &2027_i32.to_le_bytes(),
+        fa_model::Erasable::seal(
+            &"period creation".to_string(),
+            None,
+            &h.book.seal_key,
+            [117; 32],
+            [118; 24],
+        ),
+    );
+    proposal.origin = fa_model::EntryOrigin::Control {
+        control_kind: fa_model::ControlKind::PERIOD_CREATION,
+        spec_body_digest: domain_digest(crate::period_creation::DOMAIN, &[&body]),
+    };
+    let entry = proposal.clone().seal(Vec::new(), None).unwrap();
+    let target = crate::period_creation::creation_vid(&h.book, 2027);
+    let normal = fa_model::entry_vid(
+        h.book.book_id,
+        &116_u128.to_le_bytes(),
+        &2027_i32.to_le_bytes(),
+    );
+    assert_ne!(target, normal);
+    for wrong in [normal, crate::period_creation::creation_vid(&h.book, 2028)] {
+        assert!(
+            stage_period_creation_control(
+                &mut WriteBatch::new(relation::IN_BOOK),
+                &h.book,
+                &entry,
+                wrong
+            )
+            .is_err()
+        );
+    }
+    assert!(stage_control(&mut WriteBatch::new(relation::IN_BOOK), &entry, normal).is_err());
+    for variant in ["kind", "key", "calendar", "origin", "approvals", "plan"] {
+        let mut changed = proposal.clone();
+        let mut approvals = Vec::new();
+        let mut plan = None;
+        match variant {
+            "kind" => {
+                changed.control = Some(fa_model::ControlPayload::SchemaChange {
+                    kind: 14,
+                    canonical_bytes: body.clone(),
+                })
+            }
+            "key" => changed.idempotency_key = 2028_i32.to_le_bytes().to_vec(),
+            "calendar" => {
+                let mut changed_creation = creation.clone();
+                changed_creation.calendar = "another-calendar".into();
+                let canonical_bytes = changed_creation.canonical_bytes().unwrap();
+                changed.origin = fa_model::EntryOrigin::Control {
+                    control_kind: fa_model::ControlKind::PERIOD_CREATION,
+                    spec_body_digest: domain_digest(
+                        crate::period_creation::DOMAIN,
+                        &[&canonical_bytes],
+                    ),
+                };
+                changed.control = Some(fa_model::ControlPayload::SchemaChange {
+                    kind: 13,
+                    canonical_bytes,
+                });
+            }
+            "origin" => {
+                changed.origin = fa_model::EntryOrigin::Control {
+                    control_kind: fa_model::ControlKind::PERIOD_CREATION,
+                    spec_body_digest: [119; 32],
+                }
+            }
+            "approvals" => approvals.push(ApprovalRef {
+                approval_vid: VId(120),
+                approved_digest: entry.proposal_digest,
+            }),
+            "plan" => plan = Some(fa_model::Oid([121; 32])),
+            _ => unreachable!(),
+        }
+        let altered = changed.seal(approvals, plan).unwrap();
+        assert!(
+            stage_period_creation_control(
+                &mut WriteBatch::new(relation::IN_BOOK),
+                &h.book,
+                &altered,
+                target
+            )
+            .is_err(),
+            "{variant}"
+        );
+    }
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    batch.create_vertex(
+        target,
+        vec![label::ENTRY],
+        fa_model::entry_mirrors(&entry).unwrap(),
+    );
+    stage_period_creation_control(&mut batch, &h.book, &entry, target).unwrap();
+    let sequence = h.write(batch);
+    let row = h.db.vertex(target).unwrap().unwrap();
+    let claim =
+        h.db.vertex(entry_outcome_vid(&entry.proposal))
+            .unwrap()
+            .unwrap();
+    assert_eq!((row.created_at, claim.created_at), (sequence, sequence));
+    assert!(verify_period_creation_recorded(&h.db, &h.book, &row, &entry).unwrap());
+    assert!(!verify_control_recorded(&h.db, &row, &entry).unwrap());
+    let mut legacy = Harness::source("original period creation without a claim");
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    batch.create_vertex(
+        target,
+        vec![label::ENTRY],
+        fa_model::entry_mirrors(&entry).unwrap(),
+    );
+    legacy.write(batch);
+    let row = legacy.db.vertex(target).unwrap().unwrap();
+    assert!(verify_period_creation_recorded(&legacy.db, &legacy.book, &row, &entry).unwrap());
+    assert!(
+        legacy
+            .db
+            .vertex(entry_outcome_vid(&entry.proposal))
+            .unwrap()
+            .is_none()
+    );
 }
 
 struct Harness {

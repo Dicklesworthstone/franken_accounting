@@ -5,8 +5,8 @@
 //! Migration retains its declared run-scoped keys. Period, time and normal-key
 //! policy activation, account lifecycle and roles, closing and FX routing,
 //! dimension lifecycle and native subledger registration controls reserve the common key; their
-//! pre-protocol entries remain valid retry anchors. New capability issuance
-//! and revocation events reserve the key beside their target-derived Entry;
+//! pre-protocol entries remain valid retry anchors. Fiscal-year creation,
+//! capability issuance and revocation reserve the key beside their target-derived Entry;
 //! their original legacy events remain valid read-only retry anchors. This
 //! does not migrate historical capability keys into the monetary-key coverage.
 //! Existing normal-key controls are checked before a posting takes their key.
@@ -701,6 +701,87 @@ pub fn stage_control(batch: &mut WriteBatch, entry: &Entry, vid: VId) -> Result<
         ));
     }
     stage_claim(batch, entry, vid).map(|_| ())
+}
+
+/// A fiscal-year birth has one target across creators, but reserves the
+/// creator's ordinary scoped year key. The dedicated writer also validates
+/// every birth against the immutable BookSpec before publishing or retrying.
+fn period_creation_control(entry: &Entry, book: &BookContext, vid: VId) -> bool {
+    let proposal = &entry.proposal;
+    if proposal.book_id != book.book_id
+        || proposal.class != EntryClass::SCHEMA_CONTROL
+        || proposal.branch_id != Id128::TRUNK
+        || proposal.effective_date != fa_time::DateDay(0)
+        || proposal.effective_period.is_some()
+        || proposal.document_date.is_some()
+        || proposal.session_ref.is_some()
+        || !proposal.legs.is_empty()
+        || !proposal.unit_totals.is_empty()
+        || proposal.base_totals.is_some()
+        || !proposal.evidence.is_empty()
+        || !proposal.supersession.is_empty()
+        || proposal.pending.is_some()
+        || !proposal.external_ids.is_empty()
+        || !proposal.extensions.is_empty()
+        || !proposal.tags.is_empty()
+        || !entry.approvals.is_empty()
+        || entry.plan_certificate.is_some()
+    {
+        return false;
+    }
+    let Some(fa_model::ControlPayload::SchemaChange {
+        kind: crate::period_creation::SCHEMA_CHANGE_CREATE_PERIODS,
+        canonical_bytes,
+    }) = &proposal.control
+    else {
+        return false;
+    };
+    let Ok(creation) = crate::period_creation::PeriodCreation::decode(canonical_bytes) else {
+        return false;
+    };
+    creation.calendar == book.calendar.id
+        && proposal.idempotency_key == creation.fiscal_year.to_le_bytes()
+        && vid == crate::period_creation::creation_vid(book, creation.fiscal_year)
+        && matches!(
+            &proposal.origin,
+            fa_model::EntryOrigin::Control {
+                control_kind: fa_model::ControlKind::PERIOD_CREATION,
+                spec_body_digest,
+            } if *spec_body_digest == domain_digest(
+                crate::period_creation::DOMAIN,
+                &[canonical_bytes],
+            )
+        )
+}
+
+/// Publish a fiscal-year birth's successful key beside its declaration and
+/// projections. The target identity and the existing year key stay unchanged.
+pub(crate) fn stage_period_creation_control(
+    batch: &mut WriteBatch,
+    book: &BookContext,
+    entry: &Entry,
+    vid: VId,
+) -> Result<(), KernelError> {
+    if !period_creation_control(entry, book, vid) {
+        return Err(KernelError::Corrupt(
+            "period creation outcome requires its registered target-derived control".into(),
+        ));
+    }
+    stage_claim(batch, entry, vid).map(|_| ())
+}
+
+/// An original claim-free declaration remains a legacy retry anchor. A
+/// deleted or replaced modern claim never acquires that historical exception.
+pub(crate) fn verify_period_creation_recorded<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    row: &VertexRow,
+    entry: &Entry,
+) -> Result<bool, KernelError> {
+    if !period_creation_control(entry, book, row.vid) {
+        return Ok(false);
+    }
+    verify_control_claim(db, row, entry)
 }
 
 /// Capability events reserve a scoped key beside their unique target.
