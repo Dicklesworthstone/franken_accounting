@@ -457,14 +457,14 @@ fn sod_graph_refusal(rule: &str, violation: &SodBypassViolation) -> Refusal {
     match violation {
         SodBypassViolation::MissingEndpoint { endpoint } => Refusal::new(
             "FA-REF-008",
-            exit::REFUSAL,
+            exit::SAFETY,
             format!("authority graph missing SoD endpoint {:032x}", endpoint.0),
             cite,
             fix,
         ),
         SodBypassViolation::UnreachableTarget { source, target } => Refusal::new(
             "FA-REF-008",
-            exit::REFUSAL,
+            exit::SAFETY,
             format!(
                 "authority graph target {:032x} is unreachable from principal {:032x}",
                 target.0, source.0
@@ -478,7 +478,7 @@ fn sod_graph_refusal(rule: &str, violation: &SodBypassViolation) -> Refusal {
             bypass_path,
         } => Refusal::new(
             "FA-REF-008",
-            exit::REFUSAL,
+            exit::SAFETY,
             format!(
                 "authority path of length {} from {:032x} to {:032x} bypasses admissible Human approval gates",
                 bypass_path.len(),
@@ -493,7 +493,7 @@ fn sod_graph_refusal(rule: &str, violation: &SodBypassViolation) -> Refusal {
             dominating,
         } => Refusal::new(
             code::APPROVALS,
-            exit::REFUSAL,
+            exit::SAFETY,
             format!(
                 "authority graph requires {required} dominating Human approvals, found {}",
                 dominating.len()
@@ -506,7 +506,7 @@ fn sod_graph_refusal(rule: &str, violation: &SodBypassViolation) -> Refusal {
             approvers,
         } => Refusal::new(
             code::APPROVALS,
-            exit::REFUSAL,
+            exit::SAFETY,
             format!(
                 "authority graph requires {required} distinct Human approvers, found {}",
                 approvers.len()
@@ -3260,4 +3260,61 @@ pub fn list_issued<V: asupersync::fs::Vfs + Clone>(
     }
     out.sort_by_key(|i| (i.issued_at, i.control_entry));
     Ok(out)
+}
+
+#[cfg(test)]
+mod graph_refusal_tests {
+    use super::*;
+
+    #[test]
+    fn every_authority_graph_refusal_uses_the_registered_safety_exit() {
+        let source = VId(1);
+        let target = VId(2);
+        let cases = [
+            (
+                SodBypassViolation::MissingEndpoint { endpoint: source },
+                "FA-REF-008",
+            ),
+            (
+                SodBypassViolation::UnreachableTarget { source, target },
+                "FA-REF-008",
+            ),
+            (
+                SodBypassViolation::BypassPath {
+                    source,
+                    target,
+                    bypass_path: vec![source, target],
+                },
+                "FA-REF-008",
+            ),
+            (
+                SodBypassViolation::InsufficientDominatingApprovals {
+                    required: 2,
+                    dominating: vec![VId(3)],
+                },
+                code::APPROVALS,
+            ),
+            (
+                SodBypassViolation::InsufficientDistinctHumanApprovers {
+                    required: 2,
+                    approvers: vec![VId(4)],
+                },
+                code::APPROVALS,
+            ),
+        ];
+        let catalog = fa_registry::refusal_catalog::RefusalCatalog::embedded().unwrap();
+        for (violation, expected_code) in cases {
+            let refusal = sod_graph_refusal("Posting", &violation);
+            let registered = catalog
+                .rows
+                .iter()
+                .find(|row| row.code == expected_code)
+                .expect("registered authority refusal");
+            assert_eq!(refusal.code, expected_code, "{violation:?}");
+            assert_eq!(refusal.exit, exit::SAFETY, "{violation:?}");
+            assert_eq!(refusal.exit, registered.exit, "{violation:?}");
+            assert_eq!(refusal.cite, "sod_policy.toml#Posting");
+            assert!(refusal.fix.contains("independent Human"));
+        }
+    }
 }

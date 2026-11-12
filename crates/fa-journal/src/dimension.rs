@@ -779,18 +779,38 @@ pub async fn record_dimension_requirement<V: Vfs + Clone>(
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let evid = entry_vid(book.book_id, &principal.0.to_le_bytes(), key);
     let dim_vid = dimension_vid(book.book_id, kind.code);
+    if let Err(refusal) = crate::policy::capability_admitted(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
     let mut txn = db.begin(&ctx.txn())?;
     if let Err(refusal) = crate::policy::capability_witness(&txn, db, book, capability)? {
         txn.abort();
         return Ok(Err(refusal));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
+    if let Err(refusal) =
+        crate::outcome::witness_named_key(&txn, db, book.book_id, principal, key, evid)?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
         if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
             return Ok(Err(crate::outcome::key_conflict()));
         }
         let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
+        if row.labels.as_slice() != [label::ENTRY]
+            || row.props != entry_mirrors(&stored)?
+            || !stored.approvals.is_empty()
+            || stored.plan_certificate.is_some()
+            || !crate::outcome::verify_control_recorded(db, &row, &stored)?
+        {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
         if stored.proposal.semantic_digest(&book.seal_key)?
             != proposal.semantic_digest(&book.seal_key)?
         {
@@ -808,6 +828,15 @@ pub async fn record_dimension_requirement<V: Vfs + Clone>(
             recorded_at: Some(row.created_at),
             already_recorded: true,
         }));
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     let Some(dimension) = txn.vertex(db, dim_vid)? else {
         txn.abort();
@@ -863,6 +892,7 @@ pub async fn record_dimension_requirement<V: Vfs + Clone>(
     let witnessed = txn.vertex_property(db, dim_vid, property::FA_PAYLOAD)?;
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         dim_vid,
         property::FA_PAYLOAD,
@@ -999,29 +1029,38 @@ pub async fn close_dimension_value<V: Vfs + Clone>(
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let evid = entry_vid(book.book_id, &principal.0.to_le_bytes(), key);
     let value_vid = dimension_value_vid(book.book_id, kind.code, &spec.code);
+    if let Err(refusal) = crate::policy::capability_admitted(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
     let mut txn = db.begin(&ctx.txn())?;
     if let Err(refusal) = crate::policy::capability_witness(&txn, db, book, capability)? {
         txn.abort();
         return Ok(Err(refusal));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    let current = match txn.vertex(db, value_vid)? {
-        Some(row) => DimensionValueRow::decode(&row)?,
-        None => None,
-    };
-    let Some(current) = current.filter(|row| row.dimension_id == kind.id) else {
+    if let Err(refusal) =
+        crate::outcome::witness_named_key(&txn, db, book.book_id, principal, key, evid)?
+    {
         txn.abort();
-        return Ok(Err(usage_refusal(
-            format!("{} `{}` does not exist in this book", kind.code, spec.code),
-            format!("fa dimension list {} lists its values", kind.code),
-        )));
-    };
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
         if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
             return Ok(Err(crate::outcome::key_conflict()));
         }
         let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
+        if row.labels.as_slice() != [label::ENTRY]
+            || row.props != entry_mirrors(&stored)?
+            || !stored.approvals.is_empty()
+            || stored.plan_certificate.is_some()
+            || !crate::outcome::verify_control_recorded(db, &row, &stored)?
+        {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
         if stored.proposal.semantic_digest(&book.seal_key)?
             != proposal.semantic_digest(&book.seal_key)?
         {
@@ -1033,12 +1072,59 @@ pub async fn close_dimension_value<V: Vfs + Clone>(
                 "retry the original close or use a new key",
             )));
         }
+        // Replay the original close, even if a later close shortened the
+        // window again. Its successful result retained the pre-close value's
+        // creation sequence, so recover that exact historical value.
+        let before = CommitSeq(
+            row.created_at
+                .0
+                .checked_sub(1)
+                .ok_or_else(|| corrupt("a dimension close has no preceding prefix"))?,
+        );
+        let original = db
+            .vertex_at(value_vid, before)?
+            .as_ref()
+            .map(DimensionValueRow::decode)
+            .transpose()?
+            .flatten()
+            .filter(|value| {
+                value.dimension_id == kind.id
+                    && value.spec.dimension == kind.code
+                    && value.spec.code == spec.code
+            })
+            .ok_or_else(|| corrupt("the original close has no preceding value"))?;
         return Ok(Ok(DimensionValueRecorded {
-            value: current,
+            value: DimensionValueRow {
+                spec: DimensionValueSpec {
+                    valid_to: Some(spec.closed_on),
+                    ..original.spec
+                },
+                ..original
+            },
             control_entry: evid,
             already_recorded: true,
         }));
     }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+    let current = match txn.vertex(db, value_vid)? {
+        Some(row) => DimensionValueRow::decode(&row)?,
+        None => None,
+    };
+    let Some(current) = current.filter(|row| row.dimension_id == kind.id) else {
+        txn.abort();
+        return Ok(Err(usage_refusal(
+            format!("{} `{}` does not exist in this book", kind.code, spec.code),
+            format!("fa dimension list {} lists its values", kind.code),
+        )));
+    };
     if current.spec.valid_to == Some(spec.closed_on) {
         txn.abort();
         return Ok(Ok(DimensionValueRecorded {
@@ -1119,6 +1205,7 @@ pub async fn close_dimension_value<V: Vfs + Clone>(
     let witnessed = txn.vertex_property(db, value_vid, property::FA_PAYLOAD)?;
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         value_vid,
         property::FA_PAYLOAD,
