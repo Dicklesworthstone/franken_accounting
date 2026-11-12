@@ -10,6 +10,8 @@ use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 mod differences;
 #[path = "carrying/drafts.rs"]
 mod drafts;
+#[path = "carrying/reapplication.rs"]
+mod reapplication;
 #[path = "carrying/revaluation.rs"]
 mod revaluation;
 

@@ -171,7 +171,10 @@ fn correction_draft_agent_reviews_exact_pair_then_independent_promoter_publishes
     assert_eq!(h.draft("correct-rent").state, DraftState::Open);
 
     let denied = h.promote(agent.clone(), "correct-rent").unwrap_err();
-    assert_eq!(denied.code, code::CAPABILITY);
+    assert_eq!(
+        (denied.code, denied.exit),
+        (fa_policy::denial::code::AGENT_TRUNK, exit::SAFETY),
+    );
     let owner_approval = Capability::embedded(AGENT, &["approve", "read"]).unwrap();
     let denied = h.promote(owner_approval, "correct-rent").unwrap_err();
     assert_eq!(denied.code, fa_policy::denial::code::SOD);

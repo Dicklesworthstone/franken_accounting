@@ -10997,9 +10997,14 @@ fn an_agent_drafts_and_a_human_promotes_the_intents_to_trunk_in_one_commit() {
     );
     assert!(view.intents.iter().all(|i| i.capability == agent));
 
-    // The Agent cannot promote (no `approve`), nor can its owner-Human.
+    // Agent trunk admission precedes the approve-capability check; an
+    // independent Human performs the promotion below.
     let r = h.promote(agent.clone(), "close-03").unwrap_err();
-    assert_eq!((r.code, r.exit), ("FA-REF-011", exit::SAFETY), "{r}");
+    assert_eq!(
+        (r.code, r.exit),
+        (fa_policy::denial::code::AGENT_TRUNK, exit::SAFETY),
+        "{r}"
+    );
     let before = h.db.frontier().unwrap();
     let promoted = h
         .promote(h.approver_capability(), "close-03")

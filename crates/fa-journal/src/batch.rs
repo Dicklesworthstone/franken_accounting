@@ -1937,6 +1937,12 @@ fn stage_batch_with<V: Vfs + Clone>(
             }
             Ok(PostPreparation::Ready(prepared)) => prepared,
         };
+        // Commit and Plan also admit single entries, so the first member
+        // needs this explicit boundary even before a transaction is carried.
+        if let Some(refusal) = prepared.compound_carrying_refusal() {
+            prepared.abort();
+            return Ok(Err(member_refusal(i, refusal)));
+        }
         let epoch = prepared.security_policy_epoch();
         if security_policy_epoch.is_some_and(|prior| prior != epoch) {
             prepared.abort();

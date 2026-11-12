@@ -207,6 +207,9 @@ pub struct PreparedPost {
     /// Immutable rows already authenticated by the FX reversal ancestry walk.
     /// Their point-conflict refusal precedes the additional aggregate guard.
     valuation_ancestors: Vec<VertexRow>,
+    /// Newly admitted foreign application ancestry requires its own complete
+    /// publication; compound protocols do not carry staged base components.
+    foreign_application_chain: bool,
     security_policy_epoch: u64,
     effects_digest: [u8; 32],
     identity: Identity,
@@ -343,6 +346,11 @@ impl PreparedPost {
     #[must_use]
     pub fn settlement_work(&self) -> SettlementWork {
         self.settlement_work
+    }
+
+    pub(crate) fn compound_carrying_refusal(&self) -> Option<Refusal> {
+        self.foreign_application_chain
+            .then(crate::carrying::unsupported_reversal_compound)
     }
 
     pub(crate) fn entry(&self) -> &Entry {
@@ -553,6 +561,7 @@ impl PreparedPost {
             period,
             period_vertex,
             valuation_ancestors,
+            foreign_application_chain: _,
             security_policy_epoch: _,
             effects_digest: _,
             identity,
@@ -2935,6 +2944,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             ));
         }
         (Some(ReplacementBasis::Staged(prepared)), None) => {
+            if let Some(refusal) = prepared.compound_carrying_refusal() {
+                prepared.abort();
+                return Ok(Err(refusal));
+            }
             let PreparedPost {
                 txn,
                 request,
@@ -4062,6 +4075,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     //     witness, so a concurrent application is a first-committer-wins
     //     conflict, never an over-application.
     let mut applications: Vec<(u16, VId, i128)> = Vec::new();
+    let mut foreign_application_chain = false;
     let mut undo: Vec<(u16, VId, i128)> = Vec::new();
     let mut applied_delta: BTreeMap<VId, (i128, i128)> = BTreeMap::new();
     // Nothing is staged during these laws. Keep each authenticated target
@@ -4375,7 +4389,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 "cite the entry's vid from the posted event or `fa entry show`",
             )));
         }
-        let (original, _) = checked_entry_staged(&txn, db, &row)?;
+        let (original, original_recorded_at) = checked_entry_staged(&txn, db, &row)?;
         if original.entry_digest != target.entry_digest {
             txn.abort();
             return Ok(Err(Refusal::new(
@@ -4491,6 +4505,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         //     liveness and capacity; it cannot reclaim amounts used elsewhere.
         let mut anc_vid = target.vid;
         let mut anc_entry = original.clone();
+        let mut anc_recorded_at = original_recorded_at;
         let mut undo_applications = true;
         let mut seen_ancestors: BTreeSet<VId> = BTreeSet::new();
         loop {
@@ -4540,7 +4555,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 let grand = txn
                     .vertex(db, next_vid)?
                     .ok_or_else(|| KernelError::Corrupt("reversal ancestor is missing".into()))?;
-                let (grand, _) = checked_entry_staged(&txn, db, &grand)?;
+                let (grand, recorded_at) = checked_entry_staged(&txn, db, &grand)?;
                 if grand.entry_digest != first.target.entry_digest {
                     return Err(KernelError::Corrupt(
                         "reversal ancestor disagrees with its retained handle".into(),
@@ -4548,14 +4563,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 }
                 anc_vid = next_vid;
                 anc_entry = grand;
+                anc_recorded_at = recorded_at;
                 undo_applications = !undo_applications;
             } else {
                 break;
             }
         }
-        // Foreign applications additionally carry valuation relief. Preserve
-        // their bounded posture until ancestry can restore that exact relief;
-        // a native parity projection must never substitute for FX netting.
+        // Retain the original, source-bound application and its exact sign.
+        // Native mirror checks below still precede the functional carrying
+        // preflight. Allocated release ancestry has a separate route proof.
         if anc_vid != target.vid
             && anc_entry
                 .proposal
@@ -4569,10 +4585,32 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     .iter()
                     .any(|leg| leg.base_amount.is_some()))
         {
-            txn.abort();
-            return Ok(Err(not_implemented(
-                "re-application by reversing a reversal",
-            )));
+            let supported = anc_entry
+                .proposal
+                .base_totals
+                .as_ref()
+                .is_some_and(|totals| {
+                    matches!(
+                        crate::fx::FxLawId::from_oid(&totals.fx_law_oid),
+                        Some(
+                            crate::fx::FxLawId::SettlementCarryingBasis
+                                | crate::fx::FxLawId::SettlementSpotCarrying
+                        )
+                    )
+                })
+                && !crate::carrying::has_allocated_basis(&anc_entry.proposal)
+                && anc_entry
+                    .proposal
+                    .legs
+                    .iter()
+                    .any(|leg| foreign_currency(leg.amount.unit) && !leg.settles.is_empty());
+            if !supported {
+                txn.abort();
+                return Ok(Err(not_implemented(
+                    "re-application by reversing a reversal",
+                )));
+            }
+            foreign_application_chain = true;
         }
         for (i, oleg) in anc_entry.proposal.legs.iter().enumerate() {
             let ordinal =
@@ -4664,6 +4702,34 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                         .ok_or_else(|| KernelError::Corrupt("applied overflow".into()))?;
                     applications.push((ordinal, target_leg_vid, s.amount.mantissa));
                 }
+            }
+        }
+        if foreign_application_chain {
+            if !matches!(
+                admission,
+                Admission::Commit | Admission::Plan | Admission::VerifiedPlan(_)
+            ) {
+                txn.abort();
+                return Ok(Err(crate::carrying::unsupported_reversal_compound()));
+            }
+            // Named reversal witnesses use the ordinary Post authority above.
+            // This newly supported path additionally observes whole carrying
+            // history, under the same Read/Post law as a fresh settlement.
+            if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
+            if let Err(refusal) = crate::carrying::validate_application_reversal(
+                db,
+                ctx,
+                book,
+                (&anc_entry.proposal, anc_recorded_at),
+                proposal.effective_date,
+                undo_applications,
+                txn.basis(),
+            )? {
+                txn.abort();
+                return Ok(Err(refusal));
             }
         }
     }
@@ -5326,6 +5392,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         entry,
         period_vertex: period_vid(&book.calendar.id, &period.code),
         valuation_ancestors,
+        foreign_application_chain,
         period: period.code,
         security_policy_epoch: epoch,
         effects_digest,

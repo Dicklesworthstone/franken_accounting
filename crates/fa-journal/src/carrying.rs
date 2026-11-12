@@ -16,6 +16,7 @@
 mod allocated;
 pub(crate) mod differences;
 mod history;
+mod reversal;
 pub(crate) use allocated::ReleaseIndex as AllocatedReleaseIndex;
 pub(crate) use allocated::basis as allocated_basis;
 pub(crate) use allocated::covers_valuation_account;
@@ -2129,6 +2130,127 @@ fn validate_spot_applications<V: Vfs + Clone>(
     Ok(Ok(()))
 }
 
+pub(crate) fn unsupported_reversal_compound() -> Refusal {
+    Refusal::new(
+        code::CLASS_NOT_IMPLEMENTED,
+        exit::REFUSAL,
+        "foreign application reversal chains require their own publication",
+        "plan §5.7–5.10 (exact recorded relief and complete carrying dependency)",
+        "post this reversal separately, or review and commit its single-entry plan; compound reversal chains require an explicit staged carrying-value law",
+    )
+}
+
+/// Judge the signed effect of an authenticated application ancestor against
+/// today's complete carrying state. The posting transaction has already
+/// checked native target liveness, capacity and every reversal ancestor.
+pub(crate) fn validate_application_reversal<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    original: (&EntryPayload, CommitSeq),
+    effective_date: DateDay,
+    undo: bool,
+    at: CommitSeq,
+) -> Outcome<()> {
+    let (original, recorded_at) = original;
+    cx.query().with_restriction(|| {
+        if recorded_at.0 == 0 || recorded_at > at || !is_source_bound(original)
+            || has_allocated_basis(original)
+        {
+            return Ok(Err(invalid(
+                "application reversal requires its retained nonallocated source-bound ancestor",
+            )));
+        }
+        let Some(totals) = &original.base_totals else {
+            return Ok(Err(invalid("application ancestor has no functional valuation")));
+        };
+        let spot = match FxLawId::from_oid(&totals.fx_law_oid) {
+            Some(FxLawId::SettlementCarryingBasis) => false,
+            Some(FxLawId::SettlementSpotCarrying) => true,
+            _ => return Ok(Err(invalid("unsupported application reversal valuation law"))),
+        };
+        let spec = crate::fx::book_spec_at(db, book, at)?;
+        let current = asupersync::Cx::current().ok_or_else(|| {
+            KernelError::Corrupt("application reversal requires the caller context".into())
+        })?;
+        let stripped = current.restrict::<asupersync::cx::cap::None>();
+        let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
+        let mut audits = SuccessfulHistoryAudits::default();
+        let mut targets = BTreeSet::new();
+        for leg in &original.legs {
+            if leg.amount.unit == spec.base_unit || leg.settles.is_empty() {
+                continue;
+            }
+            cx.query().checkpoint().map_err(fgdb::WriteTxnError::Interrupted)?;
+            let [application] = leg.settles.as_slice() else {
+                return Ok(Err(invalid("a foreign application ancestor must name one target per applying leg")));
+            };
+            if !book.units.get(leg.amount.unit).is_some_and(|unit| {
+                matches!(unit.kind, fa_money::UnitKind::Currency { .. })
+            }) || application.amount.unit != leg.amount.unit
+                || application.amount.mantissa <= 0
+                || application.amount.mantissa > leg.amount.mantissa
+                || (!spot && application.amount != leg.amount)
+                || !targets.insert((application.target.vid, application.ordinal))
+            {
+                return Ok(Err(invalid("foreign application ancestry requires positive disjoint recorded allocations")));
+            }
+            let item = match open_item_carrying_with_audits(
+                db, cx, book, application.target, application.ordinal, at, Some(&mut audits),
+            )? {
+                Ok(item) => item,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if item.account != leg.account_ref || item.side == leg.side
+                || item.dimensions != leg.dimension_set
+                || item.original_native.unit != application.amount.unit
+                || effective_date < item.latest_effective_date
+            {
+                return Ok(Err(invalid("application reversal requires its original matching target and a date at or after every current item effect")));
+            }
+            // A spot leg can contain an unapplied remainder. Its full base
+            // amount is not the relief: use the original immutable quote,
+            // original date and applied amount at the original publication.
+            let relief = if spot {
+                match spot_application_relief(
+                    db, book, original, application.amount, recorded_at, &mut budget,
+                )? {
+                    Ok(relief) => relief,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            } else {
+                let Some(relief) = leg.base_amount else {
+                    return Ok(Err(invalid("application ancestor lacks its recorded historical relief")));
+                };
+                relief
+            };
+            if relief.unit != item.original_base.unit || relief.mantissa < 0 {
+                return Ok(Err(invalid("recorded application relief has another unit or a negative amount")));
+            }
+            let state = reversal::Components {
+                native: item.open_native.mantissa,
+                historical: item.historical_open_base.mantissa,
+                valuation: item.valuation_open_base.mantissa,
+            };
+            if reversal::project(
+                state,
+                item.original_native.mantissa,
+                item.original_base.mantissa,
+                application.amount.mantissa,
+                relief.mantissa,
+                undo,
+            ).is_err() {
+                return Ok(Err(invalid("exact recorded application relief would exceed current native or historical capacity, overflow, or strand a carrying component")));
+            }
+        }
+        if targets.is_empty() {
+            return Ok(Err(invalid("application reversal has no retained foreign application")));
+        }
+        audits.verify_entry_prefix(db, cx, book, at)?;
+        Ok(Ok(()))
+    })
+}
+
 /// Exact application undo restores its recorded split, without repricing the
 /// old receipt after a later revaluation. Reversing an original source while
 /// its contra component remains would orphan that component and is refused.
@@ -2142,6 +2264,12 @@ pub(crate) fn validate_reversal<V: Vfs + Clone>(
     at: CommitSeq,
 ) -> Outcome<()> {
     cx.query().with_restriction(|| {
+        // The posting transaction resolves application ancestry and its sign
+        // before validating a reversal of a reversal. A reversal's cleared
+        // settles cannot stand in for the original application declaration.
+        if original.class == EntryClass::REVERSAL {
+            return Ok(Ok(()));
+        }
         let mut audits = SuccessfulHistoryAudits::default();
         if has_allocated_basis(original) {
             let releases = match allocated::basis(original) { Ok(value) => value, Err(refusal) => return Ok(Err(refusal)) };
@@ -2162,7 +2290,7 @@ pub(crate) fn validate_reversal<V: Vfs + Clone>(
             audits.verify_entry_prefix(db, cx, book, at)?;
             return Ok(Ok(()));
         }
-        if original.class == EntryClass::REVERSAL || original.base_totals.as_ref().is_none_or(|total| {
+        if original.base_totals.as_ref().is_none_or(|total| {
             !matches!(FxLawId::from_oid(&total.fx_law_oid), Some(FxLawId::SpotClose | FxLawId::PeriodAverage))
         }) { return Ok(Ok(())); }
         let mut allocated_ordinals = BTreeSet::new();
