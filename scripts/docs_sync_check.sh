@@ -85,13 +85,85 @@ for name, command, expected, diagnostic in cases:
     else:
         failures += 1
         print(f"FAIL docs_sync_selftest::{name} expected={expected} actual={result.returncode}; logs={base}")
+
+# Chronological refs/notes/fa-verdict selection control (fa-0hs4.21):
+# Ensure an older note on a hex-high commit OID never shadows a newer note on
+# a hex-lower commit OID, while genuinely stale notes (>7 days) still fail.
+note_fixture = base / "chronological-notes"
+note_fixture.mkdir()
+(note_fixture / "registries").mkdir()
+(note_fixture / "scripts").mkdir()
+(note_fixture / "registries/verbs.toml").write_text(registry)
+(note_fixture / "scripts/check.sh").write_text("# CANONICAL_STEPS: fmt\n")
+(note_fixture / "AGENTS.md").write_text("<!-- check-sh-steps: fmt -->\n")
+(note_fixture / "README.md").write_text("> **Status (2026-10-25):** fixture\n## TL;DR\n")
+subprocess.run(["git", "init", "-q", "-b", "main"], cwd=note_fixture, check=True)
+subprocess.run(["git", "config", "user.name", "Docs Sync Selftest"], cwd=note_fixture, check=True)
+subprocess.run(["git", "config", "user.email", "docs-sync@example.invalid"], cwd=note_fixture, check=True)
+subprocess.run(["git", "add", "."], cwd=note_fixture, check=True)
+subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=note_fixture, check=True)
+commits = []
+for idx in range(24):
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", f"c-{idx}"],
+        cwd=note_fixture,
+        check=True,
+    )
+    commits.append(
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=note_fixture, text=True).strip()
+    )
+hex_sorted = sorted(commits)
+hex_low, hex_high = hex_sorted[0], hex_sorted[-1]
+assert hex_low < hex_high
+# Put OLDER note (2026-10-01, 24 days stale) on hex_high (which `git notes list` prints LAST!)
+# and NEWER note (2026-10-24, 1 day old) on hex_low.
+subprocess.run(
+    ["git", "notes", "--ref=refs/notes/fa-verdict", "add", "-f", "-m",
+     f"fa-verdict v3\nverdict=pass\ncommit={hex_high}\nfinished_utc=2026-10-01T12:00:00Z\n", hex_high],
+    cwd=note_fixture,
+    check=True,
+)
+subprocess.run(
+    ["git", "notes", "--ref=refs/notes/fa-verdict", "add", "-f", "-m",
+     f"fa-verdict v3\nverdict=pass\ncommit={hex_low}\nfinished_utc=2026-10-24T12:00:00Z\n", hex_low],
+    cwd=note_fixture,
+    check=True,
+)
+res_fresh = subprocess.run(
+    ["bash", str(source / "scripts/docs_sync_check.sh"), str(note_fixture)],
+    cwd=source, text=True, capture_output=True
+)
+# Now flip hex_low to 2026-10-05 so BOTH notes are >7 days stale vs 2026-10-25 -> must FAIL!
+subprocess.run(
+    ["git", "notes", "--ref=refs/notes/fa-verdict", "add", "-f", "-m",
+     f"fa-verdict v3\nverdict=pass\ncommit={hex_low}\nfinished_utc=2026-10-05T12:00:00Z\n", hex_low],
+    cwd=note_fixture,
+    check=True,
+)
+res_stale = subprocess.run(
+    ["bash", str(source / "scripts/docs_sync_check.sh"), str(note_fixture)],
+    cwd=source, text=True, capture_output=True
+)
+if (
+    res_fresh.returncode == 0
+    and "within 7 days of 2026-10-24 (1d)" in res_fresh.stdout + res_fresh.stderr
+    and res_stale.returncode == 1
+    and f"refs/notes/fa-verdict({hex_low[:12]})" in res_stale.stdout + res_stale.stderr
+    and "FAIL readme-status-date" in res_stale.stdout + res_stale.stderr
+):
+    print("PASS docs_sync_selftest::chronological-notes exit=0")
+else:
+    failures += 1
+    print(f"FAIL docs_sync_selftest::chronological-notes fresh_rc={res_fresh.returncode} stale_rc={res_stale.returncode}")
+
 print(f"fixtures={base}")
-print(f"cases={len(cases)} failures={failures}")
+print(f"cases={len(cases) + 1} failures={failures}")
 sys.exit(1 if failures else 0)
 PY
   selftest_rc=$?
   if [ "$selftest_rc" -eq 0 ]; then
     gate_pass "docs-sync-selftest" "all registry-prefix and evaluator-failure controls executed"
+    gate_pass "docs_sync_check::selftest_hex_high_older_verdict_note_does_not_shadow_newer_note" "chronological fa-verdict note selection verified with stale-note negative control"
   else
     gate_fail "docs-sync-selftest" "controls failed (exit $selftest_rc)"
   fi
@@ -295,16 +367,40 @@ else:
     status_dt = datetime.date.fromisoformat(status_date_str)
     ref_dt = datetime.date.fromisoformat(verified_date_str) if verified_date_str else status_dt
     ref_loc = f"README.md:{verified_line_no}" if verified_line_no else "refs/notes/fa-verdict"
-    # Also check latest refs/notes/fa-verdict note date if git repo is available
+    # Also check chronologically latest refs/notes/fa-verdict note date if git repo is available.
+    # `git notes list` sorts alphabetically by target commit hex OID, not execution time.
     p = subprocess.run(["git", "-C", str(root), "notes", "--ref=refs/notes/fa-verdict", "list"], capture_output=True, text=True)
     if p.returncode == 0 and p.stdout.strip():
-        last_commit = p.stdout.strip().splitlines()[-1].split()[-1]
-        p2 = subprocess.run(["git", "-C", str(root), "notes", "--ref=refs/notes/fa-verdict", "show", last_commit], capture_output=True, text=True)
-        if p2.returncode == 0:
-            m_utc = re.search(r"^finished_utc=(\d{4}-\d{2}-\d{2})", p2.stdout, re.M)
-            if m_utc:
-                ref_dt = datetime.date.fromisoformat(m_utc.group(1))
-                ref_loc = f"refs/notes/fa-verdict({last_commit[:12]})"
+        latest_note = None
+        for row in p.stdout.strip().splitlines():
+            parts = row.split()
+            if len(parts) != 2:
+                continue
+            commit = parts[1]
+            p2 = subprocess.run(["git", "-C", str(root), "notes", "--ref=refs/notes/fa-verdict", "show", commit], capture_output=True, text=True)
+            if p2.returncode != 0:
+                continue
+            m_ts = re.search(r"^finished_utc=(\S+)", p2.stdout, re.M)
+            if not m_ts:
+                continue
+            stamp = m_ts.group(1)
+            try:
+                when = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                day = when.date()
+            except ValueError:
+                m_day = re.match(r"^(\d{4}-\d{2}-\d{2})", stamp)
+                if not m_day:
+                    continue
+                day = datetime.date.fromisoformat(m_day.group(1))
+                when = datetime.datetime.combine(day, datetime.time.min, tzinfo=datetime.timezone.utc)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=datetime.timezone.utc)
+            cand = (when, commit, day)
+            if latest_note is None or cand[:2] > latest_note[:2]:
+                latest_note = cand
+        if latest_note is not None:
+            ref_dt = latest_note[2]
+            ref_loc = f"refs/notes/fa-verdict({latest_note[1][:12]})"
     delta_days = abs((ref_dt - status_dt).days)
     if delta_days > 7:
         msg = f"README.md:{status_line_no}: Status date {status_date_str} is {delta_days} days from verdict date {ref_dt.isoformat()} ({ref_loc}); max allowed is 7 days"

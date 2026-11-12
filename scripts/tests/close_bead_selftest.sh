@@ -588,6 +588,141 @@ PY
   gate_pass "close_bead_selftest::large_verified_note_preserves_acceptance_and_ancestry_checks (producer-generated synthetic proof; missing tests and future landing refused; no Rust execution or real Beads mutation)"
 }
 
+large_decision_json_streams_without_argv_limit() {
+  local blob before after backup="$base/issues.before-huge.jsonl"
+  blob="$(git notes --ref=fa-verdict list "$(git log -n 1 --format='%H' HEAD~1)" | awk '{print $1}')"
+  cp "$STUB_BEADS_JSONL" "$backup"
+  before="$(sha256sum "$STUB_BEADS_JSONL" | awk '{print $1}')"
+  python3 - "$STUB_BEADS_JSONL" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+many = "\n".join(f"inventory::ledger_report_case_{i:05d}" for i in range(5000))
+rows.append({
+    "id": "fa-huge-decision",
+    "status": "in_progress",
+    "description": f"5000 acceptance items (>200 KiB decision_json).\n\n```acceptance-tests\n{many}\n```\n",
+})
+path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+PY
+  FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh fa-huge-decision --verdict "$blob" \
+    --commit "$main_commit" --repository "$fixture" --reason "streamed decision json" \
+    >"$base/huge-decision.stdout" 2>"$base/huge-decision.stderr" \
+    || fail "large_decision_json_streams_without_argv_limit: failed ($(cat "$base/huge-decision.stderr"))"
+  cp "$backup" "$STUB_BEADS_JSONL"
+  after="$(sha256sum "$STUB_BEADS_JSONL" | awk '{print $1}')"
+  [ "$before" = "$after" ] || fail "large_decision_json_streams_without_argv_limit: fixture Beads not restored"
+  grep -Fq 'CLOSE_BEAD_VERIFIED bead=fa-huge-decision' "$base/huge-decision.stdout" \
+    || fail "large_decision_json_streams_without_argv_limit: missing CLOSE_BEAD_VERIFIED"
+  if grep -Fq 'Argument list too long' "$base/huge-decision.stderr"; then
+    fail "large_decision_json_streams_without_argv_limit: hit argv E2BIG"
+  fi
+  gate_pass "close_bead_selftest::large_decision_json_streams_without_argv_limit (5000-test ~250 KiB decision_json streamed over stdin without argv limit)"
+}
+
+ancestry_grep_does_not_match_child_or_regex_sibling_ids() {
+  local rc=0 sibling_proof="$base/sibling-proof"
+  python3 - "$STUB_BEADS_JSONL" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+rows.append({
+    "id": "fa-0hs4.1",
+    "status": "in_progress",
+    "description": "Anchored ancestry check.\n\n```acceptance-tests\nfa-journal::retention::tests::floor_enforced\n```\n",
+})
+path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+PY
+  git add .beads/issues.jsonl
+  git commit -q -m "fix: sibling and regex lookalikes (fa-0hs4.19, fa-0hs4.1.2, fa-0hs4X1, sub-fa-0hs4.1)"
+  FAKE_CHECK_MODE=pass bash scripts/local_proof.sh --output "$sibling_proof" >/dev/null
+  FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh fa-0hs4.1 --verdict "$sibling_proof" \
+    --repository "$fixture" --reason "must not match sibling ids" \
+    >"$base/ancestry-sibling.stdout" 2>"$base/ancestry-sibling.stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "ancestry_grep_does_not_match_child_or_regex_sibling_ids: matched fa-0hs4.19 / fa-0hs4X1 for fa-0hs4.1"
+  grep -Fq 'no commit mentioning fa-0hs4.1 is reachable' "$base/ancestry-sibling.stderr" \
+    || fail "ancestry_grep_does_not_match_child_or_regex_sibling_ids: unexpected error ($(cat "$base/ancestry-sibling.stderr"))"
+
+  git commit -q --allow-empty -m "fix: exact token with trailing period Fixes fa-0hs4.1."
+  local exact_proof="$base/exact-ancestry-proof"
+  FAKE_CHECK_MODE=pass bash scripts/local_proof.sh --output "$exact_proof" >/dev/null
+  FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh fa-0hs4.1 --verdict "$exact_proof" \
+    --repository "$fixture" --reason "exact token matches" \
+    >"$base/ancestry-exact.stdout" 2>"$base/ancestry-exact.stderr" \
+    || fail "ancestry_grep_does_not_match_child_or_regex_sibling_ids: exact fa-0hs4.1. did not match ($(cat "$base/ancestry-exact.stderr"))"
+  gate_pass "close_bead_selftest::ancestry_grep_does_not_match_child_or_regex_sibling_ids (fa-0hs4.19, fa-0hs4.1.2, fa-0hs4X1, sub-fa-0hs4.1 rejected; exact fa-0hs4.1. admitted)"
+}
+
+inventory_match_rejects_same_suffix_in_wrong_crate() {
+  local pkg_proof="$base/pkg-qualified-proof" rc=0
+  cat > "$fixture/scripts/check.sh" <<'CHECK_PKG'
+#!/usr/bin/env bash
+# CANONICAL_STEPS: test-list, test
+set -eu
+tree_hash="$(git rev-parse 'HEAD^{tree}')"
+toolchain="$(rustc --version 2>/dev/null || echo 'rustc 1.100.0-nightly')"
+log_dir="$CHECK_LOG_DIR"
+manifest="$CHECK_STEP_MANIFEST"
+stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+mkdir -p "$log_dir"
+printf '  tests::shared_suffix: test\nRemote command finished: exit=0\n[RCH] remote hz2 (1s)\n' > "$log_dir/test-list.log"
+cat > "$log_dir/test.log" <<'EOF'
+==== test job fa-policy.lib: cargo test -p fa-policy --lib (exit 0)
+     Running unittests src/lib.rs (target/debug/deps/fa_policy-0123456789abcdef)
+
+running 1 test
+test tests::shared_suffix ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored
+Remote command finished: exit=0
+[RCH] remote hz2 (1s)
+EOF
+d_list="$(sha256sum "$log_dir/test-list.log" | awk '{print $1}')"
+d_test="$(sha256sum "$log_dir/test.log" | awk '{print $1}')"
+{
+  printf '{"step":"test-list","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"%s","finished":"%s","duration_secs":0,"log_digest":"%s"}\n' \
+    "$tree_hash" "$toolchain" "$stamp" "$stamp" "$d_list"
+  printf '{"step":"test","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"%s","finished":"%s","duration_secs":0,"log_digest":"%s"}\n' \
+    "$tree_hash" "$toolchain" "$stamp" "$stamp" "$d_test"
+} > "$manifest"
+printf 'PASS test-list\nPASS test\nALL GATES GREEN\n'
+CHECK_PKG
+  chmod +x "$fixture/scripts/check.sh"
+  python3 - "$STUB_BEADS_JSONL" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+rows.extend([
+    {
+        "id": "fa-right-crate",
+        "status": "in_progress",
+        "description": "Right crate.\n\n```acceptance-tests\nfa-policy::tests::shared_suffix\n```\n",
+    },
+    {
+        "id": "fa-wrong-crate",
+        "status": "in_progress",
+        "description": "Wrong crate.\n\n```acceptance-tests\nfa-journal::tests::shared_suffix\n```\n",
+    },
+])
+path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+PY
+  git add scripts/check.sh .beads/issues.jsonl
+  git commit -q -m "test: package-qualified fixture (fa-right-crate, fa-wrong-crate)"
+  bash scripts/local_proof.sh --output "$pkg_proof" >/dev/null
+  FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh fa-wrong-crate --verdict "$pkg_proof" \
+    --repository "$fixture" --reason "wrong crate must fail" \
+    >"$base/wrong-crate.stdout" 2>"$base/wrong-crate.stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "inventory_match_rejects_same_suffix_in_wrong_crate: fa-policy::tests::shared_suffix satisfied fa-journal::tests::shared_suffix"
+  grep -Fq 'missing from verdict' "$base/wrong-crate.stderr" \
+    || fail "inventory_match_rejects_same_suffix_in_wrong_crate: unexpected error ($(cat "$base/wrong-crate.stderr"))"
+
+  FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh fa-right-crate --verdict "$pkg_proof" \
+    --repository "$fixture" --reason "right crate must pass" \
+    >"$base/right-crate.stdout" 2>"$base/right-crate.stderr" \
+    || fail "inventory_match_rejects_same_suffix_in_wrong_crate: fa-policy::tests::shared_suffix rejected ($(cat "$base/right-crate.stderr"))"
+  gate_pass "close_bead_selftest::inventory_match_rejects_same_suffix_in_wrong_crate (fa-policy::tests::shared_suffix admits fa-policy and refuses fa-journal)"
+}
+
 parser_unit_tests
 closes_with_cited_note
 matches_integration_tests_by_their_binary
@@ -609,6 +744,9 @@ refuses_verdict_without_landing_commit
 unbound_resumed_steps_cannot_authorize_closure
 process_closure_and_regression_checks
 large_verified_note_preserves_acceptance_and_ancestry_checks
+large_decision_json_streams_without_argv_limit
+ancestry_grep_does_not_match_child_or_regex_sibling_ids
+inventory_match_rejects_same_suffix_in_wrong_crate
 
 cd "$source_root" || fail "cannot cd back to $source_root"
 gate_verdict

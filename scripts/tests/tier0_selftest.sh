@@ -63,6 +63,10 @@ case "${FAKE_RCH_MODE:-remote}" in
     printf 'RCH_SOURCE_NAMESPACE_CONTROL_UNSETTLED status=0 cause=deadline-or-external-interruption\n' >&2
     exit 1
     ;;
+  refuse-after-partial-finished)
+    printf '    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n[RCH] remote required; refusing local fallback: no admissible workers\n' >&2
+    exit 103
+    ;;
 esac
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "--" ]; then
   shift 2
@@ -80,7 +84,7 @@ if [ "${FAKE_RCH_MODE:-remote}" = "check-color-forwarding" ]; then
   esac
 fi
 printf '[RCH] Selected worker: hz2 at 10.0.0.2\n'
-RCH_CARGO_WRAPPER_BYPASS=1 "$@"
+RCH_REQUIRE_REMOTE=0 RCH_CARGO_WRAPPER_BYPASS=1 "$@"
 rc=$?
 printf 'Remote command finished: exit=%s\n' "$rc"
 exit "$rc"
@@ -88,27 +92,30 @@ RCH_STUB
 chmod +x "$base/bin/rch"
 
 export FA_RCH_BIN="$base/bin/rch"
-export RCH_CARGO_WRAPPER_BYPASS=1
+unset RCH_CARGO_WRAPPER_BYPASS
+unset RCH_REQUIRE_REMOTE
+REAL_CARGO_FOR_FIXTURE="$(rustup which cargo 2>/dev/null || command -v cargo)"
 export CARGO_TARGET_DIR="$base/target"
 export TIER0_JOBS=2
 
 setup_fixture_repo() {
   git init -q --bare -b main "$remote"
   git clone -q "$remote" "$dev" 2>/dev/null
-  cd "$dev" || gate_die "tier0-selftest: cannot cd into $dev"
-  git config user.name "Tier0 Dev"
-  git config user.email "dev@example.invalid"
+  (
+    cd "$dev" || exit 1
+    git config user.name "Tier0 Dev"
+    git config user.email "dev@example.invalid"
 
-  mkdir -p scripts/lib scripts/hooks crates/fa/src crates/fa-mcp/src crates/fa-mcp/tests
-  cp "$SOURCE_ROOT/scripts/tier0.sh" scripts/tier0.sh
-  cp "$SOURCE_ROOT/scripts/merge_train.sh" scripts/merge_train.sh
-  cp "$SOURCE_ROOT/scripts/install-hooks.sh" scripts/install-hooks.sh
-  cp "$SOURCE_ROOT/scripts/hooks/pre-push" scripts/hooks/pre-push
-  cp "$SOURCE_ROOT/scripts/gate_workers.conf" scripts/gate_workers.conf
-  cp "$SOURCE_ROOT/scripts/lib/gate_verdict.sh" scripts/lib/gate_verdict.sh
-  chmod +x scripts/*.sh scripts/hooks/pre-push
+    mkdir -p scripts/lib scripts/hooks crates/fa/src crates/fa-mcp/src crates/fa-mcp/tests
+    cp "$SOURCE_ROOT/scripts/tier0.sh" scripts/tier0.sh
+    cp "$SOURCE_ROOT/scripts/merge_train.sh" scripts/merge_train.sh
+    cp "$SOURCE_ROOT/scripts/install-hooks.sh" scripts/install-hooks.sh
+    cp "$SOURCE_ROOT/scripts/hooks/pre-push" scripts/hooks/pre-push
+    cp "$SOURCE_ROOT/scripts/gate_workers.conf" scripts/gate_workers.conf
+    cp "$SOURCE_ROOT/scripts/lib/gate_verdict.sh" scripts/lib/gate_verdict.sh
+    chmod +x scripts/*.sh scripts/hooks/pre-push
 
-  cat > Cargo.toml <<'TOML'
+    cat > Cargo.toml <<'TOML'
 [workspace]
 resolver = "2"
 members = ["crates/fa", "crates/fa-mcp"]
@@ -117,7 +124,7 @@ members = ["crates/fa", "crates/fa-mcp"]
 unsafe_code = "forbid"
 TOML
 
-  cat > crates/fa/Cargo.toml <<'TOML'
+    cat > crates/fa/Cargo.toml <<'TOML'
 [package]
 name = "fa"
 version = "0.1.0"
@@ -127,7 +134,7 @@ edition = "2024"
 workspace = true
 TOML
 
-  cat > crates/fa/src/lib.rs <<'RS'
+    cat > crates/fa/src/lib.rs <<'RS'
 #![forbid(unsafe_code)]
 
 pub mod book {
@@ -149,7 +156,7 @@ pub mod book {
 }
 RS
 
-  cat > crates/fa-mcp/Cargo.toml <<'TOML'
+    cat > crates/fa-mcp/Cargo.toml <<'TOML'
 [package]
 name = "fa-mcp"
 version = "0.1.0"
@@ -162,7 +169,7 @@ fa = { path = "../fa" }
 workspace = true
 TOML
 
-  cat > crates/fa-mcp/src/lib.rs <<'RS'
+    cat > crates/fa-mcp/src/lib.rs <<'RS'
 #![forbid(unsafe_code)]
 
 #[must_use]
@@ -171,7 +178,7 @@ pub const fn mcp_ready() -> bool {
 }
 RS
 
-  cat > crates/fa-mcp/tests/e2e_stdio.rs <<'RS'
+    cat > crates/fa-mcp/tests/e2e_stdio.rs <<'RS'
 #[test]
 fn inline_fx_rates_keep_agent_provenance() {
     let book = fa::book::AsyncBook::new(42);
@@ -180,18 +187,17 @@ fn inline_fx_rates_keep_agent_provenance() {
 }
 RS
 
-  cargo fmt --all
-  git add .
-  git commit -q -m "initial green workspace"
-  bash scripts/tier0.sh --publish-note > "$base/init-tier0.out" 2>"$base/init-tier0.err" \
-    || gate_die "tier0-selftest: initial fixture failed tier0 ($(cat "$base/init-tier0.out" "$base/init-tier0.err"))"
-  git push -q origin main
-  git push -q origin refs/notes/fa-tier0:refs/notes/fa-tier0
+    "$REAL_CARGO_FOR_FIXTURE" fmt --all
+    git add .
+    git commit -q -m "initial green workspace"
+    bash scripts/tier0.sh --publish-note > "$base/init-tier0.out" 2>"$base/init-tier0.err" || exit 2
+    git push -q origin main
+    git push -q origin refs/notes/fa-tier0:refs/notes/fa-tier0
+  ) || gate_die "tier0-selftest: initial fixture failed tier0 ($(cat "$base/init-tier0.out" "$base/init-tier0.err" 2>/dev/null))"
 
   git clone -q "$remote" "$op" 2>/dev/null
   git -C "$op" config user.name "Tier0 Train"
   git -C "$op" config user.email "train@example.invalid"
-  cd "$SOURCE_ROOT" || gate_die "tier0-selftest: cannot cd back to $SOURCE_ROOT"
 }
 
 remote_main() {
@@ -476,7 +482,7 @@ falls_back_to_local_lane_on_rch_refusal() {
   local rc=0
   (
     cd "$dev"
-    FAKE_RCH_MODE=refuse TIER0_HOST_FINGERPRINT="gate-host-01:Linux-x86_64" \
+    FAKE_RCH_MODE=refuse RCH_REQUIRE_REMOTE=0 TIER0_HOST_FINGERPRINT="gate-host-01:Linux-x86_64" \
       bash scripts/tier0.sh --publish-note --log-dir "$base/local-fallback-logs"
   ) > "$base/local-fallback.out" 2>"$base/local-fallback.err" || rc=$?
 
@@ -524,7 +530,7 @@ unexecuted_transport_failure_is_unrun() {
 
 unconfirmed_remote_completion_never_replays_locally() {
   local mode rc head_sha note cargo_bin
-  cargo_bin="$(command -v cargo)"
+  cargo_bin="$REAL_CARGO_FOR_FIXTURE"
   cat > "$base/bin/cargo-observer" <<'CARGO_OBSERVER'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -654,6 +660,116 @@ RS
   return 0
 }
 
+rch_shim_bypass_refusal_under_require_remote_is_unrun_not_red() {
+  local rc=0 head_sha note
+  cat > "$base/bin/cargo-shim-refusal" <<'SHIM_REFUSE'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  printf 'cargo 1.90.0-nightly\n'
+  exit 0
+fi
+if [ "${1:-}" = "fmt" ] && [ "${RCH_CARGO_WRAPPER_BYPASS:-0}" != "1" ]; then
+  exit 0
+fi
+printf 'rch shim: refusing caller-set RCH_CARGO_WRAPPER_BYPASS=1 while RCH_REQUIRE_REMOTE is enabled\n' >&2
+exit 1
+SHIM_REFUSE
+  chmod +x "$base/bin/cargo-shim-refusal"
+
+  # Case A: RCH_REQUIRE_REMOTE=1 in environment disables local fallback before invoking cargo
+  (
+    cd "$dev" || exit 1
+    git commit -q --allow-empty -m "fixture: RCH_REQUIRE_REMOTE=1 must report UNRUN"
+    FAKE_RCH_MODE=refuse RCH_REQUIRE_REMOTE=1 FA_CARGO_BIN="$base/bin/cargo-shim-refusal" \
+      bash scripts/tier0.sh --publish-note --log-dir "$base/req-remote-env-logs"
+  ) > "$base/req-remote-env.out" 2> "$base/req-remote-env.err" || rc=$?
+  head_sha="$(git -C "$dev" rev-parse HEAD)"
+  note="$(git -C "$dev" notes --ref=fa-tier0 show "$head_sha" 2>/dev/null || true)"
+  if [ "$rc" -ne 2 ] \
+    || ! grep -Eq '^UNRUN check tier0 UNRUN step=check .* lane=remote-refused ' "$base/req-remote-env.out" \
+    || grep -q '^FAIL check tier0 FAIL ' "$base/req-remote-env.out" \
+    || grep -Fxq 'verdict=pass' <<< "$note"; then
+    gate_fail "rch_shim_bypass_refusal_under_require_remote_is_unrun_not_red — env case exit=$rc ($(cat "$base/req-remote-env.out" "$base/req-remote-env.err"))"
+    return 1
+  fi
+
+  # Case B: RCH shim refuses bypass via config file even without RCH_REQUIRE_REMOTE env var
+  rc=0
+  (
+    cd "$dev" || exit 1
+    git commit -q --allow-empty -m "fixture: rch shim config refusal must report UNRUN not FAIL"
+    FAKE_RCH_MODE=refuse RCH_REQUIRE_REMOTE=0 FA_CARGO_BIN="$base/bin/cargo-shim-refusal" \
+      bash scripts/tier0.sh --publish-note --log-dir "$base/req-remote-shim-logs"
+  ) > "$base/req-remote-shim.out" 2> "$base/req-remote-shim.err" || rc=$?
+  head_sha="$(git -C "$dev" rev-parse HEAD)"
+  note="$(git -C "$dev" notes --ref=fa-tier0 show "$head_sha" 2>/dev/null || true)"
+  if [ "$rc" -ne 2 ] \
+    || ! grep -Eq '^UNRUN check tier0 UNRUN step=check .* lane=remote-refused ' "$base/req-remote-shim.out" \
+    || grep -q '^FAIL check tier0 FAIL ' "$base/req-remote-shim.out" \
+    || grep -Fxq 'verdict=pass' <<< "$note"; then
+    gate_fail "rch_shim_bypass_refusal_under_require_remote_is_unrun_not_red — shim case exit=$rc ($(cat "$base/req-remote-shim.out" "$base/req-remote-shim.err"))"
+    return 1
+  fi
+
+  gate_pass "tier0_selftest::rch_shim_bypass_refusal_under_require_remote_is_unrun_not_red (env and shim bypass refusals report UNRUN exit 2, never FAIL or PASS)"
+  return 0
+}
+
+local_fallback_resolves_real_cargo_only_when_permitted() {
+  local rc=0 head_sha note
+  cat > "$base/bin/cargo-silent-zero" <<'SILENT_ZERO'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  printf 'cargo 1.90.0-nightly\n'
+  exit 0
+fi
+exit 0
+SILENT_ZERO
+  cat > "$base/bin/cargo-permitted-local" <<'PERMITTED_LOCAL'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  printf 'cargo 1.90.0-nightly\n'
+  exit 0
+fi
+printf '    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n'
+exit 0
+PERMITTED_LOCAL
+  chmod +x "$base/bin/cargo-silent-zero" "$base/bin/cargo-permitted-local"
+
+  # Remote partial `Finished` line must NOT bleed into check.local.log when local exits 0 without Finished
+  (
+    cd "$dev" || exit 1
+    git commit -q --allow-empty -m "fixture: remote Finished must not bleed into local fallback log"
+    FAKE_RCH_MODE=refuse-after-partial-finished RCH_REQUIRE_REMOTE=0 FA_CARGO_BIN="$base/bin/cargo-silent-zero" \
+      bash scripts/tier0.sh --publish-note --log-dir "$base/bleed-logs"
+  ) > "$base/bleed.out" 2> "$base/bleed.err" || rc=$?
+  if [ "$rc" -ne 2 ] || ! grep -Eq '^UNRUN check tier0 UNRUN step=check ' "$base/bleed.out"; then
+    gate_fail "local_fallback_resolves_real_cargo_only_when_permitted — remote Finished bled into silent local exit 0 (rc=$rc: $(cat "$base/bleed.out" "$base/bleed.err"))"
+    return 1
+  fi
+
+  # Permitted local cargo with real Finished marker succeeds on lane=local
+  rc=0
+  (
+    cd "$dev" || exit 1
+    git commit -q --allow-empty -m "fixture: permitted local fallback passes with Finished marker"
+    FAKE_RCH_MODE=refuse RCH_REQUIRE_REMOTE=0 FA_CARGO_BIN="$base/bin/cargo-permitted-local" \
+      TIER0_HOST_FINGERPRINT="gate-host-02:Linux-x86_64" \
+      bash scripts/tier0.sh --publish-note --log-dir "$base/permitted-local-logs"
+  ) > "$base/permitted-local.out" 2> "$base/permitted-local.err" || rc=$?
+  head_sha="$(git -C "$dev" rev-parse HEAD)"
+  note="$(git -C "$dev" notes --ref=fa-tier0 show "$head_sha" 2>/dev/null || true)"
+  if [ "$rc" -ne 0 ] \
+    || ! grep -Eq '^PASS check tier0 PASS step=check .* lane=local host=gate-host-02:Linux-x86_64 ' "$base/permitted-local.out" \
+    || ! grep -Fxq 'verdict=pass' <<< "$note"; then
+    gate_fail "local_fallback_resolves_real_cargo_only_when_permitted — permitted local fallback failed (rc=$rc: $(cat "$base/permitted-local.out" "$base/permitted-local.err"))"
+    return 1
+  fi
+
+  gate_pass "tier0_selftest::local_fallback_resolves_real_cargo_only_when_permitted (check.local.log isolates remote Finished bleed and admits permitted local lane)"
+  return 0
+}
+
 setup_fixture_repo
 
 if [ "$#" -gt 0 ]; then
@@ -668,7 +784,9 @@ if [ "$#" -gt 0 ]; then
       unexecuted_transport_failure_is_unrun|\
       unconfirmed_remote_completion_never_replays_locally|\
       unrun_refuses_to_fold_without_ejecting|\
-      publishes_note_after_the_remote_notes_ref_moved)
+      publishes_note_after_the_remote_notes_ref_moved|\
+      rch_shim_bypass_refusal_under_require_remote_is_unrun_not_red|\
+      local_fallback_resolves_real_cargo_only_when_permitted)
         "$fn"
         ;;
       *)
@@ -687,6 +805,8 @@ else
   unconfirmed_remote_completion_never_replays_locally
   unrun_refuses_to_fold_without_ejecting
   publishes_note_after_the_remote_notes_ref_moved
+  rch_shim_bypass_refusal_under_require_remote_is_unrun_not_red
+  local_fallback_resolves_real_cargo_only_when_permitted
 fi
 
 gate_verdict

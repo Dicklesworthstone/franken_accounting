@@ -256,9 +256,9 @@ name = "case"
 summary = "Restatement cases (plan §8.3): open a case over the periods a material correction affects, journal its determination (day and authority), rehearse it on a scenario whose diff certificate is replayed, retained and attached, approve its effect manifest under dual control, post a PriorPeriodAdjustment, Revision, Restatement or PolicyChangeRetrospective case's entries in one batch, disclose it in a reviewed Disclosure document, close it, and read it."
 writes = true
 subcommands = ["open", "determine", "rehearse", "approve", "post", "disclose", "close", "show", "list", "diff"]
-flags = ["--kind", "--periods", "--narrative", "--determined-on", "--authority", "--on", "--key", "--date", "--certificate", "--approval", "--document", "--period", "--unit", "--issuance", "--distribution", "--label", "--request-out", "--equity-certificate", "--equity-request"]
+flags = ["--kind", "--periods", "--narrative", "--determined-on", "--authority", "--on", "--key", "--date", "--certificate", "--approval", "--document", "--period", "--definition", "--unit", "--issuance", "--distribution", "--label", "--request-out", "--equity-certificate", "--equity-request", "--render", "--out", "--fmd-bin"]
 switches = ["--dry-run", "--statements", "--certify", "--equity"]
-events = ["case_opened", "case_determined", "case_rehearsed", "case_manifest", "case_approved", "case_posted", "case_disclosed", "case_closed", "case", "cases", "scenario_diff", "case_statement_basis", "statement_diff", "report_certificate", "case_equity_diff"]
+events = ["case_opened", "case_determined", "case_rehearsed", "case_manifest", "case_approved", "case_posted", "case_disclosed", "case_closed", "case", "cases", "scenario_diff", "case_statement_basis", "statement_diff", "report_certificate", "case_equity_diff", "rendered"]
 exits = [0, 2, 3, 4, 5, 6, 7]
 usage = ["case approve <case> --dry-run   (prints the effect manifest: each entry the case will post, its intent digest and planner, and the digest approvers approve with fa approve --proposal <digest>)", "case approve <case> --approval <vid> --approval <vid> [--key K] [--date YYYY-MM-DD]   (Rehearsed → Approved: two Human approvals of the manifest digest, none by a principal who planned any of its entries; needs restate)", "case rehearse <case> --certificate <scenario-diff-certificate> [--key K] [--date YYYY-MM-DD]   (Determined → Rehearsed: replays the scenario's diff certificate (fa scenario diff <name> --period <code>... --certificate-out <file>), retains it and journals the rehearsal; the diff must cover every period the case affects and the scenario must be open; needs restate, read and produce)", "case open --kind Restatement|Revision|PriorPeriodAdjustment|PolicyChangeRetrospective --periods <code>[,<code>]... [--narrative <document-oid>] [--determined-on YYYY-MM-DD --authority <document-oid>] [--key K] [--date YYYY-MM-DD]   (journals a RestatementCase under restate, numbered next among the book's cases: Proposed, or Determined when the determination is already made. Every period must exist; the narrative and authority must be verified documents of this book. The default key is the request itself, so the same command opens the case once.)", "case determine <case> --on YYYY-MM-DD --authority <document-oid> [--key K]   (Proposed → Determined: the day the non-reliance or immateriality determination was made, and the document recording its authority. For a Restatement the Item 4.02 clock starts that day. FA-REF-176 from any other state.)", "case post <case> [--key K] [--date YYYY-MM-DD]   (Approved → Posted: the manifest's entries commit in one batch with the Post record, each the planned intent as the case's class under the poster, through its matrix row and SoD rule decided over the case's approvals, so the poster may not be one of the approvers; needs restate and post. This build posts PriorPeriodAdjustment, Revision, Restatement and PolicyChangeRetrospective cases (a PolicyChangeRetrospective case's entries are Restatement entries): a Revision case's scenario plans each Revision with `revises` naming the posting it corrects and its delta legs, and it posts in a period the case affects; a Restatement case's scenario plans each Restatement with `restates` naming the posting and the delta legs, and it posts into the restated period even when Closed. A case-bound entry posted outside its case is refused with FA-REF-178.)", "case disclose <case> --document <oid> --certificate <digest>... [--key K] [--date YYYY-MM-DD]   (Posted → Disclosed: requires a Disclosure document reviewed by another principal, and every distinct comparison from case diff --statements --certify. The fixed Post and all original statement questions must match and replay; missing, extra, duplicate, tampered or wrong-frontier artifacts refuse FA-REF-203. The document or review refuses FA-REF-179. Journals document, review, Post and comparison digests; needs restate and whole-book read)", "case close <case> [--key K] [--date YYYY-MM-DD]   (Disclosed → Closed: the case's last record; needs restate)", "case show <case>", "case list", "case diff <case>   (plan §15.3: the case's as-reported vs as-restated difference, replayed from the scenario diff certificate its rehearsal retained, so it is the diff the approvers reviewed; emits scenario_diff with that certificate; FA-REF-176 before the case is rehearsed; needs read)", "case diff <case> --statements [--certify]   (plan §7.4/§8.3: each affected period's balance sheet and income statement compare its first issuance's certified frontier, else its first Lock, with the case's fixed Post. The original issuance's saved definition, native or retained-functional valuation basis, and full current/comparative selection are retained; later-issued layouts are excluded. Only an unreported Revision may fall back to the frontier immediately before Post, explicitly labelled before-post-unreported; other unreported cases refuse FA-REF-161. The opening balance sheet uses its own reporting basis or inherits the earliest affected period's closure, named by basis_period. case_statement_basis identifies the source evidence for every statement_diff. Later issuances or period transitions do not change these questions. --certify retains each diff for fa replay, needing produce as well as whole-book read; FA-REF-176 before Post)", "PriorPeriodAdjustment cases also require balance-sheet and income-statement comparisons for every actual posting period named by their immutable Post members. These use before-post-impact, immediately before and at that Post, in every valuation measure selected by the original-report comparisons; they expose current retained-earnings effects even when the historical source period has zero delta. They supplement, never replace, the original-report and opening comparisons. Existing disclosures keep their recorded certificate set for exact retries.", "case diff <case> --equity --period <actual-posting-period> --unit <CODE>[,<CODE>...] [--issuance <account>] [--distribution <account>] [--label <label>] [--certify] [--request-out <new-file>]   (PriorPeriodAdjustment only: compare all fifteen equity rows immediately before and at the immutable atomic Post, in an actual current posting period. Explicit units must include every monetary unit in that period's posted PPA members. Owner-account roles are caller-selected; omission means an empty role set. Emits case_equity_diff with before-post-impact, full movement citations and canonical independent request bytes. It does not call this an originally issued equity statement. Pure comparison needs whole-book read; --certify additionally needs produce and retains the existing equity comparison certificate.)", "case disclose <case> --document <oid> --certificate <required-statement-digest>... --equity-certificate <digest> --equity-request <request-file|-> [--key K]   (optionally attach a retained current-period PPA equity comparison alongside every mandatory original-report and current-impact statement comparison. Pair repeated equity-certificate/equity-request options in order; request files contain the independent canonical bytes from case diff --equity --request-out, or their full hex. Whole-book restate/read and CaseControl authority are checked before reading files. Both original equity sources replay against the caller's exact units, dates, roles and Post-1/Post frontiers. Supplemental comparisons cannot replace required statements; the complete retained digest set is immutable on retry. The same request file works with fa-verify --equity-diff-request.)"]
 example = "fa case open --kind Restatement --periods FY2025-P12 --narrative <oid> --book ./books/myco --json"
@@ -485,14 +485,14 @@ example = "fa settle --intent settle.json --book ./books/myco --json"
 
 [[verb]]
 name = "document"
-summary = "Record a source document, list the documents the book holds, run a batch import with a content-addressed receipt, read or redact a document, export a disclosure proof, manage custody, evaluate erasure against legal holds, record legal holds and attestations, attach documents to committed entries singly or with --entries '<JSON VID array>'|-, or extract a PDF's text layer as a derived document. Attachment groups publish one native receipt per entry in request order, stop on the first refusal, and retain the committed prefix; at most 4096 unique entries, 1 MiB input, and 16384 total citations."
+summary = "Record a source document, list the documents the book holds, run a batch import with a content-addressed receipt, read or redact a document, export a disclosure proof, manage custody, evaluate erasure against legal holds, activate or inspect retention floors and checkpoint cadence, record legal holds and attestations, attach documents to committed entries singly or with --entries '<JSON VID array>'|-, or extract a PDF's text layer as a derived document. Attachment groups publish one native receipt per entry in request order, stop on the first refusal, and retain the committed prefix; at most 4096 unique entries, 1 MiB input, and 16384 total citations."
 writes = true
-subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "extract", "import", "list", "show"]
-flags = ["--kind", "--mime", "--grade", "--tool", "--chunk", "--to", "--authority", "--subject", "--through", "--scope", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--entries", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--file", "--run", "--out", "--grant", "--party", "--balance", "--as-of", "--claim", "--review", "--digest", "--sign-key"]
+subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "extract", "import", "list", "show", "retention"]
+flags = ["--kind", "--mime", "--grade", "--tool", "--chunk", "--from", "--to", "--authority", "--subject", "--through", "--scope", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--entries", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--file", "--run", "--out", "--grant", "--party", "--balance", "--as-of", "--claim", "--review", "--digest", "--sign-key", "--floor-days", "--floor-commits", "--seq", "--day", "--cadence-commits", "--cadence-days"]
 switches = ["--dry-run"]
-events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "legal_holds", "attestation_recorded", "evidence_attached", "document_extracted", "import_recorded", "import_receipt", "documents", "document_shown"]
+events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "legal_holds", "attestation_recorded", "evidence_attached", "document_extracted", "import_recorded", "import_receipt", "documents", "document_shown", "retention_policy_planned", "retention_policy_activated", "retention_policies", "retention_cut_evaluated", "retention_cadence_checked"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> (--subject <vid|oid>... | --through HEAD|<seq>) [--effective YYYY-MM-DD] [--description <text>] [--key K]   (--through holds every entry, document and party recorded at or before that sequence, a book-scope hold (plan §15.6); --scope book is --through HEAD; repeating it is the recorded hold)", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document hold list --subject <vid|oid>   (the holds active on one subject, ascending; what blocks its erasure)", "document attest review <oid> [--against <oid>]... [--sign-key <key file>]   (every attest form takes --sign-key: a principal that registered a signing key signs its attestations with its current key file, read by the client and never routed through fad; plan §14.5)", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest manual --review <file|hex|-> --digest <review_digest> --reason <name|code> --statement <text>   (fa-kokk: the ManualAssertion over the retained sealed proposal of fa post --review-only|--review-out, the proposal_digest fa approve --proposal binds, so fa post --review <file|hex> --digest <review_digest> --approval <vid> commits one entry carrying both; the review supplies the whole proposal, so no --intent or --plan-out)", "document attest confirmed <oid> --party <code> --balance \"<amount> <UNIT>\" --as-of YYYY-MM-DD   (plan §11.12, AS 2310: the auditor's Confirmed attestation over a Confirmation document, what the party confirmed; needs produce; one per document. An engagement judges it audit-grade only when its firm principal received the document)", "document attest represented <oid> --claim <text>... --as-of YYYY-MM-DD   (plan §11.12, AS 2805: management's Represented attestation over a Representation letter, each claim sealed under the book key; needs approve, which no Agent holds; one per letter)", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document attach <entry-vid|E:vid> --evidence <oid>[:role]...   (AttachEvidence, plan §9.2: documents that support a committed entry, recorded after it; the entry never changes, fa explain evidence lists the supplement, and the same attachment again is the recorded one)", "document extract <oid> [--tool pdf-text|focr|fw] [--kind <Kind>]   (plan §9.1: the source's text as a derived text document whose bytes bind the source oid. pdf-text, the default, reads a PDF's text layer deterministically, so the same source gives the same document; focr OCRs an image or scan and fw transcribes audio, the owner's tools run as subprocesses (replayable false; not installed is exit 4). Uploaded and graded like document add, by who runs it; the kind defaults to the source's; fa document read shows the text and its lineage)", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]...", "document list [--kind <Kind>] [--as-known-at HEAD|<seq>]   (every held document as public metadata: oid, kind, media type, grade, size, commitment, recorded sequence; never the bytes)", "document extract <oid> [--kind <Kind>]   (plan §9.1: the PDF's text layer as a derived text document whose bytes bind the source oid; deterministic, so the same source gives the same document; uploaded and graded like document add, by who runs it; the kind defaults to the source's; fa document read shows the text and its lineage)", "document show <oid>   (plan §13.2 fa doc show: one held document at the head, its list metadata with its custody chain, the legal holds active on it and its Bates range in every matter that produced it; never the bytes)"]
+usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> (--subject <vid|oid>... | --through HEAD|<seq>) [--effective YYYY-MM-DD] [--description <text>] [--key K]   (--through holds every entry, document and party recorded at or before that sequence, a book-scope hold (plan §15.6); --scope book is --through HEAD; repeating it is the recorded hold)", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document hold list --subject <vid|oid>   (the holds active on one subject, ascending; what blocks its erasure)", "document attest review <oid> [--against <oid>]... [--sign-key <key file>]   (every attest form takes --sign-key: a principal that registered a signing key signs its attestations with its current key file, read by the client and never routed through fad; plan §14.5)", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest manual --review <file|hex|-> --digest <review_digest> --reason <name|code> --statement <text>   (fa-kokk: the ManualAssertion over the retained sealed proposal of fa post --review-only|--review-out, the proposal_digest fa approve --proposal binds, so fa post --review <file|hex> --digest <review_digest> --approval <vid> commits one entry carrying both; the review supplies the whole proposal, so no --intent or --plan-out)", "document attest confirmed <oid> --party <code> --balance \"<amount> <UNIT>\" --as-of YYYY-MM-DD   (plan §11.12, AS 2310: the auditor's Confirmed attestation over a Confirmation document, what the party confirmed; needs produce; one per document. An engagement judges it audit-grade only when its firm principal received the document)", "document attest represented <oid> --claim <text>... --as-of YYYY-MM-DD   (plan §11.12, AS 2805: management's Represented attestation over a Representation letter, each claim sealed under the book key; needs approve, which no Agent holds; one per letter)", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document attach <entry-vid|E:vid> --evidence <oid>[:role]...   (AttachEvidence, plan §9.2: documents that support a committed entry, recorded after it; the entry never changes, fa explain evidence lists the supplement, and the same attachment again is the recorded one)", "document extract <oid> [--tool pdf-text|focr|fw] [--kind <Kind>]   (plan §9.1: the source's text as a derived text document whose bytes bind the source oid. pdf-text, the default, reads a PDF's text layer deterministically, so the same source gives the same document; focr OCRs an image or scan and fw transcribes audio, the owner's tools run as subprocesses (replayable false; not installed is exit 4). Uploaded and graded like document add, by who runs it; the kind defaults to the source's; fa document read shows the text and its lineage)", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]...", "document list [--kind <Kind>] [--as-known-at HEAD|<seq>]   (every held document as public metadata: oid, kind, media type, grade, size, commitment, recorded sequence; never the bytes)", "document extract <oid> [--kind <Kind>]   (plan §9.1: the PDF's text layer as a derived text document whose bytes bind the source oid; deterministic, so the same source gives the same document; uploaded and graded like document add, by who runs it; the kind defaults to the source's; fa document read shows the text and its lineage)", "document show <oid>   (plan §13.2 fa doc show: one held document at the head, its list metadata with its custody chain, the legal holds active on it and its Bates range in every matter that produced it; never the bytes)", "document retention activate (--authority <document-oid> (--scope book|class:<EntryClass>|kind:<DocumentKind> | --subject <vid|oid>...) (--floor-days <N> | --floor-commits <N>) --from YYYY-MM-DD [--to YYYY-MM-DD] [--key K] [--description <text>] --dry-run [--plan-out <new-file>] | --plan <file|-> --approval <vid> --approval <vid>)   (plan §8.5: two-person PolicyControl activation of a retention floor citing a held authority Document under rule_change)", "document retention list   (every active retention policy at current head)", "document retention cut <subject-vid|oid> --seq <commit-seq> --day YYYY-MM-DD   (evaluate whether a retention cut at seq/day satisfies all active legal holds and retention floors under erase; refuses FA-REF-117 on hold or FA-REF-119 before floor)", "document retention cadence --cadence-commits <N> [--cadence-days <N>]   (check whether checkpoint cadence satisfies every active retention floor; refuses FA-REF-118 when cadence exceeds a floor)"]
 example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book ./books/myco --json"
 
 [[verb]]
@@ -536,7 +536,7 @@ name = "tb"
 summary = "Trial balance: native leaf or summary stock/activity, or exact functional-currency stock and period activity, with retained certification and replay at a known-at frontier."
 writes = true
 subcommands = []
-flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--certificate-out", "--branch", "--as-issued-to", "--as-reported-in", "--render", "--out", "--dimension"]
+flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--certificate-out", "--branch", "--as-issued-to", "--as-reported-in", "--render", "--out", "--fmd-bin", "--dimension"]
 switches = ["--activity", "--summary", "--certify", "--as-originally-reported", "--as-currently-stated", "--functional"]
 events = ["trial_balance", "summary_trial_balance", "report_certificate", "functional_trial_balance", "functional_stock_balance", "functional_dimension_trial_balance", "rendered"]
 exits = [0, 2, 3, 4, 5, 7, 8]
@@ -548,7 +548,7 @@ name = "statement"
 summary = "Built-in and approved company statement layouts over exact historical journal folds, with editable templates, partition lint, two-person activation, comparative columns and retained replay certificates."
 writes = true
 subcommands = []
-flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--certificate-out", "--branch", "--before-certificate", "--after-certificate", "--from-diff", "--expect", "--request-out", "--certificate", "--issued-to", "--document", "--key", "--date", "--plan", "--approval", "--as-issued-to", "--as-reported-in", "--render", "--out", "--present-in", "--rounding", "--from", "--to", "--issuance", "--distribution", "--unit", "--label", "--form", "--schedule", "--quarter", "--edit", "--file", "--plan-out", "--scale-digits", "--residual-line", "--residual-label", "--grant"]
+flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--certificate-out", "--branch", "--before-certificate", "--after-certificate", "--from-diff", "--expect", "--request-out", "--certificate", "--issued-to", "--document", "--key", "--date", "--plan", "--approval", "--as-issued-to", "--as-reported-in", "--render", "--out", "--fmd-bin", "--present-in", "--rounding", "--from", "--to", "--issuance", "--distribution", "--unit", "--label", "--form", "--schedule", "--quarter", "--edit", "--file", "--plan-out", "--scale-digits", "--residual-line", "--residual-label", "--grant"]
 switches = ["--certify", "--as-originally-reported", "--as-currently-stated", "--dry-run", "--functional"]
 events = ["statement", "statement_presented", "statement_diff", "statement_trace", "report_certificate", "statement_issuance_plan", "statement_issued", "statement_issuances", "statement_lint", "rendered", "equity_roll_forward", "equity_roll_forward_diff", "regulatory_schedule", "statement_definition_template", "statement_definition_plan", "statement_definition_activated", "custom_statement", "functional_custom_statement"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
@@ -584,9 +584,9 @@ name = "open-items"
 summary = "Open items (plan §5.7): each live posted leg, its applications, and its open amount, with account metadata at the selected historical snapshot."
 writes = true
 subcommands = []
-flags = ["--account", "--as-of", "--as-known-at", "--certificate-out", "--branch", "--csv-out", "--applications-csv-out"]
+flags = ["--account", "--as-of", "--as-known-at", "--certificate-out", "--branch", "--csv-out", "--applications-csv-out", "--render", "--out", "--fmd-bin"]
 switches = ["--certify"]
-events = ["open_items", "report_certificate"]
+events = ["open_items", "report_certificate", "rendered"]
 exits = [0, 2, 3, 4, 5, 7, 8]
 usage = ["open-items [--account <code>] [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>] [--csv-out <new-file>] [--applications-csv-out <new-file>]", "--csv-out writes the same report as text CSV: one row per item with its exact original, applied, applied-out and open mantissas, unit id and leg identity. --applications-csv-out writes every application against those items, undone ones included (live=false). Both are new files only. Import them as text to keep every digit.", "Without certification this is a pure read. --as-of folds open items through an inclusive civil date. --certify retains an immutable report certificate in the book; --certificate-out also creates a new external copy. Unknown account filters refuse, including accounts absent at the selected known-at. Replay fixes that snapshot, account metadata, and application/reversal lineage."]
 example = "fa open-items --account 1200 --book ./books/myco --json"
@@ -609,9 +609,9 @@ name = "explain"
 summary = "Explain a leaf account's balance, a committed entry and its lineage, an entry's complete supersession lineage and net effect, an entry's evidence closure, a refusal code from the embedded catalog, a fiscal period's state and transitions, or a register cell's fold vs materialized state."
 writes = true
 subcommands = ["balance", "entry", "evidence", "refusal", "period", "register", "lineage"]
-flags = ["--period", "--unit", "--as-known-at", "--certificate-out", "--branch", "--as-issued-to", "--as-reported-in"]
+flags = ["--period", "--unit", "--as-known-at", "--certificate-out", "--branch", "--as-issued-to", "--as-reported-in", "--render", "--out", "--fmd-bin"]
 switches = ["--certify", "--as-originally-reported", "--as-currently-stated"]
-events = ["balance_explained", "entry_explained", "evidence_explained", "refusal_explained", "period_explained", "register_explained", "lineage_explained", "report_certificate"]
+events = ["balance_explained", "entry_explained", "evidence_explained", "refusal_explained", "period_explained", "register_explained", "lineage_explained", "report_certificate", "rendered"]
 exits = [0, 2, 3, 4, 5, 7, 8]
 usage = ["explain balance <account code> --period <code> [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "explain balance <account code> --period <code> --as-originally-reported [--certify | --certificate-out <new-file>]   (plan §7.4: the balance as its period was first reported, as fa tb --as-originally-reported: at the certificate of the period's first StatementIssuance, else its first Lock; FA-REF-161 when the period was never reported; cannot be combined with --as-known-at)", "explain balance <account code> --period <code> --as-currently-stated [--certify | --certificate-out <new-file>]   (plan §7.4 AS CURRENTLY STATED: the balance at the head, with every correction recorded since the period was reported; it excludes the other restatement views and --as-known-at)", "explain balance <account code> --period <code> (--as-issued-to <audience> | --as-reported-in C:<oid>) [--certify | --certificate-out <new-file>]   (the balance as its period was issued to that audience or reported in that retained statement certificate, as on fa tb)","explain entry <vid|E:vid>", "explain lineage <vid|E:vid> [--as-known-at HEAD|<seq>]", "explain evidence <entry-vid|E:vid>", "explain refusal <FA-REF-nnn | refusal_id>", "explain period <period-code>", "explain register <account-code> --period <code> [--unit <CODE>] [--as-known-at HEAD|<seq>]", "Without certification this is a pure read; `explain refusal` requires no book. --certify, --certificate-out and the restatement views (--as-originally-reported, --as-issued-to, --as-reported-in, --as-currently-stated) apply only to `explain balance`; the other subcommands refuse them (exit 2). --certify (on `explain balance`) retains the exact explanation and native read closure in the book; --certificate-out also creates a new external copy. The certificate binds historical account metadata, contributing entries, evidence references, lineage, cell history, and the whole-period fold."]
 example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json"
@@ -678,14 +678,14 @@ example = "fa rule eval rules/sale_with_tax.rule --event EV-1001 --input as_of=2
 
 [[verb]]
 name = "procedure"
-summary = "Lantern (plan §11): list the registered forensic and audit procedures, or run one over the book's trunk at a recorded sequence and, for a procedure that takes one (its effective_through in procedure list), through an effective date; a date given to any other procedure is refused. A finding is a statistic with typed citations, never an accusation."
+summary = "Lantern (plan §11): list the registered forensic and audit procedures, calibrate a threshold parameter via split-conformal + Wilson bounds under a replayable DecisionCard, or run one over the book's trunk at a recorded sequence and, for a procedure that takes one (its effective_through in procedure list), through an effective date; a date given to any other procedure is refused. A finding is a statistic with typed citations, never an accusation."
 writes = false
-subcommands = ["list", "run"]
-flags = ["--known-at", "--effective-through", "--param", "--account", "--source", "--budget", "--grant", "--certificate-out"]
+subcommands = ["list", "run", "calibrate"]
+flags = ["--known-at", "--effective-through", "--param", "--parameter", "--file", "--alpha-bps", "--delta-bps", "--policy-epoch", "--account", "--source", "--budget", "--grant", "--certificate-out"]
 switches = ["--certify"]
-events = ["procedure_list", "procedure_run", "report_certificate"]
+events = ["procedure_list", "procedure_run", "procedure_calibrated", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["procedure list", "procedure run <procedure id[@version]> [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--param <name>=<integer>]... [--account <code>] [--source <entry vid>] [--budget <work units>] [--certify] [--certificate-out <new-file>]", "--budget caps the run's work (entries, legs and comparisons counted as the procedure runs): the procedure stops at the first unit past it and the run is refused with exit 3 and no finding. A run is also stopped, with no finding, when its caller is cancelled. A procedure runs under its work meter alone, with no clock, entropy, network or filesystem.", "Parameters default to procedures.toml's pinned values; --param overrides one registered parameter. aging.* and trace.* need --effective-through; trace.* also need --account (the commingled account) and --source (the deposit entry).", "recon.bank_statement_drift needs current whole-book read and reconcile authority; supply --grant reconcile on the embedded owner route. A run without certification needs no produce grant. It evaluates every retained exact statement close at --known-at; --effective-through selects statement close dates without changing their immutable cash cutoff. Use --certify to retain the complete observations, or finding record to publish them into the finding-review journal.", "--certify retains a replayable procedure certificate without journaling a FindingRun; --certificate-out implies certification and also writes a new file (never overwrites). Certification needs current whole-book Read and Produce authority, plus Reconcile for bank statement drift. The procedure_run event names its certificate, followed by report_certificate. Use replay --certificate or certificate status to read the retained result, and bundle produce --certificate to export supported independent-verifier profiles. Native certification supports audited input closures; unsupported profiles refuse. Portable recomputation supports only the profiles listed by fa-verify. Explicit id@version selects a retained algorithm; jet.round_amounts@1 and jet.period_end_timing@1 preserve their original no-cutoff law, while their current v2 accepts an optional effective-through date."]
+usage = ["procedure list", "procedure run <procedure id[@version]> [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--param <name>=<integer>]... [--account <code>] [--source <entry vid>] [--budget <work units>] [--certify] [--certificate-out <new-file>]", "procedure calibrate <procedure id> --parameter <name> --file <calibration.json|-> [--alpha-bps 500] [--delta-bps 500] [--policy-epoch <64-hex>]   (plan §11.8: split-conformal calibration + Wilson precision/recall/clean-FPR intervals over clean_scores and labeled_items, selecting the highest-recall candidate satisfying the marginal FPR bound under a replay-verified DecisionCard with pinned fallback; Claim::Statistical; writes nothing)", "--budget caps the run's work (entries, legs and comparisons counted as the procedure runs): the procedure stops at the first unit past it and the run is refused with exit 3 and no finding. A run is also stopped, with no finding, when its caller is cancelled. A procedure runs under its work meter alone, with no clock, entropy, network or filesystem.", "Parameters default to procedures.toml's pinned values; --param overrides one registered parameter. aging.* and trace.* need --effective-through; trace.* also need --account (the commingled account) and --source (the deposit entry).", "recon.bank_statement_drift needs current whole-book read and reconcile authority; supply --grant reconcile on the embedded owner route. A run without certification needs no produce grant. It evaluates every retained exact statement close at --known-at; --effective-through selects statement close dates without changing their immutable cash cutoff. Use --certify to retain the complete observations, or finding record to publish them into the finding-review journal.", "--certify retains a replayable procedure certificate without journaling a FindingRun; --certificate-out implies certification and also writes a new file (never overwrites). Certification needs current whole-book Read and Produce authority, plus Reconcile for bank statement drift. The procedure_run event names its certificate, followed by report_certificate. Use replay --certificate or certificate status to read the retained result, and bundle produce --certificate to export supported independent-verifier profiles. Native certification supports audited input closures; unsupported profiles refuse. Portable recomputation supports only the profiles listed by fa-verify. Explicit id@version selects a retained algorithm; jet.round_amounts@1 and jet.period_end_timing@1 preserve their original no-cutoff law, while their current v2 accepts an optional effective-through date."]
 example = "fa procedure run jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
@@ -717,9 +717,9 @@ name = "trace"
 summary = "Trace funds under a registered tracing law (plan §11.5): fa procedure run trace.<law> under the plan's spelling, with procedure run's flags."
 writes = false
 subcommands = []
-flags = ["--known-at", "--effective-through", "--param", "--account", "--source", "--budget", "--grant"]
+flags = ["--known-at", "--effective-through", "--param", "--account", "--source", "--budget", "--render", "--out", "--grant"]
 switches = []
-events = ["procedure_run"]
+events = ["procedure_run", "rendered"]
 exits = [0, 2, 3, 4, 5, 7, 8]
 usage = ["trace <libr|fifo|lifo|pro-rata|network-libr|network-fifo|network-lifo|network-pro-rata|restitution-order> --account <code> --source <entry vid> --effective-through YYYY-MM-DD [--known-at HEAD|<seq>] [--param <name>=<integer>]... [--budget <work units>]", "--account is the commingled account and --source the deposit entry; every tracing law needs --effective-through. The result is exactly fa procedure run trace.<law>'s procedure_run event."]
 example = "fa trace libr --account 1000 --source <entry vid> --effective-through 2026-03-31 --book ./books/myco --json"
@@ -955,14 +955,14 @@ example = "fa export ads --period FY2026-P03 --out ./ads-2026-03 --book ./books/
 
 [[verb]]
 name = "verify"
-summary = "Verify derived state against the journal: leg projections, refolded registers, cumulative daily usage, open-item applied mirrors, limited accounts' availability cells, scheduled reversals, complete native period history, accumulator states, FX valuations recomputed from their Rate documents, the full-text BM25 search index over entries, documents and findings, or a replay of the whole history (exit 8 on drift). For book or registers, --require-materialized additionally requires initialized, current register caches; uninitialized or stale caches otherwise remain ordinary maintenance lag."
+summary = "Verify derived state against the journal: leg projections, refolded registers, cumulative daily usage, open-item applied mirrors, limited accounts' availability cells, scheduled reversals, complete native period history, accumulator states, FX valuations recomputed from their Rate documents, active retention policies against their Policy vertices and authority Documents, the full-text BM25 search index over entries, documents and findings, or a replay of the whole history (exit 8 on drift). For book or registers, --require-materialized additionally requires initialized, current register caches; uninitialized or stale caches otherwise remain ordinary maintenance lag."
 writes = false
-subcommands = ["book", "registers", "entities", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "fx-conversion", "replay", "close", "export", "search"]
+subcommands = ["book", "registers", "entities", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "fx-conversion", "replay", "close", "export", "search", "retention"]
 flags = ["--period", "--fiscal-year", "--as-known-at"]
 switches = ["--require-materialized", "--functional"]
-events = ["functional_registers_verified", "registers_verified", "entities_verified", "open_items_verified", "availability_verified", "usage_verified", "accumulator_verified", "projections_verified", "schedules_verified", "periods_verified", "fx_conversion_verified", "replay_verified", "close_verified", "book_verification", "export_verified", "search_verified"]
+events = ["functional_registers_verified", "registers_verified", "entities_verified", "open_items_verified", "availability_verified", "usage_verified", "accumulator_verified", "projections_verified", "schedules_verified", "periods_verified", "fx_conversion_verified", "replay_verified", "close_verified", "book_verification", "export_verified", "search_verified", "retention_verified"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["verify registers --functional ((--period <code>)... | --fiscal-year N) [--as-known-at HEAD|<seq>] [--require-materialized]   (independently refolds each retained functional snapshot at its claimed prefix; available=false makes no verification claim. stale and lag_entries count unread Entry activity through the selected observation; cache publications and document-only commits create no lag. --require-materialized exits 8 for missing or stale functional caches and names the advance command. Requires current read and verify; performs no repair)", "verify book   (every target below except close, cheapest first: projections, periods, schedules, accumulator, open-items, availability, usage, fx-conversion, entities, native registers and functional-registers over every period, replay; functional caches are optional but an existing damaged cache fails. --require-materialized retains the native-cache requirement; select verify registers --functional --require-materialized for functional currentness. Each emits its own event, then book_verification names each verdict: pass, fail, error or skipped. Exit 8 when any target fails; otherwise the first other failure is returned as itself after the remaining targets ran)", "verify close FY2026 [--as-known-at <sequence>] (check nominal-zero at the last Closing and later deltas at that recorded prefix; exit 8 when a close or reclose is needed)", "verify registers ((--period <code>)... | --fiscal-year N)   (also verifies cumulative daily usage at current head before checking the selected period folds)", "verify usage [--as-known-at HEAD|<seq>|<RFC3339>]   (refold every native daily charge and UsageCell from retained history at the selected prefix, including original issuance, gross-debit source entries and committed time witnesses; requires current whole-book read and verify authority; no period filter, no writes or implicit repair; FA-REF-167, exit 8 on drift)", "verify replay   (replays every accounting commit's recorded rows into a fresh scratch book and checks it against the source pair by pair: the same entries with the same digests, and the same period folds. It proves the retained history reproduces the book's accounting state, not that the posting laws hold: rows are copied, not re-posted, and both sides fold with the same code. No period filter; exit 8 on any difference; history the scratch replay cannot reproduce, a divergence included, is FA-REF-134, exit 5)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)", "verify schedules (every Schedule vertex and SCHEDULED_BY mirror; no period filter)", "verify periods [--as-known-at HEAD|<seq>|<RFC3339>] (loads the complete native journal history through one selected prefix, verifies immutable Entry births, then checks every Period against its birth baseline and PeriodControl transitions; current read and verify authority required; no period filter; missing history or deleted declarations never produce a successful verification)", "verify fx-conversion [--as-known-at HEAD|<seq>|<RFC3339>]   (FA-INV-01 base: every FX-valued entry recorded at the selected prefix recomputed from the Rate documents it cites under the FX law it names, the law's registered row whatever its status now; a valued Reversal must be the exact side-swap of the entry it reverses; current whole-book read and verify authority; no period filter; exit 8 on any entry that does not recompute)", "verify entities (--period <code>)... | --fiscal-year N   (FA-INV-01 per-entity: refold each period's per-legal-entity register and prove it against the journal: per account and unit the entity cells sum to the plain fold, every entry balances per unit and legal entity, and in a multi-entity book every leg names a declared entity; exit 8 on any finding)", "verify export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl|part370 <the exported file, or the ads or part370 package directory>   (plan §16, export then import is the identity: the format's reader re-reads the file and the book's journal is selected again at the coordinate it carries, under read and verify. ads, saft and csv-gl re-read to the identical journal under their verified coordinate certificate; beancount and hledger, balance-differential formats, refold to the same balances; xbrl re-reads its coordinate and calculation linkbase; ndjson its framing and header; a part370 package re-reads its certificate, and its four files, owner rows and certificate digest must replay from the book's deposits, parties, balances and holds at the certificate's effective date and known-at. Every file must then be byte for byte what fa export writes there; exit 8 names the first difference. The coordinate is the file's own: no --as-known-at. Known limit (fa-8kpw): export replaces a delimiter in a description, memo or account name (csv-gl: comma or line break; ads: pipe; a line break splits an ads row), so the reader refuses such an export, as its certificate covers the original text)", "verify search [--as-known-at HEAD|<seq>|<RFC3339>]   (plan §9, fa-qip: rebuild the full-text BM25 search index from the journal at the selected prefix over every entry's description and leg memos, every document's text or extracted text, and every recorded finding run's narrative, verifying every document commitment and replaying every finding run, then check the index against the fresh rebuild; requires whole-book read and verify authority; no period filter; exit 8 on drift)"]
+usage = ["verify registers --functional ((--period <code>)... | --fiscal-year N) [--as-known-at HEAD|<seq>] [--require-materialized]   (independently refolds each retained functional snapshot at its claimed prefix; available=false makes no verification claim. stale and lag_entries count unread Entry activity through the selected observation; cache publications and document-only commits create no lag. --require-materialized exits 8 for missing or stale functional caches and names the advance command. Requires current read and verify; performs no repair)", "verify book   (every target below except close, cheapest first: projections, periods, schedules, accumulator, open-items, availability, usage, fx-conversion, entities, native registers and functional-registers over every period, replay; functional caches are optional but an existing damaged cache fails. --require-materialized retains the native-cache requirement; select verify registers --functional --require-materialized for functional currentness. Each emits its own event, then book_verification names each verdict: pass, fail, error or skipped. Exit 8 when any target fails; otherwise the first other failure is returned as itself after the remaining targets ran)", "verify close FY2026 [--as-known-at <sequence>] (check nominal-zero at the last Closing and later deltas at that recorded prefix; exit 8 when a close or reclose is needed)", "verify registers ((--period <code>)... | --fiscal-year N)   (also verifies cumulative daily usage at current head before checking the selected period folds)", "verify usage [--as-known-at HEAD|<seq>|<RFC3339>]   (refold every native daily charge and UsageCell from retained history at the selected prefix, including original issuance, gross-debit source entries and committed time witnesses; requires current whole-book read and verify authority; no period filter, no writes or implicit repair; FA-REF-167, exit 8 on drift)", "verify replay   (replays every accounting commit's recorded rows into a fresh scratch book and checks it against the source pair by pair: the same entries with the same digests, and the same period folds. It proves the retained history reproduces the book's accounting state, not that the posting laws hold: rows are copied, not re-posted, and both sides fold with the same code. No period filter; exit 8 on any difference; history the scratch replay cannot reproduce, a divergence included, is FA-REF-134, exit 5)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)", "verify schedules (every Schedule vertex and SCHEDULED_BY mirror; no period filter)", "verify periods [--as-known-at HEAD|<seq>|<RFC3339>] (loads the complete native journal history through one selected prefix, verifies immutable Entry births, then checks every Period against its birth baseline and PeriodControl transitions; current read and verify authority required; no period filter; missing history or deleted declarations never produce a successful verification)", "verify fx-conversion [--as-known-at HEAD|<seq>|<RFC3339>]   (FA-INV-01 base: every FX-valued entry recorded at the selected prefix recomputed from the Rate documents it cites under the FX law it names, the law's registered row whatever its status now; a valued Reversal must be the exact side-swap of the entry it reverses; current whole-book read and verify authority; no period filter; exit 8 on any entry that does not recompute)", "verify entities (--period <code>)... | --fiscal-year N   (FA-INV-01 per-entity: refold each period's per-legal-entity register and prove it against the journal: per account and unit the entity cells sum to the plain fold, every entry balances per unit and legal entity, and in a multi-entity book every leg names a declared entity; exit 8 on any finding)", "verify export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl|part370 <the exported file, or the ads or part370 package directory>   (plan §16, export then import is the identity: the format's reader re-reads the file and the book's journal is selected again at the coordinate it carries, under read and verify. ads, saft and csv-gl re-read to the identical journal under their verified coordinate certificate; beancount and hledger, balance-differential formats, refold to the same balances; xbrl re-reads its coordinate and calculation linkbase; ndjson its framing and header; a part370 package re-reads its certificate, and its four files, owner rows and certificate digest must replay from the book's deposits, parties, balances and holds at the certificate's effective date and known-at. Every file must then be byte for byte what fa export writes there; exit 8 names the first difference. The coordinate is the file's own: no --as-known-at. Known limit (fa-8kpw): export replaces a delimiter in a description, memo or account name (csv-gl: comma or line break; ads: pipe; a line break splits an ads row), so the reader refuses such an export, as its certificate covers the original text)", "verify search [--as-known-at HEAD|<seq>|<RFC3339>]   (plan §9, fa-qip: rebuild the full-text BM25 search index from the journal at the selected prefix over every entry's description and leg memos, every document's text or extracted text, and every recorded finding run's narrative, verifying every document commitment and replaying every finding run, then check the index against the fresh rebuild; requires whole-book read and verify authority; no period filter; exit 8 on drift)", "verify retention   (plan §8.5: verify every active PolicyControl retention policy at current head against its stored Policy vertex and committed authority Document; requires whole-book read and verify authority; no period filter; exit 8 on drift)"]
 example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -4124,7 +4124,7 @@ hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--versio
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
 repeat_flags = ["--evidence", "--approval", "--reversal-approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--difference", "--route", "--band", "--issuance", "--distribution", "--definition", "--claim", "--turned-around", "--corrected", "--input", "--allow", "--forbid"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
-integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--max-depth", "--budget"]
+integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--max-depth", "--budget", "--floor-days", "--floor-commits", "--seq", "--cadence-commits", "--cadence-days", "--alpha-bps", "--delta-bps", "--parent-known-at"]
 
 [[mcp.cluster]]
 name = "fa.orient"
@@ -4546,7 +4546,7 @@ mistakes = ["Trying to self-issue witness permission: caller grants are forbidde
 name = "verify"
 cluster = "fa.book"
 verb = "verify"
-subcommands = ["book", "registers", "entities", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "fx-conversion", "replay", "search"]
+subcommands = ["book", "registers", "entities", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "fx-conversion", "replay", "search", "retention"]
 selector = "target"
 positionals = []
 required = []
@@ -6874,11 +6874,13 @@ reach = "judged"
 verbs = ["draft"]
 subcommands = ["list", "show"]
 ops = ["read"]
+reach = "judged"
 
 [[bound]]
 verbs = ["draft"]
 subcommands = ["promote"]
 ops = ["approve"]
+reach = "judged"
 
 [[bound]]
 verbs = ["scenario"]
@@ -7748,3 +7750,188 @@ reason = "host-only: preparing a classification activation requires rule_change 
 verb = "cash-policy"
 subcommand = "activate"
 reason = "host-only: activation requires rule_change authority, two independent Human approvals and host confirmation; sessions report with fa_proof_gl policy_name"
+
+# ---------------------------------------------------------------------------
+# Retention policies, split-conformal calibration, and book-to-book bridges
+# (plan §8.5, §11.1, §12.2; beads fa-7uhr, fa-4psc, fa-259c)
+# ---------------------------------------------------------------------------
+
+[[verb]]
+name = "recon"
+summary = "Multi-book adjustment layers and Schedule M-1 / book-to-book reconciliation bridges (plan §12.2, FA-INV-13): anchor a layered book to a parent book's known-at frontier, post adjustment-layer entries carrying registered reason codes and rule lineage, and compute a certified book-to-book bridge."
+writes = true
+subcommands = ["anchor", "post", "book-to-book"]
+flags = ["--parent-certificate", "--parent-book", "--parent-book-id", "--parent-known-at", "--reason-code", "--rule-oid", "--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on", "--prior-period-error", "--relates-to", "--draft", "--scenario", "--review", "--review-out", "--digest", "--approval", "--period", "--as-of", "--as-known-at"]
+switches = ["--dry-run", "--review-only"]
+events = ["adjustment_layer_anchored", "plan", "posted", "recorded", "book_to_book_reconciled"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["recon anchor (--parent-certificate <hex|file> | --parent-book <dir> [--parent-known-at HEAD|<seq>] | --parent-book-id <32-hex> --parent-known-at <seq>)   (journals an immutable SchemaChange adjustment-layer anchor under schema_change binding the parent book id and parent_known_at frontier)", "recon post --reason-code <M1-TEMP-DEPRECIATION|M1-TEMP-BAD-DEBT|M1-TEMP-DEFERRED-REVENUE|M1-PERM-MEALS|M1-PERM-PENALTIES|M1-PERM-TAX-EXEMPT-INTEREST|IFRS-LEASE-RECLASS|IFRS-DEV-CAPITALIZATION|STAT-RESERVE-BASIS|REG-CAPITAL-DEDUCTION> [--rule-oid <64-hex>] --intent <file.json|-> [--approval <vid>]... [--dry-run [--plan-out <new-file>]]   (posts an adjustment-layer entry tagged with a registered book-to-book reason code and rule_version_oid; every non-zero book difference requires an explicit coded adjustment)", "recon book-to-book (--period <code> | --as-of YYYY-MM-DD) (--parent-certificate <hex|file> | --parent-book <dir> [--parent-known-at HEAD|<seq>]) [--as-known-at HEAD|<seq>|<RFC3339>]   (computes and verifies a deterministic BookToBookBridge under read and reconcile: parent_net + adjustments_net == layered_net for every (account, unit) cell, refusing ParentBookRestated when parent_known_at advances beyond the layer's anchor or UnexplainedBookDifference when any adjustment lacks a registered reason code)"]
+example = "fa recon book-to-book --period FY2026-P03 --parent-book ./books/gaap --book ./books/tax --json"
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["retention"]
+args = ["activate"]
+ops = ["rule_change"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["retention"]
+args = ["cut"]
+ops = ["erase"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["retention"]
+args = ["list", "cadence"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["recon"]
+subcommands = ["anchor"]
+ops = ["schema_change"]
+
+[[bound]]
+verbs = ["recon"]
+subcommands = ["post"]
+ops = ["post"]
+
+[[bound]]
+verbs = ["recon"]
+subcommands = ["book-to-book"]
+ops = ["read", "reconcile"]
+
+[[mcp.tool]]
+cluster = "fa.evidence"
+name = "retention"
+verb = "document"
+subcommands = ["retention"]
+positionals = ["action"]
+flags = ["--authority", "--scope", "--subject", "--floor-days", "--floor-commits", "--from", "--to", "--key", "--description", "--plan", "--approval", "--seq", "--day", "--cadence-commits", "--cadence-days"]
+switches = ["--dry-run"]
+stdin_property = "plan"
+stdin_kind = "string"
+stdin_via = "--plan"
+required = ["action"]
+dont = ["Use action list or cadence under read authority to inspect active PolicyControl retention floors and verify that checkpoint cadences never exceed an active floor (FA-REF-200).", "Activation requires rule_change and two independent Human approvals over the dry-run proposal_digest, citing a held authority Document; retention cut checks require erase authority and refuse active legal holds (FA-REF-117) or unexpired floors (FA-REF-199)."]
+mistakes = ["Supplying both floor_days and floor_commits on the same policy, or omitting the held authority document OID.", "Passing a host path in plan_file or plan_out: MCP returns dry-run plan hex inline and accepts complete plan hex in plan."]
+
+[[mcp.tool]]
+cluster = "fa.forensics"
+name = "calibrate"
+verb = "procedure"
+subcommands = ["calibrate"]
+positionals = ["id"]
+flags = ["--parameter", "--file", "--alpha-bps", "--delta-bps", "--policy-epoch"]
+switches = []
+stdin_property = "calibration"
+stdin_kind = "object"
+stdin_via = "--file"
+required = ["id", "--parameter", "--file"]
+dont = ["Supply clean_scores, labeled_items ({score, anomaly}) and optional candidate_thresholds inline in calibration as exact integers; floats are refused.", "Treat calibrated thresholds and empirical FPR intervals as Claim::Statistical evidence under a replayable decision card, never as an accounting invariant or accusation; when no candidate satisfies the split-conformal bound, the pinned registry default is selected as fallback."]
+mistakes = ["Passing a floating-point score or threshold instead of an exact integer in the parameter's registered unit.", "Passing a host path as file instead of the inline calibration object."]
+
+[[mcp.tool]]
+cluster = "fa.match"
+name = "book_to_book"
+verb = "recon"
+subcommands = ["anchor", "post", "book-to-book"]
+selector = "action"
+positionals = []
+flags = ["--parent-certificate", "--parent-book-id", "--parent-known-at", "--reason-code", "--rule-oid", "--intent", "--evidence", "--event", "--balancing", "--timeout-ns", "--reverse-on", "--prior-period-error", "--relates-to", "--draft", "--scenario", "--review", "--digest", "--approval", "--period", "--as-of", "--as-known-at"]
+switches = ["--dry-run"]
+stdin_property = "intent"
+stdin_kind = "object"
+stdin_via = "--intent"
+required = []
+dont = ["In MCP, pass the parent book's certified trial-balance hex inline in parent_certificate for action book-to-book; MCP never opens a second host book directory.", "Every adjustment-layer posting (action post) must carry a registered reason_code (such as M1-TEMP-DEPRECIATION or M1-PERM-MEALS); uncoded differences in an adjustment layer refuse reconciliation (UnexplainedBookDifference).", "Anchoring an adjustment layer requires schema_change on the host; Preparer sessions can post coded adjustments (post) and verify book-to-book bridges (read and reconcile)."]
+mistakes = ["Passing parent_book or intent_file host paths in MCP instead of inline parent_certificate hex or inline intent JSON.", "Advancing or restating the parent book past the layer's anchored parent_known_at without re-anchoring on the host."]
+
+[[shape]]
+name = "retention_policy_row"
+doc = "One active journaled PolicyControl retention floor, its held authority document OID, scope, floor, and civil applicability window."
+fields = ["policy_oid:hex", "control_entry:hex", "activated_at:seq", "authority:hex", "scope:string", "subjects:[hex]", "floor_kind:string", "floor_value:int", "effective_from:date", "effective_to:date?"]
+
+[[event]]
+name = "retention_policy_planned"
+book = true
+doc = "Dry-run plan for a PolicyControl retention floor activation, carrying the canonical plan hex and proposal_digest for two independent Human approvals."
+fields = ["policy_oid:hex", "proposal_digest:hex", "scope:string", "floor:string", "effective_from:date", "bytes:hex", "plan:string?"]
+
+[[event]]
+name = "retention_policy_activated"
+book = true
+doc = "Two-person PolicyControl activation of an immutable retention floor citing its held authority Document."
+fields = ["policy_oid:hex", "control_entry:hex", "recorded_at:seq", "security_policy_epoch:seq", "already_recorded:bool"]
+
+[[event]]
+name = "retention_policies"
+book = true
+doc = "Active retention policies at current head, in recording order."
+fields = ["count:int", "policies:[retention_policy_row]"]
+
+[[event]]
+name = "retention_cut_evaluated"
+book = true
+doc = "Confirmed that a candidate retention cut at cut_seq / cut_day is not blocked by any active legal hold or retention floor."
+fields = ["subject:hex", "cut_seq:seq", "cut_day:date", "admissible:bool"]
+
+[[event]]
+name = "retention_cadence_checked"
+book = true
+doc = "Confirmed that the configured checkpoint cadence does not exceed any active retention floor."
+fields = ["cadence_commits:seq", "cadence_days:int?", "policies_checked:int"]
+
+[[event]]
+name = "retention_verified"
+book = true
+doc = "Verified every active PolicyControl retention policy against its stored Policy vertex and committed authority Document."
+fields = ["policies_checked:int", "policies:[retention_policy_row]"]
+
+[[shape]]
+name = "wilson_interval"
+doc = "Exact integer Wilson score 95% confidence interval in basis points (0..=10000)."
+fields = ["successes:int", "trials:int", "point_bps:int", "lower_bps:int", "upper_bps:int"]
+
+[[shape]]
+name = "labeled_detector_metrics"
+doc = "Confusion counts and Wilson 95% confidence intervals (precision, recall, clean FPR) at one integer threshold."
+fields = ["true_positives:int", "false_positives:int", "true_negatives:int", "false_negatives:int", "precision:wilson_interval", "recall:wilson_interval", "clean_fpr:wilson_interval"]
+
+[[shape]]
+name = "conformal_bound"
+doc = "Finite-sample split-conformal quantile and marginal clean-FPR upper bound in basis points."
+fields = ["calibration_n:int", "target_alpha_bps:int", "delta_bps:int", "quantile_rank_1based:int", "calibrated_threshold:int", "marginal_fpr_bound_bps:int", "empirical_clean_fpr_bps:int"]
+
+[[shape]]
+name = "threshold_candidate_evaluation"
+doc = "Labeled detector metrics and split-conformal admissibility for one candidate integer threshold."
+fields = ["threshold:int", "satisfies_conformal_bound:bool", "metrics:labeled_detector_metrics"]
+
+[[event]]
+name = "procedure_calibrated"
+book = true
+doc = "Split-conformal threshold calibration for one registered Lantern procedure parameter, bound to a replay-verified adaptive DecisionCard with deterministic pinned fallback (Claim::Statistical)."
+fields = ["procedure:string", "parameter:string", "claim_class:string", "pinned_fallback_threshold:int", "selected_threshold:int", "used_fallback:bool", "decision_card_digest:hex", "conformal_bound:conformal_bound", "selected_metrics:labeled_detector_metrics", "candidates:[threshold_candidate_evaluation]"]
+
+[[event]]
+name = "adjustment_layer_anchored"
+book = true
+doc = "Journaled SchemaChange control anchoring an AdjustmentLayer book to a parent book ID and parent_known_at commit sequence."
+fields = ["layered_book_id:hex", "parent_book_id:hex", "parent_known_at:seq", "document_oid:hex", "doc_commit:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[shape]]
+name = "book_to_book_explanation"
+doc = "One coded adjustment-layer entry explaining part or all of an (account, unit) book-to-book delta."
+fields = ["entry:hex", "rule_version_oid:hex", "reason_code:string", "permanent:bool", "net_delta:amount"]
+
+[[shape]]
+name = "book_to_book_row"
+doc = "Reconciled parent_net + adjustments_net == layered_net bridge row for one (account, unit) cell."
+fields = ["account:hex", "code:string", "unit:string", "parent_net:amount", "adjustments_net:amount", "layered_net:amount", "explanations:[book_to_book_explanation]"]
+
+[[event]]
+name = "book_to_book_reconciled"
+book = true
+doc = "Deterministic book-to-book reconciliation bridge between a parent book and an anchored adjustment-layer book (plan §12.2, FA-INV-13)."
+fields = ["parent_book_id:hex", "parent_known_at:seq", "layered_book_id:hex", "layered_known_at:seq", "period:string?", "effective_through:date", "bridge_digest:hex", "bytes:hex", "rows:[book_to_book_row]"]

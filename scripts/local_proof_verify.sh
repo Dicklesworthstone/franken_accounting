@@ -225,7 +225,7 @@ tools = (proof / "tools.txt").read_text().splitlines()
 require([line.removeprefix("rustc=") for line in tools if line.startswith("rustc=")] == [toolchain],
         "note/retained toolchain mismatch")
 listed_log = proof / "steps/test-list.log"
-listed = sorted(re.findall(r"^\s*(.+): test$", listed_log.read_text(), re.M)) if listed_log.is_file() else []
+listed = sorted(re.findall(r"^\s*(.+): test$", listed_log.read_text(encoding="utf-8", errors="replace"), re.M)) if listed_log.is_file() else []
 actual_inventory = (hashlib.sha256(("\n".join(listed) + "\n").encode()).hexdigest() if listed else
                     hashlib.sha256(listed_log.read_bytes()).hexdigest() if listed_log.is_file() else "none")
 require(inv_digest == actual_inventory, "note/retained test inventory mismatch")
@@ -238,7 +238,7 @@ for rec, origin in zip(steps, records):
     passed, failed = [], []
     actual_witness = {"log_digest": origin["log_digest"], "worker": origin["worker"]}
     if log.is_file():
-        text = log.read_text(errors="replace")
+        text = log.read_text(encoding="utf-8", errors="replace")
         if name == "test-list":
             actual_witness["listed_tests"] = len(re.findall(r"^\s*(.+): test$", text, re.M))
             actual_witness["test_inventory_digest"] = actual_inventory
@@ -562,9 +562,9 @@ try:
             require(log.is_file(), f"{name}: missing step log")
             require(hashlib.sha256(log.read_bytes()).hexdigest() == record["log_digest"], f"{name}: step log digest mismatch")
         if for_resume == "1" and log.is_file():
-            require(not re.search(r"RCH_SCOPED_COMPLETION_UNCONFIRMED|completion unconfirmed", log.read_text()), f"{name}: uncertain completion requires reconciliation before resume")
+            require(not re.search(r"RCH_SCOPED_COMPLETION_UNCONFIRMED|completion unconfirmed", log.read_text(encoding="utf-8", errors="replace")), f"{name}: uncertain completion requires reconciliation before resume")
         if record["status"] == "PASS" and name in {"check", "clippy", "test-list", "test", "robot-schema", "registry-check", "fuzz-smoke", "bench-smoke", "reachability"}:
-            text = log.read_text()
+            text = log.read_text(encoding="utf-8", errors="replace")
             require("Remote command finished: exit=0" in text, f"{name}: missing remote completion")
             require(not re.search(r"Remote command finished: exit=[1-9]\d*|^test result: FAILED|^test .+ \.\.\. FAILED$", text, re.M), f"{name}: contradictory failed execution")
             workers = re.findall(r"Selected worker: (\S+) at |^\[RCH\] remote (\S+) \(", text, re.M)
@@ -594,8 +594,8 @@ try:
                     == {k: v for k, v in record.items() if k != "reused_from"}, f"{name}: execution provenance changed")
     if records.get("test", {}).get("status") == "PASS":
         require(records.get("test-list", {}).get("status") == "PASS", "test PASS lacks an inventory witness")
-        listed = collections.Counter(re.findall(r"^\s*(.+): test$", (root / "steps/test-list.log").read_text(), re.M))
-        executed = collections.Counter(re.findall(r"^test (.+?)(?: - should panic)? \.\.\. (?:ok|ignored(?:, [^\n]*)?)$", (root / "steps/test.log").read_text(), re.M))
+        listed = collections.Counter(re.findall(r"^\s*(.+): test$", (root / "steps/test-list.log").read_text(encoding="utf-8", errors="replace"), re.M))
+        executed = collections.Counter(re.findall(r"^test (.+?)(?: - should panic)? \.\.\. (?:ok|ignored(?:, [^\n]*)?)$", (root / "steps/test.log").read_text(encoding="utf-8", errors="replace"), re.M))
         require(bool(listed) and listed == executed, "listed/executed test inventories differ")
     sources_dir = root / "sources"
     actual_sources = {path.name for path in sources_dir.iterdir()} if sources_dir.exists() else set()

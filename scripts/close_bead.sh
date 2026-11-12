@@ -231,6 +231,8 @@ def load_verdict_inventory(repo, verdict_spec, for_close=False):
     """
     passed = set()
     failed = set()
+    passed_unqualified = set()
+    failed_unqualified = set()
     p = pathlib.Path(verdict_spec) if verdict_spec else None
     if p and p.exists():
         proof_dir = p if p.is_dir() else p.parent
@@ -262,37 +264,87 @@ def load_verdict_inventory(repo, verdict_spec, for_close=False):
         records = [json.loads(line) for line in (proof_dir / "step-verdicts.jsonl").read_text().splitlines()]
         # Only declared, checksum-bound step logs can supply executed cases.
         for record in records:
+            step_stem = record["step"]
+            step_norm = step_stem.replace("-", "_")
+            if record.get("status") in ("PASS", "FAIL"):
+                step_set = passed if record["status"] == "PASS" else failed
+                step_set.add(f"scripts/check.sh::{step_stem}")
+                step_set.add(f"check::{step_stem}")
             if record["log_digest"] == "none":
                 continue
-            step_stem = record["step"]
             lf = proof_dir / "steps" / (step_stem + ".log")
             text = lf.read_text(encoding="utf-8", errors="replace")
             if step_stem == "test":
-                # cargo names an integration test by its path inside its test
-                # binary, never by the binary; only the preceding
-                # `Running tests/<bin>.rs` line says which binary ran it. Each
-                # case is recorded bare and as `<bin>::<path>`, so a
-                # `crate::<bin>::<path>` acceptance line can match it.
+                # Track package provenance from `==== test job ... -p <pkg>`,
+                # `Doc-tests <pkg>`, and `Running ...` headers so a test from
+                # crate B can never impersonate `crate_a::...` when package
+                # provenance is present, while preserving synthetic sections
+                # lacking package headers.
+                job_pkg = None
+                section_pkg = None
                 binary = None
                 for line in text.splitlines():
-                    run = re.match(r"^\s*(?:Running|Doc-tests)\s+(\S+)", line)
-                    if run or line.startswith("==== test job "):
-                        named = re.fullmatch(r"tests/([A-Za-z0-9_-]+)(?:\.rs|/main\.rs)", run.group(1)) if run else None
-                        binary = named.group(1) if named else None
+                    if line.startswith("==== test job "):
+                        mpkg = re.search(r"(?:^|\s)(?:-p|--package)(?:=|\s+)([A-Za-z0-9_-]+)", line)
+                        job_pkg = mpkg.group(1) if mpkg else None
+                        section_pkg = None
+                        binary = None
+                        continue
+                    doc = re.match(r"^\s*Doc-tests\s+([A-Za-z0-9_-]+)", line)
+                    if doc:
+                        section_pkg = doc.group(1)
+                        binary = None
+                        continue
+                    run = re.match(r"^\s*Running\s+(?:(unittests)\s+(\S+)|(\S+))(?:\s+\(([^)]+)\))?", line)
+                    if run:
+                        section_pkg = None
+                        binary = None
+                        exe_path = run.group(4) or ""
+                        mbuild = re.search(r"(?:^|/)build/([A-Za-z0-9_-]+)/[0-9a-f]{8,}/out/", exe_path)
+                        if mbuild:
+                            section_pkg = mbuild.group(1)
+                        if run.group(1) == "unittests":
+                            src_path = run.group(2) or ""
+                            if section_pkg is None and src_path.endswith("src/lib.rs"):
+                                mdep = re.search(r"(?:^|/)([A-Za-z0-9_]+)-[0-9a-f]{8,}(?:\.exe)?$", exe_path)
+                                if mdep:
+                                    section_pkg = mdep.group(1)
+                        else:
+                            target_path = run.group(3) or ""
+                            named = re.fullmatch(r"tests/([A-Za-z0-9_-]+)(?:\.rs|/main\.rs)", target_path)
+                            binary = named.group(1) if named else None
                         continue
                     m = re.match(r"^test\s+(\S+)(?: - should panic)?\s+\.\.\.\s+(ok|FAILED)$", line)
                     if m:
-                        cases = passed if m.group(2) == "ok" else failed
-                        cases.add(m.group(1))
-                        if binary:
-                            cases.add(f"{binary}::{m.group(1)}")
+                        cname = m.group(1)
+                        is_ok = m.group(2) == "ok"
+                        cases = passed if is_ok else failed
+                        unqual = passed_unqualified if is_ok else failed_unqualified
+                        pkg = job_pkg or section_pkg
+                        if pkg:
+                            pkg_norm = pkg.replace("-", "_")
+                            for pfx in {pkg, pkg_norm}:
+                                cases.add(f"{pfx}::{cname}")
+                                if binary:
+                                    cases.add(f"{pfx}::{binary}::{cname}")
+                            if "::" not in cname:
+                                cases.add(cname)
+                        else:
+                            cases.add(cname)
+                            unqual.add(cname)
+                            if binary:
+                                cases.add(f"{binary}::{cname}")
+                                unqual.add(f"{binary}::{cname}")
             for m in re.finditer(r"^(PASS|FAIL|ok)\s+([A-Za-z0-9_.:/-]+)", text, re.M):
                 kind, cname = m.group(1), m.group(2)
-                target_Set = failed if kind == "FAIL" else passed
+                is_fail = kind == "FAIL"
+                target_Set = failed if is_fail else passed
                 # Script cases stay qualified by their owning step. A PASS
                 # in check-classify cannot impersonate a workspace Rust test.
                 target_Set.add(f"{step_stem}::{cname}")
-                target_Set.add(f"{step_stem.replace('-', '_')}::{cname}")
+                target_Set.add(f"{step_norm}::{cname}")
+                if cname.startswith((f"{step_stem}::", f"{step_norm}::")):
+                    target_Set.add(cname)
         return {
             "commit": commit,
             "tree": tree,
@@ -301,24 +353,37 @@ def load_verdict_inventory(repo, verdict_spec, for_close=False):
             "note_id": note_id,
             "passed": passed,
             "failed": failed,
+            "passed_unqualified": passed_unqualified,
+            "failed_unqualified": failed_unqualified,
         }
 
     # Otherwise resolve via git notes --ref=fa-verdict in repo
     target = verdict_spec or "HEAD"
-    note_text = ""
     note_id = ""
     commit = ""
-    # Check if target is a note blob SHA in refs/notes/fa-verdict
     try:
         listing = subprocess.check_output(
             ["git", "-C", repo, "notes", "--ref=fa-verdict", "list"],
             text=True, stderr=subprocess.DEVNULL
         ).splitlines()
+        exact = []
+        prefix = []
         for entry in listing:
             parts = entry.split()
-            if len(parts) == 2 and (parts[0].startswith(target) or parts[1].startswith(target)):
-                note_id, commit = parts[0], parts[1]
-                break
+            if len(parts) != 2:
+                continue
+            if parts[0] == target or parts[1] == target:
+                exact.append((parts[0], parts[1]))
+            elif len(target) >= 4 and (parts[0].startswith(target) or parts[1].startswith(target)):
+                prefix.append((parts[0], parts[1]))
+        chosen = exact if exact else prefix
+        commits = {c for _, c in chosen}
+        if len(commits) > 1:
+            die(f"ambiguous verdict reference `{target}` matches multiple notes in {repo}")
+        if len(chosen) >= 1:
+            note_id, commit = chosen[0]
+    except SystemExit:
+        raise
     except Exception:
         pass
     if not commit:
@@ -351,20 +416,23 @@ def load_verdict_inventory(repo, verdict_spec, for_close=False):
     inventory["note_id"] = fields["note_id"]
     return inventory
 
-def matches_inventory(test_id, inv_set):
+def matches_inventory(test_id, inv_set, unqual_set=None):
     if test_id in inv_set:
         return True
-    # Normalize crate-name hyphens to underscores and allow suffix matching after crate::
     norm = test_id.replace("-", "_")
     if norm in inv_set:
         return True
-    if "::" in test_id:
+    if unqual_set is not None and "::" in test_id:
         prefix, rest = test_id.split("::", 1)
-        if rest in inv_set:
+        if rest in unqual_set:
             return True
-        # e.g. scripts/tests/close_bead_selftest.sh::closes_with_cited_note -> closes_with_cited_note
         stem = pathlib.Path(prefix).stem
-        if f"{stem}::{rest}" in inv_set or rest in inv_set:
+        if f"{stem}::{rest}" in inv_set or f"{stem}::{rest}" in unqual_set or rest in unqual_set:
+            return True
+    elif "::" in test_id:
+        prefix, rest = test_id.split("::", 1)
+        stem = pathlib.Path(prefix).stem
+        if f"{stem}::{rest}" in inv_set:
             return True
     return False
 
@@ -421,7 +489,11 @@ if cmd == "closure-debt":
         if has_citation:
             verdict_cited += 1
         if kind == "tests":
-            if inv is None or any(not matches_inventory(t, inv["passed"]) or matches_inventory(t, inv["failed"]) for t in items):
+            if inv is None or any(
+                not matches_inventory(t, inv["passed"], inv.get("passed_unqualified"))
+                or matches_inventory(t, inv["failed"], inv.get("failed_unqualified"))
+                for t in items
+            ):
                 debt_beads.append(bid)
         elif not has_citation:
             debt_beads.append(bid)
@@ -470,7 +542,7 @@ if cmd == "regression-check":
             continue
         checked += 1
         for t in items:
-            if matches_inventory(t, inv["failed"]) or not matches_inventory(t, inv["passed"]):
+            if matches_inventory(t, inv["failed"], inv.get("failed_unqualified")) or not matches_inventory(t, inv["passed"], inv.get("passed_unqualified")):
                 regressions.append((bid, t))
     if regressions:
         for bid, t in regressions:
@@ -535,9 +607,9 @@ if cmd == "verify-close":
         misses = []
         failed_hits = []
         for t in items:
-            if matches_inventory(t, inv["failed"]):
+            if matches_inventory(t, inv["failed"], inv.get("failed_unqualified")):
                 failed_hits.append(t)
-            elif matches_inventory(t, inv["passed"]):
+            elif matches_inventory(t, inv["passed"], inv.get("passed_unqualified")):
                 hits.append(t)
             else:
                 misses.append(t)
@@ -610,11 +682,26 @@ import subprocess, sys
 repo, target = sys.argv[1:3]
 try:
     listing = subprocess.check_output(["git", "-C", repo, "notes", "--ref=fa-verdict", "list"], text=True, stderr=subprocess.DEVNULL).splitlines()
+    exact = []
+    prefix = []
     for line in listing:
         parts = line.split()
-        if len(parts) == 2 and (parts[0].startswith(target) or parts[1].startswith(target)):
-            print(parts[1])
-            sys.exit(0)
+        if len(parts) != 2:
+            continue
+        if parts[0] == target or parts[1] == target:
+            exact.append((parts[0], parts[1]))
+        elif len(target) >= 4 and (parts[0].startswith(target) or parts[1].startswith(target)):
+            prefix.append((parts[0], parts[1]))
+    chosen = exact if exact else prefix
+    commits = {c for _, c in chosen}
+    if len(commits) > 1:
+        print(f"ambiguous verdict reference `{target}` matches multiple notes in {repo}", file=sys.stderr)
+        sys.exit(2)
+    if len(chosen) >= 1:
+        print(chosen[0][1])
+        sys.exit(0)
+except SystemExit:
+    raise
 except Exception:
     pass
 try:
@@ -624,7 +711,7 @@ try:
 except Exception:
     sys.exit(1)
 PY
-)" || fail "cannot resolve --verdict $spec in $repo_dir"
+)" || fail "cannot resolve unambiguous --verdict $spec in $repo_dir"
   verify_out="$(bash "$root/scripts/local_proof_verify.sh" --repository "$repo_dir" --for-close --note "$resolved_commit")" \
     || fail "verdict note for $spec ($resolved_commit) failed local_proof_verify.sh against $repo_dir"
   verdict="$(awk -F= '$1 == "verdict" { print $2 }' <<< "$verify_out")"
@@ -639,7 +726,24 @@ fi
 
 # 2. Resolve and verify landing commit ancestry in the verdict's commit
 if [ -z "$landing_commit" ]; then
-  landing_commit="$(git -C "$repo_dir" log -n 1 --format='%H' --grep="$bead_id" "$manifest_commit" 2>/dev/null || true)"
+  landing_commit="$(python3 -B - "$repo_dir" "$manifest_commit" "$bead_id" <<'PY' 2>/dev/null || true
+import re, subprocess, sys
+repo, commit, bid = sys.argv[1:4]
+pat = re.compile(r"(?<![A-Za-z0-9_.-])" + re.escape(bid) + r"(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])")
+out = subprocess.check_output(
+    ["git", "-C", repo, "log", "--format=%H%x00%B%x1e", commit],
+    text=True, stderr=subprocess.DEVNULL
+)
+for rec in out.split("\x1e"):
+    rec = rec.lstrip("\r\n")
+    if "\x00" not in rec:
+        continue
+    sha, body = rec.split("\x00", 1)
+    if pat.search(body):
+        print(sha.strip())
+        sys.exit(0)
+PY
+)"
   [ -n "$landing_commit" ] || fail "no commit mentioning $bead_id is reachable from verdict commit $manifest_commit (supply --commit explicitly if commit message does not mention $bead_id)"
 else
   landing_commit="$(git -C "$repo_dir" rev-parse --verify "${landing_commit}^{commit}" 2>/dev/null)" \
@@ -658,11 +762,11 @@ actual_manifest_tree="$(git -C "$repo_dir" rev-parse "${manifest_commit}^{tree}"
 decision_json="$(run_py_helper verify-close "$repo_dir" "$bead_id" "$verify_spec" "$landing_commit" "$no_tests_reason" "$require_block")" \
   || exit $?
 
-note_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["note_id"])' "$decision_json")"
-close_mode="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["mode"])' "$decision_json")"
+note_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["note_id"])' <<< "$decision_json")"
+close_mode="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["mode"])' <<< "$decision_json")"
 
 if [ "$close_mode" = "process" ]; then
-  proc_reason="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["process_reason"])' "$decision_json")"
+  proc_reason="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["process_reason"])' <<< "$decision_json")"
   cited_reason="${reason} [process-closure: ${proc_reason}] [verdict_note: ${note_id:0:12} commit=${manifest_commit:0:12} tree=${manifest_tree:0:12}]"
 else
   cited_reason="${reason} [verdict_note: ${note_id:0:12} commit=${manifest_commit:0:12} tree=${manifest_tree:0:12}]"

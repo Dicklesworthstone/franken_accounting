@@ -25,7 +25,7 @@ use fa_registry::g0::{
     SloRegistry, SupersessionKinds, TracingLaws,
 };
 use fa_registry::intake_sources::IntakeSources;
-use fa_registry::invariants::Invariants;
+use fa_registry::invariants::{Invariants, Status as InvariantStatus};
 use fa_registry::lantern_calibration::LanternCalibration;
 use fa_registry::mutants::MutantLedger;
 use fa_registry::procedures::Procedures;
@@ -787,6 +787,9 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
             .map_err(|e| e.to_string())?;
     }
     let invariants = Invariants::parse(&read("invariants.toml")?).map_err(|e| e.to_string())?;
+    if root.join("crates").is_dir() {
+        check_live_invariant_checkers(root, &invariants)?;
+    }
     let _topology =
         Topology::parse(&read("workspace_topology.toml")?).map_err(|e| e.to_string())?;
 
@@ -847,8 +850,18 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
         &calibration,
     )
     .map_err(|e| e.to_string())?;
-    let _unwired =
+    let unwired =
         UnwiredModules::from_text(&read("unwired_modules.toml")?).map_err(|e| e.to_string())?;
+    if let Some(open_beads) = load_open_beads(root) {
+        for row in unwired.unwired.iter().chain(&unwired.unwired_items) {
+            if !open_beads.contains(&row.owner_bead) {
+                return Err(format!(
+                    "unwired_modules.toml: `{}` cites owner_bead `{}` which is not open or in_progress in .beads/issues.jsonl",
+                    row.path, row.owner_bead
+                ));
+            }
+        }
+    }
     let claims_config =
         ClaimsLintConfig::parse(&read("claims_lint.toml")?).map_err(|e| e.to_string())?;
 
@@ -1243,6 +1256,46 @@ pub fn check_artifact_producers(
         }
     }
     Ok(artifacts.artifacts.len())
+}
+
+/// Every `live` clause in `registries/invariants.toml` must name `checkers`
+/// and `negatives` that resolve to real `#[test]` functions in workspace
+/// crates (`fa-0hs4.4`).
+pub fn check_live_invariant_checkers(
+    root: &Path,
+    invariants: &Invariants,
+) -> Result<usize, String> {
+    let mut checked = 0usize;
+    for clause in &invariants.clauses {
+        let InvariantStatus::Live {
+            checkers,
+            negatives,
+            ..
+        } = &clause.status
+        else {
+            continue;
+        };
+        let clause_id = clause.full_id();
+        for (kind, checker) in checkers
+            .iter()
+            .map(|c| ("checker", c))
+            .chain(negatives.iter().map(|c| ("negative", c)))
+        {
+            if workspace_package_dir(root, &checker.krate).is_none() {
+                return Err(format!(
+                    "invariants.toml {clause_id}: {kind} `{checker}` names unknown workspace crate `{}`",
+                    checker.krate
+                ));
+            }
+            if !checker.resolves_with(|rel| fs::read_to_string(root.join(rel)).ok()) {
+                return Err(format!(
+                    "invariants.toml {clause_id}: {kind} `{checker}` does not resolve to a #[test] fn in workspace test inventory"
+                ));
+            }
+            checked += 1;
+        }
+    }
+    Ok(checked)
 }
 
 /// Verify that every object/relation kind named in `derived_objects` of
@@ -1771,6 +1824,7 @@ fn main() -> ProcessExitCode {
 mod tests {
     use super::*;
     use fa_registry::evidence_artifacts::verify_prose_claims_lint_text;
+    use fa_registry::invariants::Checker;
 
     #[test]
     fn real_workspace_registries_pass() {
@@ -2182,6 +2236,37 @@ per_procedure_confusion = ["jet.round_amounts:90:0:0:1200"]
         let err = check_proof_lane_artifacts(&root, &lanes).expect_err("a missing path must fail");
         assert!(
             err.contains(&lanes.lanes[0].id) && err.contains("FaProofs/Amount.lean"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn live_clause_checker_exists_in_test_inventory() {
+        let root = default_workspace_root();
+        let mut invariants = Invariants::embedded().expect("invariants.toml");
+        let count = check_live_invariant_checkers(&root, &invariants)
+            .expect("every live clause checker and negative resolves in workspace test inventory");
+        assert!(
+            count >= 100,
+            "expected >= 100 resolved live checkers, got {count}"
+        );
+
+        let live_clause = invariants
+            .clauses
+            .iter_mut()
+            .find(|c| c.is_live())
+            .expect("at least one live clause");
+        let clause_id = live_clause.full_id();
+        if let InvariantStatus::Live { checkers, .. } = &mut live_clause.status {
+            checkers[0] = Checker::parse(
+                "fa-journal::tests/genesis.rs::nonexistent_planted_checker_fa_0hs4_4",
+            )
+            .expect("valid checker syntax");
+        }
+        let err = check_live_invariant_checkers(&root, &invariants)
+            .expect_err("a missing checker test in invariants.toml must fail");
+        assert!(
+            err.contains(&clause_id) && err.contains("nonexistent_planted_checker_fa_0hs4_4"),
             "{err}"
         );
     }

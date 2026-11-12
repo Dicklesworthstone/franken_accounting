@@ -381,6 +381,32 @@ foreign_git.update(GIT_DIR=str(root / "only_red_history" / ".git"),
 history = json.loads((root / "history_chronology.expected.json").read_text())
 check("explicit-repo-ignores-inherited-git-context", base, 0,
       f"last_tier0={history['last_tier0_commit']}@{history['last_tier0_utc']}", env=foreign_git)
+
+pressure_status = copy.deepcopy(healthy)
+pressure_worker = pressure_status["data"]["daemon"]["workers"][0]
+pressure_worker["id"] = "hz2"
+pressure_worker["pressure_disk_free_gb"] = 80.3
+pressure_worker["pressure_disk_total_gb"] = 320.0
+pressure_worker["pressure_disk_free_ratio"] = 0.2509
+pressure_worker["pressure_state"] = "critical"
+pressure_path = root / "critical-pressure-ample-disk.json"
+pressure_path.write_text(json.dumps(pressure_status))
+pressure_res = subprocess.run(
+    ["bash", helper, "--status-json", str(pressure_path), "--repo", str(root / "history_chronology")],
+    capture_output=True, text=True, timeout=5
+)
+pressure_transcript = pressure_res.stdout + pressure_res.stderr
+print(f"CONTROL critical-pressure-ample-disk: exit={pressure_res.returncode}, expected=1")
+if (
+    pressure_res.returncode != 1
+    or "FAIL worker-hz2-pressure" not in pressure_transcript
+    or "under critical pressure" not in pressure_transcript
+    or "FAIL worker-hz2-disk" in pressure_transcript
+):
+    failures.append("critical-pressure-ample-disk")
+    for line in pressure_transcript.splitlines():
+        print(f"DETAIL critical-pressure-ample-disk: {line}")
+
 if failures:
     print(f"CONTROL_FAILURES {failures}")
     raise SystemExit(1)
@@ -388,6 +414,7 @@ PY
 rc_input_controls=$?
 if [ "$rc_input_controls" -eq 0 ]; then
   gate_pass "input_validation" "malformed metrics, thresholds and missing values refuse without partial green or hangs"
+  gate_pass "gate_health_selftest::critical_memory_pressure_with_ample_disk_reports_pressure_not_disk_floor" "critical pressure with 80.3 GB free disk reports worker-hz2-pressure, never worker-hz2-disk"
 else
   gate_fail "input_validation" "input controls failed (rc=$rc_input_controls)"
 fi

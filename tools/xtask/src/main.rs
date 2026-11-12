@@ -253,9 +253,16 @@ fn run_reachability(today: String) -> Result<(), String> {
     let crates = reachability::workspace_crates()?;
     let read = |p: &str| fs::read_to_string(root.join(p)).ok();
     let modules = reachability::analyze(&crates, &read);
+    let items = reachability::analyze_items(&crates, &read);
     let registry = UnwiredModules::embedded().map_err(|e| e.to_string())?;
-    print!("{}", reachability::render(&modules, &registry));
-    let fails = reachability::check(&modules, &registry, &read, Some(today.as_str()));
+    print!("{}", reachability::render_all(&modules, &items, &registry));
+    let mut fails = reachability::check(&modules, &registry, &read, Some(today.as_str()));
+    fails.extend(reachability::check_items(
+        &items,
+        &registry,
+        &read,
+        Some(today.as_str()),
+    ));
     if fails.is_empty() {
         println!("xtask reachability: ok (as of {today})");
         Ok(())

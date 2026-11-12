@@ -448,26 +448,26 @@ id = "post"
 operation_class = "single_entry_post"
 description = "Balanced 2-leg ordinary PostEntry into an open period without balance limits or ceilings"
 hot_object_exceptions = []
-point_reads = 3
+point_reads = 13
 witnesses = 1
 cas_moves = 0
 edges_written = 8
-vertices_written = 3
+vertices_written = 4
 transactions = 1
-complexity_witness = "1 period read/witness + 2 leaf account reads + 1 Entry vertex + 2 Leg vertices + 8 projection edges (2 * HAS_LEG/POSTS_TO/FOR/IN_UNIT)"
+complexity_witness = "1 period read/witness + 8 registered Dimension requirement reads + 2 leaf account reads + 2 NativeSubledger binding reads + 1 Entry vertex + 2 Leg vertices + 1 common-key IntentOutcome vertex + 8 edges (2 HAS_LEG + 2 POSTS_TO + 2 IN_UNIT + 1 IN_PERIOD + 1 EVIDENCED_BY)"
 
 [[kernel_op_witness]]
 id = "reserve"
 operation_class = "single_entry_post"
 description = "2-leg Pending reservation entry into an open period with 1 LimitCell account"
 hot_object_exceptions = ["LimitCell"]
-point_reads = 4
+point_reads = 14
 witnesses = 2
 cas_moves = 1
 edges_written = 8
-vertices_written = 3
+vertices_written = 4
 transactions = 1
-complexity_witness = "1 period read/witness + 2 leaf account reads + 1 LimitCell read/witness/CAS + 1 Entry vertex + 2 Leg vertices + 8 projection edges"
+complexity_witness = "1 period read/witness + 8 registered Dimension requirement reads + 2 leaf account reads + 2 NativeSubledger binding reads + 1 LimitCell read/witness/CAS + 1 Entry vertex + 2 Leg vertices + 1 common-key IntentOutcome vertex + 8 edges (2 HAS_LEG + 2 POSTS_TO + 2 IN_UNIT + 1 IN_PERIOD + 1 EVIDENCED_BY)"
 
 [[kernel_op_witness]]
 id = "resolve"
@@ -477,10 +477,10 @@ hot_object_exceptions = ["LimitCell"]
 point_reads = 3
 witnesses = 2
 cas_moves = 1
-edges_written = 1
-vertices_written = 1
+edges_written = 2
+vertices_written = 2
 transactions = 1
-complexity_witness = "1 period read/witness + 1 pending target read/witness + 1 LimitCell CAS release + 1 Resolution entry vertex + 1 RESOLVES edge"
+complexity_witness = "1 period read/witness + 1 pending target read/witness + 1 LimitCell CAS release + 1 Resolution entry vertex + 1 common-key IntentOutcome vertex + 2 edges (1 IN_PERIOD + 1 RESOLVES)"
 
 [[kernel_op_witness]]
 id = "period_transition"
@@ -515,11 +515,11 @@ description = "Journal accumulator advance over 1 new entry and signed Transpare
 hot_object_exceptions = []
 point_reads = 2
 witnesses = 0
-cas_moves = 0
+cas_moves = 1
 edges_written = 2
-vertices_written = 3
+vertices_written = 2
 transactions = 1
-complexity_witness = "1 prior state read + 1 entry read + 1 LeafEnvelope + 1 AccumulatorState + 1 TransparencyCheckpoint + 2 lineage edges"
+complexity_witness = "1 prior state read + 1 new entry leaf + 1 AccumulatorState vertex + 1 TransparencyCheckpoint vertex + 1 book accumulator_head CAS + 2 lineage edges (DERIVED_FROM, CHECKPOINTS)"
 
 [[kernel_op_witness]]
 id = "fold_per_entry"
@@ -530,9 +530,9 @@ point_reads = 2
 witnesses = 0
 cas_moves = 2
 edges_written = 0
-vertices_written = 0
+vertices_written = 1
 transactions = 1
-complexity_witness = "2 Register cell lookups + 2 Register cell updates + fold_digest recomputation"
+complexity_witness = "2 Register cell lookups + 2 Register cell CAS updates + 1 immutable RegisterCheckpoint vertex (eager_advance cadence = 1) + fold_digest recomputation"
 
 [[kernel_op_witness]]
 id = "verify_per_cell"

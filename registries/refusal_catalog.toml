@@ -1305,6 +1305,14 @@ exit = "refusal"
 cite = "plan §4.3 and fa-ficc (per-account dimension requirements and allowed/forbidden values): preparer-chosen legs must use an exact value permitted by the account's current dimension policy"
 fix = "use a permitted value of this dimension (fa dimension constraints <dimension> shows account policies), or have an authorized schema controller change the policy with fa dimension constrain; presence remains governed separately by fa dimension require"
 
+[[refusal]]
+code = "FA-REF-208"
+name = "FUTURE_SCHEMA_MINOR"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "Appendix A fa:entry:v1 additive-minor law (fa-hoi5: only entries written at schema minors this build knows may be sealed)"
+fix = "write the minor this build knows; register the extension first"
+
 # ---- Proof export (145–146) ---
 [[refusal]]
 code = "FA-REF-145"

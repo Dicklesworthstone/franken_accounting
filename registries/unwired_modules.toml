@@ -1,27 +1,25 @@
 # =============================================================================
-# registries/unwired_modules.toml — library code no surface reaches (fa-2ioe)
+# registries/unwired_modules.toml — library code no surface reaches
+# (beads fa-2ioe module granularity, fa-0hs4.14 item granularity)
 # =============================================================================
 #
 # `xtask reachability` follows references from every non-test source file of
 # the surfaces (fa-cli, fad, fa-mcp, fa-verify) and the gate tools (xtask,
-# registry-check) into the library crates. A pub module or crate root with pub
-# items or methods of its own that nothing reachable references must have a
-# row here (one of trait impls or re-exports alone is never reported).
-# Library code without a surface is unverified by the e2e tests and invisible
+# registry-check) into the library crates, both at module granularity and
+# transitively across top-level public functions, structs, and enums.
+# Library code without a surface is unverified by e2e tests and invisible
 # to agents.
 #
-# [[unwired]]: wiring debt.
-# - path:       the module, `crate_ident::seg::seg` (a crate root is its ident)
-# - owner_bead: the open bead whose work reaches it from a surface
+# [[unwired]] / [[unwired_item]]: wiring debt.
+# - path:       module (`crate_ident::seg`) or item (`crate_ident::…::item`)
+# - owner_bead: the open/in_progress bead whose work wires it from a surface
 # - reason:     what is missing
-# - expires:    YYYY-MM-DD. scripts/check.sh step `reachability` fails on the
-#               day after; extend it only with a new reason.
-# [[verification]]: code whose only consumer is a test harness, by design.
+# - expires:    YYYY-MM-DD; fails on the day after unless wired or renewed
+# [[verification]] / [[verification_item]]: test-harness-only by design.
 # - path, reason as above
-# - consumer:   the workspace-relative test file that references it
+# - consumer:   workspace-relative test/verification .rs file referencing it
 #
-# Both fail when stale: a row whose module a surface now reaches, or that
-# names no module, must go (cargo test -p xtask).
+# Every row fails when stale (surface now reaches it) or dangling.
 # =============================================================================
 
 schema_version = 1
@@ -40,3 +38,373 @@ reason = "The TigerBeetle-semantics corpus runner: a self-consistency check agai
 path = "fa_lantern::witness"
 consumer = "crates/fa-lantern/tests/lantern.rs"
 reason = "The CGSE determinism witness the procedure suite runs over every registered procedure (plan §11.1)."
+
+[[unwired_item]]
+path = "fa_registers::fx::CtaRollForwardSchedule"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::RemeasurementBasis"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::RemeasurementInputLine"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::RemeasurementLineResult"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::RemeasurementRunResult"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::TranslatedStatement"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::TranslationInputLine"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::TranslationItemKind"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::TranslationLineResult"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::plan_cta_deconsolidation_recycling"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::plan_remeasurement_entry"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::remeasure_temporal"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::translate_current_rate"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::verify_remeasurement_certificate"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[unwired_item]]
+path = "fa_registers::fx::verify_translation_certificate"
+owner_bead = "fa-q3cx"
+reason = "Current-rate translation, temporal remeasurement and CTA recycling await period-chain surface and kernel posting wiring (plan §12.4)."
+expires = "2026-12-15"
+
+[[verification_item]]
+path = "fa_formats::bank::verify_statement_sequence_continuity"
+consumer = "crates/fa-formats/tests/formats_conformance.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-formats/tests/formats_conformance.rs."
+
+[[verification_item]]
+path = "fa_formats::beancount::SubprocessOracleStatus"
+consumer = "crates/fa-formats/tests/formats_conformance.rs"
+reason = "Verification/test-harness entrypoint (enum) exercised by crates/fa-formats/tests/formats_conformance.rs."
+
+[[verification_item]]
+path = "fa_formats::beancount::compare_balances_exact"
+consumer = "crates/fa-formats/tests/formats_conformance.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-formats/tests/formats_conformance.rs."
+
+[[verification_item]]
+path = "fa_formats::beancount::probe_external_oracle_binary"
+consumer = "crates/fa-formats/tests/formats_conformance.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-formats/tests/formats_conformance.rs."
+
+[[verification_item]]
+path = "fa_formats::fwc::invoke_fwc_bank_fetch"
+consumer = "crates/fa-formats/src/fwc.rs"
+reason = "Unit-test-only convenience wrapper around fetch_fwc_payload + parse_fwc_plaid_transactions_sync; fa bank fetch calls fetch_fwc_payload directly so raw bytes are retained before parsing."
+
+[[verification_item]]
+path = "fa_formats::part370::fixture_part370_bank_book"
+consumer = "crates/fa-formats/src/part370.rs"
+reason = "Unit-test-only fixture/helper (fn) exercised inside #[cfg(test)] of crates/fa-formats/src/part370.rs."
+
+[[verification_item]]
+path = "fa_formats::xbrl::validate_calculation_linkbase"
+consumer = "crates/fa-formats/tests/formats_conformance.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-formats/tests/formats_conformance.rs."
+
+[[verification_item]]
+path = "fa_formats::xbrl::write_format_journal_xbrl_xml"
+consumer = "crates/fa-formats/tests/formats_conformance.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-formats/tests/formats_conformance.rs."
+
+[[verification_item]]
+path = "fa_journal::batch::post_batch"
+consumer = "crates/fa-journal/tests/bank_matches/reconciliation_guard.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-journal/tests/bank_matches/reconciliation_guard.rs."
+
+[[verification_item]]
+path = "fa_journal::batch::post_batch_with_crash"
+consumer = "crates/fa/src/book/tests.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa/src/book/tests.rs."
+
+[[verification_item]]
+path = "fa_journal::carrying::open_item_carrying_at"
+consumer = "crates/fa-journal/tests/genesis/carrying.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-journal/tests/genesis/carrying.rs."
+
+[[verification_item]]
+path = "fa_journal::carrying::prepare_fx_settlement_in_draft"
+consumer = "crates/fa-journal/tests/genesis/carrying/drafts.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-journal/tests/genesis/carrying/drafts.rs."
+
+[[verification_item]]
+path = "fa_journal::case::post_case"
+consumer = "crates/fa-journal/tests/policy/read_authority.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-journal/tests/policy/read_authority.rs."
+
+[[verification_item]]
+path = "fa_journal::evidence::read_document"
+consumer = "crates/fa-journal/tests/genesis.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-journal/tests/genesis.rs."
+
+[[verification_item]]
+path = "fa_journal::fx::plan_revaluation"
+consumer = "crates/fa-registers/tests/registers.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/registers.rs."
+
+[[verification_item]]
+path = "fa_journal::import::bank::read_bank_statement_link"
+consumer = "crates/fa/src/bank/provenance_tests.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa/src/bank/provenance_tests.rs."
+
+[[verification_item]]
+path = "fa_journal::migration::run_entries"
+consumer = "crates/fa-registers/tests/migration.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/migration.rs."
+
+[[verification_item]]
+path = "fa_journal::policy::ActivationRequest"
+consumer = "crates/fa-journal/tests/genesis/policy_outcome_keys.rs"
+reason = "Verification/test-harness entrypoint (struct) exercised by crates/fa-journal/tests/genesis/policy_outcome_keys.rs."
+
+[[verification_item]]
+path = "fa_journal::policy::activate_policy"
+consumer = "crates/fa-journal/tests/genesis/policy_outcome_keys.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-journal/tests/genesis/policy_outcome_keys.rs."
+
+[[verification_item]]
+path = "fa_journal::policy::activation_proposal"
+consumer = "crates/fa-journal/tests/genesis/policy_outcome_keys.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-journal/tests/genesis/policy_outcome_keys.rs."
+
+[[verification_item]]
+path = "fa_journal::post::prepare_post"
+consumer = "crates/fa-journal/tests/bank_matches/outstanding.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-journal/tests/bank_matches/outstanding.rs."
+
+[[verification_item]]
+path = "fa_journal::scratch::replay_batches"
+consumer = "crates/fa-journal/tests/scratch_order.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-journal/tests/scratch_order.rs."
+
+[[verification_item]]
+path = "fa_journal::sweep::sweep_batch_with_witness"
+consumer = "crates/fa-journal/src/sweep.rs"
+reason = "Unit-test-only fixture/helper (fn) exercised inside #[cfg(test)] of crates/fa-journal/src/sweep.rs."
+
+[[verification_item]]
+path = "fa_lantern::cutoff::compute_scenario_but_for_damages"
+consumer = "crates/fa-lantern/tests/lantern.rs"
+reason = "Snapshot-diff verification oracle for damages.but_for (plan §11.6); fa scenario diff --certify is the certified surface."
+
+[[verification_item]]
+path = "fa_lantern::default_budget"
+consumer = "crates/fa-lantern/tests/lantern/jet.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-lantern/tests/lantern/jet.rs."
+
+[[verification_item]]
+path = "fa_lantern::digits::expected_counts_1e9"
+consumer = "crates/fa-lantern/tests/lantern.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-lantern/tests/lantern.rs."
+
+[[verification_item]]
+path = "fa_lantern::digits::first_digit_expected_counts"
+consumer = "crates/fa-lantern/tests/lantern.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-lantern/tests/lantern.rs."
+
+[[verification_item]]
+path = "fa_lantern::digits::first_two_digits_expected_counts"
+consumer = "crates/fa-lantern/tests/lantern.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-lantern/tests/lantern.rs."
+
+[[verification_item]]
+path = "fa_lantern::digits::ks_critical_1e9"
+consumer = "crates/fa-lantern/tests/lantern.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-lantern/tests/lantern.rs."
+
+[[verification_item]]
+path = "fa_lantern::digits::second_digit_expected_counts"
+consumer = "crates/fa-lantern/tests/lantern.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-lantern/tests/lantern.rs."
+
+[[verification_item]]
+path = "fa_lantern::projection::ApprovalRow"
+consumer = "crates/fa-lantern/tests/lantern.rs"
+reason = "Preparer/approver projection row verified against naive oracle in crates/fa-lantern/tests/lantern.rs."
+
+[[verification_item]]
+path = "fa_lantern::projection::PreparerRow"
+consumer = "crates/fa-lantern/tests/lantern.rs"
+reason = "Preparer/approver projection row verified against naive oracle in crates/fa-lantern/tests/lantern.rs."
+
+[[verification_item]]
+path = "fa_lantern::projection::Preparers"
+consumer = "crates/fa-lantern/tests/lantern.rs"
+reason = "Preparer/approver bipartite projection verified against naive oracle in crates/fa-lantern/tests/lantern.rs."
+
+[[verification_item]]
+path = "fa_lantern::projection::preparers"
+consumer = "crates/fa-lantern/tests/lantern.rs"
+reason = "Preparer/approver bipartite projection entrypoint verified in crates/fa-lantern/tests/lantern.rs."
+
+[[verification_item]]
+path = "fa_lantern::run_over"
+consumer = "crates/fa-lantern/tests/lantern.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-lantern/tests/lantern.rs."
+
+[[verification_item]]
+path = "fa_money::lot::convert_with_law"
+consumer = "crates/fa-registers/tests/registers.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/registers.rs."
+
+[[verification_item]]
+path = "fa_notary::migration_balance::prove_balance"
+consumer = "crates/fa-notary/tests/notary.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-notary/tests/notary.rs."
+
+[[verification_item]]
+path = "fa_notary::migration_balance::prove_balance_with_migrations"
+consumer = "crates/fa-notary/tests/notary.rs"
+reason = "Explicit legacy v2 partial-payload migration balance proof producer verified for membership_only compatibility in crates/fa-notary/tests/notary.rs."
+
+[[verification_item]]
+path = "fa_notary::state::prove_balance"
+consumer = "crates/fa-notary/tests/notary.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-notary/tests/notary.rs."
+
+[[verification_item]]
+path = "fa_notary::state::prove_scope"
+consumer = "crates/fa-notary/tests/notary.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-notary/tests/notary.rs."
+
+[[verification_item]]
+path = "fa_registers::entity::check_register_equals"
+consumer = "crates/fa-registers/tests/differential.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/differential.rs."
+
+[[verification_item]]
+path = "fa_registers::fx::verify_functional_fold"
+consumer = "crates/fa-registers/tests/registers.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/registers.rs."
+
+[[verification_item]]
+path = "fa_registers::fx::verify_functional_fold_excluding_classes"
+consumer = "crates/fa-registers/tests/registers.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/registers.rs."
+
+[[verification_item]]
+path = "fa_registers::fx::verify_functional_stock"
+consumer = "crates/fa-registers/tests/fx_stock.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/fx_stock.rs."
+
+[[verification_item]]
+path = "fa_registers::lots::fold_lots_from_open_items"
+consumer = "crates/fa-registers/src/lots/tests.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/src/lots/tests.rs."
+
+[[verification_item]]
+path = "fa_registers::maintainer::head_fold"
+consumer = "crates/fa-registers/tests/differential/large_pending_state.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/differential/large_pending_state.rs."
+
+[[verification_item]]
+path = "fa_registers::maintainer::rebuild_reads_are_shared"
+consumer = "crates/fa-registers/tests/registers.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/registers.rs."
+
+[[verification_item]]
+path = "fa_registers::period_activity_served"
+consumer = "crates/fa-registers/tests/differential.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/differential.rs."
+
+[[verification_item]]
+path = "fa_registers::period_activity_served_at"
+consumer = "crates/fa-registers/tests/differential.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/differential.rs."
+
+[[verification_item]]
+path = "fa_registers::periods_for_balance"
+consumer = "crates/fa-registers/src/lib.rs"
+reason = "Unit-test-only fixture/helper (fn) exercised inside #[cfg(test)] of crates/fa-registers/src/lib.rs."
+
+[[verification_item]]
+path = "fa_registers::trial_balance"
+consumer = "crates/fa-registers/tests/differential.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/differential.rs."
+
+[[verification_item]]
+path = "fa_registers::trial_balance_served"
+consumer = "crates/fa-registers/tests/differential.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/differential.rs."
+
+[[verification_item]]
+path = "fa_registers::trial_balance_served_at"
+consumer = "crates/fa-registers/tests/differential.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/differential.rs."
+
+[[verification_item]]
+path = "fa_registers::verify_period"
+consumer = "crates/fa-registers/tests/differential.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-registers/tests/differential.rs."
+
+[[verification_item]]
+path = "fa_registry::admissibility_plan::PlanAdmissibility"
+consumer = "crates/fa-cli/tests/scoreboard.rs"
+reason = "Verification/test-harness entrypoint (struct) exercised by crates/fa-cli/tests/scoreboard.rs."
+
+[[verification_item]]
+path = "fa_registry::limits_embedded"
+consumer = "crates/fa-oracles/src/cases/book.rs"
+reason = "Verification/test-harness entrypoint (fn) exercised by crates/fa-oracles/src/cases/book.rs."

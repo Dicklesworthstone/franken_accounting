@@ -892,7 +892,7 @@ argv = ["g2_beancount_hledger_external_oracle"]
 expected = "absent"
 expected_exit = 2
 expected_event = "error"
-bead = "fa-3ock"
+bead = "fa-sa4w"
 
 [[gate_criterion]]
 id = "G2-09"
@@ -1012,7 +1012,7 @@ argv = ["g3_gauntlet_ergonomics_scorecards"]
 expected = "absent"
 expected_exit = 2
 expected_event = "error"
-bead = "fa-nmk4"
+bead = "fa-y6eu"
 
 # ---- Gate G4 (6 clauses) ----------------------------------------------------
 
@@ -1038,7 +1038,7 @@ argv = ["g4_conformance_matrices_published"]
 expected = "absent"
 expected_exit = 2
 expected_event = "error"
-bead = "fa-3ock"
+bead = "fa-ipom"
 
 [[gate_criterion]]
 id = "G4-03"
@@ -1119,7 +1119,7 @@ bead = "fa-ygj2"
 [[governance_row]]
 id = "GOV-03"
 metric = "tier0_coverage"
-description = "Unskippable Tier-0 gate hooks (.githooks/pre-commit, .githooks/pre-push) and scripts/tier0.sh are installed and active"
+description = "Unskippable Tier-0 gate hook (scripts/hooks/pre-push via scripts/install-hooks.sh) and scripts/tier0.sh are installed and active"
 evidence_class = "registry"
 probe_kind = "registry"
 argv = ["tier0_coverage"]

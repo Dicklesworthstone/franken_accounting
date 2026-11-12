@@ -314,10 +314,16 @@ for wid in designated:
     )
 
     worker_ok = True
-    if free_gb < min_gb or free_pct < min_pct or pressure == "critical":
+    if free_gb < min_gb or free_pct < min_pct:
         print(
             f"FAIL\tworker-{wid}-disk\tworker {wid} below disk threshold "
             f"(free={free_gb:.1f}GB / {free_pct:.1f}%, min={min_gb:.1f}GB / {min_pct:.1f}%, pressure={pressure})"
+        )
+        worker_ok = False
+    if pressure == "critical":
+        print(
+            f"FAIL\tworker-{wid}-pressure\tworker {wid} under critical pressure "
+            f"(pressure={pressure}, free_disk={free_gb:.1f}GB / {free_pct:.1f}%)"
         )
         worker_ok = False
     if status != "healthy" or circuit != "closed":

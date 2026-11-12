@@ -759,6 +759,57 @@ done
 
 bash "$source_root/scripts/tests/crate_verdicts_selftest.sh"
 
+# Regression controls for fa-0hs4.22:
+# 1) --resume-from with trailing slash preserves canonical sources/<id> layout,
+#    and non-UTF-8 bytes in step logs decode identically in producer and verifier.
+trailing_split1="$base/split-1-current"
+trailing_split1_rc=0
+FAKE_PROOF_MODE=split-1 bash scripts/local_proof.sh --output "$trailing_split1" >/dev/null || trailing_split1_rc=$?
+[ "$trailing_split1_rc" -eq 2 ] || fail "trailing-slash split-1 setup did not exit 2 ($trailing_split1_rc)"
+trailing_source_id="$("$LOCAL_PROOF_REAL_HASH" "$trailing_split1/SHA256SUMS" | awk '{print $1}')"
+trailing_resume="$base/split-2-trailing-slash"
+FAKE_PROOF_MODE=split-2 bash scripts/local_proof.sh --output "$trailing_resume" --resume-from "$trailing_split1/" \
+  >"$base/trailing-resume.stdout" 2>"$base/trailing-resume.stderr" \
+  || fail "resume-from with trailing slash failed ($(cat "$base/trailing-resume.stderr"))"
+[ -f "$trailing_resume/sources/$trailing_source_id/manifest.txt" ] \
+  || fail "trailing-slash resume missing flat sources/<id>/manifest.txt"
+[ ! -d "$trailing_resume/sources/$trailing_source_id/$(basename "$trailing_split1")" ] \
+  || fail "trailing-slash resume nested basename inside sources/<id>"
+bash scripts/local_proof_verify.sh --repository "$fixture" "$trailing_resume" >/dev/null \
+  || fail "trailing-slash resumed proof failed verification"
+
+non_utf8_proof="$base/non-utf8-log"
+cp -R "$compile_proof" "$non_utf8_proof"
+python3 -B - "$non_utf8_proof" <<'PY'
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+log_path = root / "steps/check.log"
+raw = log_path.read_bytes() + b"\ncompiler stderr raw byte: \xff\xfe\n"
+log_path.write_bytes(raw)
+records = [json.loads(line) for line in (root / "step-verdicts.jsonl").read_text().splitlines()]
+for rec in records:
+    if rec["step"] == "check":
+        rec["log_digest"] = hashlib.sha256(raw).hexdigest()
+lines = [json.dumps(rec, separators=(",", ":")) for rec in records]
+(root / "step-verdicts.jsonl").write_text("\n".join(lines) + "\n")
+tools = [line for line in (root / "tools.txt").read_text().splitlines() if not line.startswith("step_verdict=")]
+(root / "tools.txt").write_text("\n".join(tools + ["step_verdict=" + line for line in lines]) + "\n")
+PY
+rehash "$non_utf8_proof"
+bash scripts/local_proof_verify.sh --repository "$fixture" --for-close "$non_utf8_proof" \
+  >"$base/non-utf8.stdout" 2>"$base/non-utf8.stderr" \
+  || fail "local_proof_verify.sh failed on step log containing non-UTF-8 bytes"
+printf 'PASS local_proof_selftest::resume_from_preserves_flat_sources_and_non_utf8_log_parity\n'
+
+# 2) --push-note failure to a missing origin remote is surfaced (non-zero exit), never swallowed.
+push_fail_rc=0
+FAKE_PROOF_MODE=pass bash scripts/local_proof.sh --output "$base/push-note-fail" --push-note \
+  >"$base/push-note-fail.stdout" 2>"$base/push-note-fail.stderr" || push_fail_rc=$?
+[ "$push_fail_rc" -ne 0 ] || fail "local_proof.sh swallowed --push-note failure to missing remote"
+grep -Fq 'could not push refs/notes/fa-verdict to origin' "$base/push-note-fail.stderr" \
+  || fail "local_proof.sh did not surface push-note diagnostic ($(cat "$base/push-note-fail.stderr"))"
+printf 'PASS local_proof_selftest::note_write_failure_is_surfaced_not_swallowed\n'
+
 printf 'PASS local-proof v3 semantic controls (verified partial reuse, retained provenance, legacy verification, git notes, bead-close attribution, and refusal of unproved per-crate verdicts)\n'
 printf 'fixture=%s\n' "$fixture"
 printf 'pass_proof=%s\n' "$pass_proof"

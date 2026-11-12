@@ -254,7 +254,7 @@ publish_note() {
         "refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" 2>/dev/null; then
       return 0
     fi
-    git -C "$clone" fetch --quiet "$remote_url" \
+    git -C "$clone" fetch --refmap="" --quiet "$remote_url" \
       "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF-remote" 2>/dev/null || true
     gitc -C "$clone" notes --ref="$NOTES_REF" merge -q -s cat_sort_uniq \
       "$NOTES_REF-remote" 2>/dev/null || true
@@ -273,7 +273,7 @@ push_fa_verdict_notes() {
         "refs/notes/$VERDICT_NOTES_REF:refs/notes/$VERDICT_NOTES_REF" 2>/dev/null; then
       return 0
     fi
-    git -C "$clone" fetch --quiet "$remote_url" \
+    git -C "$clone" fetch --refmap="" --quiet "$remote_url" \
       "+refs/notes/$VERDICT_NOTES_REF:refs/notes/$VERDICT_NOTES_REF-remote" 2>/dev/null || true
     gitc -C "$clone" notes --ref="$VERDICT_NOTES_REF" merge -q -s cat_sort_uniq \
       "$VERDICT_NOTES_REF-remote" 2>/dev/null || true
@@ -355,7 +355,7 @@ publish_tier0_note() {
         "refs/notes/$TIER0_NOTES_REF:refs/notes/$TIER0_NOTES_REF" 2>/dev/null; then
       return 0
     fi
-    git -C "$clone" fetch --quiet "$remote_url" \
+    git -C "$clone" fetch --refmap="" --quiet "$remote_url" \
       "+refs/notes/$TIER0_NOTES_REF:refs/notes/$TIER0_NOTES_REF-remote" 2>/dev/null || true
     gitc -C "$clone" notes --ref="$TIER0_NOTES_REF" merge -q -s cat_sort_uniq \
       "$TIER0_NOTES_REF-remote" 2>/dev/null || true

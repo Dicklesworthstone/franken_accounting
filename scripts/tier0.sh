@@ -215,6 +215,10 @@ else
     record_step_verdict "fmt" "PASS" "local" "local" "$fmt_started" "$fmt_finished" "$fmt_dur" "$fmt_log"
     gate_pass "fmt tier0 PASS step=fmt tree=$tree lane=local host=$host_fp toolchain=$toolchain_id duration=${fmt_dur}s"
     fmt_status="PASS"
+  elif grep -Eq '^rch shim: refusing .*RCH_CARGO_WRAPPER_BYPASS|while RCH_REQUIRE_REMOTE is enabled' "$fmt_log"; then
+    record_step_verdict "fmt" "UNRUN" "remote-refused" "none" "$fmt_started" "$fmt_finished" "$fmt_dur" "$fmt_log"
+    gate_unrun "fmt tier0 UNRUN step=fmt exit=$fmt_rc tree=$tree lane=remote-refused host=$host_fp toolchain=$toolchain_id duration=${fmt_dur}s — rch shim refused local cargo fmt; log: $fmt_log"
+    fmt_status="UNRUN"
   else
     record_step_verdict "fmt" "FAIL" "local" "local" "$fmt_started" "$fmt_finished" "$fmt_dur" "$fmt_log"
     gate_fail "fmt tier0 FAIL step=fmt exit=$fmt_rc tree=$tree lane=local host=$host_fp toolchain=$toolchain_id duration=${fmt_dur}s; log: $fmt_log"
@@ -294,26 +298,44 @@ else
       check_lane="remote-refused"
       check_worker="none"
       check_status="UNRUN"
+    elif [ "${TIER0_FORCE_LOCAL:-0}" != "1" ] && [ "${RCH_REQUIRE_REMOTE:-0}" = "1" ]; then
+      check_lane="remote-refused"
+      check_worker="none"
+      check_status="UNRUN"
+      remote_reason="$remote_reason (RCH_REQUIRE_REMOTE=1 disables local fallback)"
     else
       gate_diag "tier0: remote lane unavailable ($remote_reason); running local lane on $host_fp"
+      local_log="$log_dir/check.local.log"
+      : > "$local_log"
       if [ -f "$check_log" ] && [ -s "$check_log" ]; then
         cp "$check_log" "$check_log.remote" 2>/dev/null || true
         printf '\n=== tier0 local-lane fallback on %s (%s) ===\n' "$host_fp" "$remote_reason" >>"$check_log"
       else
         : > "$check_log"
       fi
-      RCH_CARGO_WRAPPER_BYPASS=1 \
-        "$CARGO_BIN" check -j "$TIER0_JOBS" --workspace --all-targets >>"$check_log" 2>&1
+      if [ "${TIER0_FORCE_LOCAL:-0}" = "1" ]; then
+        RCH_REQUIRE_REMOTE="${RCH_REQUIRE_REMOTE:-0}" RCH_CARGO_WRAPPER_BYPASS=1 \
+          "$CARGO_BIN" check -j "$TIER0_JOBS" --workspace --all-targets >"$local_log" 2>&1
+      else
+        RCH_CARGO_WRAPPER_BYPASS=1 \
+          "$CARGO_BIN" check -j "$TIER0_JOBS" --workspace --all-targets >"$local_log" 2>&1
+      fi
       check_rc=$?
+      cat "$local_log" >>"$check_log"
       check_lane="local"
       check_worker="local"
       if [ "$check_rc" -eq 0 ]; then
-        if grep -Eq '^[[:space:]]*Finished ' "$check_log"; then
+        if grep -Eq '^[[:space:]]*Finished ' "$local_log"; then
           check_status="PASS"
         else
           check_status="UNRUN"
           remote_reason="local lane exited 0 without cargo 'Finished' completion marker"
         fi
+      elif grep -Eq '^rch shim: refusing .*RCH_CARGO_WRAPPER_BYPASS|while RCH_REQUIRE_REMOTE is enabled' "$local_log"; then
+        check_lane="remote-refused"
+        check_worker="none"
+        check_status="UNRUN"
+        remote_reason="$remote_reason; local fallback refused by rch shim under RCH_REQUIRE_REMOTE"
       else
         check_status="FAIL"
       fi
@@ -350,7 +372,7 @@ if [ "$fmt_status" = "PASS" ] && [ "$check_status" = "PASS" ]; then
   else
     overall_verdict="void"
   fi
-elif [ "$fmt_status" = "UNRUN" ] || [ "$check_status" = "UNRUN" ]; then
+elif [ "$fmt_status" != "FAIL" ] && [ "$check_status" != "FAIL" ] && { [ "$fmt_status" = "UNRUN" ] || [ "$check_status" = "UNRUN" ]; }; then
   overall_verdict="unrun"
 fi
 
@@ -384,7 +406,7 @@ if [ "$overall_verdict" = "pass" ] && [ "$dirty" -eq 0 ] && [ "$publish_note" -e
         note_pushed=1
         break
       fi
-      git fetch --quiet "$remote" "+refs/notes/fa-tier0:refs/notes/fa-tier0-remote" >/dev/null 2>&1 || true
+      git fetch --refmap="" --quiet "$remote" "+refs/notes/fa-tier0:refs/notes/fa-tier0-remote" >/dev/null 2>&1 || true
       git notes --ref=fa-tier0 merge -q -s ours refs/notes/fa-tier0-remote >/dev/null 2>&1 || true
     done
     [ "$note_pushed" -eq 1 ] \

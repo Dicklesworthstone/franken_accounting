@@ -71,6 +71,21 @@ pub struct ModuleReach {
     pub reached: bool,
 }
 
+/// A top-level public library item (`fn`, `struct`, `enum`) and whether any
+/// surface reaches it transitively through the call/type graph (bead fa-0hs4.14).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemReach {
+    /// `crate_ident::…::item_ident`.
+    pub path: String,
+    /// Enclosing module path (`crate_ident::…`, or `crate_ident` at crate root).
+    pub module_path: String,
+    /// `"fn"`, `"struct"`, or `"enum"`.
+    pub kind: &'static str,
+    /// Workspace-relative source file.
+    pub file: String,
+    pub reached: bool,
+}
+
 /// The workspace's crate list from the topology registry (present crates).
 pub fn workspace_crates() -> Result<Vec<CrateSpec>, String> {
     let topo = Topology::embedded().map_err(|e| e.to_string())?;
@@ -936,6 +951,926 @@ pub fn render(modules: &[ModuleReach], registry: &UnwiredModules) -> String {
     out
 }
 
+// ---- item-level transitive reachability (bead fa-0hs4.14) -------------------
+
+#[derive(Clone, Debug, Default)]
+struct ItemFileMeta {
+    ident: String,
+    imported: BTreeMap<String, BTreeSet<String>>,
+    globs: BTreeMap<String, Vec<Vec<String>>>,
+    qualified: BTreeMap<String, BTreeSet<String>>,
+    aliases: BTreeMap<String, String>,
+}
+
+struct CodeUnit {
+    crate_name: String,
+    ident: String,
+    layer: String,
+    modpath: Vec<String>,
+    pub_mod: bool,
+    file: String,
+    kind: &'static str,
+    name: Option<String>,
+    bare_pub: bool,
+    words: BTreeSet<String>,
+    impl_headers: Vec<String>,
+}
+
+fn use_leaves_with_alias(toks: &[Token]) -> Vec<(Vec<String>, Option<String>)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    expand_use_alias(toks, &mut i, Vec::new(), &mut out);
+    out
+}
+
+fn expand_use_alias(
+    toks: &[Token],
+    i: &mut usize,
+    prefix: Vec<String>,
+    out: &mut Vec<(Vec<String>, Option<String>)>,
+) {
+    let mut path = prefix;
+    loop {
+        match toks.get(*i).map(|t| &t.tok) {
+            Some(Tok::PathSep) => *i += 1,
+            Some(Tok::Ident(w)) if w == "as" => {
+                let alias = toks.get(*i + 1).and_then(ident_of).map(str::to_string);
+                *i += 2;
+                out.push((path, alias));
+                return;
+            }
+            Some(Tok::Ident(w)) => {
+                path.push(w.clone());
+                *i += 1;
+            }
+            Some(Tok::Punct('*')) => {
+                path.push("*".into());
+                *i += 1;
+                out.push((path, None));
+                return;
+            }
+            Some(Tok::Punct('{')) => {
+                *i += 1;
+                loop {
+                    match toks.get(*i).map(|t| &t.tok) {
+                        None => return,
+                        Some(Tok::Punct('}')) => {
+                            *i += 1;
+                            return;
+                        }
+                        Some(Tok::Punct(',')) => *i += 1,
+                        _ => expand_use_alias(toks, i, path.clone(), out),
+                    }
+                }
+            }
+            _ => {
+                out.push((path, None));
+                return;
+            }
+        }
+    }
+}
+
+fn item_end(toks: &[Token], start: usize) -> usize {
+    let mut j = start;
+    while j < toks.len() {
+        if is_punct(&toks[j], ';') {
+            return j + 1;
+        }
+        if is_punct(&toks[j], '{') {
+            return group_end(toks, j);
+        }
+        if is_punct(&toks[j], '(') || is_punct(&toks[j], '[') {
+            j = group_end(toks, j);
+            continue;
+        }
+        j += 1;
+    }
+    toks.len()
+}
+
+fn unit_kind(kw: &str) -> &'static str {
+    match kw {
+        "fn" => "fn",
+        "struct" => "struct",
+        "enum" => "enum",
+        "trait" => "trait",
+        "type" => "type",
+        "const" => "const",
+        "static" => "static",
+        "union" => "union",
+        "impl" => "impl",
+        _ => "other",
+    }
+}
+
+fn can_file_reach_item(
+    fm: &ItemFileMeta,
+    f_rel: &str,
+    target: &CodeUnit,
+    reexported_by: &BTreeMap<String, BTreeSet<String>>,
+    pub_aliases: &BTreeMap<String, BTreeMap<String, String>>,
+) -> bool {
+    let Some(t_name) = target.name.as_deref() else {
+        return false;
+    };
+    if fm.ident == target.ident {
+        if f_rel == target.file {
+            return true;
+        }
+        let mut names: BTreeSet<&str> = fm
+            .imported
+            .get(&target.ident)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .collect();
+        for k in [target.ident.as_str(), "crate", "self", "super"] {
+            for n in fm.qualified.get(k).into_iter().flatten() {
+                names.insert(n.as_str());
+            }
+        }
+        if names.contains(t_name) {
+            return true;
+        }
+        if let Some(last_seg) = target.modpath.last() {
+            if fm
+                .qualified
+                .get(last_seg)
+                .is_some_and(|qs| qs.contains(t_name))
+            {
+                return true;
+            }
+            if names.contains(last_seg.as_str()) {
+                return true;
+            }
+        }
+        if fm.globs.get(&target.ident).is_some_and(|g| !g.is_empty()) {
+            return true;
+        }
+        return false;
+    }
+    let Some(via) = reexported_by.get(&target.ident) else {
+        return false;
+    };
+    for d in via {
+        let in_imp = fm.imported.get(d).is_some_and(|s| s.contains(t_name));
+        let in_qual = fm.qualified.get(d).is_some_and(|s| s.contains(t_name));
+        if in_imp || in_qual {
+            return true;
+        }
+        if let Some(als) = pub_aliases.get(d) {
+            for (al, orig) in als {
+                if orig == t_name
+                    && (fm.imported.get(d).is_some_and(|s| s.contains(al))
+                        || fm.qualified.get(d).is_some_and(|s| s.contains(al)))
+                {
+                    return true;
+                }
+            }
+        }
+        if let Some(seg) = target.modpath.last() {
+            let seg_named = fm.imported.get(d).is_some_and(|s| s.contains(seg))
+                || fm.qualified.get(d).is_some_and(|s| s.contains(seg));
+            if seg_named
+                && (fm.qualified.get(seg).is_some_and(|s| s.contains(t_name))
+                    || fm.imported.get(d).is_some_and(|s| s.contains(t_name)))
+            {
+                return true;
+            }
+            for mseg in &target.modpath {
+                let mseg_named = fm.imported.get(d).is_some_and(|s| s.contains(mseg))
+                    || fm.qualified.get(d).is_some_and(|s| s.contains(mseg));
+                if mseg_named && fm.qualified.get(seg).is_some_and(|s| s.contains(t_name)) {
+                    return true;
+                }
+            }
+        }
+        if fm.globs.contains_key(d) {
+            return true;
+        }
+    }
+    false
+}
+
+struct ModSource {
+    crate_name: String,
+    ident: String,
+    layer: String,
+    modpath: Vec<String>,
+    pub_mod: bool,
+    file: String,
+    tokens: Vec<Token>,
+}
+
+/// Transitive item-level reachability over top-level public `fn`, `struct`, and
+/// `enum` items of scanned library crates from [`ROOTS`].
+pub fn analyze_items(
+    crates: &[CrateSpec],
+    read: &dyn Fn(&str) -> Option<String>,
+) -> Vec<ItemReach> {
+    let idents: BTreeSet<String> = crates.iter().map(|c| c.name.replace('-', "_")).collect();
+    let mut mod_sources: Vec<ModSource> = Vec::new();
+
+    for spec in crates {
+        let ident = spec.name.replace('-', "_");
+        let mut stack: Vec<(String, Vec<String>, bool, String)> = Vec::new();
+        for (root_file, modpath) in [
+            ("lib.rs", Vec::new()),
+            ("main.rs", vec!["<main>".to_string()]),
+        ] {
+            stack.push((
+                format!("{}/src/{root_file}", spec.path),
+                modpath,
+                true,
+                format!("{}/src", spec.path),
+            ));
+        }
+        while let Some((file, modpath, pubm, dir)) = stack.pop() {
+            let Some(text) = read(&file) else { continue };
+            let facts = file_facts(&text);
+            for (name, bare_pub, has_path) in facts.mods.iter().rev() {
+                if *has_path {
+                    continue;
+                }
+                let flat = format!("{dir}/{name}.rs");
+                let nested = format!("{dir}/{name}/mod.rs");
+                let child = if read(&flat).is_some() { flat } else { nested };
+                let mut next_path = modpath.clone();
+                next_path.push(name.clone());
+                stack.push((child, next_path, pubm && *bare_pub, format!("{dir}/{name}")));
+            }
+            let toks = strip_cfg_test(tokens(&lex(&text)));
+            mod_sources.push(ModSource {
+                crate_name: spec.name.clone(),
+                ident: ident.clone(),
+                layer: spec.layer.clone(),
+                modpath,
+                pub_mod: pubm,
+                file,
+                tokens: toks,
+            });
+        }
+    }
+
+    let mut file_meta: BTreeMap<String, ItemFileMeta> = BTreeMap::new();
+    let mut reexports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut pub_aliases: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    let mut units: Vec<CodeUnit> = Vec::new();
+
+    for src in &mod_sources {
+        let (cname, ident, clayer, mpath, pubm, relfile, toks) = (
+            &src.crate_name,
+            &src.ident,
+            &src.layer,
+            &src.modpath,
+            &src.pub_mod,
+            &src.file,
+            &src.tokens,
+        );
+        let mut meta = ItemFileMeta {
+            ident: ident.clone(),
+            ..ItemFileMeta::default()
+        };
+        let mut i = 0;
+        while i < toks.len() {
+            let (ve, has_vis) = if is_ident(&toks[i], "pub") {
+                if toks.get(i + 1).is_some_and(|n| is_punct(n, '(')) {
+                    (group_end(toks, i + 1), true)
+                } else {
+                    (i + 1, true)
+                }
+            } else {
+                (i, false)
+            };
+            if toks.get(ve).is_some_and(|n| is_ident(n, "use")) {
+                let end = (ve + 1..toks.len())
+                    .find(|&j| is_punct(&toks[j], ';'))
+                    .unwrap_or(toks.len());
+                for (path, alias) in use_leaves_with_alias(&toks[ve + 1..end]) {
+                    let Some(first) = path.first() else { continue };
+                    let root_c = if matches!(first.as_str(), "crate" | "self" | "super") {
+                        ident.clone()
+                    } else if idents.contains(first) {
+                        first.clone()
+                    } else {
+                        continue;
+                    };
+                    let rest: Vec<String> = path[1..]
+                        .iter()
+                        .filter(|s| !matches!(s.as_str(), "self" | "super" | "crate"))
+                        .cloned()
+                        .collect();
+                    if rest.last().is_some_and(|s| s == "*") {
+                        meta.globs
+                            .entry(root_c.clone())
+                            .or_default()
+                            .push(rest[..rest.len() - 1].to_vec());
+                    }
+                    for s in &rest {
+                        if s != "*" {
+                            meta.imported
+                                .entry(root_c.clone())
+                                .or_default()
+                                .insert(s.clone());
+                        }
+                    }
+                    if let (Some(al), Some(last)) = (alias, rest.last()) {
+                        meta.aliases.insert(al.clone(), last.clone());
+                        if has_vis {
+                            pub_aliases
+                                .entry(ident.clone())
+                                .or_default()
+                                .insert(al, last.clone());
+                        }
+                    }
+                    if has_vis && idents.contains(first) && first != ident {
+                        reexports
+                            .entry(ident.clone())
+                            .or_default()
+                            .insert(first.clone());
+                    }
+                }
+                i = (end + 1).min(toks.len());
+                continue;
+            }
+            i += 1;
+        }
+        for (k, tk) in toks.iter().enumerate() {
+            if let Some(first) = ident_of(tk)
+                && toks.get(k + 1).is_some_and(|n| n.tok == Tok::PathSep)
+            {
+                let mut j = k + 1;
+                while toks.get(j).is_some_and(|n| n.tok == Tok::PathSep)
+                    && let Some(seg) = toks.get(j + 1).and_then(ident_of)
+                {
+                    meta.qualified
+                        .entry(first.to_string())
+                        .or_default()
+                        .insert(seg.to_string());
+                    j += 2;
+                }
+            }
+        }
+        file_meta.insert(relfile.clone(), meta);
+
+        let mut u_idx = 0;
+        while u_idx < toks.len() {
+            let attr_start = u_idx;
+            while u_idx + 1 < toks.len()
+                && is_punct(&toks[u_idx], '#')
+                && (is_punct(&toks[u_idx + 1], '[')
+                    || (u_idx + 2 < toks.len()
+                        && is_punct(&toks[u_idx + 1], '!')
+                        && is_punct(&toks[u_idx + 2], '[')))
+            {
+                let open_b = if is_punct(&toks[u_idx + 1], '[') {
+                    u_idx + 1
+                } else {
+                    u_idx + 2
+                };
+                u_idx = group_end(toks, open_b);
+            }
+            if u_idx >= toks.len() {
+                break;
+            }
+            let (ve, bp) = if is_ident(&toks[u_idx], "pub") {
+                if toks.get(u_idx + 1).is_some_and(|n| is_punct(n, '(')) {
+                    (group_end(toks, u_idx + 1), false)
+                } else {
+                    (u_idx + 1, true)
+                }
+            } else {
+                (u_idx, false)
+            };
+            if ve >= toks.len() {
+                break;
+            }
+            let mut kw_idx = ve;
+            while toks.get(kw_idx).is_some_and(|t| {
+                is_ident(t, "async") || is_ident(t, "unsafe") || is_ident(t, "extern")
+            }) {
+                kw_idx += 1;
+            }
+            if toks.get(kw_idx).is_some_and(|t| is_ident(t, "const"))
+                && toks.get(kw_idx + 1).is_some_and(|t| is_ident(t, "fn"))
+            {
+                kw_idx += 1;
+            }
+            let kw = toks.get(kw_idx).and_then(ident_of).unwrap_or("");
+            if kw == "use" {
+                let end = (u_idx..toks.len())
+                    .find(|&j| is_punct(&toks[j], ';'))
+                    .unwrap_or(toks.len());
+                u_idx = (end + 1).min(toks.len());
+                continue;
+            }
+            if kw == "mod" && toks.get(kw_idx + 2).is_some_and(|t| is_punct(t, ';')) {
+                u_idx = kw_idx + 3;
+                continue;
+            }
+            let mut end = item_end(toks, kw_idx);
+            if end <= attr_start {
+                end = attr_start + 1;
+            }
+            let kind = unit_kind(kw);
+            let name = if matches!(
+                kind,
+                "fn" | "struct" | "enum" | "trait" | "type" | "const" | "static" | "union"
+            ) {
+                toks.get(kw_idx + 1).and_then(ident_of).map(str::to_string)
+            } else {
+                None
+            };
+            let mut words: BTreeSet<String> = toks[attr_start..end]
+                .iter()
+                .filter_map(ident_of)
+                .map(str::to_string)
+                .collect();
+            if let Some(n) = &name {
+                words.remove(n);
+            }
+            let mut impl_headers = Vec::new();
+            if kind == "impl" {
+                for tk in &toks[attr_start..end] {
+                    if is_punct(tk, '{') {
+                        break;
+                    }
+                    if let Some(id) = ident_of(tk)
+                        && !matches!(
+                            id,
+                            "impl"
+                                | "for"
+                                | "where"
+                                | "pub"
+                                | "const"
+                                | "async"
+                                | "unsafe"
+                                | "dyn"
+                                | "ref"
+                                | "mut"
+                        )
+                    {
+                        impl_headers.push(id.to_string());
+                    }
+                }
+            }
+            units.push(CodeUnit {
+                crate_name: cname.clone(),
+                ident: ident.clone(),
+                layer: clayer.clone(),
+                modpath: mpath.clone(),
+                pub_mod: *pubm,
+                file: relfile.clone(),
+                kind,
+                name,
+                bare_pub: bp,
+                words,
+                impl_headers,
+            });
+            u_idx = end;
+        }
+    }
+
+    let mut reexported_by: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for d in &idents {
+        let mut seen = BTreeSet::from([d.clone()]);
+        let mut stack = vec![d.clone()];
+        while let Some(x) = stack.pop() {
+            for e in reexports.get(&x).into_iter().flatten() {
+                if seen.insert(e.clone()) {
+                    stack.push(e.clone());
+                }
+            }
+        }
+        for c in seen {
+            reexported_by.entry(c).or_default().insert(d.clone());
+        }
+    }
+
+    let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut impl_units: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (idx, u) in units.iter().enumerate() {
+        if let Some(n) = &u.name {
+            by_name.entry(n.clone()).or_default().push(idx);
+        } else if u.kind == "impl" {
+            for h in &u.impl_headers {
+                impl_units.entry(h.clone()).or_default().push(idx);
+            }
+        }
+    }
+
+    let mut reached = vec![false; units.len()];
+    let mut queue = std::collections::VecDeque::new();
+    for (idx, u) in units.iter().enumerate() {
+        if ROOTS.contains(&u.crate_name.as_str()) {
+            reached[idx] = true;
+            queue.push_back(idx);
+        }
+    }
+
+    while let Some(cur) = queue.pop_front() {
+        let u_cur = &units[cur];
+        let Some(fm) = file_meta.get(&u_cur.file) else {
+            continue;
+        };
+        let mut expanded_words = u_cur.words.clone();
+        for w in &u_cur.words {
+            if let Some(orig) = fm.aliases.get(w) {
+                expanded_words.insert(orig.clone());
+            }
+            for d_al in pub_aliases.values() {
+                if let Some(orig) = d_al.get(w) {
+                    expanded_words.insert(orig.clone());
+                }
+            }
+        }
+        for w in &expanded_words {
+            if let Some(targets) = by_name.get(w) {
+                for &target in targets {
+                    if !reached[target]
+                        && can_file_reach_item(
+                            fm,
+                            &u_cur.file,
+                            &units[target],
+                            &reexported_by,
+                            &pub_aliases,
+                        )
+                    {
+                        reached[target] = true;
+                        queue.push_back(target);
+                    }
+                }
+            }
+            if let Some(imps) = impl_units.get(w) {
+                for &imp in imps {
+                    if !reached[imp] {
+                        let same_or_reached_type = units[imp].ident == u_cur.ident
+                            || by_name.get(w).is_some_and(|ts| {
+                                ts.iter()
+                                    .any(|&t| reached[t] && units[t].ident == units[imp].ident)
+                            });
+                        if same_or_reached_type {
+                            reached[imp] = true;
+                            queue.push_back(imp);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(self_name) = &u_cur.name
+            && let Some(imps) = impl_units.get(self_name)
+        {
+            for &imp in imps {
+                if !reached[imp] && units[imp].ident == u_cur.ident {
+                    reached[imp] = true;
+                    queue.push_back(imp);
+                }
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for (idx, u) in units.iter().enumerate() {
+        if ROOTS.contains(&u.crate_name.as_str()) || !SCANNED_LAYERS.contains(&u.layer.as_str()) {
+            continue;
+        }
+        if !u.pub_mod || u.modpath.first().is_some_and(|s| s == "<main>") {
+            continue;
+        }
+        if !u.bare_pub || !matches!(u.kind, "fn" | "struct" | "enum") {
+            continue;
+        }
+        let Some(name) = &u.name else { continue };
+        let module_path = std::iter::once(u.ident.as_str())
+            .chain(u.modpath.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join("::");
+        out.push(ItemReach {
+            path: format!("{module_path}::{name}"),
+            module_path,
+            kind: u.kind,
+            file: u.file.clone(),
+            reached: reached[idx],
+        });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    // Deduplicate identical cfg-branched declarations in the same module if any exist:
+    // an item is reached if any branch declaration of that path is reached.
+    let mut deduped: Vec<ItemReach> = Vec::with_capacity(out.len());
+    for item in out {
+        if let Some(prev) = deduped.last_mut()
+            && prev.path == item.path
+        {
+            prev.reached |= item.reached;
+        } else {
+            deduped.push(item);
+        }
+    }
+    deduped
+}
+
+fn cfg_test_words(text: &str) -> BTreeSet<String> {
+    let toks = tokens(&lex(text));
+    let mut words = BTreeSet::new();
+    let mut i = 0;
+    while i < toks.len() {
+        let gated = i + 6 < toks.len()
+            && is_punct(&toks[i], '#')
+            && is_punct(&toks[i + 1], '[')
+            && is_ident(&toks[i + 2], "cfg")
+            && is_punct(&toks[i + 3], '(')
+            && is_ident(&toks[i + 4], "test")
+            && is_punct(&toks[i + 5], ')')
+            && is_punct(&toks[i + 6], ']');
+        if !gated {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 7;
+        while j < toks.len() {
+            if is_punct(&toks[j], ';') || is_punct(&toks[j], ',') {
+                j += 1;
+                break;
+            }
+            if is_punct(&toks[j], '}') {
+                break;
+            }
+            if is_punct(&toks[j], '{') {
+                j = group_end(&toks, j);
+                break;
+            }
+            if is_punct(&toks[j], '(') || is_punct(&toks[j], '[') {
+                j = group_end(&toks, j);
+                continue;
+            }
+            j += 1;
+        }
+        for tk in &toks[i + 7..j] {
+            if let Some(w) = ident_of(tk) {
+                words.insert(w.to_string());
+            }
+        }
+        i = j;
+    }
+    words
+}
+
+fn all_lexed_words(text: &str) -> BTreeSet<String> {
+    tokens(&lex(text))
+        .into_iter()
+        .filter_map(|t| match t.tok {
+            Tok::Ident(w) => Some(w),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The item-granularity gate (bead fa-0hs4.14): every unreached public `fn`,
+/// `struct` or `enum` outside an already-registered whole-module row has a live
+/// `[[unwired_item]]` or `[[verification_item]]` row, and every row is live and
+/// non-stale.
+pub fn check_items(
+    items: &[ItemReach],
+    registry: &UnwiredModules,
+    read: &dyn Fn(&str) -> Option<String>,
+    today: Option<&str>,
+) -> Vec<String> {
+    let module_registered: BTreeSet<&str> = registry
+        .unwired
+        .iter()
+        .map(|u| u.path.as_str())
+        .chain(registry.verification.iter().map(|v| v.path.as_str()))
+        .collect();
+    let by_path: BTreeMap<&str, &ItemReach> =
+        items.iter().map(|it| (it.path.as_str(), it)).collect();
+    let registered: BTreeSet<&str> = registry
+        .unwired_items
+        .iter()
+        .map(|u| u.path.as_str())
+        .chain(registry.verification_items.iter().map(|v| v.path.as_str()))
+        .collect();
+    let mut fails = Vec::new();
+    for it in items.iter().filter(|it| !it.reached) {
+        if module_registered.contains(it.module_path.as_str()) {
+            continue;
+        }
+        if !registered.contains(it.path.as_str()) {
+            fails.push(format!(
+                "unreached item {} ({} in {}): no surface reaches it transitively. Wire it to a surface, tighten to pub(crate), or add an [[unwired_item]] / [[verification_item]] row to registries/unwired_modules.toml",
+                it.path, it.kind, it.file
+            ));
+        }
+    }
+    let row_state = |path: &str, fails: &mut Vec<String>| -> bool {
+        match by_path.get(path) {
+            None => {
+                fails.push(format!(
+                    "registries/unwired_modules.toml names item {path}, which is no pub library item; remove the row"
+                ));
+                false
+            }
+            Some(it) if it.reached => {
+                fails.push(format!(
+                    "stale item row: {path} is reached from a surface now; remove its row from registries/unwired_modules.toml"
+                ));
+                false
+            }
+            Some(_) => true,
+        }
+    };
+    for u in &registry.unwired_items {
+        if row_state(u.path.as_str(), &mut fails)
+            && let Some(today) = today
+            && u.expires.as_str() < today
+        {
+            fails.push(format!(
+                "expired item row: {} expired on {} (owner {}); wire it, or renew the row with a new reason",
+                u.path, u.expires, u.owner_bead
+            ));
+        }
+    }
+    for v in &registry.verification_items {
+        if !row_state(v.path.as_str(), &mut fails) {
+            continue;
+        }
+        let Some(item) = by_path.get(v.path.as_str()) else {
+            continue;
+        };
+        let leaf = v.path.rsplit("::").next().unwrap_or(&v.path);
+        let named = match read(v.consumer.as_str()) {
+            Some(consumer_src) => {
+                if v.consumer == item.file {
+                    cfg_test_words(&consumer_src).contains(leaf)
+                } else {
+                    all_lexed_words(&consumer_src).contains(leaf)
+                }
+            }
+            None => false,
+        };
+        if !named {
+            fails.push(format!(
+                "verification item row {}: consumer {} does not reference it",
+                v.path, v.consumer
+            ));
+        }
+    }
+    fails
+}
+
+/// Combined module + item human report.
+pub fn render_all(
+    modules: &[ModuleReach],
+    items: &[ItemReach],
+    registry: &UnwiredModules,
+) -> String {
+    let mut out = render(modules, registry);
+    let module_registered: BTreeSet<&str> = registry
+        .unwired
+        .iter()
+        .map(|u| u.path.as_str())
+        .chain(registry.verification.iter().map(|v| v.path.as_str()))
+        .collect();
+    let eligible: Vec<&ItemReach> = items
+        .iter()
+        .filter(|it| !module_registered.contains(it.module_path.as_str()))
+        .collect();
+    for it in eligible.iter().filter(|it| !it.reached) {
+        let status = if let Some(u) = registry.unwired_items.iter().find(|u| u.path == it.path) {
+            format!("unwired_item, {} until {}", u.owner_bead, u.expires)
+        } else if let Some(v) = registry
+            .verification_items
+            .iter()
+            .find(|v| v.path == it.path)
+        {
+            format!("verification_item, {}", v.consumer)
+        } else {
+            "UNREGISTERED".to_string()
+        };
+        out.push_str(&format!("{:<68} {:>6}  {status}\n", it.path, it.kind));
+    }
+    let reached = eligible.iter().filter(|it| it.reached).count();
+    out.push_str(&format!(
+        "{} library items: {reached} reached, {} unreached ({} unwired_item rows, {} verification_item rows)\n",
+        eligible.len(),
+        eligible.len() - reached,
+        registry.unwired_items.len(),
+        registry.verification_items.len()
+    ));
+    out
+}
+
+#[cfg(test)]
+#[test]
+fn unreached_public_function_fails() {
+    let (crates, mut files) = tests::fixture();
+    // Positive control: `fa_lib::fold::fold_all` is called from `fa-cli` via `Book::trial_balance`.
+    let base_reg = UnwiredModules::from_text(
+        "schema_version = 1\n[[unwired]]\npath = \"fa_lib::commented\"\nowner_bead = \"fa-1\"\nreason = \"r\"\nexpires = \"2026-12-15\"\n[[unwired]]\npath = \"fa_lib::orphan\"\nowner_bead = \"fa-1\"\nreason = \"r\"\nexpires = \"2026-12-15\"\n",
+    )
+    .expect("registry");
+    let items_ok = analyze_items(&crates, &|p| files.get(p).cloned());
+    assert!(
+        items_ok
+            .iter()
+            .any(|it| it.path == "fa_lib::fold::fold_all" && it.reached),
+        "positive control fold_all must be reached: {items_ok:?}"
+    );
+    assert!(
+        check_items(
+            &items_ok,
+            &base_reg,
+            &|p| files.get(p).cloned(),
+            Some("2026-11-11")
+        )
+        .is_empty()
+    );
+
+    // Planted negative: a public function inside reached module `fa_lib::fold` with no surface caller fails.
+    files
+        .get_mut("crates/fa-lib/src/fold.rs")
+        .expect("fold.rs")
+        .push_str("\npub fn planted_unreached_fn() {}\n");
+    let items_bad = analyze_items(&crates, &|p| files.get(p).cloned());
+    let fails = check_items(
+        &items_bad,
+        &base_reg,
+        &|p| files.get(p).cloned(),
+        Some("2026-11-11"),
+    );
+    assert_eq!(fails.len(), 1, "{fails:?}");
+    assert!(
+        fails[0].contains("unreached item fa_lib::fold::planted_unreached_fn"),
+        "{fails:?}"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn expired_function_registration_fails() {
+    let (crates, mut files) = tests::fixture();
+    files
+        .get_mut("crates/fa-lib/src/fold.rs")
+        .expect("fold.rs")
+        .push_str("\npub fn planted_expiring_fn() {}\n");
+    let reg = UnwiredModules::from_text(
+        "schema_version = 1\n[[unwired]]\npath = \"fa_lib::commented\"\nowner_bead = \"fa-1\"\nreason = \"r\"\nexpires = \"2026-12-15\"\n[[unwired]]\npath = \"fa_lib::orphan\"\nowner_bead = \"fa-1\"\nreason = \"r\"\nexpires = \"2026-12-15\"\n[[unwired_item]]\npath = \"fa_lib::fold::planted_expiring_fn\"\nowner_bead = \"fa-2\"\nreason = \"r\"\nexpires = \"2026-10-21\"\n",
+    )
+    .expect("registry");
+    let items = analyze_items(&crates, &|p| files.get(p).cloned());
+    let read = |p: &str| files.get(p).cloned();
+    assert!(check_items(&items, &reg, &read, Some("2026-10-21")).is_empty());
+    let fails = check_items(&items, &reg, &read, Some("2026-10-22"));
+    assert_eq!(fails.len(), 1, "{fails:?}");
+    assert!(
+        fails[0].contains(
+            "expired item row: fa_lib::fold::planted_expiring_fn expired on 2026-10-21 (owner fa-2)"
+        ),
+        "{fails:?}"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn test_only_caller_does_not_count_as_reachable() {
+    let (crates, mut files) = tests::fixture();
+    files
+        .get_mut("crates/fa-lib/src/fold.rs")
+        .expect("fold.rs")
+        .push_str(
+            "\npub fn only_called_by_tests() {}\n#[cfg(test)]\nmod unit_caller { fn check() { super::only_called_by_tests(); } }\n",
+        );
+    files.insert(
+        "crates/fa-lib/tests/it.rs".into(),
+        "#[test]\nfn ext() { fa_lib::fold::only_called_by_tests(); }\n".into(),
+    );
+    let base_reg = UnwiredModules::from_text(
+        "schema_version = 1\n[[unwired]]\npath = \"fa_lib::commented\"\nowner_bead = \"fa-1\"\nreason = \"r\"\nexpires = \"2026-12-15\"\n[[unwired]]\npath = \"fa_lib::orphan\"\nowner_bead = \"fa-1\"\nreason = \"r\"\nexpires = \"2026-12-15\"\n",
+    )
+    .expect("registry");
+    let read = |p: &str| files.get(p).cloned();
+    let items = analyze_items(&crates, &read);
+    assert!(
+        items
+            .iter()
+            .any(|it| it.path == "fa_lib::fold::only_called_by_tests" && !it.reached),
+        "cfg(test) and integration tests must not count as surface reach: {items:?}"
+    );
+    let fails = check_items(&items, &base_reg, &read, Some("2026-11-11"));
+    assert_eq!(fails.len(), 1, "{fails:?}");
+    assert!(
+        fails[0].contains("unreached item fa_lib::fold::only_called_by_tests"),
+        "{fails:?}"
+    );
+
+    // Explicit [[verification_item]] registration with a real test consumer passes.
+    let verif_reg = UnwiredModules::from_text(
+        "schema_version = 1\n[[unwired]]\npath = \"fa_lib::commented\"\nowner_bead = \"fa-1\"\nreason = \"r\"\nexpires = \"2026-12-15\"\n[[unwired]]\npath = \"fa_lib::orphan\"\nowner_bead = \"fa-1\"\nreason = \"r\"\nexpires = \"2026-12-15\"\n[[verification_item]]\npath = \"fa_lib::fold::only_called_by_tests\"\nconsumer = \"crates/fa-lib/tests/it.rs\"\nreason = \"test-only entrypoint\"\n",
+    )
+    .expect("verif registry");
+    assert!(check_items(&items, &verif_reg, &read, Some("2026-11-11")).is_empty());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -950,7 +1885,7 @@ mod tests {
 
     /// A small workspace: a surface `fa-cli`, a facade `fa` re-exporting
     /// `fa-lib`, whose modules are reached in different ways or not at all.
-    fn fixture() -> (Vec<CrateSpec>, BTreeMap<String, String>) {
+    pub(super) fn fixture() -> (Vec<CrateSpec>, BTreeMap<String, String>) {
         let crates = vec![
             spec("fa-cli", "surface"),
             spec("fa", "surface"),
@@ -1169,6 +2104,24 @@ mod tests {
             "{}\n{}",
             fails.join("\n"),
             render(&modules, &registry)
+        );
+    }
+
+    #[test]
+    fn the_workspace_has_no_unregistered_unreached_item() {
+        let root = crate::default_workspace_root();
+        let crates = workspace_crates().expect("topology");
+        let read = |p: &str| std::fs::read_to_string(root.join(p)).ok();
+        let modules = analyze(&crates, &read);
+        let items = analyze_items(&crates, &read);
+        assert!(items.len() > 500, "{} items", items.len());
+        let registry = UnwiredModules::embedded().expect("unwired_modules.toml");
+        let fails = check_items(&items, &registry, &read, None);
+        assert!(
+            fails.is_empty(),
+            "{}\n{}",
+            fails.join("\n"),
+            render_all(&modules, &items, &registry)
         );
     }
 }

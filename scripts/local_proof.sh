@@ -117,9 +117,11 @@ case "$output" in "$root"|"$root"/*) fail "output must be outside the repository
 # Never write into another producer's directory if that claim fails.
 mkdir "$output" || fail "could not claim output directory: $output"
 if [ -n "$resume_from" ]; then
+  [ -d "$resume_from" ] || fail "--resume-from directory does not exist: $resume_from"
+  resume_from="$(cd "$resume_from" && pwd -P)"
   source_id="$("${hash_command[@]}" "$resume_from/SHA256SUMS" | awk '{print $1}')"
-  mkdir "$output/sources"
-  cp -R "$resume_from" "$output/sources/$source_id" \
+  mkdir -p "$output/sources/$source_id"
+  cp -R "$resume_from"/. "$output/sources/$source_id/" \
     || fail "could not retain the source proof; no commands executed"
   bash scripts/local_proof_verify.sh --repository "$root" --for-resume "$output/sources/$source_id" \
     || fail "retained source proof changed during copy; no commands executed"
@@ -249,7 +251,7 @@ sums_sha256 = hashlib.sha256((root / "SHA256SUMS").read_bytes()).hexdigest()
 
 test_list_log = root / "steps" / "test-list.log"
 if test_list_log.is_file():
-    listed = sorted(re.findall(r"^\s*(.+): test$", test_list_log.read_text(errors="replace"), re.M))
+    listed = sorted(re.findall(r"^\s*(.+): test$", test_list_log.read_text(encoding="utf-8", errors="replace"), re.M))
     if listed:
         test_inv_digest = hashlib.sha256(("\n".join(listed) + "\n").encode("utf-8")).hexdigest()
     else:
@@ -279,7 +281,7 @@ if step_file.is_file():
             "worker": rec.get("worker", "local"),
         }
         if log_path.is_file():
-            text = log_path.read_text(errors="replace")
+            text = log_path.read_text(encoding="utf-8", errors="replace")
             if step_name == "test-list":
                 witness["listed_tests"] = len(re.findall(r"^\s*(.+): test$", text, re.M))
                 witness["test_inventory_digest"] = test_inv_digest
@@ -312,10 +314,14 @@ if step_file.is_file():
 print("\n".join(out))
 PY
 )"
-  printf '%s\n' "$note_body" | git notes --ref=fa-verdict add -f -F - "$before_commit" 2>/dev/null || true
-  note_id="$(git notes --ref=fa-verdict list "$before_commit" 2>/dev/null | awk '{print $1}' || true)"
+  printf '%s\n' "$note_body" | git notes --ref=fa-verdict add -f -F - "$before_commit" \
+    || fail "could not write refs/notes/fa-verdict note for $before_commit"
+  note_id="$(git notes --ref=fa-verdict list "$before_commit" | awk '{print $1}')" \
+    || fail "could not read back refs/notes/fa-verdict note for $before_commit"
+  [ -n "$note_id" ] || fail "refs/notes/fa-verdict note missing after add for $before_commit"
   if [ "$push_note" -eq 1 ]; then
-    git push origin refs/notes/fa-verdict:refs/notes/fa-verdict 2>/dev/null || true
+    git push origin refs/notes/fa-verdict:refs/notes/fa-verdict \
+      || fail "could not push refs/notes/fa-verdict to origin"
   fi
 fi
 
