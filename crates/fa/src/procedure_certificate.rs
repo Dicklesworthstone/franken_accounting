@@ -925,7 +925,7 @@ impl ProcedureCertificate {
             || evidence != Some(self.report.evidence.as_str())
         {
             return Err(offline_unsupported(
-                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, exact duplicates v1, round-amount density v1, first-digit Benford v2, and LIBR/FIFO/LIFO v2 with their complete parameter inventories; JET v2 permits an optional cutoff, while tracing v2 requires a claim date and canonical account/source handles",
+                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, exact duplicates v1, round-amount density v1, first-digit Benford v2, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; JET v2 permits an optional cutoff, while tracing v2 requires a claim date and canonical account/source handles",
             ));
         }
         let jet = matches!(

@@ -349,6 +349,7 @@ fn encoded(output: &[u8]) -> Vec<u8> {
     certificate
         .bytes(super::super::FORMAT)
         .bytes(b"source certificate")
+        .bytes(&[])
         .fixed(&[2; 32])
         .u128(3)
         .fixed(&[4; 32])

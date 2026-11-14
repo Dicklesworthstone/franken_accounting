@@ -261,6 +261,19 @@ fn fifo_and_lifo_certificates_reopen_and_verify_offline_with_wide_native_amounts
     ]);
 }
 
+#[test]
+fn pro_rata_certificates_reopen_and_verify_offline_with_wide_native_amounts() {
+    verify_wide_tracing(&[
+        (
+            "trace.pro_rata",
+            "FA-EVID-L18",
+            "2026-03-02",
+            i128::from(u64::MAX) + 2,
+        ),
+        ("trace.pro_rata", "FA-EVID-L18", "2026-03-05", 4_000),
+    ]);
+}
+
 fn verify_wide_tracing(cases: &[(&str, &str, &str, i128)]) {
     let fixture = Fixture::new();
     let evidence = fixture.chart_and_evidence();
@@ -280,7 +293,7 @@ fn verify_wide_tracing(cases: &[(&str, &str, &str, i128)]) {
         &evidence,
     );
     fixture.post("ordered-clean", "2026-03-04", "100.00", &evidence);
-    // Shared evidence does not authorize replenishment under either ordered law.
+    // Shared evidence does not authorize replenishment under these tracing laws.
     fixture.post("ordered-return", "2026-03-05", "20.00", &evidence);
     withdrawal(
         &fixture,

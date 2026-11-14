@@ -91,7 +91,7 @@
 //! `jet.period_end_timing` v1/v2, `duplicates.same_same_same` v1 and first-digit
 //! Benford v2 from the complete native history. Different-date duplicate v1
 //! and round-amount density v1 reproduce their nearest eligible pairs and exact
-//! account populations. LIBR, FIFO and LIFO v2 reconstruct one account/source/unit/entity
+//! account populations. LIBR, FIFO, LIFO and pro-rata v2 reconstruct one account/source/unit/entity
 //! stream through a required claim date, including signed overdrafts, declared
 //! intraday order and evidence-linked replenishment. Tracing proves the named
 //! calculation, not legal entitlement or source-document truth.

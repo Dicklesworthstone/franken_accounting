@@ -101,7 +101,7 @@ pub(super) struct Stream {
     pub comparisons: u64,
 }
 
-/// Source normalization is shared by the three independent tracing laws. Only
+/// Source normalization is shared by all four independent tracing laws. Only
 /// authenticated historical metadata and the already resolved live population
 /// enter here; neither producer output nor current graph mirrors are inputs.
 pub(super) fn stream(

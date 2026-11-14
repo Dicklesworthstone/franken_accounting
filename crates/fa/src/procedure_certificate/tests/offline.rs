@@ -9,6 +9,8 @@ use fa_verify::report::{VerifiedReport, verify_report_expected};
 mod libr;
 #[path = "offline/ordered_trace.rs"]
 mod ordered_trace;
+#[path = "offline/pro_rata.rs"]
+mod pro_rata;
 #[path = "offline/profile_admission.rs"]
 mod profile_admission;
 

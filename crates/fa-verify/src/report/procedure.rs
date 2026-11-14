@@ -16,7 +16,8 @@
 //! handles and effective claim date, and reconstructs one native-unit/entity
 //! stream under its declared intraday and replenishment laws. FIFO and LIFO v2
 //! independently consume the older clean, source and newer clean money under
-//! the same authenticated movement and intraday contract. The cutoff selects
+//! the same authenticated movement and intraday contract. Pro-rata v2 divides
+//! withdrawals under the exact two-share LargestRemainder law. The cutoff selects
 //! postings before reversal liveness
 //! while the input commitment retains every visible entry at the frontier.
 //! Replacement identities require a later authenticated reversal, replacement,
@@ -36,6 +37,7 @@ mod different_dates;
 mod libr;
 mod ordered;
 mod post_closing;
+mod pro_rata;
 mod round_density;
 pub(super) use post_closing::period_transitions;
 
@@ -82,6 +84,11 @@ pub enum VerifiedProcedureParameters {
         account: u128,
         source: u128,
     },
+    TraceProRata {
+        intraday_order: u32,
+        account: u128,
+        source: u128,
+    },
     FirstDigit {
         account_type: u32,
         currency_iso4217: u32,
@@ -105,6 +112,7 @@ impl VerifiedProcedureParameters {
             Self::TraceLibr { .. } => "trace.libr",
             Self::TraceFifo { .. } => "trace.fifo",
             Self::TraceLifo { .. } => "trace.lifo",
+            Self::TraceProRata { .. } => "trace.pro_rata",
             Self::FirstDigit { .. } => "benford.first_digit",
         }
     }
@@ -120,6 +128,7 @@ impl VerifiedProcedureParameters {
             Self::TraceLibr { .. } => "FA-EVID-L15",
             Self::TraceFifo { .. } => "FA-EVID-L16",
             Self::TraceLifo { .. } => "FA-EVID-L17",
+            Self::TraceProRata { .. } => "FA-EVID-L18",
             Self::FirstDigit { .. } => "FA-EVID-L10",
         }
     }
@@ -149,7 +158,9 @@ impl VerifiedProcedureParameters {
                 ("intraday_order", intraday_order),
                 ("replenishment", replenishment),
             ],
-            Self::TraceFifo { intraday_order, .. } | Self::TraceLifo { intraday_order, .. } => {
+            Self::TraceFifo { intraday_order, .. }
+            | Self::TraceLifo { intraday_order, .. }
+            | Self::TraceProRata { intraday_order, .. } => {
                 vec![("intraday_order", intraday_order)]
             }
             Self::FirstDigit {
@@ -182,6 +193,9 @@ impl VerifiedProcedureParameters {
         }
         | Self::TraceLifo {
             account, source, ..
+        }
+        | Self::TraceProRata {
+            account, source, ..
         } = self
         {
             vec![
@@ -206,6 +220,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmountDensity { .. } => &round_density::DEFAULTS,
             Self::TraceLibr { .. } => &libr::DEFAULTS,
             Self::TraceFifo { .. } | Self::TraceLifo { .. } => &ordered::DEFAULTS,
+            Self::TraceProRata { .. } => &pro_rata::DEFAULTS,
             Self::FirstDigit { .. } => &benford::DEFAULTS,
         }
     }
@@ -222,7 +237,10 @@ impl VerifiedProcedureParameters {
     pub(crate) fn is_trace(self) -> bool {
         matches!(
             self,
-            Self::TraceLibr { .. } | Self::TraceFifo { .. } | Self::TraceLifo { .. }
+            Self::TraceLibr { .. }
+                | Self::TraceFifo { .. }
+                | Self::TraceLifo { .. }
+                | Self::TraceProRata { .. }
         )
     }
 
@@ -235,9 +253,10 @@ impl VerifiedProcedureParameters {
             | Self::SameSameDifferent { .. }
             | Self::RoundAmountDensity { .. } => "O(legs log legs)",
             Self::FirstDigit { .. } => "O(legs)",
-            Self::TraceLibr { .. } | Self::TraceFifo { .. } | Self::TraceLifo { .. } => {
-                "O(posting_legs log entities + movements log movements)"
-            }
+            Self::TraceLibr { .. }
+            | Self::TraceFifo { .. }
+            | Self::TraceLifo { .. }
+            | Self::TraceProRata { .. } => "O(posting_legs log entities + movements log movements)",
         }
     }
 }
@@ -517,11 +536,12 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "trace.libr" => ("FA-EVID-L15", None),
         "trace.fifo" => ("FA-EVID-L16", None),
         "trace.lifo" => ("FA-EVID-L17", None),
+        "trace.pro_rata" => ("FA-EVID-L18", None),
         "benford.first_digit" => ("FA-EVID-L10", None),
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, exact duplicates and round-amount density v1, first-digit Benford v2, and one-account LIBR/FIFO/LIFO v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, exact duplicates and round-amount density v1, first-digit Benford v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
@@ -536,7 +556,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         ) && version != 1)
         || (matches!(
             id,
-            "benford.first_digit" | "trace.libr" | "trace.fifo" | "trace.lifo"
+            "benford.first_digit" | "trace.libr" | "trace.fifo" | "trace.lifo" | "trace.pro_rata"
         ) && version != 2)
         || question.u8("procedure.claim")? != 0
         || text(&mut question, 128, "procedure.evidence")? != evidence
@@ -559,7 +579,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             "this procedure version does not support an effective-date cutoff",
         ));
     }
-    if matches!(id, "trace.libr" | "trace.fifo" | "trace.lifo") && effective_through.is_none() {
+    if matches!(
+        id,
+        "trace.libr" | "trace.fifo" | "trace.lifo" | "trace.pro_rata"
+    ) && effective_through.is_none()
+    {
         return Err(failed(
             "procedure_profile",
             "tracing requires an effective claim date",
@@ -569,6 +593,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         libr::decode(&mut question)?
     } else if matches!(id, "trace.fifo" | "trace.lifo") {
         ordered::decode(&mut question, id == "trace.lifo")?
+    } else if id == "trace.pro_rata" {
+        pro_rata::decode(&mut question)?
     } else if id == "benford.first_digit" {
         benford::decode(&mut question)?
     } else if id == "numbers.round_amount_density" {
@@ -1293,6 +1319,7 @@ fn recompute_version(
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }
         | VerifiedProcedureParameters::TraceLifo { .. }
+        | VerifiedProcedureParameters::TraceProRata { .. }
         | VerifiedProcedureParameters::FirstDigit { .. } => 1,
     };
     let mut live_entries = 0u64;
@@ -1404,6 +1431,7 @@ fn recompute_version(
             | VerifiedProcedureParameters::TraceLibr { .. }
             | VerifiedProcedureParameters::TraceFifo { .. }
             | VerifiedProcedureParameters::TraceLifo { .. }
+            | VerifiedProcedureParameters::TraceProRata { .. }
             | VerifiedProcedureParameters::FirstDigit { .. } => {
                 grouped_population.push(entry);
                 None
@@ -1446,6 +1474,12 @@ fn recompute_version(
         findings.push(finding);
         live_legs = legs;
         comparisons = compared;
+    } else if matches!(profile, VerifiedProcedureParameters::TraceProRata { .. }) {
+        let (finding, legs, compared) =
+            pro_rata::replay(profile, effective_through, &grouped_population, registry)?;
+        findings.push(finding);
+        live_legs = legs;
+        comparisons = compared;
     } else if matches!(profile, VerifiedProcedureParameters::FirstDigit { .. }) {
         let (finding, legs) = benford::replay(profile, &grouped_population, registry)?;
         findings.push(finding);
@@ -1461,7 +1495,8 @@ fn recompute_version(
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }
-        | VerifiedProcedureParameters::TraceLifo { .. } => None,
+        | VerifiedProcedureParameters::TraceLifo { .. }
+        | VerifiedProcedureParameters::TraceProRata { .. } => None,
     };
     if let Some(population) = statistic_population {
         for finding in &mut findings {
