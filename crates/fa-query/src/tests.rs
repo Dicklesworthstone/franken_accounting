@@ -940,6 +940,88 @@ fn an_aggregate_over_an_amount_alias_is_computed_exactly() {
     assert!(r.message.contains("adds amounts of every unit"), "{r:?}");
 }
 
+/// A path mentioning IN_UNIT need not end at the amount's unit. In particular,
+/// a zero-hop walk returns the original Leg, whose absent code groups every
+/// currency together. Unit provenance requires one directed IN_UNIT hop.
+#[test]
+fn amount_unit_provenance_requires_one_exact_relationship() {
+    for relationship in [
+        "-[:IN_UNIT*0]->",
+        "-[:IN_UNIT*0..1]->",
+        "-[:IN_UNIT*1..2]->",
+        "-[:IN_UNIT*2]->",
+        "-[:IN_UNIT]->{0,1}",
+        "-[:IN_UNIT]->{,1}",
+        "-[:IN_UNIT]->{2}",
+        "-[:IN_UNIT|POSTS_TO]->",
+        "-[:POSTS_TO|IN_UNIT]->",
+        "-[:IN_UNIT]-",
+        "<-[:IN_UNIT]->",
+    ] {
+        for projection in [
+            "RETURN u.code AS unit, SUM(l.amount) AS total",
+            "WHERE u.unit_id = 1 RETURN SUM(l.amount) AS total",
+        ] {
+            let text = format!("MATCH (l:Leg){relationship}(u) {projection}");
+            let r = refused(&text);
+            assert_eq!(r.law, Law::Amount, "{text}: {r:?}");
+        }
+    }
+    // The unambiguous native spellings of exactly one hop keep working.
+    for relationship in [
+        "-[:IN_UNIT]->",
+        "-[edge:IN_UNIT]->",
+        "-[:IN_UNIT*1]->",
+        "-[:IN_UNIT*1..1]->",
+        "-[:IN_UNIT*..1]->",
+        "-[:IN_UNIT]->{1}",
+        "-[:IN_UNIT]->{1,1}",
+        "- /* relation */ [:IN_UNIT] ->",
+    ] {
+        let text = format!(
+            "MATCH (l:Leg){relationship}(u:Unit) RETURN u.code AS unit, SUM(l.amount) AS total"
+        );
+        let (_, query) = native(&text);
+        assert!(query.aggregation().is_some(), "{text}");
+    }
+    for relationship in [
+        "<-[:IN_UNIT]-",
+        "<-[edge:IN_UNIT]-",
+        "<-[:IN_UNIT*1..1]-",
+        "<-[:IN_UNIT]-{1}",
+    ] {
+        let text = format!(
+            "MATCH (u:Unit){relationship}(l:Leg) RETURN u.code AS unit, SUM(l.amount) AS total"
+        );
+        let (_, query) = native(&text);
+        assert!(query.aggregation().is_some(), "{text}");
+    }
+    // A separate direct pin still proves the amount's unit, regardless of
+    // an unrelated graph walk used for an ordinary grouping column.
+    let (_, query) = native(
+        "MATCH (l:Leg)-[:IN_UNIT*0..1]->(u) WHERE l.unit_id = 1 RETURN u.code, SUM(l.amount) AS total",
+    );
+    assert!(query.aggregation().is_some());
+}
+
+#[test]
+fn a_pattern_unit_pin_is_the_complete_scalar_value() {
+    for map in [
+        "unit_id: 1 + l.unit_id",
+        "unit_id: 1, unit_id: l.unit_id",
+        "unit_id: 1 OR l.unit_id = 2",
+    ] {
+        let text = format!("MATCH (l:Leg {{{map}}}) RETURN SUM(l.amount) AS total");
+        assert_eq!(refused(&text).law, Law::Amount, "{text}");
+    }
+    for text in [
+        "MATCH (l:Leg {unit_id: 1, side: 0}) RETURN SUM(l.amount) AS total",
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit {code: 'USD'}) RETURN SUM(l.amount) AS total",
+    ] {
+        assert!(native(text).1.aggregation().is_some(), "{text}");
+    }
+}
+
 /// fa-5c1, the runtime graph: `CALL fa.access_log` is the AccessEvent read
 /// itself, at trunk's head, optionally one reader's; every coordinate it
 /// cannot honour is refused with the admissible form, never ignored.

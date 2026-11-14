@@ -359,6 +359,83 @@ fn native_pipeline_preserves_exact_units_and_refuses_unsupported_certification()
 }
 
 #[test]
+fn native_amount_aggregates_require_a_direct_unit_witness() {
+    let mut f = Fixture::new();
+    f.post(f.proposal("usd-unit-witness", "2026-03-01", f.usd, "ar", "sales", 123));
+    f.post(f.proposal("eur-unit-witness", "2026-03-02", f.eur, "ar", "sales", 7));
+    let head = f.book.head().unwrap();
+    let reader = cap(&["read", "produce"]);
+    let expected = vec![
+        vec![
+            QueryCell::Text("EUR".into()),
+            QueryCell::Decimal("0.07".into()),
+        ],
+        vec![
+            QueryCell::Text("USD".into()),
+            QueryCell::Decimal("1.23".into()),
+        ],
+    ];
+    for relationship in ["-[:IN_UNIT]->", "-[:IN_UNIT*1..1]->", "-[:IN_UNIT]->{1}"] {
+        let statement = format!(
+            "MATCH (l:Leg){relationship}(u:Unit) WHERE l.side = 0 RETURN u.code AS unit, SUM(l.amount) AS total ORDER BY unit"
+        );
+        let certified = f
+            .book
+            .certify_query(PRINCIPAL, &reader, &statement)
+            .unwrap()
+            .unwrap();
+        assert_eq!(certified.rows.rows, expected, "{relationship}");
+        assert_eq!(
+            f.book
+                .replay_query(PRINCIPAL, &reader, &certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.rows,
+            "{relationship}",
+        );
+    }
+    // These are valid native WALK forms. The zero-hop occurrence returns
+    // u=l, not a Unit; u.code is then NULL for both currencies. Aggregating
+    // that group would report the meaningless combined amount 1.30.
+    let fa_query::Selection::Native(raw) = fa_query::rewrite(
+        "MATCH (l:Leg)-[:IN_UNIT*0]->(u) WHERE l.side = 0 RETURN u.code AS unit, l.amount AS amount",
+    )
+    .unwrap()
+    .selection
+    else {
+        panic!("native zero-hop walk");
+    };
+    let raw = f.book.query_native(&raw, head, None).unwrap().unwrap();
+    assert_eq!(raw.rows.len(), 2);
+    assert!(raw.rows.iter().all(|row| row[0] == QueryCell::Null));
+    assert!(
+        raw.rows
+            .contains(&vec![QueryCell::Null, QueryCell::Decimal("0.07".into()),])
+    );
+    assert!(
+        raw.rows
+            .contains(&vec![QueryCell::Null, QueryCell::Decimal("1.23".into()),])
+    );
+    for relationship in [
+        "-[:IN_UNIT*0]->",
+        "-[:IN_UNIT*0..1]->",
+        "-[:IN_UNIT]->{0,1}",
+    ] {
+        let statement = format!(
+            "MATCH (l:Leg){relationship}(u) WHERE l.side = 0 RETURN u.code AS unit, SUM(l.amount) AS total ORDER BY unit"
+        );
+        let refusal = f
+            .book
+            .certify_query(PRINCIPAL, &reader, &statement)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, code::QUERY_AMOUNT_LAW, "{relationship}");
+        assert!(refusal.message.contains("every unit"), "{refusal:?}");
+    }
+    assert_eq!(f.book.head().unwrap(), head, "query checks never publish");
+}
+
+#[test]
 fn historical_query_authority_binds_native_reads_certification_and_typed_replay() {
     let mut f = Fixture::new();
     f.post(f.proposal(

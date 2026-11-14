@@ -16,7 +16,10 @@
 //! or by its `IN_UNIT` unit `u` with `u.code = '<code>'` or
 //! `u.unit_id = <literal>`, as a top-level conjunct of a `WHERE` with no
 //! root `OR`, or in the pattern's own map (`(u:Unit {code: 'USD'})`). It is
-//! grouped by a non-aggregate item that is exactly `x.unit_id`, `u.code`,
+//! linked by exactly one directed `IN_UNIT` hop: zero-hop/longer walks and
+//! relationship alternatives do not establish the endpoint's unit identity.
+//! A map pin is one complete scalar literal, never the prefix of an expression.
+//! A unit is grouped by a non-aggregate item that is exactly `x.unit_id`, `u.code`,
 //! `u.unit_id` or `u` (an expression that only mentions one, such as
 //! `x.unit_id * 0`, groups nothing). A pin holds in its scope: a `WITH`
 //! passes on only the bindings it projects unchanged, a `UNION` arm starts
@@ -51,8 +54,8 @@ const PIN_FIX: &str = "pin one unit: (l)-[:IN_UNIT]->(u:Unit {code: 'USD'}) or W
 pub(crate) struct Node {
     pub var: Option<String>,
     pub labels: Vec<String>,
-    /// Map entries: key and the value's token index.
-    map: Vec<(String, usize)>,
+    /// Map entries: key and the complete value's token range.
+    map: Vec<(String, std::ops::Range<usize>)>,
     open: usize,
     close: usize,
 }
@@ -91,7 +94,13 @@ pub(crate) fn nodes(lexed: &Lexed<'_>, from: usize, to: usize) -> Vec<Node> {
                     && lexed.kind(k) == Some(Kind::Word)
                     && lexed.punct(k + 1, ':')
                 {
-                    map.push((lexed.str(k).to_string(), k + 2));
+                    let end = (k + 2..close)
+                        .find(|&at| {
+                            (lexed.tokens[at].parent == Some(j) && lexed.punct(at, ','))
+                                || (lexed.tokens[at].parent == Some(i) && lexed.punct(at, '}'))
+                        })
+                        .unwrap_or(close);
+                    map.push((lexed.str(k).to_string(), k + 2..end));
                 }
             }
         }
@@ -107,31 +116,89 @@ pub(crate) fn nodes(lexed: &Lexed<'_>, from: usize, to: usize) -> Vec<Node> {
     found
 }
 
-/// `(x)-[:IN_UNIT]->(u)` edges between consecutive nodes of one path, as
-/// (amount binding, unit binding).
+/// Whether the complete relationship between two nodes proves a single
+/// directed IN_UNIT hop, and if so whether its direction is reversed.
+/// Keywords are case-insensitive in GQL; relation names are not.
+fn single_unit_hop(lexed: &Lexed<'_>, from: usize, to: usize) -> Option<bool> {
+    let mut at = from;
+    let reversed = lexed.punct(at, '<');
+    at += usize::from(reversed);
+    if !lexed.punct(at, '-') || !lexed.punct(at + 1, '[') {
+        return None;
+    }
+    at += 2;
+    if lexed.kind(at) == Some(Kind::Word) && lexed.punct(at + 1, ':') {
+        at += 1; // Optional relationship binding, as in [r:IN_UNIT].
+    }
+    if !lexed.punct(at, ':') || lexed.str(at + 1) != "IN_UNIT" {
+        return None;
+    }
+    at += 2;
+    let one =
+        |index| lexed.kind(index) == Some(Kind::Digits) && lexed.str(index).parse::<u16>() == Ok(1);
+    let inner_bounds = lexed.punct(at, '*');
+    if inner_bounds {
+        at += 1;
+        if one(at) {
+            at += 1;
+            if lexed.punct(at, '.') && lexed.punct(at + 1, '.') {
+                at += 2;
+                if !one(at) {
+                    return None;
+                }
+                at += 1;
+            }
+        } else if lexed.punct(at, '.') && lexed.punct(at + 1, '.') && one(at + 2) {
+            // The native Cypher spelling *..1 has an implicit lower bound of 1.
+            at += 3;
+        } else {
+            return None;
+        }
+    }
+    if !lexed.punct(at, ']') || !lexed.punct(at + 1, '-') {
+        return None;
+    }
+    at += 2;
+    if !reversed {
+        if !lexed.punct(at, '>') {
+            return None;
+        }
+        at += 1;
+    }
+    if lexed.punct(at, '{') {
+        // Native GQL postfix {,1} starts at zero, so only {1} or {1,1}
+        // proves one hop. Native syntax also rejects two quantifiers.
+        if inner_bounds || !one(at + 1) {
+            return None;
+        }
+        at += 2;
+        if lexed.punct(at, ',') {
+            if !one(at + 1) {
+                return None;
+            }
+            at += 2;
+        }
+        if !lexed.punct(at, '}') {
+            return None;
+        }
+        at += 1;
+    }
+    (at == to).then_some(reversed)
+}
+
+/// Exact `(x)-[:IN_UNIT]->(u)` edges between consecutive nodes of one path,
+/// as (amount binding, unit binding). A mention of IN_UNIT inside a broader
+/// walk or an alternative relation is not a unit witness.
 fn unit_edges(lexed: &Lexed<'_>, nodes: &[Node]) -> Vec<(String, String)> {
     let mut edges = Vec::new();
     for pair in nodes.windows(2) {
         let (a, b) = (&pair[0], &pair[1]);
-        let between = a.close + 1..b.open;
-        if between.is_empty()
-            || between
-                .clone()
-                .any(|k| lexed.root(k) && lexed.punct(k, ','))
-        {
+        let Some(reversed) = single_unit_hop(lexed, a.close + 1, b.open) else {
             continue;
-        }
-        let in_unit = between.clone().any(|k| {
-            lexed.word(k, "IN_UNIT") && (lexed.punct(k - 1, ':') || lexed.punct(k - 1, '|'))
-        });
-        if !in_unit {
-            continue;
-        }
-        let left = lexed.punct(between.start, '<');
-        let right = lexed.punct(between.end - 1, '>');
-        match (&a.var, &b.var, left, right) {
-            (Some(x), Some(u), false, true) => edges.push((x.clone(), u.clone())),
-            (Some(u), Some(x), true, false) => edges.push((x.clone(), u.clone())),
+        };
+        match (&a.var, &b.var, reversed) {
+            (Some(x), Some(u), false) => edges.push((x.clone(), u.clone())),
+            (Some(u), Some(x), true) => edges.push((x.clone(), u.clone())),
             _ => {}
         }
     }
@@ -321,12 +388,16 @@ impl Facts {
             for (key, value) in &node.map {
                 let unit_key =
                     key == "unit_id" || (key == "code" && node.labels.iter().any(|l| l == "Unit"));
-                if unit_key && matches!(lexed.kind(*value), Some(Kind::Digits | Kind::Quoted)) {
+                if unit_key
+                    && value.len() == 1
+                    && matches!(lexed.kind(value.start), Some(Kind::Digits | Kind::Quoted))
+                    && node.map.iter().filter(|(other, _)| other == key).count() == 1
+                {
                     self.pins.insert(
                         var.clone(),
                         Pin {
                             key: key.clone(),
-                            value: lexed.str(*value).to_string(),
+                            value: lexed.str(value.start).to_string(),
                         },
                     );
                 }
@@ -540,7 +611,7 @@ pub(crate) fn check_with_amount_aliases(
                 {
                     return Err(refused(
                         lexed,
-                        *value,
+                        value.start,
                         format!("`{key}` in a pattern's map compares an amount with a literal"),
                         PIN_FIX,
                     ));
