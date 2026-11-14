@@ -2154,20 +2154,36 @@ pub(crate) fn validate_application_reversal<V: Vfs + Clone>(
 ) -> Outcome<()> {
     let (original, recorded_at) = original;
     cx.query().with_restriction(|| {
-        if recorded_at.0 == 0 || recorded_at > at || !is_source_bound(original)
-            || has_allocated_basis(original)
-        {
+        if recorded_at.0 == 0 || recorded_at > at || !is_source_bound(original) {
             return Ok(Err(invalid(
-                "application reversal requires its retained nonallocated source-bound ancestor",
+                "application reversal requires its retained source-bound ancestor",
             )));
         }
         let Some(totals) = &original.base_totals else {
             return Ok(Err(invalid("application ancestor has no functional valuation")));
         };
         let spot = match FxLawId::from_oid(&totals.fx_law_oid) {
-            Some(FxLawId::SettlementCarryingBasis) => false,
+            Some(FxLawId::SettlementCarryingBasis | FxLawId::SettlementAllocatedCarrying) => false,
             Some(FxLawId::SettlementSpotCarrying) => true,
             _ => return Ok(Err(invalid("unsupported application reversal valuation law"))),
+        };
+        let releases = if has_allocated_basis(original) {
+            if let Err(refusal) = allocated::retained_shape(original) {
+                return Ok(Err(refusal));
+            }
+            let basis = match allocated::basis(original) {
+                Ok(basis) => basis,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            Some(
+                basis
+                    .items
+                    .into_iter()
+                    .map(|release| (release.applying_ordinal, release))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+        } else {
+            None
         };
         let spec = crate::fx::book_spec_at(db, book, at)?;
         let current = asupersync::Cx::current().ok_or_else(|| {
@@ -2177,7 +2193,7 @@ pub(crate) fn validate_application_reversal<V: Vfs + Clone>(
         let mut budget = ArithmeticBudget::new(&stripped, BudgetLimits::uniform(1_000_000, 0), 4096);
         let mut audits = SuccessfulHistoryAudits::default();
         let mut targets = BTreeSet::new();
-        for leg in &original.legs {
+        for (ordinal, leg) in original.legs.iter().enumerate() {
             if leg.amount.unit == spec.base_unit || leg.settles.is_empty() {
                 continue;
             }
@@ -2232,19 +2248,57 @@ pub(crate) fn validate_application_reversal<V: Vfs + Clone>(
                 historical: item.historical_open_base.mantissa,
                 valuation: item.valuation_open_base.mantissa,
             };
-            if reversal::project(
-                state,
-                item.original_native.mantissa,
-                item.original_base.mantissa,
-                application.amount.mantissa,
-                relief.mantissa,
-                undo,
-            ).is_err() {
+            let projection = if let Some(releases) = &releases {
+                let ordinal = u16::try_from(ordinal)
+                    .map_err(|_| KernelError::Corrupt("application ordinal exceeds u16".into()))?;
+                let Some(release) = releases.get(&ordinal) else {
+                    return Ok(Err(invalid("allocated application ancestry omits its recorded release")));
+                };
+                // The source audit above reconstructs the release at its
+                // original publication, including its original route epoch.
+                // A later additive route map may have a different identity,
+                // but these dedicated destinations cannot be reassigned.
+                if release.historical_relief != relief
+                    || release.valuation_relief.unit != item.original_base.unit
+                    || release.total_relief.unit != item.original_base.unit
+                    || item.valuation_route
+                        != Some(crate::chart::FxRevaluationRoute {
+                            valuation_account: release.valuation_account,
+                            unrealized_account: release.unrealized_account,
+                        })
+                {
+                    return Ok(Err(invalid("allocated application ancestry differs from its authenticated relief or dedicated route")));
+                }
+                reversal::project_recorded(
+                    state,
+                    item.original_native.mantissa,
+                    item.original_base.mantissa,
+                    reversal::Components {
+                        native: application.amount.mantissa,
+                        historical: relief.mantissa,
+                        valuation: release.valuation_relief.mantissa,
+                    },
+                    undo,
+                )
+            } else {
+                reversal::project(
+                    state,
+                    item.original_native.mantissa,
+                    item.original_base.mantissa,
+                    application.amount.mantissa,
+                    relief.mantissa,
+                    undo,
+                )
+            };
+            if projection.is_err() {
                 return Ok(Err(invalid("exact recorded application relief would exceed current native or historical capacity, overflow, or strand a carrying component")));
             }
         }
         if targets.is_empty() {
             return Ok(Err(invalid("application reversal has no retained foreign application")));
+        }
+        if releases.as_ref().is_some_and(|releases| releases.len() != targets.len()) {
+            return Ok(Err(invalid("allocated application ancestry does not cover exactly its foreign applications")));
         }
         audits.verify_entry_prefix(db, cx, book, at)?;
         Ok(Ok(()))

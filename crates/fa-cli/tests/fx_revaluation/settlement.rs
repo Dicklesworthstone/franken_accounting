@@ -465,10 +465,7 @@ fn allocated_cash_workflow(liability: bool) {
     assert_eq!(net(&restored, f.valuation()), sign * 334);
     assert_eq!(net(&restored, f.unrealized()), -sign * 334);
     assert_eq!(net(&restored, "1100"), sign * 8_667);
-    // Re-applying by reversing an undo remains outside the native settlement
-    // contract. A fresh application instead recomputes its complete source.
-    let before_unsupported = head(&f.f.book);
-    let (status, refusal) = run(
+    let redone = ok(
         &f.f.book,
         &[
             "reverse",
@@ -483,10 +480,114 @@ fn allocated_cash_workflow(liability: bool) {
             "read",
             "--yes",
         ],
+    );
+    let redone_entry = f.f.entry(text(data(&redone), "vid"));
+    assert_eq!(
+        release(&redone_entry),
+        basis,
+        "redo retains the original allocation instead of repricing it"
+    );
+    let redone_stock = f.stock("2026-02-28");
+    for account in [
+        f.control(),
+        f.valuation(),
+        f.unrealized(),
+        "1100",
+        "3900",
+        "4900",
+    ] {
+        assert_eq!(net(&redone_stock, account), net(&fully_settled, account));
+    }
+
+    // The actual producer must export reversal ancestry that the independent
+    // verifier can reproduce from its signed complete prefix.
+    let certificate_file = f.f.dir.join("allocated-redo.cert");
+    let (status, certified) = run_many(
+        &f.f.book,
+        &[
+            "tb",
+            "--functional",
+            "--as-of",
+            "2026-02-28",
+            "--certificate-out",
+            certificate_file.to_str().unwrap(),
+        ],
         None,
     );
-    assert_ne!(status, 0, "{}", refusal.render());
-    assert_eq!(head(&f.f.book), before_unsupported);
+    assert_eq!(status, 0, "{certified:?}");
+    assert_eq!(certified.len(), 2);
+    assert_eq!(text(&certified[1], "event"), "report_certificate");
+    let certificate =
+        fa::ReportArtifact::decode(&std::fs::read(&certificate_file).unwrap()).unwrap();
+    let locator = format!("C:{}", text(data(&certified[1]), "oid"));
+    let checkpoint = ok(&f.f.book, &["checkpoint", "create", "--grant", "witness"]);
+    let signed = ok(
+        &f.f.book,
+        &[
+            "proof",
+            "signed-checkpoint",
+            "--state",
+            text(data(&checkpoint), "oid"),
+        ],
+    );
+    let key: [u8; 32] = decode_hex(text(data(&signed), "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    let exported = ok(
+        &f.f.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &locator,
+            "--state",
+            text(data(&checkpoint), "oid"),
+        ],
+    );
+    let verified = fa_verify::report::verify_report_expected(
+        &decode_hex(text(data(&exported), "bytes")),
+        &[key],
+        None,
+        Some(&decode_hex(text(data(&exported), "receipt"))),
+        Some(certificate.digest()),
+    )
+    .expect("native allocated undo and redo reproduce from the signed functional artifact");
+    assert_eq!(verified.output, certificate.output());
+    assert!(verified.functional_trial_balance.is_some());
+
+    let undone_again = ok(
+        &f.f.book,
+        &[
+            "reverse",
+            text(data(&redone), "vid"),
+            "--reason",
+            "WrongAmount",
+            "--effective",
+            "2026-02-05",
+            "--evidence",
+            &f.f.evidence,
+            "--grant",
+            "read",
+            "--yes",
+        ],
+    );
+    assert_eq!(
+        release(&f.f.entry(text(data(&undone_again), "vid"))),
+        basis
+    );
+    let restored_again = f.stock("2026-02-28");
+    for account in [
+        f.control(),
+        f.valuation(),
+        f.unrealized(),
+        "1100",
+        "3900",
+        "4900",
+    ] {
+        assert_eq!(net(&restored_again, account), net(&restored, account));
+    }
+    // A fresh application still computes and retains its complete current
+    // source, including the intervening exact reversal chain.
     let (cash_side, applying_side) = if liability {
         ("credit", "debit")
     } else {

@@ -4571,7 +4571,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
         // Retain the original, source-bound application and its exact sign.
         // Native mirror checks below still precede the functional carrying
-        // preflight. Allocated release ancestry has a separate route proof.
+        // preflight, including the original allocated release's route proof.
         if anc_vid != target.vid
             && anc_entry
                 .proposal
@@ -4595,10 +4595,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                         Some(
                             crate::fx::FxLawId::SettlementCarryingBasis
                                 | crate::fx::FxLawId::SettlementSpotCarrying
+                                | crate::fx::FxLawId::SettlementAllocatedCarrying
                         )
                     )
                 })
-                && !crate::carrying::has_allocated_basis(&anc_entry.proposal)
                 && anc_entry
                     .proposal
                     .legs

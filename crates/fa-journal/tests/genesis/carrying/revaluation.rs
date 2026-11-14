@@ -1345,10 +1345,31 @@ fn disjoint_allocated_group_has_one_recorded_prefix_and_one_exact_undo() {
         );
     }
     let reversed = undo(&proposal, posted.entry_ref(), b"allocated-group-undo");
-    f.f.h.post(request(reversed)).unwrap();
-    for (target, initial) in f.targets.iter().zip(positions) {
-        assert_eq!(f.position(*target, None), initial);
+    let reversed_ref = f.f.h.post(request(reversed.clone())).unwrap().entry_ref();
+    for (target, initial) in f.targets.iter().zip(&positions) {
+        assert_eq!(f.position(*target, None), *initial);
     }
+    // Reapply both original releases, including their opposite valuation
+    // signs, as one authenticated ancestor rather than a newly priced group.
+    let reapplied = undo(&reversed, reversed_ref, b"allocated-group-reapply");
+    f.f.h.post(request(reapplied)).unwrap();
+    for ((target, initial), release) in f.targets.iter().zip(&positions).zip(&expected) {
+        assert_eq!(
+            f.position(*target, None),
+            OracleRevaluedCarrying {
+                native: initial.native.checked_sub(release.native).unwrap(),
+                historical_base: initial
+                    .historical_base
+                    .checked_sub(release.historical_base)
+                    .unwrap(),
+                carrying_base: initial
+                    .carrying_base
+                    .checked_sub(release.carrying_base)
+                    .unwrap(),
+            }
+        );
+    }
+    assert_leg_projections(&f.f.h);
     f.f.verify();
 }
 
@@ -1467,5 +1488,329 @@ fn allocated_settlement_cannot_use_another_sources_valuation_leaf() {
         assert_eq!(f.f.h.db.frontier().unwrap(), head);
         assert_eq!(f.f.h.db.vertices().unwrap(), rows);
         assert_eq!(f.functional_net(second_valuation), 0);
+    }
+}
+
+#[test]
+fn allocated_reapplication_preserves_recorded_components_after_later_revaluation() {
+    for side in [Side::Debit, Side::Credit] {
+        for first_target in [6, 13] {
+            let mut f = RevaluedFixture::new(side, &[(3, 10)]);
+            let target = f.targets[0];
+            let first = f.revaluation(first_target, 3, 3, true).unwrap();
+            f.post_revaluation(first, b"reapplication-first-valuation");
+            let original_position = f.position(target, None);
+            let relief = remaining_revalued_carrying_relief(original_position, 1).unwrap();
+            let original = f
+                .prepare(target, 1, day(4, 15), b"allocated-reapplication-original")
+                .unwrap()
+                .into_proposal();
+            let applied = f.f.h.post(request(original.clone())).unwrap().entry_ref();
+            let next = f.revaluation(3, 1, 4, true).unwrap();
+            f.post_revaluation(next, b"reapplication-later-valuation");
+            let before_undo = f.position(target, None);
+            assert_eq!(
+                before_undo,
+                OracleRevaluedCarrying {
+                    native: 2,
+                    historical_base: 7,
+                    carrying_base: 6,
+                }
+            );
+            let mut reversal = undo(&original, applied, b"allocated-reapplication-undo");
+            reversal.effective_date = day(5, 1);
+            let reversed = f.f.h.post(request(reversal.clone())).unwrap().entry_ref();
+            let at_undo = f.f.h.db.frontier().unwrap();
+            let undone = OracleRevaluedCarrying {
+                native: before_undo.native.checked_add(relief.native).unwrap(),
+                historical_base: before_undo
+                    .historical_base
+                    .checked_add(relief.historical_base)
+                    .unwrap(),
+                carrying_base: before_undo
+                    .carrying_base
+                    .checked_add(relief.carrying_base)
+                    .unwrap(),
+            };
+            assert_eq!(f.position(target, None), undone);
+            assert_ne!(
+                remaining_revalued_carrying_relief(undone, 1).unwrap(),
+                relief,
+                "a fresh application would use a different carrying ratio"
+            );
+
+            let reapplied = undo(&reversal, reversed, b"allocated-reapplication-redo");
+            let reapplied_ref = f.f.h.post(request(reapplied.clone())).unwrap().entry_ref();
+            let at_redo = f.f.h.db.frontier().unwrap();
+            assert_eq!(f.position(target, None), before_undo);
+            let undone_again = undo(
+                &reapplied,
+                reapplied_ref,
+                b"allocated-reapplication-second-undo",
+            );
+            f.f.h.post(request(undone_again)).unwrap();
+            assert_eq!(f.position(target, None), undone);
+            let head = f.f.h.db.frontier().unwrap();
+            for recorded in [original, reversal, reapplied] {
+                assert!(matches!(
+                    f.f.h.post(request(recorded)).unwrap(),
+                    Posted::AlreadyRecorded { .. }
+                ));
+                assert_eq!(f.f.h.db.frontier().unwrap(), head);
+                assert_eq!(f.position(target, None), undone);
+            }
+            assert_eq!(f.position(target, Some(at_undo)), undone);
+            assert_eq!(f.position(target, Some(at_redo)), before_undo);
+
+            let final_payment = f
+                .prepare(target, 3, day(5, 2), b"allocated-reapplication-final")
+                .unwrap()
+                .into_proposal();
+            let final_ref = f.f.h.post(request(final_payment.clone())).unwrap().entry_ref();
+            let full_undo = undo(
+                &final_payment,
+                final_ref,
+                b"allocated-reapplication-full-undo",
+            );
+            let full_undo_ref = f.f.h.post(request(full_undo.clone())).unwrap().entry_ref();
+            assert_eq!(f.position(target, None), undone);
+            let full_redo = undo(
+                &full_undo,
+                full_undo_ref,
+                b"allocated-reapplication-full-redo",
+            );
+            f.f.h.post(request(full_redo)).unwrap();
+            assert_eq!(
+                f.position(target, None),
+                OracleRevaluedCarrying {
+                    native: 0,
+                    historical_base: 0,
+                    carrying_base: 0,
+                }
+            );
+            for account in [f.source, f.valuation, f.unrealized, f.f.conversion] {
+                assert_eq!(f.functional_net(account), 0);
+            }
+            assert_leg_projections(&f.f.h);
+            f.f.verify();
+        }
+    }
+}
+
+#[test]
+fn allocated_reapplication_cannot_strand_offsetting_components_or_negative_carrying() {
+    for failure in ["total", "historical", "stranded"] {
+        let mut f = match failure {
+            "stranded" => RevaluedFixture::new(Side::Debit, &[(2, 1)]),
+            "historical" => RevaluedFixture::new(Side::Debit, &[(2, 3)]),
+            _ => RevaluedFixture::new(Side::Debit, &[(3, 10)]),
+        };
+        let target = f.targets[0];
+        let first = if failure == "stranded" {
+            // Two native units retain one historical unit and minus one
+            // valuation unit. Each partial application rounds both reliefs
+            // to zero; consuming the last native unit that way would strand
+            // opposite components even though their total is zero.
+            f.revaluation(1, 8, 3, true).unwrap()
+        } else if failure == "historical" {
+            f.revaluation(1, 2, 3, true).unwrap()
+        } else {
+            f.revaluation(13, 3, 3, true).unwrap()
+        };
+        f.post_revaluation(first, b"blocked-reapplication-first-valuation");
+        let original = f
+            .prepare(target, 1, day(4, 15), b"blocked-allocated-original")
+            .unwrap()
+            .into_proposal();
+        let applied = f.f.h.post(request(original.clone())).unwrap().entry_ref();
+        let mut reversal = undo(&original, applied, b"blocked-allocated-undo");
+        reversal.effective_date = day(4, 16);
+        let reversed = f.f.h.post(request(reversal.clone())).unwrap().entry_ref();
+        if failure != "total" {
+            let competing = f
+                .prepare(target, 1, day(4, 17), b"blocked-allocated-competitor")
+                .unwrap()
+                .into_proposal();
+            f.f.h.post(request(competing)).unwrap();
+        } else {
+            let lower = f.revaluation(1, 1, 4, true).unwrap();
+            f.post_revaluation(lower, b"blocked-reapplication-lower-valuation");
+        }
+        let position = f.position(target, None);
+        assert_eq!(
+            position,
+            if failure != "total" {
+                OracleRevaluedCarrying {
+                    native: 1,
+                    historical_base: 1,
+                    carrying_base: i128::from(failure == "historical"),
+                }
+            } else {
+                OracleRevaluedCarrying {
+                    native: 3,
+                    historical_base: 10,
+                    carrying_base: 3,
+                }
+            }
+        );
+        let mut reapplied = undo(&reversal, reversed, b"blocked-allocated-redo");
+        reapplied.effective_date = day(5, 1);
+        let head = f.f.h.db.frontier().unwrap();
+        let rows = f.f.h.db.vertices().unwrap();
+        let refused = f.f.h.post(request(reapplied)).unwrap_err();
+        assert_eq!(refused.code, fa_journal::refusal::code::SETTLE_SHAPE);
+        assert_eq!(f.f.h.db.frontier().unwrap(), head);
+        assert_eq!(f.f.h.db.vertices().unwrap(), rows);
+        assert_eq!(f.position(target, None), position);
+        assert_leg_projections(&f.f.h);
+        f.f.verify();
+    }
+}
+
+#[test]
+fn allocated_reapplication_retains_authority_and_complete_prefix_guards() {
+    let mut f = RevaluedFixture::new(Side::Debit, &[(3, 10)]);
+    let target = f.targets[0];
+    let first = f.revaluation(13, 3, 3, true).unwrap();
+    f.post_revaluation(first, b"guarded-allocated-valuation");
+    let original = f
+        .prepare(target, 1, day(4, 15), b"guarded-allocated-original")
+        .unwrap()
+        .into_proposal();
+    let applied = f.f.h.post(request(original.clone())).unwrap().entry_ref();
+    let reversal = undo(&original, applied, b"guarded-allocated-undo");
+    let reversed = f.f.h.post(request(reversal.clone())).unwrap().entry_ref();
+    let reapplied = undo(&reversal, reversed, b"guarded-allocated-redo");
+    let head = f.f.h.db.frontier().unwrap();
+    let rows = f.f.h.db.vertices().unwrap();
+    let mut without_read = request(reapplied.clone());
+    without_read.capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let refused = f.f.h.post(without_read).unwrap_err();
+    assert_eq!(refused.code, fa_journal::refusal::code::CAPABILITY);
+    assert_eq!(f.f.h.db.frontier().unwrap(), head);
+    assert_eq!(f.f.h.db.vertices().unwrap(), rows);
+
+    let cx = f.f.h.ctx();
+    let prepared = prepare_post(&mut f.f.h.db, &cx, &f.f.h.book, request(reapplied.clone()))
+        .unwrap()
+        .unwrap();
+    let PostPreparation::Ready(prepared) = prepared else {
+        panic!("a new allocated reapplication is prepared");
+    };
+    let unrelated = f.f.h.document(
+        INVOICE,
+        HUMAN_UPLOAD,
+        b"new evidence after allocated reapplication was prepared",
+    );
+    f.f.h.add_document(&unrelated).unwrap();
+    let head = f.f.h.db.frontier().unwrap();
+    let rows = f.f.h.db.vertices().unwrap();
+    let refused = f.f.h.runtime
+        .block_on(prepared.commit(&mut f.f.h.db, &cx))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, fa_journal::refusal::code::PLAN_INVALIDATED);
+    assert_eq!(f.f.h.db.frontier().unwrap(), head);
+    assert_eq!(f.f.h.db.vertices().unwrap(), rows);
+    f.f.h.post(request(reapplied)).unwrap();
+    assert_eq!(
+        f.position(target, None),
+        OracleRevaluedCarrying {
+            native: 2,
+            historical_base: 7,
+            carrying_base: 9,
+        }
+    );
+    assert_leg_projections(&f.f.h);
+    f.f.verify();
+}
+
+#[test]
+fn allocated_reapplication_does_not_enable_compound_publication() {
+    for member_position in 0..3 {
+        let mut f = RevaluedFixture::new(Side::Debit, &[(3, 10)]);
+        let target = f.targets[0];
+        let first = f.revaluation(13, 3, 3, true).unwrap();
+        f.post_revaluation(first, b"compound-allocated-valuation");
+        let original = f
+            .prepare(target, 1, day(4, 15), b"compound-allocated-original")
+            .unwrap()
+            .into_proposal();
+        let applied = f.f.h.post(request(original.clone())).unwrap().entry_ref();
+        let reversal = undo(&original, applied, b"compound-allocated-undo");
+        let reversed = f.f.h.post(request(reversal.clone())).unwrap().entry_ref();
+        let reapplied = undo(&reversal, reversed, b"compound-allocated-redo");
+        let ordinary = f.f.h.proposal(
+            f.f.h.rent_legs(1),
+            b"compound-allocated-companion",
+            EntryClass::ORIGINAL,
+        );
+        let members = match member_position {
+            0 => vec![reapplied.clone(), ordinary],
+            1 => vec![ordinary, reapplied.clone()],
+            _ => vec![reapplied.clone()],
+        };
+        let batch = f.f.h.batch(b"compound-allocated-batch", members);
+        let capability = Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap();
+        let head = f.f.h.db.frontier().unwrap();
+        let rows = f.f.h.db.vertices().unwrap();
+        let direct = f.f.post_fx_batch(batch.clone()).unwrap_err();
+        assert_eq!(direct.code, fa_journal::refusal::code::CLASS_NOT_IMPLEMENTED);
+        let planned = f.f.h.planned_batch(batch, &capability).unwrap_err();
+        assert_eq!(planned.code, fa_journal::refusal::code::CLASS_NOT_IMPLEMENTED);
+        assert_eq!(f.f.h.db.frontier().unwrap(), head);
+        assert_eq!(f.f.h.db.vertices().unwrap(), rows);
+        f.f.h.post(request(reapplied)).unwrap();
+        assert_eq!(
+            f.position(target, None),
+            OracleRevaluedCarrying {
+                native: 2,
+                historical_base: 7,
+                carrying_base: 9,
+            }
+        );
+        assert_leg_projections(&f.f.h);
+        f.f.verify();
+    }
+}
+
+#[test]
+fn allocated_reapplication_rechecks_native_capacity_and_latest_effective_date() {
+    for consume_capacity in [false, true] {
+        let mut f = RevaluedFixture::new(Side::Debit, &[(3, 10)]);
+        let target = f.targets[0];
+        let first = f.revaluation(13, 3, 3, true).unwrap();
+        f.post_revaluation(first, b"limited-allocated-valuation");
+        let original = f
+            .prepare(target, 1, day(4, 15), b"limited-allocated-original")
+            .unwrap()
+            .into_proposal();
+        let applied = f.f.h.post(request(original.clone())).unwrap().entry_ref();
+        let mut reversal = undo(&original, applied, b"limited-allocated-undo");
+        reversal.effective_date = day(4, 16);
+        let reversed = f.f.h.post(request(reversal.clone())).unwrap().entry_ref();
+        let mut reapplied = undo(&reversal, reversed, b"limited-allocated-redo");
+        let expected = if consume_capacity {
+            let competing = f
+                .prepare(target, 3, day(4, 17), b"limited-allocated-consumed")
+                .unwrap()
+                .into_proposal();
+            f.f.h.post(request(competing)).unwrap();
+            reapplied.effective_date = day(4, 17);
+            fa_journal::refusal::code::OVER_APPLICATION
+        } else {
+            reapplied.effective_date = day(4, 15);
+            fa_journal::refusal::code::SETTLE_SHAPE
+        };
+        let position = f.position(target, None);
+        let head = f.f.h.db.frontier().unwrap();
+        let rows = f.f.h.db.vertices().unwrap();
+        let refused = f.f.h.post(request(reapplied)).unwrap_err();
+        assert_eq!(refused.code, expected, "{refused}");
+        assert_eq!(f.f.h.db.frontier().unwrap(), head);
+        assert_eq!(f.f.h.db.vertices().unwrap(), rows);
+        assert_eq!(f.position(target, None), position);
+        assert_leg_projections(&f.f.h);
+        f.f.verify();
     }
 }

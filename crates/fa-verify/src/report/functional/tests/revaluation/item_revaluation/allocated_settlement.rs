@@ -485,11 +485,22 @@ fn allocated_settlement_relieves_positive_and_negative_carrying_and_takes_the_fi
                 sign * (target - first_total - remaining)
             );
             let reinstated = undo(13, b"reinstate-final", &reversed, &quote);
-            records.push(reinstated.record);
-            assert!(
-                replay_allocated(&records, &rates).is_err(),
-                "native allocated-carrying does not admit a reversal of its application undo"
-            );
+            records.push(reinstated.record.clone());
+            let (reapplied, _) = replay_allocated(&records, &rates).unwrap();
+            for code in ["1000", "1290", "4700", "1010", "1900", "7000", "3000"] {
+                assert_eq!(net(&reapplied, code), net(&closed, code));
+            }
+            let reversed_again = undo(14, b"undo-reinstated-final", &reinstated, &quote);
+            records.push(reversed_again.record.clone());
+            let (restored_again, _) = replay_allocated(&records, &rates).unwrap();
+            for code in ["1000", "1290", "4700", "1010", "1900", "7000", "3000"] {
+                assert_eq!(net(&restored_again, code), net(&restored, code));
+            }
+            records.push(undo(15, b"reinstate-final-again", &reversed_again, &quote).record);
+            let (closed_again, _) = replay_allocated(&records, &rates).unwrap();
+            for code in ["1000", "1290", "4700", "1010", "1900", "7000", "3000"] {
+                assert_eq!(net(&closed_again, code), net(&closed, code));
+            }
         }
     }
 }
@@ -632,6 +643,270 @@ fn allocated_settlement_then_revaluation_uses_each_remaining_carrying_component(
 }
 
 #[test]
+fn allocated_reapplication_uses_recorded_signed_relief_after_a_later_revaluation() {
+    for (target, closing, total) in [(15, (3, 2), 6), (5, (1, 2), 2)] {
+        for debit in [true, false] {
+            let (mut records, mut rates, source, allocation) =
+                allocated_history(10, 10, target, (1, 1), closing, debit);
+            let quote = rate_fixture(2, 1, 4, 30);
+            records.push(intake(&quote, 9));
+            let partial = payment(
+                10,
+                30,
+                b"reapplication-original",
+                &quote,
+                &[component(
+                    &source,
+                    debit,
+                    4,
+                    4,
+                    total,
+                    8,
+                    &records[3],
+                    &[&allocation],
+                )],
+            );
+            records.push(partial.record.clone());
+            let restored = undo(11, b"reapplication-undo", &partial, &quote);
+            records.push(restored.record.clone());
+            let later = close_rate(2, 1);
+            records.push(intake(&later, 12));
+            let reclosed = item_adjustment(
+                13,
+                12,
+                b"revalue-before-reapplication",
+                debit,
+                &records[3],
+                &later,
+                &[
+                    (&source, 0),
+                    (&allocation, 0),
+                    (&partial.record, 0),
+                    (&partial.record, 5),
+                    (&restored.record, 0),
+                    (&restored.record, 5),
+                ],
+                &[Item {
+                    source: source.clone(),
+                    native: 10,
+                    historical: 10,
+                    prior: target - 10,
+                    target: 20,
+                }],
+            );
+            records.push(reclosed.clone());
+            rates.extend([quote.clone(), later]);
+            let (before, _) = replay_allocated(&records, &rates).unwrap();
+            let sign = if debit { 1 } else { -1 };
+            assert_eq!(net(&before, "1000"), sign * 10);
+            assert_eq!(net(&before, "1290"), sign * 10);
+
+            records.push(with_release(
+                14,
+                4,
+                29,
+                b"backdated-reapplication",
+                &swapped(&restored.legs),
+                &quote,
+                &restored.basis,
+                Some(&restored.record),
+            ));
+            assert!(
+                replay_allocated(&records, &rates).is_err(),
+                "reapplication cannot predate the latest allocation"
+            );
+            records.pop();
+            let reinstated = undo(14, b"reapplication-after-revalue", &restored, &quote);
+            let sibling = entry(
+                14,
+                1,
+                10,
+                b"reapplication-sibling",
+                &pair(1, 1),
+                Some((1, &rates[0], None)),
+                None,
+                None,
+            );
+            records.push(sibling);
+            replay_allocated(&records, &rates).unwrap();
+            records.push(reinstated.record.clone());
+            assert!(
+                replay_allocated(&records, &rates).is_err(),
+                "allocated reversal chains require a standalone publication"
+            );
+            records.pop();
+            records.pop();
+            records.push(reinstated.record.clone());
+            let (after, _) = replay_allocated(&records, &rates).unwrap();
+            assert_eq!(net(&after, "1000"), sign * 6);
+            assert_eq!(
+                net(&after, "1290"),
+                sign * (14 - total),
+                "reapplication must reuse the original signed valuation release"
+            );
+            assert_eq!(net(&after, "1010"), sign * 8);
+            *records.last_mut().unwrap() =
+                mutate_release(&reinstated.record, |raw| raw[21] ^= 1);
+            assert!(
+                replay_allocated(&records, &rates).is_err(),
+                "reapplication cannot replace its inherited source proof"
+            );
+            *records.last_mut().unwrap() = reinstated.record.clone();
+            let final_payment = payment(
+                15,
+                30,
+                b"final-after-reapplication",
+                &quote,
+                &[component(
+                    &source,
+                    debit,
+                    6,
+                    6,
+                    20 - total,
+                    12,
+                    &records[3],
+                    &[
+                        &allocation,
+                        &partial.record,
+                        &restored.record,
+                        &reclosed,
+                        &reinstated.record,
+                    ],
+                )],
+            );
+            records.push(final_payment.record);
+            let (closed, _) = replay_allocated(&records, &rates).unwrap();
+            assert_eq!(net(&closed, "1000"), 0);
+            assert_eq!(net(&closed, "1290"), 0);
+            assert_eq!(net(&closed, "4700"), 0);
+            assert_eq!(net(&closed, "1010"), sign * 20);
+        }
+    }
+}
+
+#[test]
+fn allocated_reapplication_checks_current_capacity_after_another_payment() {
+    let (mut records, mut rates, source, allocation) =
+        allocated_history(10, 10, 15, (1, 1), (3, 2), true);
+    let quote = rate_fixture(2, 1, 4, 30);
+    records.push(intake(&quote, 9));
+    let partial = payment(
+        10,
+        30,
+        b"capacity-original",
+        &quote,
+        &[component(
+            &source,
+            true,
+            4,
+            4,
+            6,
+            8,
+            &records[3],
+            &[&allocation],
+        )],
+    );
+    records.push(partial.record.clone());
+    let restored = undo(11, b"capacity-undo", &partial, &quote);
+    records.push(restored.record.clone());
+    rates.push(quote.clone());
+    let prefix = records.len();
+    for (native, total, accepted) in [(6, 9, true), (7, 10, false)] {
+        records.truncate(prefix);
+        let competing = payment(
+            12,
+            30,
+            b"capacity-competing-payment",
+            &quote,
+            &[component(
+                &source,
+                true,
+                native,
+                native,
+                total,
+                native * 2,
+                &records[3],
+                &[&allocation, &partial.record, &restored.record],
+            )],
+        );
+        records.push(competing.record);
+        replay_allocated(&records, &rates).unwrap();
+        records.push(undo(13, b"capacity-reapplication", &restored, &quote).record);
+        let result = replay_allocated(&records, &rates);
+        if accepted {
+            let (closed, _) = result.unwrap();
+            assert_eq!(net(&closed, "1000"), 0);
+            assert_eq!(net(&closed, "1290"), 0);
+            assert_eq!(net(&closed, "4700"), 0);
+        } else {
+            assert!(
+                result.is_err(),
+                "recorded relief cannot spend capacity used by another payment"
+            );
+        }
+    }
+}
+
+#[test]
+fn allocated_reapplication_cannot_strand_offsetting_components_or_exceed_historical_capacity() {
+    for (historical, target, spot, closing, relief) in [
+        (1, 0, (1, 2), (1, 8), 0),
+        (3, 1, (3, 2), (1, 2), 2),
+    ] {
+        let (mut records, mut rates, source, allocation) =
+            allocated_history(2, historical, target, spot, closing, true);
+        let quote = rate_fixture(1, 1, 4, 30);
+        records.push(intake(&quote, 9));
+        let partial = payment(
+            10,
+            30,
+            b"component-capacity-original",
+            &quote,
+            &[component(
+                &source,
+                true,
+                1,
+                relief,
+                0,
+                1,
+                &records[3],
+                &[&allocation],
+            )],
+        );
+        records.push(partial.record.clone());
+        let restored = undo(11, b"component-capacity-undo", &partial, &quote);
+        records.push(restored.record.clone());
+        let competing = payment(
+            12,
+            30,
+            b"component-capacity-competing",
+            &quote,
+            &[component(
+                &source,
+                true,
+                1,
+                relief,
+                0,
+                1,
+                &records[3],
+                &[&allocation, &partial.record, &restored.record],
+            )],
+        );
+        records.push(competing.record);
+        rates.push(quote.clone());
+        let (before, _) = replay_allocated(&records, &rates).unwrap();
+        assert_eq!(net(&before, "1000"), 1);
+        assert_eq!(net(&before, "1290"), if target == 0 { -1 } else { 0 });
+        records.push(undo(13, b"component-capacity-reapplication", &restored, &quote).record);
+        assert_eq!(
+            replay_allocated(&records, &rates).unwrap_err().predicate,
+            "functional_carrying",
+            "native capacity and a nonnegative total cannot hide stranded or negative components"
+        );
+    }
+}
+
+#[test]
 fn allocated_settlement_preserves_zero_relief_and_restores_it_without_repricing() {
     let (mut records, mut rates, source, allocation) =
         allocated_history(100, 1, 2, (1, 100), (1, 50), true);
@@ -663,11 +938,23 @@ fn allocated_settlement_preserves_zero_relief_and_restores_it_without_repricing(
     let (partial, _) = replay_allocated(&records, &rates).unwrap();
     assert_eq!(net(&partial, "1000"), 1);
     assert_eq!(net(&partial, "1290"), 1);
-    records.push(undo(11, b"undo-zero-relief", &zero, &quote).record);
+    let reversed = undo(11, b"undo-zero-relief", &zero, &quote);
+    records.push(reversed.record.clone());
     let (restored, _) = replay_allocated(&records, &rates).unwrap();
     assert_eq!(net(&restored, "1000"), 1);
     assert_eq!(net(&restored, "1290"), 1);
     assert_eq!(net(&restored, "1010"), 0);
+    let reinstated = undo(12, b"reinstate-zero-relief", &reversed, &quote);
+    records.push(reinstated.record.clone());
+    let (reapplied, _) = replay_allocated(&records, &rates).unwrap();
+    for code in ["1000", "1290", "4700", "1010", "1900", "7000", "3000"] {
+        assert_eq!(net(&reapplied, code), net(&partial, code));
+    }
+    records.push(undo(13, b"undo-reinstated-zero", &reinstated, &quote).record);
+    let (restored_again, _) = replay_allocated(&records, &rates).unwrap();
+    for code in ["1000", "1290", "4700", "1010", "1900", "7000", "3000"] {
+        assert_eq!(net(&restored_again, code), net(&restored, code));
+    }
 }
 
 #[test]
@@ -842,31 +1129,32 @@ fn allocated_settlement_bundle_replays_complete_carrying_and_rejects_false_certi
         allocated_history(10, 10, 15, (1, 1), (3, 2), true);
     let quote = rate_fixture(2, 1, 4, 30);
     records.push(intake(&quote, 9));
-    records.push(
-        payment(
-            10,
-            30,
-            b"bundle-release",
-            &quote,
-            &[component(
-                &source,
-                true,
-                4,
-                4,
-                6,
-                8,
-                &records[3],
-                &[&allocation],
-            )],
-        )
-        .record,
+    let partial = payment(
+        10,
+        30,
+        b"bundle-release",
+        &quote,
+        &[component(
+            &source,
+            true,
+            4,
+            4,
+            6,
+            8,
+            &records[3],
+            &[&allocation],
+        )],
     );
+    records.push(partial.record.clone());
+    let restored = undo(11, b"bundle-undo", &partial, &quote);
+    records.push(restored.record.clone());
+    records.push(undo(12, b"bundle-reapplication", &restored, &quote).record);
     rates.push(quote);
     let (expected, output) = replay_allocated(&records, &rates).unwrap();
     let selected = Selection::AsOf(58);
     let docs = allocated_registries();
     let (bundle, signed, pin) =
-        pack_with_registries(&records, &selected, 10, &book(&[]), &rates, &output, &docs);
+        pack_with_registries(&records, &selected, 12, &book(&[]), &rates, &output, &docs);
     let verified = verify_report_with_inputs(&bundle, &[], None, None, Some(&pin), None, |_, _| {
         Ok(signed.clone())
     })
@@ -878,7 +1166,7 @@ fn allocated_settlement_bundle_replays_complete_carrying_and_rejects_false_certi
     let (bundle, signed, pin) = pack_with_registries(
         &records,
         &selected,
-        10,
+        12,
         &book(&[]),
         &rates,
         &false_output,

@@ -837,14 +837,39 @@ pub(super) fn verify(
                     }
                 }
                 if let Some(coverage) = checked.releases.get(&parent) {
-                    for effect in effects.get(&parent).into_iter().flatten() {
-                        if effective(&envelopes[index])? < targets[&effect.target].latest_effective
-                        {
+                    let inherited = effects
+                        .get(&parent)
+                        .ok_or_else(|| invalid("allocated reversal has no authenticated effects"))?;
+                    let reapplication = envelopes[parent].class == 4;
+                    if inherited.len() != coverage.len() || reapplication && group.len() != 1 {
+                        return Err(invalid(
+                            "allocated reapplication requires complete inherited effects and a standalone publication",
+                        ));
+                    }
+                    for (effect, release) in inherited.iter().zip(coverage) {
+                        let state = &targets[&effect.target];
+                        if effective(&envelopes[index])? < state.latest_effective {
                             return Err(invalid(
-                                "allocated-settlement undo precedes a later item allocation or application",
+                                "allocated-settlement reversal precedes a later item allocation or application",
                             ));
                         }
+                        if reapplication {
+                            let route = state.allocated.ok_or_else(|| {
+                                invalid("allocated reapplication has no current item allocation")
+                            })?;
+                            if !live.contains(&effect.target.0)
+                                || route.valuation != release.route.valuation
+                                || route.unrealized != release.route.unrealized
+                            {
+                                return Err(invalid(
+                                    "allocated reapplication requires a live source and its retained route destinations",
+                                ));
+                            }
+                        }
                     }
+                    // Reversal chains inherit the independently reproduced
+                    // signed relief. A later allocation changes capacity,
+                    // not the original historical or valuation components.
                     release_coverage.insert(index, coverage.clone());
                 }
                 effects

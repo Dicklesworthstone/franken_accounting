@@ -108,18 +108,12 @@ pub(super) fn read_history(
         }
     }
     for (&index, &parent) in parents {
-        if declarations.contains_key(&index) && envelopes[parent].class == 4 {
-            return Err(failed(
-                "supported_report",
-                "allocated settlement cannot inherit a fresh reapplication by reversing an undo",
-            ));
-        }
         if declarations.contains_key(&index)
             && (declarations.get(&index) != declarations.get(&parent)
                 || infos[&index].fx_settlement_basis != infos[&parent].fx_settlement_basis)
         {
             return Err(invalid(
-                "an exact allocated-settlement undo must retain its original release basis",
+                "an exact allocated-settlement reversal must retain its original release basis",
             ));
         }
     }
