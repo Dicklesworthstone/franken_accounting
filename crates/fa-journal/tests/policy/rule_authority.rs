@@ -13,6 +13,9 @@ use fa_journal::rule::{
 };
 use fa_model::{EventKind, EventResource, EventSpec};
 
+#[path = "rule_authority/outcome_keys.rs"]
+mod outcome_keys;
+
 fn source(ceiling: &str) -> String {
     format!(
         r#"rule bounded_sale v1 for event Sale {{

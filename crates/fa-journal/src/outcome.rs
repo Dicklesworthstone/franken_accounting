@@ -665,6 +665,27 @@ pub fn is_cash_flow_policy_activation(entry: &Entry) -> bool {
         && fa_model::cash_flow_policy::is_activation_entry(&entry.proposal)
 }
 
+/// The dedicated rule writer activates exactly one immutable rule version.
+/// Other lifecycle transitions must not acquire its legacy retry exception.
+#[must_use]
+pub fn is_rule_activation(entry: &Entry) -> bool {
+    let proposal = &entry.proposal;
+    let fa_model::EntryOrigin::Control {
+        control_kind: fa_model::ControlKind::RULE_ACTIVATION,
+        spec_body_digest,
+    } = &proposal.origin
+    else {
+        return false;
+    };
+    proposal.class == EntryClass::POLICY_CONTROL
+        && entry.plan_certificate.is_none()
+        && matches!(&proposal.control,
+            Some(fa_model::ControlPayload::LifecycleTransition {
+                object_ref, from: 0, to: 1, proof_refs, reason_code: 0,
+            }) if proof_refs.is_empty()
+                && *object_ref == fa_model::rule_version_vid(proposal.book_id, spec_body_digest))
+}
+
 fn normal_key_control(entry: &Entry, vid: VId) -> bool {
     let proposal = &entry.proposal;
     let admitted = matches!(
@@ -683,7 +704,10 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
                     ..
                 })
             ));
-    (admitted || is_statement_activation(entry) || is_cash_flow_policy_activation(entry))
+    (admitted
+        || is_statement_activation(entry)
+        || is_cash_flow_policy_activation(entry)
+        || is_rule_activation(entry))
         && vid
             == fa_model::entry_vid(
                 proposal.book_id,

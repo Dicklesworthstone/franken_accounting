@@ -982,6 +982,17 @@ pub async fn activate_rule_version<V: Vfs + Clone>(
         return Ok(Err(r));
     }
     let epoch = crate::policy::epoch_witness(&txn, db)?;
+    if let Err(refusal) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        principal,
+        &proposal.idempotency_key,
+        evid,
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
         if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
@@ -989,7 +1000,9 @@ pub async fn activate_rule_version<V: Vfs + Clone>(
         }
         let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
         let recorded_at = row.created_at;
-        if stored.proposal_digest != proposal_digest {
+        if stored.proposal_digest != proposal_digest
+            || !crate::outcome::verify_control_recorded(db, &row, &stored)?
+        {
             return Ok(Err(Refusal::new(
                 code::IDEMPOTENCY_CONFLICT,
                 exit::CONFLICT,
@@ -1001,14 +1014,32 @@ pub async fn activate_rule_version<V: Vfs + Clone>(
                 "commit the identical plan to get its recorded outcome, or plan the activation under a new --key",
             )));
         }
+        // The proposal binds the immutable IR digest, not the plan's redundant
+        // rule name. Authenticate that name against the version visible when
+        // this activation published, independently of today's name bindings.
+        let Some(version) = rule_version_at(db, book, &plan.ir_digest, recorded_at)? else {
+            return Ok(Err(crate::outcome::key_conflict()));
+        };
+        if version.rule.name() != plan.rule_name {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
         return Ok(Ok(RuleActivated {
-            rule_name: plan.rule_name,
+            rule_name: version.rule.name().to_string(),
             binding,
             control_entry: evid,
             recorded_at,
             approvals: stored.approvals.len(),
             already_recorded: true,
         }));
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     let version_vid = rule_version_vid(book.book_id, &plan.ir_digest);
     let version = match txn.vertex(db, version_vid)? {
@@ -1070,6 +1101,7 @@ pub async fn activate_rule_version<V: Vfs + Clone>(
     let encoded = scalar_bytes("rule_name._fa_payload", bindings.encode()?)?;
     let mut in_book = WriteBatch::new(relation::IN_BOOK);
     in_book.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_book, &entry, evid)?;
     if name_row.is_some() {
         in_book.compare_and_set_vertex_property(
             name_vid,
