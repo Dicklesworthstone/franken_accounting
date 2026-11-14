@@ -99,7 +99,7 @@ impl BalanceAllocationReview {
             period: self.source_period.clone(),
             unit: posting.request.total.unit,
             dimensions: posting.dimensions.clone(),
-            method: posting.request.method,
+            method: posting.request.method.clone(),
             targets: posting.request.targets.clone(),
             target_cells: posting.target_cells.clone(),
         }

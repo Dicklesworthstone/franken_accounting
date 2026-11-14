@@ -264,7 +264,7 @@ pub use fa_model::{
     PartySpec, draft_branch, event_vid, instrument_vid, party_vid,
 };
 pub use fa_money::allocation::{
-    AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,
+    AllocationBracket, AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,
 };
 pub use fa_notary::checkpoint::signer_key_id;
 pub use fa_notary::code as notary_code;

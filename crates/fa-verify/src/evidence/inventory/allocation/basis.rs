@@ -7,6 +7,15 @@ use std::collections::BTreeSet;
 
 pub(super) const BASIS_MAGIC: &[u8; 15] = b"FA-ALLOC-BASIS\0";
 const REQUEST_MAGIC: &[u8; 17] = b"FA-ALLOC-REQUEST\0";
+const MAX_BRACKETS: usize = 64;
+const MAX_BRACKET_WEIGHTS: usize = 4096;
+
+/// One independently decoded marginal band of the registered Tiered law.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AllocationBracket {
+    pub upper_bound: u128,
+    pub weights: Vec<u128>,
+}
 
 /// One caller-ordered target; zero shares retain their identities and basis.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +66,8 @@ pub struct AllocationBasis {
     pub targets: Vec<AllocationTarget>,
     /// Empty means the v1 shared dimension set; v2 has one cell per target.
     pub target_cells: Vec<AllocationTargetCell>,
+    /// Only law 4 carries a complete progressive marginal schedule.
+    pub brackets: Vec<AllocationBracket>,
 }
 
 impl AllocationBasis {
@@ -103,7 +114,7 @@ impl AllocationBasis {
             return Err(invalid("unsupported allocation request format"));
         }
         let law = r.u16("allocation.law")?;
-        if !matches!(law, 1 | 2 | 3 | 5) || r.u16("allocation.law_version")? != 1 {
+        if !matches!(law, 1..=5) || r.u16("allocation.law_version")? != 1 {
             return Err(invalid("unsupported allocation law or version"));
         }
         let unit = r.u32("allocation.unit")?;
@@ -124,14 +135,36 @@ impl AllocationBasis {
         if count == 0 {
             return Err(invalid("allocation needs targets"));
         }
-        // This request format ends at its fixed-size target rows. Enforce
-        // exact bytes before allocating, not merely the decoder's lower bound.
+        // Existing laws end at the fixed-size target rows. Tiered adds its
+        // complete schedule. Check both counts and exact bytes before allocation.
         let header = if law == 2 { 67usize } else { 49usize };
-        if request.len() != header + 32 * count {
-            return Err(invalid(
-                "target count does not match the exact request length",
-            ));
-        }
+        let target_end = header + 32 * count;
+        let bracket_count = if law == 4 {
+            let encoded: [u8; 4] = request
+                .get(target_end..target_end + 4)
+                .ok_or(invalid("missing tiered bracket schedule"))?
+                .try_into()
+                .map_err(|_| invalid("invalid tiered bracket count"))?;
+            let bands = usize::try_from(u32::from_le_bytes(encoded))
+                .map_err(|_| AllocationError::InputLimit)?;
+            if bands == 0
+                || bands > MAX_BRACKETS
+                || bands * count > MAX_BRACKET_WEIGHTS
+                || request.len() != target_end + 4 + bands * (16 + 16 * count)
+            {
+                return Err(invalid(
+                    "tiered schedule exceeds its count or exact byte bounds",
+                ));
+            }
+            bands
+        } else {
+            if request.len() != target_end {
+                return Err(invalid(
+                    "target count does not match the exact request length",
+                ));
+            }
+            0
+        };
         let mut targets = Vec::new();
         targets
             .try_reserve_exact(count)
@@ -145,10 +178,31 @@ impl AllocationBasis {
                     "targets must be distinct and cannot include the source",
                 ));
             }
-            if law == 5 && basis != 1 {
-                return Err(invalid("equal split requires basis one"));
+            if matches!(law, 4 | 5) && basis != 1 {
+                return Err(invalid("equal split and tiered require target basis one"));
             }
             targets.push(AllocationTarget { account, basis });
+        }
+        let mut brackets = Vec::new();
+        if law == 4 {
+            let _count = r.u32("allocation.bracket_count")?;
+            brackets
+                .try_reserve_exact(bracket_count)
+                .map_err(|_| AllocationError::InputLimit)?;
+            for _ in 0..bracket_count {
+                let upper_bound = r.u128("allocation.bracket.upper_bound")?;
+                let mut weights = Vec::new();
+                weights
+                    .try_reserve_exact(count)
+                    .map_err(|_| AllocationError::InputLimit)?;
+                for _ in 0..count {
+                    weights.push(r.u128("allocation.bracket.weight")?);
+                }
+                brackets.push(AllocationBracket {
+                    upper_bound,
+                    weights,
+                });
+            }
         }
         r.finish("allocation request")?;
         if recipient.is_some_and(|recipient| !ids.contains(&recipient)) {
@@ -165,8 +219,10 @@ impl AllocationBasis {
             recipient,
             targets,
             target_cells,
+            brackets,
         };
         basis.validate_target_cells()?;
+        basis.validate_brackets()?;
         Ok(basis)
     }
 
@@ -218,6 +274,40 @@ impl AllocationBasis {
         Ok(())
     }
 
+    fn validate_brackets(&self) -> Result<(), AllocationError> {
+        if self.law != 4 {
+            return if self.brackets.is_empty() {
+                Ok(())
+            } else {
+                Err(invalid("only Tiered has a bracket schedule"))
+            };
+        }
+        if self.brackets.is_empty()
+            || self.brackets.len() > MAX_BRACKETS
+            || self
+                .brackets
+                .len()
+                .checked_mul(self.targets.len())
+                .is_none_or(|cells| cells > MAX_BRACKET_WEIGHTS)
+            || self.targets.iter().any(|target| target.basis != 1)
+        {
+            return Err(invalid("invalid tiered schedule size or target basis"));
+        }
+        let mut lower = 0;
+        for bracket in &self.brackets {
+            if bracket.upper_bound <= lower
+                || bracket.weights.len() != self.targets.len()
+                || bracket.weights.iter().all(|weight| *weight == 0)
+            {
+                return Err(invalid(
+                    "tiered bands require increasing positive bounds and complete nonzero weights",
+                ));
+            }
+            lower = bracket.upper_bound;
+        }
+        Ok(())
+    }
+
     /// Independent arithmetic. Public fields are checked again so a modified
     /// decoded value cannot invoke an unsupported law or a zero divisor.
     pub fn shares(&self) -> Result<Vec<i128>, AllocationError> {
@@ -235,6 +325,7 @@ impl AllocationBasis {
             return Err(invalid("duplicate or source target"));
         }
         self.validate_target_cells()?;
+        self.validate_brackets()?;
         if self.law == 2 {
             if !self.rounding.is_some_and(|law| (1..=9).contains(&law))
                 || !self.recipient.is_some_and(|id| ids.contains(&id))
@@ -335,6 +426,9 @@ impl AllocationBasis {
                     return Err(invalid("insufficient waterfall capacity"));
                 }
             }
+            4 => {
+                shares = tiered_shares(total, &self.brackets, self.targets.len())?;
+            }
             5 => {
                 if self.targets.iter().any(|target| target.basis != 1) {
                     return Err(invalid("equal split requires basis one"));
@@ -370,6 +464,65 @@ impl AllocationBasis {
         i128::try_from(positive.narrow()?).map_err(|_| AllocationError::Arithmetic)?;
         Ok(shares)
     }
+}
+
+fn tiered_shares(
+    total: u128,
+    brackets: &[AllocationBracket],
+    count: usize,
+) -> Result<Vec<i128>, AllocationError> {
+    if brackets.last().is_none_or(|last| last.upper_bound < total) {
+        return Err(invalid("tiered schedule does not cover the entire total"));
+    }
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(count)
+        .map_err(|_| AllocationError::InputLimit)?;
+    result.resize(count, 0i128);
+    let mut lower = 0;
+    for bracket in brackets {
+        let width = total.min(bracket.upper_bound) - total.min(lower);
+        lower = bracket.upper_bound;
+        let denominator = bracket
+            .weights
+            .iter()
+            .try_fold(Wide::ZERO, |sum, weight| sum.add(Wide::of(*weight)))?;
+        let mut ranks = Vec::new();
+        ranks
+            .try_reserve_exact(count)
+            .map_err(|_| AllocationError::InputLimit)?;
+        let mut assigned = 0u128;
+        for (index, weight) in bracket.weights.iter().enumerate() {
+            let (quotient, remainder) = Wide::product(width, *weight).div_rem(denominator)?;
+            let floor = quotient.narrow()?;
+            assigned = assigned
+                .checked_add(floor)
+                .ok_or(AllocationError::Arithmetic)?;
+            result[index] = result[index]
+                .checked_add(i128::try_from(floor).map_err(|_| AllocationError::Arithmetic)?)
+                .ok_or(AllocationError::Arithmetic)?;
+            ranks.push((remainder, index));
+        }
+        let residual = usize::try_from(
+            width
+                .checked_sub(assigned)
+                .ok_or(AllocationError::Arithmetic)?,
+        )
+        .map_err(|_| AllocationError::Arithmetic)?;
+        if residual >= count {
+            return Err(AllocationError::Arithmetic);
+        }
+        ranks.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        for (fraction, index) in ranks.into_iter().take(residual) {
+            if fraction == Wide::ZERO {
+                return Err(AllocationError::Arithmetic);
+            }
+            result[index] = result[index]
+                .checked_add(1)
+                .ok_or(AllocationError::Arithmetic)?;
+        }
+    }
+    Ok(result)
 }
 
 fn validate_dimensions(dimensions: &[(u32, u128)]) -> Result<(), AllocationError> {

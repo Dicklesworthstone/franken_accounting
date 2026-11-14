@@ -236,6 +236,111 @@ impl Fixture {
 const TARGETS: &str = r#"[{"account":"6100","weight":3,"dimensions":{"cost_center":"ENG"}},{"account":"6100","weight":2,"dimensions":{"cost_center":"SALES"}}]"#;
 
 #[test]
+fn tiered_allocation_reviews_posts_and_retries_the_exact_progressive_schedule() {
+    let f = Fixture::new();
+    let targets = r#"[{"account":"6100","dimensions":{"cost_center":"ENG"}},{"account":"6100","dimensions":{"cost_center":"SALES"}}]"#;
+    let intent = f.allocation(
+        "progressive-rent",
+        r#""total":"100.00 USD","source_side":"credit""#,
+        r#""method":"tiered","brackets":[{"upper_bound":"40.00 USD","weights":[9,1]},{"upper_bound":"80.00 USD","weights":[8,2]},{"upper_bound":"unbounded","weights":[7,3]}]"#,
+        targets,
+    );
+    let (review, path) = f.review("tiered", &intent);
+    assert_eq!(text(&review, "method"), "tiered");
+    let legs = get(&review, "legs").as_arr().unwrap();
+    assert_eq!(legs.len(), 3);
+    for (leg, cell, amount) in [
+        (&legs[0], "SHARED", "100.00 USD"),
+        (&legs[1], "ENG", "82.00 USD"),
+        (&legs[2], "SALES", "18.00 USD"),
+    ] {
+        assert_eq!(text(leg, "amount"), amount);
+        f.assert_dimensions(leg, cell);
+    }
+    let retained = fa::AllocationReview::decode(&std::fs::read(&path).unwrap()).unwrap();
+    let fa::AllocationMethod::Tiered { brackets } = &retained.posting().request.method else {
+        panic!("review must retain its complete progressive schedule")
+    };
+    assert_eq!(brackets.len(), 3);
+    assert_eq!(brackets[0].upper_bound, 4_000);
+    assert_eq!(brackets[2].upper_bound, u128::MAX);
+    assert_eq!(brackets[1].weights, [8, 2]);
+    f.import_driver(&path, "tiered");
+    let approved = ok(
+        &f.book,
+        &[
+            "allocate",
+            "approve",
+            "--review",
+            &path,
+            "--digest",
+            text(&review, "review_digest"),
+            "--as",
+            "controller",
+        ],
+    );
+    let plan_path = f.dir.join("tiered.plan").display().to_string();
+    ok(
+        &f.book,
+        &[
+            "allocate",
+            "--review",
+            &path,
+            "--digest",
+            text(&review, "review_digest"),
+            "--approval",
+            text(&approved, "approval_vid"),
+            "--dry-run",
+            "--plan-out",
+            &plan_path,
+        ],
+    );
+    let before = f.head();
+    let posted = ok(
+        &f.book,
+        &["commit", "--plan", &plan_path, "--grant", "read"],
+    );
+    assert_eq!(f.head(), before + 1);
+    let retry = ok(
+        &f.book,
+        &["commit", "--plan", &plan_path, "--grant", "read"],
+    );
+    assert_eq!(text(&posted, "vid"), text(&retry, "vid"));
+    assert_eq!(get(&retry, "already_recorded"), &Json::Bool(true));
+    assert_eq!(f.head(), before + 1);
+    f.assert_cell("SHARED", "100.00 USD", "100.00 USD");
+    f.assert_cell("ENG", "82.00 USD", "0.00 USD");
+    f.assert_cell("SALES", "18.00 USD", "0.00 USD");
+}
+
+#[test]
+fn malformed_tiered_schedules_refuse_before_publishing_a_driver_or_entry() {
+    let f = Fixture::new();
+    let targets = r#"[{"account":"6100","dimensions":{"cost_center":"ENG"}},{"account":"6100","dimensions":{"cost_center":"SALES"}}]"#;
+    for (index, method) in [
+        r#""method":"tiered""#,
+        r#""method":"tiered","brackets":[]"#,
+        r#""method":"tiered","brackets":[{"upper_bound":"unbounded","weights":[1]}]"#,
+        r#""method":"tiered","brackets":[{"upper_bound":"unbounded","weights":[0,0]}]"#,
+        r#""method":"tiered","brackets":[{"upper_bound":"unbounded","weights":[1,1],"rate":25}]"#,
+        r#""method":"tiered","brackets":[{"upper_bound":"40.00 EUR","weights":[1,1]}]"#,
+        r#""method":"tiered","brackets":[{"upper_bound":"40.00 USD","weights":[1,1]},{"upper_bound":"40.00 USD","weights":[2,1]}]"#,
+        r#""method":"tiered","brackets":[{"upper_bound":"99.99 USD","weights":[1,1]}]"#,
+        r#""method":"equal_split","brackets":[{"upper_bound":"unbounded","weights":[1,1]}]"#,
+    ].into_iter().enumerate() {
+        let intent = f.allocation(&format!("bad-tier-{index}"), r#""total":"100.00 USD","source_side":"credit""#, method, targets);
+        for mode in [Some("--review-only"), None] {
+            let mut args = vec!["allocate", "--intent", intent.as_str()];
+            args.extend(mode);
+            let head = f.head();
+            let (code, refusal) = run(&f.book, &args);
+            assert_ne!(code, 0, "{}", refusal.render());
+            assert_eq!(f.head(), head, "an invalid schedule must not import its driver");
+        }
+    }
+}
+
+#[test]
 fn dimensional_allocation_review_approval_plan_and_exact_retry_preserve_destination_cells() {
     let f = Fixture::new();
     let intent = f.allocation(

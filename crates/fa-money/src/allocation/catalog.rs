@@ -9,21 +9,23 @@ const EMBEDDED: &str = include_str!("../../../../registries/allocation_laws.toml
 /// Hard implementation ceiling, independent of a configurable lower bound.
 pub const MAX_ALLOCATION_TARGETS: usize = 4096;
 
-/// Stable identity of an implemented allocation law. IDs 4 and 6 are reserved
-/// for the distinct, currently unsupported Tiered and ByUnitsThenValue laws.
+/// Stable identity of an implemented allocation law. ID 6 remains reserved
+/// for the distinct, currently unsupported ByUnitsThenValue law.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AllocationLaw {
     LargestRemainder,
     ProRataResidualToNamed,
     Waterfall,
+    Tiered,
     EqualSplitResidualFirst,
 }
 
 impl AllocationLaw {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::LargestRemainder,
         Self::ProRataResidualToNamed,
         Self::Waterfall,
+        Self::Tiered,
         Self::EqualSplitResidualFirst,
     ];
 
@@ -32,6 +34,7 @@ impl AllocationLaw {
             Self::LargestRemainder => 1,
             Self::ProRataResidualToNamed => 2,
             Self::Waterfall => 3,
+            Self::Tiered => 4,
             Self::EqualSplitResidualFirst => 5,
         }
     }
@@ -45,6 +48,7 @@ impl AllocationLaw {
             Self::LargestRemainder => "LargestRemainder",
             Self::ProRataResidualToNamed => "ProRataResidualToNamed",
             Self::Waterfall => "Waterfall",
+            Self::Tiered => "Tiered",
             Self::EqualSplitResidualFirst => "EqualSplitResidualFirst",
         }
     }
@@ -71,6 +75,12 @@ impl AllocationLaw {
                 "native-mantissa-caps",
                 "input-order; fill-earlier-cap-first",
                 "none",
+                "magnitude-then-restore-sign",
+            ],
+            Self::Tiered => [
+                "cumulative-native-bounds; per-bracket-weights; target-basis-one",
+                "ascending-brackets; input-order; remainder-descending; ties-lowest-index",
+                "floor-band-magnitude; distribute-one-unit-per-bracket",
                 "magnitude-then-restore-sign",
             ],
             Self::EqualSplitResidualFirst => [
@@ -188,12 +198,12 @@ mod tests {
                 .iter()
                 .map(|law| law.id())
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 5]
+            [1, 2, 3, 4, 5]
         );
         for law in AllocationLaw::ALL {
             assert_eq!(AllocationLaw::from_id(law.id()), Some(law));
         }
-        for absent in [0, 4, 6, u16::MAX] {
+        for absent in [0, 6, u16::MAX] {
             assert_eq!(AllocationLaw::from_id(absent), None);
         }
     }

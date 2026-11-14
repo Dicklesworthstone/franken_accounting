@@ -10,15 +10,19 @@
 //! account legality, approvals and journal publication are outside this scope.
 
 use super::{
-    AllocationCatalog, AllocationError, AllocationLaw, AllocationMethod, AllocationOutcome,
-    AllocationRequest, AllocationTarget, MAX_ALLOCATION_TARGETS,
+    AllocationBracket, AllocationCatalog, AllocationError, AllocationLaw, AllocationMethod,
+    AllocationOutcome, AllocationRequest, AllocationTarget, MAX_ALLOCATION_BRACKET_WEIGHTS,
+    MAX_ALLOCATION_BRACKETS, MAX_ALLOCATION_TARGETS,
 };
 use crate::{Amount, AmountError, RoundingLaw, UnitId};
 
 const REQUEST_MAGIC: &[u8; 17] = b"FA-ALLOC-REQUEST\0";
 const RECEIPT_MAGIC: &[u8; 17] = b"FA-ALLOC-RECEIPT\0";
 const VERSION: [u8; 4] = [1, 0, 0, 0]; // u16 major 1, u16 minor 0
-pub const MAX_ALLOCATION_REQUEST_BYTES: usize = 128 + 32 * MAX_ALLOCATION_TARGETS;
+pub const MAX_ALLOCATION_REQUEST_BYTES: usize = 128
+    + 32 * MAX_ALLOCATION_TARGETS
+    + 16 * MAX_ALLOCATION_BRACKET_WEIGHTS
+    + 16 * MAX_ALLOCATION_BRACKETS;
 pub const MAX_ALLOCATION_RECEIPT_BYTES: usize =
     MAX_ALLOCATION_REQUEST_BYTES + 32 * MAX_ALLOCATION_TARGETS + 128;
 
@@ -27,7 +31,13 @@ impl AllocationRequest {
     /// execution (for example, zero total weight or insufficient capacity).
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, AllocationError> {
         self.validate_shape(&AllocationCatalog::embedded()?)?;
-        let mut bytes = reserved(128 + 32 * self.targets.len())?;
+        let bracket_bytes = match &self.method {
+            AllocationMethod::Tiered { brackets } => {
+                4 + brackets.len() * (16 + 16 * self.targets.len())
+            }
+            _ => 0,
+        };
+        let mut bytes = reserved(128 + 32 * self.targets.len() + bracket_bytes)?;
         bytes.extend_from_slice(REQUEST_MAGIC);
         bytes.extend_from_slice(&VERSION);
         bytes.extend_from_slice(&self.method.law().id().to_le_bytes());
@@ -37,7 +47,7 @@ impl AllocationRequest {
         if let AllocationMethod::ProRataResidualToNamed {
             rounding,
             recipient,
-        } = self.method
+        } = &self.method
         {
             bytes.extend_from_slice(&rounding.id().to_le_bytes());
             bytes.extend_from_slice(&recipient.to_le_bytes());
@@ -46,6 +56,17 @@ impl AllocationRequest {
         for target in &self.targets {
             bytes.extend_from_slice(&target.id.to_le_bytes());
             bytes.extend_from_slice(&target.basis.to_le_bytes());
+        }
+        // Law 4 appends its complete marginal schedule. The encodings of
+        // every previously implemented law remain byte-for-byte unchanged.
+        if let AllocationMethod::Tiered { brackets } = &self.method {
+            write_count(&mut bytes, brackets.len())?;
+            for bracket in brackets {
+                bytes.extend_from_slice(&bracket.upper_bound.to_le_bytes());
+                for weight in &bracket.weights {
+                    bytes.extend_from_slice(&weight.to_le_bytes());
+                }
+            }
         }
         bounded(&bytes, MAX_ALLOCATION_REQUEST_BYTES)?;
         Ok(bytes)
@@ -74,9 +95,12 @@ impl AllocationRequest {
         }
         let unit = UnitId(u32::from_le_bytes(r.take("unit id")?));
         let mantissa = i128::from_le_bytes(r.take("total mantissa")?);
-        let method = match law {
+        let mut method = match law {
             AllocationLaw::LargestRemainder => AllocationMethod::LargestRemainder,
             AllocationLaw::Waterfall => AllocationMethod::Waterfall,
+            AllocationLaw::Tiered => AllocationMethod::Tiered {
+                brackets: Vec::new(),
+            },
             AllocationLaw::EqualSplitResidualFirst => AllocationMethod::EqualSplitResidualFirst,
             AllocationLaw::ProRataResidualToNamed => AllocationMethod::ProRataResidualToNamed {
                 rounding: RoundingLaw::from_id(u16::from_le_bytes(r.take("rounding law")?))
@@ -86,14 +110,39 @@ impl AllocationRequest {
         };
         let count = usize::try_from(u32::from_le_bytes(r.take("target count")?))
             .map_err(|_| AllocationError::Invalid("target count is unrepresentable"))?;
-        if count == 0
-            || count > catalog.max_targets()
-            || count.checked_mul(32) != Some(r.bytes.len() - r.offset)
-        {
+        if count == 0 || count > catalog.max_targets() {
             return Err(AllocationError::Invalid(
                 "target count or request length is invalid",
             ));
         }
+        let target_end = r.offset + 32 * count;
+        let bracket_count = if law == AllocationLaw::Tiered {
+            let encoded: [u8; 4] = r
+                .bytes
+                .get(target_end..target_end + 4)
+                .ok_or(AllocationError::Invalid("missing tiered bracket count"))?
+                .try_into()
+                .map_err(|_| AllocationError::Invalid("invalid tiered bracket count"))?;
+            let bands = usize::try_from(u32::from_le_bytes(encoded))
+                .map_err(|_| AllocationError::Invalid("tiered count is unrepresentable"))?;
+            if bands == 0
+                || bands > MAX_ALLOCATION_BRACKETS
+                || bands * count > MAX_ALLOCATION_BRACKET_WEIGHTS
+                || r.bytes.len() != target_end + 4 + bands * (16 + 16 * count)
+            {
+                return Err(AllocationError::Invalid(
+                    "tiered bracket count, weight-cell bound or request length is invalid",
+                ));
+            }
+            bands
+        } else {
+            if target_end != r.bytes.len() {
+                return Err(AllocationError::Invalid(
+                    "target count or request length is invalid",
+                ));
+            }
+            0
+        };
         let mut targets = Vec::new();
         targets
             .try_reserve_exact(count)
@@ -103,6 +152,28 @@ impl AllocationRequest {
                 id: u128::from_le_bytes(r.take("target id")?),
                 basis: u128::from_le_bytes(r.take("target basis")?),
             });
+        }
+        if law == AllocationLaw::Tiered {
+            let _count = r.take::<4>("bracket count")?;
+            let mut brackets = Vec::new();
+            brackets
+                .try_reserve_exact(bracket_count)
+                .map_err(|_| AmountError::Overflow)?;
+            for _ in 0..bracket_count {
+                let upper_bound = u128::from_le_bytes(r.take("bracket upper bound")?);
+                let mut weights = Vec::new();
+                weights
+                    .try_reserve_exact(count)
+                    .map_err(|_| AmountError::Overflow)?;
+                for _ in 0..count {
+                    weights.push(u128::from_le_bytes(r.take("bracket weight")?));
+                }
+                brackets.push(AllocationBracket {
+                    upper_bound,
+                    weights,
+                });
+            }
+            method = AllocationMethod::Tiered { brackets };
         }
         let request = Self {
             total: Amount::new(unit, mantissa),

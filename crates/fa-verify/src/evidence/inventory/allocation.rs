@@ -22,7 +22,7 @@ use crate::evidence::{EvidenceCitation, EvidenceError};
 use crate::{Checkpoint, Inclusion};
 use core::fmt;
 
-pub use basis::{AllocationBasis, AllocationTarget, AllocationTargetCell};
+pub use basis::{AllocationBasis, AllocationBracket, AllocationTarget, AllocationTargetCell};
 
 /// Existing entry extension ceiling minus its fixed record framing.
 pub const MAX_BASIS_BYTES: usize = 64 * 1024 - 84;

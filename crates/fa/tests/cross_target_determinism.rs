@@ -18,8 +18,9 @@ use fa_model::{
     EntryClass, EntryOrigin, EntryPayload, Id128, LegPayload, Oid, Writer, account_vid,
 };
 use fa_money::allocation::{
-    AllocationCatalog, AllocationLaw, equal_split_residual_first, largest_remainder,
-    pro_rata_residual_to_named, waterfall,
+    AllocationBracket, AllocationCatalog, AllocationLaw, AllocationMethod, AllocationRequest,
+    AllocationTarget, equal_split_residual_first, largest_remainder, pro_rata_residual_to_named,
+    waterfall,
 };
 use fa_money::valuation::{LegValue, value_legs};
 use fa_money::{
@@ -156,6 +157,43 @@ fn allocation_vector_digest() -> [u8; 32] {
         for share in &wf {
             w.i128(share.mantissa);
         }
+    }
+
+    // Progressive marginal schedules bind both exact shares and their
+    // canonical receipts, including signed limits and unoccupied bands.
+    for total in [i128::MIN, -25_000, -1, 0, 1, 25_000, i128::MAX] {
+        let request = AllocationRequest {
+            total: Amount::new(unit, total),
+            method: AllocationMethod::Tiered {
+                brackets: vec![
+                    AllocationBracket {
+                        upper_bound: 10_000,
+                        weights: vec![9, 1],
+                    },
+                    AllocationBracket {
+                        upper_bound: 20_000,
+                        weights: vec![8, 2],
+                    },
+                    AllocationBracket {
+                        upper_bound: u128::MAX,
+                        weights: vec![7, 3],
+                    },
+                ],
+            },
+            targets: vec![
+                AllocationTarget { id: 100, basis: 1 },
+                AllocationTarget { id: 101, basis: 1 },
+            ],
+        };
+        w.u8(5)
+            .bytes(&request.canonical_bytes().expect("tiered request"))
+            .bytes(
+                &request
+                    .execute()
+                    .expect("tiered allocation")
+                    .receipt_bytes()
+                    .expect("tiered receipt"),
+            );
     }
 
     let bytes = w.finish().expect("canonical writer");
@@ -554,9 +592,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
         "amount + rounding corpus digest drifted on {}",
         std::env::consts::ARCH
     );
+    // Tiered adds its catalog identity and signed request/receipt vectors.
+    // An independent unbounded-integer oracle reproduced the prior c909e713
+    // corpus, then measured these bytes using the production Writer/BLAKE3.
+    // The architecture qualification requirement above remains unchanged.
     assert_eq!(
         allocation,
-        "c909e7135ddce1a5359b9828712c466d582481ef31d237a9d1eb707cbb321b18",
+        "7b8e2abdf02ad1c2da7469ce68f7f7920454c7113bb4d031dc21a6f09683f991",
         "allocation corpus digest drifted on {}",
         std::env::consts::ARCH
     );

@@ -58,7 +58,7 @@ impl BalanceAllocationRequest {
             target_cells: self.target_cells.clone(),
             request: AllocationRequest {
                 total: Amount::new(self.unit, total),
-                method: self.method,
+                method: self.method.clone(),
                 targets: self.targets.clone(),
             },
         }

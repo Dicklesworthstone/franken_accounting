@@ -37,6 +37,40 @@ fn basis(law: u16, rounding: u16, total: i128, weights: &[u128], debit: bool) ->
     w.buf
 }
 
+fn tiered_basis(total: i128, brackets: &[(u128, Vec<u128>)], debit: bool) -> Vec<u8> {
+    let count = brackets[0].1.len();
+    let mut request = Writer::default();
+    request
+        .fixed(b"FA-ALLOC-REQUEST\0")
+        .u16(1)
+        .u16(0)
+        .u16(4)
+        .u16(1)
+        .u32(1)
+        .i128(total)
+        .count(count);
+    for index in 0..count {
+        request.u128(20 + index as u128).u128(1);
+    }
+    request.count(brackets.len());
+    for (upper, weights) in brackets {
+        assert_eq!(weights.len(), count);
+        request.u128(*upper);
+        for weight in weights {
+            request.u128(*weight);
+        }
+    }
+    let mut basis = Writer::default();
+    basis
+        .fixed(b"FA-ALLOC-BASIS\0")
+        .u16(1)
+        .u128(10)
+        .u8(u8::from(!debit))
+        .count(0)
+        .bytes(&request.buf);
+    basis.buf
+}
+
 fn citation(bytes: &[u8]) -> EvidenceCitation {
     let commitment = doc_commit(21, bytes);
     EvidenceCitation {
@@ -175,6 +209,94 @@ fn known_allocations_bind_native_legs_and_exact_workpaper_for_both_source_sides(
             assert_eq!(verified.basis.targets.len(), weights.len());
         }
     }
+}
+
+#[test]
+fn tiered_allocations_verify_independent_marginal_arithmetic_and_full_entry_binding() {
+    for debit in [true, false] {
+        for (total, schedule, expected) in [
+            (
+                25_000,
+                vec![
+                    (10_000, vec![9, 1]),
+                    (20_000, vec![8, 2]),
+                    (u128::MAX, vec![7, 3]),
+                ],
+                vec![20_500, 4_500],
+            ),
+            (
+                2,
+                vec![(1, vec![1, 1, 0]), (2, vec![0, 1, 1])],
+                vec![1, 1, 0],
+            ),
+            (
+                i128::MAX,
+                vec![(u128::MAX, vec![u128::MAX, u128::MAX])],
+                vec![i128::MAX / 2 + 1, i128::MAX / 2],
+            ),
+        ] {
+            let bytes = tiered_basis(total, &schedule, debit);
+            let p = proposal(&bytes, &expected, &[citation(&bytes)]);
+            let (proof_bytes, checkpoint, digest) = proof(&p, true);
+            let verified =
+                verify_allocation_for(&proof_bytes, &checkpoint, &digest, &bytes).unwrap();
+            assert_eq!(verified.shares, expected);
+            assert_eq!(verified.basis.law, 4);
+            assert_eq!(verified.basis.brackets.len(), schedule.len());
+            let mut wrong = expected;
+            wrong[0] -= 1;
+            wrong[1] += 1;
+            let forged = proposal(&bytes, &wrong, &[citation(&bytes)]);
+            let (forged_proof, forged_checkpoint, forged_digest) = proof(&forged, true);
+            assert!(
+                verify_allocation_for(&forged_proof, &forged_checkpoint, &forged_digest, &bytes)
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn tiered_schedule_rejects_uncovered_totals_hostile_counts_and_unbound_modifications() {
+    let schedule = [(3, vec![1, 1]), (20, vec![1, 3])];
+    let bytes = tiered_basis(7, &schedule, false);
+    let decoded = AllocationBasis::decode(&bytes).unwrap();
+    assert_eq!(decoded.shares().unwrap(), [3, 4]);
+    for cut in 0..bytes.len() {
+        assert!(AllocationBasis::decode(&bytes[..cut]).is_err());
+    }
+    for count in [0u32, 1, 3, 65, u32::MAX] {
+        let mut altered = bytes.clone();
+        let at = 42 + 49 + 32 * 2;
+        altered[at..at + 4].copy_from_slice(&count.to_le_bytes());
+        assert!(AllocationBasis::decode(&altered).is_err());
+    }
+    for bad in [
+        vec![(3, vec![1, 1]), (3, vec![1, 3])],
+        vec![(3, vec![1, 1]), (2, vec![1, 3])],
+        vec![(3, vec![1, 1]), (20, vec![0, 0])],
+    ] {
+        assert!(AllocationBasis::decode(&tiered_basis(1, &bad, false)).is_err());
+    }
+    assert!(
+        AllocationBasis::decode(&tiered_basis(21, &schedule, false))
+            .unwrap()
+            .shares()
+            .is_err()
+    );
+    let mut changed = decoded.clone();
+    changed.brackets[1].weights.pop();
+    assert!(changed.shares().is_err());
+    changed = decoded.clone();
+    changed.law = 1;
+    assert!(
+        changed.shares().is_err(),
+        "other laws cannot ignore a retained schedule"
+    );
+    let p = proposal(&bytes, &[3, 4], &[citation(&bytes)]);
+    let (proof, checkpoint, digest) = proof(&p, true);
+    let changed = tiered_basis(7, &[(3, vec![1, 1]), (21, vec![1, 3])], false);
+    assert!(verify_allocation_for(&proof, &checkpoint, &digest, &changed).is_err());
 }
 
 #[test]

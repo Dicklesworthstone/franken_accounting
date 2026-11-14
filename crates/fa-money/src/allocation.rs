@@ -8,6 +8,7 @@ mod ordered;
 mod pro_rata;
 mod receipt;
 mod request;
+mod tiered;
 
 pub use catalog::{AllocationCatalog, AllocationLaw, MAX_ALLOCATION_TARGETS};
 pub use ordered::{equal_split_residual_first, waterfall};
@@ -15,6 +16,9 @@ pub use pro_rata::{ProRataAllocation, pro_rata_residual_to_named};
 pub use receipt::{MAX_ALLOCATION_RECEIPT_BYTES, MAX_ALLOCATION_REQUEST_BYTES};
 pub use request::{
     AllocationError, AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,
+};
+pub use tiered::{
+    AllocationBracket, MAX_ALLOCATION_BRACKET_WEIGHTS, MAX_ALLOCATION_BRACKETS, tiered,
 };
 
 use crate::amount::{Amount, AmountError, signed_magnitude};

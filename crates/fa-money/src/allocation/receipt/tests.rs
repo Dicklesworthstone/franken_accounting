@@ -47,6 +47,22 @@ fn every_method_and_signed_boundary_roundtrips_and_replays() {
                 &[0, u128::MAX, u128::MAX],
             ),
             request(total, AllocationMethod::EqualSplitResidualFirst, &[1; 3]),
+            request(
+                total,
+                AllocationMethod::Tiered {
+                    brackets: vec![
+                        AllocationBracket {
+                            upper_bound: 3,
+                            weights: vec![1, 1, 1],
+                        },
+                        AllocationBracket {
+                            upper_bound: u128::MAX,
+                            weights: vec![0, u128::MAX, u128::MAX],
+                        },
+                    ],
+                },
+                &[1; 3],
+            ),
         ];
         for rounding in RoundingLaw::ALL {
             inputs.push(request(
@@ -80,6 +96,12 @@ fn every_request_truncation_and_trailing_byte_is_rejected() {
             rounding: RoundingLaw::HalfEven,
             recipient: 100,
         },
+        AllocationMethod::Tiered {
+            brackets: vec![AllocationBracket {
+                upper_bound: 10,
+                weights: vec![1; 3],
+            }],
+        },
     ] {
         let bytes = request(5, method, &[1; 3]).canonical_bytes().unwrap();
         for cut in 0..bytes.len() {
@@ -102,7 +124,7 @@ fn unknown_versions_laws_rounding_and_hostile_counts_are_refused() {
     for (offset, replacement) in [
         (17, 2u16), // format major
         (19, 1u16), // unsupported minor
-        (21, 4u16), // unimplemented Tiered law
+        (21, 4u16), // Tiered requires its complete bracket schedule
         (21, 6u16), // unimplemented two-key law
         (23, 2u16), // law version
     ] {
@@ -132,6 +154,54 @@ fn unknown_versions_laws_rounding_and_hostile_counts_are_refused() {
     pro_rata[45..47].copy_from_slice(&10u16.to_le_bytes());
     assert!(AllocationRequest::decode(&pro_rata).is_err());
     assert!(AllocationRequest::decode(&vec![0; MAX_ALLOCATION_REQUEST_BYTES + 1]).is_err());
+}
+
+#[test]
+fn tiered_receipts_bind_the_complete_schedule_and_reject_hostile_band_counts() {
+    let input = request(
+        7,
+        AllocationMethod::Tiered {
+            brackets: vec![
+                AllocationBracket {
+                    upper_bound: 3,
+                    weights: vec![1, 1],
+                },
+                AllocationBracket {
+                    upper_bound: 20,
+                    weights: vec![1, 3],
+                },
+            ],
+        },
+        &[1; 2],
+    );
+    let bytes = input.canonical_bytes().unwrap();
+    let schedule = 49 + 32 * 2;
+    assert_eq!(&bytes[21..25], &[4, 0, 1, 0]);
+    assert_eq!(&bytes[schedule..schedule + 4], &2u32.to_le_bytes());
+    assert_eq!(&bytes[schedule + 4..schedule + 20], &3u128.to_le_bytes());
+    let receipt = input.execute().unwrap().receipt_bytes().unwrap();
+    let mut changed = input.clone();
+    let AllocationMethod::Tiered { brackets } = &mut changed.method else {
+        unreachable!()
+    };
+    brackets[1].upper_bound = 21; // Even an unoccupied bound belongs to the request.
+    assert!(AllocationOutcome::replay_receipt_for(&receipt, &changed).is_err());
+    let mut changed = input.clone();
+    let AllocationMethod::Tiered { brackets } = &mut changed.method else {
+        unreachable!()
+    };
+    brackets[1].weights.swap(0, 1);
+    assert!(AllocationOutcome::replay_receipt_for(&receipt, &changed).is_err());
+    for count in [0u32, 1, 3, 65, u32::MAX] {
+        let mut malformed = bytes.clone();
+        malformed[schedule..schedule + 4].copy_from_slice(&count.to_le_bytes());
+        assert!(AllocationRequest::decode(&malformed).is_err());
+    }
+    for index in 0..receipt.len() {
+        let mut altered = receipt.clone();
+        altered[index] ^= 1;
+        assert!(AllocationOutcome::replay_receipt_for(&altered, &input).is_err());
+    }
 }
 
 #[test]

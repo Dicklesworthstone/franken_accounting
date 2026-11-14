@@ -1,6 +1,6 @@
 # Plan §6.3 / fa-joq. Executable arithmetic laws, not posting authorization.
-# IDs follow the plan's catalog order. 4 (Tiered) and 6 (ByUnitsThenValue)
-# remain unsupported and are deliberately absent, not aliases of other laws.
+# IDs follow the plan's catalog order. 6 (ByUnitsThenValue) remains
+# unsupported and is deliberately absent, not an alias of another law.
 # Target order is part of the basis: never sort a caller's waterfall or ties.
 schema_version = 1
 max_targets = 4096
@@ -30,6 +30,18 @@ name = "Waterfall"
 basis = "native-mantissa-caps"
 ordering = "input-order; fill-earlier-cap-first"
 rounding = "none"
+signed = "magnitude-then-restore-sign"
+
+[[law]]
+id = 4
+# Each cumulative band redistributes its occupied amount over all targets.
+# Bounds/weights, including unused bands, are retained in the law-4 request.
+# 64 brackets / 4096 weight cells; no implicit final bracket or tax policy.
+version = 1
+name = "Tiered"
+basis = "cumulative-native-bounds; per-bracket-weights; target-basis-one"
+ordering = "ascending-brackets; input-order; remainder-descending; ties-lowest-index"
+rounding = "floor-band-magnitude; distribute-one-unit-per-bracket"
 signed = "magnitude-then-restore-sign"
 
 [[law]]

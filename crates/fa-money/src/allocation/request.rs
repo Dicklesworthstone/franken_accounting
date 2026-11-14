@@ -7,8 +7,8 @@ use core::fmt;
 use std::collections::BTreeSet;
 
 use super::{
-    AllocationCatalog, AllocationLaw, ProRataAllocation, equal_split_residual_first,
-    largest_remainder, pro_rata_residual_to_named, waterfall,
+    AllocationBracket, AllocationCatalog, AllocationLaw, ProRataAllocation,
+    equal_split_residual_first, largest_remainder, pro_rata_residual_to_named, tiered, waterfall,
 };
 use crate::wide::U256;
 use crate::{Amount, AmountError, RoundingLaw};
@@ -54,7 +54,7 @@ impl From<fa_registry::RegistryError> for AllocationError {
 
 /// The selected law and all of its runtime parameters. A residual recipient
 /// is an explicit target identity; reordering targets never renames it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AllocationMethod {
     LargestRemainder,
     ProRataResidualToNamed {
@@ -62,15 +62,19 @@ pub enum AllocationMethod {
         recipient: u128,
     },
     Waterfall,
+    Tiered {
+        brackets: Vec<AllocationBracket>,
+    },
     EqualSplitResidualFirst,
 }
 
 impl AllocationMethod {
-    pub const fn law(self) -> AllocationLaw {
+    pub const fn law(&self) -> AllocationLaw {
         match self {
             Self::LargestRemainder => AllocationLaw::LargestRemainder,
             Self::ProRataResidualToNamed { .. } => AllocationLaw::ProRataResidualToNamed,
             Self::Waterfall => AllocationLaw::Waterfall,
+            Self::Tiered { .. } => AllocationLaw::Tiered,
             Self::EqualSplitResidualFirst => AllocationLaw::EqualSplitResidualFirst,
         }
     }
@@ -80,7 +84,8 @@ impl AllocationMethod {
 pub struct AllocationTarget {
     pub id: u128,
     /// Weight for proportional laws, native mantissa cap for Waterfall,
-    /// exactly 1 for EqualSplitResidualFirst. Never a floating-point value.
+    /// exactly 1 for EqualSplitResidualFirst or Tiered (whose weights belong
+    /// to each bracket). Never a floating-point value.
     pub basis: u128,
 }
 
@@ -109,9 +114,10 @@ impl AllocationRequest {
             .try_reserve_exact(self.targets.len())
             .map_err(|_| AmountError::Overflow)?;
         basis.extend(self.targets.iter().map(|target| target.basis));
-        let (shares, pro_rata) = match self.method {
+        let (shares, pro_rata) = match &self.method {
             AllocationMethod::LargestRemainder => (largest_remainder(self.total, &basis)?, None),
             AllocationMethod::Waterfall => (waterfall(self.total, &basis)?, None),
+            AllocationMethod::Tiered { brackets } => (tiered(self.total, brackets)?, None),
             AllocationMethod::EqualSplitResidualFirst => (
                 equal_split_residual_first(self.total, self.targets.len())?,
                 None,
@@ -123,11 +129,11 @@ impl AllocationRequest {
                 let index = self
                     .targets
                     .iter()
-                    .position(|target| target.id == recipient)
+                    .position(|target| target.id == *recipient)
                     .ok_or(AllocationError::Invalid(
                         "residual recipient is not a target",
                     ))?;
-                let result = pro_rata_residual_to_named(self.total, &basis, index, rounding)?;
+                let result = pro_rata_residual_to_named(self.total, &basis, index, *rounding)?;
                 (result.shares.clone(), Some(result))
             }
         };
@@ -154,18 +160,25 @@ impl AllocationRequest {
             if !ids.insert(target.id) {
                 return Err(AllocationError::Invalid("duplicate target identity"));
             }
-            if self.method == AllocationMethod::EqualSplitResidualFirst && target.basis != 1 {
+            if matches!(
+                self.method,
+                AllocationMethod::EqualSplitResidualFirst | AllocationMethod::Tiered { .. }
+            ) && target.basis != 1
+            {
                 return Err(AllocationError::Invalid(
-                    "equal split requires basis 1 for every target",
+                    "equal split and tiered allocation require basis 1 for every target",
                 ));
             }
         }
-        if let AllocationMethod::ProRataResidualToNamed { recipient, .. } = self.method
-            && !ids.contains(&recipient)
+        if let AllocationMethod::ProRataResidualToNamed { recipient, .. } = &self.method
+            && !ids.contains(recipient)
         {
             return Err(AllocationError::Invalid(
                 "residual recipient is not a target",
             ));
+        }
+        if let AllocationMethod::Tiered { brackets } = &self.method {
+            super::tiered::validate_brackets(brackets, self.targets.len())?;
         }
         Ok(())
     }

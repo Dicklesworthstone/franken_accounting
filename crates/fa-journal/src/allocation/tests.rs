@@ -1,5 +1,5 @@
 use super::*;
-use fa_money::allocation::{AllocationMethod, AllocationTarget};
+use fa_money::allocation::{AllocationBracket, AllocationMethod, AllocationTarget};
 use fa_money::{RoundingLaw, UnitId};
 
 fn basis(total: i128, method: AllocationMethod, weights: &[u128]) -> AllocationPosting {
@@ -41,6 +41,55 @@ fn explicit_native_allocation_constructs_the_exact_source_and_target_vector() {
         legs.iter()
             .all(|leg| leg.settles.is_empty() && leg.base_amount.is_none())
     );
+}
+
+#[test]
+fn tiered_posting_binds_each_marginal_band_and_conserves_the_native_legs() {
+    let basis = basis(
+        25_000,
+        AllocationMethod::Tiered {
+            brackets: vec![
+                AllocationBracket {
+                    upper_bound: 10_000,
+                    weights: vec![9, 1],
+                },
+                AllocationBracket {
+                    upper_bound: 20_000,
+                    weights: vec![8, 2],
+                },
+                AllocationBracket {
+                    upper_bound: u128::MAX,
+                    weights: vec![7, 3],
+                },
+            ],
+        },
+        &[1, 1],
+    );
+    let outcome = basis.request.execute().unwrap();
+    let legs = basis.legs(&outcome).unwrap();
+    assert_eq!(
+        legs.iter()
+            .map(|leg| (leg.account_ref.0, side_tag(leg.side), leg.amount.mantissa))
+            .collect::<Vec<_>>(),
+        [(10, 1, 25_000), (11, 0, 20_500), (12, 0, 4_500)]
+    );
+    assert_eq!(
+        AllocationPosting::decode_record(&basis.record_bytes().unwrap()).unwrap(),
+        basis
+    );
+    let mut changed = basis.clone();
+    let AllocationMethod::Tiered { brackets } = &mut changed.request.method else {
+        unreachable!()
+    };
+    brackets[2].weights = vec![6, 4];
+    assert_eq!(basis.law_digest(), changed.law_digest());
+    assert_ne!(
+        basis.basis_digest().unwrap(),
+        changed.basis_digest().unwrap()
+    );
+    assert!(changed.legs(&outcome).is_err());
+    let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+    assert_eq!((totals[0].debits, totals[0].credits), (25_000, 25_000));
 }
 
 #[test]

@@ -6,7 +6,9 @@
 
 use fa_journal::allocation::AllocationPosting;
 use fa_model::{Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, Oid, SealKey};
-use fa_money::allocation::{AllocationMethod, AllocationRequest, AllocationTarget};
+use fa_money::allocation::{
+    AllocationBracket, AllocationMethod, AllocationRequest, AllocationTarget,
+};
 use fa_money::{Amount, RoundingLaw, Side, UnitId};
 use fa_notary::Journal;
 use fa_time::DateDay;
@@ -18,6 +20,25 @@ use fgdb_types::{CommitSeq, VId};
 
 const BOOK: Id128 = Id128([0x6a; 16]);
 const ENTRY: VId = VId(0x1234);
+
+fn progressive_method() -> AllocationMethod {
+    AllocationMethod::Tiered {
+        brackets: vec![
+            AllocationBracket {
+                upper_bound: 10_000,
+                weights: vec![9, 1],
+            },
+            AllocationBracket {
+                upper_bound: 20_000,
+                weights: vec![8, 2],
+            },
+            AllocationBracket {
+                upper_bound: u128::MAX,
+                weights: vec![7, 3],
+            },
+        ],
+    }
+}
 
 fn posting(total: i128, method: AllocationMethod, weights: &[u128]) -> AllocationPosting {
     AllocationPosting {
@@ -145,6 +166,7 @@ fn actual_producer_entries_and_proofs_verify_for_all_laws_sides_and_rounding_mod
         posting(10, AllocationMethod::Waterfall, &[4, 0, 9]),
         posting(2, AllocationMethod::EqualSplitResidualFirst, &[1; 5]),
         posting(i128::MAX, AllocationMethod::LargestRemainder, &[1; 2]),
+        posting(25_000, progressive_method(), &[1; 2]),
     ];
     for rounding in RoundingLaw::ALL {
         for recipient in [20, 21, 22] {
@@ -260,6 +282,7 @@ fn with_target_dimensions(mut posting: AllocationPosting) -> AllocationPosting {
 fn actual_v2_producer_cells_verify_independently_for_all_laws_and_rounding_modes() {
     let mut examples = vec![
         posting(100, AllocationMethod::LargestRemainder, &[3, 2]),
+        posting(25_000, progressive_method(), &[1; 2]),
         posting(10, AllocationMethod::Waterfall, &[4, 0, 9]),
         posting(2, AllocationMethod::EqualSplitResidualFirst, &[1; 5]),
     ];

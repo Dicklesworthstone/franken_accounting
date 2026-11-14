@@ -11702,11 +11702,21 @@ fn parse_allocation_method(doc: &Json, book_id: Id128) -> Result<AllocationMetho
         .or_else(|| doc.get("law"))
         .and_then(Json::as_str)
         .unwrap_or("largest_remainder");
+    if doc.get("brackets").is_some() && !matches!(method_name, "tiered" | "Tiered") {
+        return Err(usage(
+            "only method tiered accepts a bracket schedule",
+            "select method: tiered, or remove brackets",
+        ));
+    }
     match method_name {
         "largest_remainder" | "LargestRemainder" | "hamilton" => {
             Ok(AllocationMethod::LargestRemainder)
         }
         "waterfall" | "Waterfall" => Ok(AllocationMethod::Waterfall),
+        "tiered" | "Tiered" => Ok(AllocationMethod::Tiered {
+            // Bounds in amount notation are resolved after the source unit.
+            brackets: Vec::new(),
+        }),
         "equal_split_residual_first" | "EqualSplitResidualFirst" | "equal_split" => {
             Ok(AllocationMethod::EqualSplitResidualFirst)
         }
@@ -11744,16 +11754,17 @@ fn parse_allocation_method(doc: &Json, book_id: Id128) -> Result<AllocationMetho
         }
         other => Err(usage(
             format!("unknown allocation method `{other}`"),
-            "method: largest_remainder|pro_rata_residual_to_named|waterfall|equal_split_residual_first",
+            "method: largest_remainder|pro_rata_residual_to_named|waterfall|tiered|equal_split_residual_first",
         )),
     }
 }
 
-fn allocation_method_name(method: AllocationMethod) -> &'static str {
+fn allocation_method_name(method: &AllocationMethod) -> &'static str {
     match method {
         AllocationMethod::LargestRemainder => "largest_remainder",
         AllocationMethod::ProRataResidualToNamed { .. } => "pro_rata_residual_to_named",
         AllocationMethod::Waterfall => "waterfall",
+        AllocationMethod::Tiered { .. } => "tiered",
         AllocationMethod::EqualSplitResidualFirst => "equal_split_residual_first",
     }
 }
@@ -11851,7 +11862,13 @@ fn parse_allocation_targets(
                     "basis: 100",
                 ));
             }
-            None if matches!(method, AllocationMethod::EqualSplitResidualFirst) => 1,
+            None if matches!(
+                method,
+                AllocationMethod::EqualSplitResidualFirst | AllocationMethod::Tiered { .. }
+            ) =>
+            {
+                1
+            }
             None => {
                 return Err(usage(
                     format!("{what}: missing `basis` (or `weight`/`cap`)"),
@@ -11862,6 +11879,9 @@ fn parse_allocation_targets(
         out.push(AllocationTarget { id, basis });
     }
     let method = match method {
+        AllocationMethod::Tiered { .. } => AllocationMethod::Tiered {
+            brackets: parse_allocation_brackets(doc, units, unit, out.len())?,
+        },
         AllocationMethod::ProRataResidualToNamed {
             rounding,
             recipient: account,
@@ -11910,6 +11930,130 @@ fn parse_allocation_targets(
         targets: out,
         cells,
     })
+}
+
+fn parse_allocation_brackets(
+    doc: &Json,
+    units: &fa_money::UnitRegistry,
+    unit: fa_money::UnitId,
+    target_count: usize,
+) -> Result<Vec<fa::AllocationBracket>, Fail> {
+    let rows = doc.get("brackets").and_then(Json::as_arr).ok_or_else(|| {
+        usage(
+            "tiered allocation requires an ordered brackets array",
+            "brackets: [{\"upper_bound\":\"100.00 USD\",\"weights\":[9,1]}, {\"upper_bound\":\"unbounded\",\"weights\":[8,2]}]",
+        )
+    })?;
+    if rows.is_empty()
+        || rows.len() > fa_money::allocation::MAX_ALLOCATION_BRACKETS
+        || target_count == 0
+        || rows
+            .len()
+            .checked_mul(target_count)
+            .is_none_or(|cells| cells > fa_money::allocation::MAX_ALLOCATION_BRACKET_WEIGHTS)
+    {
+        return Err(usage(
+            "tiered allocation requires 1 through 64 brackets and at most 4096 bracket weights",
+            "supply a complete bounded schedule over the declared targets",
+        ));
+    }
+    let mut brackets = Vec::with_capacity(rows.len());
+    let mut lower = 0;
+    for (index, row) in rows.iter().enumerate() {
+        let what = format!("brackets[{index}]");
+        let Json::Obj(fields) = row else {
+            return Err(usage(
+                format!("{what}: bracket must be an object"),
+                "provide upper_bound and weights",
+            ));
+        };
+        if fields.len() != 2
+            || fields
+                .iter()
+                .any(|(name, _)| !matches!(name.as_str(), "upper_bound" | "weights"))
+        {
+            return Err(usage(
+                format!("{what}: a bracket has exactly upper_bound and weights"),
+                "remove unknown fields and retain every band's explicit bound and weights",
+            ));
+        }
+        let upper_bound = match row.get("upper_bound") {
+            Some(Json::Int(value)) => u128::try_from(*value).map_err(|_| {
+                usage(
+                    format!("{what}: upper_bound must be positive"),
+                    "use a cumulative native-mantissa bound",
+                )
+            })?,
+            Some(Json::Str(value)) if value == "unbounded" => u128::MAX,
+            Some(Json::Str(value)) => match value.parse::<u128>() {
+                Ok(value) => value,
+                Err(_) => {
+                    let amount = Amount::parse(value, units).map_err(|error| {
+                        usage(format!("{what}: upper_bound `{value}`: {error:?}"), "use an exact amount in the source unit, an integer magnitude or unbounded")
+                    })?;
+                    if amount.unit != unit || amount.mantissa < 0 {
+                        return Err(usage(
+                            format!("{what}: upper_bound must be nonnegative in the source unit"),
+                            "use the allocation's native unit",
+                        ));
+                    }
+                    amount.mantissa.unsigned_abs()
+                }
+            },
+            _ => {
+                return Err(usage(
+                    format!("{what}: missing or invalid upper_bound"),
+                    "provide a cumulative amount or unbounded",
+                ));
+            }
+        };
+        if upper_bound <= lower {
+            return Err(usage(
+                format!("{what}: cumulative upper bounds must be positive and strictly increasing"),
+                "order marginal bands by their upper bounds; unbounded can only be last",
+            ));
+        }
+        let weights = row.get("weights").and_then(Json::as_arr).ok_or_else(|| {
+            usage(
+                format!("{what}: missing weights array"),
+                "give one nonnegative integer weight for each target, in target order",
+            )
+        })?;
+        if weights.len() != target_count {
+            return Err(usage(
+                format!("{what}: weights must match all {target_count} targets"),
+                "retain zero weights and the declared target order",
+            ));
+        }
+        let weights = weights
+            .iter()
+            .map(|weight| {
+                match weight {
+                    Json::Int(value) => u128::try_from(*value).ok(),
+                    Json::Str(value) => value.parse::<u128>().ok(),
+                    _ => None,
+                }
+                .ok_or_else(|| {
+                    usage(
+                        format!("{what}: each weight must be a nonnegative integer"),
+                        "use an integer or an unsigned integer string",
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if weights.iter().all(|weight| *weight == 0) {
+            return Err(usage(
+                format!("{what}: weights sum to zero"),
+                "give at least one target a positive weight in every bracket",
+            ));
+        }
+        brackets.push(fa::AllocationBracket {
+            upper_bound,
+            weights,
+        });
+        lower = upper_bound;
+    }
+    Ok(brackets)
 }
 
 fn parse_allocation_dimensions(
@@ -12068,7 +12212,7 @@ fn emit_allocation_reviewed(
     out.at_book(book)?;
     let (legs, human_legs) = render_proposal_legs(book, proposal)?;
     let total_str = render_amount(posting.request.total, &book.context().units)?;
-    let method_str = allocation_method_name(posting.request.method);
+    let method_str = allocation_method_name(&posting.request.method);
     let side_str = side_name(posting.source_side);
     let review_hex = hex(&review_digest);
     let proposal_hex = hex(&proposal_digest);
@@ -12416,6 +12560,15 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 targets: parsed.targets,
             },
         };
+        // Compute before importing any durable driver or evidence. In
+        // particular, a well-formed progressive schedule may not cover the
+        // requested total; that refusal must leave the book unchanged.
+        posting.request.execute().map_err(|error| {
+            usage(
+                format!("cannot compute allocation: {error}"),
+                "check that the selected law and complete allocation basis cover the total",
+            )
+        })?;
         let driver_ev = if review_mode {
             posting.driver_evidence(book_ctx.book_id)?
         } else {

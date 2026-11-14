@@ -46,6 +46,27 @@ fn registered_laws_have_distinct_golden_accounting_results() {
             vec![0, -3, -4],
         ),
         (
+            25_000,
+            AllocationMethod::Tiered {
+                brackets: vec![
+                    AllocationBracket {
+                        upper_bound: 10_000,
+                        weights: vec![9, 1],
+                    },
+                    AllocationBracket {
+                        upper_bound: 20_000,
+                        weights: vec![8, 2],
+                    },
+                    AllocationBracket {
+                        upper_bound: u128::MAX,
+                        weights: vec![7, 3],
+                    },
+                ],
+            },
+            vec![1, 1],
+            vec![20_500, 4_500],
+        ),
+        (
             1,
             AllocationMethod::ProRataResidualToNamed {
                 rounding: RoundingLaw::Ceiling,
@@ -269,7 +290,7 @@ fn generated_law_requests_conserve_and_preserve_every_target() {
         let caps = [0, total.unsigned_abs() / 2, total.unsigned_abs()];
         let input = request(
             total,
-            method,
+            method.clone(),
             if method == AllocationMethod::Waterfall {
                 &caps
             } else {
@@ -288,4 +309,22 @@ fn generated_law_requests_conserve_and_preserve_every_target() {
         assert_eq!(result.shares().len(), input.targets.len());
         assert_eq!(result.request(), &input);
     }
+}
+
+#[test]
+fn tiered_shape_binds_every_bracket_to_the_ordered_targets() {
+    let method = AllocationMethod::Tiered {
+        brackets: vec![AllocationBracket {
+            upper_bound: 100,
+            weights: vec![1, 2],
+        }],
+    };
+    assert!(request(0, method.clone(), &[1, 1]).execute().is_ok());
+    assert!(
+        request(0, method.clone(), &[1, 2])
+            .canonical_bytes()
+            .is_err()
+    );
+    assert!(request(0, method.clone(), &[1]).canonical_bytes().is_err());
+    assert!(request(101, method, &[1, 1]).execute().is_err());
 }
