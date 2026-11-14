@@ -1353,3 +1353,392 @@ fn dimensioned_acquisitions_pair_costs_by_partition_and_refuse_cross_partition_s
     assert_eq!(south.outcome().total_relieved_cost, 30);
     assert_eq!(south.proposal().legs[2].settles[0].ordinal, 4);
 }
+
+
+// Lot policies participate in the common successful-intent key namespace.
+
+fn lot_policy_key_harness() -> Harness {
+    let mut h = harness();
+    let account = AccountSpec {
+        code: "1400".into(),
+        name: "Inventory".into(),
+        account_type: fa_model::AccountType::ASSET.0,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::AnyUnit,
+        parent_code: None,
+        limit: None,
+    };
+    let cx = h.ctx();
+    let day = h.day();
+    let description = h.statement("Lot account", 111);
+    h.runtime
+        .block_on(install_chart(
+            &mut h.db,
+            &cx,
+            &h.book,
+            &[account],
+            PRINCIPAL,
+            day,
+            b"lot-key-chart",
+            description,
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    h
+}
+
+fn lot_policy_key_request(h: &Harness, key: &[u8]) -> LotPolicyRequest {
+    LotPolicyRequest {
+        principal: PRINCIPAL,
+        policy: LotPolicy {
+            account: account_vid(h.book.book_id, "1400"),
+            law: LotLaw::Fifo,
+            regime: AccountingRegime::UsGaap,
+            rounding_law: RoundingLaw::HalfEven,
+        },
+        effective_date: h.day(),
+        idempotency_key: key.to_vec(),
+        description: h.statement("Lot policy", 112),
+        approvals: Vec::new(),
+    }
+}
+
+fn record_key_policy(
+    h: &mut Harness,
+    request: &LotPolicyRequest,
+) -> Result<fa_journal::chart::lots::LotPolicyRecorded, Refusal> {
+    let cx = h.ctx();
+    h.runtime
+        .block_on(set_lot_policy(
+            &mut h.db,
+            &cx,
+            &h.book,
+            &Capability::embedded(PRINCIPAL, &["read", "schema_change"]).unwrap(),
+            request.clone(),
+        ))
+        .expect("lot-policy kernel")
+}
+
+fn lot_policy_outcome(h: &Harness, request: &LotPolicyRequest) -> VId {
+    fa_model::intent_outcome_vid(
+        h.book.book_id,
+        &request.principal.0.to_le_bytes(),
+        &request.idempotency_key,
+    )
+}
+
+#[test]
+fn lot_policy_keys_conflict_with_posting_families_in_both_orders() {
+    for family in ["original", "reversal", "resolution", "batch"] {
+        for policy_first in [false, true] {
+            let mut h = lot_policy_key_harness();
+            let source = h.proposal(h.rent_legs(100), b"lot-key-source", EntryClass::ORIGINAL);
+            let target = h.post(h.request(source, &["post"])).unwrap().entry_ref();
+            let pending = h.pending(h.rent_legs(200), b"lot-key-hold");
+            let hold = h.post(h.request(pending, &["post"])).unwrap().entry_ref();
+            let key = b"shared-lot-policy-key";
+            let request = lot_policy_key_request(&h, key);
+            if policy_first {
+                record_key_policy(&mut h, &request).unwrap();
+            }
+            let before = h.db.frontier().unwrap();
+            let vertices = h.db.vertices().unwrap();
+            let result = match family {
+                "original" => {
+                    let proposal = h.proposal(h.rent_legs(300), key, EntryClass::ORIGINAL);
+                    h.post(h.request(proposal, &["post"])).map(|_| ())
+                }
+                "reversal" => {
+                    let proposal = h.reversal_of_entry(target, key);
+                    h.post(h.request(proposal, &["post"])).map(|_| ())
+                }
+                "resolution" => {
+                    let proposal = h.resolution_posts(hold, h.rent_legs(150), vec![0, 1], key);
+                    h.post(h.request(proposal, &["post"])).map(|_| ())
+                }
+                "batch" => {
+                    let member = h.proposal(
+                        h.rent_legs(300),
+                        b"lot-key-batch-member",
+                        EntryClass::ORIGINAL,
+                    );
+                    h.post_batch(h.batch(key, vec![member])).map(|_| ())
+                }
+                _ => unreachable!(),
+            };
+            if policy_first {
+                let refusal = result.unwrap_err();
+                assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", 6), "{family}");
+                assert_eq!(h.db.frontier().unwrap(), before);
+                assert_eq!(h.db.vertices().unwrap(), vertices);
+            } else {
+                result.unwrap();
+                let before = h.db.frontier().unwrap();
+                let vertices = h.db.vertices().unwrap();
+                let refusal = record_key_policy(&mut h, &request).unwrap_err();
+                assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", 6), "{family}");
+                assert_eq!(h.db.frontier().unwrap(), before);
+                assert_eq!(h.db.vertices().unwrap(), vertices);
+            }
+        }
+    }
+    // A different SchemaControl at the normal identity is also a conflict,
+    // rather than corruption while decoding it as a lot-policy body.
+    let mut h = lot_policy_key_harness();
+    let request = lot_policy_key_request(&h, b"lot-key-chart");
+    let before = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let refusal = record_key_policy(&mut h, &request).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", 6));
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+}
+
+#[test]
+fn lot_policy_claims_publish_with_policy_state_and_retries_stay_immutable() {
+    use fa_journal::chart::lots::LotPolicyRecorded;
+    use fa_model::symbols::label;
+
+    let mut h = lot_policy_key_harness();
+    let request = lot_policy_key_request(&h, b"claimed-lot-policy");
+    let before = h.db.frontier().unwrap();
+    let count = h.db.vertices().unwrap().len();
+    let edges = h.db.edges_at(before).unwrap().len();
+    let recorded = record_key_policy(&mut h, &request).unwrap();
+    assert!(!recorded.already_recorded);
+    assert_eq!(recorded.recorded_at.0, before.0 + 1);
+    assert_eq!(h.db.vertices().unwrap().len(), count + 4);
+    assert_eq!(h.db.edges_at(recorded.recorded_at).unwrap().len(), edges);
+    let entry = h.db.vertex(recorded.entry.vid).unwrap().unwrap();
+    let claim = h.db.vertex(lot_policy_outcome(&h, &request)).unwrap().unwrap();
+    assert_eq!(claim.labels, vec![label::INTENT_OUTCOME]);
+    assert_eq!(claim.created_at, entry.created_at);
+    assert_eq!(
+        fa_journal::rows::prop(&claim, property::TARGET_REF),
+        Some(&CanonicalScalar::bytes(recorded.entry.vid.0.to_le_bytes().to_vec()).unwrap())
+    );
+    let original_policy = policy_at(&h.db, &h.book, request.policy.account, recorded.recorded_at)
+        .unwrap()
+        .unwrap();
+    assert_eq!(original_policy.entry, recorded.entry);
+    assert_eq!(original_policy.policy, request.policy);
+
+    let mut changed = request.clone();
+    changed.idempotency_key = b"changed-claimed-lot-policy".to_vec();
+    changed.policy.law = LotLaw::Lifo;
+    let proposal = lot_policy_proposal(
+        &h.book,
+        changed.principal,
+        &changed.policy,
+        changed.effective_date,
+        &changed.idempotency_key,
+        changed.description.clone(),
+    )
+    .unwrap();
+    let digest = proposal.proposal_digest().unwrap();
+    changed.approvals = vec![
+        h.approve_digest(VId(70), digest).unwrap(),
+        h.approve_digest(VId(71), digest).unwrap(),
+    ];
+    let before = h.db.frontier().unwrap();
+    let count = h.db.vertices().unwrap().len();
+    let edges = h.db.edges_at(before).unwrap().len();
+    let updated = record_key_policy(&mut h, &changed).unwrap();
+    assert_eq!(updated.recorded_at.0, before.0 + 1);
+    assert_eq!(h.db.vertices().unwrap().len(), count + 2);
+    assert_eq!(h.db.edges_at(updated.recorded_at).unwrap().len(), edges);
+    let changed_claim = h.db.vertex(lot_policy_outcome(&h, &changed)).unwrap().unwrap();
+    assert_eq!(changed_claim.created_at, updated.recorded_at);
+    assert_eq!(
+        policy_at(&h.db, &h.book, request.policy.account, recorded.recorded_at)
+            .unwrap()
+            .unwrap(),
+        original_policy
+    );
+    assert_eq!(
+        policy_at(&h.db, &h.book, request.policy.account, updated.recorded_at)
+            .unwrap()
+            .unwrap()
+            .policy,
+        changed.policy
+    );
+
+    let before = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let expected = LotPolicyRecorded {
+        already_recorded: true,
+        ..recorded
+    };
+    assert_eq!(record_key_policy(&mut h, &request).unwrap(), expected);
+    let mut resealed = request.clone();
+    resealed.description = h.statement("Lot policy", 113);
+    assert_eq!(record_key_policy(&mut h, &resealed).unwrap(), expected);
+    assert_eq!(
+        record_key_policy(&mut h, &changed).unwrap(),
+        LotPolicyRecorded {
+            already_recorded: true,
+            ..updated
+        }
+    );
+    for mismatch in [
+        LotPolicyRequest {
+            effective_date: DateDay::from_ymd(2026, 3, 16).unwrap(),
+            ..request.clone()
+        },
+        LotPolicyRequest {
+            description: h.statement("Different lot policy request", 114),
+            ..request.clone()
+        },
+        LotPolicyRequest {
+            policy: changed.policy.clone(),
+            ..request.clone()
+        },
+        LotPolicyRequest {
+            approvals: Vec::new(),
+            ..changed
+        },
+    ] {
+        let refusal = record_key_policy(&mut h, &mismatch).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", 6));
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+    assert_eq!(h.db.vertex(expected.entry.vid).unwrap().unwrap(), entry);
+    assert_eq!(h.db.vertex(claim.vid).unwrap().unwrap(), claim);
+}
+
+#[test]
+fn lot_policy_retry_rejects_deleted_or_rewritten_atomic_claims() {
+    for fault in ["delete-claim", "retarget-claim", "restore-claim", "restore-entry"] {
+        let mut h = lot_policy_key_harness();
+        let request = lot_policy_key_request(&h, b"intact-lot-policy");
+        let recorded = record_key_policy(&mut h, &request).unwrap();
+        let outcome = lot_policy_outcome(&h, &request);
+        let victim = if fault == "restore-entry" {
+            recorded.entry.vid
+        } else {
+            outcome
+        };
+        let original = h.db.vertex(victim).unwrap().unwrap();
+        let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+        match fault {
+            "delete-claim" => {
+                assert!(h.db.vertex_at(outcome, recorded.recorded_at).unwrap().is_some());
+                damage.delete_vertex(outcome);
+            }
+            "retarget-claim" => {
+                damage.set_vertex_property(
+                    outcome,
+                    property::TARGET_REF,
+                    Some(CanonicalScalar::bytes(VId(0xfeed).0.to_le_bytes().to_vec()).unwrap()),
+                );
+            }
+            _ => {
+                damage.set_vertex_property(
+                    victim,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::bytes(vec![0xff]).unwrap()),
+                );
+            }
+        }
+        h.write_raw(damage);
+        if fault.starts_with("restore-") {
+            let mut restore = fgdb::WriteBatch::new(relation::IN_BOOK);
+            for (key, value) in original.props {
+                restore.set_vertex_property(victim, key, Some(value));
+            }
+            h.write_raw(restore);
+        }
+        let before = h.db.frontier().unwrap();
+        let vertices = h.db.vertices().unwrap();
+        let refusal = record_key_policy(&mut h, &request).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", 6), "{fault}");
+        assert_eq!(h.db.frontier().unwrap(), before);
+        assert_eq!(h.db.vertices().unwrap(), vertices);
+    }
+}
+
+#[test]
+fn prepared_reversal_cannot_spend_a_lot_policy_key() {
+    let mut h = lot_policy_key_harness();
+    let source = h.proposal(h.rent_legs(100), b"lot-race-source", EntryClass::ORIGINAL);
+    let target = h.post(h.request(source, &["post"])).unwrap().entry_ref();
+    let key = b"lot-policy-race";
+    let request = lot_policy_key_request(&h, key);
+    let reversal = h.request(h.reversal_of_entry(target, key), &["post"]);
+    let cx = h.ctx();
+    let PostPreparation::Ready(prepared) = prepare_post(&mut h.db, &cx, &h.book, reversal)
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("fresh reversal")
+    };
+    let epoch = security_policy_epoch(&h.db).unwrap();
+    record_key_policy(&mut h, &request).unwrap();
+    assert_eq!(security_policy_epoch(&h.db).unwrap(), epoch);
+    let before = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let refusal = h
+        .runtime
+        .block_on(prepared.commit(&mut h.db, &cx))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.exit, 6);
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+    assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+}
+
+#[test]
+fn lot_policy_authority_precedes_occupied_claim_observation() {
+    let mut h = lot_policy_key_harness();
+    let request = lot_policy_key_request(&h, b"protected-lot-policy");
+    record_key_policy(&mut h, &request).unwrap();
+    let outcome = lot_policy_outcome(&h, &request);
+    let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+    damage.set_vertex_property(
+        outcome,
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(b"FA-ENTRY-OUTCOME\0".to_vec()).unwrap()),
+    );
+    h.write_raw(damage);
+    let before = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let authority = Capability::embedded(PRINCIPAL, &["read", "schema_change"]).unwrap();
+    let scoped = authority.clone().for_periods(&[h.march.as_str()]).unwrap();
+    let cx = h.ctx();
+    for capability in [
+        Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
+        Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        scoped,
+    ] {
+        let refusal = h
+            .runtime
+            .block_on(set_lot_policy(
+                &mut h.db,
+                &cx,
+                &h.book,
+                &capability,
+                request.clone(),
+            ))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.exit, 7);
+    }
+    assert!(
+        h.runtime
+            .block_on(set_lot_policy(
+                &mut h.db,
+                &cx,
+                &h.book,
+                &authority,
+                request,
+            ))
+            .is_err(),
+        "an authorized observer reaches the planted malformed claim"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+}

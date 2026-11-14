@@ -4,8 +4,8 @@
 //! additionally reserve (book, principal, key), shared with atomic batches.
 //! Migration retains its declared run-scoped keys. Period, time and normal-key
 //! policy activation, account lifecycle and roles, closing and FX routing,
-//! dimension lifecycle and native subledger registration controls reserve the common key; their
-//! pre-protocol entries remain valid retry anchors. Fiscal-year creation,
+//! dimension lifecycle, native subledger registration and lot policies reserve
+//! the common key; their pre-protocol entries remain valid retry anchors. Fiscal-year creation,
 //! capability issuance and revocation reserve the key beside their target-derived Entry;
 //! their original legacy events remain valid read-only retry anchors. This
 //! does not migrate historical capability keys into the monetary-key coverage.
@@ -679,7 +679,7 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
             && matches!(
                 &proposal.control,
                 Some(fa_model::ControlPayload::SchemaChange {
-                    kind: 2..=4 | 12 | 14 | 15 | 16..=19 | 25,
+                    kind: 2..=4 | 12 | 14 | 15 | 16..=19 | 21 | 25,
                     ..
                 })
             ));

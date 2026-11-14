@@ -452,14 +452,28 @@ pub async fn set_lot_policy_proposal<V: Vfs + Clone>(
         &proposal.principal_ref.0.to_le_bytes(),
         &proposal.idempotency_key,
     );
+    if let Err(refusal) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        vid,
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, vid)? {
         txn.abort();
         if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
             return Ok(Err(crate::outcome::key_conflict()));
         }
         let prior = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
-        let stored = from_entry(&row, book.book_id, &prior)?
-            .ok_or_else(|| corrupt("retry identity is not a lot policy"))?;
+        if prior.plan_certificate.is_some()
+            || !crate::outcome::verify_control_recorded(db, &row, &prior)?
+        {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
         let same = prior.proposal_digest == proposal_digest
             || matches!(
             (prior.proposal.semantic_digest(&book.seal_key), proposal.semantic_digest(&book.seal_key)),
@@ -473,12 +487,23 @@ pub async fn set_lot_policy_proposal<V: Vfs + Clone>(
                 "retry the exact retained proposal and approvals or choose a new key",
             )));
         }
+        let stored = from_entry(&row, book.book_id, &prior)?
+            .ok_or_else(|| corrupt("retry identity is not a lot policy"))?;
         return Ok(Ok(LotPolicyRecorded {
             entry: stored.entry,
             policy: stored.policy,
             recorded_at: stored.recorded_at,
             already_recorded: true,
         }));
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     let Some(row) = txn.vertex(db, policy.account)? else {
         txn.abort();
@@ -536,6 +561,7 @@ pub async fn set_lot_policy_proposal<V: Vfs + Clone>(
     let old = txn.vertex_property(db, pointer_vid, property::FA_PAYLOAD)?;
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(vid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, vid)?;
     if current.is_some() {
         batch.compare_and_set_vertex_property(
             pointer_vid,
