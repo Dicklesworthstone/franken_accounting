@@ -1354,7 +1354,6 @@ fn dimensioned_acquisitions_pair_costs_by_partition_and_refuse_cross_partition_s
     assert_eq!(south.proposal().legs[2].settles[0].ordinal, 4);
 }
 
-
 // Lot policies participate in the common successful-intent key namespace.
 
 fn lot_policy_key_harness() -> Harness {
@@ -1512,7 +1511,10 @@ fn lot_policy_claims_publish_with_policy_state_and_retries_stay_immutable() {
     assert_eq!(h.db.vertices().unwrap().len(), count + 4);
     assert_eq!(h.db.edges_at(recorded.recorded_at).unwrap().len(), edges);
     let entry = h.db.vertex(recorded.entry.vid).unwrap().unwrap();
-    let claim = h.db.vertex(lot_policy_outcome(&h, &request)).unwrap().unwrap();
+    let claim =
+        h.db.vertex(lot_policy_outcome(&h, &request))
+            .unwrap()
+            .unwrap();
     assert_eq!(claim.labels, vec![label::INTENT_OUTCOME]);
     assert_eq!(claim.created_at, entry.created_at);
     assert_eq!(
@@ -1549,7 +1551,10 @@ fn lot_policy_claims_publish_with_policy_state_and_retries_stay_immutable() {
     assert_eq!(updated.recorded_at.0, before.0 + 1);
     assert_eq!(h.db.vertices().unwrap().len(), count + 2);
     assert_eq!(h.db.edges_at(updated.recorded_at).unwrap().len(), edges);
-    let changed_claim = h.db.vertex(lot_policy_outcome(&h, &changed)).unwrap().unwrap();
+    let changed_claim =
+        h.db.vertex(lot_policy_outcome(&h, &changed))
+            .unwrap()
+            .unwrap();
     assert_eq!(changed_claim.created_at, updated.recorded_at);
     assert_eq!(
         policy_at(&h.db, &h.book, request.policy.account, recorded.recorded_at)
@@ -1611,7 +1616,12 @@ fn lot_policy_claims_publish_with_policy_state_and_retries_stay_immutable() {
 
 #[test]
 fn lot_policy_retry_rejects_deleted_or_rewritten_atomic_claims() {
-    for fault in ["delete-claim", "retarget-claim", "restore-claim", "restore-entry"] {
+    for fault in [
+        "delete-claim",
+        "retarget-claim",
+        "restore-claim",
+        "restore-entry",
+    ] {
         let mut h = lot_policy_key_harness();
         let request = lot_policy_key_request(&h, b"intact-lot-policy");
         let recorded = record_key_policy(&mut h, &request).unwrap();
@@ -1625,7 +1635,11 @@ fn lot_policy_retry_rejects_deleted_or_rewritten_atomic_claims() {
         let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
         match fault {
             "delete-claim" => {
-                assert!(h.db.vertex_at(outcome, recorded.recorded_at).unwrap().is_some());
+                assert!(
+                    h.db.vertex_at(outcome, recorded.recorded_at)
+                        .unwrap()
+                        .is_some()
+                );
                 damage.delete_vertex(outcome);
             }
             "retarget-claim" => {
@@ -1729,13 +1743,7 @@ fn lot_policy_authority_precedes_occupied_claim_observation() {
     }
     assert!(
         h.runtime
-            .block_on(set_lot_policy(
-                &mut h.db,
-                &cx,
-                &h.book,
-                &authority,
-                request,
-            ))
+            .block_on(set_lot_policy(&mut h.db, &cx, &h.book, &authority, request,))
             .is_err(),
         "an authorized observer reaches the planted malformed claim"
     );

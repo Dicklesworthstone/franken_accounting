@@ -104,6 +104,409 @@ fn cancel(h: &mut Harness, name: &str) -> RecurringRecorded {
         .unwrap()
 }
 
+fn cancel_request(
+    h: &mut Harness,
+    name: &str,
+    cap: &Capability,
+    description: Erasable<String>,
+) -> fa_journal::refusal::Outcome<RecurringRecorded> {
+    let ctx = h.ctx();
+    h.runtime.block_on(cancel_recurring(
+        &mut h.db,
+        &ctx,
+        &h.book,
+        cap,
+        name,
+        description,
+    ))
+}
+
+fn lifecycle_key(h: &Harness, name: &str, cancelled: bool) -> Vec<u8> {
+    let schedule = recurring_schedule_vid(h.book.book_id, name);
+    let domain = if cancelled {
+        b"fa:recurring-cancel-key:v1".as_slice()
+    } else {
+        b"fa:recurring-create-key:v1".as_slice()
+    };
+    fa_model::domain_digest(domain, &[&schedule.0.to_le_bytes()]).to_vec()
+}
+
+#[test]
+fn recurring_creation_retries_bind_the_complete_ordered_approval_envelope() {
+    let mut h = harness_configured(Vec::new(), Some(TimeZonePolicy::Utc), None);
+    let cap = capability();
+    let planned = plan(
+        &h,
+        spec(&h, "reviewed-rent", "2026-03-31", "2026-04-30"),
+        &cap,
+    );
+    let first = h
+        .approve_digest(VId(70), planned.proposal_digest().unwrap())
+        .unwrap();
+    let second = h
+        .approve_digest(VId(71), planned.proposal_digest().unwrap())
+        .unwrap();
+    let approved = vec![first, second];
+    let recorded = create(&mut h, planned.clone(), &cap, approved.clone()).unwrap();
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    for changed in [vec![], vec![first], vec![second], vec![second, first]] {
+        let refused = create(&mut h, planned.clone(), &cap, changed).unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("FA-REF-032", exit::CONFLICT));
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+    let retried = create(&mut h, planned, &cap, approved).unwrap();
+    assert!(retried.already_recorded);
+    assert_eq!(retried.control_entry, recorded.control_entry);
+    assert_eq!(retried.recorded_at, recorded.recorded_at);
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn recurring_cancellation_retries_bind_the_principal_and_reason_but_not_sealing_entropy() {
+    let mut h = harness_configured(Vec::new(), Some(TimeZonePolicy::Utc), None);
+    let definition = spec(&h, "cancel-binding", "2026-03-31", "2026-04-30");
+    approved(&mut h, definition, &capability());
+    let stopped = cancel(&mut h, "cancel-binding");
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    let another = Capability::embedded(VId(72), &["post", "read", "approve"]).unwrap();
+    for (cap, reason) in [
+        (
+            capability(),
+            h.statement("a different cancellation reason", 93),
+        ),
+        (another, h.statement("stop future rent", 93)),
+    ] {
+        let refused = cancel_request(&mut h, "cancel-binding", &cap, reason)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("FA-REF-032", exit::CONFLICT));
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+    let resealed = h.statement("stop future rent", 94);
+    let retry = cancel_request(&mut h, "cancel-binding", &capability(), resealed)
+        .unwrap()
+        .unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.control_entry, stopped.control_entry);
+    assert_eq!(retry.recorded_at, stopped.recorded_at);
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn recurring_lifecycle_and_batches_reserve_the_same_principal_key_in_both_orders() {
+    for cancelled in [false, true] {
+        for batch_first in [false, true] {
+            let mut h = harness_configured(Vec::new(), Some(TimeZonePolicy::Utc), None);
+            let name = "shared-recurring-key";
+            let cap = capability();
+            let planned = plan(&h, spec(&h, name, "2026-03-31", "2026-04-30"), &cap);
+            let approval = h.approve_transition(planned.proposal_digest().unwrap());
+            if cancelled {
+                create(&mut h, planned.clone(), &cap, vec![approval]).unwrap();
+            }
+            let key = lifecycle_key(&h, name, cancelled);
+            let member = h.proposal(h.rent_legs(321), b"batch-member", EntryClass::ORIGINAL);
+            let batch = h.batch(&key, vec![member]);
+            if batch_first {
+                h.post_batch(batch).unwrap();
+                let head = h.db.frontier().unwrap();
+                let rows = h.db.vertices().unwrap();
+                let refused = if cancelled {
+                    let reason = h.statement("stop future rent", 93);
+                    cancel_request(&mut h, name, &cap, reason)
+                        .unwrap()
+                        .unwrap_err()
+                } else {
+                    create(&mut h, planned, &cap, vec![approval]).unwrap_err()
+                };
+                assert_eq!((refused.code, refused.exit), ("FA-REF-032", exit::CONFLICT));
+                assert_eq!(h.db.frontier().unwrap(), head);
+                assert_eq!(h.db.vertices().unwrap(), rows);
+            } else {
+                let recorded = if cancelled {
+                    cancel(&mut h, name)
+                } else {
+                    create(&mut h, planned, &cap, vec![approval]).unwrap()
+                };
+                let claim =
+                    h.db.vertex(fa_model::intent_outcome_vid(
+                        h.book.book_id,
+                        &PRINCIPAL.0.to_le_bytes(),
+                        &key,
+                    ))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(claim.created_at, recorded.recorded_at);
+                assert_eq!(
+                    fa_journal::rows::prop(&claim, property::TARGET_REF),
+                    Some(
+                        &CanonicalScalar::bytes(
+                            recorded.control_entry.vid.0.to_le_bytes().to_vec()
+                        )
+                        .unwrap()
+                    )
+                );
+                let head = h.db.frontier().unwrap();
+                let rows = h.db.vertices().unwrap();
+                let refused = h.post_batch(batch).unwrap_err();
+                assert_eq!((refused.code, refused.exit), ("FA-REF-032", exit::CONFLICT));
+                assert_eq!(h.db.frontier().unwrap(), head);
+                assert_eq!(h.db.vertices().unwrap(), rows);
+                // The common key is still confined to its original principal.
+                let mut other =
+                    h.proposal(h.rent_legs(654), b"other-principal", EntryClass::ORIGINAL);
+                other.principal_ref = VId(73);
+                h.post_batch(h.batch(&key, vec![other])).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn recurring_lifecycle_refuses_rewritten_restored_and_missing_outcome_records() {
+    for cancelled in [false, true] {
+        for damage in ["entry", "claim", "deleted claim"] {
+            let mut h = harness_configured(Vec::new(), Some(TimeZonePolicy::Utc), None);
+            let name = "retained-recurring";
+            let cap = capability();
+            let planned = plan(&h, spec(&h, name, "2026-03-31", "2026-04-30"), &cap);
+            let approval = h.approve_transition(planned.proposal_digest().unwrap());
+            let created = create(&mut h, planned.clone(), &cap, vec![approval]).unwrap();
+            let recorded = if cancelled {
+                cancel(&mut h, name)
+            } else {
+                created
+            };
+            tick_on(&mut h, "2026-03-15");
+            let mut history = None;
+            assert_eq!(
+                sweep_with_history(&mut h, 1, &mut history)
+                    .unwrap()
+                    .unwrap(),
+                None
+            );
+            let key = lifecycle_key(&h, name, cancelled);
+            let target = if damage == "entry" {
+                recorded.control_entry.vid
+            } else {
+                fa_model::intent_outcome_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), &key)
+            };
+            let original = h.db.vertex(target).unwrap().unwrap();
+            let mut write = fgdb::WriteBatch::new(relation::IN_CASE);
+            if damage == "deleted claim" {
+                write.delete_vertex(target);
+                h.write_raw(write);
+            } else {
+                write.set_vertex_property(
+                    target,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::Int(0)),
+                );
+                h.write_raw(write);
+                let mut restore = fgdb::WriteBatch::new(relation::IN_CASE);
+                for (key, value) in &original.props {
+                    restore.set_vertex_property(target, *key, Some(value.clone()));
+                }
+                h.write_raw(restore);
+                let restored = h.db.vertex(target).unwrap().unwrap();
+                assert_eq!(restored.props, original.props);
+                assert!(restored.created_at > original.created_at);
+            }
+            let head = h.db.frontier().unwrap();
+            let rows = h.db.vertices().unwrap();
+            assert!(
+                !verify_recurring(&h.db, &h.ctx(), &h.book)
+                    .unwrap()
+                    .is_green(),
+                "{cancelled}/{damage}"
+            );
+            let retry = if cancelled {
+                let reason = h.statement("stop future rent", 93);
+                cancel_request(&mut h, name, &cap, reason)
+            } else {
+                let ctx = h.ctx();
+                h.runtime.block_on(create_recurring(
+                    &mut h.db,
+                    &ctx,
+                    &h.book,
+                    &cap,
+                    planned,
+                    vec![approval],
+                ))
+            };
+            assert!(!matches!(retry, Ok(Ok(_))), "{cancelled}/{damage}");
+            // Cached discovery cannot hide an altered common claim.
+            let carried = sweep_with_history(&mut h, 1, &mut history).unwrap_err();
+            let literal = sweep_with_history(&mut h, 1, &mut None).unwrap_err();
+            assert_eq!(carried.to_string(), literal.to_string());
+            assert!(history.is_none());
+            assert_eq!(h.db.frontier().unwrap(), head);
+            assert_eq!(h.db.vertices().unwrap(), rows);
+        }
+    }
+}
+
+/// Reproduce the original dedicated writer, publishing no common claim in
+/// the first place. Deleting a modern claim would not be historical evidence.
+fn write_legacy_recurring(
+    h: &mut Harness,
+    planned: &RecurringPlan,
+    approval: fa_model::ApprovalRef,
+    cancelled: bool,
+) -> (EntryRef, Option<EntryRef>) {
+    let encoded = planned.encode().unwrap();
+    let mut reader = fa_model::Reader::new(&encoded);
+    assert_eq!(
+        reader.fixed::<13>("plan magic").unwrap(),
+        *b"FA-RECURRING\0"
+    );
+    assert_eq!(reader.u16("plan version").unwrap(), 1);
+    let template = fa_model::Entry::decode(reader.bytes(65_536, "plan").unwrap()).unwrap();
+    reader.finish().unwrap();
+    let creation = template.proposal.seal(vec![approval], None).unwrap();
+    let proposal = &creation.proposal;
+    let evid = entry_vid(
+        h.book.book_id,
+        &PRINCIPAL.0.to_le_bytes(),
+        &proposal.idempotency_key,
+    );
+    let schedule = recurring_schedule_vid(h.book.book_id, &planned.spec().name);
+    let blob = |bytes: Vec<u8>| CanonicalScalar::bytes(bytes).unwrap();
+    let mut props = vec![
+        (property::FA_PAYLOAD, blob(planned.encode().unwrap())),
+        (
+            property::FA_DIGEST,
+            blob(planned.proposal_digest().unwrap().to_vec()),
+        ),
+        (property::BOOK_ID, blob(h.book.book_id.0.to_vec())),
+        (
+            property::CODE,
+            CanonicalScalar::text(planned.spec().name.clone()).unwrap(),
+        ),
+        (property::TARGET_REF, blob(evid.0.to_le_bytes().to_vec())),
+        (property::STATE, CanonicalScalar::Int(1)),
+        (property::ORDINAL, CanonicalScalar::Int(0)),
+    ];
+    props.sort_by_key(|(key, _)| key.0);
+    let mut stage = fgdb::WriteBatch::new(relation::IN_CASE);
+    stage.create_vertex(
+        evid,
+        vec![fa_model::symbols::label::ENTRY],
+        fa_model::entry_mirrors(&creation).unwrap(),
+    );
+    stage.create_vertex(
+        schedule,
+        vec![fa_model::symbols::label::RECURRING_SCHEDULE],
+        props,
+    );
+    stage.add_edge(
+        edge_id(relation::IN_CASE, evid, schedule),
+        evid,
+        schedule,
+        vec![],
+    );
+    h.write_raw(stage);
+    let creation_ref = creation.entry_ref(evid);
+    if !cancelled {
+        return (creation_ref, None);
+    }
+    let mut proposal = creation.proposal;
+    proposal.idempotency_key = lifecycle_key(h, &planned.spec().name, true);
+    proposal.description = h.statement("stop future rent", 93);
+    proposal.extensions.clear();
+    proposal.control = Some(ControlPayload::ScheduleCancelled {
+        schedule_ref: schedule,
+        cause_ref: evid,
+    });
+    let cancelled = proposal.seal(Vec::new(), None).unwrap();
+    let digest =
+        fa_model::domain_digest(b"fa:vid:recurring-cancel:v1", &[&schedule.0.to_le_bytes()]);
+    let cancel_vid = VId(u128::from_le_bytes(digest[..16].try_into().unwrap()));
+    let mut stage = fgdb::WriteBatch::new(relation::IN_CASE);
+    stage.create_vertex(
+        cancel_vid,
+        vec![fa_model::symbols::label::ENTRY],
+        fa_model::entry_mirrors(&cancelled).unwrap(),
+    );
+    stage.set_vertex_property(schedule, property::STATE, Some(CanonicalScalar::Int(2)));
+    stage.add_edge(
+        edge_id(relation::IN_CASE, cancel_vid, schedule),
+        cancel_vid,
+        schedule,
+        vec![],
+    );
+    h.write_raw(stage);
+    (creation_ref, Some(cancelled.entry_ref(cancel_vid)))
+}
+
+#[test]
+fn original_legacy_recurring_controls_remain_readable_and_retryable_after_durable_reopen() {
+    for cancelled in [false, true] {
+        let mut h = harness_configured_coverage(Vec::new(), Some(TimeZonePolicy::Utc), None, false);
+        let cap = capability();
+        let name = "legacy-recurring";
+        let planned = plan(&h, spec(&h, name, "2026-03-31", "2026-04-30"), &cap);
+        let approval = h.approve_transition(planned.proposal_digest().unwrap());
+        let (creation, cancellation) =
+            write_legacy_recurring(&mut h, &planned, approval, cancelled);
+        let ctx = h.ctx();
+        let (vfs, keys) = h.legacy_storage.clone().unwrap();
+        let empty = h
+            .runtime
+            .block_on(Database::open_memory(&ctx.commit(), keys.clone()))
+            .unwrap();
+        drop(std::mem::replace(&mut h.db, empty));
+        h.db = h
+            .runtime
+            .block_on(Database::open_with_vfs(
+                &ctx.commit(),
+                vfs.clone(),
+                vfs.database_dir(),
+                keys,
+            ))
+            .unwrap();
+        assert!(matches!(
+            h.db.delta_since(fgdb_types::CommitSeq(0)),
+            Err(fgdb::ReadError::DeltaCursorRetired { .. })
+        ));
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        // Read-only verification must work before any writer hydrates history.
+        let read = recurring_schedules(&h.db, &ctx, &h.book, &cap)
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].cancelled_at.is_some(), cancelled);
+        assert!(verify_recurring(&h.db, &ctx, &h.book).unwrap().is_green());
+        let retry = create(&mut h, planned, &cap, vec![approval]).unwrap();
+        assert!(retry.already_recorded);
+        assert_eq!(retry.control_entry, creation);
+        if let Some(cancellation) = cancellation {
+            let retry = cancel(&mut h, name);
+            assert!(retry.already_recorded);
+            assert_eq!(retry.control_entry, cancellation);
+        }
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        for is_cancel in [false, true] {
+            let key = lifecycle_key(&h, name, is_cancel);
+            assert!(
+                h.db.vertex(fa_model::intent_outcome_vid(
+                    h.book.book_id,
+                    &PRINCIPAL.0.to_le_bytes(),
+                    &key,
+                ))
+                .unwrap()
+                .is_none()
+            );
+        }
+    }
+}
+
 #[test]
 fn monthly_rent_mints_twelve_exact_occurrences_with_bounded_restart_and_no_duplicates() {
     let mut h = harness_configured(Vec::new(), Some(TimeZonePolicy::Utc), None);

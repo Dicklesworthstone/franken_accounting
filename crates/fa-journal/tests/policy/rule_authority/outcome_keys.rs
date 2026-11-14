@@ -57,7 +57,9 @@ fn write_raw(h: &mut Harness, batch: WriteBatch) -> CommitSeq {
     let ctx = h.ctx();
     let mut txn = h.db.begin(&ctx.txn()).unwrap();
     txn.write(&h.db, batch).unwrap();
-    h.runtime.block_on(txn.commit(&mut h.db, &ctx.commit())).unwrap()
+    h.runtime
+        .block_on(txn.commit(&mut h.db, &ctx.commit()))
+        .unwrap()
 }
 
 #[test]
@@ -121,7 +123,10 @@ fn rule_activation_claim_is_atomic_and_retry_survives_a_later_activation() {
     assert_eq!(claim.labels, vec![label::INTENT_OUTCOME]);
     assert_eq!(claim.created_at, first.recorded_at);
     assert_eq!(
-        h.db.vertex(first.control_entry).unwrap().unwrap().created_at,
+        h.db.vertex(first.control_entry)
+            .unwrap()
+            .unwrap()
+            .created_at,
         claim.created_at
     );
     assert_eq!(first.approvals, 2);
@@ -215,7 +220,11 @@ fn rule_activation_retry_rejects_a_deleted_or_republished_claim() {
             restore.set_vertex_property(
                 claim.vid,
                 property::FA_PAYLOAD,
-                Some(fa_journal::rows::prop(&claim, property::FA_PAYLOAD).unwrap().clone()),
+                Some(
+                    fa_journal::rows::prop(&claim, property::FA_PAYLOAD)
+                        .unwrap()
+                        .clone(),
+                ),
             );
             write_raw(&mut h, restore);
         }
@@ -241,7 +250,11 @@ fn legacy_rule_activation_retries_remain_read_only() {
     );
     let entry = proposal.seal(cited, None).unwrap();
     let mut legacy = WriteBatch::new(relation::IN_BOOK);
-    legacy.create_vertex(evid, vec![label::ENTRY], fa_model::entry_mirrors(&entry).unwrap());
+    legacy.create_vertex(
+        evid,
+        vec![label::ENTRY],
+        fa_model::entry_mirrors(&entry).unwrap(),
+    );
     let at = write_raw(&mut h, legacy);
     assert!(h.db.vertex(outcome(&h, &plan)).unwrap().is_none());
     let rows = h.db.vertices().unwrap();
@@ -264,8 +277,13 @@ fn rule_activation_outcome_rejects_unrelated_lifecycle_controls() {
     for mutation in 0..4 {
         let mut forged = entry.clone();
         let Some(ControlPayload::LifecycleTransition {
-            object_ref, from, proof_refs, reason_code, ..
-        }) = &mut forged.proposal.control else {
+            object_ref,
+            from,
+            proof_refs,
+            reason_code,
+            ..
+        }) = &mut forged.proposal.control
+        else {
             unreachable!("rule activation lifecycle");
         };
         match mutation {
@@ -281,8 +299,13 @@ fn rule_activation_outcome_rejects_unrelated_lifecycle_controls() {
             &PREPARER.0.to_le_bytes(),
             &forged.proposal.idempotency_key,
         );
-        assert!(fa_journal::outcome::stage_control(
-            &mut WriteBatch::new(relation::IN_BOOK), &forged, evid,
-        ).is_err());
+        assert!(
+            fa_journal::outcome::stage_control(
+                &mut WriteBatch::new(relation::IN_BOOK),
+                &forged,
+                evid,
+            )
+            .is_err()
+        );
     }
 }

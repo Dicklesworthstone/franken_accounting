@@ -4,9 +4,10 @@
 //! additionally reserve (book, principal, key), shared with atomic batches.
 //! Migration retains its declared run-scoped keys. Period, time and normal-key
 //! policy activation, account lifecycle and roles, closing and FX routing,
-//! dimension lifecycle, native subledger registration and lot policies reserve
-//! the common key; their pre-protocol entries remain valid retry anchors. Fiscal-year creation,
-//! capability issuance and revocation reserve the key beside their target-derived Entry;
+//! dimension lifecycle, native subledger registration, lot policies and asset
+//! schedules reserve the common key; their pre-protocol entries remain valid
+//! retry anchors. Recurring lifecycle, fiscal-year creation, capability issuance
+//! and revocation reserve the key beside their registered Entry identity;
 //! their original legacy events remain valid read-only retry anchors. This
 //! does not migrate historical capability keys into the monetary-key coverage.
 //! Existing normal-key controls are checked before a posting takes their key.
@@ -700,7 +701,7 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
             && matches!(
                 &proposal.control,
                 Some(fa_model::ControlPayload::SchemaChange {
-                    kind: 2..=12 | 14..=19 | 21 | 23 | 25,
+                    kind: 2..=12 | 14..=19 | 21..=23 | 25,
                     ..
                 })
             ));
@@ -886,6 +887,36 @@ pub fn verify_control_recorded<V: Vfs + Clone>(
     entry: &Entry,
 ) -> Result<bool, KernelError> {
     if !normal_key_control(entry, row.vid) {
+        return Ok(false);
+    }
+    verify_control_claim(db, row, entry)
+}
+
+/// Reserve a recurring lifecycle's successful key beside its canonical
+/// creation or cancellation. The dedicated writer admits both its authority
+/// and target before staging this claim.
+pub(crate) fn stage_recurring_control(
+    batch: &mut WriteBatch,
+    entry: &Entry,
+    vid: VId,
+) -> Result<(), KernelError> {
+    if !crate::recurring::is_lifecycle_control(entry, vid) {
+        return Err(KernelError::Corrupt(
+            "recurring outcome claim requires its registered lifecycle control".into(),
+        ));
+    }
+    stage_claim(batch, entry, vid).map(|_| ())
+}
+
+/// Historical claim-free recurring controls remain valid only at their
+/// immutable original publication. A missing or rewritten modern claim is
+/// never interpreted as a legacy control.
+pub(crate) fn verify_recurring_recorded<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    entry: &Entry,
+) -> Result<bool, KernelError> {
+    if !crate::recurring::is_lifecycle_control(entry, row.vid) {
         return Ok(false);
     }
     verify_control_claim(db, row, entry)

@@ -420,6 +420,82 @@ fn create_proposal(
     })
 }
 
+fn cancellation_proposal(
+    plan: &RecurringPlan,
+    creation: VId,
+    principal: VId,
+    description: Erasable<String>,
+) -> EntryPayload {
+    let schedule = recurring_schedule_vid(plan.spec.template.book_id, &plan.spec.name);
+    let mut proposal = plan.proposal.clone();
+    proposal.description = description;
+    proposal.principal_ref = principal;
+    proposal.idempotency_key =
+        domain_digest(b"fa:recurring-cancel-key:v1", &[&schedule.0.to_le_bytes()]).to_vec();
+    proposal.extensions.clear();
+    proposal.control = Some(ControlPayload::ScheduleCancelled {
+        schedule_ref: schedule,
+        cause_ref: creation,
+    });
+    proposal
+}
+
+/// The dedicated writer's admitted lifecycle shapes. Cancellation authority
+/// and its exact creation binding are checked by the writer and history fold;
+/// this predicate keeps the common outcome protocol confined to those shapes.
+pub(crate) fn is_lifecycle_control(entry: &Entry, vid: VId) -> bool {
+    let proposal = &entry.proposal;
+    if entry.plan_certificate.is_some()
+        || proposal.class != EntryClass::SCHEDULE_CONTROL
+        || !matches!(
+            proposal.origin,
+            EntryOrigin::Control {
+                control_kind: ControlKind::RECURRING_SCHEDULE,
+                ..
+            }
+        )
+    {
+        return false;
+    }
+    match &proposal.control {
+        Some(ControlPayload::LifecycleTransition { from: 0, to: 1, .. }) => {
+            !entry.approvals.is_empty()
+                && RecurringPlan::from_proposal(proposal.clone()).is_ok()
+                && vid
+                    == entry_vid(
+                        proposal.book_id,
+                        &proposal.principal_ref.0.to_le_bytes(),
+                        &proposal.idempotency_key,
+                    )
+        }
+        Some(ControlPayload::ScheduleCancelled { schedule_ref, .. }) => {
+            vid == cancel_vid(*schedule_ref)
+                && entry.approvals.is_empty()
+                && proposal.schema_minor == fa_model::entry::EXTENSIONS_MINOR
+                && proposal.branch_id == Id128::TRUNK
+                && proposal.effective_date == DateDay::EPOCH
+                && proposal.document_date.is_none()
+                && proposal.effective_period.is_none()
+                && proposal.legs.is_empty()
+                && proposal.unit_totals.is_empty()
+                && proposal.base_totals.is_none()
+                && proposal.session_ref.is_none()
+                && proposal.evidence.is_empty()
+                && proposal.supersession.is_empty()
+                && proposal.pending.is_none()
+                && proposal.external_ids.is_empty()
+                && proposal.extensions.is_empty()
+                && proposal.tags.is_empty()
+                && proposal.idempotency_key
+                    == domain_digest(
+                        b"fa:recurring-cancel-key:v1",
+                        &[&schedule_ref.0.to_le_bytes()],
+                    )
+        }
+        _ => false,
+    }
+}
+
 fn admit<V: Vfs + Clone>(
     db: &Database<V>,
     ctx: &PurposeContexts,
@@ -573,25 +649,37 @@ pub async fn create_recurring<V: Vfs + Clone>(
         &capability.holder().0.to_le_bytes(),
         &plan.proposal.idempotency_key,
     );
+    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(r));
+    }
     let mut txn = db.begin(&ctx.txn())?;
     if let Err(r) = policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    if let Err(r) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        capability.holder(),
+        &plan.proposal.idempotency_key,
+        evid,
+    )? {
         txn.abort();
         return Ok(Err(r));
     }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
         if !crate::entry_storage::has_class_mirror(&row, EntryClass::SCHEDULE_CONTROL) {
-            return Ok(Err(conflict(
-                "recurring creation identity",
-                "name is already bound to another template",
-            )));
+            return Ok(Err(crate::outcome::key_conflict()));
         }
         let recorded = decode_entry(&row)?;
-        if recorded.proposal != plan.proposal {
-            return Ok(Err(conflict(
-                "recurring creation identity",
-                "name is already bound to another template",
-            )));
+        if recorded.proposal != plan.proposal
+            || recorded.approvals != approvals
+            || entry_mirrors(&recorded)? != row.props
+            || !crate::outcome::verify_recurring_recorded(db, &row, &recorded)?
+        {
+            return Ok(Err(crate::outcome::key_conflict()));
         }
         return Ok(Ok(RecurringRecorded {
             schedule,
@@ -599,6 +687,15 @@ pub async fn create_recurring<V: Vfs + Clone>(
             recorded_at: row.created_at,
             already_recorded: true,
         }));
+    }
+    if let Err(r) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&plan.proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(r));
     }
     if txn.vertex(db, schedule)?.is_some() {
         txn.abort();
@@ -630,6 +727,7 @@ pub async fn create_recurring<V: Vfs + Clone>(
     let entry = plan.proposal.clone().seal(approvals, None)?;
     let mut stage = WriteBatch::new(relation::IN_CASE);
     stage.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_recurring_control(&mut stage, &entry, evid)?;
     stage.create_vertex(
         schedule,
         vec![label::RECURRING_SCHEDULE],
@@ -789,11 +887,17 @@ fn records_with_work<V: Vfs + Clone>(
             if !row.labels.contains(&label::ENTRY) { continue; }
             work.entries_decoded = work.entries_decoded.saturating_add(1);
             let entry = crate::entry_storage::decode_at(db, &row, at)?;
-            if let Some(mark) = marker(&entry.proposal)? { occurrences.push((row.clone(), entry.clone(), mark)); }
+            if let Some(mark) = marker(&entry.proposal)? {
+                if !crate::outcome::original(db, &row)? {
+                    return Err(corrupt("occurrence is not its immutable creation record"));
+                }
+                occurrences.push((row.clone(), entry.clone(), mark));
+            }
             if !matches!(entry.proposal.origin, EntryOrigin::Control { control_kind: ControlKind::RECURRING_SCHEDULE, .. }) { continue; }
             if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK
-                || entry.proposal.class != EntryClass::SCHEDULE_CONTROL || entry_mirrors(&entry)? != row.props {
-                return Err(corrupt("lifecycle record coordinate or mirrors differ"));
+                || entry.proposal.class != EntryClass::SCHEDULE_CONTROL || entry_mirrors(&entry)? != row.props
+                || !crate::outcome::verify_recurring_recorded(db, &row, &entry)? {
+                return Err(corrupt("lifecycle record coordinate, mirrors or immutable outcome differ"));
             }
             match &entry.proposal.control {
                 Some(ControlPayload::LifecycleTransition { from: 0, to: 1, object_ref, .. }) => {
@@ -807,13 +911,15 @@ fn records_with_work<V: Vfs + Clone>(
                         return Err(corrupt("duplicate creation"));
                     }
                 }
-                Some(ControlPayload::ScheduleCancelled { schedule_ref, cause_ref }) => cancels.push((row.clone(), *schedule_ref, *cause_ref)),
+                Some(ControlPayload::ScheduleCancelled { schedule_ref, cause_ref }) => cancels.push((row.clone(), entry.clone(), *schedule_ref, *cause_ref)),
                 _ => return Err(corrupt("unknown recurring lifecycle transition")),
             }
         }
-        for (row, schedule, cause) in cancels {
+        for (row, entry, schedule, cause) in cancels {
             let record = records.get_mut(&schedule).ok_or_else(|| corrupt("cancellation without creation"))?;
-            if row.vid != cancel_vid(schedule) || cause != record.creation.vid || row.created_at <= record.created_at || record.cancelled_at.replace(row.created_at).is_some() {
+            let expected = cancellation_proposal(&record.plan, record.creation.vid, entry.proposal.principal_ref, entry.proposal.description.clone());
+            if row.vid != cancel_vid(schedule) || cause != record.creation.vid || row.created_at <= record.created_at || record.cancelled_at.replace(row.created_at).is_some()
+                || entry.proposal != expected {
                 return Err(corrupt("invalid cancellation lineage"));
             }
         }
@@ -941,6 +1047,7 @@ fn history_unchanged<V: Vfs + Clone>(
                         DeltaRow::LabelMembership { label: changed, .. }
                             if *changed == label::ENTRY
                                 || *changed == label::ENTRY_FRAGMENT
+                                || *changed == label::INTENT_OUTCOME
                                 || *changed == label::RECURRING_SCHEDULE =>
                         {
                             return Ok(false);
@@ -961,6 +1068,7 @@ fn history_unchanged<V: Vfs + Clone>(
                                 || db.vertex_at(*vid, at)?.is_some_and(|row| {
                                     row.labels.contains(&label::ENTRY)
                                         || row.labels.contains(&label::ENTRY_FRAGMENT)
+                                        || row.labels.contains(&label::INTENT_OUTCOME)
                                         || row.labels.contains(&label::RECURRING_SCHEDULE)
                                 })
                             {
@@ -1077,6 +1185,9 @@ pub async fn cancel_recurring<V: Vfs + Clone>(
     if let Err(r) = admit(db, ctx, book, capability, true)? {
         return Ok(Err(r));
     }
+    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(r));
+    }
     let schedule = recurring_schedule_vid(book.book_id, name);
     let Some(record) = records(db, ctx, book)?.remove(&schedule) else {
         return Ok(Err(refusal(format!(
@@ -1098,21 +1209,54 @@ pub async fn cancel_recurring<V: Vfs + Clone>(
         return Ok(Err(policy::refusal(&d)));
     }
     let evid = cancel_vid(schedule);
+    let proposal = cancellation_proposal(
+        &record.plan,
+        record.creation.vid,
+        capability.holder(),
+        description,
+    );
+    proposal.validate()?;
     let mut txn = db.begin(&ctx.txn())?;
     if let Err(r) = policy::capability_witness(&txn, db, book, capability)? {
         txn.abort();
         return Ok(Err(r));
     }
-    let epoch = policy::epoch_witness(&txn, db)?;
+    if let Err(r) = policy::capability_key_witness(&txn, db, &proposal, evid)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
+        if !crate::entry_storage::has_class_mirror(&row, EntryClass::SCHEDULE_CONTROL) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
         let entry = decode_entry(&row)?;
+        let same = entry.proposal_digest == proposal.proposal_digest()?
+            || matches!(
+                (entry.proposal.semantic_digest(&book.seal_key), proposal.semantic_digest(&book.seal_key)),
+                (Ok(prior), Ok(requested)) if prior == requested
+            );
+        if !same
+            || entry_mirrors(&entry)? != row.props
+            || !crate::outcome::verify_recurring_recorded(db, &row, &entry)?
+        {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
         return Ok(Ok(RecurringRecorded {
             schedule,
             control_entry: entry.entry_ref(evid),
             recorded_at: row.created_at,
             already_recorded: true,
         }));
+    }
+    if let Err(r) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(r));
     }
     if txn.vertex_property(db, schedule, property::STATE)? != Some(CanonicalScalar::Int(ACTIVE)) {
         txn.abort();
@@ -1121,16 +1265,7 @@ pub async fn cancel_recurring<V: Vfs + Clone>(
             "schedule is no longer active",
         )));
     }
-    let mut proposal = record.plan.proposal.clone();
-    proposal.description = description;
-    proposal.principal_ref = capability.holder();
-    proposal.idempotency_key =
-        domain_digest(b"fa:recurring-cancel-key:v1", &[&schedule.0.to_le_bytes()]).to_vec();
-    proposal.extensions.clear();
-    proposal.control = Some(ControlPayload::ScheduleCancelled {
-        schedule_ref: schedule,
-        cause_ref: record.creation.vid,
-    });
+    let epoch = policy::epoch_witness(&txn, db)?;
     let key = fa_policy::sod::control_key("ScheduleControl", None, "CancelRecurring");
     if policy::steward()?.preparer_op(&key) != Some(Op::Post) {
         txn.abort();
@@ -1153,6 +1288,7 @@ pub async fn cancel_recurring<V: Vfs + Clone>(
     let entry = proposal.seal(Vec::new(), None)?;
     let mut stage = WriteBatch::new(relation::IN_CASE);
     stage.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_recurring_control(&mut stage, &entry, evid)?;
     stage.compare_and_set_vertex_property(
         schedule,
         property::STATE,

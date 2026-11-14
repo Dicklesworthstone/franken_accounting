@@ -745,8 +745,7 @@ fn allocated_reapplication_uses_recorded_signed_relief_after_a_later_revaluation
                 "reapplication must reuse the original signed valuation release"
             );
             assert_eq!(net(&after, "1010"), sign * 8);
-            *records.last_mut().unwrap() =
-                mutate_release(&reinstated.record, |raw| raw[21] ^= 1);
+            *records.last_mut().unwrap() = mutate_release(&reinstated.record, |raw| raw[21] ^= 1);
             assert!(
                 replay_allocated(&records, &rates).is_err(),
                 "reapplication cannot replace its inherited source proof"
@@ -849,10 +848,9 @@ fn allocated_reapplication_checks_current_capacity_after_another_payment() {
 
 #[test]
 fn allocated_reapplication_cannot_strand_offsetting_components_or_exceed_historical_capacity() {
-    for (historical, target, spot, closing, relief) in [
-        (1, 0, (1, 2), (1, 8), 0),
-        (3, 1, (3, 2), (1, 2), 2),
-    ] {
+    for (historical, target, spot, closing, relief) in
+        [(1, 0, (1, 2), (1, 8), 0), (3, 1, (3, 2), (1, 2), 2)]
+    {
         let (mut records, mut rates, source, allocation) =
             allocated_history(2, historical, target, spot, closing, true);
         let quote = rate_fixture(1, 1, 4, 30);

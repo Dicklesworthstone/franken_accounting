@@ -571,10 +571,7 @@ fn allocated_cash_workflow(liability: bool) {
             "--yes",
         ],
     );
-    assert_eq!(
-        release(&f.f.entry(text(data(&undone_again), "vid"))),
-        basis
-    );
+    assert_eq!(release(&f.f.entry(text(data(&undone_again), "vid"))), basis);
     let restored_again = f.stock("2026-02-28");
     for account in [
         f.control(),

@@ -184,7 +184,10 @@ mod tests {
         ] {
             let after = project_recorded(before, 3, 10, relief, false).unwrap();
             assert_eq!(after, expected);
-            assert_eq!(project_recorded(after, 3, 10, relief, true).unwrap(), before);
+            assert_eq!(
+                project_recorded(after, 3, 10, relief, true).unwrap(),
+                before
+            );
         }
     }
 

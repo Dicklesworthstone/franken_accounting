@@ -837,9 +837,9 @@ pub(super) fn verify(
                     }
                 }
                 if let Some(coverage) = checked.releases.get(&parent) {
-                    let inherited = effects
-                        .get(&parent)
-                        .ok_or_else(|| invalid("allocated reversal has no authenticated effects"))?;
+                    let inherited = effects.get(&parent).ok_or_else(|| {
+                        invalid("allocated reversal has no authenticated effects")
+                    })?;
                     let reapplication = envelopes[parent].class == 4;
                     if inherited.len() != coverage.len() || reapplication && group.len() != 1 {
                         return Err(invalid(

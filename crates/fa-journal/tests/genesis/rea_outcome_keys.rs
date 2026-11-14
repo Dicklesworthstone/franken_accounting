@@ -582,11 +582,7 @@ fn legacy_rea_retries_survive_recovery_without_rewriting_their_birth() {
 #[test]
 fn recovered_legacy_reversal_key_refuses_every_rea_control_after_reopen() {
     let mut h = harness_legacy();
-    let original = h.proposal(
-        h.rent_legs(100),
-        b"REA-legacy-source",
-        EntryClass::ORIGINAL,
-    );
+    let original = h.proposal(h.rent_legs(100), b"REA-legacy-source", EntryClass::ORIGINAL);
     let target = outcome_recovery_tests::write_legacy(&mut h, original);
     let key = b"REA-legacy-reversal-key";
     let reversal = h.reversal_of_entry(target, key);

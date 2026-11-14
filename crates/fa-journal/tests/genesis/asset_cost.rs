@@ -89,6 +89,54 @@ fn posting(proposal: EntryPayload) -> PostRequest {
     }
 }
 
+fn register_schedule(
+    h: &mut Harness,
+    request: &AssetScheduleRequest,
+) -> Result<AssetScheduleRecorded, Refusal> {
+    let cx = h.ctx();
+    let schema = Capability::embedded(PRINCIPAL, &["read", "schema_change"]).unwrap();
+    h.runtime
+        .block_on(create_asset_schedule(
+            &mut h.db,
+            &cx,
+            &h.book,
+            &schema,
+            request.clone(),
+        ))
+        .unwrap()
+}
+
+fn unregistered_schedule() -> (Fixture, AssetScheduleRequest) {
+    let mut f = Fixture::new(AssetCostKind::Depreciation, 100, 0, 3);
+    let mut source = f.source.clone();
+    source.idempotency_key = b"schedule-outcome-acquisition".to_vec();
+    let acquisition = f.h.post(posting(source.clone())).unwrap().entry_ref();
+    let mut spec = f.schedule.spec.clone();
+    spec.name = "schedule-outcome-asset".into();
+    spec.acquisition = acquisition;
+    let request = AssetScheduleRequest {
+        principal: PRINCIPAL,
+        spec,
+        effective_date: f.h.day(),
+        idempotency_key: b"schedule-outcome-key".to_vec(),
+        description: source.description,
+        approvals: vec![],
+    };
+    (f, request)
+}
+
+fn assert_schedule_key_conflict(h: &mut Harness, request: &AssetScheduleRequest) {
+    let head = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let refusal = register_schedule(h, request).unwrap_err();
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        (code::IDEMPOTENCY_CONFLICT, 6)
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+}
+
 fn undo(proposal: &EntryPayload, target: EntryRef, key: &[u8]) -> EntryPayload {
     let mut reversed = proposal.clone();
     reversed.class = EntryClass::REVERSAL;
@@ -267,6 +315,279 @@ impl Fixture {
             .proposal(self.template(month, key))
             .unwrap()
     }
+}
+
+#[test]
+fn asset_schedule_keys_conflict_with_postings_reversals_and_batches_in_both_orders() {
+    for family in ["posting", "reversal", "batch"] {
+        for schedule_first in [false, true] {
+            let (mut f, request) = unregistered_schedule();
+            let source = f.h.proposal(
+                f.h.rent_legs(100),
+                b"schedule-outcome-reversal-source",
+                EntryClass::ORIGINAL,
+            );
+            let target = f.h.post(posting(source.clone())).unwrap().entry_ref();
+            if schedule_first {
+                register_schedule(&mut f.h, &request).unwrap();
+            }
+            let head = f.h.db.frontier().unwrap();
+            let vertices = f.h.db.vertices().unwrap();
+            let key = &request.idempotency_key;
+            let result = match family {
+                "posting" => {
+                    let proposal = f.h.proposal(f.h.rent_legs(200), key, EntryClass::ORIGINAL);
+                    f.h.post(posting(proposal)).map(|_| ())
+                }
+                "reversal" => f.h.post(posting(undo(&source, target, key))).map(|_| ()),
+                "batch" => {
+                    let member = f.h.proposal(
+                        f.h.rent_legs(200),
+                        b"schedule-outcome-batch-member",
+                        EntryClass::ORIGINAL,
+                    );
+                    f.h.post_batch(f.h.batch(key, vec![member])).map(|_| ())
+                }
+                _ => unreachable!(),
+            };
+            if schedule_first {
+                let refusal = result.unwrap_err();
+                assert_eq!(
+                    (refusal.code, refusal.exit),
+                    (code::IDEMPOTENCY_CONFLICT, 6),
+                    "{family} after schedule"
+                );
+                assert_eq!(f.h.db.frontier().unwrap(), head);
+                assert_eq!(f.h.db.vertices().unwrap(), vertices);
+            } else {
+                result.unwrap();
+                assert_schedule_key_conflict(&mut f.h, &request);
+            }
+        }
+    }
+}
+
+#[test]
+fn asset_schedule_outcome_is_atomic_and_retries_preserve_the_recorded_request() {
+    let (mut f, request) = unregistered_schedule();
+    let head = f.h.db.frontier().unwrap();
+    let first = register_schedule(&mut f.h, &request).unwrap();
+    assert!(!first.already_recorded);
+    assert_eq!(first.recorded_at.0, head.0 + 1);
+    let claim_vid = fa_model::intent_outcome_vid(
+        f.h.book.book_id,
+        &PRINCIPAL.0.to_le_bytes(),
+        &request.idempotency_key,
+    );
+    let claim = f.h.db.vertex(claim_vid).unwrap().unwrap();
+    assert_eq!(claim.labels, vec![fa_model::symbols::label::INTENT_OUTCOME]);
+    assert_eq!(claim.created_at, first.recorded_at);
+    assert_eq!(
+        fa_journal::rows::prop(&claim, property::TARGET_REF),
+        Some(&CanonicalScalar::bytes(first.entry.vid.0.to_le_bytes().to_vec()).unwrap())
+    );
+    let expected = AssetScheduleRecorded {
+        already_recorded: true,
+        ..first
+    };
+    let head = f.h.db.frontier().unwrap();
+    assert_eq!(register_schedule(&mut f.h, &request).unwrap(), expected);
+    assert_eq!(f.h.db.frontier().unwrap(), head);
+
+    let mut changed = request.clone();
+    changed.spec.salvage = Amount::new(f.h.usd, 1);
+    assert_schedule_key_conflict(&mut f.h, &changed);
+    let mut changed = request.clone();
+    changed.description = f.h.statement("different schedule intent", 122);
+    assert_schedule_key_conflict(&mut f.h, &changed);
+    let mut changed = request.clone();
+    changed.approvals = vec![
+        f.h.approve_transition(
+            request
+                .proposal(&f.h.book)
+                .unwrap()
+                .proposal_digest()
+                .unwrap(),
+        ),
+    ];
+    assert_schedule_key_conflict(&mut f.h, &changed);
+    assert_eq!(register_schedule(&mut f.h, &request).unwrap(), expected);
+    assert!(
+        verify_asset_schedules(&f.h.db, &f.h.ctx(), &f.h.book)
+            .unwrap()
+            .is_green()
+    );
+}
+
+#[test]
+fn an_asset_schedule_reserves_its_key_against_an_already_prepared_reversal() {
+    let (mut f, request) = unregistered_schedule();
+    let source = f.h.proposal(
+        f.h.rent_legs(100),
+        b"asset-key-race-source",
+        EntryClass::ORIGINAL,
+    );
+    let target = f.h.post(posting(source.clone())).unwrap().entry_ref();
+    let reversal = posting(undo(&source, target, &request.idempotency_key));
+    let cx = f.h.ctx();
+    let PostPreparation::Ready(prepared) = prepare_post(&mut f.h.db, &cx, &f.h.book, reversal)
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("fresh reversal");
+    };
+    register_schedule(&mut f.h, &request).unwrap();
+    let head = f.h.db.frontier().unwrap();
+    let vertices = f.h.db.vertices().unwrap();
+    assert_eq!(
+        f.h.runtime
+            .block_on(prepared.commit(&mut f.h.db, &cx))
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        6
+    );
+    assert_eq!(f.h.db.frontier().unwrap(), head);
+    assert_eq!(f.h.db.vertices().unwrap(), vertices);
+}
+
+#[test]
+fn an_original_legacy_asset_schedule_remains_a_read_only_retry_anchor() {
+    let (mut f, request) = unregistered_schedule();
+    let entry = request
+        .proposal(&f.h.book)
+        .unwrap()
+        .seal(vec![], None)
+        .unwrap();
+    let vid = entry_vid(
+        f.h.book.book_id,
+        &PRINCIPAL.0.to_le_bytes(),
+        &request.idempotency_key,
+    );
+    let cx = f.h.ctx();
+    let mut batch = fgdb::WriteBatch::new(relation::IN_BOOK);
+    batch.create_vertex(
+        vid,
+        vec![fa_model::symbols::label::ENTRY],
+        fa_model::entry_mirrors(&entry).unwrap(),
+    );
+    let at =
+        f.h.runtime
+            .block_on(f.h.db.write(&cx.commit(), batch))
+            .unwrap();
+    let vertices = f.h.db.vertices().unwrap();
+    let retry = register_schedule(&mut f.h, &request).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.entry, entry.entry_ref(vid));
+    assert_eq!(retry.recorded_at, at);
+    assert_eq!(f.h.db.frontier().unwrap(), at);
+    assert_eq!(f.h.db.vertices().unwrap(), vertices);
+    assert!(
+        f.h.db
+            .vertex(fa_model::intent_outcome_vid(
+                f.h.book.book_id,
+                &PRINCIPAL.0.to_le_bytes(),
+                &request.idempotency_key,
+            ))
+            .unwrap()
+            .is_none()
+    );
+    let proposal = f.h.proposal(
+        f.h.rent_legs(200),
+        &request.idempotency_key,
+        EntryClass::ORIGINAL,
+    );
+    assert_eq!(f.h.post(posting(proposal)).unwrap_err().exit, 6);
+    assert_eq!(f.h.db.frontier().unwrap(), at);
+}
+
+#[test]
+fn asset_schedule_retries_reject_deleted_claims_and_rewritten_history() {
+    for damage in ["deleted-claim", "rewritten-claim", "rewritten-entry"] {
+        let (mut f, request) = unregistered_schedule();
+        let recorded = register_schedule(&mut f.h, &request).unwrap();
+        let claim = fa_model::intent_outcome_vid(
+            f.h.book.book_id,
+            &PRINCIPAL.0.to_le_bytes(),
+            &request.idempotency_key,
+        );
+        if damage == "deleted-claim" {
+            let mut batch = fgdb::WriteBatch::new(relation::IN_BOOK);
+            batch.delete_vertex(claim);
+            f.h.write_raw(batch);
+        } else {
+            let (vid, property) = if damage == "rewritten-claim" {
+                (claim, property::TARGET_REF)
+            } else {
+                (recorded.entry.vid, property::FA_DIGEST)
+            };
+            let row = f.h.db.vertex(vid).unwrap().unwrap();
+            let original = fa_journal::rows::prop(&row, property).cloned().unwrap();
+            let corrupted = CanonicalScalar::bytes(vec![0x55; 32]).unwrap();
+            for (old, new) in [(original.clone(), corrupted.clone()), (corrupted, original)] {
+                let mut batch = fgdb::WriteBatch::new(relation::IN_BOOK);
+                batch.compare_and_set_vertex_property(
+                    vid,
+                    property,
+                    Some(old),
+                    new,
+                    fgdb::WriteMismatchPolicy::AbortWrite,
+                );
+                f.h.write_raw(batch);
+            }
+        }
+        assert_schedule_key_conflict(&mut f.h, &request);
+    }
+}
+
+#[test]
+fn asset_schedule_retry_admits_current_authority_before_observing_its_outcome() {
+    let (mut f, request) = unregistered_schedule();
+    register_schedule(&mut f.h, &request).unwrap();
+    let claim = fa_model::intent_outcome_vid(
+        f.h.book.book_id,
+        &PRINCIPAL.0.to_le_bytes(),
+        &request.idempotency_key,
+    );
+    let row = f.h.db.vertex(claim).unwrap().unwrap();
+    let mut batch = fgdb::WriteBatch::new(relation::IN_BOOK);
+    batch.compare_and_set_vertex_property(
+        claim,
+        property::FA_PAYLOAD,
+        fa_journal::rows::prop(&row, property::FA_PAYLOAD).cloned(),
+        CanonicalScalar::bytes(b"FA-ENTRY-OUTCOME\0".to_vec()).unwrap(),
+        fgdb::WriteMismatchPolicy::AbortWrite,
+    );
+    f.h.write_raw(batch);
+    let head = f.h.db.frontier().unwrap();
+    let cx = f.h.ctx();
+    let reader = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    assert!(
+        f.h.runtime
+            .block_on(create_asset_schedule(
+                &mut f.h.db,
+                &cx,
+                &f.h.book,
+                &reader,
+                request.clone(),
+            ))
+            .unwrap()
+            .is_err()
+    );
+    let schema = Capability::embedded(PRINCIPAL, &["read", "schema_change"]).unwrap();
+    assert!(
+        f.h.runtime
+            .block_on(create_asset_schedule(
+                &mut f.h.db,
+                &cx,
+                &f.h.book,
+                &schema,
+                request,
+            ))
+            .is_err(),
+        "the malformed outcome is visible only to an authorized caller"
+    );
+    assert_eq!(f.h.db.frontier().unwrap(), head);
 }
 
 #[test]

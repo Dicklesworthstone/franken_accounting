@@ -1014,6 +1014,17 @@ pub async fn create_asset_schedule_proposal<V: Vfs + Clone>(
         &proposal.principal_ref.0.to_le_bytes(),
         &proposal.idempotency_key,
     );
+    if let Err(refusal) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        vid,
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, vid)? {
         txn.abort();
         if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
@@ -1025,7 +1036,11 @@ pub async fn create_asset_schedule_proposal<V: Vfs + Clone>(
             (prior.proposal.semantic_digest(&book.seal_key), proposal.semantic_digest(&book.seal_key)),
             (Ok(a), Ok(b)) if a == b);
         let stored = declared_entry(&row, book.book_id, &prior)?;
-        if !same || prior.approvals != approvals || stored.is_none() {
+        if !same
+            || prior.approvals != approvals
+            || stored.is_none()
+            || !crate::outcome::verify_control_recorded(db, &row, &prior)?
+        {
             return Ok(Err(Refusal::new(
                 code::IDEMPOTENCY_CONFLICT,
                 exit::CONFLICT,
@@ -1041,6 +1056,15 @@ pub async fn create_asset_schedule_proposal<V: Vfs + Clone>(
             recorded_at: stored.recorded_at,
             already_recorded: true,
         }));
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     let history = history(db, cx, book, txn.basis())?;
     if history.schedules.values().any(|stored| {
@@ -1105,6 +1129,7 @@ pub async fn create_asset_schedule_proposal<V: Vfs + Clone>(
     };
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(vid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, vid)?;
     stage_guard(
         &txn,
         db,

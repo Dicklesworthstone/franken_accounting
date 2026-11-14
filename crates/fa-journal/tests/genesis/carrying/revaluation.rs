@@ -1566,7 +1566,11 @@ fn allocated_reapplication_preserves_recorded_components_after_later_revaluation
                 .prepare(target, 3, day(5, 2), b"allocated-reapplication-final")
                 .unwrap()
                 .into_proposal();
-            let final_ref = f.f.h.post(request(final_payment.clone())).unwrap().entry_ref();
+            let final_ref =
+                f.f.h
+                    .post(request(final_payment.clone()))
+                    .unwrap()
+                    .entry_ref();
             let full_undo = undo(
                 &final_payment,
                 final_ref,
@@ -1705,10 +1709,12 @@ fn allocated_reapplication_retains_authority_and_complete_prefix_guards() {
     f.f.h.add_document(&unrelated).unwrap();
     let head = f.f.h.db.frontier().unwrap();
     let rows = f.f.h.db.vertices().unwrap();
-    let refused = f.f.h.runtime
-        .block_on(prepared.commit(&mut f.f.h.db, &cx))
-        .unwrap()
-        .unwrap_err();
+    let refused =
+        f.f.h
+            .runtime
+            .block_on(prepared.commit(&mut f.f.h.db, &cx))
+            .unwrap()
+            .unwrap_err();
     assert_eq!(refused.code, fa_journal::refusal::code::PLAN_INVALIDATED);
     assert_eq!(f.f.h.db.frontier().unwrap(), head);
     assert_eq!(f.f.h.db.vertices().unwrap(), rows);
@@ -1755,9 +1761,15 @@ fn allocated_reapplication_does_not_enable_compound_publication() {
         let head = f.f.h.db.frontier().unwrap();
         let rows = f.f.h.db.vertices().unwrap();
         let direct = f.f.post_fx_batch(batch.clone()).unwrap_err();
-        assert_eq!(direct.code, fa_journal::refusal::code::CLASS_NOT_IMPLEMENTED);
+        assert_eq!(
+            direct.code,
+            fa_journal::refusal::code::CLASS_NOT_IMPLEMENTED
+        );
         let planned = f.f.h.planned_batch(batch, &capability).unwrap_err();
-        assert_eq!(planned.code, fa_journal::refusal::code::CLASS_NOT_IMPLEMENTED);
+        assert_eq!(
+            planned.code,
+            fa_journal::refusal::code::CLASS_NOT_IMPLEMENTED
+        );
         assert_eq!(f.f.h.db.frontier().unwrap(), head);
         assert_eq!(f.f.h.db.vertices().unwrap(), rows);
         f.f.h.post(request(reapplied)).unwrap();
