@@ -30,6 +30,7 @@ pub mod open_items;
 pub mod reconciliation;
 pub mod replay;
 mod report;
+mod report_history;
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet, btree_map};
@@ -93,6 +94,7 @@ pub use reconciliation::{
     normalize_counterparty, normalize_reference, verify_match_preserves_committed_amounts,
     verify_reconciliation_register,
 };
+pub use report_history::{ReportHistoryMemo, ReportHistoryWork};
 
 pub const FOLD_DIGEST_DOMAIN: &[u8] = b"fa:register-fold:v2";
 
@@ -2073,7 +2075,7 @@ pub fn trial_balance_served_at<V: asupersync::fs::Vfs + Clone>(
     periods: &[String],
     known_at: Option<CommitSeq>,
 ) -> Result<(TrialBalance, Served), RegisterError> {
-    trial_balance_served_at_inner(db, None, book, periods, known_at)
+    trial_balance_served_at_inner(db, None, book, periods, known_at, None)
 }
 
 /// A trial balance at one recorded prefix, using durable register checkpoints
@@ -2087,7 +2089,25 @@ pub fn trial_balance_served_at_with_context<V: asupersync::fs::Vfs + Clone>(
     periods: &[String],
     known_at: Option<CommitSeq>,
 ) -> Result<(TrialBalance, Served), RegisterError> {
-    trial_balance_served_at_inner(db, Some(cx), book, periods, known_at)
+    trial_balance_served_at_inner(db, Some(cx), book, periods, known_at, None)
+}
+
+/// A resident trial balance with independently enumerated source metadata
+/// carried between reads. The native prefix marker authenticates every reuse;
+/// edits, migration changes and unavailable history keep the literal path.
+/// Callers admit the whole selected book before accessing this memo, just as
+/// for [`trial_balance_served_at_with_context`]. Monetary cells and tails are
+/// still checked on every read; no amounts are taken from this memo.
+pub fn trial_balance_served_at_carried<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+    history: &mut ReportHistoryMemo,
+) -> Result<(TrialBalance, Served), RegisterError> {
+    report_checkpoint(Some(cx))?;
+    trial_balance_served_at_inner(db, Some(cx), book, periods, known_at, Some(history))
 }
 
 fn trial_balance_served_at_inner<V: asupersync::fs::Vfs + Clone>(
@@ -2096,6 +2116,7 @@ fn trial_balance_served_at_inner<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     periods: &[String],
     known_at: Option<CommitSeq>,
+    history: Option<&mut ReportHistoryMemo>,
 ) -> Result<(TrialBalance, Served), RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     let selected = select_periods(db, book, periods, seq)?;
@@ -2109,7 +2130,7 @@ fn trial_balance_served_at_inner<V: asupersync::fs::Vfs + Clone>(
         through = Some(through.map_or(DateDay(end), |d: DateDay| d.max(DateDay(end))));
     }
     let maintained = match through {
-        Some(day) => maintained_sums(db, cx, book, day, seq)?,
+        Some(day) => maintained_sums(db, cx, book, day, seq, history)?,
         None => Err("no period was selected".to_string()),
     };
     match maintained {
@@ -2141,8 +2162,16 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     day: DateDay,
     seq: CommitSeq,
+    history: Option<&mut ReportHistoryMemo>,
 ) -> Result<Result<(ColumnSums, ServedPeriods), String>, RegisterError> {
-    let (accounts, periods) = report_metadata_at(db, cx, book, seq)?;
+    let mut source = match history {
+        Some(history) => Some(history.read(db, cx, book, seq)?),
+        None => None,
+    };
+    let (accounts, periods) = match &source {
+        Some(source) => source.metadata(),
+        None => report_metadata_at(db, cx, book, seq)?,
+    };
     let mut sums = ColumnSums::new();
     let mut served = Vec::new();
     let mut populated_periods = None;
@@ -2176,7 +2205,13 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
             Err(error) => return Err(error),
         };
         let Some(head) = head else {
-            if period_has_postings_at(db, cx, book, &period.code, seq, &mut populated_periods)? {
+            let populated = match source.as_mut() {
+                Some(source) => source.period_has_postings(db, cx, book, &period.code)?,
+                None => {
+                    period_has_postings_at(db, cx, book, &period.code, seq, &mut populated_periods)?
+                }
+            };
+            if populated {
                 return Ok(Err(unservable(&period.code)));
             }
             continue;
@@ -2257,7 +2292,7 @@ pub fn period_activity_served_at<V: asupersync::fs::Vfs + Clone>(
     periods: &[String],
     known_at: Option<CommitSeq>,
 ) -> Result<(TrialBalance, Served), RegisterError> {
-    period_activity_served_at_inner(db, None, book, periods, known_at)
+    period_activity_served_at_inner(db, None, book, periods, known_at, None)
 }
 
 /// Period activity at one recorded prefix, using durable register checkpoints
@@ -2271,7 +2306,23 @@ pub fn period_activity_served_at_with_context<V: asupersync::fs::Vfs + Clone>(
     periods: &[String],
     known_at: Option<CommitSeq>,
 ) -> Result<(TrialBalance, Served), RegisterError> {
-    period_activity_served_at_inner(db, Some(cx), book, periods, known_at)
+    period_activity_served_at_inner(db, Some(cx), book, periods, known_at, None)
+}
+
+/// Period activity with resident source metadata and empty-period evidence.
+/// Reuse is authenticated against the exact native prefix and never changes
+/// the maintained-cell checks, literal fallback or requested coordinate.
+/// Admit the selected whole-book observation before accessing `history`.
+pub fn period_activity_served_at_carried<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+    history: &mut ReportHistoryMemo,
+) -> Result<(TrialBalance, Served), RegisterError> {
+    report_checkpoint(Some(cx))?;
+    period_activity_served_at_inner(db, Some(cx), book, periods, known_at, Some(history))
 }
 
 fn period_activity_served_at_inner<V: asupersync::fs::Vfs + Clone>(
@@ -2280,10 +2331,18 @@ fn period_activity_served_at_inner<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     periods: &[String],
     known_at: Option<CommitSeq>,
+    history: Option<&mut ReportHistoryMemo>,
 ) -> Result<(TrialBalance, Served), RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     let selected = select_periods(db, book, periods, seq)?;
-    let (accounts, _) = report_metadata_at(db, cx, book, seq)?;
+    let mut source = match history {
+        Some(history) => Some(history.read(db, cx, book, seq)?),
+        None => None,
+    };
+    let (accounts, _) = match &source {
+        Some(source) => source.metadata(),
+        None => report_metadata_at(db, cx, book, seq)?,
+    };
     let mut sums = ColumnSums::new();
     let mut served = Vec::new();
     let mut populated_periods = None;
@@ -2318,14 +2377,21 @@ fn period_activity_served_at_inner<V: asupersync::fs::Vfs + Clone>(
                 }
                 served.push((code.clone(), head.served_at, head.tail_entries));
             }
-            None if period_has_postings_at(db, cx, book, code, seq, &mut populated_periods)? => {
-                let reason = unservable(code);
-                return Ok((
-                    report_at(db, book, selected.clone(), seq, None, &[], None)?,
-                    Served::Literal(reason),
-                ));
+            None => {
+                let populated = match source.as_mut() {
+                    Some(source) => source.period_has_postings(db, cx, book, code)?,
+                    None => {
+                        period_has_postings_at(db, cx, book, code, seq, &mut populated_periods)?
+                    }
+                };
+                if populated {
+                    let reason = unservable(code);
+                    return Ok((
+                        report_at(db, book, selected.clone(), seq, None, &[], None)?,
+                        Served::Literal(reason),
+                    ));
+                }
             }
-            None => {}
         }
     }
     Ok((

@@ -122,6 +122,10 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     pub(crate) carried: fa_journal::CarriedHistory,
     /// Authenticated Entry history carried only by ordinary functional reads.
     pub(crate) functional_history: fa_journal::entry_history::EntryHistoryMemo,
+    /// Independently enumerated source metadata for resident native TB and
+    /// activity reads. Contended or poisoned disposable state uses the literal
+    /// path; a report never waits for this optional optimization.
+    pub(crate) report_history: std::sync::Mutex<fa_registers::ReportHistoryMemo>,
     /// The client's principal key, when this handle signs every approval and
     /// attestation it records ([`Self::sign_with_principal_key`], plan
     /// §14.5, fa-kae). Held only for the handle's life; never journaled.
@@ -273,6 +277,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             signer: keys.checkpoint_signing_key(),
             carried: fa_journal::CarriedHistory::default(),
             functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
+            report_history: std::sync::Mutex::default(),
             principal_key: None,
         })
     }
@@ -330,6 +335,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             signer: keys.checkpoint_signing_key(),
             carried: fa_journal::CarriedHistory::default(),
             functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
+            report_history: std::sync::Mutex::default(),
             principal_key: None,
         })
     }
@@ -4009,6 +4015,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
                 functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
+                report_history: std::sync::Mutex::default(),
                 principal_key: None,
             },
             map,
@@ -4051,6 +4058,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
                 functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
+                report_history: std::sync::Mutex::default(),
                 principal_key: None,
             },
             rehearsal,
@@ -4095,6 +4103,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
                 functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
+                report_history: std::sync::Mutex::default(),
                 principal_key: None,
             },
             rehearsal,
@@ -4146,6 +4155,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
                 functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
+                report_history: std::sync::Mutex::default(),
                 principal_key: None,
             },
             map,
@@ -7691,16 +7701,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
-        self.query(cx, |db, book| {
-            Ok(fa_registers::trial_balance_served_at_with_context(
-                db,
-                &cx.query(),
-                book,
-                periods,
-                known_at,
-            )?
-            .0)
-        })
+        self.trial_balance_served_at(cx, periods, known_at)
+            .map(|(report, _)| report)
     }
 
     /// Load the committed delta window back to the oldest maintained
@@ -7760,15 +7762,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         cx: &PurposeContexts,
         periods: &[String],
     ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
-        self.query(cx, |db, book| {
-            Ok(fa_registers::period_activity_served_at_with_context(
-                db,
-                &cx.query(),
-                book,
-                periods,
-                None,
-            )?)
-        })
+        self.period_activity_served_at(cx, periods, None)
     }
 
     /// The trial balance at the head and how it was served: from
@@ -7779,13 +7773,62 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         cx: &PurposeContexts,
         periods: &[String],
     ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
+        self.trial_balance_served_at(cx, periods, None)
+    }
+
+    /// Called after the facade admits the complete selected book. Metadata
+    /// is reused only through its authenticated native prefix; contention
+    /// keeps the independent literal source path and never blocks a read.
+    pub(crate) fn trial_balance_served_at(
+        &self,
+        cx: &PurposeContexts,
+        periods: &[String],
+        known_at: Option<CommitSeq>,
+    ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
         self.query(cx, |db, book| {
+            if let Ok(mut history) = self.report_history.try_lock() {
+                return Ok(fa_registers::trial_balance_served_at_carried(
+                    db,
+                    &cx.query(),
+                    book,
+                    periods,
+                    known_at,
+                    &mut history,
+                )?);
+            }
             Ok(fa_registers::trial_balance_served_at_with_context(
                 db,
                 &cx.query(),
                 book,
                 periods,
-                None,
+                known_at,
+            )?)
+        })
+    }
+
+    pub(crate) fn period_activity_served_at(
+        &self,
+        cx: &PurposeContexts,
+        periods: &[String],
+        known_at: Option<CommitSeq>,
+    ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
+        self.query(cx, |db, book| {
+            if let Ok(mut history) = self.report_history.try_lock() {
+                return Ok(fa_registers::period_activity_served_at_carried(
+                    db,
+                    &cx.query(),
+                    book,
+                    periods,
+                    known_at,
+                    &mut history,
+                )?);
+            }
+            Ok(fa_registers::period_activity_served_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                periods,
+                known_at,
             )?)
         })
     }
@@ -7810,16 +7853,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
-        self.query(cx, |db, book| {
-            Ok(fa_registers::period_activity_served_at_with_context(
-                db,
-                &cx.query(),
-                book,
-                periods,
-                known_at,
-            )?
-            .0)
-        })
+        self.period_activity_served_at(cx, periods, known_at)
+            .map(|(report, _)| report)
     }
 }
 

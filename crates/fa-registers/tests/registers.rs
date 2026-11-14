@@ -35,6 +35,9 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 const PRINCIPAL: VId = VId(7);
 
+#[path = "registers/report_history.rs"]
+mod report_history;
+
 struct Harness {
     runtime: Runtime,
     root: Cx,

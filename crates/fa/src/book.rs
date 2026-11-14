@@ -9260,8 +9260,12 @@ impl ReadScope<'_> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         if let Err(refusal) = self.authority.whole_book(seq) {
+            let purposes = self.book.purposes();
+            let report = with_store!(&self.book.store, core => core.query(&purposes, |db, book| {
+                Ok(fa_registers::trial_balance_at(db, book, periods, Some(seq))?)
+            }))?;
             return Ok(Ok((
-                self.book.trial_balance_at(periods, Some(seq))?,
+                report,
                 fa_registers::Served::Literal(format!(
                     "this capability cannot inspect the register window ({}: {}); the read folds the journal",
                     refusal.code, refusal.message
@@ -9269,11 +9273,11 @@ impl ReadScope<'_> {
             )));
         }
         let purposes = self.book.purposes();
-        with_store!(&self.book.store, core => core.query(&purposes, |db, book| {
-            Ok(Ok(fa_registers::trial_balance_served_at_with_context(
-                db, &purposes.query(), book, periods, Some(seq),
-            )?))
-        }))
+        Ok(Ok(
+            with_store!(&self.book.store, core => core.trial_balance_served_at(
+                &purposes, periods, Some(seq),
+            ))?,
+        ))
     }
 
     /// [`Book::trial_balance_at`] under the scope caveats (see
@@ -9331,8 +9335,12 @@ impl ReadScope<'_> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         if let Err(refusal) = self.authority.whole_book(seq) {
+            let purposes = self.book.purposes();
+            let report = with_store!(&self.book.store, core => core.query(&purposes, |db, book| {
+                Ok(fa_registers::period_activity(db, book, periods, Some(seq))?)
+            }))?;
             return Ok(Ok((
-                self.book.period_activity(periods, Some(seq))?,
+                report,
                 fa_registers::Served::Literal(format!(
                     "this capability cannot inspect the register window ({}: {}); the read folds the journal",
                     refusal.code, refusal.message
@@ -9340,11 +9348,11 @@ impl ReadScope<'_> {
             )));
         }
         let purposes = self.book.purposes();
-        with_store!(&self.book.store, core => core.query(&purposes, |db, book| {
-            Ok(Ok(fa_registers::period_activity_served_at_with_context(
-                db, &purposes.query(), book, periods, Some(seq),
-            )?))
-        }))
+        Ok(Ok(
+            with_store!(&self.book.store, core => core.period_activity_served_at(
+                &purposes, periods, Some(seq),
+            ))?,
+        ))
     }
 
     /// [`Book::period_activity`] under the scope caveats: it reaches exactly

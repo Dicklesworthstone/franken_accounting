@@ -9,6 +9,7 @@ use fa_time::{FiscalCalendar, PeriodKind};
 use fgdb_sim::vfs::{FaultKind, FaultPlan, FaultVfs, Trigger};
 
 mod class_scoped_approval;
+mod report_history;
 
 fn maintenance_capability(principal: VId) -> Capability {
     Capability::embedded(principal, &["read", "verify", "maintain"]).unwrap()
