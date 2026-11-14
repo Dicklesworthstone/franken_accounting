@@ -144,7 +144,7 @@ fn compiled(statement: &str, known_at: CommitSeq) -> Result<(Native, Option<Stri
             "a CALL is certified as the report it runs (fa tb, fa explain balance, fa statement or fa open-items --certify), not as a query",
         )),
         Selection::AccessLog { .. } => Err(invalid(
-            "CALL fa.access_log reads the access events at the head; it has no certificate",
+            "CALL fa.access_log is certified as an access-log report (fa access log --certify), not as a generic query",
         )),
         Selection::Procedure { .. } => Err(invalid(
             "a procedure CALL is recorded with fa finding record, not certified as a query",

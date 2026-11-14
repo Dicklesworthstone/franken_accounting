@@ -1163,11 +1163,15 @@ fn the_access_log_procedure_reads_the_runtime_graph_at_the_head() {
             reader: Some("auditor-7".into())
         }
     );
+    let historical = rewrite("EXPLAIN (CERTIFICATE) CALL fa.access_log('auditor-7') AS KNOWN AT 7")
+        .expect("certified historical access log");
+    assert_eq!(historical.known_at, KnownAt::Seq(7));
+    assert!(historical.certify);
+    assert_eq!(historical.selection, one.selection);
     for text in [
         "CALL fa.access_log FOR PERIOD 'FY2026-P03'",
-        "CALL fa.access_log AS KNOWN AT 7",
+        "CALL fa.access_log AS KNOWN AT '2026-03-15T00:00:00Z'",
         "CALL fa.access_log AT BRANCH 'scenario:x'",
-        "EXPLAIN (CERTIFICATE) CALL fa.access_log",
     ] {
         let r = refused(text);
         assert!(r.message.contains("fa.access_log"), "{text}: {r:?}");

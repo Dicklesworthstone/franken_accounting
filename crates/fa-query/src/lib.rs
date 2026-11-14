@@ -29,8 +29,9 @@
 //!   balance`, `fa statement`, `fa open-items`) at the statement's period
 //!   and known-at;
 //! - `CALL fa.access_log` and `CALL fa.access_log('<reader>')`, the runtime
-//!   graph's AccessEvents (`fa access log`) at the head: a read-only bound
-//!   session's own query is among them, recorded before it observed;
+//!   graph's AccessEvents (`fa access log`) at the selected recorded prefix;
+//!   certification uses its access-log certificate, and bound sessions record
+//!   their own read attempt before observing;
 //! - `CALL fa.<family>('<name>[@<version>]'[, {argument: value, ...}])`,
 //!   the registered Lantern run at the selected recorded/effective coordinate;
 //!   certification uses that procedure's own retained certificate;
@@ -942,15 +943,17 @@ fn call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> 
         },
         "fa.access_log" => {
             if selectors.period.is_some()
-                || !matches!(selectors.known_at, None | Some(KnownAt::Head))
+                || !matches!(
+                    selectors.known_at,
+                    None | Some(KnownAt::Head | KnownAt::Seq(_))
+                )
                 || selectors.branch.is_some()
-                || selectors.certify
             {
                 return Err(Refusal::new(
                     Law::Profile,
                     0,
-                    "fa.access_log reads the access events recorded at trunk's head: no period, known-at, branch or certificate",
-                    "CALL fa.access_log | CALL fa.access_log('<reader>'); a later window: fa access log --since <seq>",
+                    "fa.access_log selects trunk's recorded access history: no period, instant, restatement view or branch",
+                    "[EXPLAIN (CERTIFICATE)] CALL fa.access_log('<reader>') [AS KNOWN AT <seq>]; a later window: fa access log --since <seq>",
                 ));
             }
             Ok(Selection::AccessLog { reader: account })

@@ -2482,7 +2482,7 @@ pub(crate) fn bound_command_rule(
     if verb == "query"
         && let Ok(Some(invocation)) = crate::query::procedure_invocation(args)
     {
-        return bound_command_rule("procedure", &invocation);
+        return bound_command_rule(invocation.positional.first()?.as_str(), &invocation);
     }
     let reg = crate::verbs::registry().ok()?;
     let present = |flag: &str| args.switch(flag) || !args.flag_all(flag).is_empty();

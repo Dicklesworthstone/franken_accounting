@@ -84,6 +84,12 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> (i32, Json) {
+        let (exit, mut events) = self.run_many(args);
+        assert_eq!(events.len(), 1, "args={args:?}\n{events:?}");
+        (exit, events.remove(0))
+    }
+
+    fn run_many(&self, args: &[&str]) -> (i32, Vec<Json>) {
         let output = Command::new(env!("CARGO_BIN_EXE_fa"))
             .current_dir(&self.dir)
             .args(["--book", "book"])
@@ -95,15 +101,17 @@ impl Fixture {
             .expect("run fa");
         let stdout = String::from_utf8(output.stdout).unwrap();
         let lines: Vec<&str> = stdout.lines().collect();
-        assert_eq!(lines.len(), 1, "args={args:?}\n{stdout}");
-        fa_cli::verbs::registry()
-            .unwrap()
-            .check_line(lines[0])
-            .unwrap_or_else(|error| panic!("robot schema: {error}\n{stdout}"));
-        (
-            output.status.code().unwrap_or(-1),
-            json::parse(lines[0]).unwrap(),
-        )
+        let registry = fa_cli::verbs::registry().unwrap();
+        let events = lines
+            .into_iter()
+            .map(|line| {
+                registry
+                    .check_line(line)
+                    .unwrap_or_else(|error| panic!("robot schema: {error}\n{stdout}"));
+                json::parse(line).unwrap()
+            })
+            .collect();
+        (output.status.code().unwrap_or(-1), events)
     }
 
     fn ok(&self, args: &[&str]) -> Json {
@@ -789,11 +797,10 @@ fn a_query_over_the_runtime_graph_lists_the_callers_own_session() {
     assert_eq!(theirs.len(), 1, "{theirs:?}");
     assert_eq!(text(&theirs[0], "command"), "tb");
 
-    // Planted: certification, a known-at and a branch are refused by the
-    // profile before the book opens, so nothing more is recorded.
+    // Unsupported coordinates are refused by the profile before the book
+    // opens, so nothing more is recorded.
     for statement in [
-        "EXPLAIN (CERTIFICATE) CALL fa.access_log",
-        "CALL fa.access_log AS KNOWN AT 3",
+        "CALL fa.access_log AS KNOWN AT '2026-03-15T00:00:00Z'",
         "CALL fa.access_log AT BRANCH 'scenario:x'",
     ] {
         let (code, refused) = f.run(&["--token", &auditor, "query", statement]);
@@ -804,4 +811,206 @@ fn a_query_over_the_runtime_graph_lists_the_callers_own_session() {
         );
     }
     assert_eq!(number(&f.log(&["--reader", "auditor-7"]), "count"), 1);
+}
+
+#[test]
+fn certified_historical_access_logs_replay_their_original_interval_after_later_reads() {
+    let f = Fixture::new();
+    let (auditor, _) = f.issue("historical-auditor", &["read"]);
+    f.ok(&["--token", &auditor, "tb", "--period", "FY2026-P03"]);
+    let selected = f.head();
+    let prefix = selected.to_string();
+    let original = f.log(&["--through", &prefix]);
+    f.ok(&["--token", &auditor, "tb", "--period", "FY2026-P03"]);
+    let accounting = data(&f.ok(&["tb", "--period", "FY2026-P03"])).clone();
+    let (exit, events) = f.run_many(&[
+        "access",
+        "log",
+        "--through",
+        &prefix,
+        "--certify",
+        "--certificate-out",
+        "historical-access.cert",
+        "--grant",
+        "produce",
+    ]);
+    assert_eq!(exit, 0, "{events:?}");
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(text(&events[0], "event"), "access_log");
+    assert_eq!(data(&events[0]), &original);
+    assert_eq!(
+        number(events[0].get("coordinate").unwrap(), "known_at"),
+        selected
+    );
+    let receipt = data(&events[1]);
+    assert_eq!(text(receipt, "output_format"), fa::ACCESS_LOG_OUTPUT_FORMAT);
+    assert_eq!(
+        text(receipt, "replay_scope"),
+        "fa-access-log-over-retained-prefix"
+    );
+    assert!(text(receipt, "authority").starts_with("capability:"));
+    let digest = format!("C:{}", text(receipt, "oid"));
+    let replay = f.ok(&["replay", &digest]);
+    assert_eq!(data(&replay), &original);
+    assert_eq!(
+        number(replay.get("coordinate").unwrap(), "known_at"),
+        selected
+    );
+    let file_replay = f.ok(&["replay", "historical-access.cert"]);
+    assert_eq!(data(&file_replay), &original);
+    f.ok(&["--token", &auditor, "tb", "--period", "FY2026-P03"]);
+    let status = f.ok(&["certificate", "status", &digest]);
+    assert_eq!(text(data(&status), "status"), "Current");
+    assert_eq!(data(&f.ok(&["tb", "--period", "FY2026-P03"])), &accounting);
+
+    // The CALL surface carries the same original-prefix certificate family.
+    let statement = format!("EXPLAIN (CERTIFICATE) CALL fa.access_log AS KNOWN AT {selected}");
+    let (exit, called) = f.run_many(&["query", &statement, "--grant", "produce"]);
+    assert_eq!(exit, 0, "{called:?}");
+    assert_eq!(data(&called[0]), &original);
+    assert_eq!(text(data(&called[1]), "oid"), text(receipt, "oid"));
+
+    // The artifact binds its original book even when supplied as a file.
+    let other = Fixture::new();
+    let path = f.dir.join("historical-access.cert");
+    let (exit, refused) = other.run(&["replay", path.to_str().unwrap()]);
+    assert_eq!(exit, 8, "{refused:?}");
+}
+
+#[test]
+fn open_access_certificates_track_the_same_reader_and_require_current_authority() {
+    let f = Fixture::new();
+    let (auditor, commitment) = f.issue("certificate-auditor", &["read", "produce"]);
+    let (other, _) = f.issue("other-auditor", &["read"]);
+    let (exit, events) = f.run_many(&[
+        "--token",
+        &auditor,
+        "access",
+        "log",
+        "--reader",
+        "certificate-auditor",
+        "--certify",
+    ]);
+    assert_eq!(exit, 0, "{events:?}");
+    assert_eq!(events.len(), 2, "{events:?}");
+    let original = data(&events[0]);
+    let receipt = data(&events[1]);
+    assert_eq!(
+        text(receipt, "authority"),
+        format!("capability:{commitment}")
+    );
+    let digest = format!("C:{}", text(receipt, "oid"));
+    assert_eq!(
+        number(original, "count"),
+        1,
+        "the producer's read is recorded"
+    );
+    f.ok(&["--token", &other, "tb", "--period", "FY2026-P03"]);
+    assert_eq!(
+        text(data(&f.ok(&["certificate", "status", &digest])), "status"),
+        "Current"
+    );
+    f.ok(&["--token", &auditor, "tb", "--period", "FY2026-P03"]);
+    assert_eq!(
+        text(data(&f.ok(&["certificate", "status", &digest])), "status"),
+        "Changed"
+    );
+    assert_eq!(data(&f.ok(&["replay", &digest])), original);
+
+    let before = f.head();
+    let (exit, refused) = f.run(&["--token", &other, "access", "log", "--certify"]);
+    assert_eq!(exit, 7, "{refused:?}");
+    assert_eq!(
+        f.head(),
+        before,
+        "missing produce is refused before recording a read"
+    );
+    f.ok(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &commitment,
+        "--grant",
+        "issue_capability",
+        "--yes",
+    ]);
+    let before = f.head();
+    let (exit, refused) = f.run(&["--token", &auditor, "replay", &digest]);
+    assert_eq!(exit, 7, "{refused:?}");
+    assert_eq!(refused.get("coordinate"), Some(&Json::Null));
+    assert_eq!(
+        f.head(),
+        before,
+        "a saved producer does not restore revoked authority"
+    );
+}
+
+#[test]
+fn a_pinned_reader_can_read_its_historical_access_prefix_but_not_head() {
+    let f = Fixture::new();
+    let (auditor, _) = f.issue("source-auditor", &["read"]);
+    f.ok(&["--token", &auditor, "tb", "--period", "FY2026-P03"]);
+    let selected = f.head();
+    let prefix = selected.to_string();
+    f.ok(&[
+        "capability",
+        "issue",
+        "--holder",
+        "pinned-auditor",
+        "--profile",
+        "human",
+        "--op",
+        "read",
+        "--op",
+        "produce",
+        "--known-at-most",
+        &prefix,
+        "--out",
+        "pinned.token",
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+        "--grant",
+        "produce",
+    ]);
+    let direct = f.ok(&[
+        "--token",
+        "pinned.token",
+        "access",
+        "log",
+        "--through",
+        &prefix,
+    ]);
+    assert_eq!(number(data(&direct), "count"), 1);
+    assert_eq!(
+        number(direct.get("coordinate").unwrap(), "known_at"),
+        selected
+    );
+    let statement = format!("CALL fa.access_log AS KNOWN AT {selected}");
+    let call = f.ok(&["--token", "pinned.token", "query", &statement]);
+    assert_eq!(data(&call), data(&direct));
+    let certified_call = format!("EXPLAIN (CERTIFICATE) {statement}");
+    for args in [
+        vec!["--token", "pinned.token", "access", "log"],
+        vec!["--token", "pinned.token", "query", "CALL fa.access_log"],
+        // Retention publishes metadata at HEAD and keeps the shared artifact
+        // path's current whole-book authority. These fail before the receipt.
+        vec![
+            "--token",
+            "pinned.token",
+            "access",
+            "log",
+            "--through",
+            &prefix,
+            "--certify",
+        ],
+        vec!["--token", "pinned.token", "query", &certified_call],
+    ] {
+        let before = f.head();
+        let (exit, refused) = f.run(&args);
+        assert_eq!(exit, 7, "{refused:?}");
+        assert_eq!(refused.get("coordinate"), Some(&Json::Null));
+        assert_eq!(f.head(), before);
+    }
 }

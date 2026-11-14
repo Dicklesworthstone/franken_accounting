@@ -69,6 +69,8 @@ pub enum ReportArtifactFamily {
     /// A profile query (fa-5c1): its native read replayed and its exact
     /// result recomputed ([`crate::QueryCertificate`]).
     Query,
+    /// A complete access-log selection at one retained historical prefix.
+    AccessLog,
 }
 
 impl ReportArtifactFamily {
@@ -99,6 +101,7 @@ impl ReportArtifactFamily {
             Self::DraftDiff => "draft-diff",
             Self::CloseRunRehearsal => "close-run-rehearsal",
             Self::Query => "query",
+            Self::AccessLog => "access-log",
         }
     }
 }
@@ -165,6 +168,7 @@ enum Artifact {
     DraftDiff(Box<crate::DraftDiffCertificate>),
     CloseRunRehearsal(Box<crate::CloseRunRehearsalCertificate>),
     Query(Box<crate::QueryCertificate>),
+    AccessLog(Box<crate::AccessLogCertificate>),
 }
 
 // Policy certificates retain their exact financial source and derivation inputs.
@@ -310,6 +314,8 @@ impl ReportArtifact {
             || format == crate::QUERY_CERTIFICATE_FORMAT_V2
         {
             Artifact::Query(Box::new(crate::QueryCertificate::decode(bytes)?))
+        } else if format == crate::ACCESS_LOG_CERTIFICATE_FORMAT {
+            Artifact::AccessLog(Box::new(crate::AccessLogCertificate::decode(bytes)?))
         } else if format == crate::cash_flow_policy::CASH_FLOW_POLICY_CERTIFICATE_FORMAT {
             let certificate = CashFlowPolicyCertificate::decode(bytes)?;
             let output = certificate.output()?;
@@ -352,6 +358,7 @@ impl ReportArtifact {
             Artifact::DraftDiff(_) => ReportArtifactFamily::DraftDiff,
             Artifact::CloseRunRehearsal(_) => ReportArtifactFamily::CloseRunRehearsal,
             Artifact::Query(_) => ReportArtifactFamily::Query,
+            Artifact::AccessLog(_) => ReportArtifactFamily::AccessLog,
         }
     }
 
@@ -416,6 +423,7 @@ impl ReportArtifact {
             Artifact::CloseRunRehearsal(c) => c.trunk(),
             // The whole-book stock trial balance at the query's sequence.
             Artifact::Query(c) => c.source_certificate(),
+            Artifact::AccessLog(c) => c.source_certificate(),
         }
     }
 
@@ -494,6 +502,7 @@ impl ReportArtifact {
             Artifact::DraftDiff(c) => c.digest(),
             Artifact::CloseRunRehearsal(c) => c.digest(),
             Artifact::Query(c) => c.digest(),
+            Artifact::AccessLog(c) => c.digest(),
         }
     }
 
@@ -528,6 +537,7 @@ impl ReportArtifact {
             Artifact::DraftDiff(c) => c.output(),
             Artifact::CloseRunRehearsal(c) => c.output(),
             Artifact::Query(c) => c.output(),
+            Artifact::AccessLog(c) => c.output(),
         }
     }
 
@@ -567,6 +577,7 @@ impl ReportArtifact {
             Artifact::DraftDiff(c) => c.canonical_bytes(),
             Artifact::CloseRunRehearsal(c) => c.canonical_bytes(),
             Artifact::Query(c) => c.canonical_bytes(),
+            Artifact::AccessLog(c) => c.canonical_bytes(),
         }
     }
 }
@@ -609,6 +620,7 @@ from_certificate!(
     crate::DraftDiffCertificate,
     crate::CloseRunRehearsalCertificate,
     crate::QueryCertificate,
+    crate::AccessLogCertificate,
 );
 
 fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
@@ -850,6 +862,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             (Artifact::Query(c), ReportArtifactExpectation::AsSupplied) => {
                 self.replay_query(cx, principal, capability, c)?.map(|_| ())
             }
+            (Artifact::AccessLog(c), ReportArtifactExpectation::AsSupplied) => self
+                .replay_access_log(cx, principal, capability, c)?
+                .map(|_| ()),
             (
                 Artifact::CashFlow(c),
                 ReportArtifactExpectation::CashFlow {

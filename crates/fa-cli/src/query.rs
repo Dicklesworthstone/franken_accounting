@@ -43,19 +43,49 @@ fn statement(args: &Args) -> Result<&str, Fail> {
 }
 
 /// Pure command translation shared by pre-open admission and execution.
-/// A standalone Lantern CALL has exactly the direct procedure's authority,
-/// retained version and certificate family; its query spelling changes none.
+/// Standalone Lantern and access-log CALLs have their direct command's
+/// authority and certificate family; their query spelling changes neither.
 pub(crate) fn procedure_invocation(args: &Args) -> Result<Option<Args>, Fail> {
     let profiled =
         fa::compile_query(statement(args)?).map_err(|r| Fail::Refusal(fa::profile_refusal(&r)))?;
-    let QuerySelection::Procedure { id, arguments } = &profiled.selection else {
-        return Ok(None);
-    };
-    let invocation = lantern_args(args, &profiled, id, arguments)?;
-    // The registry judge is pure. Invalid selectors must not open a book
-    // merely because --certificate-out also names a host path.
-    crate::cli::procedure_selector(id)?;
-    Ok(Some(invocation))
+    match &profiled.selection {
+        QuerySelection::Procedure { id, arguments } => {
+            let invocation = lantern_args(args, &profiled, id, arguments)?;
+            // Invalid selectors must not open a book merely because an
+            // output option also names a host path.
+            crate::cli::procedure_selector(id)?;
+            Ok(Some(invocation))
+        }
+        QuerySelection::AccessLog { reader } => {
+            access_invocation(args, &profiled, reader.as_deref()).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn access_invocation(
+    args: &Args,
+    profiled: &fa::ProfiledQuery,
+    reader: Option<&str>,
+) -> Result<Args, Fail> {
+    if args
+        .flag("--branch")
+        .is_some_and(|branch| branch != "trunk")
+    {
+        return Err(usage(
+            "CALL fa.access_log reads trunk's recorded access history",
+            "fa query \"CALL fa.access_log('<reader>')\" --json",
+        ));
+    }
+    let mut read = procedure_args(args, profiled, &["access", "log"]);
+    if let Some(at) = read.flags.remove("--as-known-at") {
+        read.flags.insert("--through".to_string(), at);
+    }
+    if let Some(name) = reader {
+        read.flags
+            .insert("--reader".to_string(), vec![name.to_owned()]);
+    }
+    Ok(read)
 }
 
 pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -121,26 +151,10 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             return crate::cli::open_items_cmd(ctx, &read);
         }
-        // The runtime graph's AccessEvents at trunk's head: the command's own
-        // flags it cannot honour are refused, never passed on and ignored.
+        // AccessEvents use the same pinned selection and retained certificate
+        // as the direct command, not a generic accounting-query certificate.
         QuerySelection::AccessLog { reader } => {
-            if args.switch("--certify")
-                || args.flag("--certificate-out").is_some()
-                || args
-                    .flag("--branch")
-                    .is_some_and(|branch| branch != "trunk")
-            {
-                return Err(usage(
-                    "CALL fa.access_log reads the access events at trunk's head; it has no certificate or branch",
-                    "fa query \"CALL fa.access_log('<reader>')\" --json",
-                ));
-            }
-            let mut read = args.clone();
-            read.positional = vec!["access".to_string(), "log".to_string()];
-            if let Some(name) = reader {
-                read.flags
-                    .insert("--reader".to_string(), vec![name.clone()]);
-            }
+            let read = access_invocation(args, &profiled, reader.as_deref())?;
             return crate::access::access_cmd(ctx, &read);
         }
     };

@@ -5710,6 +5710,53 @@ impl Book {
         with_store!(&self.store, core => self.runtime.block_on(core.access_log(&purposes, since)))
     }
 
+    /// Read a pinned access-log selection under current whole-book authority.
+    pub fn read_access_log(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::AccessLogRequest,
+    ) -> Outcome<crate::AccessLogReport> {
+        with_store!(&self.store, core => core.read_access_log(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Certify the complete selected access events at their original prefix.
+    pub fn certify_access_log(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::AccessLogRequest,
+    ) -> Outcome<crate::CertifiedAccessLog> {
+        with_store!(&self.store, core => core.certify_access_log(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Replay against retained native history; the saved producer is not authority.
+    pub fn replay_access_log(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::AccessLogCertificate,
+    ) -> Outcome<crate::AccessLogReport> {
+        with_store!(&self.store, core => core.replay_access_log(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    pub fn access_log_certificate_status(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::AccessLogCertificate,
+    ) -> Outcome<crate::AccessLogCertificateStatus> {
+        with_store!(&self.store, core => core.access_log_certificate_status(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
     /// Persist an immutable certificate under the presented principal's
     /// current `read` and `produce` authority, including on an exact retry.
     /// Retries return the original storage sequence without a write; neither

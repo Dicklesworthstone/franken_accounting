@@ -242,6 +242,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     "a query certificate replayed; its freshness compares the statement's result at the head, which query_certificate_status reports (fa certificate status)",
                 )));
             }
+            Artifact::AccessLog(_) => {
+                return Ok(Err(invalid(
+                    "an access-log certificate replayed; freshness compares matching access events, which access_log_certificate_status reports (fa certificate status)",
+                )));
+            }
             _ => {
                 return Ok(Err(invalid(format!(
                     "{} certificate replayed, but its accounting-selection freshness law is not implemented; use its historical replay result",

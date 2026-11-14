@@ -12,6 +12,13 @@
 //! The payload names the head the read observed. Each record advances the
 //! head, so two reads never share an identity.
 
+mod certificate;
+
+pub use certificate::{
+    ACCESS_LOG_CERTIFICATE_FORMAT, ACCESS_LOG_OUTPUT_FORMAT, AccessLogCertificate,
+    AccessLogCertificateStatus, AccessLogReport, AccessLogRequest, CertifiedAccessLog,
+};
+
 use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{KernelError, Refusal, code, exit};
@@ -154,6 +161,17 @@ pub(crate) fn log<V: Vfs + Clone>(
     since: CommitSeq,
 ) -> Result<Vec<RecordedAccess>, BookError> {
     let head = db.frontier().map_err(KernelError::from)?;
+    log_at(db, book, since, head)
+}
+
+/// Read one retained snapshot, not today's rows filtered by their sequence.
+/// Callers must establish current whole-book read authority first.
+pub(crate) fn log_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    since: CommitSeq,
+    at: CommitSeq,
+) -> Result<Vec<RecordedAccess>, BookError> {
     let bind = RelationBind::new().with_label("AccessEvent", label::ACCESS_EVENT);
     // The time is pinned by execute_prepared_gql_at, not by the statement;
     // the rows are ordered below.
@@ -162,16 +180,36 @@ pub(crate) fn log<V: Vfs + Clone>(
         .prepare_gql_plan(statement, &bind)
         .map_err(|e| KernelError::Corrupt(format!("access log query: {e}")))?;
     let vids = db
-        .execute_prepared_gql_at(&plan, head)
+        .execute_prepared_gql_at(&plan, at)
         .map_err(|e| KernelError::Corrupt(format!("access log query: {e}")))?;
     let mut out = Vec::new();
     for vid in vids {
         let row = db
-            .vertex(vid)
+            .vertex_at(vid, at)
             .map_err(KernelError::from)?
             .ok_or_else(|| corrupt(vid, "listed but absent"))?;
         if row.labels.as_slice() != [label::ACCESS_EVENT] {
             return Err(corrupt(vid, "carries other labels"));
+        }
+        // Native created_at starts this content version. It is a receipt's
+        // recorded sequence only while the immutable original row survives;
+        // restoring its exact bytes after a rewrite must not re-date access.
+        let before = row
+            .created_at
+            .0
+            .checked_sub(1)
+            .ok_or_else(|| corrupt(vid, "has no original creating sequence"))?;
+        if db
+            .vertex_at(vid, CommitSeq(before))
+            .map_err(KernelError::from)?
+            .is_some()
+            || db
+                .vertex_at(vid, row.created_at)
+                .map_err(KernelError::from)?
+                .as_ref()
+                != Some(&row)
+        {
+            return Err(corrupt(vid, "is not its immutable original access record"));
         }
         let bytes = |key, what: &str| match prop(&row, key) {
             Some(CanonicalScalar::Bytes(b)) => Ok(b.as_slice().to_vec()),

@@ -544,6 +544,18 @@ fn emit_certificate(
     retained: &RetainedCertificate,
 ) {
     let certificate = presentation.source;
+    let access_certificate = (presentation.output_format == fa::ACCESS_LOG_OUTPUT_FORMAT)
+        .then(|| fa::AccessLogCertificate::decode(bytes).ok())
+        .flatten();
+    let replay_scope = if access_certificate.is_some() {
+        "fa-access-log-over-retained-prefix"
+    } else {
+        REPLAY_SCOPE
+    };
+    let authority = access_certificate.as_ref().map_or_else(
+        || AUTHORITY.to_owned(),
+        |certificate| format!("capability:{}", hex(certificate.capability_commitment())),
+    );
     let digest = hex(presentation.digest);
     let encoded = hex(bytes);
     let file = args.flag("--certificate-out");
@@ -567,7 +579,7 @@ fn emit_certificate(
             retained.recorded_at.0
         ),
         None => format!(
-            "Retained report certificate {digest} in the book at sequence {} ({REPLAY_SCOPE}, {AUTHORITY})\n{command}\nCertificate bytes (hex): {encoded}",
+            "Retained report certificate {digest} in the book at sequence {} ({replay_scope}, {authority})\n{command}\nCertificate bytes (hex): {encoded}",
             retained.recorded_at.0
         ),
     };
@@ -580,11 +592,16 @@ fn emit_certificate(
             ("bytes", s(encoded)),
             ("file", file.map_or(Json::Null, s)),
             ("replay_command", s(command)),
-            ("replay_scope", s(REPLAY_SCOPE)),
-            ("authority", s(AUTHORITY)),
+            ("replay_scope", s(replay_scope)),
+            ("authority", s(authority)),
             ("output_format", s(presentation.output_format)),
             ("output_digest", s(hex(&presentation.output_digest))),
-            ("native_inputs", Json::Int(certificate.inputs.len() as i128)),
+            (
+                "native_inputs",
+                Json::Int(
+                    (certificate.inputs.len() + usize::from(access_certificate.is_some())) as i128,
+                ),
+            ),
             ("journal_root", s(hex(&certificate.journal_root))),
             (
                 "journal_leaves",
@@ -1180,6 +1197,12 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
+    let access_log = if artifact.family() == ReportArtifactFamily::AccessLog {
+        let certificate = fa::AccessLogCertificate::decode(&bytes)?;
+        Some(book.replay_access_log(principal, &capability, &certificate)??)
+    } else {
+        None
+    };
     if let Some(path) = args.flag("--output") {
         crate::cli::write_new_output_file(
             &ctx.files,
@@ -1339,6 +1362,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         true
     } else if let Some(certificate) = procedure {
         procedure::render(&ctx.out, certificate.report(), &digest);
+        true
+    } else if let Some(report) = access_log {
+        crate::access::render(&ctx.out, &report, Some(&digest));
         true
     } else if let Some((certificate, rows)) = query {
         let period = certificate.period()?;
@@ -1517,6 +1543,23 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
                 }
             }
         }
+        ReportArtifactFamily::AccessLog => {
+            if args.flag("--expect").is_some() {
+                return Err(usage(
+                    "access-log status compares its recorded interval and reader and does not accept report-policy expectations",
+                    "fa certificate status C:<access-log-certificate> --json",
+                ));
+            }
+            let certificate = fa::AccessLogCertificate::decode(&bytes)?;
+            match book.access_log_certificate_status(principal, &capability, &certificate)?? {
+                fa::AccessLogCertificateStatus::Current { checked_at } => {
+                    ("Current", checked_at, Vec::new(), Vec::new())
+                }
+                fa::AccessLogCertificateStatus::Changed { checked_at } => {
+                    ("Changed", checked_at, Vec::new(), Vec::new())
+                }
+            }
+        }
         ReportArtifactFamily::Procedure => {
             if args.flag("--expect").is_some() {
                 return Err(usage(
@@ -1648,7 +1691,27 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             )
         })
         .collect::<String>();
+    let is_access_log = artifact.family() == ReportArtifactFamily::AccessLog;
+    if is_access_log {
+        ctx.out.effective("all".to_owned());
+    }
+    let replay_scope = if is_access_log {
+        "fa-access-log-over-retained-prefix"
+    } else {
+        REPLAY_SCOPE
+    };
+    let authority = if is_access_log {
+        let commitment = capability
+            .commitment()
+            .map_err(|error| certificate_invalid(error.to_string()))?;
+        format!("capability:{}", hex(&commitment))
+    } else {
+        AUTHORITY.to_owned()
+    };
     let status_detail = match artifact.family() {
+        ReportArtifactFamily::AccessLog => {
+            "matching access events in the original recorded interval compared".to_owned()
+        }
         ReportArtifactFamily::Procedure => {
             "procedure findings, population, work and decision evidence compared".to_owned()
         }
@@ -1675,8 +1738,8 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
                 ("disclosure_document", case.disclosure_document.map_or(Json::Null, |oid| s(hex(&oid.0)))),
                 ("disclosure_digest", case.disclosure_digest.map_or(Json::Null, |digest| s(hex(&digest)))),
             ])).collect())),
-            ("replay_scope", s(REPLAY_SCOPE)),
-            ("authority", s(AUTHORITY)),
+            ("replay_scope", s(replay_scope)),
+            ("authority", s(authority)),
         ],
         &format!("Certificate {digest}: {name} (known at {}, checked at {}, {status_detail}){case_summary}", certificate.known_at.0, checked_at.0),
         Some(&digest),

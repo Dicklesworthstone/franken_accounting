@@ -52,6 +52,10 @@
 #![forbid(unsafe_code)]
 
 pub mod access_log;
+pub use access_log::{
+    ACCESS_LOG_CERTIFICATE_FORMAT, ACCESS_LOG_OUTPUT_FORMAT, AccessLogCertificate,
+    AccessLogCertificateStatus, AccessLogReport, AccessLogRequest, CertifiedAccessLog,
+};
 pub mod account_role;
 pub mod aging;
 pub mod allocation_review;
