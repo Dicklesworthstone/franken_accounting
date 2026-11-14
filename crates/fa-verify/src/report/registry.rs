@@ -538,10 +538,7 @@ pub(super) fn verify_procedure(
             "selected procedure must occur exactly once in its registry",
         ));
     };
-    let benford = matches!(
-        profile,
-        super::procedure::VerifiedProcedureParameters::FirstDigit { .. }
-    );
+    let benford = profile.is_benford();
     let uncalibrated = benford
         || profile.is_trace()
         || matches!(

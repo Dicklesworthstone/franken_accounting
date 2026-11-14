@@ -18,8 +18,8 @@ pub(super) const DEFAULTS: [(&str, u32); 7] = [
     ("side", 0),
 ];
 
-const SCALE: u128 = 1_000_000_000;
-const CHI_POPULATION_LIMIT: u64 = 1_000_000;
+pub(super) const SCALE: u128 = 1_000_000_000;
+pub(super) const CHI_POPULATION_LIMIT: u64 = 1_000_000;
 // Rounded log10(1 + 1/d), d=1..=9, with the last cell reduced by one
 // part per billion so the registered v2 table sums to exactly one.
 const PROBABILITIES: [u128; 9] = [
@@ -34,18 +34,18 @@ const PROBABILITIES: [u128; 9] = [
     45_757_490,
 ];
 
-fn arithmetic() -> ReportError {
+pub(super) fn arithmetic() -> ReportError {
     failed(
         "procedure_arithmetic",
         "Benford exact arithmetic exceeds its bounds",
     )
 }
 
-pub(super) fn decode(reader: &mut Reader<'_>) -> Result<VerifiedProcedureParameters, ReportError> {
+pub(super) fn decode_values(reader: &mut Reader<'_>) -> Result<[u32; 7], ReportError> {
     if reader.count(DEFAULTS.len(), 20, "procedure.parameters")? != DEFAULTS.len() {
         return Err(failed(
             "procedure_profile",
-            "first-digit Benford v2 requires all seven explicit parameters",
+            "Benford v2 requires all seven explicit parameters",
         ));
     }
     let mut values = [0u32; 7];
@@ -69,6 +69,11 @@ pub(super) fn decode(reader: &mut Reader<'_>) -> Result<VerifiedProcedureParamet
             "Benford requires account_type 0..=8, currency_iso4217 1..=999 and side 0 or 1",
         ));
     }
+    Ok(values)
+}
+
+pub(super) fn decode(reader: &mut Reader<'_>) -> Result<VerifiedProcedureParameters, ReportError> {
+    let values = decode_values(reader)?;
     Ok(VerifiedProcedureParameters::FirstDigit {
         account_type: values[0],
         currency_iso4217: values[1],
@@ -80,7 +85,7 @@ pub(super) fn decode(reader: &mut Reader<'_>) -> Result<VerifiedProcedureParamet
     })
 }
 
-fn population(counts: &[u64; 9]) -> Result<u64, ReportError> {
+pub(super) fn population<const N: usize>(counts: &[u64; N]) -> Result<u64, ReportError> {
     counts.iter().try_fold(0u64, |total, &count| {
         total.checked_add(count).ok_or_else(arithmetic)
     })
@@ -90,6 +95,13 @@ fn population(counts: &[u64; 9]) -> Result<u64, ReportError> {
 /// 1e6. The version's chi-square bound is retained even when wider arithmetic
 /// could admit a larger population; above it the output explicitly omits chi.
 fn statistics(counts: &[u64; 9]) -> Result<(u64, u64, Option<u64>), ReportError> {
+    statistics_for(counts, &PROBABILITIES)
+}
+
+pub(super) fn statistics_for<const N: usize>(
+    counts: &[u64; N],
+    probabilities: &[u128; N],
+) -> Result<(u64, u64, Option<u64>), ReportError> {
     let total = population(counts)?;
     if total == 0 {
         return Ok((0, 0, Some(0)));
@@ -100,7 +112,7 @@ fn statistics(counts: &[u64; 9]) -> Result<(u64, u64, Option<u64>), ReportError>
     let mut expected_cumulative = 0u128;
     let mut largest_distance = 0u128;
     let mut chi = (total <= CHI_POPULATION_LIMIT).then_some(0u128);
-    for (&count, probability) in counts.iter().zip(PROBABILITIES) {
+    for (&count, &probability) in counts.iter().zip(probabilities) {
         let observed = u128::from(count)
             .checked_mul(SCALE)
             .ok_or_else(arithmetic)?;
@@ -125,7 +137,8 @@ fn statistics(counts: &[u64; 9]) -> Result<(u64, u64, Option<u64>), ReportError>
                 .ok_or_else(arithmetic)?;
         }
     }
-    let mad = u64::try_from(deviation / (n * 9)).map_err(|_| arithmetic())?;
+    let cells = n.checked_mul(N as u128).ok_or_else(arithmetic)?;
+    let mad = u64::try_from(deviation / cells).map_err(|_| arithmetic())?;
     let ks = u64::try_from(largest_distance / n).map_err(|_| arithmetic())?;
     let chi = chi
         .map(u64::try_from)

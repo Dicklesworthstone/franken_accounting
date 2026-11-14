@@ -46,6 +46,8 @@ pub fn profile(
         ("duplicates.same_same_different", 1) => ("FA-EVID-L08", WINDOW),
         ("numbers.round_amount_density", 1) => ("FA-EVID-L64", DENSITY),
         ("benford.first_digit", 2) => ("FA-EVID-L10", BENFORD),
+        ("benford.second_digit", 2) => ("FA-EVID-L30", BENFORD),
+        ("benford.first_two_digits", 2) => ("FA-EVID-L31", BENFORD),
         ("trace.libr", 2) => ("FA-EVID-L15", LIBR),
         ("trace.fifo", 2) => ("FA-EVID-L16", TRACE_ORDER),
         ("trace.lifo", 2) => ("FA-EVID-L17", TRACE_ORDER),
@@ -144,6 +146,8 @@ mod tests {
                 "FA-EVID-L64",
             ),
             ("benford.first_digit", 2, &benford, "FA-EVID-L10"),
+            ("benford.second_digit", 2, &benford, "FA-EVID-L30"),
+            ("benford.first_two_digits", 2, &benford, "FA-EVID-L31"),
         ];
         for &(id, version, parameters, evidence) in cases {
             assert_eq!(profile(id, version, None, parameters, &[]), Some(evidence));

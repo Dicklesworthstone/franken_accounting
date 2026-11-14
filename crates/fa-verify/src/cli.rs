@@ -2498,6 +2498,34 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                     details.push(("chi_square_1e6", chi_square_1e6.map_or(Json::Null, n)));
                 }
             }
+            crate::report::VerifiedProcedureStatistic::DigitPopulation { counts }
+            | crate::report::VerifiedProcedureStatistic::DigitMad { counts, .. } => {
+                let name = if matches!(
+                    report.parameters,
+                    crate::report::VerifiedProcedureParameters::SecondDigit { .. }
+                ) {
+                    "second_digit_counts"
+                } else {
+                    "first_two_digits_counts"
+                };
+                details.push((name, Json::List(counts.iter().copied().map(n).collect())));
+                let scored = matches!(
+                    finding.statistic,
+                    crate::report::VerifiedProcedureStatistic::DigitMad { .. }
+                );
+                details.push(("conformity_scored", Json::Bool(scored)));
+                if let crate::report::VerifiedProcedureStatistic::DigitMad {
+                    ks_1e9,
+                    chi_square_1e6,
+                    max_z_milli,
+                    ..
+                } = &finding.statistic
+                {
+                    details.push(("ks_1e9", n(*ks_1e9)));
+                    details.push(("chi_square_1e6", chi_square_1e6.map_or(Json::Null, n)));
+                    details.push(("max_z_milli", n(*max_z_milli)));
+                }
+            }
         }
         details.push(("narrative", s(&finding.narrative)));
         checks.push(Check::pass(

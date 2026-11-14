@@ -473,13 +473,14 @@ fn lots_certificate(certificate: &[u8]) -> bool {
     header().unwrap_or(false)
 }
 
-/// Route bounded JET, duplicate, density, tracing and first-digit Benford profiles.
+/// Route bounded JET, duplicate, density, tracing and Benford digit profiles.
 /// This checks framing and selection; producer replay and the verifier authenticate
 /// the complete source, commitments and reproduced output.
 fn procedure_certificate(certificate: &[u8]) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
-        if reader.bytes(64, "procedure format")? != b"fa:procedure-certificate:v1" {
+        let format = reader.bytes(64, "procedure format")?;
+        if format != b"fa:procedure-certificate:v1" && format != b"fa:procedure-certificate:v2" {
             return Ok(false);
         }
         let source = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "procedure source")?;
@@ -503,6 +504,16 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
             return Ok(false);
         }
         reader.bytes(1024 * 1024, "procedure native approvals")?;
+        let extended = format == b"fa:procedure-certificate:v2";
+        if extended {
+            let count = reader.count(6, "procedure extended inputs")?;
+            if count != 6 {
+                return Ok(false);
+            }
+            for _ in 0..count {
+                reader.bytes(1024 * 1024, "procedure extended witness")?;
+            }
+        }
         reader.fixed::<32>("procedure registry closure")?;
         reader.u128("procedure producer")?;
         reader.fixed::<32>("procedure capability")?;
@@ -514,6 +525,9 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
             return Ok(false);
         }
         let id = output.str(128, "procedure id")?;
+        if extended != matches!(id, "benford.second_digit" | "benford.first_two_digits") {
+            return Ok(false);
+        }
         let version = output.u16("procedure version")?;
         if output.u8("procedure claim")? != 0 {
             return Ok(false);

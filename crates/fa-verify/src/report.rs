@@ -2271,10 +2271,7 @@ fn verify_report_with_native_subledger_input(
             let definitions = procedure_registry
                 .as_mut()
                 .ok_or_else(|| failed("registry_closure", "procedure registries are absent"))?;
-            if matches!(
-                request.parameters,
-                procedure::VerifiedProcedureParameters::FirstDigit { .. }
-            ) {
+            if request.parameters.is_benford() {
                 definitions.account_types = schema
                     .accounts
                     .iter()

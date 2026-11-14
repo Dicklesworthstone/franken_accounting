@@ -5,6 +5,9 @@
 use super::*;
 use fa_verify::report::{VerifiedReport, verify_report_expected};
 
+#[path = "offline/benford_digits.rs"]
+mod benford_digits;
+
 #[path = "offline/libr.rs"]
 mod libr;
 #[path = "offline/ordered_trace.rs"]

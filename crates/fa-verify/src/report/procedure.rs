@@ -6,7 +6,7 @@
 //! effective-date cutoff, and v2 with an optional inclusive cutoff. Same-day
 //! duplicates v1 uses the all-date population and no parameters. Different-date
 //! duplicates v1 pairs each posting with its nearest later unrelated occurrence
-//! within the inclusive `window_days` parameter. First-digit Benford v2 selects
+//! within the inclusive `window_days` parameter. Benford digit profiles v2 select
 //! one currency, side and optional account type from the all-date population,
 //! with exact fixed-point statistics. Round-amount density v1 compares each
 //! account's nonzero legs with the book's rate using exact integer thresholds.
@@ -33,6 +33,7 @@ use crate::blake3::hash_parts;
 use crate::codec::{Reader, Writer};
 
 mod benford;
+mod benford_digits;
 mod different_dates;
 mod libr;
 mod ordered;
@@ -42,6 +43,7 @@ mod round_density;
 pub(super) use post_closing::period_transitions;
 
 const FORMAT: &[u8] = b"fa:procedure-certificate:v1";
+const EXTENDED_FORMAT: &[u8] = b"fa:procedure-certificate:v2";
 const OUTPUT_FORMAT: &[u8] = b"fa:procedure-output:v1";
 const DIGEST_DOMAIN: &[u8] = b"fa:procedure-certificate-digest:v1";
 const MAX_OUTPUT: usize = 32 * 1024 * 1024;
@@ -98,6 +100,24 @@ pub enum VerifiedProcedureParameters {
         min_population: u32,
         side: u32,
     },
+    SecondDigit {
+        account_type: u32,
+        currency_iso4217: u32,
+        mad_acceptable: u32,
+        mad_close: u32,
+        mad_marginal: u32,
+        min_population: u32,
+        side: u32,
+    },
+    FirstTwoDigits {
+        account_type: u32,
+        currency_iso4217: u32,
+        mad_acceptable: u32,
+        mad_close: u32,
+        mad_marginal: u32,
+        min_population: u32,
+        side: u32,
+    },
 }
 
 impl VerifiedProcedureParameters {
@@ -114,6 +134,8 @@ impl VerifiedProcedureParameters {
             Self::TraceLifo { .. } => "trace.lifo",
             Self::TraceProRata { .. } => "trace.pro_rata",
             Self::FirstDigit { .. } => "benford.first_digit",
+            Self::SecondDigit { .. } => "benford.second_digit",
+            Self::FirstTwoDigits { .. } => "benford.first_two_digits",
         }
     }
 
@@ -130,6 +152,8 @@ impl VerifiedProcedureParameters {
             Self::TraceLifo { .. } => "FA-EVID-L17",
             Self::TraceProRata { .. } => "FA-EVID-L18",
             Self::FirstDigit { .. } => "FA-EVID-L10",
+            Self::SecondDigit { .. } => "FA-EVID-L30",
+            Self::FirstTwoDigits { .. } => "FA-EVID-L31",
         }
     }
 
@@ -164,6 +188,24 @@ impl VerifiedProcedureParameters {
                 vec![("intraday_order", intraday_order)]
             }
             Self::FirstDigit {
+                account_type,
+                currency_iso4217,
+                mad_acceptable,
+                mad_close,
+                mad_marginal,
+                min_population,
+                side,
+            }
+            | Self::SecondDigit {
+                account_type,
+                currency_iso4217,
+                mad_acceptable,
+                mad_close,
+                mad_marginal,
+                min_population,
+                side,
+            }
+            | Self::FirstTwoDigits {
                 account_type,
                 currency_iso4217,
                 mad_acceptable,
@@ -222,6 +264,8 @@ impl VerifiedProcedureParameters {
             Self::TraceFifo { .. } | Self::TraceLifo { .. } => &ordered::DEFAULTS,
             Self::TraceProRata { .. } => &pro_rata::DEFAULTS,
             Self::FirstDigit { .. } => &benford::DEFAULTS,
+            Self::SecondDigit { .. } => &benford_digits::SECOND_DEFAULTS,
+            Self::FirstTwoDigits { .. } => &benford_digits::FIRST_TWO_DEFAULTS,
         }
     }
 
@@ -244,6 +288,13 @@ impl VerifiedProcedureParameters {
         )
     }
 
+    pub(crate) fn is_benford(self) -> bool {
+        matches!(
+            self,
+            Self::FirstDigit { .. } | Self::SecondDigit { .. } | Self::FirstTwoDigits { .. }
+        )
+    }
+
     pub(crate) fn complexity(self) -> &'static str {
         match self {
             Self::RoundAmounts { .. } => "O(legs)",
@@ -252,7 +303,9 @@ impl VerifiedProcedureParameters {
             Self::SameSameSame
             | Self::SameSameDifferent { .. }
             | Self::RoundAmountDensity { .. } => "O(legs log legs)",
-            Self::FirstDigit { .. } => "O(legs)",
+            Self::FirstDigit { .. } | Self::SecondDigit { .. } | Self::FirstTwoDigits { .. } => {
+                "O(legs)"
+            }
             Self::TraceLibr { .. }
             | Self::TraceFifo { .. }
             | Self::TraceLifo { .. }
@@ -327,6 +380,19 @@ pub enum VerifiedProcedureStatistic {
         ks_1e9: u64,
         chi_square_1e6: Option<u64>,
     },
+    /// Second-digit (10 buckets) or first-two-digits (90 buckets) population.
+    /// The verified parameter profile fixes the bucket meanings and count.
+    DigitPopulation {
+        counts: Vec<u64>,
+    },
+    /// Independent digit distribution with continuity-corrected maximum Z.
+    DigitMad {
+        counts: Vec<u64>,
+        mad_1e9: u64,
+        ks_1e9: u64,
+        chi_square_1e6: Option<u64>,
+        max_z_milli: u64,
+    },
 }
 
 impl VerifiedProcedureStatistic {
@@ -338,8 +404,8 @@ impl VerifiedProcedureStatistic {
             Self::CommitsAfterClose { .. } => "commits_after_close",
             Self::DuplicateEntries { .. } => "entries",
             Self::DaysApart { .. } => "days_apart",
-            Self::FirstDigitPopulation { .. } => "population",
-            Self::FirstDigitMad { .. } => "mad",
+            Self::FirstDigitPopulation { .. } | Self::DigitPopulation { .. } => "population",
+            Self::FirstDigitMad { .. } | Self::DigitMad { .. } => "mad",
         }
     }
 
@@ -355,13 +421,16 @@ impl VerifiedProcedureStatistic {
             Self::FirstDigitPopulation { counts } => {
                 counts.iter().map(|&count| i128::from(count)).sum()
             }
-            Self::FirstDigitMad { mad_1e9, .. } => i128::from(*mad_1e9),
+            Self::DigitPopulation { counts } => counts.iter().map(|&count| i128::from(count)).sum(),
+            Self::FirstDigitMad { mad_1e9, .. } | Self::DigitMad { mad_1e9, .. } => {
+                i128::from(*mad_1e9)
+            }
         }
     }
 
     pub(crate) fn scale(&self) -> u8 {
         match self {
-            Self::FirstDigitMad { .. } => 9,
+            Self::FirstDigitMad { .. } | Self::DigitMad { .. } => 9,
             Self::TracedAmount { scale, .. } => *scale,
             _ => 0,
         }
@@ -488,7 +557,9 @@ fn framed_hash(domain: &[u8], bytes: &[u8]) -> [u8; 32] {
 
 pub(super) fn recognizes(bytes: &[u8]) -> bool {
     bytes.starts_with(&(FORMAT.len() as u32).to_le_bytes())
-        && bytes.get(4..4 + FORMAT.len()) == Some(FORMAT)
+        && bytes
+            .get(4..4 + FORMAT.len())
+            .is_some_and(|format| format == FORMAT || format == EXTENDED_FORMAT)
 }
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
@@ -499,7 +570,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         ));
     }
     let mut r = Reader::new(bytes);
-    if r.bytes(64, "procedure.format")? != FORMAT {
+    let format = r.bytes(64, "procedure.format")?;
+    if format != FORMAT && format != EXTENDED_FORMAT {
         return Err(failed(
             "supported_report",
             "unsupported procedure certificate format",
@@ -509,6 +581,22 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     // Retained for native replay only: this witness never establishes approval
     // authority or contributes facts to the independent statistical fold.
     r.bytes(1024 * 1024, "procedure.approval_witness")?;
+    let extended = format == EXTENDED_FORMAT;
+    if extended {
+        // These six native population witnesses remain opaque. The two
+        // admitted digit profiles use only authenticated journal/chart/units,
+        // independently reconstructed from source; no REA or attestation fact
+        // is taken from these native-only replay witnesses.
+        if r.count(6, 4, "procedure.extended_inputs")? != 6 {
+            return Err(failed(
+                "procedure_profile",
+                "extended Benford requires six native witnesses",
+            ));
+        }
+        for _ in 0..6 {
+            r.bytes(1024 * 1024, "procedure.extended_input")?;
+        }
+    }
     let registry_digest = r.fixed("procedure.registry")?;
     r.u128("procedure.producer")?;
     r.fixed::<32>("procedure.capability_commitment")?;
@@ -538,13 +626,21 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "trace.lifo" => ("FA-EVID-L17", None),
         "trace.pro_rata" => ("FA-EVID-L18", None),
         "benford.first_digit" => ("FA-EVID-L10", None),
+        "benford.second_digit" => ("FA-EVID-L30", None),
+        "benford.first_two_digits" => ("FA-EVID-L31", None),
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, exact duplicates and round-amount density v1, first-digit Benford v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, exact duplicates and round-amount density v1, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
+    if extended != matches!(id, "benford.second_digit" | "benford.first_two_digits") {
+        return Err(failed(
+            "procedure_profile",
+            "procedure and native certificate format disagree",
+        ));
+    }
     let version = question.u16("procedure.version")?;
     if !matches!(version, 1 | 2)
         || (matches!(
@@ -556,7 +652,13 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         ) && version != 1)
         || (matches!(
             id,
-            "benford.first_digit" | "trace.libr" | "trace.fifo" | "trace.lifo" | "trace.pro_rata"
+            "benford.first_digit"
+                | "benford.second_digit"
+                | "benford.first_two_digits"
+                | "trace.libr"
+                | "trace.fifo"
+                | "trace.lifo"
+                | "trace.pro_rata"
         ) && version != 2)
         || question.u8("procedure.claim")? != 0
         || text(&mut question, 128, "procedure.evidence")? != evidence
@@ -573,7 +675,13 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     } else {
         None
     };
-    if (version == 1 || id == "benford.first_digit") && effective_through.is_some() {
+    if (version == 1
+        || matches!(
+            id,
+            "benford.first_digit" | "benford.second_digit" | "benford.first_two_digits"
+        ))
+        && effective_through.is_some()
+    {
         return Err(failed(
             "procedure_profile",
             "this procedure version does not support an effective-date cutoff",
@@ -597,6 +705,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         pro_rata::decode(&mut question)?
     } else if id == "benford.first_digit" {
         benford::decode(&mut question)?
+    } else if matches!(id, "benford.second_digit" | "benford.first_two_digits") {
+        benford_digits::decode(&mut question, id == "benford.first_two_digits")?
     } else if id == "numbers.round_amount_density" {
         round_density::decode(&mut question)?
     } else if let Some((parameter, bound)) = parameter {
@@ -744,7 +854,9 @@ fn finding(
             w.count(2).u8(1).u128(*earlier).u8(1).u128(*later);
         }
         VerifiedProcedureStatistic::FirstDigitPopulation { .. }
-        | VerifiedProcedureStatistic::FirstDigitMad { .. } => {
+        | VerifiedProcedureStatistic::FirstDigitMad { .. }
+        | VerifiedProcedureStatistic::DigitPopulation { .. }
+        | VerifiedProcedureStatistic::DigitMad { .. } => {
             w.count(0);
         }
     }
@@ -1320,7 +1432,9 @@ fn recompute_version(
         | VerifiedProcedureParameters::TraceFifo { .. }
         | VerifiedProcedureParameters::TraceLifo { .. }
         | VerifiedProcedureParameters::TraceProRata { .. }
-        | VerifiedProcedureParameters::FirstDigit { .. } => 1,
+        | VerifiedProcedureParameters::FirstDigit { .. }
+        | VerifiedProcedureParameters::SecondDigit { .. }
+        | VerifiedProcedureParameters::FirstTwoDigits { .. } => 1,
     };
     let mut live_entries = 0u64;
     let mut live_legs = 0u64;
@@ -1432,7 +1546,9 @@ fn recompute_version(
             | VerifiedProcedureParameters::TraceFifo { .. }
             | VerifiedProcedureParameters::TraceLifo { .. }
             | VerifiedProcedureParameters::TraceProRata { .. }
-            | VerifiedProcedureParameters::FirstDigit { .. } => {
+            | VerifiedProcedureParameters::FirstDigit { .. }
+            | VerifiedProcedureParameters::SecondDigit { .. }
+            | VerifiedProcedureParameters::FirstTwoDigits { .. } => {
                 grouped_population.push(entry);
                 None
             }
@@ -1484,6 +1600,14 @@ fn recompute_version(
         let (finding, legs) = benford::replay(profile, &grouped_population, registry)?;
         findings.push(finding);
         live_legs = legs;
+    } else if matches!(
+        profile,
+        VerifiedProcedureParameters::SecondDigit { .. }
+            | VerifiedProcedureParameters::FirstTwoDigits { .. }
+    ) {
+        let (finding, legs) = benford_digits::replay(profile, &grouped_population, registry)?;
+        findings.push(finding);
+        live_legs = legs;
     }
     let statistic_population = match profile {
         VerifiedProcedureParameters::RoundAmounts { .. } => Some(live_legs),
@@ -1492,6 +1616,8 @@ fn recompute_version(
         | VerifiedProcedureParameters::SameSameSame
         | VerifiedProcedureParameters::SameSameDifferent { .. } => Some(live_entries),
         VerifiedProcedureParameters::FirstDigit { .. }
+        | VerifiedProcedureParameters::SecondDigit { .. }
+        | VerifiedProcedureParameters::FirstTwoDigits { .. }
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }
