@@ -79,6 +79,8 @@ mod policy_outcome_keys;
 mod prior_period_adjustment_tests;
 #[path = "genesis/proportional.rs"]
 mod proportional_tests;
+#[path = "genesis/rea_outcome_keys.rs"]
+mod rea_outcome_keys;
 #[path = "genesis/recurring.rs"]
 mod recurring_tests;
 #[path = "genesis/register_capacity.rs"]

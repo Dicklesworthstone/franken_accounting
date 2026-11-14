@@ -47,7 +47,7 @@ use crate::rows::{AccountRow, book_root, bytes, edge_id, prop, scalar_bytes, sca
 /// `Dimension.kind` of the party dimension (plan §4.1 `Dimension` row: counterparty).
 pub const DIMENSION_KIND_PARTY: i64 = 2;
 
-/// Recorded outcome of a journaled REA schema-control operation (`kind = 5..=11`).
+/// Recorded outcome of a journaled REA schema-control operation (`kind = 5..=11, 23`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReaControlRecorded {
     pub recorded_at: CommitSeq,
@@ -403,6 +403,12 @@ fn check_rea_idempotency<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(crate::outcome::key_conflict()));
     }
     let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
+    if !stored.approvals.is_empty()
+        || stored.plan_certificate.is_some()
+        || !crate::outcome::verify_control_recorded(db, row, &stored)?
+    {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
     let same = &stored.proposal_digest == proposal_digest
         || same_rea_control(book, &stored.proposal, proposal);
     if same {
@@ -424,6 +430,44 @@ fn check_rea_idempotency<V: asupersync::fs::Vfs + Clone>(
             "resubmit the identical REA schema control to get the recorded outcome, or use a new idempotency key",
         )))
     }
+}
+
+/// Resolve the common successful-intent key before observing an REA target.
+/// Every caller has already checked current capability and policy witnesses.
+/// An immutable legacy normal-key entry remains its own retry anchor; a fresh
+/// control must also prove its key absent from recovered historical outcomes.
+fn witness_rea_key<V: asupersync::fs::Vfs + Clone>(
+    txn: &fgdb::WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    evid: VId,
+    target_vid: VId,
+    proposal: &EntryPayload,
+    proposal_digest: &[u8; 32],
+) -> Result<Option<Result<ReaControlRecorded, Refusal>>, KernelError> {
+    if let Err(refusal) = crate::outcome::witness_named_key(
+        txn,
+        db,
+        book.book_id,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        evid,
+    )? {
+        return Ok(Some(Err(refusal)));
+    }
+    if let Some(row) = txn.vertex(db, evid)? {
+        return check_rea_idempotency(db, book, &row, target_vid, proposal, proposal_digest)
+            .map(Some);
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(proposal),
+    )? {
+        return Ok(Some(Err(refusal)));
+    }
+    Ok(None)
 }
 
 fn open_external_ids(
@@ -699,9 +743,11 @@ pub async fn create_party<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(row) = txn.vertex(db, evid)? {
+    if let Some(recorded) =
+        witness_rea_key(&txn, db, book, evid, pvid, &proposal, &proposal_digest)?
+    {
         txn.abort();
-        return check_rea_idempotency(db, book, &row, pvid, &proposal, &proposal_digest);
+        return Ok(recorded);
     }
     if txn.vertex(db, pvid)?.is_some() {
         txn.abort();
@@ -725,6 +771,7 @@ pub async fn create_party<V: asupersync::fs::Vfs + Clone>(
 
     let mut in_book = WriteBatch::new(relation::IN_BOOK);
     in_book.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_book, &entry, evid)?;
     if need_dim {
         let mut dim_props = vec![
             (property::BOOK_ID, book_id_scalar.clone()),
@@ -901,9 +948,11 @@ pub async fn create_instrument<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(row) = txn.vertex(db, evid)? {
+    if let Some(recorded) =
+        witness_rea_key(&txn, db, book, evid, ivid, &proposal, &proposal_digest)?
+    {
         txn.abort();
-        return check_rea_idempotency(db, book, &row, ivid, &proposal, &proposal_digest);
+        return Ok(recorded);
     }
     if txn.vertex(db, ivid)?.is_some() {
         txn.abort();
@@ -1012,6 +1061,7 @@ pub async fn create_instrument<V: asupersync::fs::Vfs + Clone>(
     let root = book_root();
     let mut in_book = WriteBatch::new(relation::IN_BOOK);
     in_book.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_book, &entry, evid)?;
 
     let mut inst_props = vec![
         (
@@ -1203,9 +1253,11 @@ pub async fn create_legal_entity<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(row) = txn.vertex(db, evid)? {
+    if let Some(recorded) =
+        witness_rea_key(&txn, db, book, evid, levid, &proposal, &proposal_digest)?
+    {
         txn.abort();
-        return check_rea_idempotency(db, book, &row, levid, &proposal, &proposal_digest);
+        return Ok(recorded);
     }
     if let Some(refusal) = check_external_id_conflicts(&txn, db, &resolved_ext)? {
         txn.abort();
@@ -1247,6 +1299,7 @@ pub async fn create_legal_entity<V: asupersync::fs::Vfs + Clone>(
 
     let mut in_book = WriteBatch::new(relation::IN_BOOK);
     in_book.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_book, &entry, evid)?;
     if need_dim {
         let mut dim_props = vec![
             (property::BOOK_ID, book_id_scalar.clone()),
@@ -1406,9 +1459,11 @@ pub async fn bind_external_id<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(row) = txn.vertex(db, evid)? {
+    if let Some(recorded) =
+        witness_rea_key(&txn, db, book, evid, ext_vid, &proposal, &proposal_digest)?
+    {
         txn.abort();
-        return check_rea_idempotency(db, book, &row, ext_vid, &proposal, &proposal_digest);
+        return Ok(recorded);
     }
     let target_ok = txn.vertex(db, binding.target_vid)?.is_some_and(|row| {
         row.labels.contains(&label::PARTY)
@@ -1436,6 +1491,7 @@ pub async fn bind_external_id<V: asupersync::fs::Vfs + Clone>(
 
     let mut in_book = WriteBatch::new(relation::IN_BOOK);
     in_book.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_book, &entry, evid)?;
     stage_external_id_vertices(book, binding.target_vid, &resolved_ext, &mut in_book)?;
 
     if let Err(e) = txn.write_ordered(db, vec![in_book]) {
@@ -1583,9 +1639,11 @@ pub async fn record_relationship<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(row) = txn.vertex(db, evid)? {
+    if let Some(recorded) =
+        witness_rea_key(&txn, db, book, evid, spec.from, &proposal, &proposal_digest)?
+    {
         txn.abort();
-        return check_rea_idempotency(db, book, &row, spec.from, &proposal, &proposal_digest);
+        return Ok(recorded);
     }
     for (role_label, endpoint) in [("from", spec.from), ("to", spec.to)] {
         let ok = txn.vertex(db, endpoint)?.is_some_and(|row| {
@@ -1610,6 +1668,7 @@ pub async fn record_relationship<V: asupersync::fs::Vfs + Clone>(
     let rel_eid = relationship_edge_id(rel_id, spec.from, spec.to, &spec.basis, spec.valid_from);
     let mut rel_batch = WriteBatch::new(rel_id);
     rel_batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut rel_batch, &entry, evid)?;
     rel_batch.add_edge(
         rel_eid,
         spec.from,
@@ -1716,9 +1775,17 @@ pub async fn record_deposit_profile<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(row) = txn.vertex(db, evid)? {
+    if let Some(recorded) = witness_rea_key(
+        &txn,
+        db,
+        book,
+        evid,
+        spec.instrument,
+        &proposal,
+        &proposal_digest,
+    )? {
         txn.abort();
-        return check_rea_idempotency(db, book, &row, spec.instrument, &proposal, &proposal_digest);
+        return Ok(recorded);
     }
     let instrument = match txn.vertex(db, spec.instrument)? {
         Some(row) if row.labels.contains(&label::INSTRUMENT) => InstrumentSpec::decode(&bytes(
@@ -1803,6 +1870,7 @@ pub async fn record_deposit_profile<V: asupersync::fs::Vfs + Clone>(
 
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     if let Err(e) = txn.write_ordered(db, vec![batch]) {
         txn.abort();
         return Err(e.into());
@@ -1906,16 +1974,17 @@ pub async fn update_party_identifiers<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(row) = txn.vertex(db, evid)? {
+    if let Some(recorded) = witness_rea_key(
+        &txn,
+        db,
+        book,
+        evid,
+        update.party_vid,
+        &proposal,
+        &proposal_digest,
+    )? {
         txn.abort();
-        return check_rea_idempotency(
-            db,
-            book,
-            &row,
-            update.party_vid,
-            &proposal,
-            &proposal_digest,
-        );
+        return Ok(recorded);
     }
     let Some(party_row) = txn.vertex(db, update.party_vid)? else {
         txn.abort();
@@ -1948,6 +2017,7 @@ pub async fn update_party_identifiers<V: asupersync::fs::Vfs + Clone>(
 
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         update.party_vid,
         property::FA_PAYLOAD,
@@ -2207,9 +2277,11 @@ pub async fn record_event<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(row) = txn.vertex(db, evid)? {
+    if let Some(recorded) =
+        witness_rea_key(&txn, db, book, evid, ev_vid, &proposal, &proposal_digest)?
+    {
         txn.abort();
-        return check_rea_idempotency(db, book, &row, ev_vid, &proposal, &proposal_digest);
+        return Ok(recorded);
     }
     if txn.vertex(db, ev_vid)?.is_some() {
         txn.abort();
@@ -2315,6 +2387,7 @@ pub async fn record_event<V: asupersync::fs::Vfs + Clone>(
     let book_id_scalar = scalar_bytes("book_id", book.book_id.0.to_vec())?;
     let mut in_book = WriteBatch::new(relation::IN_BOOK);
     in_book.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_book, &entry, evid)?;
 
     let mut ev_props = vec![
         (
