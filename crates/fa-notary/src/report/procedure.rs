@@ -12,6 +12,7 @@ const DENSITY: &[(&str, i128, i128)] = &[
     ("z_squared", 1, u32::MAX as i128),
 ];
 const LIBR: &[(&str, i128, i128)] = &[("intraday_order", 0, 3), ("replenishment", 0, 1)];
+const ORDERED_TRACE: &[(&str, i128, i128)] = &[("intraday_order", 0, 3)];
 const BENFORD: &[(&str, i128, i128)] = &[
     ("account_type", 0, 8),
     ("currency_iso4217", 1, 999),
@@ -26,7 +27,7 @@ const BENFORD: &[(&str, i128, i128)] = &[
 ///
 /// Both native facade admission and transport framing use this inventory.
 /// Parameters must be explicit, unique and lexically ordered. JET
-/// round-amount/period-end v2 accepts an optional effective cutoff; LIBR v2
+/// round-amount/period-end v2 accepts an optional effective cutoff; tracing v2
 /// requires a claim date and canonical account/source handles. This is neither source verification
 /// nor a claim that the delivered result agrees with the selected algorithm.
 #[must_use]
@@ -46,9 +47,11 @@ pub fn profile(
         ("numbers.round_amount_density", 1) => ("FA-EVID-L64", DENSITY),
         ("benford.first_digit", 2) => ("FA-EVID-L10", BENFORD),
         ("trace.libr", 2) => ("FA-EVID-L15", LIBR),
+        ("trace.fifo", 2) => ("FA-EVID-L16", ORDERED_TRACE),
+        ("trace.lifo", 2) => ("FA-EVID-L17", ORDERED_TRACE),
         _ => return None,
     };
-    let tracing = id == "trace.libr";
+    let tracing = matches!(id, "trace.libr" | "trace.fifo" | "trace.lifo");
     if (tracing && effective_through.is_none())
         || (!tracing
             && effective_through.is_some()
@@ -288,6 +291,51 @@ mod tests {
                 profile("trace.libr", 2, Some(0), &parameters, &inputs),
                 None
             );
+        }
+    }
+
+    #[test]
+    fn ordered_tracing_profiles_bind_the_law_claim_date_and_exact_input_inventory() {
+        let account = "000000000000000000000000000000ab";
+        let source = "fedcba98765432100000000000000001";
+        let inputs = [("account", account), ("source", source)];
+        for (id, evidence) in [("trace.fifo", "FA-EVID-L16"), ("trace.lifo", "FA-EVID-L17")] {
+            for order in [0, 2, 3] {
+                assert_eq!(
+                    profile(id, 2, Some(i32::MAX), &[("intraday_order", order)], &inputs),
+                    Some(evidence)
+                );
+            }
+            let parameters = [("intraday_order", 0)];
+            for version in [0, 1, 3] {
+                assert_eq!(profile(id, version, Some(0), &parameters, &inputs), None);
+            }
+            assert_eq!(profile(id, 2, None, &parameters, &inputs), None);
+            for parameters in [
+                vec![],
+                vec![("intraday_order", -1)],
+                vec![("intraday_order", 1)],
+                vec![("intraday_order", 4)],
+                vec![("replenishment", 0)],
+                vec![("intraday_order", 0), ("intraday_order", 0)],
+                vec![("intraday_order", 0), ("replenishment", 0)],
+            ] {
+                assert_eq!(profile(id, 2, Some(0), &parameters, &inputs), None);
+            }
+            for inputs in [
+                vec![],
+                vec![("account", account)],
+                vec![("source", source), ("account", account)],
+                vec![("account", account), ("account", source)],
+                vec![("account", "ab"), ("source", source)],
+                vec![
+                    ("account", account),
+                    ("source", "FEDCBA98765432100000000000000001"),
+                ],
+                vec![("account", account), ("source", source), ("unused", source)],
+            ] {
+                assert_eq!(profile(id, 2, Some(0), &parameters, &inputs), None);
+            }
         }
     }
 }

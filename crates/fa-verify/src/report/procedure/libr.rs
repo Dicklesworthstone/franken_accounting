@@ -45,15 +45,28 @@ pub(super) fn decode(reader: &mut Reader<'_>) -> Result<VerifiedProcedureParamet
             "LIBR supports intraday_order 0, 2 or 3 and replenishment 0 or 1",
         ));
     }
+    let [account, source] = decode_inputs(reader)?;
+    Ok(VerifiedProcedureParameters::TraceLibr {
+        intraday_order: parameters[0],
+        replenishment: parameters[1],
+        account,
+        source,
+    })
+}
+
+/// Every one-account tracing law binds the same two canonical handles.
+pub(super) fn decode_inputs(reader: &mut Reader<'_>) -> Result<[u128; 2], ReportError> {
     if reader.count(2, 8, "procedure.inputs")? != 2 {
         return Err(profile(
-            "LIBR requires its account and source entry handles",
+            "tracing requires its account and source entry handles",
         ));
     }
     let mut handles = [0u128; 2];
     for (index, (name, _)) in INPUTS.iter().enumerate() {
         if text(reader, 64, "procedure.input_name")? != *name {
-            return Err(profile("LIBR handles must be unique and lexically ordered"));
+            return Err(profile(
+                "tracing handles must be unique and lexically ordered",
+            ));
         }
         let value = text(reader, 32, "procedure.input_handle")?;
         if value.len() != 32
@@ -62,48 +75,46 @@ pub(super) fn decode(reader: &mut Reader<'_>) -> Result<VerifiedProcedureParamet
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
             return Err(profile(
-                "LIBR handles require exactly 32 lowercase hex digits",
+                "tracing handles require exactly 32 lowercase hex digits",
             ));
         }
         handles[index] = u128::from_str_radix(value, 16)
-            .map_err(|_| profile("LIBR handle exceeds its identity bound"))?;
+            .map_err(|_| profile("tracing handle exceeds its identity bound"))?;
     }
-    Ok(VerifiedProcedureParameters::TraceLibr {
-        intraday_order: parameters[0],
-        replenishment: parameters[1],
-        account: handles[0],
-        source: handles[1],
-    })
+    Ok(handles)
 }
 
-struct Movement {
-    identity: u128,
-    day: i32,
-    recorded_at: u64,
-    inflow: bool,
-    magnitude: i128,
+pub(super) struct Movement {
+    pub identity: u128,
+    pub day: i32,
+    pub recorded_at: u64,
+    pub inflow: bool,
+    pub magnitude: i128,
     replenishes: bool,
 }
 
-pub(super) fn replay(
-    selection: VerifiedProcedureParameters,
-    claim: Option<i32>,
+pub(super) struct Stream {
+    pub unit: u32,
+    pub entity: Option<u128>,
+    pub movements: Vec<Movement>,
+    pub source_at: usize,
+    pub comparisons: u64,
+}
+
+/// Source normalization is shared by the three independent tracing laws. Only
+/// authenticated historical metadata and the already resolved live population
+/// enter here; neither producer output nor current graph mirrors are inputs.
+pub(super) fn stream(
+    account: u128,
+    source: u128,
+    claim: i32,
+    intraday_order: u32,
     live: &[&Entry],
     registry: &Registry,
-) -> Result<(VerifiedProcedureFinding, u64, u64), ReportError> {
-    let VerifiedProcedureParameters::TraceLibr {
-        intraday_order,
-        replenishment,
-        account,
-        source,
-    } = selection
-    else {
-        return Err(profile("expected the LIBR tracing profile"));
-    };
-    if !matches!(intraday_order, 0 | 2 | 3) || replenishment > 1 {
-        return Err(profile("unsupported LIBR ordering or replenishment law"));
+) -> Result<Stream, ReportError> {
+    if !matches!(intraday_order, 0 | 2 | 3) {
+        return Err(profile("unsupported tracing intraday ordering law"));
     }
-    let claim = claim.ok_or_else(|| profile("LIBR requires an effective claim date"))?;
     let context = registry.trace.as_ref().ok_or_else(|| {
         failed(
             "procedure_source",
@@ -289,6 +300,42 @@ pub(super) fn replay(
         })?;
     let count = movements.len() as u64;
     let comparisons = count.saturating_mul(u64::from(count.max(1).ilog2()));
+    Ok(Stream {
+        unit,
+        entity,
+        movements,
+        source_at,
+        comparisons,
+    })
+}
+
+pub(super) fn replay(
+    selection: VerifiedProcedureParameters,
+    claim: Option<i32>,
+    live: &[&Entry],
+    registry: &Registry,
+) -> Result<(VerifiedProcedureFinding, u64, u64), ReportError> {
+    let VerifiedProcedureParameters::TraceLibr {
+        intraday_order,
+        replenishment,
+        account,
+        source,
+    } = selection
+    else {
+        return Err(profile("expected the LIBR tracing profile"));
+    };
+    if replenishment > 1 {
+        return Err(profile("unsupported LIBR replenishment law"));
+    }
+    let claim = claim.ok_or_else(|| profile("LIBR requires an effective claim date"))?;
+    let Stream {
+        unit,
+        entity,
+        movements,
+        source_at,
+        comparisons,
+    } = stream(account, source, claim, intraday_order, live, registry)?;
+    let count = movements.len() as u64;
     let mut balance = 0i128;
     for movement in &movements[..source_at] {
         balance = if movement.inflow {

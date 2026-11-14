@@ -543,16 +543,13 @@ pub(super) fn verify_procedure(
         super::procedure::VerifiedProcedureParameters::FirstDigit { .. }
     );
     let uncalibrated = benford
+        || profile.is_trace()
         || matches!(
             profile,
             super::procedure::VerifiedProcedureParameters::RoundAmountDensity { .. }
-                | super::procedure::VerifiedProcedureParameters::TraceLibr { .. }
         );
     if integer(row, "version")? != i128::from(version)
-        || if matches!(
-            profile,
-            super::procedure::VerifiedProcedureParameters::TraceLibr { .. }
-        ) {
+        || if profile.is_trace() {
             string(row, "effective_through")? != "required"
         } else if profile.supports_cutoff(version) {
             string(row, "effective_through")? != "optional"

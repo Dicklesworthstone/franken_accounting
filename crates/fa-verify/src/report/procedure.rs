@@ -1,4 +1,4 @@
-//! Independent replay of JET, duplicate, density, LIBR and Benford procedures.
+//! Independent replay of JET, duplicate, density, tracing and Benford procedures.
 //!
 //! The complete journal prefix supplies the population; native read witnesses
 //! and the producer's findings supply no arithmetic or period metadata. These
@@ -14,7 +14,9 @@
 //! reconstructs the first journaled close of each period and compares it with
 //! each live posting's recording sequence. LIBR v2 requires its account/source
 //! handles and effective claim date, and reconstructs one native-unit/entity
-//! stream under its declared intraday and replenishment laws. The cutoff selects
+//! stream under its declared intraday and replenishment laws. FIFO and LIFO v2
+//! independently consume the older clean, source and newer clean money under
+//! the same authenticated movement and intraday contract. The cutoff selects
 //! postings before reversal liveness
 //! while the input commitment retains every visible entry at the frontier.
 //! Replacement identities require a later authenticated reversal, replacement,
@@ -32,6 +34,7 @@ use crate::codec::{Reader, Writer};
 mod benford;
 mod different_dates;
 mod libr;
+mod ordered;
 mod post_closing;
 mod round_density;
 pub(super) use post_closing::period_transitions;
@@ -69,6 +72,16 @@ pub enum VerifiedProcedureParameters {
         account: u128,
         source: u128,
     },
+    TraceFifo {
+        intraday_order: u32,
+        account: u128,
+        source: u128,
+    },
+    TraceLifo {
+        intraday_order: u32,
+        account: u128,
+        source: u128,
+    },
     FirstDigit {
         account_type: u32,
         currency_iso4217: u32,
@@ -90,6 +103,8 @@ impl VerifiedProcedureParameters {
             Self::SameSameDifferent { .. } => "duplicates.same_same_different",
             Self::RoundAmountDensity { .. } => "numbers.round_amount_density",
             Self::TraceLibr { .. } => "trace.libr",
+            Self::TraceFifo { .. } => "trace.fifo",
+            Self::TraceLifo { .. } => "trace.lifo",
             Self::FirstDigit { .. } => "benford.first_digit",
         }
     }
@@ -103,6 +118,8 @@ impl VerifiedProcedureParameters {
             Self::SameSameDifferent { .. } => "FA-EVID-L08",
             Self::RoundAmountDensity { .. } => "FA-EVID-L64",
             Self::TraceLibr { .. } => "FA-EVID-L15",
+            Self::TraceFifo { .. } => "FA-EVID-L16",
+            Self::TraceLifo { .. } => "FA-EVID-L17",
             Self::FirstDigit { .. } => "FA-EVID-L10",
         }
     }
@@ -132,6 +149,9 @@ impl VerifiedProcedureParameters {
                 ("intraday_order", intraday_order),
                 ("replenishment", replenishment),
             ],
+            Self::TraceFifo { intraday_order, .. } | Self::TraceLifo { intraday_order, .. } => {
+                vec![("intraday_order", intraday_order)]
+            }
             Self::FirstDigit {
                 account_type,
                 currency_iso4217,
@@ -156,6 +176,12 @@ impl VerifiedProcedureParameters {
     pub(crate) fn inputs(self) -> Vec<(&'static str, String)> {
         if let Self::TraceLibr {
             account, source, ..
+        }
+        | Self::TraceFifo {
+            account, source, ..
+        }
+        | Self::TraceLifo {
+            account, source, ..
         } = self
         {
             vec![
@@ -168,11 +194,7 @@ impl VerifiedProcedureParameters {
     }
 
     pub(super) fn input_definitions(self) -> &'static [(&'static str, &'static str)] {
-        if matches!(self, Self::TraceLibr { .. }) {
-            &libr::INPUTS
-        } else {
-            &[]
-        }
+        if self.is_trace() { &libr::INPUTS } else { &[] }
     }
 
     pub(super) fn parameter_defaults(self) -> &'static [(&'static str, u32)] {
@@ -183,16 +205,25 @@ impl VerifiedProcedureParameters {
             Self::PostClosing | Self::SameSameSame => &[],
             Self::RoundAmountDensity { .. } => &round_density::DEFAULTS,
             Self::TraceLibr { .. } => &libr::DEFAULTS,
+            Self::TraceFifo { .. } | Self::TraceLifo { .. } => &ordered::DEFAULTS,
             Self::FirstDigit { .. } => &benford::DEFAULTS,
         }
     }
 
     pub(super) fn supports_cutoff(self, version: u16) -> bool {
         version == 2
-            && matches!(
-                self,
-                Self::RoundAmounts { .. } | Self::PeriodEndTiming { .. } | Self::TraceLibr { .. }
-            )
+            && (self.is_trace()
+                || matches!(
+                    self,
+                    Self::RoundAmounts { .. } | Self::PeriodEndTiming { .. }
+                ))
+    }
+
+    pub(crate) fn is_trace(self) -> bool {
+        matches!(
+            self,
+            Self::TraceLibr { .. } | Self::TraceFifo { .. } | Self::TraceLifo { .. }
+        )
     }
 
     pub(crate) fn complexity(self) -> &'static str {
@@ -204,7 +235,9 @@ impl VerifiedProcedureParameters {
             | Self::SameSameDifferent { .. }
             | Self::RoundAmountDensity { .. } => "O(legs log legs)",
             Self::FirstDigit { .. } => "O(legs)",
-            Self::TraceLibr { .. } => "O(posting_legs log entities + movements log movements)",
+            Self::TraceLibr { .. } | Self::TraceFifo { .. } | Self::TraceLifo { .. } => {
+                "O(posting_legs log entities + movements log movements)"
+            }
         }
     }
 }
@@ -482,11 +515,13 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "duplicates.same_same_different" => ("FA-EVID-L08", Some(("window_days", u32::MAX))),
         "numbers.round_amount_density" => ("FA-EVID-L64", None),
         "trace.libr" => ("FA-EVID-L15", None),
+        "trace.fifo" => ("FA-EVID-L16", None),
+        "trace.lifo" => ("FA-EVID-L17", None),
         "benford.first_digit" => ("FA-EVID-L10", None),
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, exact duplicates and round-amount density v1, first-digit Benford v2, and one-account LIBR v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, exact duplicates and round-amount density v1, first-digit Benford v2, and one-account LIBR/FIFO/LIFO v2",
             ));
         }
     };
@@ -499,7 +534,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "duplicates.same_same_different"
                 | "numbers.round_amount_density"
         ) && version != 1)
-        || (matches!(id, "benford.first_digit" | "trace.libr") && version != 2)
+        || (matches!(
+            id,
+            "benford.first_digit" | "trace.libr" | "trace.fifo" | "trace.lifo"
+        ) && version != 2)
         || question.u8("procedure.claim")? != 0
         || text(&mut question, 128, "procedure.evidence")? != evidence
     {
@@ -521,14 +559,16 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             "this procedure version does not support an effective-date cutoff",
         ));
     }
-    if id == "trace.libr" && effective_through.is_none() {
+    if matches!(id, "trace.libr" | "trace.fifo" | "trace.lifo") && effective_through.is_none() {
         return Err(failed(
             "procedure_profile",
-            "LIBR requires an effective claim date",
+            "tracing requires an effective claim date",
         ));
     }
     let parameters = if id == "trace.libr" {
         libr::decode(&mut question)?
+    } else if matches!(id, "trace.fifo" | "trace.lifo") {
+        ordered::decode(&mut question, id == "trace.lifo")?
     } else if id == "benford.first_digit" {
         benford::decode(&mut question)?
     } else if id == "numbers.round_amount_density" {
@@ -571,9 +611,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             VerifiedProcedureParameters::SameSameSame
         }
     };
-    if !matches!(parameters, VerifiedProcedureParameters::TraceLibr { .. })
-        && question.count(0, 8, "procedure.inputs")? != 0
-    {
+    if !parameters.is_trace() && question.count(0, 8, "procedure.inputs")? != 0 {
         return Err(failed(
             "procedure_profile",
             "procedure input handles are unsupported",
@@ -1253,6 +1291,8 @@ fn recompute_version(
         | VerifiedProcedureParameters::SameSameDifferent { .. }
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
+        | VerifiedProcedureParameters::TraceFifo { .. }
+        | VerifiedProcedureParameters::TraceLifo { .. }
         | VerifiedProcedureParameters::FirstDigit { .. } => 1,
     };
     let mut live_entries = 0u64;
@@ -1362,6 +1402,8 @@ fn recompute_version(
             | VerifiedProcedureParameters::SameSameDifferent { .. }
             | VerifiedProcedureParameters::RoundAmountDensity { .. }
             | VerifiedProcedureParameters::TraceLibr { .. }
+            | VerifiedProcedureParameters::TraceFifo { .. }
+            | VerifiedProcedureParameters::TraceLifo { .. }
             | VerifiedProcedureParameters::FirstDigit { .. } => {
                 grouped_population.push(entry);
                 None
@@ -1394,6 +1436,16 @@ fn recompute_version(
         findings.push(finding);
         live_legs = legs;
         comparisons = compared;
+    } else if matches!(
+        profile,
+        VerifiedProcedureParameters::TraceFifo { .. }
+            | VerifiedProcedureParameters::TraceLifo { .. }
+    ) {
+        let (finding, legs, compared) =
+            ordered::replay(profile, effective_through, &grouped_population, registry)?;
+        findings.push(finding);
+        live_legs = legs;
+        comparisons = compared;
     } else if matches!(profile, VerifiedProcedureParameters::FirstDigit { .. }) {
         let (finding, legs) = benford::replay(profile, &grouped_population, registry)?;
         findings.push(finding);
@@ -1407,7 +1459,9 @@ fn recompute_version(
         | VerifiedProcedureParameters::SameSameDifferent { .. } => Some(live_entries),
         VerifiedProcedureParameters::FirstDigit { .. }
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
-        | VerifiedProcedureParameters::TraceLibr { .. } => None,
+        | VerifiedProcedureParameters::TraceLibr { .. }
+        | VerifiedProcedureParameters::TraceFifo { .. }
+        | VerifiedProcedureParameters::TraceLifo { .. } => None,
     };
     if let Some(population) = statistic_population {
         for finding in &mut findings {

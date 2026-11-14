@@ -133,10 +133,10 @@ commands:
                                                 native/functional one-book consolidated group statements,
                                                 and bounded statistical procedures: JET round-amount/period-end v1/v2,
                                                 post-closing v1, exact same-day/different-date duplicates v1,
-                                                round-amount density v1, first-digit Benford v2 and one-account LIBR v2.
+                                                round-amount density v1, first-digit Benford v2 and one-account LIBR/FIFO/LIFO v2.
                                                 JET round-amount/period-end v2 accepts an inclusive effective cutoff;
-                                                LIBR v2 requires a claim date and canonical account/source handles,
-                                                and checks its declared intraday and evidence-replenishment laws
+                                                Tracing v2 requires a claim date and canonical account/source handles,
+                                                and checks its declared intraday order and law (LIBR also binds replenishment)
                                                 within the source-selected native unit and legal entity.
                                                 All other profiles require no cutoff or input handles;
                                                 Replacement histories require current target-derived identities and later
