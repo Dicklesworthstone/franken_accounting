@@ -681,9 +681,24 @@ fn numeric_audit_registries_reject_resealed_semantic_changes() {
         for variant in [
             "version", "claim", "evidence", "complexity", "tie_break",
             "calibration", "cutoff", "default", "duplicate", "input",
+            "missing parameter", "duplicate procedure", "artifact", "extra population law",
         ] {
             let mut changed = document(&encode_document(&declaration)).unwrap();
             match variant {
+                "missing parameter" => {
+                    changed.arrays.get_mut("parameter").unwrap().pop();
+                }
+                "duplicate procedure" => {
+                    let mut duplicate = document(&encode_document(&declaration)).unwrap();
+                    changed.arrays.get_mut("procedure").unwrap()
+                        .push(duplicate.arrays.get_mut("procedure").unwrap().remove(0));
+                }
+                "extra population law" => {
+                    changed.arrays.insert("population".into(), vec![BTreeMap::from([
+                        ("procedure".into(), Value::Text(id.into())),
+                        ("selection".into(), Value::Text("omit_small_debits".into())),
+                    ])]);
+                }
                 "default" => {
                     changed.arrays.get_mut("parameter").unwrap()[0]
                         .insert("default".into(), Value::Int(17));
@@ -715,6 +730,7 @@ fn numeric_audit_registries_reject_resealed_semantic_changes() {
                         "complexity" => ("complexity", Value::Text("O(1)".into())),
                         "tie_break" => ("tie_break", Value::Text("none".into())),
                         "calibration" => ("calibration", Value::Text("corpus".into())),
+                        "artifact" => ("artifact", Value::Text("FA-ART-CAL-01".into())),
                         "cutoff" => ("effective_through", Value::Text("optional".into())),
                         _ => unreachable!(),
                     };

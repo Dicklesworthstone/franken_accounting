@@ -435,3 +435,7 @@ pub(super) fn replay(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "relative_size.rs"]
+mod relative_size_regressions;

@@ -18,6 +18,8 @@ mod ordered_trace;
 mod pro_rata;
 #[path = "offline/profile_admission.rs"]
 mod profile_admission;
+#[path = "offline/relative_size_factor.rs"]
+mod relative_size_factor;
 #[path = "offline/unusual_accounts.rs"]
 mod unusual_accounts;
 
