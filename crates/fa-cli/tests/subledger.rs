@@ -607,3 +607,473 @@ fn verify_requires_a_date_and_rejects_flags_that_would_be_silently_ignored() {
     }
     assert_eq!(f.head(), before);
 }
+
+fn declared_tax_fixture() -> Fixture {
+    Fixture::with_additional_accounts(vec![
+        json::parse(r#"{"code":"1300","name":"Declared input tax","type":"Asset","unit":"USD"}"#)
+            .unwrap(),
+        json::parse(
+            r#"{"code":"2200","name":"Declared output tax","type":"Liability","unit":"USD"}"#,
+        )
+        .unwrap(),
+    ])
+}
+
+#[test]
+fn declared_invoice_and_bill_taxes_preserve_gross_plans_maturity_and_retries() {
+    let f = declared_tax_fixture();
+    f.register("AR", "1200", "receivables");
+    f.register("AP", "2000", "payables");
+    for (verb, party, control_flag, control, line_flag, account, subledger, lines, amounts, net) in [
+        (
+            "invoice",
+            "C-1",
+            "--receivable",
+            "1200",
+            "--revenue",
+            "4000",
+            "AR",
+            [
+                r#"qty=8 unit_price="0.125 USD" tax_amount="0.080 USD" tax_account=2200"#,
+                r#"amount="31.5 USD" tax_amount="2.60 USD" tax_account=2200"#,
+            ],
+            [3518, 100, 3150, 8, 260],
+            "35.18 USD",
+        ),
+        (
+            "bill",
+            "V-1",
+            "--payable",
+            "2000",
+            "--expense",
+            "6000",
+            "AP",
+            [
+                r#"amount="300.25 USD" tax_amount="15.01 USD" tax_account=1300"#,
+                r#"qty=3 unit_price="0.25 USD" tax_amount="0.04 USD" tax_account=1300"#,
+            ],
+            [31605, 30025, 75, 1501, 4],
+            "-316.05 USD",
+        ),
+    ] {
+        let args = vec![
+            verb,
+            "--party",
+            party,
+            "--number",
+            "DECLARED-TAX-1",
+            "--date",
+            "2026-03-14",
+            "--due-date",
+            "2026-03-31",
+            control_flag,
+            control,
+            line_flag,
+            account,
+            "--line",
+            lines[0],
+            "--line",
+            lines[1],
+            "--evidence",
+            &f.evidence,
+        ];
+        let path = f.dir.join(format!("{verb}-declared-tax.plan"));
+        let path = path.to_str().unwrap();
+        let mut review = args.clone();
+        review.extend(["--dry-run", "--plan-out", path]);
+        let before = f.head();
+        let planned = data(&f.ok(&review));
+        assert_eq!(f.head(), before, "tax planning must publish nothing");
+        let plan = fa::PostPlan::decode(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            plan.proposal().legs.len(),
+            5,
+            "gross, two net lines, two tax legs"
+        );
+        assert_eq!(
+            plan.proposal().evidence.len(),
+            1,
+            "the source document remains bound"
+        );
+        for (leg, expected) in plan.proposal().legs.iter().zip(amounts) {
+            assert_eq!(leg.amount.mantissa, expected);
+        }
+        let plan_legs = rows(&planned, "legs");
+        assert_eq!(text(&plan_legs[0], "account"), control);
+        assert_eq!(text(&plan_legs[1], "account"), account);
+        assert_eq!(text(&plan_legs[2], "account"), account);
+        let tax_account = if verb == "invoice" { "2200" } else { "1300" };
+        for leg in &plan_legs[3..] {
+            assert_eq!(text(leg, "account"), tax_account);
+            assert_eq!(
+                text(leg, "side"),
+                if verb == "invoice" { "credit" } else { "debit" }
+            );
+        }
+        let terms = plan
+            .proposal()
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::OBLIGATION_MATURITY_EXTENSION)
+            .expect("contractual maturity is part of the sealed proposal");
+        let terms = fa_model::obligation::InlineObligationTerms::decode_list(&terms.1).unwrap();
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].ordinal, 0);
+        assert_eq!(terms[0].installments.len(), 1);
+        assert_eq!(
+            terms[0].installments[0].amount, amounts[0],
+            "the entire gross amount falls due"
+        );
+
+        let posted = data(&f.ok(&["commit", "--plan", path]));
+        let vid = text(&posted, "vid");
+        let after = f.head();
+        let shown = data(&f.ok(&["entry", "show", &vid]));
+        assert_eq!(
+            text(&shown, "proposal_digest"),
+            text(&planned, "proposal_digest")
+        );
+        assert_eq!(text(&data(&f.ok(&args)), "vid"), vid);
+        assert_eq!(text(&data(&f.ok(&["commit", "--plan", path])), "vid"), vid);
+        assert_eq!(
+            f.head(),
+            after,
+            "typed and saved-plan retries publish no duplicate tax"
+        );
+
+        let reconciled = f.verify(subledger, None);
+        assert_eq!(reconciled.get("reconciled"), Some(&Json::Bool(true)));
+        let party_row = rows(&reconciled, "rows")
+            .iter()
+            .find(|row| text(row, "party") == party)
+            .expect("party gross balance");
+        assert_eq!(text(party_row, "net"), net);
+        let aging = data(&f.ok(&[
+            "gl",
+            "aging",
+            "--account",
+            control,
+            "--basis",
+            "due-date",
+            "--as-of",
+            "2026-04-01",
+        ]));
+        let items = rows(&aging, "items");
+        assert_eq!(items.len(), 1);
+        assert_eq!(text(&items[0], "due_date"), "2026-03-31");
+        assert_eq!(text(&items[0], "open"), usd(amounts[0]));
+
+        let mut changed = args.clone();
+        let first_line = changed.iter().position(|value| *value == "--line").unwrap() + 1;
+        changed[first_line] = if verb == "invoice" {
+            r#"qty=8 unit_price="0.125 USD" tax_amount="0.09 USD" tax_account=2200"#
+        } else {
+            r#"amount="300.25 USD" tax_amount="15.02 USD" tax_account=1300"#
+        };
+        let (exit, refused) = f.run(&changed);
+        assert_eq!(
+            exit, 6,
+            "changing a declared tax under the same key conflicts: {refused}"
+        );
+        assert_eq!(f.head(), after);
+    }
+    let tb = data(&f.ok(&["tb", "--period", "FY2026-P03"]));
+    for (code, net) in [
+        ("1200", "35.18 USD"),
+        ("4000", "-32.50 USD"),
+        ("2200", "-2.68 USD"),
+        ("2000", "-316.05 USD"),
+        ("6000", "301.00 USD"),
+        ("1300", "15.05 USD"),
+    ] {
+        let row = rows(&tb, "rows")
+            .iter()
+            .find(|row| text(row, "code") == code)
+            .unwrap();
+        assert_eq!(text(row, "net"), net, "account {code}");
+    }
+}
+
+#[test]
+fn declared_tax_refuses_incomplete_ambiguous_inexact_and_overflowing_inputs_atomically() {
+    let f = declared_tax_fixture();
+    let before = f.head();
+    let overflow = format!(
+        r#"amount="{} USD" tax_amount="1 USD" tax_account=2200"#,
+        i128::MAX
+    );
+    for line in [
+        r#"amount="1.00 USD" tax_amount="0.08 USD""#,
+        r#"amount="1.00 USD" tax_account=2200"#,
+        r#"amount="1.00 USD" tax_amount="0.08 USD" tax_account=1200"#,
+        r#"amount="1.00 USD" tax_amount="0.08 USD" tax_account=2200 tax=VAT20"#,
+        r#"amount="1.00 USD" tax_amount="0.08 USD" tax_amount="0.09 USD" tax_account=2200"#,
+        r#"amount="1.00 USD" tax_amount="0.08 USD" tax_account=2200 tax_account=1300"#,
+        r#"amount="1.00 USD" tax_amount="0.08 USD" tax_account="""#,
+        r#"amount="1.00 USD" tax_amount="-0.08 USD" tax_account=2200"#,
+        r#"amount="1.00 USD" tax_amount="0.00 USD" tax_account=2200"#,
+        r#"amount="1.00 USD" tax_amount="8e-2 USD" tax_account=2200"#,
+        r#"amount="1.00 USD" tax_amount="0.08" tax_account=2200"#,
+        r#"amount="1.00 USD" tax_amount="0.08 EUR" tax_account=2200"#,
+        r#"amount="1.00 USD" tax_amount="0.001 USD" tax_account=2200"#,
+        r#"qty=3 unit_price="0.125 USD" tax_amount="0.08 USD" tax_account=2200"#,
+        r#"qty=1.5 unit_price="2.00 USD" tax_amount="0.08 USD" tax_account=2200"#,
+        &overflow,
+    ] {
+        let (exit, output) = f.run(&[
+            "invoice",
+            "--party",
+            "C-1",
+            "--number",
+            "INVALID-TAX",
+            "--date",
+            "2026-03-14",
+            "--receivable",
+            "1200",
+            "--revenue",
+            "4000",
+            "--line",
+            line,
+            "--evidence",
+            &f.evidence,
+        ]);
+        assert_eq!(exit, 2, "line={line}: {output}");
+        assert_eq!(f.head(), before, "malformed taxes never publish: {line}");
+    }
+    let (exit, output) = f.run(&[
+        "invoice",
+        "--party",
+        "C-1",
+        "--number",
+        "UNKNOWN-TAX-ACCOUNT",
+        "--date",
+        "2026-03-14",
+        "--receivable",
+        "1200",
+        "--revenue",
+        "4000",
+        "--line",
+        r#"amount="1.00 USD" tax_amount="0.08 USD" tax_account=UNKNOWN"#,
+        "--evidence",
+        &f.evidence,
+    ]);
+    assert_eq!(exit, 3, "an unregistered tax account refuses: {output}");
+    assert!(output.contains("FA-REF-004"), "{output}");
+    assert_eq!(f.head(), before, "an unknown tax account never publishes");
+}
+
+#[test]
+fn declared_tax_drafts_promote_the_reviewed_gross_amount_and_reverse_exactly() {
+    let f = declared_tax_fixture();
+    f.register("AR", "1200", "receivables");
+    f.ok(&["draft", "new", "declared-taxes", "--as", "tax-preparer"]);
+    let baseline = data(&f.ok(&["tb", "--period", "FY2026-P03"]));
+    let args = [
+        "invoice",
+        "--party",
+        "C-1",
+        "--number",
+        "DRAFT-TAX",
+        "--date",
+        "2026-03-14",
+        "--receivable",
+        "1200",
+        "--revenue",
+        "4000",
+        "--line",
+        r#"amount="100.00 USD" tax_amount="8.25 USD" tax_account=2200"#,
+        "--evidence",
+        &f.evidence,
+        "--draft",
+        "declared-taxes",
+        "--as",
+        "tax-preparer",
+    ];
+    let planned = data(&f.ok(&args));
+    let planned_at = f.head();
+    let vid = text(&planned, "entry");
+    assert_eq!(text(&data(&f.ok(&args)), "entry"), vid);
+    assert_eq!(f.head(), planned_at, "draft retry records no second plan");
+    assert_eq!(
+        rows(&data(&f.ok(&["tb", "--period", "FY2026-P03"])), "rows"),
+        rows(&baseline, "rows"),
+        "draft tax does not affect trunk",
+    );
+    let rehearsed = data(&f.ok(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--branch",
+        "draft:declared-taxes",
+    ]));
+    let (exit, refused) = f.run(&[
+        "draft",
+        "promote",
+        "declared-taxes",
+        "--as",
+        "tax-preparer",
+        "--yes",
+    ]);
+    assert_eq!(exit, 7, "the tax preparer cannot self-promote: {refused}");
+    assert_eq!(f.head(), planned_at);
+    f.ok(&[
+        "draft",
+        "promote",
+        "declared-taxes",
+        "--as",
+        "controller",
+        "--yes",
+    ]);
+    let shown = data(&f.ok(&["entry", "show", &vid]));
+    assert_eq!(
+        text(&shown, "proposal_digest"),
+        text(&planned, "proposal_digest")
+    );
+    assert_eq!(
+        rows(&data(&f.ok(&["tb", "--period", "FY2026-P03"])), "rows"),
+        rows(&rehearsed, "rows"),
+        "promotion retains every net, tax and gross effect",
+    );
+    assert_eq!(
+        text(&rows(&f.verify("AR", None), "rows")[0], "net"),
+        "108.25 USD"
+    );
+    f.ok(&[
+        "reverse",
+        &vid,
+        "--effective",
+        "2026-03-20",
+        "--reason",
+        "WrongAmount",
+        "--evidence",
+        &f.evidence,
+    ]);
+    let tb = data(&f.ok(&["tb", "--period", "FY2026-P03"]));
+    for row in rows(&tb, "rows") {
+        assert_eq!(
+            text(row, "net"),
+            "0.00 USD",
+            "reversal leaves no tax: {row:?}"
+        );
+    }
+    let ar = f.verify("AR", None);
+    assert_eq!(ar.get("reconciled"), Some(&Json::Bool(true)));
+    assert!(
+        rows(&ar, "rows")
+            .iter()
+            .all(|row| text(row, "net") == "0.00 USD")
+    );
+}
+
+#[test]
+fn declared_tax_on_inventory_invoices_preserves_line_ordinals_and_native_cost_relief() {
+    let f = declared_tax_fixture();
+    let chart = f.file(
+        "stock-chart.json",
+        r#"{"accounts":[
+        {"code":"1400","name":"Inventory","type":"Asset","unit":"any"},
+        {"code":"1499","name":"Quantity offset","type":"Equity","unit":"SHARE"},
+        {"code":"5100","name":"Cost of goods sold","type":"Expense","unit":"USD"}
+    ]}"#,
+    );
+    f.ok(&["chart", "import", &chart]);
+    f.ok(&[
+        "chart",
+        "lot-policy",
+        "set",
+        "--account",
+        "1400",
+        "--law",
+        "FIFO",
+        "--regime",
+        "US-GAAP",
+        "--date",
+        "2026-03-01",
+        "--key",
+        "stock-policy",
+    ]);
+    let acquisition = f.file(
+        "stock-acquisition.json",
+        r#"{
+        "effective_date":"2026-03-05","idempotency_key":"stock-acquisition","legs":[
+        {"side":"debit","account":"1400","amount":"10.000000 SHARE"},
+        {"side":"credit","account":"1499","amount":"10.000000 SHARE"},
+        {"side":"debit","account":"1400","amount":"100.00 USD"},
+        {"side":"credit","account":"1000","amount":"100.00 USD"}]}
+    "#,
+    );
+    f.ok(&["post", "--intent", &acquisition, "--evidence", &f.evidence]);
+    let args = [
+        "invoice",
+        "--party",
+        "C-1",
+        "--number",
+        "TAXED-STOCK",
+        "--date",
+        "2026-03-14",
+        "--receivable",
+        "1200",
+        "--revenue",
+        "4000",
+        "--line",
+        r#"amount="10.00 USD" description=delivery tax_amount="0.80 USD" tax_account=2200"#,
+        "--line",
+        r#"qty=3 unit_price="25.00 USD" inventory=1400 quantity_unit=SHARE quantity_offset=1499 cost_offset=5100 lot_law=FIFO tax_amount="6.00 USD" tax_account=2200"#,
+        "--evidence",
+        &f.evidence,
+    ];
+    let path = f.dir.join("taxed-stock.plan");
+    let path = path.to_str().unwrap();
+    let before = f.head();
+    let mut preview = args.to_vec();
+    preview.extend(["--dry-run", "--plan-out", path]);
+    f.ok(&preview);
+    assert_eq!(f.head(), before);
+    let plan = fa::BatchPlan::decode(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(plan.prepared_entries().len(), 2);
+    let sale = plan
+        .prepared_entries()
+        .iter()
+        .find(|entry| entry.proposal.lot_disposal_basis().unwrap().is_none())
+        .unwrap();
+    assert_eq!(
+        sale.proposal
+            .legs
+            .iter()
+            .map(|leg| leg.amount.mantissa)
+            .collect::<Vec<_>>(),
+        [9180, 1000, 7500, 80, 600],
+        "tax legs never displace the stock line's ordinal"
+    );
+    let cost = plan
+        .prepared_entries()
+        .iter()
+        .find(|entry| entry.proposal.lot_disposal_basis().unwrap().is_some())
+        .unwrap();
+    assert_eq!(cost.proposal.legs[0].amount.mantissa, 3_000_000);
+    assert_eq!(
+        cost.proposal.legs[2].amount.mantissa, 3_000,
+        "tax and sale price never supply native lot cost"
+    );
+    f.ok(&["commit", "--plan", path, "--grant", "read"]);
+    let after = f.head();
+    f.ok(&args);
+    assert_eq!(
+        f.head(),
+        after,
+        "inventory retry publishes neither tax nor cost twice"
+    );
+    let tb = data(&f.ok(&["tb", "--period", "FY2026-P03"]));
+    for (code, net) in [
+        ("1200", "91.80 USD"),
+        ("4000", "-85.00 USD"),
+        ("2200", "-6.80 USD"),
+        ("5100", "30.00 USD"),
+    ] {
+        let row = rows(&tb, "rows")
+            .iter()
+            .find(|row| text(row, "code") == code)
+            .unwrap();
+        assert_eq!(text(row, "net"), net, "account {code}");
+    }
+}

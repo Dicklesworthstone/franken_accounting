@@ -6,8 +6,9 @@
 //!
 //! The invoice and bill forms use explicit accounting inputs: the caller
 //! names the control account (receivable or payable) and each line's
-//! account, there is no implicit tax, and a line that asks for tax is
-//! refused. Accrue and Defer can instead invoke a selected Canon Adjusting
+//! account. A line may declare its exact tax amount and destination account;
+//! no tax rate, jurisdiction or recoverability is inferred. Accrue and Defer
+//! can instead invoke a selected Canon Adjusting
 //! rule whose immutable program owns all effects and reversal timing.
 //! A line's total is its quantity times its unit price, computed
 //! exactly in the price's own decimal places; the kernel then checks that
@@ -652,6 +653,10 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
         ));
     }
     let mut line_legs = Vec::with_capacity(raw_lines.len());
+    // Retain the ordinary line ordinals: inventory relief selects line i at
+    // leg i + 1. Tax legs follow all net lines, and the party control remains
+    // leg zero so applications and contractual maturities cover gross amounts.
+    let mut tax_legs = Vec::new();
     let mut amounts = Vec::with_capacity(raw_lines.len());
     let mut relief = Vec::new();
     for (i, raw) in raw_lines.iter().enumerate() {
@@ -663,7 +668,7 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
                 .find(|(k, _)| k == name)
                 .map(|(_, v)| v.as_str())
         };
-        const FIELDS: [&str; 7] = [
+        const FIELDS: [&str; 9] = [
             "qty",
             "unit_price",
             "amount",
@@ -671,11 +676,13 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
             "item",
             "product",
             "description",
+            "tax_amount",
+            "tax_account",
         ];
         if field("tax").is_some() {
             return Err(usage(
                 format!("{what}: tax is not computed without a tax law (bead fa-c34)"),
-                "post the tax leg explicitly with fa post, or omit tax",
+                "declare the source document's exact tax_amount=\"<amount> <UNIT>\" together with tax_account=<code>; omit tax when no tax is declared",
             ));
         }
         if let Some((name, _)) = words.iter().find(|(k, _)| {
@@ -737,6 +744,41 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
             None,
         ));
         amounts.push(amount);
+        match (field("tax_amount"), field("tax_account")) {
+            (None, None) => {}
+            (Some(raw_tax), Some(tax_account)) => {
+                if tax_account == control {
+                    return Err(usage(
+                        format!("{what}: tax_account must differ from the party control account"),
+                        "name the declared tax's separate account; the receivable or payable must retain the complete gross document amount",
+                    ));
+                }
+                let tax = sum(&[raw_tax.to_string()])
+                    .map_err(|e| usage(format!("{what}: tax_amount: {e}"), example.clone()))?;
+                if is_zero(&tax) {
+                    return Err(usage(
+                        format!("{what}: tax_amount must be positive"),
+                        "omit both tax_amount and tax_account when no tax is declared; every posted leg moves a positive amount",
+                    ));
+                }
+                tax_legs.push(leg_json(
+                    kind.line_side(),
+                    tax_account,
+                    &tax,
+                    Some(format!("Declared tax for line {}", i + 1)),
+                    entity,
+                    None,
+                    None,
+                ));
+                amounts.push(tax);
+            }
+            _ => {
+                return Err(usage(
+                    format!("{what}: tax_amount and tax_account must be supplied together"),
+                    "--line 'amount=\"100.00 USD\" tax_amount=\"8.25 USD\" tax_account=<code>'; amounts are exclusive of the separately declared tax",
+                ));
+            }
+        }
     }
     let total = sum(&amounts).map_err(|e| usage(e, example.clone()))?;
     let mut legs = vec![leg_json(
@@ -749,6 +791,7 @@ fn typed(ctx: &mut Ctx<'_>, args: &Args, kind: Kind) -> Result<(), Fail> {
         None,
     )];
     legs.extend(line_legs);
+    legs.extend(tax_legs);
     let description = args.flag("--description").map_or_else(
         || match number {
             Some(number) => format!("{} {number}, {party}", capitalized(kind.verb())),
