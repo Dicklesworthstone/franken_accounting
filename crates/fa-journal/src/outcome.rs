@@ -2,7 +2,8 @@
 //!
 //! Entry identity still enforces target uniqueness. These immutable claims
 //! additionally reserve (book, principal, key), shared with atomic batches.
-//! Migration retains its declared run-scoped keys. Period, time and normal-key
+//! Migration chunks retain their declared run-scoped keys; run lifecycle
+//! controls reserve the ordinary principal-scoped key. Period, time and normal-key
 //! policy activation, account lifecycle and roles, closing and FX routing,
 //! dimension lifecycle, native subledger registration, lot policies and asset
 //! schedules reserve the common key; their pre-protocol entries remain valid
@@ -707,7 +708,29 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
                     ..
                 })
             ));
+    let migration = proposal.class == EntryClass::MIGRATION_CONTROL
+        && proposal.branch_id == Id128::TRUNK
+        && proposal.effective_period.is_none()
+        && entry.plan_certificate.is_none()
+        && matches!(
+            proposal.origin,
+            fa_model::EntryOrigin::Control {
+                control_kind: fa_model::ControlKind::MIGRATION_RUN,
+                ..
+            }
+        )
+        && matches!(
+            proposal.control,
+            Some(fa_model::ControlPayload::MigrationControl {
+                kind: crate::migration::kind::OPEN
+                    | crate::migration::kind::FINALIZE
+                    | crate::migration::kind::ABANDON
+                    | crate::migration::kind::BIND_SOURCE,
+                ..
+            })
+        );
     (admitted
+        || migration
         || is_statement_activation(entry)
         || is_cash_flow_policy_activation(entry)
         || is_rule_activation(entry))
@@ -728,6 +751,28 @@ pub fn stage_control(batch: &mut WriteBatch, entry: &Entry, vid: VId) -> Result<
         ));
     }
     stage_claim(batch, entry, vid).map(|_| ())
+}
+
+/// A bounded aggregate control includes its atomic key claim in the same
+/// native template budget as its other effects. Count the actual canonical
+/// properties rather than a separate estimate of the outcome format.
+pub(crate) fn stage_control_tracked(
+    batch: &mut WriteBatch,
+    tracker: &mut crate::batch::TemplateByteTracker,
+    relation: fgdb_delta_types::RelationId,
+    entry: &Entry,
+    vid: VId,
+) -> Result<(), KernelError> {
+    if !normal_key_control(entry, vid) {
+        return Err(KernelError::Corrupt(
+            "control outcome claim requires an admitted normal-key control entry".into(),
+        ));
+    }
+    let properties = claim_properties(&EntryClaim::new(entry, vid, None)?)?;
+    let outcome = entry_outcome_vid(&entry.proposal);
+    tracker.create_vertex(relation, outcome, 1, &properties);
+    batch.create_vertex(outcome, vec![label::INTENT_OUTCOME], properties);
+    Ok(())
 }
 
 /// A fiscal-year birth has one target across creators, but reserves the

@@ -419,10 +419,18 @@ pub async fn bind_source<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = crate::policy::capability_admitted(db, book, &req.capability)? {
         return Ok(Err(refusal));
     }
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
     let digest = proposal.proposal_digest()?;
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(refusal) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+    let evid = control_vid(book, proposal);
+    if let Err(refusal) = witness_control_key(&txn, db, proposal, evid)? {
         txn.abort();
         return Ok(Err(refusal));
     }
@@ -451,7 +459,20 @@ pub async fn bind_source<V: asupersync::fs::Vfs + Clone>(
             .vertex(db, VId(u128::from_le_bytes(pointer)))?
             .ok_or_else(|| KernelError::Corrupt("source binding control is missing".into()))?;
         txn.abort();
-        return recorded_or_conflict(db, book, &row, proposal, &digest, manifest.run_ref);
+        return recorded_or_conflict(db, book, &row, &req, &digest, manifest.run_ref);
+    }
+    if txn.vertex(db, evid)?.is_some() {
+        txn.abort();
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     let run = match witness_open(&txn, db, manifest.run_ref)? {
         Ok(run) => run,
@@ -520,7 +541,6 @@ pub async fn bind_source<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(source_refusal(error.to_string())));
     }
     let bytes = manifest.canonical_bytes()?;
-    let evid = control_vid(book, proposal);
     let entry = proposal.clone().seal(req.approvals.clone(), None)?;
     let mut batch = WriteBatch::new(relation::IN_MIGRATION_RUN);
     object::stage(
@@ -558,6 +578,7 @@ pub async fn bind_source<V: asupersync::fs::Vfs + Clone>(
         ],
     );
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.add_edge(
         edge_id(relation::IN_MIGRATION_RUN, evid, run.vid),
         evid,
@@ -577,7 +598,7 @@ pub async fn bind_source<V: asupersync::fs::Vfs + Clone>(
         ctx,
         book,
         txn,
-        proposal,
+        &req,
         &digest,
         RunControlled {
             run: run.vid,
