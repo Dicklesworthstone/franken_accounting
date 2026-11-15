@@ -544,6 +544,7 @@ pub(super) fn verify_procedure(
         || matches!(
             profile,
             super::procedure::VerifiedProcedureParameters::RoundAmountDensity { .. }
+                | super::procedure::VerifiedProcedureParameters::UnusualAccounts { .. }
         );
     if integer(row, "version")? != i128::from(version)
         || if profile.is_trace() {

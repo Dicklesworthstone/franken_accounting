@@ -12,8 +12,10 @@
 //! account's nonzero legs with the book's rate using exact integer thresholds.
 //! Post-closing v1
 //! reconstructs the first journaled close of each period and compares it with
-//! each live posting's recording sequence. LIBR v2 requires its account/source
-//! handles and effective claim date, and reconstructs one native-unit/entity
+//! each live posting's recording sequence. Unusual-accounts v2 independently
+//! counts undirected debit/credit pairs once per live entry against the
+//! authenticated chart, including split and reciprocal legs. LIBR v2 requires
+//! its account/source handles and effective claim date, and reconstructs one native-unit/entity
 //! stream under its declared intraday and replenishment laws. FIFO and LIFO v2
 //! independently consume the older clean, source and newer clean money under
 //! the same authenticated movement and intraday contract. Pro-rata v2 divides
@@ -40,6 +42,7 @@ mod ordered;
 mod post_closing;
 mod pro_rata;
 mod round_density;
+mod unusual_accounts;
 pub(super) use post_closing::period_transitions;
 
 const FORMAT: &[u8] = b"fa:procedure-certificate:v1";
@@ -61,6 +64,10 @@ pub enum VerifiedProcedureParameters {
         window_days: u32,
     },
     PostClosing,
+    UnusualAccounts {
+        max_pair_count: u32,
+        min_population: u32,
+    },
     SameSameSame,
     SameSameDifferent {
         window_days: u32,
@@ -126,6 +133,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmounts { .. } => "jet.round_amounts",
             Self::PeriodEndTiming { .. } => "jet.period_end_timing",
             Self::PostClosing => "jet.post_closing",
+            Self::UnusualAccounts { .. } => "jet.unusual_accounts",
             Self::SameSameSame => "duplicates.same_same_same",
             Self::SameSameDifferent { .. } => "duplicates.same_same_different",
             Self::RoundAmountDensity { .. } => "numbers.round_amount_density",
@@ -144,6 +152,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmounts { .. } => "FA-EVID-L01",
             Self::PeriodEndTiming { .. } => "FA-EVID-L02",
             Self::PostClosing => "FA-EVID-L03",
+            Self::UnusualAccounts { .. } => "FA-EVID-L24",
             Self::SameSameSame => "FA-EVID-L07",
             Self::SameSameDifferent { .. } => "FA-EVID-L08",
             Self::RoundAmountDensity { .. } => "FA-EVID-L64",
@@ -165,6 +174,13 @@ impl VerifiedProcedureParameters {
                 vec![("window_days", window_days)]
             }
             Self::PostClosing | Self::SameSameSame => Vec::new(),
+            Self::UnusualAccounts {
+                max_pair_count,
+                min_population,
+            } => vec![
+                ("max_pair_count", max_pair_count),
+                ("min_population", min_population),
+            ],
             Self::RoundAmountDensity {
                 min_legs,
                 round_power,
@@ -259,6 +275,7 @@ impl VerifiedProcedureParameters {
             Self::PeriodEndTiming { .. } => &[("window_days", 3)],
             Self::SameSameDifferent { .. } => &[("window_days", 30)],
             Self::PostClosing | Self::SameSameSame => &[],
+            Self::UnusualAccounts { .. } => &unusual_accounts::DEFAULTS,
             Self::RoundAmountDensity { .. } => &round_density::DEFAULTS,
             Self::TraceLibr { .. } => &libr::DEFAULTS,
             Self::TraceFifo { .. } | Self::TraceLifo { .. } => &ordered::DEFAULTS,
@@ -300,6 +317,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmounts { .. } => "O(legs)",
             Self::PeriodEndTiming { .. } => "O(entries)",
             Self::PostClosing => "O(entries + transitions)",
+            Self::UnusualAccounts { .. } => "O(legs log legs + account_pairs log account_pairs)",
             Self::SameSameSame
             | Self::SameSameDifferent { .. }
             | Self::RoundAmountDensity { .. } => "O(legs log legs)",
@@ -358,6 +376,13 @@ pub enum VerifiedProcedureStatistic {
         period: String,
         commits: u64,
     },
+    /// The rarest undirected debit/credit pair in this entry, counted once
+    /// per live posting. A self-pair has only one account citation.
+    AccountPairOccurrences {
+        first_account: u128,
+        second_account: u128,
+        count: u64,
+    },
     /// Full group size and the first at most 4096 members by numeric identity.
     DuplicateEntries {
         count: u64,
@@ -402,6 +427,7 @@ impl VerifiedProcedureStatistic {
             Self::DaysToPeriodEnd { .. } => "days_to_period_end",
             Self::TracedAmount { .. } => "traced_mantissa",
             Self::CommitsAfterClose { .. } => "commits_after_close",
+            Self::AccountPairOccurrences { .. } => "pair_occurrences",
             Self::DuplicateEntries { .. } => "entries",
             Self::DaysApart { .. } => "days_apart",
             Self::FirstDigitPopulation { .. } | Self::DigitPopulation { .. } => "population",
@@ -416,6 +442,7 @@ impl VerifiedProcedureStatistic {
             Self::TracedAmount { mantissa, .. } => *mantissa,
             Self::DaysToPeriodEnd { days, .. } => i128::from(*days),
             Self::CommitsAfterClose { commits, .. } => i128::from(*commits),
+            Self::AccountPairOccurrences { count, .. } => i128::from(*count),
             Self::DuplicateEntries { count, .. } => i128::from(*count),
             Self::DaysApart { days, .. } => i128::from(*days),
             Self::FirstDigitPopulation { counts } => {
@@ -583,14 +610,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     r.bytes(1024 * 1024, "procedure.approval_witness")?;
     let extended = format == EXTENDED_FORMAT;
     if extended {
-        // These six native population witnesses remain opaque. The two
-        // admitted digit profiles use only authenticated journal/chart/units,
+        // These six native population witnesses remain opaque. The admitted
+        // digit/account-pair profiles use only authenticated journal/chart/units,
         // independently reconstructed from source; no REA or attestation fact
         // is taken from these native-only replay witnesses.
         if r.count(6, 4, "procedure.extended_inputs")? != 6 {
             return Err(failed(
                 "procedure_profile",
-                "extended Benford requires six native witnesses",
+                "extended procedures require six native witnesses",
             ));
         }
         for _ in 0..6 {
@@ -618,6 +645,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "jet.round_amounts" => ("FA-EVID-L01", Some(("round_power", 30))),
         "jet.period_end_timing" => ("FA-EVID-L02", Some(("window_days", u32::MAX))),
         "jet.post_closing" => ("FA-EVID-L03", None),
+        "jet.unusual_accounts" => ("FA-EVID-L24", None),
         "duplicates.same_same_same" => ("FA-EVID-L07", None),
         "duplicates.same_same_different" => ("FA-EVID-L08", Some(("window_days", u32::MAX))),
         "numbers.round_amount_density" => ("FA-EVID-L64", None),
@@ -631,11 +659,16 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, exact duplicates and round-amount density v1, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, exact duplicates and round-amount density v1, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
-    if extended != matches!(id, "benford.second_digit" | "benford.first_two_digits") {
+    if extended
+        != matches!(
+            id,
+            "benford.second_digit" | "benford.first_two_digits" | "jet.unusual_accounts"
+        )
+    {
         return Err(failed(
             "procedure_profile",
             "procedure and native certificate format disagree",
@@ -652,7 +685,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         ) && version != 1)
         || (matches!(
             id,
-            "benford.first_digit"
+            "jet.unusual_accounts"
+                | "benford.first_digit"
                 | "benford.second_digit"
                 | "benford.first_two_digits"
                 | "trace.libr"
@@ -678,7 +712,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     if (version == 1
         || matches!(
             id,
-            "benford.first_digit" | "benford.second_digit" | "benford.first_two_digits"
+            "benford.first_digit"
+                | "benford.second_digit"
+                | "benford.first_two_digits"
+                | "jet.unusual_accounts"
         ))
         && effective_through.is_some()
     {
@@ -709,6 +746,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         benford_digits::decode(&mut question, id == "benford.first_two_digits")?
     } else if id == "numbers.round_amount_density" {
         round_density::decode(&mut question)?
+    } else if id == "jet.unusual_accounts" {
+        unusual_accounts::decode(&mut question)?
     } else if let Some((parameter, bound)) = parameter {
         if question.count(1, 20, "procedure.parameters")? != 1
             || text(&mut question, 64, "procedure.parameter")? != parameter
@@ -843,6 +882,30 @@ fn finding(
                 failed("procedure_recomputation", "period finding lacks its entry")
             })?;
             w.count(2).u8(1).u128(entry).u8(4).bytes(period.as_bytes());
+        }
+        VerifiedProcedureStatistic::AccountPairOccurrences {
+            first_account,
+            second_account,
+            ..
+        } => {
+            let entry = value.entry.ok_or_else(|| {
+                failed(
+                    "procedure_recomputation",
+                    "account-pair finding lacks its entry",
+                )
+            })?;
+            w.count(if first_account == second_account {
+                2
+            } else {
+                3
+            })
+            .u8(1)
+            .u128(entry)
+            .u8(3)
+            .u128(*first_account);
+            if first_account != second_account {
+                w.u8(3).u128(*second_account);
+            }
         }
         VerifiedProcedureStatistic::DuplicateEntries { entries, .. } => {
             w.count(entries.len());
@@ -1425,6 +1488,7 @@ fn recompute_version(
             .ok_or_else(|| failed("procedure_arithmetic", "round factor overflow"))?,
         VerifiedProcedureParameters::PeriodEndTiming { .. }
         | VerifiedProcedureParameters::PostClosing
+        | VerifiedProcedureParameters::UnusualAccounts { .. }
         | VerifiedProcedureParameters::SameSameSame
         | VerifiedProcedureParameters::SameSameDifferent { .. }
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
@@ -1540,6 +1604,7 @@ fn recompute_version(
                 post_closing::finding(entry, &first_closes)?
             }
             VerifiedProcedureParameters::SameSameSame
+            | VerifiedProcedureParameters::UnusualAccounts { .. }
             | VerifiedProcedureParameters::SameSameDifferent { .. }
             | VerifiedProcedureParameters::RoundAmountDensity { .. }
             | VerifiedProcedureParameters::TraceLibr { .. }
@@ -1574,6 +1639,9 @@ fn recompute_version(
     ) {
         (findings, live_legs, comparisons) =
             round_density::replay(profile, &grouped_population, registry)?;
+    } else if matches!(profile, VerifiedProcedureParameters::UnusualAccounts { .. }) {
+        (findings, live_entries, live_legs, comparisons) =
+            unusual_accounts::replay(profile, &grouped_population, registry)?;
     } else if matches!(profile, VerifiedProcedureParameters::TraceLibr { .. }) {
         let (finding, legs, compared) =
             libr::replay(profile, effective_through, &grouped_population, registry)?;
@@ -1618,6 +1686,7 @@ fn recompute_version(
         VerifiedProcedureParameters::FirstDigit { .. }
         | VerifiedProcedureParameters::SecondDigit { .. }
         | VerifiedProcedureParameters::FirstTwoDigits { .. }
+        | VerifiedProcedureParameters::UnusualAccounts { .. }
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }

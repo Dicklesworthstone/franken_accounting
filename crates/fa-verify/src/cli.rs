@@ -132,8 +132,8 @@ commands:
                                                 direct cash flows, changes in equity and their comparisons, lot schedules,
                                                 native/functional one-book consolidated group statements,
                                                 and bounded statistical procedures: JET round-amount/period-end v1/v2,
-                                                post-closing v1, exact same-day/different-date duplicates v1,
-                                                round-amount density v1, first-digit Benford v2 and one-account LIBR/FIFO/LIFO/pro-rata v2.
+                                                post-closing v1, unusual-account pairs v2, exact same-day/different-date duplicates v1,
+                                                round-amount density v1, Benford digit profiles v2 and one-account LIBR/FIFO/LIFO/pro-rata v2.
                                                 JET round-amount/period-end v2 accepts an inclusive effective cutoff;
                                                 Tracing v2 requires a claim date and canonical account/source handles,
                                                 and checks its declared intraday order and law (LIBR also binds replenishment)
@@ -2476,6 +2476,14 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                             .collect(),
                     ),
                 ));
+            }
+            crate::report::VerifiedProcedureStatistic::AccountPairOccurrences {
+                first_account,
+                second_account,
+                ..
+            } => {
+                details.push(("first_account", s(format!("{first_account:032x}"))));
+                details.push(("second_account", s(format!("{second_account:032x}"))));
             }
             crate::report::VerifiedProcedureStatistic::FirstDigitPopulation { counts }
             | crate::report::VerifiedProcedureStatistic::FirstDigitMad { counts, .. } => {

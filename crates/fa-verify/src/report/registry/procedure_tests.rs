@@ -267,6 +267,152 @@ fn verify_rehashed(procedures: &Document) -> Result<Registry, ReportError> {
     verify_bound(&documents, trace_profile(), 2, native, procedure)
 }
 
+fn account_pair_document() -> Document {
+    let id = "jet.unusual_accounts";
+    Document {
+        root: BTreeMap::from([("schema_version".into(), Value::Int(1))]),
+        named_tables: 0,
+        tables: BTreeMap::new(),
+        arrays: BTreeMap::from([
+            (
+                "procedure".into(),
+                vec![BTreeMap::from([
+                    ("calibration".into(), Value::Text("uncalibrated".into())),
+                    ("claim".into(), Value::Text("statistical".into())),
+                    (
+                        "complexity".into(),
+                        Value::Text("O(legs log legs + account_pairs log account_pairs)".into()),
+                    ),
+                    ("evidence".into(), Value::Text("FA-EVID-L24".into())),
+                    ("id".into(), Value::Text(id.into())),
+                    (
+                        "summary".into(),
+                        Value::Text(
+                            "Rarest undirected debit/credit pair, counted once per live entry."
+                                .into(),
+                        ),
+                    ),
+                    ("tie_break".into(), Value::Text("entry_vid".into())),
+                    ("version".into(), Value::Int(2)),
+                ])],
+            ),
+            (
+                "parameter".into(),
+                [("max_pair_count", 1), ("min_population", 5)]
+                    .into_iter()
+                    .map(|(name, default)| {
+                        BTreeMap::from([
+                            ("procedure".into(), Value::Text(id.into())),
+                            ("name".into(), Value::Text(name.into())),
+                            ("default".into(), Value::Int(default)),
+                        ])
+                    })
+                    .collect(),
+            ),
+            ("input".into(), Vec::new()),
+        ]),
+    }
+}
+
+fn verify_account_pairs(procedures: &Document) -> Result<Registry, ReportError> {
+    let documents = registry_inputs(procedures);
+    let native = closure(&documents, &[0, 1, 2, 3], b"fa:report-registry-closure:v2");
+    let procedure = closure(&documents, &[4, 3], b"fa:procedure-registry:v2");
+    verify_bound(
+        &documents,
+        VerifiedProcedureParameters::UnusualAccounts {
+            max_pair_count: 1,
+            min_population: 5,
+        },
+        2,
+        native,
+        procedure,
+    )
+}
+
+#[test]
+fn account_pair_registry_rejects_rehashed_changes_to_the_v2_law() {
+    let original = account_pair_document();
+    assert!(
+        !verify_account_pairs(&original)
+            .unwrap()
+            .unit_scales
+            .is_empty()
+    );
+    for (name, value) in [
+        ("version", Value::Int(1)),
+        ("claim", Value::Text("invariant".into())),
+        ("evidence", Value::Text("FA-EVID-L01".into())),
+        ("tie_break", Value::Text("none".into())),
+        ("complexity", Value::Text("O(legs log legs)".into())),
+        ("calibration", Value::Text("corpus".into())),
+        ("artifact", Value::Text("FA-ART-CAL-01".into())),
+        ("effective_through", Value::Text("optional".into())),
+    ] {
+        let mut changed = account_pair_document();
+        changed.arrays.get_mut("procedure").unwrap()[0].insert(name.into(), value);
+        assert_eq!(
+            verify_account_pairs(&changed).err().expect(name).predicate,
+            "registry_closure",
+            "{name}"
+        );
+    }
+    for variant in [
+        "missing parameter",
+        "duplicate parameter",
+        "changed default",
+        "unexpected handle",
+        "duplicate procedure",
+    ] {
+        let mut changed = account_pair_document();
+        match variant {
+            "missing parameter" => {
+                changed.arrays.get_mut("parameter").unwrap().pop();
+            }
+            "duplicate parameter" => {
+                let mut fresh = account_pair_document();
+                changed.arrays.get_mut("parameter").unwrap()[1] =
+                    fresh.arrays.get_mut("parameter").unwrap().remove(0);
+            }
+            "changed default" => {
+                changed.arrays.get_mut("parameter").unwrap()[0]
+                    .insert("default".into(), Value::Int(2));
+            }
+            "unexpected handle" => {
+                let mut input = account_input();
+                input.insert(
+                    "procedure".into(),
+                    Value::Text("jet.unusual_accounts".into()),
+                );
+                changed.arrays.get_mut("input").unwrap().push(input);
+            }
+            "duplicate procedure" => {
+                let mut fresh = account_pair_document();
+                changed
+                    .arrays
+                    .get_mut("procedure")
+                    .unwrap()
+                    .push(fresh.arrays.get_mut("procedure").unwrap().remove(0));
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            verify_account_pairs(&changed)
+                .err()
+                .expect(variant)
+                .predicate,
+            "registry_closure",
+            "{variant}"
+        );
+    }
+    let mut reordered = original;
+    reordered.arrays.get_mut("parameter").unwrap().reverse();
+    assert!(
+        verify_account_pairs(&reordered).is_ok(),
+        "declaration order is not parameter identity"
+    );
+}
+
 #[test]
 fn libr_registry_accepts_its_source_derived_contract_and_canonical_input_inventory() {
     let mut procedures = procedure_document();

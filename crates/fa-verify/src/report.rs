@@ -103,6 +103,10 @@
 //! period declarations supply the exclusive ends and period citations. The
 //! six-document closure binds native unit scales, procedure semantics and the
 //! decision card's policy identifier.
+//! Extended ProcedureCertificate v2 additionally carries unusual-account-pair
+//! v2 and second/first-two-digit Benford v2. Account pairs use the historical
+//! chart and complete live posting population, count reciprocal and split legs
+//! once per entry, and reproduce the rarest-pair tie-break and work transcript.
 //! Findings, citations, population, work and every output digest are rebuilt.
 //! This statistical computation does not establish fraud or approval admission.
 
@@ -2271,7 +2275,12 @@ fn verify_report_with_native_subledger_input(
             let definitions = procedure_registry
                 .as_mut()
                 .ok_or_else(|| failed("registry_closure", "procedure registries are absent"))?;
-            if request.parameters.is_benford() {
+            if request.parameters.is_benford()
+                || matches!(
+                    request.parameters,
+                    procedure::VerifiedProcedureParameters::UnusualAccounts { .. }
+                )
+            {
                 definitions.account_types = schema
                     .accounts
                     .iter()

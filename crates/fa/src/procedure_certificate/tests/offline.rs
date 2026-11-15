@@ -16,6 +16,8 @@ mod ordered_trace;
 mod pro_rata;
 #[path = "offline/profile_admission.rs"]
 mod profile_admission;
+#[path = "offline/unusual_accounts.rs"]
+mod unusual_accounts;
 
 fn round_request(f: &Fixture, power: i128, through: Option<DateDay>) -> ProcedureRequest {
     let mut request =

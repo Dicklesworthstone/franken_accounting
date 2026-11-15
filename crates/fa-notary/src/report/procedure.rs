@@ -13,6 +13,10 @@ const DENSITY: &[(&str, i128, i128)] = &[
 ];
 const LIBR: &[(&str, i128, i128)] = &[("intraday_order", 0, 3), ("replenishment", 0, 1)];
 const TRACE_ORDER: &[(&str, i128, i128)] = &[("intraday_order", 0, 3)];
+const ACCOUNT_PAIRS: &[(&str, i128, i128)] = &[
+    ("max_pair_count", 0, u32::MAX as i128),
+    ("min_population", 0, u32::MAX as i128),
+];
 const BENFORD: &[(&str, i128, i128)] = &[
     ("account_type", 0, 8),
     ("currency_iso4217", 1, 999),
@@ -42,6 +46,7 @@ pub fn profile(
         ("jet.round_amounts", 1 | 2) => ("FA-EVID-L01", ROUND),
         ("jet.period_end_timing", 1 | 2) => ("FA-EVID-L02", WINDOW),
         ("jet.post_closing", 1) => ("FA-EVID-L03", &[][..]),
+        ("jet.unusual_accounts", 2) => ("FA-EVID-L24", ACCOUNT_PAIRS),
         ("duplicates.same_same_same", 1) => ("FA-EVID-L07", &[][..]),
         ("duplicates.same_same_different", 1) => ("FA-EVID-L08", WINDOW),
         ("numbers.round_amount_density", 1) => ("FA-EVID-L64", DENSITY),
@@ -238,6 +243,46 @@ mod tests {
             assert_eq!(profile(density, 1, None, &parameters, &[]), None);
         }
         assert_eq!(profile(density, 2, None, &defaults, &[]), None);
+    }
+
+    #[test]
+    fn account_pair_profile_requires_v2_and_its_exact_all_date_parameter_inventory() {
+        let id = "jet.unusual_accounts";
+        let parameters = [("max_pair_count", 1), ("min_population", 5)];
+        assert_eq!(profile(id, 2, None, &parameters, &[]), Some("FA-EVID-L24"));
+        for version in [0, 1, 3] {
+            assert_eq!(profile(id, version, None, &parameters, &[]), None);
+        }
+        assert_eq!(profile(id, 2, Some(0), &parameters, &[]), None);
+        assert_eq!(
+            profile(id, 2, None, &parameters, &[("account", "1000")]),
+            None
+        );
+        for invalid in [
+            vec![],
+            vec![("max_pair_count", 1)],
+            vec![("min_population", 5), ("max_pair_count", 1)],
+            vec![("max_pair_count", 1), ("max_pair_count", 5)],
+            vec![("max_pair_count", -1), ("min_population", 5)],
+            vec![
+                ("max_pair_count", 1),
+                ("min_population", i128::from(u32::MAX) + 1),
+            ],
+        ] {
+            assert_eq!(profile(id, 2, None, &invalid, &[]), None);
+        }
+        for boundary in [0, i128::from(u32::MAX)] {
+            assert_eq!(
+                profile(
+                    id,
+                    2,
+                    None,
+                    &[("max_pair_count", boundary), ("min_population", boundary)],
+                    &[],
+                ),
+                Some("FA-EVID-L24")
+            );
+        }
     }
 
     #[test]
