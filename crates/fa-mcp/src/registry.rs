@@ -123,11 +123,17 @@ pub const MACROS: &[MacroSpec] = &[
     MacroSpec {
         id: "fa.macro.prepare_close",
         name: "prepare_close",
-        summary: "Inspect period state, compute the period's trial balance, verify derived registers against the fold, and rehearse a sealed close proposal (`fa period close <code> --reason Scheduled --dry-run`) with step-by-step provenance.",
-        properties: &[(
-            "period",
-            "fiscal period code to prepare for close (for example `FY2026-P03`)",
-        )],
+        summary: "Inspect period state, compute the period's trial balance, and verify derived registers against the fold. With run, inspect its durable task status and rehearse all remaining reviewed monetary tasks together in one scratch history; the period must match the run. Without run, rehearse a sealed Scheduled period-close proposal. Every step retains provenance; neither mode executes the close or retains a certificate. Use fa_close_dry_run with certify: true to retain the combined review separately.",
+        properties: &[
+            (
+                "period",
+                "fiscal period code to prepare for close (for example `FY2026-P03`); must match the immutable period when run is supplied",
+            ),
+            (
+                "run",
+                "optional existing close-run name; rehearse its complete remaining task graph, preserving dependencies and completed receipts (for example `march-close`)",
+            ),
+        ],
         required: &["period"],
         example: r#"{"period":"FY2026-P03"}"#,
         publishes: false,

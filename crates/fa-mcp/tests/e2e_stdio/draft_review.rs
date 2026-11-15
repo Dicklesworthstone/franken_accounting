@@ -498,3 +498,166 @@ fn draft_rehearsal_over_stdio_preserves_agent_plans_and_retained_replay() {
     assert_eq!(wire(&replayed), wire(original));
     assert_eq!(status_reader.finish(), 0);
 }
+
+#[test]
+fn prepare_close_macro_rehearses_the_complete_run_without_executing_it() {
+    let fixture = Fixture::new();
+    let run = "macro-march-close";
+    let names = ["macro-first", "macro-second"];
+    let mut certificates = Vec::new();
+    let mut entries = Vec::new();
+    for (name, amount) in names.iter().zip(["15.00 USD", "5.00 USD"]) {
+        cli_data(&[
+            "draft",
+            "new",
+            name,
+            "--as",
+            "macro-close-preparer",
+            "--book",
+            &fixture.book_arg,
+            "--json",
+        ]);
+        let input = fixture.dir.join(format!("{name}.json"));
+        std::fs::write(&input, intent(name, amount).to_string()).unwrap();
+        let planned = wire(&cli_data(&[
+            "post",
+            "--intent",
+            input.to_str().unwrap(),
+            "--evidence",
+            &fixture.evidence,
+            "--draft",
+            name,
+            "--as",
+            "macro-close-preparer",
+            "--book",
+            &fixture.book_arg,
+            "--json",
+        ]));
+        entries.push(planned["entry"].as_str().unwrap().to_string());
+        let (exit, output) = cli(&[
+            "close",
+            "dry-run",
+            "--draft",
+            name,
+            "--period",
+            PERIOD,
+            "--certify",
+            "--book",
+            &fixture.book_arg,
+            "--json",
+        ]);
+        assert_eq!(exit, 0, "{output}");
+        let certificate = output
+            .lines()
+            .map(wire)
+            .find(|line| line["event"] == json!("report_certificate"))
+            .expect("retained original draft review");
+        certificates.push(format!("C:{}", certificate["data"]["oid"].as_str().unwrap()));
+    }
+    // Task names sort against the declared dependency, so the rehearsal
+    // must follow the graph rather than independently reviewing each draft.
+    let tasks = json!([
+        {"id": "a-second", "depends_on": ["z-first"], "certificate": certificates[1]},
+        {"id": "z-first", "certificate": certificates[0]},
+        {"id": "finish", "depends_on": ["a-second"], "transition": "close"},
+    ])
+    .to_string();
+    cli_data(&[
+        "close",
+        "start",
+        "--run",
+        run,
+        "--period",
+        PERIOD,
+        "--tasks",
+        &tasks,
+        "--as",
+        "macro-close-controller",
+        "--book",
+        &fixture.book_arg,
+        "--json",
+    ]);
+    let status = || {
+        cli_data(&[
+            "close",
+            "status",
+            "--run",
+            run,
+            "--book",
+            &fixture.book_arg,
+            "--json",
+        ])
+    };
+    let periods = || cli_data(&["period", "list", "--book", &fixture.book_arg, "--json"]);
+    let original_status = status();
+    let original_periods = periods();
+    let original_drafts = names.map(|name| fixture.draft(name));
+    let original_balances = wire(&fixture.trial_balance());
+    let before = head(&fixture.book_arg);
+    let mut reader = Mcp::start_with(
+        &fixture.book,
+        &[
+            "--principal",
+            "macro-close-reader",
+            "--grant",
+            "read",
+            "--grant",
+            "verify",
+        ],
+    );
+    reader.discover();
+    let (error, text, result) = call_tool(
+        &mut reader,
+        "fa_macro_prepare_close",
+        json!({"period": PERIOD, "run": run}),
+    );
+    assert!(!error, "combined macro rehearsal: {text}");
+    let data = wire(&text);
+    assert_eq!(data["step_count"], json!(5));
+    assert_eq!(data["steps"][3]["step"], json!("close_status"));
+    assert_eq!(data["steps"][3]["data"], wire(&original_status));
+    assert_eq!(data["steps"][4]["step"], json!("close_run_rehearsal"));
+    assert_eq!(data["steps"][4]["tool"], json!("fa_close_dry_run"));
+    assert_eq!(data["certificates"], json!([]));
+    let report = &data["steps"][4]["data"];
+    assert_eq!(report["complete_on_trunk"], json!(false));
+    let tasks = report["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 3);
+    assert_eq!(tasks[0]["id"], json!("z-first"));
+    assert_eq!(tasks[1]["id"], json!("a-second"));
+    assert_eq!(tasks[0]["state"], json!("rehearsed"));
+    assert_eq!(tasks[1]["state"], json!("rehearsed"));
+    assert_eq!(tasks[2]["state"], json!("transition-review-required"));
+    let expense = report["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["code"] == json!("6000"))
+        .unwrap();
+    assert_eq!(expense["delta"], json!("20.00 USD"));
+    let metadata = envelope(&result);
+    assert_eq!(metadata["certificate"], JsonValue::Null);
+    assert_eq!(metadata["authority"]["ops"], json!(["read", "verify"]));
+
+    // Native period binding and missing-run refusals must survive the macro.
+    for arguments in [
+        json!({"period": "FY2026-P04", "run": run}),
+        json!({"period": PERIOD, "run": "unknown-close-run"}),
+    ] {
+        let (error, text, _) = call_tool(&mut reader, "fa_macro_prepare_close", arguments);
+        assert!(error, "an invalid run selection must refuse: {text}");
+    }
+    assert_eq!(reader.finish(), 0);
+    // Bound reads journal their access receipts. They cannot also publish a
+    // certificate, draft promotion, completion receipt or period transition.
+    assert!(!access_receipts_since(&fixture.book_arg, before, "macro-close-reader").is_empty());
+    assert_eq!(status(), original_status);
+    assert_eq!(periods(), original_periods);
+    let mut after = wire(&fixture.trial_balance());
+    after["known_at"] = original_balances["known_at"].clone();
+    assert_eq!(after, original_balances);
+    for (index, name) in names.iter().enumerate() {
+        assert_eq!(fixture.draft(name), original_drafts[index]);
+        fixture.assert_unposted(&entries[index]);
+    }
+}

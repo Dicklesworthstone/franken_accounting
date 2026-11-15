@@ -480,7 +480,8 @@ impl Adapter {
         let raw_steps: Vec<(&'static str, &'static str, Vec<String>)> = match spec.id {
             "fa.macro.prepare_close" => {
                 let period = get_str("period", true)?.unwrap_or_default();
-                vec![
+                let run = get_str("run", false)?;
+                let mut steps = vec![
                     (
                         "period_list",
                         "fa_time_period_status",
@@ -501,9 +502,33 @@ impl Adapter {
                             period.clone(),
                         ],
                     ),
-                    // The macro rehearses the period's scheduled close (fa-cvg:
-                    // a close names its reason).
-                    (
+                ];
+                if let Some(run) = run {
+                    steps.push((
+                        "close_status",
+                        "fa_close_status",
+                        vec!["close".into(), "status".into(), "--run".into(), run.clone()],
+                    ));
+                    // Reuse the native combined rehearsal, including its
+                    // immutable period check and cross-task posting laws.
+                    // A pending period task still needs its separate review
+                    // and independent execution authority.
+                    steps.push((
+                        "close_run_rehearsal",
+                        "fa_close_dry_run",
+                        vec![
+                            "close".into(),
+                            "dry-run".into(),
+                            "--run".into(),
+                            run,
+                            "--period".into(),
+                            period,
+                        ],
+                    ));
+                } else {
+                    // The standalone mode keeps the exact scheduled
+                    // period-close proposal and its existing detector memory.
+                    steps.push((
                         "close_plan",
                         "fa_time_period_transition",
                         vec![
@@ -514,8 +539,9 @@ impl Adapter {
                             "Scheduled".into(),
                             "--dry-run".into(),
                         ],
-                    ),
-                ]
+                    ));
+                }
+                steps
             }
             "fa.macro.inspect_cash_matching" => {
                 let account = get_str("account", true)?.unwrap_or_default();
@@ -2044,6 +2070,39 @@ mod tests {
                 mac.wire_name()
             );
         }
+    }
+
+    #[test]
+    fn prepare_close_run_is_declared_and_validated_before_book_access() {
+        let adapter = Adapter::new(config()).expect("adapter");
+        let mac = macro_by_wire("fa_macro_prepare_close").unwrap();
+        let schema = mac.input_schema();
+        assert_eq!(schema["properties"]["run"]["type"], json!("string"));
+        assert_eq!(schema["required"], json!(["period"]));
+        assert!(!mac.publishes);
+        for run in [
+            json!(""),
+            json!("--yes"),
+            json!("<run>"),
+            json!(17),
+            json!(true),
+        ] {
+            let error = adapter
+                .call_macro(mac, &json!({"period": "FY2026-P03", "run": run}))
+                .expect_err("invalid run is refused before opening the absent book");
+            assert_eq!(error.exit, 2, "{error:?}");
+            assert_eq!(error.detector.as_deref(), Some("arguments"));
+        }
+        let no_read = Adapter::new(ServerConfig {
+            grants: vec!["post".into()],
+            ..config()
+        })
+        .unwrap();
+        let error = no_read
+            .call_macro(mac, &json!({"period": "FY2026-P03", "run": "march-close"}))
+            .expect_err("a run grants no read authority");
+        assert_eq!(error.exit, 7);
+        assert_eq!(error.refusal_id.as_deref(), Some("FA-REF-011"));
     }
 
     #[test]
