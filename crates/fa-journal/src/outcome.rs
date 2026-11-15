@@ -6,8 +6,10 @@
 //! policy activation, account lifecycle and roles, closing and FX routing,
 //! dimension lifecycle, native subledger registration, lot policies and asset
 //! schedules reserve the common key; their pre-protocol entries remain valid
-//! retry anchors. Recurring lifecycle, fiscal-year creation, capability issuance
-//! and revocation reserve the key beside their registered Entry identity;
+//! retry anchors. Close-run lifecycle records reserve and authenticate their
+//! keys atomically with their native effects. Recurring lifecycle, fiscal-year
+//! creation, capability issuance and revocation reserve the key beside their
+//! registered Entry identity;
 //! their original legacy events remain valid read-only retry anchors. This
 //! does not migrate historical capability keys into the monetary-key coverage.
 //! Existing normal-key controls are checked before a posting takes their key.
@@ -887,6 +889,39 @@ pub fn verify_control_recorded<V: Vfs + Clone>(
     entry: &Entry,
 ) -> Result<bool, KernelError> {
     if !normal_key_control(entry, row.vid) {
+        return Ok(false);
+    }
+    verify_control_claim(db, row, entry)
+}
+
+/// Reserve a close-run lifecycle's successful key in its native transaction.
+/// Count the exact claim bytes in the enclosing promotion/transition budget.
+pub(crate) fn stage_close_control(
+    batch: &mut WriteBatch,
+    tracker: &mut crate::batch::TemplateByteTracker,
+    entry: &Entry,
+    vid: VId,
+) -> Result<(), KernelError> {
+    if !crate::close_run::is_lifecycle_control(entry, vid) {
+        return Err(KernelError::Corrupt(
+            "close outcome claim requires its registered lifecycle control".into(),
+        ));
+    }
+    let outcome = entry_outcome_vid(&entry.proposal);
+    let props = claim_properties(&EntryClaim::new(entry, vid, None)?)?;
+    tracker.create_vertex(fa_model::symbols::relation::IN_CASE, outcome, 1, &props);
+    batch.create_vertex(outcome, vec![label::INTENT_OUTCOME], props);
+    Ok(())
+}
+
+/// Claim-free historical close controls remain valid at their original
+/// publication; a deleted or rewritten modern claim is never a legacy event.
+pub(crate) fn verify_close_recorded<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    entry: &Entry,
+) -> Result<bool, KernelError> {
+    if !crate::close_run::is_lifecycle_control(entry, row.vid) {
         return Ok(false);
     }
     verify_control_claim(db, row, entry)

@@ -780,3 +780,532 @@ fn close_run_status_binds_the_original_native_outcome_not_a_rewritten_entry_list
         assert!(close_run_status(&h.db, &h.ctx(), &h.book, "outcome-history", &reader()).is_err());
     }
 }
+
+fn lifecycle_key(kind: u8, object: VId) -> Vec<u8> {
+    fa_model::domain_digest(
+        b"fa:close-record-key:v1",
+        &[&[kind], &object.0.to_le_bytes()],
+    )
+    .to_vec()
+}
+
+fn shared_key_batch(
+    h: &mut Harness,
+    key: &[u8],
+    principal: VId,
+) -> Result<BatchPosted, Refusal> {
+    let member = PostIntent::new(
+        h.proposal(
+            321,
+            b"close-key-batch-member",
+            EntryClass::ORIGINAL,
+            principal,
+        ),
+        Vec::new(),
+    )
+    .unwrap();
+    let batch = PostBatch::new(key.to_vec(), vec![member]).unwrap();
+    let cx = h.ctx();
+    h.runtime
+        .block_on(post_batch(
+            &mut h.db,
+            &cx,
+            &h.book,
+            Capability::embedded(principal, &["post"]).unwrap(),
+            batch,
+        ))
+        .unwrap()
+}
+
+#[test]
+fn close_lifecycle_and_batches_reserve_the_same_principal_key_in_both_orders() {
+    for kind in ["open", "task", "review", "complete"] {
+        for batch_first in [false, true] {
+            let mut h = Harness::new(None);
+            let action = review(&mut h, "shared-close-key", 20, 230);
+            let declaration = definition(&h, "shared-close-key", vec![task("post", &[], action)]);
+            let run = fa_model::close_run_vid(h.book.book_id, &declaration.name);
+            let task_vid = fa_model::close_task_vid(h.book.book_id, &declaration.name, "post");
+            let mut selected = None;
+            let key = match kind {
+                "open" => lifecycle_key(0, run),
+                _ => {
+                    let opened = start(&mut h, &declaration).unwrap();
+                    match kind {
+                        "task" => lifecycle_key(1, task_vid),
+                        "complete" => lifecycle_key(2, run),
+                        "review" => {
+                            let (review, certificate) =
+                                retain_combined_review(&mut h, combined_review_bytes(&opened, 1));
+                            selected = Some(review);
+                            fa_model::domain_digest(
+                                b"fa:close-review-key:v1",
+                                &[&run.0.to_le_bytes(), &certificate],
+                            )
+                            .to_vec()
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            };
+            if batch_first {
+                shared_key_batch(&mut h, &key, APPROVER).unwrap();
+                let before = h.head();
+                let rows = h.db.vertices().unwrap();
+                let refusal = if kind == "open" {
+                    start(&mut h, &declaration).unwrap_err()
+                } else {
+                    let mut req = request(&h, closer());
+                    req.review = selected.as_ref().map(|review| review.at_frontier(before));
+                    step(&mut h, &declaration.name, "post", req).unwrap_err()
+                };
+                assert_eq!(
+                    refusal.code,
+                    code::IDEMPOTENCY_CONFLICT,
+                    "{kind}: {refusal}"
+                );
+                assert_eq!(h.head(), before, "{kind}");
+                assert_eq!(h.db.vertices().unwrap(), rows, "{kind}");
+                assert_eq!(cash_balance(&h.db, h.cash), -321, "{kind}");
+                assert!(h.draft("shared-close-key").closed.is_none(), "{kind}");
+                if kind == "open" {
+                    assert!(h.db.vertex(run).unwrap().is_none());
+                } else {
+                    let view = status(&h, &declaration.name);
+                    assert!(view.tasks[0].completion.is_none(), "{kind}");
+                    assert!(view.reviews.is_empty(), "{kind}");
+                    assert!(!view.complete, "{kind}");
+                }
+            } else {
+                if kind == "open" {
+                    start(&mut h, &declaration).unwrap();
+                } else {
+                    let mut req = request(&h, closer());
+                    req.review = selected;
+                    assert!(
+                        step(&mut h, &declaration.name, "post", req)
+                            .unwrap()
+                            .run
+                            .complete
+                    );
+                }
+                let before = h.head();
+                let rows = h.db.vertices().unwrap();
+                assert_eq!(
+                    shared_key_batch(&mut h, &key, APPROVER)
+                        .unwrap_err()
+                        .code,
+                    code::IDEMPOTENCY_CONFLICT,
+                    "{kind}"
+                );
+                assert_eq!(h.head(), before, "{kind}");
+                assert_eq!(h.db.vertices().unwrap(), rows, "{kind}");
+                let entry = entry_vid(h.book.book_id, &APPROVER.0.to_le_bytes(), &key);
+                let claim = h
+                    .db
+                    .vertex(fa_model::intent_outcome_vid(
+                        h.book.book_id,
+                        &APPROVER.0.to_le_bytes(),
+                        &key,
+                    ))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(claim.labels, vec![label::INTENT_OUTCOME], "{kind}");
+                assert_eq!(
+                    claim.created_at,
+                    h.db.vertex(entry).unwrap().unwrap().created_at,
+                    "{kind}"
+                );
+                assert_eq!(
+                    prop(&claim, property::TARGET_REF),
+                    Some(&CanonicalScalar::bytes(entry.0.to_le_bytes().to_vec()).unwrap()),
+                    "{kind}"
+                );
+                shared_key_batch(&mut h, &key, OWNER).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn close_control_claims_publish_with_their_native_effect_and_authenticate_every_retry() {
+    for kind in ["open", "task", "review", "complete"] {
+        for attack in ["deleted", "rewritten-and-restored"] {
+            let mut h = Harness::new(None);
+            let action = review(&mut h, "claim-history", 20, 231);
+            let declaration = definition(&h, "claim-history", vec![task("post", &[], action)]);
+            let opened = start(&mut h, &declaration).unwrap();
+            let (selected, certificate) =
+                retain_combined_review(&mut h, combined_review_bytes(&opened, 2));
+            let mut req = request(&h, closer());
+            req.review = Some(selected);
+            let completed = step(&mut h, &declaration.name, "post", req).unwrap();
+            let key = match kind {
+                "open" => lifecycle_key(0, opened.vid),
+                "task" => lifecycle_key(1, opened.tasks[0].vid),
+                "complete" => lifecycle_key(2, opened.vid),
+                "review" => fa_model::domain_digest(
+                    b"fa:close-review-key:v1",
+                    &[&opened.vid.0.to_le_bytes(), &certificate],
+                )
+                .to_vec(),
+                _ => unreachable!(),
+            };
+            let outcome = fa_model::intent_outcome_vid(
+                h.book.book_id,
+                &APPROVER.0.to_le_bytes(),
+                &key,
+            );
+            let original = h.db.vertex(outcome).unwrap().unwrap();
+            assert_eq!(
+                original.created_at,
+                if kind == "open" {
+                    opened.opened_at
+                } else {
+                    completed.receipt.recorded_at
+                }
+            );
+            assert_eq!(
+                h.db
+                    .vertex(completed.receipt.effect)
+                    .unwrap()
+                    .unwrap()
+                    .created_at,
+                completed.receipt.recorded_at
+            );
+            let mut change = WriteBatch::new(relation::IN_CASE);
+            if attack == "deleted" {
+                change.delete_vertex(outcome);
+                h.write(change);
+            } else {
+                change.set_vertex_property(
+                    outcome,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::Int(0)),
+                );
+                h.write(change);
+                let mut restore = WriteBatch::new(relation::IN_CASE);
+                restore.set_vertex_property(
+                    outcome,
+                    property::FA_PAYLOAD,
+                    Some(prop(&original, property::FA_PAYLOAD).unwrap().clone()),
+                );
+                h.write(restore);
+                assert_eq!(h.db.vertex(outcome).unwrap().unwrap().props, original.props);
+            }
+            let before = h.head();
+            let rows = h.db.vertices().unwrap();
+            assert!(
+                close_run_status(&h.db, &h.ctx(), &h.book, &declaration.name, &reader()).is_err(),
+                "{kind}: {attack}"
+            );
+            let cx = h.ctx();
+            let text = description(&h);
+            assert!(
+                !matches!(
+                    h.runtime.block_on(create_close_run(
+                        &mut h.db,
+                        &cx,
+                        &h.book,
+                        &declaration,
+                        &closer(),
+                        text,
+                    )),
+                    Ok(Ok(_))
+                ),
+                "{kind}: {attack}"
+            );
+            let req = request(&h, closer());
+            assert!(
+                !matches!(
+                    h.runtime.block_on(execute_close_task(
+                        &mut h.db,
+                        &cx,
+                        &h.book,
+                        &declaration.name,
+                        "post",
+                        req,
+                    )),
+                    Ok(Ok(_))
+                ),
+                "{kind}: {attack}"
+            );
+            // Admission must precede reading even the corrupted claim.
+            let denied = request(
+                &h,
+                Capability::embedded(APPROVER, &["close"]).unwrap(),
+            );
+            let refusal = h
+                .runtime
+                .block_on(execute_close_task(
+                    &mut h.db,
+                    &cx,
+                    &h.book,
+                    &declaration.name,
+                    "post",
+                    denied,
+                ))
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(refusal.code, code::CAPABILITY, "{kind}: {attack}");
+            assert_eq!(h.head(), before, "{kind}: {attack}");
+            assert_eq!(h.db.vertices().unwrap(), rows, "{kind}: {attack}");
+        }
+    }
+}
+
+#[test]
+fn close_open_retry_binds_its_semantic_description_and_accepts_equivalent_resealing() {
+    let mut h = Harness::new(None);
+    let declaration = definition(
+        &h,
+        "semantic-open",
+        vec![task(
+            "close",
+            &[],
+            CloseTaskAction::PeriodTransition(PeriodTransition::Close),
+        )],
+    );
+    let initial = start(&mut h, &declaration).unwrap();
+    let before = h.head();
+    let rows = h.db.vertices().unwrap();
+    for text in ["different reviewed work", "reviewed close"] {
+        let description = Erasable::seal(
+            &text.to_string(),
+            None,
+            &h.book.seal_key,
+            [232; 32],
+            [233; 24],
+        );
+        let cx = h.ctx();
+        let result = h
+            .runtime
+            .block_on(create_close_run(
+                &mut h.db,
+                &cx,
+                &h.book,
+                &declaration,
+                &closer(),
+                description,
+            ))
+            .unwrap();
+        if text == "reviewed close" {
+            assert_eq!(result.unwrap(), initial);
+        } else {
+            assert_eq!(result.unwrap_err().code, code::IDEMPOTENCY_CONFLICT);
+        }
+        assert_eq!(h.head(), before);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+}
+
+#[test]
+fn a_current_authorized_controller_can_resume_another_controllers_completed_task() {
+    let mut h = Harness::new(None);
+    let first = review(&mut h, "controller-first", 20, 234);
+    let second = review(&mut h, "controller-second", 30, 235);
+    let declaration = definition(
+        &h,
+        "controllers",
+        vec![
+            task("first", &[], first),
+            task("second", &["first"], second),
+        ],
+    );
+    start(&mut h, &declaration).unwrap();
+    let req = request(&h, closer());
+    let first = step(&mut h, "controllers", "first", req).unwrap();
+    let before = h.head();
+    let other = Capability::embedded(OWNER, &["read", "close", "approve"]).unwrap();
+    let mut req = request(&h, other.clone());
+    req.description = Erasable::seal(
+        &"continuing the existing close".to_string(),
+        None,
+        &h.book.seal_key,
+        [236; 32],
+        [237; 24],
+    );
+    let retry = step(&mut h, "controllers", "first", req).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.receipt, first.receipt);
+    assert_eq!(retry.receipt.principal, APPROVER);
+    assert_eq!(h.head(), before);
+    let task = fa_model::close_task_vid(h.book.book_id, "controllers", "first");
+    assert!(
+        h.db
+            .vertex(fa_model::intent_outcome_vid(
+                h.book.book_id,
+                &OWNER.0.to_le_bytes(),
+                &lifecycle_key(1, task),
+            ))
+            .unwrap()
+            .is_none(),
+        "observing another controller's completed task does not acquire its key"
+    );
+    let req = request(&h, other);
+    let second = step(&mut h, "controllers", "second", req).unwrap();
+    assert!(second.run.complete);
+    assert_eq!(second.receipt.principal, OWNER);
+    assert_eq!(cash_balance(&h.db, h.cash), -50);
+    assert_eq!(status(&h, "controllers"), second.run);
+}
+
+#[test]
+fn a_genuine_legacy_close_open_remains_a_read_only_retry_anchor() {
+    let mut h = Harness::new(None);
+    let declaration = definition(
+        &h,
+        "legacy-close",
+        vec![task(
+            "close",
+            &[],
+            CloseTaskAction::PeriodTransition(PeriodTransition::Close),
+        )],
+    );
+    let body = fa_model::CloseRunBody {
+        book_id: h.book.book_id,
+        name: declaration.name.clone(),
+        period: declaration.period.clone(),
+        owner: APPROVER,
+        tasks: vec![fa_model::CloseTaskBody {
+            id: "close".into(),
+            depends_on: Vec::new(),
+            action: fa_model::CloseTaskBodyAction::PeriodTransition { to: 3 },
+        }],
+    };
+    let run = fa_model::close_run_vid(h.book.book_id, &body.name);
+    let task = fa_model::close_task_vid(h.book.book_id, &body.name, "close");
+    let key = lifecycle_key(0, run);
+    let entry_id = entry_vid(h.book.book_id, &APPROVER.0.to_le_bytes(), &key);
+    let claim = fa_model::intent_outcome_vid(h.book.book_id, &APPROVER.0.to_le_bytes(), &key);
+    let opening = EntryPayload {
+        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        book_id: h.book.book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::CLOSE_CONTROL,
+        effective_date: DateDay(0),
+        document_date: None,
+        description: description(&h),
+        effective_period: None,
+        legs: Vec::new(),
+        control: Some(fa_model::ControlPayload::LifecycleTransition {
+            object_ref: run,
+            from: 0,
+            to: 1,
+            proof_refs: Vec::new(),
+            reason_code: 0,
+        }),
+        unit_totals: Vec::new(),
+        base_totals: None,
+        idempotency_key: key,
+        origin: EntryOrigin::Control {
+            control_kind: fa_model::ControlKind::CLOSE_TRANSITION,
+            spec_body_digest: body.digest().unwrap(),
+        },
+        principal_ref: APPROVER,
+        session_ref: None,
+        evidence: Vec::new(),
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: vec![(
+            fa_model::entry::CLOSE_RUN_EXTENSION,
+            body.canonical_bytes().unwrap(),
+        )],
+        tags: Vec::new(),
+    }
+    .seal(Vec::new(), None)
+    .unwrap();
+    let object_props = |code: &str, payload: Vec<u8>, digest: [u8; 32], state: i64| {
+        let mut props = vec![
+            (
+                property::FA_PAYLOAD,
+                CanonicalScalar::bytes(payload).unwrap(),
+            ),
+            (
+                property::FA_DIGEST,
+                CanonicalScalar::bytes(digest.to_vec()).unwrap(),
+            ),
+            (
+                property::BOOK_ID,
+                CanonicalScalar::bytes(h.book.book_id.0.to_vec()).unwrap(),
+            ),
+            (property::CODE, CanonicalScalar::ucs_basic_text(code).unwrap()),
+            (property::STATE, CanonicalScalar::Int(state)),
+        ];
+        props.sort_by_key(|(key, _)| key.0);
+        props
+    };
+    // Reproduce an old writer's publication, with no claim at its original
+    // coordinate. Deleting a modern claim would not be a legacy fixture.
+    let mut batch = WriteBatch::new(relation::IN_CASE);
+    batch.create_vertex(
+        run,
+        vec![label::CLOSE_RUN],
+        object_props(
+            &body.name,
+            body.canonical_bytes().unwrap(),
+            body.digest().unwrap(),
+            1,
+        ),
+    );
+    batch.create_vertex(
+        task,
+        vec![label::CLOSE_TASK],
+        object_props(
+            "close",
+            body.tasks[0].canonical_bytes().unwrap(),
+            body.tasks[0].digest().unwrap(),
+            0,
+        ),
+    );
+    batch.create_vertex(
+        entry_id,
+        vec![label::ENTRY],
+        fa_model::entry_mirrors(&opening).unwrap(),
+    );
+    batch.add_edge(
+        edge_id(relation::IN_CASE, entry_id, run),
+        entry_id,
+        run,
+        vec![],
+    );
+    batch.add_edge(edge_id(relation::IN_CASE, task, run), task, run, vec![]);
+    h.write(batch);
+    let original = status(&h, &declaration.name);
+    let before = h.head();
+    let rows = h.db.vertices().unwrap();
+    assert_eq!(start(&mut h, &declaration).unwrap(), original);
+    assert_eq!(h.head(), before);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+    assert!(h.db.vertex(claim).unwrap().is_none());
+    assert!(
+        h.db
+            .vertex_at(claim, original.opened_at)
+            .unwrap()
+            .is_none()
+    );
+
+    let reviewed = plan(&h, &declaration.name, "close", b"legacy-final-close").unwrap();
+    let mut req = request(&h, closer());
+    req.transition_plan = Some(reviewed);
+    let complete = step(&mut h, &declaration.name, "close", req).unwrap();
+    assert!(complete.run.complete);
+    assert!(h.db.vertex(claim).unwrap().is_none());
+    for key in [lifecycle_key(1, task), lifecycle_key(2, run)] {
+        let claim = h
+            .db
+            .vertex(fa_model::intent_outcome_vid(
+                h.book.book_id,
+                &APPROVER.0.to_le_bytes(),
+                &key,
+            ))
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim.created_at, complete.receipt.recorded_at);
+    }
+    let before = h.head();
+    assert_eq!(start(&mut h, &declaration).unwrap(), complete.run);
+    assert_eq!(status(&h, &declaration.name), complete.run);
+    assert_eq!(h.head(), before);
+}
