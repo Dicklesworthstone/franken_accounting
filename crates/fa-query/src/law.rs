@@ -5,9 +5,9 @@
 //! - An aggregate over amounts (`SUM`, `AVG`, `MIN`, `MAX`, `COLLECT`) is
 //!   confined to one unit: the statement pins the unit, or the same
 //!   `RETURN`/`WITH` groups by it.
-//! - An amount compared, ordered or filtered (`WHERE`, `ORDER BY`, a
-//!   pattern's map) is pinned to one unit, every amount in that clause to
-//!   the same one, and never compared with a literal: the native grammar has
+//! - An amount compared, ordered or filtered (including predicates in
+//!   `RETURN`, `WITH` and `CASE`) is pinned to one unit. Compared amounts
+//!   share that unit and are never compared with a literal: the native grammar has
 //!   no exact decimal literal, and an integer is a different type.
 //! - One expression that combines amounts of two bindings needs both pinned
 //!   to the same unit.
@@ -470,18 +470,123 @@ fn operator(lexed: &Lexed<'_>, i: usize) -> bool {
     lexed.punct(i, '=') || lexed.punct(i, '<') || lexed.punct(i, '>') || lexed.punct(i, '!')
 }
 
-/// The reference at tokens `[start, end)` is compared with a literal.
+/// A grouping parenthesis is transparent to an operand's type; a function
+/// call is not. In particular, COUNT(amount) is a scalar, not an amount.
+fn grouping_parenthesis(lexed: &Lexed<'_>, at: usize) -> bool {
+    lexed.punct(at, '(')
+        && (at == 0
+            || lexed.kind(at - 1) != Some(Kind::Word)
+            || clause_word(lexed, at - 1)
+            || [
+                "WHEN", "THEN", "ELSE", "CASE", "AND", "OR", "XOR", "NOT", "IN", "DISTINCT", "BY",
+            ]
+            .iter()
+            .any(|word| lexed.word(at - 1, word)))
+}
+
+/// Widen one reference only through parentheses that enclose exactly it.
+/// Parent/depth checks prevent crossing an expression or function argument.
+fn grouped_reference(lexed: &Lexed<'_>, start: usize, end: usize) -> (usize, usize) {
+    let (mut start, mut end) = (start, end);
+    while start > 0 && grouping_parenthesis(lexed, start - 1) && lexed.punct(end, ')') {
+        let open = start - 1;
+        if lexed.tokens[start].parent != Some(open)
+            || lexed.tokens[end].parent != lexed.tokens[open].parent
+            || lexed.tokens[end].depth != lexed.tokens[open].depth
+        {
+            break;
+        }
+        start = open;
+        end += 1;
+    }
+    (start, end)
+}
+
+fn null_test(lexed: &Lexed<'_>, start: usize, end: usize) -> bool {
+    let (_, end) = grouped_reference(lexed, start, end);
+    lexed.word(end, "IS")
+        && (lexed.word(end + 1, "NULL")
+            || (lexed.word(end + 1, "NOT") && lexed.word(end + 2, "NULL")))
+}
+
+fn simple_case_subject(lexed: &Lexed<'_>, start: usize, end: usize) -> bool {
+    start > 0 && lexed.word(start - 1, "CASE") && lexed.word(end, "WHEN")
+}
+
+/// The simple CASE subject compared with this complete WHEN operand, if
+/// any. Search outwards across preceding completed nested CASE expressions.
+/// A searched CASE has no subject and therefore supplies no implicit operand.
+fn case_subject_for_when(lexed: &Lexed<'_>, start: usize, end: usize) -> Option<usize> {
+    if start == 0 || !lexed.word(start - 1, "WHEN") || !lexed.word(end, "THEN") {
+        return None;
+    }
+    let mut nested = 0_usize;
+    for k in (0..start - 1).rev() {
+        if k > 0 && lexed.punct(k - 1, '.') {
+            continue;
+        }
+        if lexed.word(k, "END") {
+            nested += 1;
+        } else if lexed.word(k, "CASE") {
+            if nested == 0 {
+                return (!lexed.word(k + 1, "WHEN")).then_some(k + 1);
+            }
+            nested -= 1;
+        }
+    }
+    None
+}
+
+fn compared(lexed: &Lexed<'_>, start: usize, end: usize) -> bool {
+    let (start, end) = grouped_reference(lexed, start, end);
+    operator(lexed, end)
+        || (start > 0 && operator(lexed, start - 1))
+        || simple_case_subject(lexed, start, end)
+        || case_subject_for_when(lexed, start, end).is_some()
+}
+
+fn starts_literal(lexed: &Lexed<'_>, mut at: usize) -> bool {
+    while grouping_parenthesis(lexed, at) || lexed.punct(at, '-') || lexed.punct(at, '+') {
+        at += 1;
+    }
+    literal(lexed, at)
+}
+
+/// The reference is compared with a literal, including grouping parentheses
+/// on either operand and a literal's unary sign. The check is independent of
+/// whether the containing predicate filters rows or projects a result.
 fn compared_with_literal(lexed: &Lexed<'_>, start: usize, end: usize) -> bool {
+    let (start, end) = grouped_reference(lexed, start, end);
+    if case_subject_for_when(lexed, start, end).is_some_and(|at| starts_literal(lexed, at)) {
+        return true;
+    }
+    // A simple CASE compares its subject with every WHEN operand, not just
+    // the first one. Nested CASE arms belong to their own subject.
+    if simple_case_subject(lexed, start, end) {
+        let mut nested = 0_usize;
+        for k in end..lexed.tokens.len() {
+            if k > 0 && lexed.punct(k - 1, '.') {
+                continue;
+            }
+            if lexed.word(k, "CASE") {
+                nested += 1;
+            } else if lexed.word(k, "END") {
+                if nested == 0 {
+                    break;
+                }
+                nested -= 1;
+            } else if nested == 0 && lexed.word(k, "WHEN") && starts_literal(lexed, k + 1) {
+                return true;
+            }
+        }
+    }
     let mut k = end;
     let mut saw = false;
     while operator(lexed, k) {
         saw = true;
         k += 1;
     }
-    if lexed.punct(k, '-') {
-        k += 1;
-    }
-    if saw && literal(lexed, k) {
+    if saw && starts_literal(lexed, k) {
         return true;
     }
     let mut k = start;
@@ -490,7 +595,46 @@ fn compared_with_literal(lexed: &Lexed<'_>, start: usize, end: usize) -> bool {
         saw = true;
         k -= 1;
     }
+    while k > 0 && lexed.punct(k - 1, ')') {
+        k -= 1;
+    }
     saw && k > 0 && literal(lexed, k - 1)
+}
+
+/// A complete COUNT or an explicit top-level predicate produces a scalar.
+/// Do not carry the units of its inputs onto its output alias. CASE and
+/// other functions remain conservative: an inner predicate does not establish
+/// the type of their result.
+fn scalar_projection(lexed: &Lexed<'_>, mut start: usize, mut end: usize) -> bool {
+    while grouping_parenthesis(lexed, start) && end > start + 1 && lexed.punct(end - 1, ')') {
+        let depth = lexed.tokens[start].depth;
+        if (start + 1..end - 1).any(|k| lexed.tokens[k].depth <= depth) {
+            break;
+        }
+        start += 1;
+        end -= 1;
+    }
+    if start >= end {
+        return false;
+    }
+    let depth = lexed.tokens[start].depth;
+    if lexed.word(start, "COUNT")
+        && lexed.punct(start + 1, '(')
+        && lexed.punct(end - 1, ')')
+        && (start + 2..end - 1).all(|k| lexed.tokens[k].depth > depth)
+    {
+        return true;
+    }
+    if (start..end).any(|k| lexed.tokens[k].depth == depth && lexed.word(k, "CASE")) {
+        return false;
+    }
+    (start..end).any(|k| {
+        lexed.tokens[k].depth == depth
+            && (operator(lexed, k)
+                || (lexed.word(k, "IS")
+                    && (lexed.word(k + 1, "NULL")
+                        || (lexed.word(k + 1, "NOT") && lexed.word(k + 2, "NULL")))))
+    })
 }
 
 pub(crate) fn aggregated(lexed: &Lexed<'_>, i: usize) -> bool {
@@ -640,7 +784,7 @@ pub(crate) fn check_with_amount_aliases(
                 }
                 let name = lexed.str(k);
                 if lexed.punct(k + 1, '.') && AMOUNTS.contains(&lexed.str(k + 2)) {
-                    if lexed.word(k + 3, "IS") {
+                    if null_test(lexed, k, k + 3) {
                         continue;
                     }
                     if aggregated(lexed, k) {
@@ -657,7 +801,7 @@ pub(crate) fn check_with_amount_aliases(
                     && !lexed.punct(k + 1, '(')
                     && !(k > 0 && lexed.word(k - 1, "AS"))
                 {
-                    if lexed.word(k + 1, "IS") {
+                    if null_test(lexed, k, k + 1) {
                         continue;
                     }
                     sums_amounts |= aggregated(lexed, k);
@@ -672,6 +816,9 @@ pub(crate) fn check_with_amount_aliases(
                     && !lexed.punct(k + 1, '(')
                     && !(k > 0 && lexed.word(k - 1, "AS"))
                 {
+                    if null_test(lexed, k, k + 1) {
+                        continue;
+                    }
                     // `WITH l.amount AS x ... MAX(x)` aggregates an amount
                     // as `MAX(l.amount)` does.
                     sums_amounts |= aggregated(lexed, k);
@@ -717,6 +864,24 @@ pub(crate) fn check_with_amount_aliases(
             }
             for r in &references {
                 let shown = &lexed.text[lexed.tokens[r.start].start..lexed.tokens[r.end - 1].end];
+                if compared_with_literal(lexed, r.start, r.end) {
+                    return Err(refused(
+                        lexed,
+                        r.start,
+                        format!(
+                            "`{shown}` is compared with a literal; the native grammar has no exact decimal literal"
+                        ),
+                        PIN_FIX,
+                    ));
+                }
+                if projection && compared(lexed, r.start, r.end) && r.pin.is_none() {
+                    return Err(refused(
+                        lexed,
+                        r.start,
+                        format!("`{shown}` is compared across units"),
+                        PIN_FIX,
+                    ));
+                }
                 if projection && aggregated(lexed, r.start) {
                     let grouped = r.var.as_deref().is_some_and(|var| {
                         items.iter().any(|other| {
@@ -735,16 +900,6 @@ pub(crate) fn check_with_amount_aliases(
                         ));
                     }
                 } else if !projection {
-                    if compared_with_literal(lexed, r.start, r.end) {
-                        return Err(refused(
-                            lexed,
-                            r.start,
-                            format!(
-                                "`{shown}` is compared with a literal; the native grammar has no exact decimal literal"
-                            ),
-                            PIN_FIX,
-                        ));
-                    }
                     if r.pin.is_none() {
                         return Err(refused(
                             lexed,
@@ -762,7 +917,12 @@ pub(crate) fn check_with_amount_aliases(
                 && lexed.kind(item.end - 1) == Some(Kind::Word)
             {
                 // Two or more bindings in one item were proved pinned alike.
-                aliases.insert(lexed.str(item.end - 1).to_string(), distinct[0].pin.clone());
+                let alias = lexed.str(item.end - 1).to_string();
+                if scalar_projection(lexed, item.start, item.end - 2) {
+                    aliases.remove(&alias);
+                } else {
+                    aliases.insert(alias, distinct[0].pin.clone());
+                }
             }
         }
         if let Some((first, pin)) = clause_pins.first()

@@ -750,6 +750,7 @@ fn an_amount_compares_only_within_one_unit_and_never_with_a_literal() {
         "MATCH (l:Leg) RETURN l.amount, l.unit_id",
         "MATCH (l:Leg) WHERE l.amount IS NULL RETURN COUNT(*) AS unmirrored",
         "MATCH (l:Leg) RETURN COUNT(l.amount) AS mirrored",
+        "MATCH (l:Leg) RETURN CASE 100 WHEN COUNT(l.amount) THEN true ELSE false END",
     ] {
         native(text);
     }
@@ -779,6 +780,107 @@ fn an_amount_compares_only_within_one_unit_and_never_with_a_literal() {
         let r = refused(text);
         assert_eq!(r.law, Law::Amount, "{text}: {r:?}");
         assert!(r.message.contains(says), "{text}: {r:?}");
+    }
+}
+
+/// Projecting a predicate must enforce the same amount law as filtering it.
+/// Neither grouping parentheses nor CASE's implicit equality creates an exact
+/// decimal literal or supplies a missing unit witness.
+#[test]
+fn amount_predicate_literals_are_refused_in_every_expression_position() {
+    let matched = "MATCH (a:Leg {unit_id: 1}), (b:Leg {unit_id: 1})";
+    for expression in [
+        "a.amount > 100",
+        "100 <= a.amount",
+        "(a.amount) > 100",
+        "100 <= (a.amount)",
+        "a.amount > (100)",
+        "(100) <= a.amount",
+        "((a.amount)) >= ((-100))",
+        "((+100)) <> ((a.amount))",
+        "a.amount = '100.00'",
+        "CASE WHEN a.amount > 100 THEN true ELSE false END",
+        "CASE WHEN ((100)) < ((a.amount)) THEN 1 ELSE 0 END",
+        "CASE a.amount WHEN 100 THEN true ELSE false END",
+        "CASE 100 WHEN a.amount THEN true ELSE false END",
+        "CASE ((-100)) WHEN ((a.amount)) THEN true ELSE false END",
+        "CASE 100 WHEN 99 THEN CASE b.amount WHEN a.amount THEN 1 ELSE 2 END WHEN a.amount THEN 3 ELSE 0 END",
+        "CASE ((a.amount)) WHEN ((100)) THEN true ELSE false END",
+        "CASE a.amount WHEN b.amount THEN 1 WHEN ((100)) THEN 2 ELSE 0 END",
+        "CASE a.amount WHEN b.amount THEN CASE b.amount WHEN a.amount THEN 1 ELSE 2 END WHEN 100 THEN 3 ELSE 0 END",
+    ] {
+        for suffix in [
+            format!("RETURN {expression} AS result"),
+            format!("WITH {expression} AS result RETURN result"),
+            format!("WHERE {expression} RETURN a"),
+        ] {
+            let query = format!("{matched} {suffix}");
+            let refusal = refused(&query);
+            assert_eq!(refusal.law, Law::Amount, "{query}: {refusal:?}");
+            assert!(refusal.message.contains("literal"), "{query}: {refusal:?}");
+        }
+    }
+    for predicate in ["value > 100", "((100)) < ((value))"] {
+        let query = format!("{matched} WITH a.amount AS value RETURN {predicate} AS result");
+        let refusal = refused(&query);
+        assert_eq!(refusal.law, Law::Amount, "{query}: {refusal:?}");
+        assert!(refusal.message.contains("literal"), "{query}: {refusal:?}");
+    }
+    let query = "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit {code: 'USD'}) CALL fa.open_amount(l) YIELD open, age_days RETURN ((open)) > ((100)) AS result EFFECTIVE AT '2026-03-31'";
+    assert_eq!(refused(query).law, Law::Amount);
+}
+
+#[test]
+fn projected_amount_predicates_require_unit_provenance() {
+    for query in [
+        "MATCH (l:Leg) RETURN l.amount = l.amount AS equal",
+        "MATCH (l:Leg) RETURN ((l.amount)) = ((l.amount)) AS equal",
+        "MATCH (l:Leg) WITH l.amount = l.amount AS equal RETURN equal",
+        "MATCH (l:Leg) RETURN CASE l.amount WHEN l.amount THEN true ELSE false END",
+        "MATCH (a:Leg {unit_id: 1}), (b:Leg {unit_id: 2}) RETURN a.amount = b.amount AS equal",
+        "MATCH (a:Leg {unit_id: 1}), (b:Leg {unit_id: 2}) RETURN CASE a.amount WHEN b.amount THEN true ELSE false END",
+    ] {
+        let refusal = refused(query);
+        assert_eq!(refusal.law, Law::Amount, "{query}: {refusal:?}");
+    }
+}
+
+#[test]
+fn amount_predicates_keep_exact_comparisons_null_checks_and_scalar_aliases() {
+    let matched = "MATCH (a:Leg {unit_id: 1}), (b:Leg {unit_id: 1})";
+    for expression in [
+        "a.amount = b.amount",
+        "((a.amount)) <> ((b.amount))",
+        "a.amount <= b.amount",
+        "NOT ((a.amount) > (b.amount))",
+        "(a.amount = b.amount) OR (a.amount < b.amount)",
+        "CASE WHEN a.amount = b.amount THEN true ELSE false END",
+        "CASE a.amount WHEN b.amount THEN true ELSE false END",
+        "CASE ((a.amount)) WHEN ((b.amount)) THEN true ELSE false END",
+        "CASE a.amount WHEN b.amount THEN CASE 1 WHEN 1 THEN true ELSE false END ELSE false END",
+    ] {
+        for suffix in [
+            format!("RETURN {expression} AS result"),
+            format!("WITH {expression} AS result RETURN result"),
+            format!("WHERE {expression} RETURN a"),
+        ] {
+            native(&format!("{matched} {suffix}"));
+        }
+    }
+    for query in [
+        "MATCH (l:Leg) RETURN l.amount, l.unit_id",
+        "MATCH (l:Leg) RETURN (l.amount) IS NULL AS missing",
+        "MATCH (l:Leg) WHERE ((l.amount)) IS NOT NULL RETURN l.amount",
+        "MATCH (l:Leg) WITH (l.amount) IS NULL AS missing WHERE missing = true RETURN missing",
+        "MATCH (l:Leg) WITH COUNT(l.amount) AS count WHERE count > 0 RETURN count",
+        "MATCH (l:Leg) WITH (COUNT(l.amount)) AS count RETURN count > 0 AS nonempty",
+        "MATCH (a:Leg {unit_id: 1}), (b:Leg {unit_id: 1}) WITH a.amount = b.amount AS equal WHERE equal = true RETURN equal",
+        "MATCH (l:Leg {unit_id: 1}) WITH l.amount AS value RETURN ((value)) = ((value)) AS equal",
+        "MATCH (l:Leg {unit_id: 1}) WITH l.amount AS value WHERE (value) IS NOT NULL RETURN value",
+        "MATCH (l:Leg) RETURN COUNT(l.amount) AS mirrored",
+        "MATCH (l:Leg) RETURN l.unit_id AS unit, SUM(l.amount) AS total",
+    ] {
+        native(query);
     }
 }
 
