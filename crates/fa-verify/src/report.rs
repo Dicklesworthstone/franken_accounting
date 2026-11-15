@@ -107,6 +107,10 @@
 //! v2 and second/first-two-digit Benford v2. Account pairs use the historical
 //! chart and complete live posting population, count reciprocal and split legs
 //! once per entry, and reproduce the rarest-pair tie-break and work transcript.
+//! Relative-size factor and threshold splitting v1 additionally reconstruct
+//! native-unit debit subsets, original per-leg party grouping, exact wide ratios
+//! and complete inclusive date windows. Their thresholds retain full i128
+//! precision. Both versions deliberately use the complete all-date population.
 //! Findings, citations, population, work and every output digest are rebuilt.
 //! This statistical computation does not establish fraud or approval admission.
 
@@ -2196,6 +2200,7 @@ fn verify_report_with_native_subledger_input(
                         .collect(),
                     entries: BTreeMap::new(),
                 });
+            let mut leg_parties = BTreeMap::new();
             let entries = infos
                 .iter()
                 .filter(|(index, _)| {
@@ -2226,6 +2231,20 @@ fn verify_report_with_native_subledger_input(
                     let details = crate::envelope::proposal_leg_details(
                         &records[index].1[..records[index].0],
                     )?;
+                    if request.parameters.is_number_analytics() {
+                        leg_parties.insert(
+                            info.identity,
+                            details
+                                .iter()
+                                .map(|leg| {
+                                    leg.dimensions
+                                        .iter()
+                                        .find(|(kind, _)| *kind == 12)
+                                        .map(|(_, party)| *party)
+                                })
+                                .collect(),
+                        );
+                    }
                     if let Some(context) = &mut tracing {
                         context.entries.insert(
                             info.identity,
@@ -2276,6 +2295,7 @@ fn verify_report_with_native_subledger_input(
                 .as_mut()
                 .ok_or_else(|| failed("registry_closure", "procedure registries are absent"))?;
             if request.parameters.is_benford()
+                || request.parameters.is_number_analytics()
                 || matches!(
                     request.parameters,
                     procedure::VerifiedProcedureParameters::UnusualAccounts { .. }
@@ -2288,6 +2308,7 @@ fn verify_report_with_native_subledger_input(
                     .collect();
             }
             definitions.trace = tracing;
+            definitions.leg_parties = leg_parties;
             let (verified, output) =
                 procedure::replay(request, cert.book, cert.known_at, entries, definitions)?;
             (Some(verified), output)

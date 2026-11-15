@@ -529,7 +529,11 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
         if extended
             != matches!(
                 id,
-                "benford.second_digit" | "benford.first_two_digits" | "jet.unusual_accounts"
+                "benford.second_digit"
+                    | "benford.first_two_digits"
+                    | "jet.unusual_accounts"
+                    | "numbers.relative_size_factor"
+                    | "numbers.threshold_splitting"
             )
         {
             return Ok(false);

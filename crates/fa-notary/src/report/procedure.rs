@@ -17,6 +17,17 @@ const ACCOUNT_PAIRS: &[(&str, i128, i128)] = &[
     ("max_pair_count", 0, u32::MAX as i128),
     ("min_population", 0, u32::MAX as i128),
 ];
+const RELATIVE_SIZE: &[(&str, i128, i128)] = &[
+    ("min_rsf_bps", 0, u32::MAX as i128),
+    ("min_subset_size", 2, u32::MAX as i128),
+];
+const THRESHOLD_SPLITTING: &[(&str, i128, i128)] = &[
+    ("currency_iso4217", 1, 999),
+    ("floor", 1, i128::MAX),
+    ("min_count", 2, u32::MAX as i128),
+    ("threshold", 2, i128::MAX),
+    ("window_days", 0, u32::MAX as i128),
+];
 const BENFORD: &[(&str, i128, i128)] = &[
     ("account_type", 0, 8),
     ("currency_iso4217", 1, 999),
@@ -50,6 +61,8 @@ pub fn profile(
         ("duplicates.same_same_same", 1) => ("FA-EVID-L07", &[][..]),
         ("duplicates.same_same_different", 1) => ("FA-EVID-L08", WINDOW),
         ("numbers.round_amount_density", 1) => ("FA-EVID-L64", DENSITY),
+        ("numbers.relative_size_factor", 1) => ("FA-EVID-L32", RELATIVE_SIZE),
+        ("numbers.threshold_splitting", 1) => ("FA-EVID-L33", THRESHOLD_SPLITTING),
         ("benford.first_digit", 2) => ("FA-EVID-L10", BENFORD),
         ("benford.second_digit", 2) => ("FA-EVID-L30", BENFORD),
         ("benford.first_two_digits", 2) => ("FA-EVID-L31", BENFORD),
@@ -75,6 +88,9 @@ pub fn profile(
                 name == expected && (low..=high).contains(&value)
             })
     {
+        return None;
+    }
+    if id == "numbers.threshold_splitting" && parameters[1].1 >= parameters[3].1 {
         return None;
     }
     if tracing {
@@ -104,6 +120,51 @@ mod tests {
     use super::*;
 
     type ProfileCase<'a> = (&'a str, u16, &'a [(&'a str, i128)], &'a str);
+
+    #[test]
+    fn numeric_audit_profiles_preserve_full_width_thresholds_and_exact_inventories() {
+        let rsf = [("min_rsf_bps", 50_000), ("min_subset_size", 3)];
+        let splitting = [
+            ("currency_iso4217", 840),
+            ("floor", 1i128 << 100),
+            ("min_count", 2),
+            ("threshold", i128::MAX),
+            ("window_days", i128::from(u32::MAX)),
+        ];
+        for (id, parameters, evidence) in [
+            ("numbers.relative_size_factor", &rsf[..], "FA-EVID-L32"),
+            ("numbers.threshold_splitting", &splitting[..], "FA-EVID-L33"),
+        ] {
+            assert_eq!(profile(id, 1, None, parameters, &[]), Some(evidence));
+            assert_eq!(profile(id, 2, None, parameters, &[]), None);
+            assert_eq!(profile(id, 1, Some(0), parameters, &[]), None);
+            assert_eq!(profile(id, 1, None, parameters, &[("account", "1000")]), None);
+            assert_eq!(profile(id, 1, None, &parameters[..parameters.len() - 1], &[]), None);
+            let mut duplicated = parameters.to_vec();
+            duplicated[1].0 = duplicated[0].0;
+            assert_eq!(profile(id, 1, None, &duplicated, &[]), None);
+            let mut reordered = parameters.to_vec();
+            reordered.swap(0, 1);
+            assert_eq!(profile(id, 1, None, &reordered, &[]), None);
+        }
+        for (index, value) in [
+            (0, -1), (0, i128::from(u32::MAX) + 1),
+            (1, 1), (1, i128::from(u32::MAX) + 1),
+        ] {
+            let mut invalid = rsf;
+            invalid[index].1 = value;
+            assert_eq!(profile("numbers.relative_size_factor", 1, None, &invalid, &[]), None);
+        }
+        for (index, value) in [
+            (0, 0), (0, 1_000), (1, 0), (1, i128::MAX), (2, 1),
+            (2, i128::from(u32::MAX) + 1), (3, 1), (4, -1),
+            (4, i128::from(u32::MAX) + 1),
+        ] {
+            let mut invalid = splitting;
+            invalid[index].1 = value;
+            assert_eq!(profile("numbers.threshold_splitting", 1, None, &invalid, &[]), None);
+        }
+    }
 
     #[test]
     fn portable_procedure_profiles_keep_their_exact_versions_and_evidence_ids() {

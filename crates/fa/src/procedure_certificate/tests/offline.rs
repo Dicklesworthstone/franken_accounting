@@ -10,6 +10,8 @@ mod benford_digits;
 
 #[path = "offline/libr.rs"]
 mod libr;
+#[path = "offline/number_analytics.rs"]
+mod number_analytics;
 #[path = "offline/ordered_trace.rs"]
 mod ordered_trace;
 #[path = "offline/pro_rata.rs"]

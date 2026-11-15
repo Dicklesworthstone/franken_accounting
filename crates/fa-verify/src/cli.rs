@@ -2328,7 +2328,10 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
         summary.push(("comparisons", n(report.comparisons)));
     } else {
         for (parameter, value) in parameters {
-            summary.push((parameter, n(u64::from(value))));
+            summary.push((
+                parameter,
+                i64::try_from(value).map_or_else(|_| amount(value), Json::Int),
+            ));
         }
     }
     for (name, identity) in report.parameters.inputs() {
@@ -2374,11 +2377,12 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
         let rendered_value = if matches!(
             finding.statistic,
             crate::report::VerifiedProcedureStatistic::TracedAmount { .. }
+                | crate::report::VerifiedProcedureStatistic::SplitTotal { .. }
         ) {
             amount(value)
         } else {
             // Preserve the existing count JSON: integers through i64::MAX,
-            // exact decimal strings above it. Traced money is always a string.
+            // exact decimal strings above it. Monetary amounts are always strings.
             i64::try_from(value).map_or_else(|_| amount(value), Json::Int)
         };
         let mut details = vec![
@@ -2472,6 +2476,30 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                     Json::List(
                         [earlier, later]
                             .into_iter()
+                            .map(|entry| s(format!("{entry:032x}")))
+                            .collect(),
+                    ),
+                ));
+            }
+            crate::report::VerifiedProcedureStatistic::RelativeSizeFactor {
+                largest_entry,
+                second_entry,
+                account,
+                ..
+            } => {
+                details.push(("largest_entry", s(format!("{largest_entry:032x}"))));
+                details.push(("second_entry", s(format!("{second_entry:032x}"))));
+                details.push((
+                    "account",
+                    account.map_or(Json::Null, |account| s(format!("{account:032x}"))),
+                ));
+            }
+            crate::report::VerifiedProcedureStatistic::SplitTotal { entries, .. } => {
+                details.push((
+                    "entries",
+                    Json::List(
+                        entries
+                            .iter()
                             .map(|entry| s(format!("{entry:032x}")))
                             .collect(),
                     ),
@@ -7188,6 +7216,78 @@ mod tests {
             out.exit, 8,
             "hex text read as raw bytes does not decode: a verification failure"
         );
+    }
+
+    #[test]
+    fn numeric_audit_json_keeps_full_width_thresholds_and_monetary_results_exact() {
+        use crate::report::{
+            VerifiedProcedure, VerifiedProcedureFinding, VerifiedProcedureParameters,
+            VerifiedProcedureStatistic,
+        };
+        let mut run = VerifiedProcedure {
+            procedure: "numbers.threshold_splitting".into(),
+            version: 1,
+            book_id: [1; 16],
+            known_at: 7,
+            effective_through: None,
+            parameters: VerifiedProcedureParameters::ThresholdSplitting {
+                currency_iso4217: 840,
+                floor: 1i128 << 100,
+                min_count: 2,
+                threshold: i128::MAX,
+                window_days: u32::MAX,
+            },
+            population: 2,
+            live_entries: 2,
+            live_legs: 4,
+            comparisons: 2,
+            findings: vec![VerifiedProcedureFinding {
+                entry: Some(11),
+                severity: 3,
+                statistic: VerifiedProcedureStatistic::SplitTotal {
+                    mantissa: i128::MAX,
+                    scale: 2,
+                    entries: vec![11, 12],
+                },
+                population: 2,
+                narrative: "exact source observations".into(),
+            }],
+            parameters_digest: [2; 32],
+            inputs_digest: [3; 32],
+            findings_digest: [4; 32],
+            policy_oid: [5; 32],
+            decision_card: Vec::new(),
+            decision_card_digest: [6; 32],
+        };
+        let render = |run: &VerifiedProcedure| {
+            let mut text = String::new();
+            Json::List(procedure_checks(run).iter().map(Check::json).collect()).write(&mut text);
+            text
+        };
+        let json = render(&run);
+        assert!(json.contains(&format!("\"threshold\":\"{}\"", i128::MAX)));
+        assert!(json.contains(&format!("\"floor\":\"{}\"", 1i128 << 100)));
+        assert!(json.contains("\"window_days\":4294967295"));
+        assert!(json.contains("\"min_count\":2"));
+        assert!(json.contains(&format!("\"value\":\"{}\"", i128::MAX)));
+        assert!(json.contains("\"statistic\":\"split_total\""));
+        assert!(json.contains("\"entries\":[\"0000000000000000000000000000000b\""));
+        run.procedure = "numbers.relative_size_factor".into();
+        run.parameters = VerifiedProcedureParameters::RelativeSizeFactor {
+            min_rsf_bps: 50_000,
+            min_subset_size: 3,
+        };
+        run.findings[0].statistic = VerifiedProcedureStatistic::RelativeSizeFactor {
+            basis_points: i128::MAX,
+            largest_entry: 11,
+            second_entry: 12,
+            account: None,
+        };
+        let json = render(&run);
+        assert!(json.contains("\"min_rsf_bps\":50000"));
+        assert!(json.contains("\"account\":null"));
+        assert!(json.contains("\"statistic\":\"rsf_bps\""));
+        assert!(json.contains(&format!("\"value\":\"{}\"", i128::MAX)));
     }
 
     #[test]

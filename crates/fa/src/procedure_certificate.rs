@@ -922,7 +922,11 @@ impl ProcedureCertificate {
         );
         let format = if matches!(
             self.report.procedure.as_str(),
-            "benford.second_digit" | "benford.first_two_digits" | "jet.unusual_accounts"
+            "benford.second_digit"
+                | "benford.first_two_digits"
+                | "jet.unusual_accounts"
+                | "numbers.relative_size_factor"
+                | "numbers.threshold_splitting"
         ) {
             EXTENDED_PROCEDURE_CERTIFICATE_FORMAT
         } else {
@@ -933,7 +937,7 @@ impl ProcedureCertificate {
             || evidence != Some(self.report.evidence.as_str())
         {
             return Err(offline_unsupported(
-                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, exact duplicates v1, round-amount density v1, Benford digit profiles v2, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2 permit an optional cutoff, while tracing v2 requires a claim date and canonical account/source handles",
+                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, exact duplicates and density/relative-size/threshold-splitting v1, Benford digit profiles v2, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2 permit an optional cutoff, while tracing v2 requires a claim date and canonical account/source handles",
             ));
         }
         let jet = matches!(
