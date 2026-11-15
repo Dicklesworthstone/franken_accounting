@@ -1391,36 +1391,21 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
         )
         .collect();
 
-    // Extract reason-coded adjustment legs from visible posted entries in the
-    // adjustment-layer book through `through` at `at`. Any monetary entry
-    // lacking a `fa.book_to_book` tag moves `layered_balances` without adding
-    // an `AdjustmentLayerLeg`, so `reconcile_book_to_book` refuses with
-    // `UnexplainedBookDifference`.
+    // Use the register fold's immutable, migration-visible prefix. A Pending
+    // reservation has no posted effect; a Resolution(Posts) contributes its
+    // own sub-vector and reason tag, not its hold or the released remainder.
+    // Voids, Expires and other controls have no legs. Reversals contribute
+    // their opposite-side legs at their own effective and recorded dates.
+    // Untagged posted entries still change layered_balances without adding
+    // an AdjustmentLayerLeg, producing UnexplainedBookDifference.
     let mut adjustments = Vec::new();
-    let mut runs = BTreeMap::new();
-    let mut visible_entries = Vec::new();
-    for row in db.vertices_at(at).map_err(KernelError::from)? {
-        if !row.labels.contains(&label::ENTRY) {
-            continue;
-        }
-        let entry = fa_journal::entry_storage::decode_at(db, &row, at)?;
-        if entry.proposal.book_id != book.book_id || entry.proposal.branch_id != Id128::TRUNK {
-            continue;
-        }
-        if !fa_journal::migration::visible_at(db, &entry, at, &mut runs)? {
-            continue;
-        }
-        if entry.proposal.control.is_some()
-            || entry.proposal.pending.is_some()
+    for (vid, entry, _) in fa_registers::entries_at(db, book, at)? {
+        if entry.proposal.legs.is_empty()
+            || entry.proposal.class == fa_model::EntryClass::PENDING
             || entry.proposal.effective_date > through
         {
             continue;
         }
-        visible_entries.push((row.created_at, row.vid, entry));
-    }
-    visible_entries.sort_by_key(|(created_at, vid, _)| (*created_at, vid.0));
-
-    for (_, vid, entry) in visible_entries {
         let Some(tag) = entry
             .proposal
             .tags
