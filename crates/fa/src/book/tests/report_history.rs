@@ -90,3 +90,59 @@ fn resident_report_memo_contention_keeps_the_exact_nonblocking_read() {
     );
     assert_eq!(work(&book).1, ReportHistoryWork::default());
 }
+
+fn open_item_work(
+    book: &Book,
+) -> (
+    Option<CommitSeq>,
+    fa_registers::open_items::OpenItemReadWork,
+) {
+    with_store!(&book.store, core => {
+        let memo = core.open_item_history.lock().unwrap();
+        (memo.known_at(), memo.read_work())
+    })
+}
+
+#[test]
+fn resident_open_item_facade_preserves_admission_and_does_not_wait_for_its_memo() {
+    let (book, _, _, _) = certified_fixture();
+    let principal = VId(1);
+    let reader = Capability::embedded(principal, &["read"]).unwrap();
+    let scoped = reader.clone().for_periods(&["FY2026-P03"]).unwrap();
+    let selection = ReportSelection::OpenItems { account: None };
+    assert!(
+        book.read_scope(principal, &scoped)
+            .unwrap()
+            .unwrap()
+            .admit_report(&selection, None)
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(
+        open_item_work(&book).0,
+        None,
+        "refused scoped reads cannot populate a whole-book memo"
+    );
+
+    let at = book
+        .read_scope(principal, &reader)
+        .unwrap()
+        .unwrap()
+        .admit_report(&selection, None)
+        .unwrap()
+        .unwrap();
+    let expected = book.open_items_report(None, Some(at)).unwrap();
+    assert_eq!(open_item_work(&book).0, Some(at));
+    assert_eq!(open_item_work(&book).1.snapshot_reads, 1);
+    assert_eq!(book.open_items(None, Some(at)).unwrap(), expected.items);
+    assert_eq!(open_item_work(&book).1.snapshot_reads, 0);
+    assert_eq!(open_item_work(&book).1.entries_decoded, 0);
+
+    let held = with_store!(&book.store, core => core.open_item_history.lock().unwrap());
+    assert_eq!(book.open_items_report(None, Some(at)).unwrap(), expected);
+    assert_eq!(book.open_items(None, Some(at)).unwrap(), expected.items);
+    drop(held);
+    assert_eq!(book.open_items_report(None, Some(at)).unwrap(), expected);
+    assert_eq!(open_item_work(&book).1.snapshot_reads, 0);
+    assert_eq!(book.head().unwrap(), at);
+}

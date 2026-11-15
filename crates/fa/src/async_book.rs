@@ -126,6 +126,10 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     /// activity reads. Contended or poisoned disposable state uses the literal
     /// path; a report never waits for this optional optimization.
     pub(crate) report_history: std::sync::Mutex<fa_registers::ReportHistoryMemo>,
+    /// Disposable native open-item fold for repeated resident reads. The
+    /// canonical prefix and each suffix are authenticated independently of
+    /// applied mirrors; contention falls back to the literal reader.
+    pub(crate) open_item_history: std::sync::Mutex<fa_registers::open_items::OpenItemMemo>,
     /// The client's principal key, when this handle signs every approval and
     /// attestation it records ([`Self::sign_with_principal_key`], plan
     /// §14.5, fa-kae). Held only for the handle's life; never journaled.
@@ -278,6 +282,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             carried: fa_journal::CarriedHistory::default(),
             functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
             report_history: std::sync::Mutex::default(),
+            open_item_history: std::sync::Mutex::default(),
             principal_key: None,
         })
     }
@@ -336,6 +341,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             carried: fa_journal::CarriedHistory::default(),
             functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
             report_history: std::sync::Mutex::default(),
+            open_item_history: std::sync::Mutex::default(),
             principal_key: None,
         })
     }
@@ -4016,6 +4022,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 carried: fa_journal::CarriedHistory::default(),
                 functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
                 report_history: std::sync::Mutex::default(),
+                open_item_history: std::sync::Mutex::default(),
                 principal_key: None,
             },
             map,
@@ -4059,6 +4066,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 carried: fa_journal::CarriedHistory::default(),
                 functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
                 report_history: std::sync::Mutex::default(),
+                open_item_history: std::sync::Mutex::default(),
                 principal_key: None,
             },
             rehearsal,
@@ -4104,6 +4112,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 carried: fa_journal::CarriedHistory::default(),
                 functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
                 report_history: std::sync::Mutex::default(),
+                open_item_history: std::sync::Mutex::default(),
                 principal_key: None,
             },
             rehearsal,
@@ -4156,6 +4165,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 carried: fa_journal::CarriedHistory::default(),
                 functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
                 report_history: std::sync::Mutex::default(),
+                open_item_history: std::sync::Mutex::default(),
                 principal_key: None,
             },
             map,
@@ -6932,6 +6942,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
     ) -> Result<Vec<OpenItem>, BookError> {
         self.query(cx, |db, book| {
+            if let Ok(mut history) = self.open_item_history.try_lock() {
+                return Ok(fa_registers::open_items::open_items_carried(
+                    db,
+                    &cx.query(),
+                    book,
+                    account,
+                    known_at,
+                    &mut history,
+                )?);
+            }
             Ok(fa_registers::open_items(db, book, account, known_at)?)
         })
     }
@@ -6944,6 +6964,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
     ) -> Result<crate::OpenItemsReport, BookError> {
         self.query(cx, |db, book| {
+            if let Ok(mut history) = self.open_item_history.try_lock() {
+                return Ok(fa_registers::open_items::open_items_report_carried(
+                    db,
+                    &cx.query(),
+                    book,
+                    account,
+                    known_at,
+                    &mut history,
+                )?);
+            }
             Ok(fa_registers::open_items::open_items_report(
                 db, book, account, known_at,
             )?)
