@@ -330,6 +330,33 @@ pub(crate) fn is_source_bound(proposal: &EntryPayload) -> bool {
         })
 }
 
+/// A prospective exact reversal of a foreign application. This identifies
+/// the retained law only; the native reversal path must still authenticate
+/// its complete ancestry, exact side swap and current application capacity.
+pub(crate) fn is_application_reversal(proposal: &EntryPayload) -> bool {
+    proposal.class == EntryClass::REVERSAL
+        && !crate::revaluation::is_source_bound(proposal)
+        && !crate::disposal::has_basis(proposal)
+        && !crate::asset_cost::has_basis(proposal)
+        && !proposal.extensions.iter().any(|(tag, _)| {
+            *tag == fa_model::entry::PRIOR_PERIOD_ADJUSTMENT_EXTENSION
+                || *tag == fa_model::entry::YEAR_END_CLOSE_EXTENSION
+        })
+        && proposal.base_totals.as_ref().is_some_and(|totals| {
+            matches!(
+                FxLawId::from_oid(&totals.fx_law_oid),
+                Some(
+                    FxLawId::SettlementCarryingBasis
+                        | FxLawId::SettlementAllocatedCarrying
+                        | FxLawId::SettlementSpotCarrying
+                )
+            ) && proposal
+                .legs
+                .iter()
+                .any(|leg| leg.amount.unit.0 != totals.unit_id)
+        })
+}
+
 /// Exact law arithmetic, in base minor units. The final remainder is never
 /// re-rounded; a partial amount may legitimately relieve zero base units.
 pub fn remaining_carrying_relief(
@@ -2136,7 +2163,7 @@ pub(crate) fn unsupported_reversal_compound() -> Refusal {
         exit::REFUSAL,
         "foreign application reversal chains require their own publication",
         "plan §5.7–5.10 (exact recorded relief and complete carrying dependency)",
-        "post this reversal separately, or review and commit its single-entry plan; compound reversal chains require an explicit staged carrying-value law",
+        "post this reversal separately, review and commit its single-entry plan, or plan it alone in a dedicated draft; compound reversal chains require an explicit staged carrying-value law",
     )
 }
 

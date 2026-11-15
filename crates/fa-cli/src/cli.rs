@@ -8936,10 +8936,32 @@ fn build_post_request_with_prior(
             ).into());
         }
         let vid = parse_vid(target_s, "reverses")?;
-        let Some(target) = batch_plan::target_entry(book, earlier, vid)? else {
+        let target = if let Some(name) = draft.filter(|_| capability.branch().is_some()) {
+            // A retained member is already private to this admitted owner.
+            // Published sources require their entire mirrored footprint and
+            // generated reversal effects to be admitted before payload access.
+            // The purpose-specific preflight returns no source payload and
+            // grants no reusable Read authority to this Post-only capability.
+            if let Some(target) = earlier.get(&vid) {
+                Some(target.clone())
+            } else if book.admit_draft_reversal_source(
+                &capability,
+                name,
+                vid,
+                supplied_date,
+                doc.get("effective_period").and_then(Json::as_str),
+            )?? {
+                book.read_entry(vid)?.map(|(entry, _)| entry)
+            } else {
+                None
+            }
+        } else {
+            batch_plan::target_entry(book, earlier, vid)?
+        };
+        let Some(target) = target else {
             return Err(usage(
-                format!("reverses: no entry {target_s} in this book"),
-                "fa entry show <vid> to check the identity",
+                format!("reverses: no admitted entry {target_s} in this book"),
+                "use an existing target whose complete footprint is admitted by this capability",
             ));
         };
         supersession.push(fa_model::Supersession {

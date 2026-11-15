@@ -1141,21 +1141,28 @@ mod source_draft_tests {
 
     impl Fixture {
         fn new() -> Self {
+            Self::new_with_storage(false)
+        }
+
+        fn new_with_storage(directory: bool) -> Self {
             let dir = fixture().join("source-draft-book");
             let units = UnitRegistry::embedded().unwrap();
-            let book = Book::create_memory(
-                BookKeys::for_development(0x6a),
-                BookSpec {
-                    book_id: Id128([0x6b; 16]),
-                    name: "Confined source-derived drafts".into(),
-                    base_unit: units.lookup("USD").unwrap(),
-                    calendar: FiscalCalendar::monthly("source-drafts", 1, 1).unwrap(),
-                    time_zone_policy: None,
-                    entities: Vec::new(),
-                    opening_date: None,
-                },
-                Entropy::deterministic(106),
-            )
+            let spec = BookSpec {
+                book_id: Id128([0x6b; 16]),
+                name: "Confined source-derived drafts".into(),
+                base_unit: units.lookup("USD").unwrap(),
+                calendar: FiscalCalendar::monthly("source-drafts", 1, 1).unwrap(),
+                time_zone_policy: None,
+                entities: Vec::new(),
+                opening_date: None,
+            };
+            let keys = BookKeys::for_development(0x6a);
+            let entropy = Entropy::deterministic(106);
+            let book = if directory {
+                Book::create_dir(&dir, keys, spec, entropy)
+            } else {
+                Book::create_memory(keys, spec, entropy)
+            }
             .unwrap();
             let mut f = Self {
                 book,
@@ -1683,6 +1690,296 @@ mod source_draft_tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn post_only_draft_reversals_restore_and_reapply_exact_foreign_payments() {
+        fn balances(event: &Json) -> std::collections::BTreeMap<(String, String), String> {
+            field(field(event, "data"), "rows")
+                .as_arr()
+                .unwrap()
+                .iter()
+                .filter(|row| !text(row, "net").starts_with("0.00 "))
+                .map(|row| {
+                    let account = row.get("code").or_else(|| row.get("account")).unwrap();
+                    let net = text(row, "net");
+                    let unit = net.split_whitespace().last().unwrap();
+                    (
+                        (account.as_str().unwrap().to_string(), unit.to_string()),
+                        net.to_string(),
+                    )
+                })
+                .collect()
+        }
+
+        let mut f = Fixture::new();
+        let (targets, rate) = f.settlement_sources();
+        let before_payment = f.owner(&["tb", "--period", "FY2026-P03"], None);
+        let before_functional = f.owner(&["tb", "--functional", "--period", "FY2026-P03"], None);
+        let payment = f.settlement_intent("recorded-payment-for-undo", &rate, &targets[..1]);
+        let posted = f.owner(&["post", "--intent", "-"], Some(&payment));
+        let payment_id = text(field(&posted, "data"), "vid").to_string();
+        let after_payment = f.owner(&["tb", "--period", "FY2026-P03"], None);
+        let after_functional = f.owner(&["tb", "--functional", "--period", "FY2026-P03"], None);
+        let evidence = f.evidence.clone();
+        let mut target = payment_id;
+        for (index, name) in ["undo-foreign-payment", "redo-foreign-payment"]
+            .into_iter()
+            .enumerate()
+        {
+            let (cap, authority) = f.agent(&format!("correction-agent-{index}"), Some(name));
+            f.open(&authority, name);
+            let argv = [
+                "reverse",
+                &target,
+                "--reason",
+                "WrongAmount",
+                "--effective",
+                DATE,
+                "--evidence",
+                &evidence,
+                "--draft",
+                name,
+            ];
+            let trunk_before = f.owner(&["tb", "--period", "FY2026-P03"], None);
+            let (exit, planned) = f.bound(&authority, &argv, None);
+            assert_eq!(exit, 0, "{planned:?}");
+            assert_eq!(text(&planned, "event"), "draft_planned");
+            let reversal_id = text(field(&planned, "data"), "entry").to_string();
+            let reviewed = f.book.draft_entries(&cap, name).unwrap().unwrap();
+            assert_eq!(reviewed.len(), 1);
+            assert_eq!(reviewed[0].proposal.class, fa_model::EntryClass::REVERSAL);
+            let source_vid = VId(u128::from_str_radix(&target, 16).unwrap());
+            let (source, _) = f.book.read_entry(source_vid).unwrap().unwrap();
+            assert_eq!(reviewed[0].proposal.legs.len(), source.proposal.legs.len());
+            for (undo, original) in reviewed[0].proposal.legs.iter().zip(&source.proposal.legs) {
+                assert_eq!(undo.account_ref, original.account_ref);
+                assert_eq!(undo.amount, original.amount);
+                assert_eq!(undo.base_amount, original.base_amount);
+                assert_ne!(undo.side, original.side);
+                assert!(undo.settles.is_empty());
+            }
+            let after_plan = f.book.head().unwrap();
+            let (exit, retry) = f.bound(&authority, &argv, None);
+            assert_eq!(exit, 0, "{retry:?}");
+            assert_eq!(text(field(&retry, "data"), "entry"), reversal_id);
+            assert_eq!(f.book.head().unwrap(), after_plan);
+            let trunk_after = f.owner(&["tb", "--period", "FY2026-P03"], None);
+            assert_eq!(
+                field(field(&trunk_before, "data"), "rows"),
+                field(field(&trunk_after, "data"), "rows")
+            );
+            f.promote_exact(&cap, name, 1);
+            let after_promotion = f.book.head().unwrap();
+            let (exit, retry) = f.bound(&authority, &argv, None);
+            assert_eq!(exit, 0, "closed draft retry: {retry:?}");
+            assert_eq!(text(field(&retry, "data"), "entry"), reversal_id);
+            assert_eq!(f.book.head().unwrap(), after_promotion);
+            let mut changed_date = argv.to_vec();
+            let date_index = changed_date
+                .iter()
+                .position(|arg| *arg == "--effective")
+                .unwrap()
+                + 1;
+            changed_date[date_index] = "2026-03-16";
+            let (exit, refused) = f.bound(&authority, &changed_date, None);
+            assert_eq!(exit, 6, "a changed-date retry conflicts: {refused:?}");
+            let mut changed_key = argv.to_vec();
+            changed_key.extend(["--key", "new-correction-key"]);
+            let (exit, refused) = f.bound(&authority, &changed_key, None);
+            assert_eq!(
+                exit, 3,
+                "a closed draft cannot accept a new key: {refused:?}"
+            );
+            assert_eq!(f.book.head().unwrap(), after_promotion);
+
+            let trial_balance = f.owner(&["tb", "--period", "FY2026-P03"], None);
+            let functional = f.owner(&["tb", "--functional", "--period", "FY2026-P03"], None);
+            let expected = if index == 0 {
+                &before_payment
+            } else {
+                &after_payment
+            };
+            let expected_functional = if index == 0 {
+                &before_functional
+            } else {
+                &after_functional
+            };
+            assert_eq!(balances(&trial_balance), balances(expected));
+            assert_eq!(balances(&functional), balances(expected_functional));
+            let open = f.owner(&["open-items", "--account", "2100"], None);
+            let source_item = field(field(&open, "data"), "items")
+                .as_arr()
+                .unwrap()
+                .iter()
+                .find(|item| text(item, "entry") == targets[0])
+                .unwrap();
+            assert_eq!(
+                text(source_item, "open"),
+                if index == 0 {
+                    "100.00 EUR"
+                } else {
+                    "60.00 EUR"
+                }
+            );
+            let (exit, denied) = f.bound(&authority, &["entry", "show", &target], None);
+            assert_eq!(exit, 7, "source preparation grants no Read: {denied:?}");
+            target = reversal_id;
+        }
+    }
+
+    #[test]
+    fn post_only_draft_reversals_refuse_poisoned_out_of_scope_targets_and_ancestry_before_decode() {
+        use fa_model::symbols::{property, relation};
+        use fgdb_types::CanonicalScalar;
+
+        for ancestral in [false, true] {
+            let mut f = Fixture::new_with_storage(true);
+            let (targets, rate) = f.settlement_sources();
+            let source = targets[0].clone();
+            let target = if ancestral {
+                let payment =
+                    f.settlement_intent("payment-with-private-source", &rate, &targets[..1]);
+                let posted = f.owner(&["post", "--intent", "-"], Some(&payment));
+                text(field(&posted, "data"), "vid").to_string()
+            } else {
+                source.clone()
+            };
+            let name = "scoped-correction";
+            let (cap, authority) = f.scoped_agent("scoped-correction-agent", Some(name), |cap| {
+                cap.for_accounts(&["1000", "2100", "2990", "4900"]).unwrap()
+            });
+            f.open(&authority, name);
+
+            // The forbidden bill has a permitted payable leg and a hidden
+            // expense leg. Poison its payload through the real substrate;
+            // metadata admission must reject it before any payload decode.
+            drop(f.book);
+            let runtime = asupersync::runtime::RuntimeBuilder::new().build().unwrap();
+            let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+            let cx = fgdb_types::context::PurposeContexts::narrow_runtime_root(&root);
+            let mut db = runtime
+                .block_on(fgdb::Database::open(
+                    &cx.commit(),
+                    &f.dir.join("store"),
+                    fgdb::DatabaseKeys::new(
+                        [0x6a; 32],
+                        fgdb_types::ids::DatabaseSecurityNamespaceId([0x6b; 32]),
+                        [0x6c; 32],
+                    ),
+                ))
+                .unwrap();
+            let mut poison = fgdb::WriteBatch::new(relation::DERIVED_FROM);
+            poison.set_vertex_property(
+                VId(u128::from_str_radix(&source, 16).unwrap()),
+                property::FA_PAYLOAD,
+                Some(CanonicalScalar::bytes(vec![0xff]).unwrap()),
+            );
+            runtime.block_on(db.write(&cx.commit(), poison)).unwrap();
+            drop(db);
+            f.book = Book::open_dir(
+                &f.dir,
+                BookKeys::for_development(0x6a),
+                Entropy::deterministic(107),
+            )
+            .unwrap();
+
+            let before = f.book.head().unwrap();
+            let evidence = f.evidence.clone();
+            let mut refusals = Vec::new();
+            for selected in [target.as_str(), "00000000000000000000000000000001"] {
+                let (exit, refused) = f.bound(
+                    &authority,
+                    &[
+                        "reverse",
+                        selected,
+                        "--reason",
+                        "WrongAmount",
+                        "--effective",
+                        DATE,
+                        "--evidence",
+                        &evidence,
+                        "--draft",
+                        name,
+                    ],
+                    None,
+                );
+                assert_eq!(exit, 2, "ancestral={ancestral}: {refused:?}");
+                assert!(text(field(&refused, "data"), "message").contains("no admitted entry"));
+                assert!(!format!("{refused:?}").contains("100.00"));
+                assert!(!format!("{refused:?}").contains("payload"));
+                // The draft container was already admitted before this
+                // source-specific check; only its existing head is visible.
+                assert_eq!(
+                    field(field(&refused, "coordinate"), "known_at"),
+                    &Json::Int(i128::from(before.0))
+                );
+                assert_eq!(f.book.head().unwrap(), before);
+                refusals.push(field(field(&refused, "data"), "refusal_id").clone());
+            }
+            assert_eq!(refusals[0], refusals[1]);
+            assert!(
+                f.book
+                    .draft_entries(&cap, name)
+                    .unwrap()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn post_only_draft_reversal_ceiling_refusals_do_not_disclose_derived_source_amounts() {
+        let mut f = Fixture::new();
+        let private = format!(
+            r#"{{"effective_date":"{DATE}","idempotency_key":"private-reversal-source","legs":[{{"side":"debit","account":"6000","amount":"987654.32 USD"}},{{"side":"credit","account":"2000","amount":"987654.32 USD"}}]}}"#,
+        );
+        let evidence = f.evidence.clone();
+        let posted = f.owner(
+            &["post", "--intent", "-", "--evidence", &evidence],
+            Some(&private),
+        );
+        let target = text(field(&posted, "data"), "vid").to_string();
+        let name = "limited-correction";
+        let usd = f.book.context().units.lookup("USD").unwrap();
+        let (cap, authority) = f.scoped_agent("limited-correction-agent", Some(name), |cap| {
+            cap.with_ceiling(usd, 100).unwrap()
+        });
+        f.open(&authority, name);
+        let before = f.book.head().unwrap();
+        let (exit, refused) = f.bound(
+            &authority,
+            &[
+                "reverse",
+                &target,
+                "--reason",
+                "WrongAmount",
+                "--effective",
+                DATE,
+                "--evidence",
+                &evidence,
+                "--draft",
+                name,
+            ],
+            None,
+        );
+        assert_eq!(exit, 7, "{refused:?}");
+        assert!(text(field(&refused, "data"), "message").contains("scope or amount ceiling"));
+        for secret in ["987654.32", "98765432"] {
+            assert!(!format!("{refused:?}").contains(secret));
+        }
+        assert_eq!(
+            field(field(&refused, "coordinate"), "known_at"),
+            &Json::Int(i128::from(before.0))
+        );
+        assert_eq!(f.book.head().unwrap(), before);
+        assert!(
+            f.book
+                .draft_entries(&cap, name)
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

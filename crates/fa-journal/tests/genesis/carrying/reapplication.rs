@@ -2,6 +2,7 @@
 //! position may admit that exact effect or refuse it, never reprice it.
 
 use super::*;
+use fa_model::Entry;
 
 fn position(f: &Fixture) -> (i128, i128) {
     let item = f.carrying();
@@ -14,6 +15,353 @@ fn undone(f: &mut Fixture) -> (EntryPayload, EntryRef, EntryPayload, EntryRef) {
     let reversal = undo(&original, applied, b"reapplication-undo");
     let reversed = f.h.post(request(reversal.clone())).unwrap().entry_ref();
     (original, applied, reversal, reversed)
+}
+
+pub(super) fn plan_reversal_draft(
+    f: &mut Fixture,
+    name: &str,
+    mut proposal: EntryPayload,
+) -> (Capability, Entry) {
+    let planner = Capability::new(
+        AGENT,
+        fa_policy::Profile::Agent,
+        &[fa_policy::Op::Post],
+        PRINCIPAL,
+    )
+    .unwrap()
+    .on_branch(fa_model::draft_branch(f.h.book.book_id, name))
+    .unwrap();
+    assert!(fa_policy::admit_read(&planner, AGENT, f.h.book.book_id).is_err());
+    proposal.principal_ref = AGENT;
+    f.h.open_draft(planner.clone(), name).unwrap();
+    let planned = f.h.plan_draft(planner.clone(), name, proposal).unwrap();
+    let preview = planned.plan.unwrap();
+    assert_eq!(preview.members().len(), 1);
+    let entry = preview.members()[0].entry.clone();
+    let vid = reversal_vid(entry.proposal.supersession[0].target.vid);
+    assert!(read_entry(&f.h.db, vid).unwrap().is_none());
+    assert_eq!(f.h.draft(name).state, DraftState::Open);
+    (planner, entry)
+}
+
+pub(super) fn promote_reversal_draft(f: &mut Fixture, name: &str, reviewed: &Entry) -> EntryRef {
+    let expected = reviewed.entry_ref(reversal_vid(reviewed.proposal.supersession[0].target.vid));
+    let before = f.h.db.frontier().unwrap();
+    let promoted = f.h.promote(f.h.approver_capability(), name).unwrap();
+    assert_eq!(promoted.recorded_at.0, before.0 + 1);
+    assert_eq!(promoted.entries, vec![expected]);
+    assert!(!promoted.already_recorded);
+    let (recorded, at) = read_entry(&f.h.db, expected.vid).unwrap().unwrap();
+    assert_eq!(&recorded, reviewed);
+    assert_eq!(at, promoted.recorded_at);
+    assert_eq!(recorded.proposal.principal_ref, AGENT);
+    assert_eq!(f.h.draft(name).state, DraftState::Promoted);
+    let rows = f.h.db.vertices().unwrap();
+    let retry = f.h.promote(f.h.approver_capability(), name).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.entries, promoted.entries);
+    assert_eq!(retry.recorded_at, promoted.recorded_at);
+    assert_eq!(f.h.db.frontier().unwrap(), promoted.recorded_at);
+    assert_eq!(f.h.db.vertices().unwrap(), rows);
+    expected
+}
+
+#[test]
+fn dedicated_foreign_reversal_drafts_restore_exact_relief_without_repricing() {
+    let mut f = fixture(3, 10);
+    let original = f.prepare(1, b"draft-chain-original").into_proposal();
+    let applied = f.h.post(request(original.clone())).unwrap().entry_ref();
+    let reversal = undo(&original, applied, b"draft-chain-undo");
+    let (planner, reviewed) = plan_reversal_draft(&mut f, "foreign-undo", reversal);
+    assert_eq!(position(&f), (2, 7), "planning must not restore capacity");
+    let before = f.h.db.frontier().unwrap();
+    let mut direct = request(reviewed.proposal.clone());
+    direct.capability = planner;
+    assert_eq!(f.h.post(direct).unwrap_err().exit, exit::SAFETY);
+    let owner = Capability::embedded(AGENT, &["read", "approve"]).unwrap();
+    assert_eq!(
+        f.h.promote(owner, "foreign-undo").unwrap_err().exit,
+        exit::SAFETY
+    );
+    assert_eq!(f.h.db.frontier().unwrap(), before);
+    let reversed = promote_reversal_draft(&mut f, "foreign-undo", &reviewed);
+    assert_eq!(position(&f), (3, 10));
+
+    let restore = undo(&reviewed.proposal, reversed, b"draft-chain-redo");
+    let (_, reviewed) = plan_reversal_draft(&mut f, "foreign-redo", restore);
+    let competing = f.prepare(1, b"draft-chain-intervening").into_proposal();
+    f.h.post(request(competing)).unwrap();
+    assert_eq!(position(&f), (2, 7));
+    assert_eq!(
+        f.prepare(1, b"draft-chain-fresh-relief")
+            .base_relief()
+            .mantissa,
+        4
+    );
+    let cx = f.h.ctx();
+    let scratch =
+        f.h.runtime
+            .block_on(Database::open_memory(
+                &cx.commit(),
+                DatabaseKeys::new([131; 32], DatabaseSecurityNamespaceId([132; 32]), [133; 32]),
+            ))
+            .unwrap();
+    let basis = f.h.db.frontier().unwrap();
+    let rows = f.h.db.vertices().unwrap();
+    let (scratch, replay) =
+        f.h.runtime
+            .block_on(rehearse_draft_into(
+                &mut f.h.db,
+                scratch,
+                &cx,
+                &f.h.book,
+                &Capability::embedded(APPROVER, &["read"]).unwrap(),
+                DraftRehearsalRequest {
+                    name: "foreign-redo".into(),
+                    known_at: basis,
+                },
+            ))
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        replay.batch.entries,
+        vec![reviewed.entry_ref(reversal_vid(reversed.vid))]
+    );
+    let scratch_position = open_item_carrying_at(
+        &scratch,
+        &cx,
+        &f.h.book,
+        f.target,
+        0,
+        scratch.frontier().unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        (
+            scratch_position.open_native.mantissa,
+            scratch_position.open_base.mantissa
+        ),
+        (1, 4)
+    );
+    assert_eq!(f.h.db.frontier().unwrap(), basis);
+    assert_eq!(f.h.db.vertices().unwrap(), rows);
+    assert_eq!(
+        position(&f),
+        (2, 7),
+        "scratch rehearsal must leave trunk unchanged"
+    );
+    let restored = promote_reversal_draft(&mut f, "foreign-redo", &reviewed);
+    assert_eq!(
+        position(&f),
+        (1, 4),
+        "restore the recorded three, not a newly valued four"
+    );
+
+    let second_undo = undo(&reviewed.proposal, restored, b"draft-chain-second-undo");
+    let (_, reviewed) = plan_reversal_draft(&mut f, "foreign-second-undo", second_undo);
+    assert_eq!(position(&f), (1, 4));
+    let second_reversed = promote_reversal_draft(&mut f, "foreign-second-undo", &reviewed);
+    assert_eq!(position(&f), (2, 7));
+    let second_redo = undo(
+        &reviewed.proposal,
+        second_reversed,
+        b"draft-chain-second-redo",
+    );
+    let (_, reviewed) = plan_reversal_draft(&mut f, "foreign-second-redo", second_redo);
+    promote_reversal_draft(&mut f, "foreign-second-redo", &reviewed);
+    assert_eq!(position(&f), (1, 4));
+    let final_payment = f.prepare(1, b"draft-chain-final").into_proposal();
+    f.h.post(request(final_payment)).unwrap();
+    assert_eq!(position(&f), (0, 0));
+    assert_leg_projections(&f.h);
+    f.verify();
+}
+
+#[test]
+fn dedicated_foreign_reversal_promotion_rechecks_capacity_and_lineage_atomically() {
+    for conflict in [
+        "native",
+        "negative base",
+        "stranded base",
+        "source",
+        "lineage",
+        "revoked",
+    ] {
+        let mut f = match conflict {
+            "negative base" => fixture(2, 3),
+            "stranded base" => fixture(2, 1),
+            _ => fixture(3, 10),
+        };
+        let (_, _, reversal, reversed) = undone(&mut f);
+        let restore = undo(&reversal, reversed, b"draft-conflicting-redo");
+        let name = "conflicting-foreign-redo";
+        let (planner, reviewed) = plan_reversal_draft(&mut f, name, restore);
+        let expected = match conflict {
+            "native" | "negative base" | "stranded base" => {
+                let native = if conflict == "native" { 3 } else { 1 };
+                let competing = f
+                    .prepare(native, b"draft-capacity-competitor")
+                    .into_proposal();
+                f.h.post(request(competing)).unwrap();
+                if conflict == "native" {
+                    fa_journal::refusal::code::OVER_APPLICATION
+                } else {
+                    fa_journal::refusal::code::SETTLE_SHAPE
+                }
+            }
+            "source" => {
+                let (source, _) = read_entry(&f.h.db, f.target.vid).unwrap().unwrap();
+                let source_undo = undo(&source.proposal, f.target, b"draft-source-undo");
+                f.h.post(request(source_undo)).unwrap();
+                fa_journal::refusal::code::SETTLE_TARGET
+            }
+            "lineage" => {
+                let competing = undo(&reversal, reversed, b"draft-lineage-competitor");
+                f.h.post(request(competing)).unwrap();
+                fa_journal::refusal::code::ALREADY_REVERSED
+            }
+            "revoked" => {
+                f.h.revoke(&planner, 191);
+                "FA-REF-023"
+            }
+            _ => unreachable!(),
+        };
+        let before = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let refused = f.h.promote(f.h.approver_capability(), name).unwrap_err();
+        assert_eq!(refused.code, expected, "{conflict}: {refused}");
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        assert_eq!(f.h.draft(name).state, DraftState::Open);
+        let vid = reversal_vid(reviewed.proposal.supersession[0].target.vid);
+        if conflict != "lineage" {
+            assert!(read_entry(&f.h.db, vid).unwrap().is_none());
+        }
+        assert_leg_projections(&f.h);
+        f.verify();
+    }
+}
+
+#[test]
+fn foreign_reversal_draft_promotion_rechecks_planner_before_source_history_decode() {
+    for revoked in [false, true] {
+        let mut f = fixture(3, 10);
+        let (_, _, reversal, reversed) = undone(&mut f);
+        let restore = undo(&reversal, reversed, b"draft-poisoned-redo");
+        let name = "poisoned-foreign-redo";
+        let (planner, _) = plan_reversal_draft(&mut f, name, restore);
+        if revoked {
+            f.h.revoke(&planner, 192);
+        }
+        let mut poison = fgdb::WriteBatch::new(fa_model::symbols::relation::IN_BOOK);
+        poison.set_vertex_property(
+            f.target.vid,
+            fa_model::symbols::property::FA_PAYLOAD,
+            Some(fa_journal::rows::scalar_bytes("payload", vec![0xff]).unwrap()),
+        );
+        f.h.write_raw(poison);
+        let before = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let cx = f.h.ctx();
+        let request = f.h.draft_request(f.h.approver_capability());
+        let result =
+            f.h.runtime
+                .block_on(promote_draft(&mut f.h.db, &cx, &f.h.book, name, request));
+        if revoked {
+            let refused = result.unwrap().unwrap_err();
+            assert_eq!((refused.code, refused.exit), ("FA-REF-023", exit::SAFETY));
+        } else {
+            assert!(
+                result.is_err(),
+                "an admitted planner reaches the poisoned source trap"
+            );
+        }
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        assert_eq!(f.h.draft(name).state, DraftState::Open);
+    }
+}
+
+#[test]
+fn foreign_reapplication_drafts_refuse_companions_in_either_order() {
+    for reversal_first in [false, true] {
+        let mut f = fixture(3, 10);
+        let (_, _, reversal, reversed) = undone(&mut f);
+        let mut restore = undo(&reversal, reversed, b"draft-mixed-redo");
+        restore.principal_ref = AGENT;
+        let ordinary = f.h.agent_rent(1, b"draft-mixed-rent");
+        let name = "mixed-foreign-redo";
+        let planner = f.h.agent_capability();
+        f.h.open_draft(planner.clone(), name).unwrap();
+        let (first, second) = if reversal_first {
+            (restore, ordinary)
+        } else {
+            (ordinary, restore)
+        };
+        f.h.plan_draft(planner.clone(), name, first).unwrap();
+        let before = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let refused = f.h.plan_draft(planner, name, second).unwrap_err();
+        assert_eq!(
+            refused.code,
+            fa_journal::refusal::code::CLASS_NOT_IMPLEMENTED
+        );
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        assert_eq!(f.h.draft(name).intents.len(), 1);
+        assert_eq!(f.h.draft(name).state, DraftState::Open);
+        assert_eq!(position(&f), (3, 10));
+        f.verify();
+    }
+}
+
+#[test]
+fn foreign_reversal_drafts_keep_branch_and_complete_ancestor_source_scope() {
+    for confined in [false, true] {
+        let mut f = fixture(3, 10);
+        let (_, _, reversal, reversed) = undone(&mut f);
+        let mut restore = undo(&reversal, reversed, b"draft-scoped-redo");
+        restore.principal_ref = AGENT;
+        let name = "scoped-foreign-redo";
+        let mut planner = Capability::new(
+            AGENT,
+            fa_policy::Profile::Agent,
+            &[fa_policy::Op::Post],
+            PRINCIPAL,
+        )
+        .unwrap();
+        if confined {
+            planner = planner
+                .on_branch(fa_model::draft_branch(f.h.book.book_id, name))
+                .unwrap()
+                .for_accounts(&["1000", "1211", "2991", "7091"])
+                .unwrap();
+        }
+        f.h.open_draft(planner.clone(), name).unwrap();
+        // The applying entry and its reversal fit the proposal scope, but
+        // the original receivable's complete footprint also includes 4011.
+        // Its poisoned payload must remain unobserved when scope denies it.
+        let mut poison = fgdb::WriteBatch::new(fa_model::symbols::relation::IN_BOOK);
+        poison.set_vertex_property(
+            f.target.vid,
+            fa_model::symbols::property::FA_PAYLOAD,
+            Some(fa_journal::rows::scalar_bytes("payload", vec![0xff]).unwrap()),
+        );
+        f.h.write_raw(poison);
+        let before = f.h.db.frontier().unwrap();
+        let rows = f.h.db.vertices().unwrap();
+        let refused = f.h.plan_draft(planner, name, restore).unwrap_err();
+        let expected = if confined {
+            fa_journal::refusal::code::REVERSAL_TARGET
+        } else {
+            fa_journal::refusal::code::CAPABILITY
+        };
+        assert_eq!(refused.code, expected, "{refused}");
+        assert_eq!(f.h.db.frontier().unwrap(), before);
+        assert_eq!(f.h.db.vertices().unwrap(), rows);
+        assert!(f.h.draft(name).intents.is_empty());
+    }
 }
 
 #[test]
@@ -388,7 +736,15 @@ fn partial_spot_reapplication_uses_the_applied_quote_amount_not_the_complete_leg
     let reversed = f.h.post(request(reversal.clone())).unwrap().entry_ref();
     assert_eq!(position(&f), (3, 6));
     let restore = undo(&reversal, reversed, b"reapplication-partial-spot-restore");
-    f.h.post(request(restore)).unwrap();
+    let restored = f.h.post(request(restore.clone())).unwrap().entry_ref();
+    assert_eq!(position(&f), (2, 4));
+    let draft_undo = undo(&restore, restored, b"draft-partial-spot-undo");
+    let (_, reviewed) = plan_reversal_draft(&mut f, "partial-spot-undo", draft_undo);
+    let reversed = promote_reversal_draft(&mut f, "partial-spot-undo", &reviewed);
+    assert_eq!(position(&f), (3, 6));
+    let draft_restore = undo(&reviewed.proposal, reversed, b"draft-partial-spot-redo");
+    let (_, reviewed) = plan_reversal_draft(&mut f, "partial-spot-redo", draft_restore);
+    promote_reversal_draft(&mut f, "partial-spot-redo", &reviewed);
     assert_eq!(position(&f), (2, 4));
     assert_leg_projections(&f.h);
     f.verify();

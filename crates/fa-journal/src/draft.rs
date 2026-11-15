@@ -61,6 +61,7 @@ use crate::rows::{bytes, edge_id, prop, scalar_bytes, scalar_text};
 mod batch;
 mod correction;
 mod rehearsal;
+mod reversal_source;
 use batch::decode_plan_record;
 pub use batch::plan_batch_into_draft;
 pub use correction::plan_correction_into_draft;
@@ -70,6 +71,7 @@ pub use rehearsal::{
     DraftSequenceRehearsal, DraftSequenceRehearsalRequest, DraftSourceRecord, rehearse_draft_into,
     rehearse_drafts_into,
 };
+pub use reversal_source::admit_reversal_source;
 
 /// Canonical bytes of a draft body: `u16 version ‖ book_id[16] ‖ str name ‖
 /// u128 owner_principal` (extension 8).
@@ -1984,30 +1986,24 @@ async fn promote_draft_in<V: asupersync::fs::Vfs + Clone>(
         closing_authorized: closing,
         branch: fa_model::draft_branch(book.book_id, name),
     });
-    if view
-        .intents
-        .iter()
-        .any(|planned| crate::disposal::has_basis(planned.intent.proposal()))
-    {
-        // Source history belongs to the complete sale/cost workflow. Admit
-        // every retained planner before observing any member's source; the
-        // promoter's approval cannot replace a later planner's authority.
-        for (index, planned) in view.intents.iter().enumerate() {
-            let request = crate::post::PostRequest {
-                proposal: planned.intent.proposal().clone(),
-                approvals: planned.intent.approvals().to_vec(),
-                capability: planned.capability.clone(),
-                plan_certificate: None,
-            };
-            if let Err(refusal) = crate::post::authorize_request(db, book, &request, admission)? {
-                return Ok(Err(refusal.at("member", index)));
-            }
-            if crate::disposal::has_basis(planned.intent.proposal())
-                && !admission.admits_confined_draft_sources(&planned.capability)
-                && let Err(refusal) = crate::disposal::authorize(db, book, &planned.capability)?
-            {
-                return Ok(Err(refusal.at("member", index)));
-            }
+    // Admit every retained planner before hydrating native source history,
+    // as preview does. The promoter's approval cannot replace a planner's
+    // current permission, branch, amount ceiling or source authority.
+    for (index, planned) in view.intents.iter().enumerate() {
+        let request = crate::post::PostRequest {
+            proposal: planned.intent.proposal().clone(),
+            approvals: planned.intent.approvals().to_vec(),
+            capability: planned.capability.clone(),
+            plan_certificate: None,
+        };
+        if let Err(refusal) = crate::post::authorize_request(db, book, &request, admission)? {
+            return Ok(Err(refusal.at("member", index)));
+        }
+        if crate::disposal::has_basis(planned.intent.proposal())
+            && !admission.admits_confined_draft_sources(&planned.capability)
+            && let Err(refusal) = crate::disposal::authorize(db, book, &planned.capability)?
+        {
+            return Ok(Err(refusal.at("member", index)));
         }
     }
     // The retained planner's current whole-book authority precedes loading

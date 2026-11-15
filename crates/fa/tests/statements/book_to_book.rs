@@ -255,7 +255,9 @@ fn an_untagged_posted_resolution_cannot_borrow_its_holds_explanation() {
     let refusal = f.reconcile(day(2026, 2, 28), None).unwrap_err();
     assert_eq!(refusal.code, "FA-REF-194");
     assert!(
-        refusal.message.contains("unexplained book-to-book difference"),
+        refusal
+            .message
+            .contains("unexplained book-to-book difference"),
         "{refusal:?}"
     );
     assert_eq!(f.layer.book.head().unwrap(), head);

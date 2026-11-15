@@ -57,6 +57,13 @@ pub(crate) struct VerifiedBatchPlan(());
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IndependentCarryingBatch(());
 
+/// One exact foreign-application reversal is the complete monetary content
+/// of a native draft. No predecessor can alter its carrying source before
+/// native validation, and the draft publishes its guarded transaction once.
+/// This token neither admits an ordinary batch nor grants source authority.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SingletonCarryingReversalDraft(());
+
 /// Each lot fold reads only its governed account. This token proves that
 /// every member's effects leave every other member's source unchanged.
 /// The complete committed prefix remains guarded through publication.
@@ -93,6 +100,7 @@ pub(crate) struct IndependentRevaluationBatch(());
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct AggregateProofs {
     pub(crate) carrying: Option<IndependentCarryingBatch>,
+    pub(crate) carrying_reversal: Option<SingletonCarryingReversalDraft>,
     pub(crate) disposal: Option<IndependentDisposalBatch>,
     pub(crate) asset_charge: Option<IndependentAssetChargeBatch>,
     pub(crate) closing: Option<SingletonClosingDraft>,
@@ -103,6 +111,18 @@ pub(crate) struct AggregateProofs {
 pub(crate) struct MemberPreparation {
     pub(crate) txn: Option<WriteTxn>,
     pub(crate) proofs: AggregateProofs,
+}
+
+fn singleton_carrying_reversal_draft(
+    batch: &PostBatch,
+    admission: Admission,
+) -> Option<SingletonCarryingReversalDraft> {
+    (matches!(
+        admission,
+        Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
+    ) && batch.members().len() == 1
+        && crate::carrying::is_application_reversal(batch.members()[0].proposal()))
+    .then_some(SingletonCarryingReversalDraft(()))
 }
 
 fn singleton_closing_draft(
@@ -1429,6 +1449,7 @@ fn judge_retry<V: Vfs + Clone>(
         };
     let proofs = AggregateProofs {
         carrying,
+        carrying_reversal: singleton_carrying_reversal_draft(batch, admission),
         disposal,
         asset_charge,
         closing,
@@ -1873,6 +1894,7 @@ fn stage_batch_with<V: Vfs + Clone>(
         };
     let proofs = AggregateProofs {
         carrying,
+        carrying_reversal: singleton_carrying_reversal_draft(batch, admission),
         disposal,
         asset_charge,
         closing,
@@ -1939,7 +1961,9 @@ fn stage_batch_with<V: Vfs + Clone>(
         };
         // Commit and Plan also admit single entries, so the first member
         // needs this explicit boundary even before a transaction is carried.
-        if let Some(refusal) = prepared.compound_carrying_refusal() {
+        if let Some(refusal) = prepared.compound_carrying_refusal()
+            && proofs.carrying_reversal.is_none()
+        {
             prepared.abort();
             return Ok(Err(member_refusal(i, refusal)));
         }

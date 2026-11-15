@@ -207,8 +207,9 @@ pub struct PreparedPost {
     /// Immutable rows already authenticated by the FX reversal ancestry walk.
     /// Their point-conflict refusal precedes the additional aggregate guard.
     valuation_ancestors: Vec<VertexRow>,
-    /// Newly admitted foreign application ancestry requires its own complete
-    /// publication; compound protocols do not carry staged base components.
+    /// Foreign application ancestry requires its own complete publication;
+    /// a dedicated singleton draft preserves that boundary. Compound
+    /// protocols do not carry staged base components.
     foreign_application_chain: bool,
     security_policy_epoch: u64,
     effects_digest: [u8; 32],
@@ -444,6 +445,8 @@ impl PreparedPost {
         };
         let independent_carrying =
             proofs.carrying.is_some() && crate::carrying::is_source_bound(&self.request.proposal);
+        let singleton_carrying_reversal = proofs.carrying_reversal.is_some()
+            && crate::carrying::is_application_reversal(&self.request.proposal);
         let independent_disposal =
             proofs.disposal.is_some() && crate::disposal::has_basis(&self.request.proposal);
         let independent_asset_charge =
@@ -494,6 +497,7 @@ impl PreparedPost {
             || self.paired_reversal.is_some()
             || (aggregate
                 && !independent_carrying
+                && !singleton_carrying_reversal
                 && !independent_disposal
                 && !independent_asset_charge
                 && !singleton_closing
@@ -1005,6 +1009,64 @@ fn entry_is_reversed<V: asupersync::fs::Vfs + Clone>(
     Ok(reversed)
 }
 
+/// Admit a named reversal source's complete ancestry and applied-to footprint
+/// from metadata before decoding each reached entry. Callers must separately
+/// admit current source authority; this returns no payload or broader grant.
+/// Absent, non-entry and out-of-scope sources have the same false result.
+pub(crate) fn reversal_source_in_scope<V: asupersync::fs::Vfs + Clone>(
+    txn: &fgdb::WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    scope: Option<&fa_policy::AccountScope>,
+    target: VId,
+) -> Result<bool, KernelError> {
+    let mut admitted = BTreeMap::new();
+    let mut reached = |vid: VId| -> Result<bool, KernelError> {
+        if let Some(result) = admitted.get(&vid) {
+            return Ok(*result);
+        }
+        let result = policy::entry_in_scope_by_metadata(txn, db, book, capability, scope, vid)?;
+        admitted.insert(vid, result);
+        Ok(result)
+    };
+    let mut current = target;
+    let mut seen = BTreeSet::new();
+    loop {
+        if !seen.insert(current) {
+            return Err(KernelError::Corrupt(format!(
+                "reversal ancestry of {:032x} cycles",
+                target.0
+            )));
+        }
+        if !reached(current)? {
+            return Ok(false);
+        }
+        let row = txn
+            .vertex(db, current)?
+            .ok_or_else(|| KernelError::Corrupt("an admitted reversal target vanished".into()))?;
+        let (entry, _) = checked_entry_staged(txn, db, &row)?;
+        let predecessors = entry.proposal.supersession.iter().map(|s| s.target.vid);
+        let applied = entry
+            .proposal
+            .legs
+            .iter()
+            .flat_map(|leg| leg.settles.iter().map(|s| s.target.vid));
+        for vid in predecessors.chain(applied) {
+            if !reached(vid)? {
+                return Ok(false);
+            }
+        }
+        if entry.proposal.class == EntryClass::REVERSAL
+            && let [first] = entry.proposal.supersession.as_slice()
+        {
+            current = first.target.vid;
+        } else {
+            return Ok(true);
+        }
+    }
+}
+
 /// Step 3''' for a scoped token (plan §14.2, CobaltGull 3570): the targets
 /// the commit releases, applies to or undoes are part of its footprint — a
 /// resolution's hold (every leg, so a partial Posts never silently releases
@@ -1037,42 +1099,10 @@ fn footprint_refusal<V: asupersync::fs::Vfs + Clone>(
         admitted.insert(vid, result);
         Ok(result)
     };
-    if let Some(target) = reversal_target {
-        let mut current = target.vid;
-        let mut seen: BTreeSet<VId> = BTreeSet::new();
-        loop {
-            if !seen.insert(current) {
-                return Err(KernelError::Corrupt(format!(
-                    "reversal ancestry of {:032x} cycles",
-                    target.vid.0
-                )));
-            }
-            if !reached(current)? {
-                return Ok(Some(no_reversal_target(target.vid)));
-            }
-            let row = txn.vertex(db, current)?.ok_or_else(|| {
-                KernelError::Corrupt("an admitted reversal target vanished".into())
-            })?;
-            let (entry, _) = checked_entry_staged(txn, db, &row)?;
-            let predecessors = entry.proposal.supersession.iter().map(|s| s.target.vid);
-            let applied = entry
-                .proposal
-                .legs
-                .iter()
-                .flat_map(|l| l.settles.iter().map(|s| s.target.vid));
-            for vid in predecessors.chain(applied) {
-                if !reached(vid)? {
-                    return Ok(Some(no_reversal_target(target.vid)));
-                }
-            }
-            if entry.proposal.class == EntryClass::REVERSAL
-                && let [first] = entry.proposal.supersession.as_slice()
-            {
-                current = first.target.vid;
-            } else {
-                break;
-            }
-        }
+    if let Some(target) = reversal_target
+        && !reversal_source_in_scope(txn, db, book, &req.capability, scope, target.vid)?
+    {
+        return Ok(Some(no_reversal_target(target.vid)));
     }
     if let Some((target, _)) = resolution
         && !reached(target.vid)?
@@ -1238,7 +1268,11 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     // Admit that source observation here too, for direct, plan and batch
     // entrypoints. Only the private draft token permits named-source planning
     // under its original branch-confined capability instead of general Read.
-    if crate::carrying::is_source_bound(proposal) {
+    let draft_application_reversal = matches!(
+        admission,
+        Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
+    ) && crate::carrying::is_application_reversal(proposal);
+    if crate::carrying::is_source_bound(proposal) || draft_application_reversal {
         if admission.admits_confined_draft_sources(&req.capability) {
             // Do not assume a caller used a preparation factory: native
             // drafts may contain hand-built proposals. All named Rates must
@@ -2189,6 +2223,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     };
     let crate::batch::AggregateProofs {
         carrying: carrying_batch,
+        carrying_reversal: carrying_reversal_draft,
         disposal: disposal_batch,
         asset_charge: asset_charge_batch,
         closing: closing_draft,
@@ -2405,15 +2440,17 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
     }
     if proposal.class == EntryClass::REVERSAL && crate::carrying::has_allocated_basis(proposal) {
-        if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
+        if !admission.admits_confined_draft_sources(&req.capability)
+            && let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)?
+        {
             return Ok(Err(refusal));
         }
         if carried.is_some()
             || replacement_basis.is_some()
-            || matches!(
+            || (matches!(
                 admission,
-                Admission::Promote(_) | Admission::ScratchDraft(_)
-            )
+                Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
+            ) && carrying_reversal_draft.is_none())
         {
             return Ok(Err(crate::carrying::unsupported_batch()));
         }
@@ -4708,14 +4745,18 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             if !matches!(
                 admission,
                 Admission::Commit | Admission::Plan | Admission::VerifiedPlan(_)
-            ) {
+            ) && carrying_reversal_draft.is_none()
+            {
                 txn.abort();
                 return Ok(Err(crate::carrying::unsupported_reversal_compound()));
             }
             // Named reversal witnesses use the ordinary Post authority above.
-            // This newly supported path additionally observes whole carrying
-            // history, under the same Read/Post law as a fresh settlement.
-            if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
+            // Carrying history follows the same source admission as a fresh
+            // settlement: whole-book Read/Post, or the private confined-draft
+            // path whose complete named ancestry was admitted by footprint.
+            if !admission.admits_confined_draft_sources(&req.capability)
+                && let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)?
+            {
                 txn.abort();
                 return Ok(Err(refusal));
             }

@@ -1492,6 +1492,143 @@ fn allocated_settlement_cannot_use_another_sources_valuation_leaf() {
 }
 
 #[test]
+fn dedicated_allocated_reversal_drafts_preserve_each_component_after_revaluation() {
+    use super::reapplication::{plan_reversal_draft, promote_reversal_draft};
+
+    for side in [Side::Debit, Side::Credit] {
+        for first_target in [6, 13] {
+            let mut f = RevaluedFixture::new(side, &[(3, 10)]);
+            let target = f.targets[0];
+            let first = f.revaluation(first_target, 3, 3, true).unwrap();
+            f.post_revaluation(first, b"draft-allocated-first-valuation");
+            let relief = remaining_revalued_carrying_relief(f.position(target, None), 1).unwrap();
+            let original = f
+                .prepare(target, 1, day(4, 15), b"draft-allocated-original")
+                .unwrap()
+                .into_proposal();
+            let applied = f.f.h.post(request(original.clone())).unwrap().entry_ref();
+            let mut reversal = undo(&original, applied, b"draft-allocated-undo");
+            reversal.effective_date = day(5, 1);
+            let (_, reviewed) = plan_reversal_draft(&mut f.f, "allocated-undo", reversal);
+            let next = f.revaluation(3, 1, 4, true).unwrap();
+            f.post_revaluation(next, b"draft-allocated-later-valuation");
+            let before_undo = f.position(target, None);
+            assert_eq!(
+                before_undo,
+                OracleRevaluedCarrying {
+                    native: 2,
+                    historical_base: 7,
+                    carrying_base: 6,
+                }
+            );
+            let reversed = promote_reversal_draft(&mut f.f, "allocated-undo", &reviewed);
+            let undone = OracleRevaluedCarrying {
+                native: before_undo.native + relief.native,
+                historical_base: before_undo.historical_base + relief.historical_base,
+                carrying_base: before_undo.carrying_base + relief.carrying_base,
+            };
+            assert_eq!(f.position(target, None), undone);
+            assert_ne!(
+                remaining_revalued_carrying_relief(undone, 1).unwrap(),
+                relief
+            );
+            let restore = undo(&reviewed.proposal, reversed, b"draft-allocated-redo");
+            let (_, reviewed) = plan_reversal_draft(&mut f.f, "allocated-redo", restore);
+            assert_eq!(f.position(target, None), undone);
+            let restored = promote_reversal_draft(&mut f.f, "allocated-redo", &reviewed);
+            assert_eq!(f.position(target, None), before_undo);
+            let second_undo = undo(&reviewed.proposal, restored, b"draft-allocated-second-undo");
+            let (_, reviewed) = plan_reversal_draft(&mut f.f, "allocated-second-undo", second_undo);
+            promote_reversal_draft(&mut f.f, "allocated-second-undo", &reviewed);
+            assert_eq!(f.position(target, None), undone);
+            let final_payment = f
+                .prepare(target, 3, day(5, 2), b"draft-allocated-final")
+                .unwrap()
+                .into_proposal();
+            f.f.h.post(request(final_payment)).unwrap();
+            assert_eq!(
+                f.position(target, None),
+                OracleRevaluedCarrying {
+                    native: 0,
+                    historical_base: 0,
+                    carrying_base: 0,
+                }
+            );
+            for account in [f.source, f.valuation, f.unrealized, f.f.conversion] {
+                assert_eq!(f.functional_net(account), 0);
+            }
+            assert_leg_projections(&f.f.h);
+            f.f.verify();
+        }
+    }
+}
+
+#[test]
+fn allocated_reversal_drafts_refuse_invalidated_components_without_partial_publication() {
+    use super::reapplication::plan_reversal_draft;
+
+    for failure in ["total", "historical", "stranded"] {
+        let mut f = match failure {
+            "stranded" => RevaluedFixture::new(Side::Debit, &[(2, 1)]),
+            "historical" => RevaluedFixture::new(Side::Debit, &[(2, 3)]),
+            _ => RevaluedFixture::new(Side::Debit, &[(3, 10)]),
+        };
+        let target = f.targets[0];
+        let (num, den) = match failure {
+            "stranded" => (1, 8),
+            "historical" => (1, 2),
+            _ => (13, 3),
+        };
+        let first = f.revaluation(num, den, 3, true).unwrap();
+        f.post_revaluation(first, b"draft-blocked-first-valuation");
+        let original = f
+            .prepare(target, 1, day(4, 15), b"draft-blocked-original")
+            .unwrap()
+            .into_proposal();
+        let applied = f.f.h.post(request(original.clone())).unwrap().entry_ref();
+        let reversal = undo(&original, applied, b"draft-blocked-undo");
+        let reversed = f.f.h.post(request(reversal.clone())).unwrap().entry_ref();
+        let mut restore = undo(&reversal, reversed, b"draft-blocked-redo");
+        restore.effective_date = day(5, 1);
+        let name = "blocked-allocated-redo";
+        plan_reversal_draft(&mut f.f, name, restore);
+        if failure == "total" {
+            let lower = f.revaluation(1, 1, 4, true).unwrap();
+            f.post_revaluation(lower, b"draft-blocked-lower-valuation");
+        } else {
+            let competing = f
+                .prepare(target, 1, day(4, 17), b"draft-blocked-competitor")
+                .unwrap()
+                .into_proposal();
+            f.f.h.post(request(competing)).unwrap();
+        }
+        let position = f.position(target, None);
+        let before = f.f.h.db.frontier().unwrap();
+        let rows = f.f.h.db.vertices().unwrap();
+        let refused =
+            f.f.h
+                .promote(f.f.h.approver_capability(), name)
+                .unwrap_err();
+        assert_eq!(
+            refused.code,
+            fa_journal::refusal::code::SETTLE_SHAPE,
+            "{failure}: {refused}"
+        );
+        assert_eq!(f.f.h.db.frontier().unwrap(), before);
+        assert_eq!(f.f.h.db.vertices().unwrap(), rows);
+        assert_eq!(f.f.h.draft(name).state, DraftState::Open);
+        assert!(
+            read_entry(&f.f.h.db, reversal_vid(reversed.vid))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(f.position(target, None), position);
+        assert_leg_projections(&f.f.h);
+        f.f.verify();
+    }
+}
+
+#[test]
 fn allocated_reapplication_preserves_recorded_components_after_later_revaluation() {
     for side in [Side::Debit, Side::Credit] {
         for first_target in [6, 13] {

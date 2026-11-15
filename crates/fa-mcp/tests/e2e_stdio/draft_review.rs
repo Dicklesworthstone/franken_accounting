@@ -552,7 +552,10 @@ fn prepare_close_macro_rehearses_the_complete_run_without_executing_it() {
             .map(wire)
             .find(|line| line["event"] == json!("report_certificate"))
             .expect("retained original draft review");
-        certificates.push(format!("C:{}", certificate["data"]["oid"].as_str().unwrap()));
+        certificates.push(format!(
+            "C:{}",
+            certificate["data"]["oid"].as_str().unwrap()
+        ));
     }
     // Task names sort against the declared dependency, so the rehearsal
     // must follow the graph rather than independently reviewing each draft.

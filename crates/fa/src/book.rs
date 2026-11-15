@@ -8642,6 +8642,27 @@ impl Book {
         ))
     }
 
+    /// Admit a confined draft's exact reversal source before a surface loads
+    /// it. This checks the complete source footprint and derived effect scope,
+    /// returning no source payload or general read authority.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_draft_reversal_source(
+        &self,
+        capability: &fa_policy::Capability,
+        name: &str,
+        vid: fgdb_types::VId,
+        effective_date: Option<DateDay>,
+        effective_period: Option<&str>,
+    ) -> Outcome<bool> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.query(&purposes, |db, book| {
+            Ok(fa_journal::draft::admit_reversal_source(
+                db, &purposes, book, capability, name, vid,
+                effective_date, effective_period,
+            )?)
+        }))
+    }
+
     /// Install complete additive routes for period-end FX revaluation.
     pub fn set_fx_revaluation_routes(
         &mut self,

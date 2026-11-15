@@ -508,6 +508,26 @@ migration history. Subsequent control postings require that party dimension too.
 Invoices, bills, receipts and payments use their existing party-qualified legs;
 registration creates no additional posting or balance.
 
+Typed invoice and bill lines can include a separately declared tax amount and
+account. `amount`, or `qty` times `unit_price`, is the line's net amount;
+`tax_amount` is the total tax for that line, in the same currency. Supply
+`tax_account` with it. The resulting receivable or payable includes both amounts,
+while the ordinary line and tax are separate legs. The caller selects the tax
+account and amount from the source document; no rate or tax treatment is inferred.
+
+```bash
+fa invoice --party ACME-CUST-17 --number TAX-10442 --date 2026-03-14 \
+  --receivable 1200 --revenue 4000 \
+  --line 'amount="100.00 USD" tax_amount="8.25 USD" tax_account=2300' \
+  --evidence <document-oid> --dry-run --book ./books/acme --json
+```
+
+On the `us-gaap-smb` chart this previews a 108.25 USD receivable, 100.00 USD
+revenue and 8.25 USD sales-tax payable. Bills use the same line fields, with
+the caller choosing the appropriate purchase-tax account. Omit both tax fields
+for an untaxed line. The ordinary saved-plan, draft, evidence and retry checks
+apply to the complete gross document.
+
 ```bash
 fa subledger add AR --control 1200 --kind receivables --name "Trade receivables" \
   --book ./books/acme --json
@@ -1463,6 +1483,14 @@ commitment still includes the complete population at the chosen recorded
 sequence, including controls and entries beyond the cutoff. Explicit `@1`
 reproduces the original algorithm, which takes no effective cutoff.
 
+`jet.unusual_accounts` v2 also exports for standalone replay. The verifier
+reconstructs rare debit/credit account pairs from the authenticated chart and
+live postings, counting a pair once per entry even when legs are split or the
+same pair appears in both directions. It reproduces the selected pair,
+frequency, population, citations and work counts, including historical
+reversals. This profile accepts `max_pair_count` and `min_population`; it
+refuses the older v1 algorithm and effective-date cutoffs.
+
 Corrected books can be exported when every Replacement uses the current
 target-derived identity and a later authenticated reversal, replacement or
 ordinary settlement reference resolves that identity within the certificate's
@@ -1560,7 +1588,9 @@ realized-FX effects. One publication records them all, and an exact retry
 returns that original outcome. A portable plan requires its exact recorded
 prefix; an intervening publication requires a fresh plan. Mixed mutation
 batches, two applications to the same target leg, staged foreign targets and
-FX draft/case promotion remain unsupported (`fa-pvt7`).
+FX case promotion remain unsupported (`fa-pvt7`). Native drafts can retain
+independent settlements under the same source and distinct-target checks,
+then rehearse and promote their reviewed effects with independent approval.
 
 For one accounting entry, `prepare_fx_settlement_group` accepts distinct
 existing target legs under one explicitly shared Settlement Rate document.
@@ -1568,9 +1598,10 @@ Each item keeps its own ordered conversion, cash and realized-FX effects;
 every carrying amount is derived at the same prefix and checked again by
 posting. One ordinary PostPlan records the complete group, and one reasoned
 reversal restores every item's exact recorded native and base relief. Group
-entries cannot join a batch, replacement or draft/case promotion. Mixed
-mutation, multiple rates, multi-target applying legs and typed payment
-differences remain unfinished on `fa-pvt7`.
+entries can join supported independent settlement batches and native drafts;
+replacement pairs and case promotion remain unsupported. Mixed mutation,
+multiple rates, multi-target applying legs and typed payment differences
+remain unfinished on `fa-pvt7`.
 
 The existing `post --intent` path accepts this same group: put consecutive
 cash/application pairs in the intent's `legs`, with one target per application,
@@ -1618,6 +1649,24 @@ require the explicit conversion/release path. Reviews, approvals, saved plans,
 retries and independent functional-report verification use the same law.
 This v1 profile cannot use a payment leg with outgoing applications as a new
 foreign carrying source.
+
+An exact foreign-payment undo or redo can now be the sole monetary entry in
+a dedicated native draft. Open the draft, then use
+`fa reverse <entry-vid> --reason WrongAmount --effective <day> --draft <name>`
+with the required evidence and authority. Reversing the published undo
+reapplies its recorded payment. The draft preserves the original native and
+functional relief, including each allocated valuation component; it never
+reprices the payment. Scratch rehearsal leaves trunk unchanged, and independent
+Human promotion checks current capacity, source liveness and reversal lineage
+before publishing once. Exact retries return the retained outcome. Companion
+entries and multiple reversal intents in that draft remain refused.
+
+A Post-only Agent must be explicitly confined to that draft's branch. Its
+source, every predecessor and applied-to target, and all generated effects
+must fit its capability before the CLI loads the source payload. This grants
+no general Read access. An unconfined planner needs Read and Post; promotion
+also rechecks the retained planner's current authority before loading source
+history, so a Human approver cannot substitute for a revoked planner.
 
 For an embedded owner, retain the same Read and Post grants on both calls:
 
@@ -2134,7 +2183,7 @@ fa chart import --template us-gaap-smb --book acme.fabook
 # Bare `fa` is triage, never a TUI. Agents start here (available today).
 fa triage --book acme.fabook --json
 
-# A typed invoice, rehearsed: the plan shows the legs its lines derive (available today, as are `fa bill` and `--draft`; the caller names the accounts: no Canon rule or tax yet, fa-i7e / fa-c34).
+# A typed invoice, rehearsed: the plan shows the legs its lines derive (available today, as are `fa bill` and `--draft`; the caller names the accounts and may supply explicit tax_amount and tax_account fields).
 fa invoice --party ACME-CUST-17 --number 10442 --date 2026-03-14 --due-date 2026-04-13 --receivable 1200 --revenue 4000 \
    --line 'qty=10 unit_price="125.00 USD" item=SKU-9 product=Widgets' \
    --evidence <document-oid> --dry-run --plan-out inv-10442.plan --book acme.fabook --json
