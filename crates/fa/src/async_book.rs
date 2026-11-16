@@ -2009,6 +2009,35 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Admit an exact draft reversal's source and effects without returning
+    /// its payload or publishing a journal change. The exclusive handle is
+    /// required to open the substrate transaction; the kernel always aborts it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_draft_reversal_source(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        name: &str,
+        vid: VId,
+        effective_date: Option<DateDay>,
+        effective_period: Option<&str>,
+    ) -> Outcome<bool> {
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        query.with_restriction(|| {
+            Ok(fa_journal::draft::admit_reversal_source(
+                &mut self.db,
+                cx,
+                &self.context,
+                capability,
+                name,
+                vid,
+                effective_date,
+                effective_period,
+            )?)
+        })
+    }
+
     /// Rehearse this owner's retained draft members without publishing them.
     /// Returns their resolved entries, or `None` for an empty open draft.
     pub async fn preview_draft(
