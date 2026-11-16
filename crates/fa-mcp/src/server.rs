@@ -410,14 +410,15 @@ impl Adapter {
         spec: &MacroSpec,
         arguments: &JsonValue,
     ) -> Result<CallOutput, StructuredError> {
-        self.call_macro_inner(spec, arguments)
+        self.call_macro_with_dispatch(spec, arguments, |inv| self.dispatch(inv))
             .map_err(|e| e.with_authority(self.authority_json()))
     }
 
-    fn call_macro_inner(
+    fn call_macro_with_dispatch(
         &self,
         spec: &MacroSpec,
         arguments: &JsonValue,
+        mut dispatch: impl FnMut(&Invocation) -> Result<Reply, StructuredError>,
     ) -> Result<CallOutput, StructuredError> {
         if let Some(error) = forbidden_macro_argument(spec, arguments) {
             return Err(error);
@@ -658,12 +659,20 @@ impl Adapter {
         let mut last_book = JsonValue::Null;
         let mut last_coordinate = JsonValue::Null;
         let mut last_certificate = JsonValue::Null;
+        let certifies_period = spec.id == "fa.macro.certify_period_reports";
+        let mut report_known_at: Option<u64> = None;
 
-        for (step_name, tool_wire, raw_argv) in raw_steps {
+        for (step_name, tool_wire, mut raw_argv) in raw_steps {
+            let report_step = certifies_period && step_name != "verify_accumulator";
+            if report_step
+                && let Some(known_at) = report_known_at
+            {
+                raw_argv.extend(["--as-known-at".into(), known_at.to_string()]);
+            }
             let mut argv = raw_argv.clone();
             argv.push("--json".into());
             let inv = Invocation { argv, stdin: None };
-            let reply = self.dispatch(&inv)?;
+            let reply = dispatch(&inv)?;
             if step_name == "close_plan"
                 && let Some(tool) = self.mcp.tool_by_wire(tool_wire)
                 && let Ok(mut memory) = self.memory.lock()
@@ -684,6 +693,52 @@ impl Adapter {
                     "the dispatcher exited 0 without a robot line",
                 ));
             };
+            if report_step {
+                // Retaining a certificate and recording the next access receipt
+                // both advance HEAD. A real posting may also interleave between
+                // macro steps. Use the first certificate's recorded frontier,
+                // never its retention sequence or a later book-info read.
+                let mut certificates = reply
+                    .lines
+                    .iter()
+                    .filter(|line| line.event == "report_certificate");
+                let certificate = certificates.next().ok_or_else(|| {
+                    StructuredError::foundation(
+                        "the certified report step returned no report certificate",
+                    )
+                })?;
+                if certificates.next().is_some() {
+                    return Err(StructuredError::foundation(
+                        "the certified report step returned multiple report certificates",
+                    ));
+                }
+                let known_at = match certificate.data.get("known_at") {
+                    Some(Json::Int(value)) => u64::try_from(*value).ok(),
+                    _ => None,
+                }
+                .ok_or_else(|| {
+                    StructuredError::foundation(
+                        "the report certificate has no valid recorded frontier",
+                    )
+                })?;
+                if report_known_at.is_some_and(|first| first != known_at) {
+                    return Err(StructuredError::foundation(
+                        "the period reports do not share the requested recorded frontier",
+                    ));
+                }
+                let expected = Json::Int(i128::from(known_at));
+                if reply.lines.iter().any(|line| {
+                    line.line
+                        .get("coordinate")
+                        .and_then(|coordinate| coordinate.get("known_at"))
+                        != Some(&expected)
+                }) {
+                    return Err(StructuredError::foundation(
+                        "the certified report coordinate does not match its certificate",
+                    ));
+                }
+                report_known_at = Some(known_at);
+            }
             for line in &reply.lines {
                 all_events.push(line.event.clone());
                 detect::collect_untrusted(&line.data, &mut untrusted_seen);
@@ -696,12 +751,15 @@ impl Adapter {
             if let Some(b) = last.line.get("book").filter(|v| !matches!(v, Json::Null)) {
                 last_book = to_wire(b);
             }
-            if let Some(c) = last
+            let step_coordinate = last
                 .line
                 .get("coordinate")
-                .filter(|v| !matches!(v, Json::Null))
-            {
-                last_coordinate = to_wire(c);
+                .map_or(JsonValue::Null, to_wire);
+            // The accumulator check intentionally verifies current history.
+            // Keep its coordinate in the step record without relabelling the
+            // historical financial reports with that later frontier.
+            if !step_coordinate.is_null() && (!certifies_period || report_step) {
+                last_coordinate = step_coordinate.clone();
             }
             let step_cert = last
                 .line
@@ -725,6 +783,7 @@ impl Adapter {
                 "tool": tool_wire,
                 "command": format!("fa {}", raw_argv.join(" ")),
                 "events": reply.lines.iter().map(|l| l.event.clone()).collect::<Vec<_>>(),
+                "coordinate": step_coordinate,
                 "certificate": step_cert,
                 "data": step_data,
             }));
@@ -2103,6 +2162,165 @@ mod tests {
             .expect_err("a run grants no read authority");
         assert_eq!(error.exit, 7);
         assert_eq!(error.refusal_id.as_deref(), Some("FA-REF-011"));
+    }
+
+    #[test]
+    fn certified_period_reports_share_a_frontier_across_an_interleaved_posting() {
+        fn owner(book: &Path, args: &[&str], stdin: Option<&str>) -> Vec<JsonValue> {
+            let mut argv: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+            argv.extend(["--book".into(), book.display().to_string(), "--json".into()]);
+            let files = fa_cli::cli::Files {
+                cwd: None,
+                stdin: stdin.map_or(fa_cli::cli::Stdin::Missing, |text| {
+                    fa_cli::cli::Stdin::Forwarded(text.as_bytes().to_vec())
+                }),
+            };
+            let (exit, captured) = fa_cli::entry::fa_with(&argv, files, true);
+            eprintln!("fa-mcp-macro-snapshot: argv={args:?} exit={exit}");
+            assert_eq!(
+                exit, 0,
+                "args={args:?}\n{}\n{}",
+                captured.stdout, captured.stderr
+            );
+            captured
+                .stdout
+                .lines()
+                .map(|line| {
+                    fa_cli::verbs::registry()
+                        .unwrap()
+                        .check_line(line)
+                        .expect("robot schema");
+                    fastmcp_rust::serde_json::from_str(line).expect("robot JSON")
+                })
+                .collect()
+        }
+
+        fn amount(report: &JsonValue, code: &str) -> JsonValue {
+            report["lines"]
+                .as_array()
+                .expect("statement lines")
+                .iter()
+                .find(|line| line["code"] == code && line["unit"] == "USD")
+                .unwrap_or_else(|| panic!("missing {code}/USD: {report}"))["amounts"]
+                .clone()
+        }
+
+        let dir = (0_u64..)
+            .find_map(|ordinal| {
+                let path = std::env::temp_dir().join(format!(
+                    "fa-mcp-macro-snapshot-{}-{ordinal}",
+                    std::process::id()
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => Some(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(error) => panic!("create {}: {error}", path.display()),
+                }
+            })
+            .expect("unique test directory");
+        let book = dir.join("book");
+        owner(&book, &["book", "create", "--name", "Macro snapshot"], None);
+        owner(
+            &book,
+            &["chart", "import", "-"],
+            Some(
+                r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+            ),
+        );
+        owner(&book, &["period", "create", "--fiscal-year", "2026"], None);
+        owner(&book, &["period", "open", "FY2026-P03"], None);
+        let added = owner(
+            &book,
+            &[
+                "document",
+                "add",
+                "-",
+                "--kind",
+                "Invoice",
+                "--grade",
+                "HumanUpload",
+            ],
+            Some("March rent: original charge and an additional charge"),
+        );
+        let evidence = added[0]["data"]["oid"].as_str().expect("document oid");
+        let post = |key: &str, amount: &str| {
+            let intent = json!({
+                "effective_date": "2026-03-15",
+                "idempotency_key": key,
+                "evidence": [evidence],
+                "legs": [
+                    {"side": "debit", "account": "6000", "amount": amount},
+                    {"side": "credit", "account": "1000", "amount": amount},
+                ],
+            })
+            .to_string();
+            owner(&book, &["post", "--intent", "-"], Some(&intent))
+        };
+        post("original-rent", "10.00 USD");
+        let adapter = Adapter::new(ServerConfig {
+            book: Some(book.clone()),
+            profile: LaunchProfile::Preparer,
+            grants: vec!["read".into(), "produce".into(), "verify".into()],
+            ..ServerConfig::default()
+        })
+        .expect("report producer");
+        let mac = macro_by_wire("fa_macro_certify_period_reports").unwrap();
+        let mut interleaved = None;
+        let output = adapter
+            .call_macro_with_dispatch(mac, &json!({"period": "FY2026-P03"}), |inv| {
+                let reply = adapter.dispatch(inv)?;
+                if inv.argv.first().is_some_and(|verb| verb == "tb") {
+                    assert!(interleaved.is_none(), "one initial trial balance");
+                    assert_eq!(reply.exit, 0, "{reply:?}");
+                    // A real monetary publication after the TB, before either
+                    // statement: no mocked amounts, sleeps or timing races.
+                    interleaved = Some(post("additional-rent", "20.00 USD"));
+                }
+                Ok(reply)
+            })
+            .expect("one coherent historical report package");
+        let package: JsonValue = fastmcp_rust::serde_json::from_str(&output.data).unwrap();
+        assert_eq!(package["step_count"], json!(4));
+        assert_eq!(package["certificates"].as_array().unwrap().len(), 3);
+        let steps = package["steps"].as_array().unwrap();
+        let known_at = steps[0]["data"][1]["known_at"]
+            .as_u64()
+            .expect("the first certificate's recorded frontier");
+        let posted = interleaved.expect("a real intervening posting");
+        assert!(
+            posted[0]["coordinate"]["known_at"].as_u64().unwrap() > known_at,
+            "the additional charge was published after the first report"
+        );
+        assert_eq!(output.envelope["coordinate"]["known_at"], json!(known_at));
+        for step in &steps[..3] {
+            assert_eq!(step["coordinate"]["known_at"], json!(known_at), "{step}");
+            assert_eq!(step["data"][1]["known_at"], json!(known_at), "{step}");
+            let oid = step["data"][1]["oid"].as_str().expect("retained certificate");
+            let replay = owner(&book, &["replay", &format!("C:{oid}")], None);
+            assert_eq!(replay[0]["data"], step["data"][0], "{step}");
+        }
+        for (index, name, code) in [
+            (1, "balance-sheet", "assets"),
+            (2, "income-statement", "net_income"),
+        ] {
+            assert_eq!(amount(&steps[index]["data"][0], code), json!(["-10.00 USD"]));
+            assert!(
+                steps[index]["command"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(&format!("--as-known-at {known_at}"))
+            );
+            let current = owner(
+                &book,
+                &["statement", name, "--for", "FY2026-P03"],
+                None,
+            );
+            assert_eq!(amount(&current[0]["data"], code), json!(["-30.00 USD"]));
+        }
+        // The final verification remains a separate current-history check;
+        // it must not relabel the three historical financial reports.
+        assert_eq!(steps[3]["step"], "verify_accumulator");
+        assert!(steps[3]["coordinate"]["known_at"].as_u64().unwrap() > known_at);
     }
 
     #[test]

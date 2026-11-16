@@ -177,7 +177,7 @@ pub const MACROS: &[MacroSpec] = &[
     MacroSpec {
         id: "fa.macro.certify_period_reports",
         name: "certify_period_reports",
-        summary: "Retain certified trial-balance, balance-sheet, and income-statement reports for a period and verify the book's entry accumulator with step-by-step provenance.",
+        summary: "Retain certified trial-balance, balance-sheet, and income-statement reports at the trial balance's recorded frontier, then verify the current entry accumulator. Each step records its coordinate and provenance.",
         properties: &[(
             "period",
             "fiscal period code for the certified audit package (for example `FY2026-P03`)",
