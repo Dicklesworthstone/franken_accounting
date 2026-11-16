@@ -1141,12 +1141,29 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(refusal));
     }
+    if let Err(refusal) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        principal_ref,
+        idempotency_key,
+        evid,
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
         if !crate::entry_storage::has_class_mirror(&row, entry.proposal.class) {
             return Ok(Err(crate::outcome::key_conflict()));
         }
         let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
+        if !stored.approvals.is_empty()
+            || stored.plan_certificate.is_some()
+            || !crate::outcome::verify_control_recorded(db, &row, &stored)?
+        {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
         let same = stored.proposal_digest == proposal_digest
             || matches!(
                 (
@@ -1174,6 +1191,15 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
             )))
         };
     }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&entry.proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     // A budget-capped account is born with one cell per existing period.
     let existing_periods = if accounts
         .iter()
@@ -1190,6 +1216,7 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         crate::entry_storage::stored_mirrors(&entry)?,
     );
     crate::entry_storage::stage(&ctx.query(), &mut batch, &entry, evid)?;
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     for a in accounts {
         let avid = account_vid(book.book_id, &a.code);
         let mut props = vec![

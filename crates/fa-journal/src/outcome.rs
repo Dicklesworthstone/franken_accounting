@@ -4,7 +4,7 @@
 //! additionally reserve (book, principal, key), shared with atomic batches.
 //! Migration chunks retain their declared run-scoped keys; run lifecycle
 //! controls reserve the ordinary principal-scoped key. Period, time and normal-key
-//! policy activation, account lifecycle and roles, closing and FX routing,
+//! policy activation, chart installation, account lifecycle and roles, closing and FX routing,
 //! dimension lifecycle, native subledger registration, lot policies and asset
 //! schedules reserve the common key; their pre-protocol entries remain valid
 //! retry anchors. Close-run lifecycle records reserve and authenticate their
@@ -704,7 +704,7 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
             && matches!(
                 &proposal.control,
                 Some(fa_model::ControlPayload::SchemaChange {
-                    kind: 2..=12 | 14..=19 | 21..=23 | 25,
+                    kind: 1..=12 | 14..=19 | 21..=23 | 25,
                     ..
                 })
             ));
