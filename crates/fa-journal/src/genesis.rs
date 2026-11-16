@@ -4,7 +4,7 @@
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ControlPayload, DecodeError, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128,
-    Reader, SealKey, SymbolTable, Writer, account_vid, entry_mirrors, entry_vid, unit_vid,
+    Reader, SealKey, SymbolTable, Writer, account_vid, entry_vid, unit_vid,
 };
 use fa_money::{UnitId, UnitRegistry};
 use fa_time::{
@@ -1184,7 +1184,12 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         Vec::new()
     };
     let mut batch = WriteBatch::new(relation::CHILD_OF);
-    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.create_vertex(
+        evid,
+        vec![label::ENTRY],
+        crate::entry_storage::stored_mirrors(&entry)?,
+    );
+    crate::entry_storage::stage(&ctx.query(), &mut batch, &entry, evid)?;
     for a in accounts {
         let avid = account_vid(book.book_id, &a.code);
         let mut props = vec![
