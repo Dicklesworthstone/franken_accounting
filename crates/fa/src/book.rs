@@ -8647,7 +8647,7 @@ impl Book {
     /// returning no source payload or general read authority.
     #[allow(clippy::too_many_arguments)]
     pub fn admit_draft_reversal_source(
-        &self,
+        &mut self,
         capability: &fa_policy::Capability,
         name: &str,
         vid: fgdb_types::VId,
@@ -8655,12 +8655,9 @@ impl Book {
         effective_period: Option<&str>,
     ) -> Outcome<bool> {
         let purposes = self.purposes();
-        with_store!(&self.store, core => core.query(&purposes, |db, book| {
-            Ok(fa_journal::draft::admit_reversal_source(
-                db, &purposes, book, capability, name, vid,
-                effective_date, effective_period,
-            )?)
-        }))
+        with_store!(&mut self.store, core => core.admit_draft_reversal_source(
+            &purposes, capability, name, vid, effective_date, effective_period,
+        ))
     }
 
     /// Install complete additive routes for period-end FX revaluation.

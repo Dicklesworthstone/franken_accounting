@@ -1069,7 +1069,7 @@ mod tests {
                     let CanonicalScalar::Bytes(raw) = payload else {
                         panic!("genesis payload");
                     };
-                    let mut version_one = raw.to_vec();
+                    let mut version_one = raw.as_slice().to_vec();
                     version_one[..2].copy_from_slice(&1_u16.to_le_bytes());
                     assert!(BookSpec::decode(&version_one).is_ok());
                     *payload = scalar_bytes("book", version_one).unwrap();

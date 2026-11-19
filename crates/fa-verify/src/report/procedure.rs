@@ -14,7 +14,10 @@
 //! reconstructs the first journaled close of each period and compares it with
 //! each live posting's recording sequence. Unusual-accounts v2 independently
 //! counts undirected debit/credit pairs once per live entry against the
-//! authenticated chart, including split and reciprocal legs. LIBR v2 requires
+//! authenticated chart, including split and reciprocal legs. Relative-size
+//! factor and threshold splitting v1 reconstruct party dimensions from original
+//! legs and independently reproduce exact ratios and complete greedy windows.
+//! LIBR v2 requires
 //! its account/source handles and effective claim date, and reconstructs one native-unit/entity
 //! stream under its declared intraday and replenishment laws. FIFO and LIFO v2
 //! independently consume the older clean, source and newer clean money under
@@ -38,6 +41,7 @@ mod benford;
 mod benford_digits;
 mod different_dates;
 mod libr;
+mod number_analytics;
 mod ordered;
 mod post_closing;
 mod pro_rata;
@@ -76,6 +80,17 @@ pub enum VerifiedProcedureParameters {
         min_legs: u32,
         round_power: u32,
         z_squared: u32,
+    },
+    RelativeSizeFactor {
+        min_rsf_bps: u32,
+        min_subset_size: u32,
+    },
+    ThresholdSplitting {
+        currency_iso4217: u32,
+        floor: i128,
+        min_count: u32,
+        threshold: i128,
+        window_days: u32,
     },
     TraceLibr {
         intraday_order: u32,
@@ -137,6 +152,8 @@ impl VerifiedProcedureParameters {
             Self::SameSameSame => "duplicates.same_same_same",
             Self::SameSameDifferent { .. } => "duplicates.same_same_different",
             Self::RoundAmountDensity { .. } => "numbers.round_amount_density",
+            Self::RelativeSizeFactor { .. } => "numbers.relative_size_factor",
+            Self::ThresholdSplitting { .. } => "numbers.threshold_splitting",
             Self::TraceLibr { .. } => "trace.libr",
             Self::TraceFifo { .. } => "trace.fifo",
             Self::TraceLifo { .. } => "trace.lifo",
@@ -156,6 +173,8 @@ impl VerifiedProcedureParameters {
             Self::SameSameSame => "FA-EVID-L07",
             Self::SameSameDifferent { .. } => "FA-EVID-L08",
             Self::RoundAmountDensity { .. } => "FA-EVID-L64",
+            Self::RelativeSizeFactor { .. } => "FA-EVID-L32",
+            Self::ThresholdSplitting { .. } => "FA-EVID-L33",
             Self::TraceLibr { .. } => "FA-EVID-L15",
             Self::TraceFifo { .. } => "FA-EVID-L16",
             Self::TraceLifo { .. } => "FA-EVID-L17",
@@ -167,8 +186,8 @@ impl VerifiedProcedureParameters {
     }
 
     /// Explicit bindings in the native contract's lexical name order.
-    pub(crate) fn parameters(self) -> Vec<(&'static str, u32)> {
-        match self {
+    pub(crate) fn parameters(self) -> Vec<(&'static str, i128)> {
+        let parameters = match self {
             Self::RoundAmounts { round_power } => vec![("round_power", round_power)],
             Self::PeriodEndTiming { window_days } | Self::SameSameDifferent { window_days } => {
                 vec![("window_days", window_days)]
@@ -190,6 +209,28 @@ impl VerifiedProcedureParameters {
                 ("round_power", round_power),
                 ("z_squared", z_squared),
             ],
+            Self::RelativeSizeFactor {
+                min_rsf_bps,
+                min_subset_size,
+            } => vec![
+                ("min_rsf_bps", min_rsf_bps),
+                ("min_subset_size", min_subset_size),
+            ],
+            Self::ThresholdSplitting {
+                currency_iso4217,
+                floor,
+                min_count,
+                threshold,
+                window_days,
+            } => {
+                return vec![
+                    ("currency_iso4217", i128::from(currency_iso4217)),
+                    ("floor", floor),
+                    ("min_count", i128::from(min_count)),
+                    ("threshold", threshold),
+                    ("window_days", i128::from(window_days)),
+                ];
+            }
             Self::TraceLibr {
                 intraday_order,
                 replenishment,
@@ -238,7 +279,11 @@ impl VerifiedProcedureParameters {
                 ("min_population", min_population),
                 ("side", side),
             ],
-        }
+        };
+        parameters
+            .into_iter()
+            .map(|(name, value)| (name, i128::from(value)))
+            .collect()
     }
 
     /// Exact native input bindings in lexical name order.
@@ -277,6 +322,8 @@ impl VerifiedProcedureParameters {
             Self::PostClosing | Self::SameSameSame => &[],
             Self::UnusualAccounts { .. } => &unusual_accounts::DEFAULTS,
             Self::RoundAmountDensity { .. } => &round_density::DEFAULTS,
+            Self::RelativeSizeFactor { .. } => &number_analytics::RSF_DEFAULTS,
+            Self::ThresholdSplitting { .. } => &number_analytics::SPLIT_DEFAULTS,
             Self::TraceLibr { .. } => &libr::DEFAULTS,
             Self::TraceFifo { .. } | Self::TraceLifo { .. } => &ordered::DEFAULTS,
             Self::TraceProRata { .. } => &pro_rata::DEFAULTS,
@@ -312,6 +359,13 @@ impl VerifiedProcedureParameters {
         )
     }
 
+    pub(crate) fn is_number_analytics(self) -> bool {
+        matches!(
+            self,
+            Self::RelativeSizeFactor { .. } | Self::ThresholdSplitting { .. }
+        )
+    }
+
     pub(crate) fn complexity(self) -> &'static str {
         match self {
             Self::RoundAmounts { .. } => "O(legs)",
@@ -320,7 +374,9 @@ impl VerifiedProcedureParameters {
             Self::UnusualAccounts { .. } => "O(legs log legs + account_pairs log account_pairs)",
             Self::SameSameSame
             | Self::SameSameDifferent { .. }
-            | Self::RoundAmountDensity { .. } => "O(legs log legs)",
+            | Self::RoundAmountDensity { .. }
+            | Self::RelativeSizeFactor { .. }
+            | Self::ThresholdSplitting { .. } => "O(legs log legs)",
             Self::FirstDigit { .. } | Self::SecondDigit { .. } | Self::FirstTwoDigits { .. } => {
                 "O(legs)"
             }
@@ -394,6 +450,20 @@ pub enum VerifiedProcedureStatistic {
         later: u128,
         days: u32,
     },
+    /// Exact largest/second-largest positive-debit ratio in basis points.
+    /// An account citation is absent when the group uses a party dimension.
+    RelativeSizeFactor {
+        basis_points: i128,
+        largest_entry: u128,
+        second_entry: u128,
+        account: Option<u128>,
+    },
+    /// Complete greedy group of sub-threshold postings in one date window.
+    SplitTotal {
+        mantissa: i128,
+        scale: u8,
+        entries: Vec<u128>,
+    },
     /// Below the requested minimum, only the population is scored.
     FirstDigitPopulation {
         counts: [u64; 9],
@@ -430,6 +500,8 @@ impl VerifiedProcedureStatistic {
             Self::AccountPairOccurrences { .. } => "pair_occurrences",
             Self::DuplicateEntries { .. } => "entries",
             Self::DaysApart { .. } => "days_apart",
+            Self::RelativeSizeFactor { .. } => "rsf_bps",
+            Self::SplitTotal { .. } => "split_total",
             Self::FirstDigitPopulation { .. } | Self::DigitPopulation { .. } => "population",
             Self::FirstDigitMad { .. } | Self::DigitMad { .. } => "mad",
         }
@@ -445,6 +517,8 @@ impl VerifiedProcedureStatistic {
             Self::AccountPairOccurrences { count, .. } => i128::from(*count),
             Self::DuplicateEntries { count, .. } => i128::from(*count),
             Self::DaysApart { days, .. } => i128::from(*days),
+            Self::RelativeSizeFactor { basis_points, .. } => *basis_points,
+            Self::SplitTotal { mantissa, .. } => *mantissa,
             Self::FirstDigitPopulation { counts } => {
                 counts.iter().map(|&count| i128::from(count)).sum()
             }
@@ -458,7 +532,7 @@ impl VerifiedProcedureStatistic {
     pub(crate) fn scale(&self) -> u8 {
         match self {
             Self::FirstDigitMad { .. } | Self::DigitMad { .. } => 9,
-            Self::TracedAmount { scale, .. } => *scale,
+            Self::TracedAmount { scale, .. } | Self::SplitTotal { scale, .. } => *scale,
             _ => 0,
         }
     }
@@ -478,15 +552,39 @@ pub struct VerifiedProcedureFinding {
 }
 
 impl VerifiedProcedureFinding {
-    /// Each supported multi-finding profile has a distinct first citation.
-    /// Its canonical tag and little-endian identity determine citation order.
-    fn first_citation(&self) -> Option<(u8, [u8; 16])> {
+    /// Numerical groups can share their first entry, so compare their entire
+    /// ordered citation list. Other supported multi-finding profiles have a
+    /// distinct first citation; its tag and little-endian identity suffice.
+    fn citation_order(&self) -> Vec<(u8, [u8; 16])> {
         match &self.statistic {
+            VerifiedProcedureStatistic::RelativeSizeFactor {
+                largest_entry,
+                second_entry,
+                account,
+                ..
+            } => {
+                let mut citations = vec![(1, largest_entry.to_le_bytes())];
+                if largest_entry != second_entry {
+                    citations.push((1, second_entry.to_le_bytes()));
+                }
+                if let Some(account) = account {
+                    citations.push((3, account.to_le_bytes()));
+                }
+                citations
+            }
+            VerifiedProcedureStatistic::SplitTotal { entries, .. } => entries
+                .iter()
+                .map(|entry| (1, entry.to_le_bytes()))
+                .collect(),
             VerifiedProcedureStatistic::AccountRoundLegs { account, .. }
             | VerifiedProcedureStatistic::TracedAmount { account, .. } => {
-                Some((3, account.to_le_bytes()))
+                vec![(3, account.to_le_bytes())]
             }
-            _ => self.entry.map(|entry| (1, entry.to_le_bytes())),
+            _ => self
+                .entry
+                .map(|entry| (1, entry.to_le_bytes()))
+                .into_iter()
+                .collect(),
         }
     }
 }
@@ -574,6 +672,9 @@ pub(super) struct Registry {
     pub unit_currencies: BTreeMap<u32, u16>,
     /// From authenticated historical chart controls, populated after replay.
     pub account_types: BTreeMap<u128, u8>,
+    /// First party dimension on each original leg, independently decoded from
+    /// authenticated payloads. Empty for procedures that do not need parties.
+    pub leg_parties: BTreeMap<u128, Vec<Option<u128>>>,
     pub trace: Option<TraceContext>,
     pub policy_oid: [u8; 32],
 }
@@ -611,7 +712,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let extended = format == EXTENDED_FORMAT;
     if extended {
         // These six native population witnesses remain opaque. The admitted
-        // digit/account-pair profiles use only authenticated journal/chart/units,
+        // numeric/account-pair profiles use only authenticated journal/chart/units,
         // independently reconstructed from source; no REA or attestation fact
         // is taken from these native-only replay witnesses.
         if r.count(6, 4, "procedure.extended_inputs")? != 6 {
@@ -649,6 +750,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "duplicates.same_same_same" => ("FA-EVID-L07", None),
         "duplicates.same_same_different" => ("FA-EVID-L08", Some(("window_days", u32::MAX))),
         "numbers.round_amount_density" => ("FA-EVID-L64", None),
+        "numbers.relative_size_factor" => ("FA-EVID-L32", None),
+        "numbers.threshold_splitting" => ("FA-EVID-L33", None),
         "trace.libr" => ("FA-EVID-L15", None),
         "trace.fifo" => ("FA-EVID-L16", None),
         "trace.lifo" => ("FA-EVID-L17", None),
@@ -659,14 +762,18 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, exact duplicates and round-amount density v1, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, exact duplicates and density/relative-size/threshold-splitting v1, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
     if extended
         != matches!(
             id,
-            "benford.second_digit" | "benford.first_two_digits" | "jet.unusual_accounts"
+            "benford.second_digit"
+                | "benford.first_two_digits"
+                | "jet.unusual_accounts"
+                | "numbers.relative_size_factor"
+                | "numbers.threshold_splitting"
         )
     {
         return Err(failed(
@@ -682,6 +789,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "duplicates.same_same_same"
                 | "duplicates.same_same_different"
                 | "numbers.round_amount_density"
+                | "numbers.relative_size_factor"
+                | "numbers.threshold_splitting"
         ) && version != 1)
         || (matches!(
             id,
@@ -748,6 +857,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         round_density::decode(&mut question)?
     } else if id == "jet.unusual_accounts" {
         unusual_accounts::decode(&mut question)?
+    } else if matches!(
+        id,
+        "numbers.relative_size_factor" | "numbers.threshold_splitting"
+    ) {
+        number_analytics::decode(&mut question, id == "numbers.threshold_splitting")?
     } else if let Some((parameter, bound)) = parameter {
         if question.count(1, 20, "procedure.parameters")? != 1
             || text(&mut question, 64, "procedure.parameter")? != parameter
@@ -811,7 +925,7 @@ fn parameters(w: &mut Writer, value: VerifiedProcedureParameters) {
     let parameters = value.parameters();
     w.count(parameters.len());
     for (name, amount) in parameters {
-        w.bytes(name.as_bytes()).i128(i128::from(amount));
+        w.bytes(name.as_bytes()).i128(amount);
     }
 }
 
@@ -915,6 +1029,30 @@ fn finding(
         }
         VerifiedProcedureStatistic::DaysApart { earlier, later, .. } => {
             w.count(2).u8(1).u128(*earlier).u8(1).u128(*later);
+        }
+        VerifiedProcedureStatistic::RelativeSizeFactor {
+            largest_entry,
+            second_entry,
+            account,
+            ..
+        } => {
+            w.count(
+                1 + usize::from(largest_entry != second_entry) + usize::from(account.is_some()),
+            )
+            .u8(1)
+            .u128(*largest_entry);
+            if largest_entry != second_entry {
+                w.u8(1).u128(*second_entry);
+            }
+            if let Some(account) = account {
+                w.u8(3).u128(*account);
+            }
+        }
+        VerifiedProcedureStatistic::SplitTotal { entries, .. } => {
+            w.count(entries.len());
+            for entry in entries {
+                w.u8(1).u128(*entry);
+            }
         }
         VerifiedProcedureStatistic::FirstDigitPopulation { .. }
         | VerifiedProcedureStatistic::FirstDigitMad { .. }
@@ -1059,9 +1197,7 @@ fn decision_card(
     parameters(&mut state, profile);
     let calibrated = population >= 100;
     let parameters = profile.parameters();
-    let power = parameters
-        .first()
-        .map_or(0, |(_, value)| i128::from(*value));
+    let power = parameters.first().map_or(0, |(_, value)| *value);
     let mut w = Writer::default();
     w.fixed(b"FADC")
         .u16(1)
@@ -1080,7 +1216,7 @@ fn decision_card(
     w.count(parameters.len() + 1);
     for (parameter, value) in parameters {
         w.bytes(format!("param.{parameter}").as_bytes())
-            .i128(i128::from(value))
+            .i128(value)
             .u8(0);
     }
     w.bytes(b"population").i128(i128::from(population)).u8(0);
@@ -1492,6 +1628,8 @@ fn recompute_version(
         | VerifiedProcedureParameters::SameSameSame
         | VerifiedProcedureParameters::SameSameDifferent { .. }
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
+        | VerifiedProcedureParameters::RelativeSizeFactor { .. }
+        | VerifiedProcedureParameters::ThresholdSplitting { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }
         | VerifiedProcedureParameters::TraceLifo { .. }
@@ -1607,6 +1745,8 @@ fn recompute_version(
             | VerifiedProcedureParameters::UnusualAccounts { .. }
             | VerifiedProcedureParameters::SameSameDifferent { .. }
             | VerifiedProcedureParameters::RoundAmountDensity { .. }
+            | VerifiedProcedureParameters::RelativeSizeFactor { .. }
+            | VerifiedProcedureParameters::ThresholdSplitting { .. }
             | VerifiedProcedureParameters::TraceLibr { .. }
             | VerifiedProcedureParameters::TraceFifo { .. }
             | VerifiedProcedureParameters::TraceLifo { .. }
@@ -1642,6 +1782,9 @@ fn recompute_version(
     } else if matches!(profile, VerifiedProcedureParameters::UnusualAccounts { .. }) {
         (findings, live_entries, live_legs, comparisons) =
             unusual_accounts::replay(profile, &grouped_population, registry)?;
+    } else if profile.is_number_analytics() {
+        (findings, live_legs, comparisons) =
+            number_analytics::replay(profile, &grouped_population, registry)?;
     } else if matches!(profile, VerifiedProcedureParameters::TraceLibr { .. }) {
         let (finding, legs, compared) =
             libr::replay(profile, effective_through, &grouped_population, registry)?;
@@ -1688,6 +1831,8 @@ fn recompute_version(
         | VerifiedProcedureParameters::FirstTwoDigits { .. }
         | VerifiedProcedureParameters::UnusualAccounts { .. }
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
+        | VerifiedProcedureParameters::RelativeSizeFactor { .. }
+        | VerifiedProcedureParameters::ThresholdSplitting { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }
         | VerifiedProcedureParameters::TraceLifo { .. }
@@ -1698,16 +1843,20 @@ fn recompute_version(
             finding.population = population;
         }
     }
-    // Account and entry findings have a unique first citation; population-wide
-    // Benford returns one finding with no citations. The first citation's bytes
-    // therefore resolve every remaining tie in the native canonical ordering.
-    findings.sort_by(|a, b| {
+    // Materialize ordering keys once: numeric groups may share the first
+    // citation, and a complete prefix tie is resolved by the remaining cites.
+    let mut keyed: Vec<_> = findings
+        .into_iter()
+        .map(|finding| (finding.citation_order(), finding))
+        .collect();
+    keyed.sort_by(|(a_cites, a), (b_cites, b)| {
         b.severity
             .cmp(&a.severity)
             .then_with(|| b.statistic.value().cmp(&a.statistic.value()))
-            .then_with(|| a.first_citation().cmp(&b.first_citation()))
+            .then_with(|| a_cites.cmp(b_cites))
             .then_with(|| a.narrative.cmp(&b.narrative))
     });
+    let findings: Vec<_> = keyed.into_iter().map(|(_, finding)| finding).collect();
     let mut encoded_findings = Writer::default();
     encoded_findings.count(findings.len());
     for value in &findings {
@@ -1788,6 +1937,7 @@ mod tests {
             unit_scales: BTreeMap::from([(1, 2), (2, 0)]),
             unit_currencies: BTreeMap::from([(1, 840), (2, 392)]),
             account_types: BTreeMap::from([(0, 1), (1, 3)]),
+            leg_parties: BTreeMap::new(),
             trace: None,
             policy_oid: [7; 32],
         }

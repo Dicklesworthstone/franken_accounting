@@ -209,3 +209,225 @@ fn previous_native_inline_entries_above_four_kib_remain_readable() {
     assert_eq!(retry.entry_ref(), reference);
     assert_eq!(h.db.frontier().unwrap(), at);
 }
+
+fn large_chart(h: &Harness) -> Vec<AccountSpec> {
+    let mut accounts = vec![AccountSpec {
+        code: "bulk".into(),
+        name: "Imported operating accounts".into(),
+        account_type: 1,
+        normal_balance: 0,
+        is_leaf: false,
+        unit_policy: UnitPolicy::Single(h.usd),
+        parent_code: None,
+        limit: None,
+    }];
+    accounts.extend((0..512).map(|ordinal| AccountSpec {
+        code: format!("bulk-{ordinal:04}"),
+        name: format!("Imported subsidiary operating account {ordinal:04}"),
+        account_type: 1,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::Single(h.usd),
+        parent_code: Some("bulk".into()),
+        limit: None,
+    }));
+    accounts
+}
+
+fn install_large_chart(
+    h: &mut Harness,
+    accounts: &[AccountSpec],
+    capability: &Capability,
+) -> Result<Result<fa_journal::genesis::ChartInstalled, Refusal>, KernelError> {
+    let ctx = h.ctx();
+    let day = h.day();
+    let description = h.statement("large chart import", 111);
+    h.runtime.block_on(install_chart(
+        &mut h.db,
+        &ctx,
+        &h.book,
+        accounts,
+        PRINCIPAL,
+        day,
+        b"large-chart",
+        description,
+        capability,
+    ))
+}
+
+#[test]
+fn large_chart_import_keeps_one_publication_and_replays_historical_accounts() {
+    let mut h = harness();
+    let accounts = large_chart(&h);
+    let capability = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    let before = h.db.frontier().unwrap();
+    let initial_count = fa_journal::chart::read_at(&h.db, &h.book, before)
+        .unwrap()
+        .accounts()
+        .len();
+    let installed = install_large_chart(&mut h, &accounts, &capability)
+        .expect("large chart storage")
+        .expect("chart admitted");
+    let at = installed.recorded_at;
+    assert_eq!(at.0, before.0 + 1);
+    assert_eq!(installed.accounts, accounts.len());
+    let (canonical, recorded_at) = read_entry(&h.db, installed.control_entry)
+        .unwrap()
+        .unwrap();
+    assert_eq!(recorded_at, at);
+    let encoded = canonical.encode().unwrap();
+    assert!(
+        encoded.len() > 16_384,
+        "this chart must exceed the substrate's single-row limit"
+    );
+    let root = h.db.vertex(installed.control_entry).unwrap().unwrap();
+    assert!(entry_storage::is_stored_entry_payload(
+        &fa_journal::rows::bytes(&root, property::FA_PAYLOAD, "chart root").unwrap()
+    ));
+    assert_eq!(
+        entry_storage::payload_at(&h.db, &root, at).unwrap(),
+        encoded
+    );
+    assert!(entry_storage::mirrors_match(&root, &canonical).unwrap());
+
+    let born = h
+        .db
+        .vertices_at(at)
+        .unwrap()
+        .into_iter()
+        .filter(|row| row.created_at == at)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        born.iter().filter(|row| row.labels == [label::ENTRY]).count(),
+        1
+    );
+    assert_eq!(
+        born.iter().filter(|row| row.labels == [label::ACCOUNT]).count(),
+        accounts.len()
+    );
+    let fragments = born
+        .iter()
+        .filter(|row| row.labels == [label::ENTRY_FRAGMENT])
+        .collect::<Vec<_>>();
+    assert_eq!(fragments.len(), encoded.len().div_ceil(4096));
+    for fragment in fragments {
+        assert!(h.db.vertex_at(fragment.vid, before).unwrap().is_none());
+        assert!(
+            fa_journal::rows::bytes(fragment, property::FA_PAYLOAD, "chart fragment")
+                .unwrap()
+                .len()
+                <= 4096
+        );
+    }
+    let old_chart = fa_journal::chart::read_at(&h.db, &h.book, before).unwrap();
+    let current_chart = fa_journal::chart::read_at(&h.db, &h.book, at).unwrap();
+    assert_eq!(old_chart.accounts().len(), initial_count);
+    assert_eq!(current_chart.accounts().len(), initial_count + accounts.len());
+    let summary = account_vid(h.book.book_id, "bulk");
+    assert_eq!(current_chart.leaves_under(summary).unwrap().len(), 512);
+    for spec in &accounts {
+        let vid = account_vid(h.book.book_id, &spec.code);
+        assert!(!old_chart.accounts().contains_key(&vid));
+        let account = &current_chart.accounts()[&vid];
+        assert_eq!(account.code, spec.code);
+        assert_eq!(account.name, spec.name);
+        assert_eq!(account.is_leaf, spec.is_leaf);
+    }
+
+    let retry = install_large_chart(&mut h, &accounts, &capability)
+        .unwrap()
+        .unwrap();
+    assert_eq!(retry.control_entry, installed.control_entry);
+    assert_eq!(retry.recorded_at, at);
+    assert_eq!(h.db.frontier().unwrap(), at);
+    let mut changed = accounts.clone();
+    changed.last_mut().unwrap().name.push_str(" changed");
+    let refusal = install_large_chart(&mut h, &changed, &capability)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), at);
+
+    // The newly installed chart must remain usable by the real posting
+    // kernel, not merely decodable through its storage manifest.
+    let mut legs = h.rent_legs(75);
+    legs[0].account_ref = account_vid(h.book.book_id, "bulk-0000");
+    let proposal = h.proposal(legs, b"large-chart-posting", EntryClass::ORIGINAL);
+    h.post(h.request(proposal, &["post"])).unwrap();
+    assert!(
+        fa_journal::verify_projections(&h.db, &h.book, None)
+            .unwrap()
+            .drift
+            .is_empty()
+    );
+    fa_journal::entry_history::verify_entry_history(&h.db, &h.ctx(), &h.book, None).unwrap();
+    assert_eq!(
+        entry_storage::payload_at(&h.db, &root, at).unwrap(),
+        encoded
+    );
+}
+
+#[test]
+fn chart_fragments_refuse_tampering_without_losing_the_original_chart() {
+    let mut h = harness();
+    let accounts = large_chart(&h);
+    let capability = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    let installed = install_large_chart(&mut h, &accounts, &capability)
+        .unwrap()
+        .unwrap();
+    let intact = installed.recorded_at;
+    let original_chart = fa_journal::chart::read_at(&h.db, &h.book, intact).unwrap();
+    let fragment = h
+        .db
+        .vertices_at(intact)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.created_at == intact && row.labels == [label::ENTRY_FRAGMENT])
+        .unwrap();
+    let original = fa_journal::rows::bytes(&fragment, property::FA_PAYLOAD, "chart fragment")
+        .unwrap();
+    let mut damaged = original.clone();
+    damaged[0] ^= 1;
+    let mut edit = fgdb::WriteBatch::new(relation::CHILD_OF);
+    edit.set_vertex_property(
+        fragment.vid,
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(damaged).unwrap()),
+    );
+    h.write_raw(edit);
+    let damaged_head = h.db.frontier().unwrap();
+    assert!(read_entry(&h.db, installed.control_entry).is_err());
+    assert!(fa_journal::chart::read_at(&h.db, &h.book, damaged_head).is_err());
+    assert_eq!(
+        fa_journal::chart::read_at(&h.db, &h.book, intact)
+            .unwrap()
+            .accounts(),
+        original_chart.accounts()
+    );
+    install_large_chart(
+        &mut h,
+        &accounts,
+        &Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
+    )
+    .expect("authority refusal must precede reading the damaged fragments")
+    .expect_err("read authority cannot install a chart");
+    assert_eq!(h.db.frontier().unwrap(), damaged_head);
+
+    let mut restore = fgdb::WriteBatch::new(relation::CHILD_OF);
+    restore.set_vertex_property(
+        fragment.vid,
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(original).unwrap()),
+    );
+    h.write_raw(restore);
+    assert!(read_entry(&h.db, installed.control_entry).is_err());
+    assert!(
+        fa_journal::chart::read_at(&h.db, &h.book, h.db.frontier().unwrap()).is_err()
+    );
+    assert_eq!(
+        fa_journal::chart::read_at(&h.db, &h.book, intact)
+            .unwrap()
+            .accounts(),
+        original_chart.accounts()
+    );
+}

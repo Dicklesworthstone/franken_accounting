@@ -13,7 +13,7 @@ use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ApprovalRef, CloseRunBody, CloseTaskBody, CloseTaskBodyAction, ControlKind, ControlPayload,
-    EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128, Oid, Reader, TypedRef,
+    Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128, Oid, Reader, TypedRef,
     Writer, close_run_vid, close_task_vid, domain_digest, entry_mirrors, entry_vid, period_vid,
     report_certificate_vid,
 };
@@ -585,6 +585,130 @@ fn record_key(kind: RecordKind, object: VId) -> Vec<u8> {
     .to_vec()
 }
 
+/// Only the registered close lifecycle may reserve a common successful-intent
+/// key. Full graph and native-effect correspondence is checked by `read_view`;
+/// this guard binds the control's canonical shape and normal Entry identity.
+pub(crate) fn is_lifecycle_control(entry: &Entry, vid: VId) -> bool {
+    let p = &entry.proposal;
+    if p.class != EntryClass::CLOSE_CONTROL
+        || p.branch_id != Id128::TRUNK
+        || p.effective_date != DateDay(0)
+        || p.document_date.is_some()
+        || p.effective_period.is_some()
+        || !p.legs.is_empty()
+        || !p.unit_totals.is_empty()
+        || p.base_totals.is_some()
+        || p.session_ref.is_some()
+        || !p.evidence.is_empty()
+        || !p.supersession.is_empty()
+        || p.pending.is_some()
+        || !p.external_ids.is_empty()
+        || !p.tags.is_empty()
+        || !entry.approvals.is_empty()
+        || entry.plan_certificate.is_some()
+        || vid
+            != entry_vid(
+                p.book_id,
+                &p.principal_ref.0.to_le_bytes(),
+                &p.idempotency_key,
+            )
+    {
+        return false;
+    }
+    let EntryOrigin::Control {
+        control_kind: ControlKind::CLOSE_TRANSITION,
+        spec_body_digest,
+    } = &p.origin
+    else {
+        return false;
+    };
+    let Some(ControlPayload::LifecycleTransition {
+        object_ref,
+        from,
+        to,
+        proof_refs,
+        reason_code: 0,
+    }) = &p.control
+    else {
+        return false;
+    };
+    let expected_key = match (
+        *from,
+        *to,
+        p.extensions.as_slice(),
+        proof_refs.as_slice(),
+    ) {
+        (0, 1, [(fa_model::entry::CLOSE_RUN_EXTENSION, bytes)], []) => {
+            let Ok(body) = CloseRunBody::decode(bytes) else {
+                return false;
+            };
+            if body.book_id != p.book_id
+                || body.owner != p.principal_ref
+                || close_run_vid(body.book_id, &body.name) != *object_ref
+                || body.digest().ok().as_ref() != Some(spec_body_digest)
+            {
+                return false;
+            }
+            record_key(RecordKind::Open, *object_ref)
+        }
+        (0, 1, [], [TypedRef::Vertex(_)])
+        | (0, 1, [], [TypedRef::Vertex(_), TypedRef::Object(_)])
+        | (
+            0,
+            1,
+            [],
+            [
+                TypedRef::Vertex(_),
+                TypedRef::Object(_),
+                TypedRef::Object(_),
+            ],
+        ) => record_key(RecordKind::Task, *object_ref),
+        (1, 2, [], [TypedRef::Vertex(_)]) => record_key(RecordKind::Complete, *object_ref),
+        (1, 1, [], [TypedRef::Object(certificate)]) => {
+            review_key(*object_ref, &certificate.0)
+        }
+        _ => return false,
+    };
+    p.idempotency_key == expected_key
+}
+
+/// A new close record participates in the same principal/key namespace as
+/// postings and batches, including immutable pre-protocol Entry reservations.
+/// These point reads belong to the native effect's transaction.
+fn require_fresh_record<V: Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    proposal: &EntryPayload,
+) -> Outcome<()> {
+    let vid = entry_vid(
+        proposal.book_id,
+        &proposal.principal_ref.0.to_le_bytes(),
+        &proposal.idempotency_key,
+    );
+    match crate::outcome::witness_named_key(
+        txn,
+        db,
+        book.book_id,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        vid,
+    )? {
+        Err(refusal) => return Ok(Err(refusal)),
+        Ok(true) => return Ok(Err(crate::outcome::key_conflict())),
+        Ok(false) => {}
+    }
+    if txn.vertex_has_label(db, vid, label::ENTRY)?.is_some() {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    crate::outcome::require_unused_legacy_key(
+        txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(proposal),
+    )
+}
+
 fn proposal(
     book: &BookContext,
     body: &CloseRunBody,
@@ -679,6 +803,7 @@ fn add_record(
     let mirrors = entry_mirrors(&entry)?;
     tracker.create_vertex(relation::IN_CASE, vid, 1, &mirrors);
     batch.create_vertex(vid, vec![label::ENTRY], mirrors);
+    crate::outcome::stage_close_control(batch, tracker, &entry, vid)?;
     tracker.add_edge(relation::IN_CASE, &[]);
     batch.add_edge(edge_id(relation::IN_CASE, vid, object), vid, object, vec![]);
     Ok(vid)
@@ -700,42 +825,90 @@ pub async fn create_close_run<V: Vfs + Clone>(
         Ok(body) => body,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let run = close_run_vid(book.book_id, &body.name);
+    let opening = proposal(
+        book,
+        &body,
+        RecordKind::Open,
+        run,
+        capability.holder(),
+        description,
+        None,
+    )?;
+    let opening_vid = entry_vid(
+        book.book_id,
+        &capability.holder().0.to_le_bytes(),
+        &opening.idempotency_key,
+    );
     if let Err(refusal) = crate::scratch::ensure_history(db, cx).await? {
         return Ok(Err(refusal));
     }
-    if let Some(view) = read_view(db, cx, book, &body.name)? {
-        return if view.body == body {
-            Ok(Ok(view))
-        } else {
-            Ok(Err(conflict(
-                "this run name already binds another definition",
-            )))
-        };
+    let mut txn = db.begin(&cx.txn())?;
+    if let Err(refusal) = policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
-    if db
-        .vertex(period_vid(&book.calendar.id, &body.period))?
+    if let Err(refusal) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        capability.holder(),
+        &opening.idempotency_key,
+        opening_vid,
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+    let opening_row = txn.vertex(db, opening_vid)?;
+    if opening_row
+        .as_ref()
+        .is_some_and(|row| !crate::entry_storage::has_class_mirror(row, EntryClass::CLOSE_CONTROL))
+    {
+        txn.abort();
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    if let Some(view) = read_view(db, cx, book, &body.name)? {
+        txn.abort();
+        if view.body != body {
+            return Ok(Err(conflict(
+                "this run name already binds another definition",
+            )));
+        }
+        let row = opening_row.ok_or_else(|| corrupt("the run's original Open is absent"))?;
+        let recorded = crate::entry_storage::decode_at(db, &row, view.opened_at)?;
+        let same = recorded.proposal_digest == opening.proposal_digest()?
+            || matches!(
+                (recorded.proposal.semantic_digest(&book.seal_key), opening.semantic_digest(&book.seal_key)),
+                (Ok(prior), Ok(requested)) if prior == requested
+            );
+        if !same {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        return Ok(Ok(view));
+    }
+    if let Err(refusal) = require_fresh_record(&txn, db, book, &opening)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+    if txn
+        .vertex(db, period_vid(&book.calendar.id, &body.period))?
         .is_none()
     {
+        txn.abort();
         return Ok(Err(invalid(
             "the close run's period does not exist in this book",
         )));
     }
     for task in &body.tasks {
         if let Err(refusal) = validate_draft(db, cx, book, &body.period, task)? {
+            txn.abort();
             return Ok(Err(refusal));
         }
-    }
-    let run = close_run_vid(book.book_id, &body.name);
-    let mut txn = db.begin(&cx.txn())?;
-    if let Err(refusal) = policy::capability_witness(&txn, db, book, capability)? {
-        txn.abort();
-        return Ok(Err(refusal));
     }
     if txn.vertex(db, run)?.is_some() {
         txn.abort();
         return Ok(Err(conflict("the close run appeared during creation")));
     }
-    txn.vertex(db, period_vid(&book.calendar.id, &body.period))?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
     let mut dependencies = WriteBatch::new(relation::DEPENDS_ON);
     let mut tracker = TemplateByteTracker::default();
@@ -748,20 +921,7 @@ pub async fn create_close_run<V: Vfs + Clone>(
     )?;
     tracker.create_vertex(relation::IN_CASE, run, 1, &props);
     batch.create_vertex(run, vec![label::CLOSE_RUN], props);
-    add_record(
-        &mut batch,
-        &mut tracker,
-        proposal(
-            book,
-            &body,
-            RecordKind::Open,
-            run,
-            capability.holder(),
-            description,
-            None,
-        )?,
-        run,
-    )?;
+    add_record(&mut batch, &mut tracker, opening, run)?;
     for task in &body.tasks {
         let vid = close_task_vid(book.book_id, &body.name, &task.id);
         if txn.vertex(db, vid)?.is_some() {
@@ -894,6 +1054,11 @@ fn read_view<V: Vfs + Clone>(
             &entry.proposal.control
             && (*object_ref == run || tasks.contains_key(object_ref))
         {
+            if !crate::outcome::verify_close_recorded(db, &row, &entry)? {
+                return Err(corrupt(
+                    "close control differs from its original shared-key outcome",
+                ));
+            }
             records.push((seq, row.vid, entry));
         }
     }
@@ -1805,15 +1970,8 @@ impl TaskCompletion {
                     ));
                 };
                 proof_refs.push(TypedRef::Object(Oid(review.certificate)));
-                let selection_vid = entry_vid(
-                    book.book_id,
-                    &self.capability.holder().0.to_le_bytes(),
-                    &selection.idempotency_key,
-                );
-                if txn.vertex(db, selection_vid)?.is_some() {
-                    return Ok(Err(conflict(
-                        "the combined review selection appeared during execution",
-                    )));
+                if let Err(refusal) = require_fresh_record(txn, db, book, &selection)? {
+                    return Ok(Err(refusal));
                 }
                 add_record(&mut batch, tracker, selection, self.view.vid)?;
             }
@@ -1843,6 +2001,9 @@ impl TaskCompletion {
             };
             proof_refs.push(TypedRef::Object(Oid(digest)));
         }
+        if let Err(refusal) = require_fresh_record(txn, db, book, &task_record)? {
+            return Ok(Err(refusal));
+        }
         let receipt = add_record(&mut batch, tracker, task_record, selected.vid)?;
         tracker.set_vertex_property(
             relation::IN_CASE,
@@ -1867,20 +2028,19 @@ impl TaskCompletion {
             if let Err(refusal) = admit(db, book, &self.capability, Some("Complete"))? {
                 return Ok(Err(refusal));
             }
-            add_record(
-                &mut batch,
-                tracker,
-                proposal(
-                    book,
-                    &self.view.body,
-                    RecordKind::Complete,
-                    self.view.vid,
-                    self.capability.holder(),
-                    self.description.clone(),
-                    Some(receipt),
-                )?,
+            let complete = proposal(
+                book,
+                &self.view.body,
+                RecordKind::Complete,
                 self.view.vid,
+                self.capability.holder(),
+                self.description.clone(),
+                Some(receipt),
             )?;
+            if let Err(refusal) = require_fresh_record(txn, db, book, &complete)? {
+                return Ok(Err(refusal));
+            }
+            add_record(&mut batch, tracker, complete, self.view.vid)?;
             tracker.set_vertex_property(
                 relation::IN_CASE,
                 self.view.vid,
@@ -1998,6 +2158,9 @@ pub async fn execute_close_task<V: Vfs + Clone>(
         }
     }
     if let Some(receipt) = task.completion.clone() {
+        // A completed-task resume observes its authenticated original receipt;
+        // it is not a new intent under the current controller's principal/key.
+        // Another currently authorized controller can continue the same DAG.
         return Ok(Ok(CloseTaskRecorded {
             run: view,
             task: task_id.into(),

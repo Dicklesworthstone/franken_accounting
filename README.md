@@ -1491,6 +1491,17 @@ frequency, population, citations and work counts, including historical
 reversals. This profile accepts `max_pair_count` and `min_population`; it
 refuses the older v1 algorithm and effective-date cutoffs.
 
+`numbers.relative_size_factor` v1 and `numbers.threshold_splitting` v1 also
+export for independent replay. Relative-size analysis preserves separate party
+or account groups and units, exact largest-to-second-largest ratios, and
+stable ties. Threshold analysis recomputes currency selection, party or account
+pair grouping, and complete inclusive date windows from authenticated postings.
+Both profiles reproduce every finding, citation, population and work count at
+the original recorded frontier, including reversal history. Their v1 contracts
+take no effective cutoff; the threshold and floor are declared integer mantissas
+in the selected currency. These are statistical observations, not determinations
+of a reporting obligation or wrongdoing.
+
 Corrected books can be exported when every Replacement uses the current
 target-derived identity and a later authenticated reversal, replacement or
 ordinary settlement reference resolves that identity within the certificate's

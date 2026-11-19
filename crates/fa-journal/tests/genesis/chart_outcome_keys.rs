@@ -1,4 +1,4 @@
-//! Account lifecycle controls share one key reservation with posting families.
+//! Chart installation and account lifecycle controls share posting-key reservations.
 
 use super::*;
 use fa_model::ApprovalRef;
@@ -492,4 +492,428 @@ fn a_deleted_lifecycle_claim_cannot_masquerade_as_a_legacy_control() {
         h.write_raw(damage);
         refused_without_publication(&mut h, &request, "FA-REF-032");
     }
+}
+
+#[derive(Clone)]
+struct ChartRequest {
+    accounts: Vec<AccountSpec>,
+    day: DateDay,
+    key: Vec<u8>,
+    description: Erasable<String>,
+}
+
+fn chart_request(h: &Harness, key: &[u8]) -> ChartRequest {
+    ChartRequest {
+        accounts: vec![AccountSpec {
+            code: "7100".into(),
+            name: "New chart account".into(),
+            account_type: 5,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(h.usd),
+            parent_code: None,
+            limit: None,
+        }],
+        day: h.day(),
+        key: key.to_vec(),
+        description: h.statement("chart installation", 151),
+    }
+}
+
+fn install(
+    h: &mut Harness,
+    request: &ChartRequest,
+    capability: &Capability,
+) -> fa_journal::refusal::Outcome<fa_journal::genesis::ChartInstalled> {
+    let ctx = h.ctx();
+    h.runtime.block_on(install_chart(
+        &mut h.db,
+        &ctx,
+        &h.book,
+        &request.accounts,
+        PRINCIPAL,
+        request.day,
+        &request.key,
+        request.description.clone(),
+        capability,
+    ))
+}
+
+fn install_admitted(
+    h: &mut Harness,
+    request: &ChartRequest,
+) -> Result<fa_journal::genesis::ChartInstalled, Refusal> {
+    install(
+        h,
+        request,
+        &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+    )
+    .expect("chart installation kernel")
+}
+
+fn installation_refused(h: &mut Harness, request: &ChartRequest, expected: &str) {
+    let head = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let edges = h.db.edges_at(head).unwrap();
+    let refusal = install_admitted(h, request).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), (expected, exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+    assert_eq!(h.db.edges_at(head).unwrap(), edges);
+}
+
+/// Copy one original chart publication into a separate legacy fixture, omitting
+/// its modern key claim before publication. No committed object is rewritten.
+fn legacy_chart_batches(
+    producer: &Harness,
+    target: VId,
+    approvals: Vec<ApprovalRef>,
+    plan: Option<Oid>,
+) -> (Vec<fgdb::WriteBatch>, fa_journal::genesis::ChartInstalled) {
+    let (entry, sequence) = read_entry(&producer.db, target).unwrap().unwrap();
+    let claim = fa_model::intent_outcome_vid(
+        producer.book.book_id,
+        &entry.proposal.principal_ref.0.to_le_bytes(),
+        &entry.proposal.idempotency_key,
+    );
+    assert!(matches!(
+        entry.proposal.control,
+        Some(ControlPayload::SchemaChange { kind: 1, .. })
+    ));
+    let entry = entry.proposal.seal(approvals, plan).unwrap();
+    let mut vertices = fgdb::WriteBatch::new(relation::IN_BOOK);
+    let mut created = std::collections::BTreeSet::new();
+    let mut accounts = 0;
+    let mut rows = producer.db.vertices_at(sequence).unwrap();
+    rows.sort_by_key(|row| row.birth_ordinal);
+    for row in rows {
+        if row.created_at != sequence || row.vid == claim {
+            continue;
+        }
+        assert!(
+            row.labels
+                .iter()
+                .all(|kind| matches!(*kind, label::ENTRY | label::ACCOUNT | label::LIMIT_CELL))
+        );
+        accounts += usize::from(row.labels.contains(&label::ACCOUNT));
+        assert!(created.insert(row.vid));
+        let props = if row.vid == target {
+            fa_model::entry_mirrors(&entry).unwrap()
+        } else {
+            row.props
+        };
+        vertices.create_vertex(row.vid, row.labels, props);
+    }
+    assert!(created.contains(&target));
+    let mut edges = std::collections::BTreeMap::new();
+    for edge in producer.db.edges_at(sequence).unwrap() {
+        if created.contains(&edge.entry.src) {
+            assert!(matches!(
+                edge.entry.relation,
+                relation::IN_BOOK | relation::CHILD_OF
+            ));
+            edges
+                .entry(edge.entry.relation)
+                .or_insert_with(|| fgdb::WriteBatch::new(edge.entry.relation))
+                .add_edge(edge.entry.eid, edge.entry.src, edge.entry.dst, edge.props);
+        }
+    }
+    let mut batches = vec![vertices];
+    batches.extend(edges.into_values());
+    (
+        batches,
+        fa_journal::genesis::ChartInstalled {
+            recorded_at: sequence,
+            control_entry: target,
+            accounts,
+        },
+    )
+}
+
+fn publish_legacy_chart(
+    runtime: &Runtime,
+    db: &mut Database<MemVfs>,
+    ctx: &PurposeContexts,
+    batches: Vec<fgdb::WriteBatch>,
+    mut recorded: fa_journal::genesis::ChartInstalled,
+) -> fa_journal::genesis::ChartInstalled {
+    let mut txn = db.begin(&ctx.txn()).unwrap();
+    txn.write_ordered(db, batches).unwrap();
+    recorded.recorded_at = runtime.block_on(txn.commit(db, &ctx.commit())).unwrap();
+    recorded
+}
+
+pub(super) fn write_legacy_chart_bootstrap(
+    runtime: &Runtime,
+    db: &mut Database<MemVfs>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+) -> fa_journal::genesis::ChartInstalled {
+    let producer = harness();
+    assert_eq!(producer.book.book_id, book.book_id);
+    let target = entry_vid(book.book_id, &PRINCIPAL.0.to_le_bytes(), b"chart-1");
+    let (batches, recorded) = legacy_chart_batches(&producer, target, Vec::new(), None);
+    publish_legacy_chart(runtime, db, ctx, batches, recorded)
+}
+
+fn write_legacy_installation(
+    h: &mut Harness,
+    request: &ChartRequest,
+    approvals: Vec<ApprovalRef>,
+    plan: Option<Oid>,
+) -> fa_journal::genesis::ChartInstalled {
+    let mut producer = harness();
+    let produced = install_admitted(&mut producer, request).unwrap();
+    let (batches, recorded) =
+        legacy_chart_batches(&producer, produced.control_entry, approvals, plan);
+    let ctx = h.ctx();
+    publish_legacy_chart(&h.runtime, &mut h.db, &ctx, batches, recorded)
+}
+
+#[test]
+fn posting_family_keys_cannot_install_a_chart() {
+    let mut h = harness();
+    let source = h.proposal(h.rent_legs(100), b"install-source", EntryClass::ORIGINAL);
+    let target = h.post(h.request(source, &["post"])).unwrap().entry_ref();
+    let reversal = h.reversal_of_entry(target, b"install-reversal");
+    h.post(h.request(reversal, &["post"])).unwrap();
+    let pending = h.pending(h.rent_legs(200), b"install-pending");
+    let target = h.post(h.request(pending, &["post"])).unwrap().entry_ref();
+    let resolution =
+        h.resolution_posts(target, h.rent_legs(150), vec![0, 1], b"install-resolution");
+    h.post(h.request(resolution, &["post"])).unwrap();
+    let member = h.proposal(h.rent_legs(300), b"install-member", EntryClass::ORIGINAL);
+    h.post_batch(h.batch(b"install-batch", vec![member])).unwrap();
+
+    for key in [
+        b"install-source".as_slice(),
+        b"install-reversal".as_slice(),
+        b"install-resolution".as_slice(),
+        b"install-batch".as_slice(),
+    ] {
+        let request = chart_request(&h, key);
+        installation_refused(&mut h, &request, "FA-REF-032");
+    }
+    let request = chart_request(&h, b"install-fresh");
+    assert_eq!(install_admitted(&mut h, &request).unwrap().accounts, 1);
+}
+
+#[test]
+fn chart_installation_claims_are_atomic_and_bind_the_retry() {
+    let mut h = harness();
+    let source = h.proposal(h.rent_legs(100), b"install-prior", EntryClass::ORIGINAL);
+    let target = h.post(h.request(source, &["post"])).unwrap().entry_ref();
+    let request = chart_request(&h, b"install-owned");
+    let before = h.db.frontier().unwrap();
+    let count = h.db.vertices().unwrap().len();
+    let recorded = install_admitted(&mut h, &request).unwrap();
+    assert_eq!(recorded.recorded_at.0, before.0 + 1);
+    assert_eq!(h.db.vertices().unwrap().len() - count, 3);
+    let entry = h.db.vertex(recorded.control_entry).unwrap().unwrap();
+    let claim_id =
+        fa_model::intent_outcome_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), &request.key);
+    let claim = h.db.vertex(claim_id).unwrap().unwrap();
+    assert_eq!(claim.labels, vec![label::INTENT_OUTCOME]);
+    assert_eq!(claim.created_at, entry.created_at);
+    assert_eq!(
+        fa_journal::rows::prop(&claim, property::TARGET_REF),
+        Some(&CanonicalScalar::bytes(recorded.control_entry.0.to_le_bytes().to_vec()).unwrap())
+    );
+    let head = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    assert_eq!(install_admitted(&mut h, &request).unwrap(), recorded);
+    let mut resealed = request.clone();
+    resealed.description = h.statement("chart installation", 152);
+    assert_eq!(install_admitted(&mut h, &resealed).unwrap(), recorded);
+    let mut changed = request.clone();
+    changed.accounts[0].name = "Changed chart".into();
+    installation_refused(&mut h, &changed, "FA-REF-032");
+    let mut changed = request.clone();
+    changed.day = DateDay::from_ymd(2026, 3, 16).unwrap();
+    installation_refused(&mut h, &changed, "FA-REF-032");
+    let original = h.proposal(h.rent_legs(300), &request.key, EntryClass::ORIGINAL);
+    let reversal = h.reversal_of_entry(target, &request.key);
+    for proposal in [original, reversal] {
+        let refusal = h.post(h.request(proposal, &["post"])).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
+    }
+    let member = h.proposal(
+        h.rent_legs(300),
+        b"install-unpublished-member",
+        EntryClass::ORIGINAL,
+    );
+    let refusal = h.post_batch(h.batch(&request.key, vec![member])).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+}
+
+#[test]
+fn prepared_reversal_loses_to_chart_installation_with_the_same_key() {
+    let mut h = harness();
+    let source = h.proposal(h.rent_legs(100), b"install-race-source", EntryClass::ORIGINAL);
+    let target = h.post(h.request(source, &["post"])).unwrap().entry_ref();
+    let request = chart_request(&h, b"install-race");
+    let reversal = h.request(h.reversal_of_entry(target, &request.key), &["post"]);
+    let ctx = h.ctx();
+    let PostPreparation::Ready(prepared) = prepare_post(&mut h.db, &ctx, &h.book, reversal)
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("fresh reversal")
+    };
+    let epoch = security_policy_epoch(&h.db).unwrap();
+    install_admitted(&mut h, &request).unwrap();
+    assert_eq!(security_policy_epoch(&h.db).unwrap(), epoch);
+    let head = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let refusal = h
+        .runtime
+        .block_on(prepared.commit(&mut h.db, &ctx))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.exit, exit::CONFLICT);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+    assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+}
+
+#[test]
+fn legacy_chart_installations_retry_before_and_after_outcome_recovery() {
+    let mut h = harness_legacy();
+    let source = h.proposal(h.rent_legs(100), b"install-legacy-source", EntryClass::ORIGINAL);
+    let target = outcome_recovery_tests::write_legacy(&mut h, source);
+    let reversal = h.reversal_of_entry(target, b"install-legacy-reversal");
+    outcome_recovery_tests::write_legacy(&mut h, reversal);
+    let old = chart_request(&h, b"install-legacy");
+    let recorded = write_legacy_installation(&mut h, &old, Vec::new(), None);
+    let original_row = h.db.vertex(recorded.control_entry).unwrap().unwrap();
+    let claim_id =
+        fa_model::intent_outcome_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), &old.key);
+    let head = h.db.frontier().unwrap();
+    assert_eq!(install_admitted(&mut h, &old).unwrap(), recorded);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert!(h.db.vertex(claim_id).unwrap().is_none());
+    let mut fresh = chart_request(&h, b"install-new-key");
+    fresh.accounts[0].code = "7200".into();
+    installation_refused(&mut h, &fresh, fa_journal::refusal::code::PLAN_INVALIDATED);
+
+    let ctx = h.ctx();
+    let prepared = h
+        .runtime
+        .block_on(prepare_outcome_rebuild(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            Capability::embedded(PRINCIPAL, &["read", "schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    h.runtime
+        .block_on(publish_outcome_rebuild(&mut h.db, &ctx, &h.book, prepared))
+        .unwrap()
+        .unwrap();
+    let (vfs, keys) = h.legacy_storage.clone().unwrap();
+    let empty = h
+        .runtime
+        .block_on(Database::open_memory(&ctx.commit(), keys.clone()))
+        .unwrap();
+    drop(std::mem::replace(&mut h.db, empty));
+    h.db = h
+        .runtime
+        .block_on(Database::open_with_vfs(
+            &ctx.commit(),
+            vfs.clone(),
+            vfs.database_dir(),
+            keys,
+        ))
+        .unwrap();
+    let head = h.db.frontier().unwrap();
+    assert_eq!(install_admitted(&mut h, &old).unwrap(), recorded);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertex(recorded.control_entry).unwrap().unwrap(), original_row);
+    assert!(h.db.vertex(claim_id).unwrap().is_none());
+    let occupied = chart_request(&h, b"install-legacy-reversal");
+    installation_refused(&mut h, &occupied, "FA-REF-032");
+    assert_eq!(install_admitted(&mut h, &fresh).unwrap().accounts, 1);
+}
+
+#[test]
+fn chart_installation_retries_require_the_original_envelope_and_atomic_claim() {
+    for plan in [None, Some(Oid([153; 32]))] {
+        let mut h = harness_legacy();
+        let request = chart_request(&h, b"install-changed-envelope");
+        let approvals = if plan.is_none() {
+            vec![h.approve_digest(VId(70), [11; 32]).unwrap()]
+        } else {
+            Vec::new()
+        };
+        write_legacy_installation(&mut h, &request, approvals, plan);
+        installation_refused(&mut h, &request, "FA-REF-032");
+    }
+    let mut h = harness();
+    let request = chart_request(&h, b"install-deleted-claim");
+    let recorded = install_admitted(&mut h, &request).unwrap();
+    let claim_id =
+        fa_model::intent_outcome_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), &request.key);
+    assert!(
+        h.db.vertex_at(claim_id, recorded.recorded_at)
+            .unwrap()
+            .is_some()
+    );
+    let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+    damage.delete_vertex(claim_id);
+    h.write_raw(damage);
+    installation_refused(&mut h, &request, "FA-REF-032");
+}
+
+#[test]
+fn chart_installation_checks_authority_before_observing_an_outcome() {
+    let mut h = harness();
+    let request = chart_request(&h, b"install-unread-key");
+    let evid = entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), &request.key);
+    let claim_id =
+        fa_model::intent_outcome_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), &request.key);
+    let mut planted = fgdb::WriteBatch::new(relation::IN_BOOK);
+    planted.create_vertex(
+        evid,
+        vec![label::ENTRY],
+        vec![(
+            property::FA_PAYLOAD,
+            CanonicalScalar::bytes(vec![0xff; 8]).unwrap(),
+        )],
+    );
+    let mut props = vec![
+        (
+            property::TARGET_REF,
+            CanonicalScalar::bytes(evid.0.to_le_bytes().to_vec()).unwrap(),
+        ),
+        (
+            property::FA_PAYLOAD,
+            CanonicalScalar::bytes(b"FA-ENTRY-OUTCOME\0".to_vec()).unwrap(),
+        ),
+    ];
+    props.sort_by_key(|(key, _)| key.0);
+    planted.create_vertex(claim_id, vec![label::INTENT_OUTCOME], props);
+    h.write_raw(planted);
+    let capability = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    h.revoke(&capability, 154);
+    let head = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    let scoped = capability.clone().for_periods(&[h.march.as_str()]).unwrap();
+    for (capability, code) in [(scoped, "FA-REF-011"), (capability, "FA-REF-023")] {
+        let refusal = install(&mut h, &request, &capability).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), (code, exit::SAFETY));
+    }
+    assert!(
+        install(
+            &mut h,
+            &request,
+            &Capability::embedded(PRINCIPAL, &["schema_change", "read"]).unwrap(),
+        )
+        .is_err(),
+        "the malformed outcome remains observable only to an admitted caller"
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
 }

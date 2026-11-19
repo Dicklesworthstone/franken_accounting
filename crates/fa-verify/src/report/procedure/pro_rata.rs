@@ -233,6 +233,7 @@ mod tests {
                     unit_scales: BTreeMap::from([(1, 2), (2, 0)]),
                     unit_currencies: BTreeMap::new(),
                     account_types: BTreeMap::new(),
+                    leg_parties: BTreeMap::new(),
                     trace: Some(TraceContext {
                         account_normal_balances: BTreeMap::from([(7, 0), (99, 1)]),
                         entries: BTreeMap::new(),

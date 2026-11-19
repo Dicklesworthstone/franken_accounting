@@ -94,6 +94,91 @@ fn missing_population(h: &Harness, run: VId) -> migration::TieOut {
 }
 
 #[test]
+fn source_binding_respects_cross_operation_keys_and_authenticates_atomic_retry_claims() {
+    let mut h = harness();
+    let occupied_run = open(
+        &mut h,
+        "source-occupied-key",
+        &[("1000", 100), ("4000", -100)],
+    );
+    let proposal = chunk(
+        &h,
+        occupied_run,
+        cash_legs(&h, 100),
+        b"source-occupied-chunk",
+    );
+    let (occupied_manifest, occupied_bytes) = package(&mut h, occupied_run, &[proposal]);
+    let occupied = binding_request(&h, &occupied_manifest);
+    let original = h.proposal(h.rent_legs(100), b"source-key-target", EntryClass::ORIGINAL);
+    let target = h.post(h.request(original, &["post"])).unwrap().entry_ref();
+    let reversal = h.reversal_of_entry(target, &occupied.proposal.idempotency_key);
+    h.post(h.request(reversal, &["post"])).unwrap();
+    let before = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    assert_eq!(
+        bind(&mut h, &occupied_manifest, &occupied_bytes, occupied)
+            .unwrap_err()
+            .code,
+        code::IDEMPOTENCY_CONFLICT
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+    assert!(h.db.vertex(occupied_manifest.vid()).unwrap().is_none());
+
+    let run = open(
+        &mut h,
+        "source-atomic-key",
+        &[("1000", 100), ("4000", -100)],
+    );
+    let proposal = chunk(&h, run, cash_legs(&h, 100), b"source-atomic-chunk");
+    let (manifest, bytes) = package(&mut h, run, &[proposal]);
+    let request = binding_request(&h, &manifest);
+    let changed_approvals = approvals(&mut h, &request.proposal);
+    let done = bind(&mut h, &manifest, &bytes, request.clone()).unwrap();
+    let claim_vid = fa_model::intent_outcome_vid(
+        h.book.book_id,
+        &PRINCIPAL.0.to_le_bytes(),
+        &request.proposal.idempotency_key,
+    );
+    let claim = h.db.vertex(claim_vid).unwrap().unwrap();
+    assert_eq!(claim.created_at, done.recorded_at);
+    assert_eq!(
+        claim.created_at,
+        h.db.vertex(done.control_entry).unwrap().unwrap().created_at
+    );
+    assert_eq!(
+        claim.created_at,
+        h.db.vertex(manifest.vid()).unwrap().unwrap().created_at
+    );
+    let before = h.db.frontier().unwrap();
+    assert_eq!(
+        bind(&mut h, &manifest, &bytes, request.clone()).unwrap(),
+        RunControlled {
+            already_recorded: true,
+            ..done
+        }
+    );
+    let mut changed = request.clone();
+    changed.approvals = changed_approvals;
+    assert_eq!(
+        bind(&mut h, &manifest, &bytes, changed).unwrap_err().code,
+        code::IDEMPOTENCY_CONFLICT
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let mut damage = WriteBatch::new(relation::IN_MIGRATION_RUN);
+    damage.delete_vertex(claim_vid);
+    h.write_raw(damage);
+    let before = h.db.frontier().unwrap();
+    let vertices = h.db.vertices().unwrap();
+    assert_eq!(
+        bind(&mut h, &manifest, &bytes, request).unwrap_err().code,
+        code::IDEMPOTENCY_CONFLICT
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), vertices);
+}
+
+#[test]
 fn equal_net_control_cannot_finalize_an_omitted_increase_and_exact_reversal() {
     let mut h = lock_opening(harness());
     let run = open(&mut h, "source-net-zero", &[("1000", 100), ("4000", -100)]);

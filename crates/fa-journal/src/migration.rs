@@ -42,6 +42,10 @@
 //! Opening chunk, no `lines`, no `detail_base`; every detail chunk counts.
 //! The legacy system's own timestamps ride `EntryOrigin::Migration` as
 //! provenance and are never read as recorded time (doctrine 6).
+//!
+//! Run controls share the book/principal idempotency namespace with posting
+//! and batches. Their successful claims publish atomically with the control;
+//! exact legacy controls remain immutable retry anchors without backfilling.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1392,6 +1396,9 @@ pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
     if !matches!(
         proposal.control,
         Some(ControlPayload::MigrationControl { tie_out_digest, .. }) if tie_out_digest == body_digest
+    ) || !matches!(
+        proposal.origin,
+        EntryOrigin::Control { spec_body_digest, .. } if spec_body_digest == body_digest
     ) || proposal.effective_date != body.opening_date
         || !body
             .documents()
@@ -1409,6 +1416,12 @@ pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = admit_control(db, book, &req, "Open")? {
         return Ok(Err(r));
     }
+    if let Err(refusal) = crate::policy::capability_admitted(db, book, &req.capability)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
     let proposal_digest = proposal.proposal_digest()?;
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
@@ -1418,9 +1431,22 @@ pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let evid = control_vid(book, proposal);
+    if let Err(refusal) = witness_control_key(&txn, db, proposal, evid)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return recorded_or_conflict(db, book, &row, proposal, &proposal_digest, run_vid);
+        return recorded_or_conflict(db, book, &row, &req, &proposal_digest, run_vid);
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     if let Some(existing) = txn.vertex(db, run_vid)? {
         txn.abort();
@@ -1483,6 +1509,7 @@ pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
         &body_bytes,
     )?;
     in_run.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_run, &entry, evid)?;
     in_run.create_vertex(run_vid, vec![label::MIGRATION_RUN], props);
     in_run.add_edge(
         edge_id(relation::IN_MIGRATION_RUN, evid, run_vid),
@@ -1501,7 +1528,7 @@ pub async fn open_run<V: asupersync::fs::Vfs + Clone>(
         ctx,
         book,
         txn,
-        proposal,
+        &req,
         &proposal_digest,
         RunControlled {
             run: run_vid,
@@ -1560,9 +1587,7 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = crate::policy::capability_admitted(db, book, &req.capability)? {
         return Ok(Err(refusal));
     }
-    if control_kind == kind::FINALIZE
-        && let Err(refusal) = crate::scratch::ensure_history(db, ctx).await?
-    {
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
     let proposal_digest = proposal.proposal_digest()?;
@@ -1577,9 +1602,22 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let evid = control_vid(book, proposal);
+    if let Err(refusal) = witness_control_key(&txn, db, proposal, evid)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return recorded_or_conflict(db, book, &row, proposal, &proposal_digest, run_vid);
+        return recorded_or_conflict(db, book, &row, &req, &proposal_digest, run_vid);
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     let run = match witness_open(&txn, db, run_vid)? {
         Ok(run) => run,
@@ -1710,6 +1748,13 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
     let mut in_run = WriteBatch::new(relation::IN_MIGRATION_RUN);
     tracker.create_vertex(relation::IN_MIGRATION_RUN, evid, 1, &mirrors);
     in_run.create_vertex(evid, vec![label::ENTRY], mirrors);
+    crate::outcome::stage_control_tracked(
+        &mut in_run,
+        &mut tracker,
+        relation::IN_MIGRATION_RUN,
+        &entry,
+        evid,
+    )?;
     tracker.set_vertex_property(
         relation::IN_MIGRATION_RUN,
         run_vid,
@@ -1815,7 +1860,7 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         ctx,
         book,
         txn,
-        proposal,
+        &req,
         &proposal_digest,
         RunControlled {
             run: run_vid,
@@ -1857,6 +1902,13 @@ fn check_control(
         ));
     }
     let shaped = proposal.class == EntryClass::MIGRATION_CONTROL
+        && matches!(
+            proposal.origin,
+            EntryOrigin::Control {
+                control_kind: ControlKind::MIGRATION_RUN,
+                ..
+            }
+        )
         && matches!(
             proposal.control,
             Some(ControlPayload::MigrationControl { run_ref, kind: k, .. })
@@ -2061,12 +2113,31 @@ fn control_vid(book: &BookContext, proposal: &EntryPayload) -> VId {
     )
 }
 
+/// Called only after current control admission. A batch or target-derived
+/// posting can occupy this key without occupying the normal Entry identity.
+fn witness_control_key<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    proposal: &EntryPayload,
+    evid: VId,
+) -> Outcome<()> {
+    Ok(crate::outcome::witness_named_key(
+        txn,
+        db,
+        proposal.book_id,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        evid,
+    )?
+    .map(|_| ()))
+}
+
 async fn finish<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     mut txn: WriteTxn,
-    proposal: &EntryPayload,
+    req: &RunControlRequest,
     proposal_digest: &[u8; 32],
     mut done: RunControlled,
 ) -> Outcome<RunControlled> {
@@ -2098,7 +2169,13 @@ async fn finish<V: asupersync::fs::Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(done.control_entry)? {
-            Some(row) => recorded_or_conflict(db, book, &row, proposal, proposal_digest, done.run),
+            Some(row) => recorded_or_conflict(db, book, &row, req, proposal_digest, done.run),
+            None if db
+                .vertex(crate::outcome::entry_outcome_vid(&req.proposal))?
+                .is_some() =>
+            {
+                Ok(Err(crate::outcome::key_conflict()))
+            }
             None => Err(KernelError::Corrupt(
                 "identity spent but no live row".into(),
             )),
@@ -2114,14 +2191,20 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     row: &VertexRow,
-    proposal: &EntryPayload,
+    req: &RunControlRequest,
     proposal_digest: &[u8; 32],
     run: VId,
 ) -> Outcome<RunControlled> {
+    let proposal = &req.proposal;
     if !crate::entry_storage::has_class_mirror(row, proposal.class) {
         return Ok(Err(crate::outcome::key_conflict()));
     }
     let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
+    if stored.approvals != req.approvals
+        || !crate::outcome::verify_control_recorded(db, row, &stored)?
+    {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
     let conflict = Refusal::new(
         code::IDEMPOTENCY_CONFLICT,
         exit::CONFLICT,
@@ -2156,7 +2239,12 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
             (Err(e), _) | (_, Err(e)) => return Err(e.into()),
         }
     };
-    let Some(ControlPayload::MigrationControl { kind: k, .. }) = stored.proposal.control else {
+    let Some(ControlPayload::MigrationControl {
+        kind: k,
+        tie_out_digest,
+        ..
+    }) = stored.proposal.control
+    else {
         return Ok(Err(conflict));
     };
     if !same || stored.proposal.class != EntryClass::MIGRATION_CONTROL {
@@ -2172,6 +2260,20 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
             )));
         }
     };
+    // Finalize and Abandon return the exact population they bound, including
+    // on retry. Read the original publication prefix: later history must not
+    // change that outcome, and a rewritten control cannot choose a new prefix.
+    let chunks = if matches!(k, kind::FINALIZE | kind::ABANDON) {
+        let retained = read_run(db, run, Some(row.created_at))?
+            .ok_or_else(|| KernelError::Corrupt("recorded run control has no run".into()))?;
+        let tie = tie_out(db, book, &retained, row.created_at)?;
+        if tie.digest != tie_out_digest {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        tie.chunks
+    } else {
+        Vec::new()
+    };
     Ok(Ok(RunControlled {
         run,
         kind: k,
@@ -2180,7 +2282,7 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
         recorded_at: row.created_at,
         control_entry: row.vid,
         already_recorded: true,
-        chunks: Vec::new(),
+        chunks,
     }))
 }
 

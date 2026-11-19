@@ -607,3 +607,141 @@ fn libr_registry_binds_both_closures_and_the_six_document_order() {
     );
     assert!(verify_rehashed(&procedures).is_ok());
 }
+
+#[test]
+fn numeric_audit_registries_reject_resealed_semantic_changes() {
+    let profiles = [
+        (
+            VerifiedProcedureParameters::RelativeSizeFactor {
+                min_rsf_bps: 50_000,
+                min_subset_size: 3,
+            },
+            "numbers.relative_size_factor",
+            "FA-EVID-L32",
+            vec![("min_rsf_bps", 50_000), ("min_subset_size", 3)],
+        ),
+        (
+            VerifiedProcedureParameters::ThresholdSplitting {
+                currency_iso4217: 840,
+                floor: 250_000,
+                min_count: 2,
+                threshold: 1_000_000,
+                window_days: 5,
+            },
+            "numbers.threshold_splitting",
+            "FA-EVID-L33",
+            vec![
+                ("currency_iso4217", 840),
+                ("floor", 250_000),
+                ("min_count", 2),
+                ("threshold", 1_000_000),
+                ("window_days", 5),
+            ],
+        ),
+    ];
+    for (profile, id, evidence, defaults) in profiles {
+        let declaration = Document {
+            root: BTreeMap::from([("schema_version".into(), Value::Int(1))]),
+            named_tables: 0,
+            tables: BTreeMap::new(),
+            arrays: BTreeMap::from([
+                (
+                    "procedure".into(),
+                    vec![BTreeMap::from([
+                        ("id".into(), Value::Text(id.into())),
+                        ("version".into(), Value::Int(1)),
+                        ("claim".into(), Value::Text("statistical".into())),
+                        ("evidence".into(), Value::Text(evidence.into())),
+                        ("tie_break".into(), Value::Text("entry_vid".into())),
+                        ("complexity".into(), Value::Text("O(legs log legs)".into())),
+                        ("calibration".into(), Value::Text("uncalibrated".into())),
+                        ("summary".into(), Value::Text("Exact numeric audit law".into())),
+                    ])],
+                ),
+                (
+                    "parameter".into(),
+                    defaults.into_iter().map(|(name, default)| BTreeMap::from([
+                        ("procedure".into(), Value::Text(id.into())),
+                        ("name".into(), Value::Text(name.into())),
+                        ("default".into(), Value::Int(default)),
+                    ])).collect(),
+                ),
+            ]),
+        };
+        let check = |declaration: &Document| {
+            let documents = registry_inputs(declaration);
+            let native = closure(&documents, &[0, 1, 2, 3], b"fa:report-registry-closure:v2");
+            let digest = closure(&documents, &[4, 3], b"fa:procedure-registry:v2");
+            verify_bound(&documents, profile, 1, native, digest)
+        };
+        let accepted = check(&declaration).unwrap();
+        if id == "numbers.threshold_splitting" {
+            assert!(accepted.unit_currencies.values().any(|iso| *iso == 840));
+        }
+        for variant in [
+            "version", "claim", "evidence", "complexity", "tie_break",
+            "calibration", "cutoff", "default", "duplicate", "input",
+            "missing parameter", "duplicate procedure", "artifact", "extra population law",
+        ] {
+            let mut changed = document(&encode_document(&declaration)).unwrap();
+            match variant {
+                "missing parameter" => {
+                    changed.arrays.get_mut("parameter").unwrap().pop();
+                }
+                "duplicate procedure" => {
+                    let mut duplicate = document(&encode_document(&declaration)).unwrap();
+                    changed.arrays.get_mut("procedure").unwrap()
+                        .push(duplicate.arrays.get_mut("procedure").unwrap().remove(0));
+                }
+                "extra population law" => {
+                    changed.arrays.insert("population".into(), vec![BTreeMap::from([
+                        ("procedure".into(), Value::Text(id.into())),
+                        ("selection".into(), Value::Text("omit_small_debits".into())),
+                    ])]);
+                }
+                "default" => {
+                    changed.arrays.get_mut("parameter").unwrap()[0]
+                        .insert("default".into(), Value::Int(17));
+                }
+                "duplicate" => {
+                    let (name, default) = if id == "numbers.relative_size_factor" {
+                        ("min_rsf_bps", 50_000)
+                    } else {
+                        ("currency_iso4217", 840)
+                    };
+                    changed.arrays.get_mut("parameter").unwrap().push(BTreeMap::from([
+                        ("procedure".into(), Value::Text(id.into())),
+                        ("name".into(), Value::Text(name.into())),
+                        ("default".into(), Value::Int(default)),
+                    ]));
+                }
+                "input" => {
+                    changed.arrays.insert("input".into(), vec![BTreeMap::from([
+                        ("procedure".into(), Value::Text(id.into())),
+                        ("name".into(), Value::Text("party".into())),
+                        ("kind".into(), Value::Text("party".into())),
+                    ])]);
+                }
+                field => {
+                    let (key, value) = match field {
+                        "version" => ("version", Value::Int(2)),
+                        "claim" => ("claim", Value::Text("invariant".into())),
+                        "evidence" => ("evidence", Value::Text("FA-EVID-L64".into())),
+                        "complexity" => ("complexity", Value::Text("O(1)".into())),
+                        "tie_break" => ("tie_break", Value::Text("none".into())),
+                        "calibration" => ("calibration", Value::Text("corpus".into())),
+                        "artifact" => ("artifact", Value::Text("FA-ART-CAL-01".into())),
+                        "cutoff" => ("effective_through", Value::Text("optional".into())),
+                        _ => unreachable!(),
+                    };
+                    changed.arrays.get_mut("procedure").unwrap()[0].insert(key.into(), value);
+                }
+            }
+            assert_eq!(
+                check(&changed).err().expect(variant).predicate,
+                "registry_closure",
+                "{id}: {variant}"
+            );
+        }
+    }
+}

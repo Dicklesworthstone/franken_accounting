@@ -24,7 +24,7 @@ use crate::refusal::{Outcome, Refusal};
 /// The native planner still decides whether the complete request is a retry.
 #[allow(clippy::too_many_arguments)]
 pub fn admit_reversal_source<V: asupersync::fs::Vfs + Clone>(
-    db: &Database<V>,
+    db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: &Capability,

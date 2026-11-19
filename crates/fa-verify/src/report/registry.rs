@@ -541,6 +541,7 @@ pub(super) fn verify_procedure(
     let benford = profile.is_benford();
     let uncalibrated = benford
         || profile.is_trace()
+        || profile.is_number_analytics()
         || matches!(
             profile,
             super::procedure::VerifiedProcedureParameters::RoundAmountDensity { .. }
@@ -626,16 +627,21 @@ pub(super) fn verify_procedure(
             id,
             u8::try_from(integer(row, "scale")?).map_err(|_| invalid("invalid unit scale"))?,
         );
-        if benford {
+        if benford
+            || matches!(
+                profile,
+                super::procedure::VerifiedProcedureParameters::ThresholdSplitting { .. }
+            )
+        {
             if string(row, "kind")? == "currency" {
                 let iso = u16::try_from(integer(row, "iso4217")?)
                     .ok()
                     .filter(|iso| (1..=999).contains(iso))
-                    .ok_or_else(|| invalid("Benford currency has no valid ISO 4217 identity"))?;
+                    .ok_or_else(|| invalid("procedure currency has no valid ISO 4217 identity"))?;
                 unit_currencies.insert(id, iso);
             } else if row.contains_key("iso4217") {
                 return Err(invalid(
-                    "a Benford noncurrency unit cannot carry a currency identity",
+                    "a procedure noncurrency unit cannot carry a currency identity",
                 ));
             }
         }
@@ -644,6 +650,7 @@ pub(super) fn verify_procedure(
         unit_scales,
         unit_currencies,
         account_types: BTreeMap::new(),
+        leg_parties: BTreeMap::new(),
         trace: None,
         policy_oid: procedure_policy_oid(&document(inputs[5].1)?)?,
     })

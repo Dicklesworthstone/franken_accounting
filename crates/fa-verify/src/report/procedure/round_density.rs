@@ -241,6 +241,7 @@ mod tests {
             unit_scales: BTreeMap::from([(1, 2), (2, 0), (3, 38)]),
             unit_currencies: BTreeMap::new(),
             account_types: BTreeMap::new(),
+            leg_parties: BTreeMap::new(),
             trace: None,
             policy_oid: [7; 32],
         }
@@ -579,7 +580,10 @@ mod tests {
             decode(&mut Reader::new(&parameter_bytes(&valid)))
                 .unwrap()
                 .parameters(),
-            DEFAULTS.to_vec()
+            DEFAULTS
+                .iter()
+                .map(|&(name, value)| (name, i128::from(value)))
+                .collect::<Vec<_>>()
         );
         for (index, value) in [
             (0, -1),

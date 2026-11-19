@@ -1904,7 +1904,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(inv_macro["macro"], json!("fa.macro.investigate_account"));
     assert_eq!(inv_macro["step_count"], json!(3));
     assert_eq!(inv_macro["certificates"].as_array().unwrap().len(), 1);
-    let (is_error, text, _) = call_tool(
+    let (is_error, text, metadata) = call_tool(
         &mut mcp,
         "fa_macro_certify_period_reports",
         json!({"period": "FY2026-P03"}),
@@ -1914,6 +1914,24 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(pkg_macro["macro"], json!("fa.macro.certify_period_reports"));
     assert_eq!(pkg_macro["step_count"], json!(4));
     assert_eq!(pkg_macro["certificates"].as_array().unwrap().len(), 3);
+    let report_frontier = pkg_macro["steps"][0]["data"][1]["known_at"]
+        .as_u64()
+        .expect("the first report certificate's snapshot");
+    for step in &pkg_macro["steps"].as_array().unwrap()[..3] {
+        assert_eq!(
+            step["coordinate"]["known_at"],
+            json!(report_frontier),
+            "{step}"
+        );
+        assert_eq!(step["data"][1]["known_at"], json!(report_frontier), "{step}");
+    }
+    let pkg_envelope: JsonValue =
+        fastmcp_rust::serde_json::from_str(metadata["content"][1]["text"].as_str().unwrap())
+            .unwrap();
+    assert_eq!(
+        pkg_envelope["coordinate"]["known_at"],
+        json!(report_frontier)
+    );
     log("live resources, unavailable resource refusals and 4 workflow macros verified over stdio");
 
     // A portable plan runs under the actual launch capability. Rejected

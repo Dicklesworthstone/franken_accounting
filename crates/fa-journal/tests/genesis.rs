@@ -632,23 +632,27 @@ fn harness_configured_coverage(
         },
     ];
     let day = DateDay::from_ymd(2026, 1, 1).unwrap();
-    let installed = runtime
-        .block_on(async {
-            install_chart(
-                &mut db,
-                &ctx,
-                &book,
-                &chart,
-                PRINCIPAL,
-                day,
-                b"chart-1",
-                Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
-                &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
-            )
-            .await
-        })
-        .expect("kernel")
-        .expect("chart installs");
+    let installed = if coverage {
+        runtime
+            .block_on(async {
+                install_chart(
+                    &mut db,
+                    &ctx,
+                    &book,
+                    &chart,
+                    PRINCIPAL,
+                    day,
+                    b"chart-1",
+                    Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
+                    &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("chart installs")
+    } else {
+        chart_outcome_keys::write_legacy_chart_bootstrap(&runtime, &mut db, &ctx, &book)
+    };
     assert_eq!(installed.accounts, 5);
     assert_eq!(
         fa_journal::genesis::list_accounts(&db)
