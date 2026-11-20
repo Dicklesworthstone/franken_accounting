@@ -111,7 +111,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(r));
         }
-        self.finding_by_vid(cx, principal, capability, selected)
+        let (digest, _) = match self.finding_locator(cx, principal, capability, selected)? {
+            Ok(locator) => locator,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let sources = match self
+            .prepare_finding_sources(cx, principal, capability, &digest)
+            .await?
+        {
+            Ok(sources) => sources,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        self.finding_by_vid_prepared(cx, principal, capability, selected, sources.as_ref())
             .await
     }
 
@@ -125,12 +136,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         selected: VId,
     ) -> Outcome<RecordedFinding> {
+        self.finding_by_vid_prepared(cx, principal, capability, selected, None)
+            .await
+    }
+
+    async fn finding_by_vid_prepared(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        selected: VId,
+        sources: Option<&crate::bank::PreparedBankTransfers>,
+    ) -> Outcome<RecordedFinding> {
         let (digest, ordinal) = match self.finding_locator(cx, principal, capability, selected)? {
             Ok(c) => c,
             Err(r) => return Ok(Err(r)),
         };
         let run = match self
-            .read_findings(cx, principal, capability, &digest)
+            .read_findings_prepared(cx, principal, capability, &digest, sources)
             .await?
         {
             Ok(r) => r,

@@ -2456,6 +2456,7 @@ fn test_fixture(as_of: DateDay) -> (Snapshot, BookContext, VId, VId, Oid) {
         documents,
         supplements: BTreeMap::new(),
         bank_reconciliations: None,
+        bank_transfers: None,
         inputs_digest: [0x22; 32],
     };
     snapshot.fold_roles().unwrap();

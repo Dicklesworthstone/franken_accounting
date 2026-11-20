@@ -113,6 +113,10 @@ pub struct Snapshot {
     /// recorded prefix. Populated by admitted bank-procedure orchestration only;
     /// `None` means the additional bank input closure has not been evaluated.
     pub bank_reconciliations: Option<Vec<fa_journal::bank::BankReconciliationState>>,
+    /// Exact active bank matches paired on native two-leg cash transfers.
+    /// Populated only after the complete original-statement and match history
+    /// has been authorized, replayed and authenticated at this prefix.
+    pub bank_transfers: Option<Vec<crate::kiting::BankTransfer>>,
     /// `H(domain ‖ known_at ‖ (vid, entry_digest, recorded_at)*)`.
     pub inputs_digest: [u8; 32],
 }
@@ -351,6 +355,7 @@ impl Snapshot {
             documents,
             supplements,
             bank_reconciliations: None,
+            bank_transfers: None,
             inputs_digest,
         }
         .with_roles()?;
@@ -632,6 +637,26 @@ impl Snapshot {
             .iter()
             .map(|e| (e.vid, e.entry.proposal.legs.len()))
             .collect();
+        // This witness changes leg order, so authenticated bank-match source
+        // ordinals move with their original cash legs. Production snapshots
+        // never perform this permutation.
+        if let Some(transfers) = &mut s.bank_transfers {
+            for transfer in transfers {
+                if let Some(length) = lengths.get(&transfer.entry.vid) {
+                    for ordinal in [
+                        &mut transfer.source_ordinal,
+                        &mut transfer.destination_ordinal,
+                    ] {
+                        if let Some(reversed) = length
+                            .checked_sub(usize::from(*ordinal) + 1)
+                            .and_then(|index| u16::try_from(index).ok())
+                        {
+                            *ordinal = reversed;
+                        }
+                    }
+                }
+            }
+        }
         for e in &mut s.entries {
             e.entry.proposal.legs.reverse();
             // A settlement follows its target leg through the permutation.

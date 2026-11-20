@@ -15,6 +15,9 @@ use fa_cli::json::{self, Json};
 #[path = "bank/outstanding.rs"]
 mod outstanding;
 
+#[path = "bank/kiting.rs"]
+mod kiting;
+
 fn data(value: &Json) -> &Json {
     value.get("data").expect("robot data")
 }

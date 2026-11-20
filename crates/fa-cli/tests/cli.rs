@@ -19309,8 +19309,9 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
     let listed = ok(&["procedure", "list"]);
     let listed_doc = doc(&listed);
     let rows = arr(&listed_doc, "procedures");
-    assert_eq!(rows.len(), 70, "{listed}");
+    assert_eq!(rows.len(), 71, "{listed}");
     for id in [
+        "graph.kiting",
         "graph.party_concentration",
         "graph.ultimate_beneficiary",
         "graph.party_communities",

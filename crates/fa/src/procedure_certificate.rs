@@ -11,6 +11,7 @@
 
 mod bank;
 mod extended;
+mod kiting;
 pub use extended::EXTENDED_CERTIFIABLE_PROCEDURES;
 
 use crate::{AsyncBook, BookError, Outcome, ReportCertificate, ReportSelection};
@@ -34,6 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const PROCEDURE_CERTIFICATE_FORMAT: &[u8] = b"fa:procedure-certificate:v1";
 pub const EXTENDED_PROCEDURE_CERTIFICATE_FORMAT: &[u8] = extended::FORMAT;
 pub const BANK_PROCEDURE_CERTIFICATE_FORMAT: &[u8] = bank::FORMAT;
+pub const KITING_PROCEDURE_CERTIFICATE_FORMAT: &[u8] = kiting::FORMAT;
 pub const PROCEDURE_OUTPUT_FORMAT: &[u8] = b"fa:procedure-output:v1";
 pub const MAX_PROCEDURE_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_OUTPUT: usize = 32 * 1024 * 1024;
@@ -338,8 +340,27 @@ fn registry_digest() -> Result<[u8; 32], Refusal> {
     crate::certificate::canonical_closure(b"fa:procedure-registry:v2", PROCEDURE_REGISTRIES)
 }
 
+/// Adding a procedure does not rewrite any previously published registry
+/// epoch. The explicit suffix boundary retains even the old raw-text bytes.
+fn pre_kiting_registry_text() -> Result<&'static str, Refusal> {
+    const BOUNDARY: &str =
+        "# graph.kiting v1 registry epoch begins here; preserve the preceding raw closure.\n";
+    let text = PROCEDURE_REGISTRIES[0].1;
+    if text.matches(BOUNDARY).count() != 1 {
+        return Err(invalid("the pre-kiting procedure registry is unavailable"));
+    }
+    text.split_once(BOUNDARY)
+        .map(|(previous, _)| previous)
+        .ok_or_else(|| invalid("the pre-kiting procedure registry is unavailable"))
+}
+
+fn pre_kiting_registry_document() -> Result<fa_registry::toml::Document, Refusal> {
+    fa_registry::toml::parse(pre_kiting_registry_text()?)
+        .map_err(|error| invalid(format!("pre-kiting procedure registry: {error}")))
+}
+
 fn retained_registry_document() -> Result<Vec<u8>, Refusal> {
-    let jet = fa_registry::procedures::legacy_v1_document()
+    let jet = fa_registry::procedures::legacy_v1_document_from_text(pre_kiting_registry_text()?)
         .and_then(fa_registry::procedures::solvency_v5_document)
         .and_then(fa_registry::procedures::lapping_v2_document)
         .map_err(|error| invalid(format!("retained JET registry: {error}")))?;
@@ -395,10 +416,10 @@ fn registry_digest_for_run(procedure: &str, version: u16) -> Result<[u8; 32], Re
 
 fn layering_v2_registry_document(legacy_jet: bool) -> Result<Vec<u8>, Refusal> {
     let document = if legacy_jet {
-        fa_registry::procedures::legacy_v1_document()
+        fa_registry::procedures::legacy_v1_document_from_text(pre_kiting_registry_text()?)
             .map_err(|error| invalid(format!("retained JET/layering registry: {error}")))?
     } else {
-        fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
+        fa_registry::toml::parse(pre_kiting_registry_text()?)
             .map_err(|error| invalid(format!("retained layering registry: {error}")))?
     };
     fa_registry::procedures::solvency_v5_document(document)
@@ -445,14 +466,13 @@ fn pre_lapping_metering_registry_text() -> Result<String, Refusal> {
 }
 
 fn pre_solvency_registry_document() -> Result<fa_registry::toml::Document, Refusal> {
-    let document = fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
-        .map_err(|error| invalid(format!("procedure registry: {error}")))?;
+    let document = pre_kiting_registry_document()?;
     fa_registry::procedures::solvency_v5_document(document)
         .map_err(|error| invalid(format!("retained cash-flow solvency registry: {error}")))
 }
 
 fn pre_solvency_registry_text() -> Result<String, Refusal> {
-    fa_registry::procedures::solvency_v5_registry_text(PROCEDURE_REGISTRIES[0].1)
+    fa_registry::procedures::solvency_v5_registry_text(pre_kiting_registry_text()?)
         .map_err(|error| invalid(format!("retained raw cash-flow solvency registry: {error}")))
 }
 
@@ -514,9 +534,12 @@ fn retained_jet_registry_text(text: &str) -> Result<String, Refusal> {
 // lapping, cash-flow solvency.
 type ProcedureEpochVersions = (u16, u16, u16, u16, u16, u16, u16);
 
-/// Only these eight audited epochs are executable, with algorithm identities
-/// checked separately. Unpublished mixed combinations are never inferred.
+/// The current and eight retained audited epochs are executable, with
+/// algorithm identities checked separately. Mixed epochs are never inferred.
 fn registry_versions(registry: &[u8; 32]) -> Result<Option<ProcedureEpochVersions>, Refusal> {
+    if registry == &registry_digest()? || registry == &legacy_registry_digest() {
+        return Ok(Some((2, 3, 3, 4, 2, 4, 6)));
+    }
     let epochs = [
         (2, 3, 3, 4, 2, 4, 6),
         (2, 3, 3, 4, 2, 4, 5),
@@ -529,7 +552,7 @@ fn registry_versions(registry: &[u8; 32]) -> Result<Option<ProcedureEpochVersion
     ];
     for (jet, layering, suspense, preference, fraud, lapping, solvency) in epochs {
         let canonical = if solvency == 6 {
-            registry_digest()?
+            registry_digest_with_procedures(pre_kiting_registry_document()?.canonical_bytes())?
         } else if lapping == 4 {
             registry_digest_with_procedures(pre_solvency_registry_document()?.canonical_bytes())?
         } else if lapping == 3 {
@@ -554,7 +577,13 @@ fn registry_versions(registry: &[u8; 32]) -> Result<Option<ProcedureEpochVersion
     // Canonical epochs do not depend on the stricter raw-text layout inverse.
     for (jet, layering, suspense, preference, fraud, lapping, solvency) in epochs {
         let raw = if solvency == 6 {
-            legacy_registry_digest()
+            domain_digest(
+                b"fa:procedure-registry:v1",
+                &[
+                    pre_kiting_registry_text()?.as_bytes(),
+                    PROCEDURE_REGISTRIES[1].1.as_bytes(),
+                ],
+            )
         } else if lapping == 4 {
             domain_digest(
                 b"fa:procedure-registry:v1",
@@ -613,6 +642,10 @@ fn canonical_registry_document(registry: &[u8; 32]) -> Result<Option<Vec<u8>>, R
         return fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
             .map(|document| Some(document.canonical_bytes()))
             .map_err(|error| invalid(format!("procedure registry: {error}")));
+    }
+    let previous = pre_kiting_registry_document()?.canonical_bytes();
+    if registry == &registry_digest_with_procedures(previous.clone())? {
+        return Ok(Some(previous));
     }
     let solvency = pre_solvency_registry_document()?.canonical_bytes();
     if registry == &registry_digest_with_procedures(solvency.clone())? {
@@ -1021,10 +1054,13 @@ impl ProcedureCertificate {
     }
     /// Original procedures use v1. Extended procedures carry six additional
     /// native population witnesses and use v2. Bank drift uses its complete v3
-    /// native populations and relations; no earlier format is auto-upgraded.
+    /// native populations and relations. Kiting additionally binds source
+    /// custody in v4; no earlier format is auto-upgraded.
     #[must_use]
     pub fn format(&self) -> &'static [u8] {
-        if bank::supported(&self.report.procedure, self.report.version) {
+        if kiting::supported(&self.report.procedure, self.report.version) {
+            kiting::FORMAT
+        } else if bank::supported(&self.report.procedure, self.report.version) {
             bank::FORMAT
         } else if self.extended_inputs.is_empty() {
             PROCEDURE_CERTIFICATE_FORMAT
@@ -1056,7 +1092,9 @@ impl ProcedureCertificate {
                 "procedure and complete native source coordinates disagree",
             ));
         }
-        if bank::supported(&self.report.procedure, self.report.version) {
+        if kiting::supported(&self.report.procedure, self.report.version) {
+            kiting::validate(self)?;
+        } else if bank::supported(&self.report.procedure, self.report.version) {
             bank::validate(self)?;
         } else {
             extended::validate(self)?;
@@ -1134,6 +1172,7 @@ impl ProcedureCertificate {
         if format != PROCEDURE_CERTIFICATE_FORMAT
             && format != extended::FORMAT
             && format != bank::FORMAT
+            && format != kiting::FORMAT
         {
             return Err(invalid("unsupported procedure certificate version"));
         }
@@ -1147,8 +1186,10 @@ impl ProcedureCertificate {
         )
         .map_err(|_| invalid("malformed native approval source"))?;
         let mut extended_inputs = Vec::new();
-        if format == extended::FORMAT || format == bank::FORMAT {
-            let required = if format == bank::FORMAT {
+        if format == extended::FORMAT || format == bank::FORMAT || format == kiting::FORMAT {
+            let required = if format == kiting::FORMAT {
+                kiting::COUNT
+            } else if format == bank::FORMAT {
                 bank::COUNT
             } else {
                 extended::COUNT
@@ -1201,12 +1242,21 @@ impl ProcedureCertificate {
                 .contains(&(self.report.procedure.as_str(), self.report.version))
             && !extended::has_retained_closure(&self.report.procedure, self.report.version)
             && !bank::supported(&self.report.procedure, self.report.version)
+            && !kiting::supported(&self.report.procedure, self.report.version)
         {
             return Err(invalid(
                 "this procedure version has no complete registered native certificate closure",
             ));
         }
         let current = registry_digest()?;
+        if self.report.procedure == kiting::PROCEDURE
+            && self.registry != current
+            && self.registry != legacy_registry_digest()
+        {
+            return Err(invalid(
+                "the retained procedure registry does not declare graph.kiting",
+            ));
+        }
         let Some((
             jet_version,
             layering_version,
@@ -1307,8 +1357,9 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
     principal: VId,
     capability: &Capability,
     produce: bool,
-    reconcile: bool,
+    procedure: &str,
 ) -> Outcome<()> {
+    let reconcile = matches!(procedure, bank::PROCEDURE | kiting::PROCEDURE);
     if let Err(denial) = fa_policy::admit_read(capability, principal, book.context().book_id)
         .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
         .and_then(|()| {
@@ -1317,6 +1368,17 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
                     capability,
                     Op::Reconcile,
                     "reading bank reconciliation procedures",
+                )
+            } else {
+                Ok(())
+            }
+        })
+        .and_then(|()| {
+            if procedure == kiting::PROCEDURE {
+                fa_policy::require(
+                    capability,
+                    Op::Privileged,
+                    "replaying complete bank statement evidence for graph.kiting",
                 )
             } else {
                 Ok(())
@@ -1409,8 +1471,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         procedure: &str,
         produce: bool,
     ) -> Outcome<()> {
-        let reconcile = procedure == bank::PROCEDURE;
-        if let Err(refusal) = authorize(self, cx, principal, capability, produce, reconcile)? {
+        let reconcile = matches!(procedure, bank::PROCEDURE | kiting::PROCEDURE);
+        if let Err(refusal) = authorize(self, cx, principal, capability, produce, procedure)? {
             return Ok(Err(refusal));
         }
         if reconcile
@@ -1418,7 +1480,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
-        authorize(self, cx, principal, capability, produce, reconcile)
+        authorize(self, cx, principal, capability, produce, procedure)
     }
 
     /// Run with explicit current authority and admitted history hydration.
@@ -1460,16 +1522,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
         }
         let reconcile = request.procedure == bank::PROCEDURE;
+        let prepared = if request.procedure == kiting::PROCEDURE {
+            match self
+                .prepare_kiting_inputs(cx, capability, request.known_at)
+                .await?
+            {
+                Ok(inputs) => Some(inputs),
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+        } else {
+            None
+        };
+        let known_at = prepared
+            .as_ref()
+            .map(crate::bank::PreparedBankTransfers::known_at)
+            .or(request.known_at);
         let result = self.query(cx, |db, book| {
-            let mut snapshot = Snapshot::read(
-                db,
-                &cx.query(),
-                book,
-                request.known_at,
-                request.effective_through,
-            )?;
+            let mut snapshot =
+                Snapshot::read(db, &cx.query(), book, known_at, request.effective_through)?;
             if reconcile
                 && let Err(refusal) = bank::populate(db, cx, book, capability, &mut snapshot)?
+            {
+                return Ok(Err(refusal));
+            }
+            if request.procedure == kiting::PROCEDURE
+                && let Err(refusal) = kiting::populate(prepared.as_ref(), &mut snapshot)
             {
                 return Ok(Err(refusal));
             }
@@ -1481,7 +1558,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Some(&cx.query()),
             )?))
         })?;
-        if let Err(refusal) = authorize(self, cx, principal, capability, false, reconcile)? {
+        if let Err(refusal) = authorize(self, cx, principal, capability, false, &request.procedure)?
+        {
             return Ok(Err(refusal));
         }
         Ok(result)
@@ -1508,7 +1586,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
-        self.certify_procedure(cx, principal, capability, request)
+        if request.procedure == kiting::PROCEDURE {
+            let prepared = match self
+                .prepare_kiting_inputs(cx, capability, request.known_at)
+                .await?
+            {
+                Ok(inputs) => inputs,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let mut pinned = request.clone();
+            pinned.known_at = Some(prepared.known_at());
+            self.certify_procedure_prepared(cx, principal, capability, &pinned, Some(&prepared))
+        } else {
+            self.certify_procedure(cx, principal, capability, request)
+        }
     }
 
     /// Replay the saved coordinate after loading authenticated native history.
@@ -1538,7 +1629,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
-        self.replay_procedure(cx, principal, capability, certificate)
+        let prepared = if certificate.report.procedure == kiting::PROCEDURE {
+            match self
+                .prepare_kiting_inputs(cx, capability, Some(certificate.known_at()))
+                .await?
+            {
+                Ok(inputs) => Some(inputs),
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+        } else {
+            None
+        };
+        self.replay_procedure_prepared(cx, principal, capability, certificate, prepared.as_ref())
     }
 
     /// Check freshness from a cold or resident book. Current Read and any bank
@@ -1570,12 +1672,38 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
-        self.procedure_certificate_status(cx, principal, capability, certificate)
+        let (original_sources, current_sources) =
+            if certificate.report.procedure == kiting::PROCEDURE {
+                let original = match self
+                    .prepare_kiting_inputs(cx, capability, Some(certificate.known_at()))
+                    .await?
+                {
+                    Ok(inputs) => inputs,
+                    Err(refusal) => return Ok(Err(refusal)),
+                };
+                let current = match self.prepare_kiting_inputs(cx, capability, None).await? {
+                    Ok(inputs) => inputs,
+                    Err(refusal) => return Ok(Err(refusal)),
+                };
+                (Some(original), Some(current))
+            } else {
+                (None, None)
+            };
+        self.procedure_certificate_status_prepared(
+            cx,
+            principal,
+            capability,
+            certificate,
+            original_sources.as_ref(),
+            current_sources.as_ref(),
+        )
     }
 
     /// Replay the complete historical run, then execute its exact registered
     /// method, parameters, handles and effective cutoff at one current head.
     /// Read is sufficient; bank procedures additionally require Reconcile.
+    /// Kiting's original-source replay also requires Privileged and uses the
+    /// mutable `with_history` entrypoint.
     ///
     /// Unlike monetary report freshness, this compares the run itself rather
     /// than attributing changes to later posting entries: parties, approvals,
@@ -1587,7 +1715,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         certificate: &ProcedureCertificate,
     ) -> Outcome<ProcedureCertificateStatus> {
-        let original = match self.replay_procedure(cx, principal, capability, certificate)? {
+        self.procedure_certificate_status_prepared(
+            cx,
+            principal,
+            capability,
+            certificate,
+            None,
+            None,
+        )
+    }
+
+    fn procedure_certificate_status_prepared(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &ProcedureCertificate,
+        original_sources: Option<&crate::bank::PreparedBankTransfers>,
+        current_sources: Option<&crate::bank::PreparedBankTransfers>,
+    ) -> Outcome<ProcedureCertificateStatus> {
+        let original = match self.replay_procedure_prepared(
+            cx,
+            principal,
+            capability,
+            certificate,
+            original_sources,
+        )? {
             Ok(report) => report,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -1598,10 +1751,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let built = request.build()?;
         let bank_procedure = request.procedure == bank::PROCEDURE;
         let result = self.query(cx, |db, book| {
+            let known_at = current_sources.map(crate::bank::PreparedBankTransfers::known_at);
             let mut snapshot =
-                Snapshot::read(db, &cx.query(), book, None, request.effective_through)?;
+                Snapshot::read(db, &cx.query(), book, known_at, request.effective_through)?;
             if bank_procedure
                 && let Err(refusal) = bank::populate(db, cx, book, capability, &mut snapshot)?
+            {
+                return Ok(Err(refusal));
+            }
+            if request.procedure == kiting::PROCEDURE
+                && let Err(refusal) = kiting::populate(current_sources, &mut snapshot)
             {
                 return Ok(Err(refusal));
             }
@@ -1621,7 +1780,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Some(&cx.query()),
             )?))
         })?;
-        if let Err(refusal) = authorize(self, cx, principal, capability, false, bank_procedure)? {
+        if let Err(refusal) = authorize(self, cx, principal, capability, false, &request.procedure)?
+        {
             return Ok(Err(refusal));
         }
         let current = match result {
@@ -1639,7 +1799,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         normalized.coordinate.known_at = original.coordinate.known_at;
         normalized.inputs_digest = original.inputs_digest;
         normalized.findings_digest = original.findings_digest;
-        let unchanged = normalized == original;
+        // The run hash also includes its coordinate. Compare the complete
+        // paired bank sources independently before normalizing that hash, so
+        // even a zero-finding run detects later changes to its bank population.
+        let sources_unchanged = match (original_sources, current_sources) {
+            (Some(original), Some(current)) => original.same_sources(current),
+            (None, None) => true,
+            _ => false,
+        };
+        let unchanged = sources_unchanged && normalized == original;
         cx.query().checkpoint().map_err(BookError::Context)?;
         Ok(Ok(if unchanged {
             ProcedureCertificateStatus::Current { checked_at }
@@ -1660,9 +1828,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: &ProcedureRequest,
     ) -> Outcome<CertifiedProcedure> {
+        self.certify_procedure_prepared(cx, principal, capability, request, None)
+    }
+
+    fn certify_procedure_prepared(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &ProcedureRequest,
+        prepared: Option<&crate::bank::PreparedBankTransfers>,
+    ) -> Outcome<CertifiedProcedure> {
         let bank_procedure = request.procedure == bank::PROCEDURE;
-        if let Err(r) = authorize(self, cx, principal, capability, true, bank_procedure)? {
+        let kiting_procedure = request.procedure == kiting::PROCEDURE;
+        if let Err(r) = authorize(self, cx, principal, capability, true, &request.procedure)? {
             return Ok(Err(r));
+        }
+        if kiting_procedure && prepared.is_none() {
+            return Ok(Err(kiting::missing_sources()));
         }
         let built = match request.build() {
             Ok(p) => p,
@@ -1672,6 +1855,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if !supported(&row.id, row.version)
             && !extended::supported(&row.id, row.version)
             && !bank::supported(&row.id, row.version)
+            && !kiting::supported(&row.id, row.version)
         {
             return Ok(Err(invalid(
                 "this procedure version has no complete registered native certificate closure; ordinary procedure execution is unchanged",
@@ -1707,7 +1891,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     policy(),
                 )
                 .map_err(BookError::CertifiedRead)?;
-            let extended_inputs = if bank_procedure {
+            let extended_inputs = if kiting_procedure {
+                kiting::capture(db, cx, book, source.known_at)?
+            } else if bank_procedure {
                 bank::capture(db, cx, book, source.known_at)?
             } else if extended::supported(&row.id, row.version) {
                 extended::capture(db, cx, book, source.known_at)?
@@ -1724,6 +1910,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             if bank_procedure
                 && let Err(r) = bank::populate(db, cx, book, capability, &mut snapshot)?
             {
+                return Ok(Err(r));
+            }
+            if kiting_procedure && let Err(r) = kiting::populate(prepared, &mut snapshot) {
                 return Ok(Err(r));
             }
             if extended::supported(&row.id, row.version)
@@ -1772,7 +1961,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 certificate,
             }))
         })?;
-        if let Err(r) = authorize(self, cx, principal, capability, true, bank_procedure)? {
+        if let Err(r) = authorize(self, cx, principal, capability, true, &request.procedure)? {
             return Ok(Err(r));
         }
         Ok(result)
@@ -1787,9 +1976,31 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         certificate: &ProcedureCertificate,
     ) -> Outcome<ProcedureRun> {
+        self.replay_procedure_prepared(cx, principal, capability, certificate, None)
+    }
+
+    pub(crate) fn replay_procedure_prepared(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &ProcedureCertificate,
+        prepared: Option<&crate::bank::PreparedBankTransfers>,
+    ) -> Outcome<ProcedureRun> {
         let bank_procedure = certificate.report.procedure == bank::PROCEDURE;
-        if let Err(r) = authorize(self, cx, principal, capability, false, bank_procedure)? {
+        let kiting_procedure = certificate.report.procedure == kiting::PROCEDURE;
+        if let Err(r) = authorize(
+            self,
+            cx,
+            principal,
+            capability,
+            false,
+            &certificate.report.procedure,
+        )? {
             return Ok(Err(r));
+        }
+        if kiting_procedure && prepared.is_none() {
+            return Ok(Err(kiting::missing_sources()));
         }
         if certificate.book_id() != self.context().book_id {
             return Ok(Err(invalid(
@@ -1834,6 +2045,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             {
                 return Ok(Err(r));
             }
+            if kiting_procedure && let Err(r) = kiting::populate(prepared, &mut snapshot) {
+                return Ok(Err(r));
+            }
             if extended::supported(&certificate.report.procedure, certificate.report.version)
                 && let Err(r) = extended::unchanged_attestations(db, cx, &snapshot)?
             {
@@ -1874,7 +2088,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
             Ok(Ok(report))
         })?;
-        if let Err(r) = authorize(self, cx, principal, capability, false, bank_procedure)? {
+        if let Err(r) = authorize(
+            self,
+            cx,
+            principal,
+            capability,
+            false,
+            &certificate.report.procedure,
+        )? {
             return Ok(Err(r));
         }
         Ok(result)

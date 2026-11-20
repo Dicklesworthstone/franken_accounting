@@ -966,6 +966,55 @@ fn legacy_report_registries(selection: &ReportSelection) -> Vec<(&'static str, &
     sources
 }
 
+/// The kiting detector added only this registered suffix to limits. These
+/// budgets never enter an older native report fold, but pre-narrowing report
+/// certificates committed the entire file, including its original raw text.
+/// Retain that exact source epoch, without accepting arbitrary removed rows.
+fn pre_kiting_legacy_report_registries(
+    selection: &ReportSelection,
+) -> Result<Vec<(&'static str, &'static str)>, Refusal> {
+    const BOUNDARY: &str =
+        "\n# graph.kiting v1 registry epoch begins here; preserve the preceding raw closure.\n";
+    const SUFFIX: &str = r#"[[limit]]
+name = "max_kiting_transfers"
+value = 100000
+[[limit]]
+name = "max_kiting_findings"
+value = 10000
+[[limit]]
+name = "max_kiting_finding_bytes"
+value = 16777216
+[[limit]]
+name = "max_kiting_instrument_bytes"
+value = 256
+"#;
+    let mut sources = legacy_report_registries(selection);
+    let (_, limits) = sources
+        .iter_mut()
+        .find(|(name, _)| *name == "limits")
+        .ok_or_else(|| invalid("the legacy report limits registry is unavailable"))?;
+    let text = *limits;
+    if text.matches(BOUNDARY).count() != 1 {
+        return Err(invalid(
+            "the pre-kiting report limits registry is unavailable",
+        ));
+    }
+    let (previous, suffix) = text
+        .split_once(BOUNDARY)
+        .ok_or_else(|| invalid("the pre-kiting report limits registry is unavailable"))?;
+    let parse = |source| {
+        fa_registry::toml::parse(source)
+            .map_err(|error| invalid(format!("retained report limits: {error}")))
+    };
+    if parse(suffix)? != parse(SUFFIX)? {
+        return Err(invalid(
+            "the kiting limits suffix differs from its published epoch",
+        ));
+    }
+    *limits = previous;
+    Ok(sources)
+}
+
 /// The digest of one registry's parsed canonical content (bead fa-t8gk):
 /// comments and layout never reach it, and every key and value does.
 pub(crate) fn canonical_registry_digest(name: &str, text: &str) -> Result<[u8; 32], Refusal> {
@@ -1185,11 +1234,31 @@ fn legacy_v2_registry_digest(selection: &ReportSelection) -> Result<[u8; 32], Re
 /// never carry it; it is kept only so certificates retained before fa-t8gk
 /// still replay while their registry text is unchanged.
 fn legacy_registry_digest(selection: &ReportSelection) -> [u8; 32] {
-    let leaves: Vec<(&str, [u8; 32])> = legacy_report_registries(selection)
-        .into_iter()
-        .map(|(name, text)| (name, digest(b"fa:report-registry:v1", text.as_bytes())))
+    raw_report_registry_digest(&legacy_report_registries(selection))
+}
+
+fn raw_report_registry_digest(sources: &[(&str, &str)]) -> [u8; 32] {
+    let leaves: Vec<(&str, [u8; 32])> = sources
+        .iter()
+        .map(|(name, text)| (*name, digest(b"fa:report-registry:v1", text.as_bytes())))
         .collect();
     registry_closure(b"fa:report-registry-closure:v1", &leaves)
+}
+
+fn legacy_registry_supported(
+    selection: &ReportSelection,
+    recorded: &[u8; 32],
+) -> Result<bool, Refusal> {
+    if *recorded == legacy_v2_registry_digest(selection)?
+        || *recorded == legacy_registry_digest(selection)
+    {
+        return Ok(true);
+    }
+    let previous = pre_kiting_legacy_report_registries(selection)?;
+    Ok(
+        *recorded == canonical_closure(b"fa:report-registry-closure:v2", &previous)?
+            || *recorded == raw_report_registry_digest(&previous),
+    )
 }
 
 /// The closure over each named registry's canonical digest.
@@ -2138,9 +2207,13 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         Ok(epoch) => epoch,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let legacy_v2 = match legacy_v2_registry_digest(&certificate.selection) {
-        Ok(closure) => closure,
-        Err(refusal) => return Ok(Err(refusal)),
+    let legacy_supported = if certificate.registry_digest != current && archived_epoch.is_none() {
+        match legacy_registry_supported(&certificate.selection, &certificate.registry_digest) {
+            Ok(supported) => supported,
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+    } else {
+        false
     };
     let pre_carrying = if certificate.registry_digest != current
         && matches!(
@@ -2167,8 +2240,7 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
                 | ReportSelection::DimensionTrialBalance { .. }
                 | ReportSelection::RegulatorySchedule(_)
                 | ReportSelection::CustomStatement(_)
-        ) || (certificate.registry_digest != legacy_v2
-            && certificate.registry_digest != legacy_registry_digest(&certificate.selection)))
+        ) || !legacy_supported)
     {
         return Ok(Err(registry_unavailable(
             "report certificate",

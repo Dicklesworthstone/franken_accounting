@@ -533,7 +533,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(r));
         }
         let observation = match self
-            .finding_by_vid(cx, principal, capability, finding)
+            .finding_by_vid_with_history(cx, principal, capability, finding)
             .await?
         {
             Ok(finding) => finding,

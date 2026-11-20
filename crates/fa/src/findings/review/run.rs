@@ -227,7 +227,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(r));
         }
         let run = match self
-            .read_findings(cx, principal, capability, certificate)
+            .read_findings_with_history(cx, principal, capability, certificate)
             .await?
         {
             Ok(run) => run,

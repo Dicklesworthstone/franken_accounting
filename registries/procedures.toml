@@ -1776,3 +1776,32 @@ summary = "Per-claim absolute deltas from each RegisterEquals baseline to gross 
 effective_through = "optional"
 
 
+# graph.kiting v1 registry epoch begins here; preserve the preceding raw closure.
+[[procedure]]
+id = "graph.kiting"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L71"
+tie_break = "entry_vid"
+complexity = "O((entries + transfers) log (transfers + 1) + max_search_steps)"
+calibration = "uncalibrated"
+summary = "Bounded temporal cycles across distinct authenticated bank instruments and cash-role accounts. Inputs are active native bank matches on both opposite cash legs of an exact two-leg transfer, checked against retained original statements, manifests, line documents and import receipts. Unmatched, split or ambiguous transfers are outside this population. Same-unit, same-entity, equal-amount cycles require a nonempty common float interval: receiver availability is the later of credit booking and value dates, and sender clearance is the debit value date. The interval must begin on or before any effective cutoff. Canonical bounded exhaustive temporal DFS records its ordered choices in a CGSE witness. Accounting reversal alone does not erase a matched physical bank movement; explicit native unmatching retires its use. Every finding cites the complete cycle's entries, accounts, manifests and lines. These uncalibrated screening observations do not establish intent or fraud. Read, Reconcile and Privileged authority are required by the native full-source bank contract; MCP launch templates cannot add Privileged. At most 100000 paired transfers, 10000 findings, 16 MiB of findings and 256 bytes per instrument identity; exceeded bounds refuse the whole run. Native v4 certificates re-read the authenticated sources; portable offline verification is not supported."
+effective_through = "optional"
+
+[[parameter]]
+procedure = "graph.kiting"
+name = "window_days"
+default = 7
+meaning = "Maximum statement-date span of a candidate cycle, in days (1..365)."
+
+[[parameter]]
+procedure = "graph.kiting"
+name = "max_hops"
+default = 3
+meaning = "Maximum number of distinct bank instruments in a simple cycle (2..8)."
+
+[[parameter]]
+procedure = "graph.kiting"
+name = "max_search_steps"
+default = 100000
+meaning = "Deterministic graph-search budget (1..10000000); exhaustion refuses instead of returning partial findings."

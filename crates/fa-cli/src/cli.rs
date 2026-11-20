@@ -25109,7 +25109,7 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                 })
                 .transpose()?;
             let who = ctx.principal(args);
-            let bank = id == "recon.bank_statement_drift";
+            let bank = matches!(id, "recon.bank_statement_drift" | "graph.kiting");
             let protected_cap = if certify || bank {
                 let cap = ctx.capability(
                     args,
@@ -25125,6 +25125,9 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                 }
                 if bank {
                     ops.push(fa_policy::Op::Reconcile);
+                }
+                if id == "graph.kiting" {
+                    ops.push(fa_policy::Op::Privileged);
                 }
                 for op in ops {
                     fa_policy::require(&cap, op, "reading or certifying a procedure")

@@ -106,6 +106,15 @@ pub const MAX_CLOSE_RUN_TASKS: usize = 16;
 pub const MAX_CLOSE_RUN_TEXT_BYTES: usize = 128;
 pub const MAX_CLOSE_RUN_BYTES: usize = 12 * 1024;
 
+/// Complete exact paired-bank-transfer population for temporal cycle screening.
+pub const MAX_KITING_TRANSFERS: usize = 100_000;
+/// Complete cycle census. Reaching the next finding refuses without truncation.
+pub const MAX_KITING_FINDINGS: usize = 10_000;
+/// Sum of canonical kiting Finding bytes, independent of the census count.
+pub const MAX_KITING_FINDING_BYTES: usize = 16 * 1024 * 1024;
+/// Original statement instrument identity before graph allocation or sorting.
+pub const MAX_KITING_INSTRUMENT_BYTES: usize = 256;
+
 /// Every limit as `(name, value)`, in registry order.
 pub const ALL: &[(&str, u64)] = &[
     ("max_entry_bytes", MAX_ENTRY_BYTES as u64),
@@ -193,6 +202,13 @@ pub const ALL: &[(&str, u64)] = &[
     ("max_close_run_tasks", MAX_CLOSE_RUN_TASKS as u64),
     ("max_close_run_text_bytes", MAX_CLOSE_RUN_TEXT_BYTES as u64),
     ("max_close_run_bytes", MAX_CLOSE_RUN_BYTES as u64),
+    ("max_kiting_transfers", MAX_KITING_TRANSFERS as u64),
+    ("max_kiting_findings", MAX_KITING_FINDINGS as u64),
+    ("max_kiting_finding_bytes", MAX_KITING_FINDING_BYTES as u64),
+    (
+        "max_kiting_instrument_bytes",
+        MAX_KITING_INSTRUMENT_BYTES as u64,
+    ),
 ];
 
 #[cfg(test)]

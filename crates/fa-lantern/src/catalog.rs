@@ -38,6 +38,7 @@ use crate::jet::{
     RoundAmounts, SelfApproved, SelfSourcedEvidence, SuspenseAging, ThinDescriptions,
     UnusualAccounts, UnusualPreparers, Weekend,
 };
+use crate::kiting::Kiting;
 use crate::numbers::{RelativeSizeFactor, RoundAmountDensity, SequenceGaps, ThresholdSplitting};
 use crate::trace::{Law, Trace};
 use crate::{LanternError, Params, Procedure};
@@ -125,6 +126,7 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         ReconLapping::ID => Box::new(ReconLapping::with(params)),
         ReconAttestedRegisterCompare::ID => Box::new(ReconAttestedRegisterCompare::with(params)),
         BankStatementDrift::ID => Box::new(BankStatementDrift::with(params)),
+        Kiting::ID => Box::new(Kiting::with(params)),
         AssertionDrift::ID => Box::new(AssertionDrift::with(params)),
         UnrecordedLiabilities::ID => Box::new(UnrecordedLiabilities::with(params)),
         SubsequentEvents::ID => Box::new(SubsequentEvents::with(params)),

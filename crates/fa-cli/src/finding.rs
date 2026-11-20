@@ -450,9 +450,17 @@ fn record(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .transpose()?;
     let who = ctx.principal(args);
     let cap = capability(ctx, args, &["read", "produce"])?;
-    if selected.is_some_and(|(id, _)| id == "recon.bank_statement_drift") {
-        fa_policy::require(&cap, Op::Reconcile, "recording bank statement drift")
+    if selected.is_some_and(|(id, _)| matches!(id, "recon.bank_statement_drift" | "graph.kiting")) {
+        fa_policy::require(&cap, Op::Reconcile, "recording bank procedures")
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    }
+    if selected.is_some_and(|(id, _)| id == "graph.kiting") {
+        fa_policy::require(
+            &cap,
+            Op::Privileged,
+            "replaying complete bank statement evidence",
+        )
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     }
     let mut book = ctx
         .books
@@ -478,7 +486,10 @@ fn record(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             effective_through: effective,
             budget: None,
         };
-        let certified = if request.procedure == "recon.bank_statement_drift" {
+        let certified = if matches!(
+            request.procedure.as_str(),
+            "recon.bank_statement_drift" | "graph.kiting"
+        ) {
             book.certify_procedure_with_history(who, &cap, &request)??
         } else {
             book.certify_procedure(who, &cap, &request)??
