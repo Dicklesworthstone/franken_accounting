@@ -21,7 +21,9 @@ import public_ledger as ledger
 
 
 PROCEDURES = {
-    "jet.round_amounts": (1, {"round_power": 3}),
+    # Version 2 honors an optional effective cutoff. This sweep deliberately
+    # omits that cutoff, retaining the complete published source population.
+    "jet.round_amounts": (2, {"round_power": 3}),
     "jet.weekend": (1, {}),
     "duplicates.same_same_same": (1, {}),
     "duplicates.same_same_different": (1, {"window_days": 30}),
@@ -349,7 +351,7 @@ def run_native(native: ledger.Native, rows: list[dict], posted: dict[str, dict])
               "monetary_entries": len(entries), "native_legs": 2 * len(entries),
               "zero_principal_observations": len(rows) - len(entries),
               "source_accounts": sorted({row["account"] for row in rows}),
-              "effective_date_scope": "All source postings at the recorded prefix; these procedures take no effective-through filter",
+              "effective_date_scope": "All source postings at the recorded prefix; this sweep supplies no effective-through filter",
               "account_citation_bindings": account_ids, "procedures": results,
               "oracle_sha256": ledger.sha256(Path(__file__)),
               "verification_scope": "Independent source predicates and native retained-certificate replay; no offline fa-verify analytic-recomputation claim"}
