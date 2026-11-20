@@ -284,10 +284,7 @@ fn threshold_splitting_exports_complete_windows_party_boundaries_and_currency() 
     };
     assert_eq!(totals(&historical.report), vec![1_100, 1_100, 1_500]);
     let mut yen_request = request(&f, "numbers.threshold_splitting", &parameters);
-    yen_request.parameters = yen_request
-        .parameters
-        .set("currency_iso4217", 392)
-        .unwrap();
+    yen_request.parameters = yen_request.parameters.set("currency_iso4217", 392).unwrap();
     let yen_report = f.certify(&yen_request);
     assert_eq!(totals(&yen_report.report), vec![1_100]);
     assert_eq!(yen_report.report.findings[0].statistic.scale, 0);
@@ -440,9 +437,8 @@ fn numeric_audit_bundles_reject_resealed_results_and_invalid_profiles() {
             );
             reseal(&mut forged);
             let changed = replace_certificate(&produced.bundle.bytes, &forged);
-            let error =
-                verify_report_expected(&changed, &[key], None, None, Some(forged.digest()))
-                    .unwrap_err();
+            let error = verify_report_expected(&changed, &[key], None, None, Some(forged.digest()))
+                .unwrap_err();
             assert!(
                 matches!(error.predicate, "procedure_profile" | "canonical_encoding"),
                 "{id}: {variant}: {error}"
@@ -469,10 +465,14 @@ fn numeric_audit_bundles_reject_resealed_results_and_invalid_profiles() {
         );
         assert_eq!(command.exit, 0, "{}", command.stdout);
         assert!(command.stdout.contains(id));
-        assert!(command.stdout.contains(if id == "numbers.relative_size_factor" {
-            "rsf_bps"
-        } else {
-            "split_total"
-        }));
+        assert!(
+            command
+                .stdout
+                .contains(if id == "numbers.relative_size_factor" {
+                    "rsf_bps"
+                } else {
+                    "split_total"
+                })
+        );
     }
 }

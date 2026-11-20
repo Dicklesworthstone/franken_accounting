@@ -361,12 +361,49 @@ fn refused_write<T>(error: WriteTxnError) -> Outcome<T> {
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Kiting findings need the original source parse even when their native
+    /// certificate and graph citations are already resident.
+    async fn prepare_finding_sources(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        digest: &[u8; 32],
+    ) -> Outcome<Option<crate::bank::PreparedBankTransfers>> {
+        let artifact = match self
+            .read_report_artifact(cx, principal, capability, digest)
+            .await?
+        {
+            Ok(artifact) => artifact,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if artifact.family() != ReportArtifactFamily::Procedure {
+            return Ok(Ok(None));
+        }
+        let bytes = match artifact.canonical_bytes() {
+            Ok(bytes) => bytes,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let certificate = match ProcedureCertificate::decode(&bytes) {
+            Ok(certificate) => certificate,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if certificate.report().procedure != "graph.kiting" {
+            return Ok(Ok(None));
+        }
+        Ok(self
+            .prepare_kiting_inputs(cx, capability, Some(certificate.known_at()))
+            .await?
+            .map(Some))
+    }
+
     async fn prepared_findings(
         &self,
         cx: &PurposeContexts,
         principal: VId,
         capability: &Capability,
         digest: &[u8; 32],
+        sources: Option<&crate::bank::PreparedBankTransfers>,
     ) -> Outcome<Prepared> {
         let artifact = match self
             .read_report_artifact(cx, principal, capability, digest)
@@ -392,7 +429,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(p) => p,
             Err(r) => return Ok(Err(r)),
         };
-        if let Err(r) = self.replay_procedure(cx, principal, capability, &prepared.certificate)? {
+        if let Err(r) = self.replay_procedure_prepared(
+            cx,
+            principal,
+            capability,
+            &prepared.certificate,
+            sources,
+        )? {
             return Ok(Err(r));
         }
         let report = prepared.certificate.report();
@@ -435,9 +478,22 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(r));
         }
+        let sources = match self
+            .prepare_finding_sources(cx, principal, capability, certificate_digest)
+            .await?
+        {
+            Ok(sources) => sources,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let at = self.head(cx)?;
         let prepared = match self
-            .prepared_findings(cx, principal, capability, certificate_digest)
+            .prepared_findings(
+                cx,
+                principal,
+                capability,
+                certificate_digest,
+                sources.as_ref(),
+            )
             .await?
         {
             Ok(p) => p,
@@ -557,8 +613,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(r));
         }
-        self.read_findings(cx, principal, capability, certificate_digest)
-            .await
+        let sources = match self
+            .prepare_finding_sources(cx, principal, capability, certificate_digest)
+            .await?
+        {
+            Ok(sources) => sources,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        self.read_findings_prepared(
+            cx,
+            principal,
+            capability,
+            certificate_digest,
+            sources.as_ref(),
+        )
+        .await
     }
 
     /// Read the entire run by full certificate digest, under current authority.
@@ -571,11 +640,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         certificate_digest: &[u8; 32],
     ) -> Outcome<RecordedFindings> {
+        self.read_findings_prepared(cx, principal, capability, certificate_digest, None)
+            .await
+    }
+
+    async fn read_findings_prepared(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate_digest: &[u8; 32],
+        sources: Option<&crate::bank::PreparedBankTransfers>,
+    ) -> Outcome<RecordedFindings> {
         if let Err(r) = authorize(self, cx, principal, capability, false)? {
             return Ok(Err(r));
         }
         let prepared = match self
-            .prepared_findings(cx, principal, capability, certificate_digest)
+            .prepared_findings(cx, principal, capability, certificate_digest, sources)
             .await?
         {
             Ok(p) => p,

@@ -37,6 +37,7 @@ pub use fa_journal::import::{BankFormat, BankImportManifest, BankImportPredecess
 pub use fa_model::bank_csv::{BankCsvAmounts, BankCsvDateFormat, BankCsvLayout};
 
 mod confirmation;
+mod kiting;
 mod reconciliation;
 pub use confirmation::{BankConfirmationRequest, BankConfirmationStatus, BankStatusRequest};
 pub use fa_journal::bank::{
@@ -45,6 +46,7 @@ pub use fa_journal::bank::{
     BankReconciliationStatus, BankUnmatchRecorded, BankUnmatchRequest,
 };
 pub use fa_registers::reconciliation::{ReconciliationRegister, UnpostedResidualFinding};
+pub(crate) use kiting::PreparedBankTransfers;
 pub use reconciliation::BankReconciliationRequest;
 
 const PARSER_REVISION: u16 = 1;

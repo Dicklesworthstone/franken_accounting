@@ -385,7 +385,7 @@ fn write_legacy_recurring(
         (property::BOOK_ID, blob(h.book.book_id.0.to_vec())),
         (
             property::CODE,
-            CanonicalScalar::text(planned.spec().name.clone()).unwrap(),
+            CanonicalScalar::ucs_basic_text(&planned.spec().name).unwrap(),
         ),
         (property::TARGET_REF, blob(evid.0.to_le_bytes().to_vec())),
         (property::STATE, CanonicalScalar::Int(1)),

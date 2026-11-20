@@ -24,6 +24,7 @@ from public_ledger import DIMENSION_COLUMNS, PERIODS, period_end, read_fact
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_FILES = ("report.fab", "checkpoint.bin", "report.receipt")
 MAX_PUBLIC_COMPRESSED_BYTES = 2 * 1024 * 1024
+NATIVE_REPORT_REGISTRIES = ("account_types", "entry_classes", "units", "foundations")
 
 
 def require(condition: bool, message: str) -> None:
@@ -286,11 +287,17 @@ def reconcile_source_output(closure: dict, selected: dict, dimension: str) -> di
 
 
 def inspect(bundle: bytes, *, source_bound: bool, require_fragments: bool) -> dict:
-    """Describe the already independently verified v8 dimension-report wire."""
+    """Describe independently verified v8 reports in their v1 or v2 transport.
+
+    Version 2 adds the complete authenticated native-report registry closure.
+    Its certificate and source-selection wire remain unchanged. Authentication
+    and registry semantics belong to the preceding fa-verify invocation; this
+    reader enforces the exact dimension-report framing and inventory only.
+    """
     container = Reader(bundle)
     require(container.blob() == b"fa:report-bundle:v1", "unexpected bundle domain")
     major, minor = container.number(2), container.number(2)
-    require(major == 1, "this helper supports native dimension report bundles")
+    require(major in (1, 2), "this helper supports version-1 and version-2 native dimension report bundles")
     require(minor == int(source_bound), "bundle source profile differs from request")
     certificate = Reader(container.blob())
     fmt = certificate.take(24).decode("ascii")
@@ -372,6 +379,19 @@ def inspect(bundle: bytes, *, source_bound: bool, require_fragments: bool) -> di
             container.blob()
         require(witnesses > 0, "source-bound profile has no source witnesses")
     require(run_bodies > 0, "public-ledger report has no canonical migration bodies")
+    registries = []
+    if major == 2:
+        require(container.number(4) == len(NATIVE_REPORT_REGISTRIES),
+                "dimension report requires its complete four-registry closure")
+        for expected in NATIVE_REPORT_REGISTRIES:
+            name = container.blob()
+            require(name == expected.encode("ascii"),
+                    "dimension report registry names are missing, extra or reordered")
+            canonical = container.blob()
+            require(0 < len(canonical) <= 1024 * 1024,
+                    "dimension report registry bytes are empty or exceed the native limit")
+            registries.append({"name": expected, "bytes": len(canonical),
+                               "sha256": hashlib.sha256(canonical).hexdigest()})
     container.finish()
     return {"bundle_major": major, "bundle_minor": minor, "certificate_format": fmt,
             "book": book, "branch": branch, "known_at": known_at, "selected": selected,
@@ -380,6 +400,7 @@ def inspect(bundle: bytes, *, source_bound: bool, require_fragments: bool) -> di
             "additive_input_labels": labels, "certificate_digest": digest,
             "canonical_records": records, "migration_run_bodies": run_bodies,
             "migration_source_witnesses": witnesses,
+            "registry_closure": registries,
             "output": output,
             "scope": "Descriptive framing only; separate fa-verify establishes authentication."}
 

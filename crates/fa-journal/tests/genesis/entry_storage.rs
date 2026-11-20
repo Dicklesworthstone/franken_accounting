@@ -271,9 +271,7 @@ fn large_chart_import_keeps_one_publication_and_replays_historical_accounts() {
     let at = installed.recorded_at;
     assert_eq!(at.0, before.0 + 1);
     assert_eq!(installed.accounts, accounts.len());
-    let (canonical, recorded_at) = read_entry(&h.db, installed.control_entry)
-        .unwrap()
-        .unwrap();
+    let (canonical, recorded_at) = read_entry(&h.db, installed.control_entry).unwrap().unwrap();
     assert_eq!(recorded_at, at);
     let encoded = canonical.encode().unwrap();
     assert!(
@@ -290,19 +288,22 @@ fn large_chart_import_keeps_one_publication_and_replays_historical_accounts() {
     );
     assert!(entry_storage::mirrors_match(&root, &canonical).unwrap());
 
-    let born = h
-        .db
-        .vertices_at(at)
-        .unwrap()
-        .into_iter()
-        .filter(|row| row.created_at == at)
-        .collect::<Vec<_>>();
+    let born =
+        h.db.vertices_at(at)
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.created_at == at)
+            .collect::<Vec<_>>();
     assert_eq!(
-        born.iter().filter(|row| row.labels == [label::ENTRY]).count(),
+        born.iter()
+            .filter(|row| row.labels == [label::ENTRY])
+            .count(),
         1
     );
     assert_eq!(
-        born.iter().filter(|row| row.labels == [label::ACCOUNT]).count(),
+        born.iter()
+            .filter(|row| row.labels == [label::ACCOUNT])
+            .count(),
         accounts.len()
     );
     let fragments = born
@@ -322,7 +323,10 @@ fn large_chart_import_keeps_one_publication_and_replays_historical_accounts() {
     let old_chart = fa_journal::chart::read_at(&h.db, &h.book, before).unwrap();
     let current_chart = fa_journal::chart::read_at(&h.db, &h.book, at).unwrap();
     assert_eq!(old_chart.accounts().len(), initial_count);
-    assert_eq!(current_chart.accounts().len(), initial_count + accounts.len());
+    assert_eq!(
+        current_chart.accounts().len(),
+        initial_count + accounts.len()
+    );
     let summary = account_vid(h.book.book_id, "bulk");
     assert_eq!(current_chart.leaves_under(summary).unwrap().len(), 512);
     for spec in &accounts {
@@ -377,15 +381,14 @@ fn chart_fragments_refuse_tampering_without_losing_the_original_chart() {
         .unwrap();
     let intact = installed.recorded_at;
     let original_chart = fa_journal::chart::read_at(&h.db, &h.book, intact).unwrap();
-    let fragment = h
-        .db
-        .vertices_at(intact)
-        .unwrap()
-        .into_iter()
-        .find(|row| row.created_at == intact && row.labels == [label::ENTRY_FRAGMENT])
-        .unwrap();
-    let original = fa_journal::rows::bytes(&fragment, property::FA_PAYLOAD, "chart fragment")
-        .unwrap();
+    let fragment =
+        h.db.vertices_at(intact)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.created_at == intact && row.labels == [label::ENTRY_FRAGMENT])
+            .unwrap();
+    let original =
+        fa_journal::rows::bytes(&fragment, property::FA_PAYLOAD, "chart fragment").unwrap();
     let mut damaged = original.clone();
     damaged[0] ^= 1;
     let mut edit = fgdb::WriteBatch::new(relation::CHILD_OF);
@@ -421,9 +424,7 @@ fn chart_fragments_refuse_tampering_without_losing_the_original_chart() {
     );
     h.write_raw(restore);
     assert!(read_entry(&h.db, installed.control_entry).is_err());
-    assert!(
-        fa_journal::chart::read_at(&h.db, &h.book, h.db.frontier().unwrap()).is_err()
-    );
+    assert!(fa_journal::chart::read_at(&h.db, &h.book, h.db.frontier().unwrap()).is_err());
     assert_eq!(
         fa_journal::chart::read_at(&h.db, &h.book, intact)
             .unwrap()

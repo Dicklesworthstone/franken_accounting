@@ -21,6 +21,10 @@
 //! hold — and it carries the approvals the `legal-hold-release` row requires
 //! (a Human principal other than its preparer), bound to its proposal
 //! through a [`ReleasePlan`].
+//! Both lifecycle writers atomically reserve their (book, principal, key)
+//! `IntentOutcome`; target uniqueness never grants a second use of the key.
+//! Retrying authenticates the original control and its original claim before
+//! returning the recorded sequence, without changing hold cells or approvals.
 //!
 //! A book-scope Place (`fa document hold place --through <seq>`; the
 //! receiver's pre-appointment trunk, plan §15.6) carries `2u8 ‖ u64
@@ -405,6 +409,55 @@ fn hold_event(entry: &Entry) -> Result<Option<(Scope, Oid)>, KernelError> {
     Ok(Some((scope, *authority_oid)))
 }
 
+/// The exact shapes emitted by this dedicated writer. Other control kinds
+/// cannot borrow the hold lifecycle's atomic-claim or legacy-retry contract.
+pub(crate) fn is_hold_control(entry: &Entry, vid: VId) -> bool {
+    let proposal = &entry.proposal;
+    if proposal.schema_minor != fa_model::entry::EXTENSIONS_MINOR
+        || proposal.branch_id != Id128::TRUNK
+        || proposal.effective_period.is_some()
+        || proposal.document_date.is_some()
+        || !proposal.legs.is_empty()
+        || !proposal.unit_totals.is_empty()
+        || proposal.base_totals.is_some()
+        || proposal.session_ref.is_some()
+        || !proposal.evidence.is_empty()
+        || !proposal.supersession.is_empty()
+        || proposal.pending.is_some()
+        || !proposal.external_ids.is_empty()
+        || !proposal.tags.is_empty()
+        || entry.plan_certificate.is_some()
+        || proposal.extensions.len() != 1
+    {
+        return false;
+    }
+    let EntryOrigin::Control {
+        control_kind: fa_model::ControlKind::LEGAL_HOLD,
+        spec_body_digest,
+    } = &proposal.origin
+    else {
+        return false;
+    };
+    let Ok(Some((scope, _))) = hold_event(entry) else {
+        return false;
+    };
+    if scope.digest().ok().as_ref() != Some(spec_body_digest) {
+        return false;
+    }
+    match scope {
+        Scope::Place(_) | Scope::Book(_) => {
+            entry.approvals.is_empty()
+                && vid
+                    == entry_vid(
+                        proposal.book_id,
+                        &proposal.principal_ref.0.to_le_bytes(),
+                        &proposal.idempotency_key,
+                    )
+        }
+        Scope::Release(hold) => vid == release_vid(proposal.book_id, hold),
+    }
+}
+
 /// The Place stored at `row`, if `row` is one.
 fn placed_of<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
@@ -624,7 +677,8 @@ pub(crate) fn admit<V: asupersync::fs::Vfs + Clone>(
     Ok(Ok(()))
 }
 
-fn placed_or_conflict(
+fn placed_or_conflict<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     row: &VertexRow,
     proposal: &EntryPayload,
@@ -646,6 +700,12 @@ fn placed_or_conflict(
         return Ok(Err(conflict()));
     }
     let stored = decode_entry(row)?;
+    if row.labels.as_slice() != [label::ENTRY]
+        || row.props != entry_mirrors(&stored)?
+        || !crate::outcome::verify_hold_recorded(db, row, &stored)?
+    {
+        return Ok(Err(conflict()));
+    }
     let same = &stored.proposal_digest == digest
         || matches!(
             (
@@ -728,12 +788,32 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
         &req.principal.0.to_le_bytes(),
         &req.idempotency_key,
     );
+    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(r));
+    }
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    if let Err(r) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        req.principal,
+        &req.idempotency_key,
+        hold,
+    )? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let existing = txn.vertex(db, hold)?;
     let scope = match named {
         Some(scope) => scope,
         // The head when the hold was first placed: the same request again is
         // the recorded hold, however far the head has moved since.
-        None => match db
-            .vertex(hold)?
+        None => match existing
             .as_ref()
             .map(|row| placed_of(db, row, row.created_at))
             .transpose()?
@@ -743,13 +823,13 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
                 through: Some(through),
                 ..
             }) => Scope::Book(through),
-            _ => Scope::Book(db.frontier()?),
+            _ => Scope::Book(txn.basis()),
         },
     };
     if let Scope::Book(through) = &scope {
-        // This exclusive handle's head is the transaction's basis below.
-        let head = db.frontier()?;
+        let head = txn.basis();
         if *through > head {
+            txn.abort();
             return Ok(Err(Refusal::new(
                 code::LEGAL_HOLD_SUBJECT,
                 exit::REFUSAL,
@@ -775,6 +855,7 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
         req.description,
     )?;
     if let Err(e) = proposal.validate() {
+        txn.abort();
         return Ok(Err(structure(
             format!("the hold's control record is malformed: {e}"),
             "fix the named field",
@@ -782,15 +863,18 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
     }
     let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let digest = proposal.proposal_digest()?;
-    let txn_cx = ctx.txn();
-    let mut txn = db.begin(&txn_cx)?;
-    if let Err(r) = capability_witness(&txn, db, book, capability)? {
+    if let Some(row) = existing {
+        txn.abort();
+        return placed_or_conflict(db, book, &row, &proposal, &digest);
+    }
+    if let Err(r) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
         txn.abort();
         return Ok(Err(r));
-    }
-    if let Some(row) = txn.vertex(db, hold)? {
-        txn.abort();
-        return placed_or_conflict(book, &row, &proposal, &digest);
     }
     let epoch = epoch_witness(&txn, db)?;
     let key = fa_policy::sod::control_key("HoldControl", None, "Place");
@@ -823,6 +907,7 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::HOLDS);
     batch.create_vertex(hold, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_hold_control(&mut batch, &entry, hold)?;
     // Each target is (the cell whose active set gains the hold, the vertex
     // its HOLDS edge points at): a named subject's own cell, or the book's
     // cell with the edge to the book root.
@@ -924,9 +1009,18 @@ pub async fn place_legal_hold<V: asupersync::fs::Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(hold)? {
-            Some(row) => placed_or_conflict(book, &row, &proposal, &digest),
+            Some(row) => placed_or_conflict(db, book, &row, &proposal, &digest),
             // A first hold on one of the subjects raced this one.
-            None => Ok(Err(conflict("legal hold"))),
+            None => {
+                if db
+                    .vertex(crate::outcome::entry_outcome_vid(&proposal))?
+                    .is_some()
+                {
+                    Ok(Err(crate::outcome::key_conflict()))
+                } else {
+                    Ok(Err(conflict("legal hold")))
+                }
+            }
         },
         Err(e) => Err(e.into()),
     }
@@ -995,15 +1089,49 @@ pub async fn release_legal_hold<V: asupersync::fs::Vfs + Clone>(
     }
     let digest = proposal.proposal_digest()?;
     let release = release_vid(book.book_id, plan.hold);
+    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(r));
+    }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(r) = capability_witness(&txn, db, book, capability)? {
         txn.abort();
         return Ok(Err(r));
     }
+    if let Err(r) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        plan.principal_ref,
+        &plan.idempotency_key,
+        release,
+    )? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    // A pre-protocol normal-key entry is still its own key reservation.
+    // This guard precedes a target-derived release's recorded-outcome path.
+    let normal = entry_vid(
+        book.book_id,
+        &plan.principal_ref.0.to_le_bytes(),
+        &plan.idempotency_key,
+    );
+    if normal != release && txn.vertex_has_label(db, normal, label::ENTRY)?.is_some() {
+        txn.abort();
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
     if let Some(row) = txn.vertex(db, release)? {
         txn.abort();
-        return released_or_refused(&row, plan.hold, &digest);
+        return released_or_refused(db, book, &row, plan.hold, &proposal, approvals);
+    }
+    if let Err(r) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(r));
     }
     let Some(hold_row) = txn.vertex(db, plan.hold)? else {
         txn.abort();
@@ -1016,6 +1144,15 @@ pub async fn release_legal_hold<V: asupersync::fs::Vfs + Clone>(
             "is not a legal hold's placement",
         )));
     };
+    let source = decode_entry(&hold_row)?;
+    if source.proposal.book_id != book.book_id
+        || hold_row.labels.as_slice() != [label::ENTRY]
+        || hold_row.props != entry_mirrors(&source)?
+        || !crate::outcome::verify_hold_recorded(db, &hold_row, &source)?
+    {
+        txn.abort();
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
     if placed.authority != plan.authority {
         txn.abort();
         return Ok(Err(unknown_hold(
@@ -1039,6 +1176,7 @@ pub async fn release_legal_hold<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.seal(approvals.to_vec(), None)?;
     let mut batch = WriteBatch::new(relation::HOLDS);
     batch.create_vertex(release, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_hold_control(&mut batch, &entry, release)?;
     // The cells that list the hold: the book's for a book-scope hold, each
     // named subject's otherwise.
     let cells: Vec<VId> = match placed.through {
@@ -1092,27 +1230,53 @@ pub async fn release_legal_hold<V: asupersync::fs::Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(release)? {
-            Some(row) => released_or_refused(&row, plan.hold, &digest),
-            None => Err(KernelError::Corrupt(
-                "release identity spent but no live row".into(),
-            )),
+            Some(row) => released_or_refused(db, book, &row, plan.hold, &entry.proposal, approvals),
+            None => Ok(Err(crate::outcome::key_conflict())),
         },
         Err(e) => Err(e.into()),
     }
 }
 
-fn released_or_refused(
+fn released_or_refused<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
     row: &VertexRow,
     hold: VId,
-    digest: &[u8; 32],
+    proposal: &EntryPayload,
+    approvals: &[ApprovalRef],
 ) -> Outcome<LegalHoldReleased> {
-    if &decode_entry(row)?.proposal_digest == digest {
+    if !crate::entry_storage::has_class_mirror(row, EntryClass::HOLD_CONTROL) {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    let stored = decode_entry(row)?;
+    if row.labels.as_slice() != [label::ENTRY]
+        || row.props != entry_mirrors(&stored)?
+        || stored.proposal.book_id != book.book_id
+        || !matches!(hold_event(&stored)?, Some((Scope::Release(target), _)) if target == hold)
+        || !crate::outcome::verify_hold_recorded(db, row, &stored)?
+    {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    let same = stored.proposal_digest == proposal.proposal_digest()?
+        || matches!(
+            (
+                stored.proposal.semantic_digest(&book.seal_key),
+                proposal.semantic_digest(&book.seal_key),
+            ),
+            (Ok(a), Ok(b)) if a == b
+        );
+    if same && stored.approvals == approvals {
         return Ok(Ok(LegalHoldReleased {
             release: row.vid,
             hold,
             recorded_at: row.created_at,
             already_recorded: true,
         }));
+    }
+    if stored.proposal.principal_ref == proposal.principal_ref
+        && stored.proposal.idempotency_key == proposal.idempotency_key
+    {
+        return Ok(Err(crate::outcome::key_conflict()));
     }
     Ok(Err(unknown_hold(
         hold,

@@ -13,6 +13,8 @@
 //! registered Entry identity;
 //! their original legacy events remain valid read-only retry anchors. This
 //! does not migrate historical capability keys into the monetary-key coverage.
+//! Legal-hold placements and target-derived releases also reserve the common
+//! key atomically; their original pre-claim entries remain retry anchors.
 //! Existing normal-key controls are checked before a posting takes their key.
 
 mod keys;
@@ -934,6 +936,36 @@ pub fn verify_control_recorded<V: Vfs + Clone>(
     entry: &Entry,
 ) -> Result<bool, KernelError> {
     if !normal_key_control(entry, row.vid) {
+        return Ok(false);
+    }
+    verify_control_claim(db, row, entry)
+}
+
+/// A hold placement uses its normal key identity; a release uses the held
+/// target's unique release identity. Both reserve the same successful-intent
+/// namespace only after the dedicated writer admits their complete controls.
+pub(crate) fn stage_hold_control(
+    batch: &mut WriteBatch,
+    entry: &Entry,
+    vid: VId,
+) -> Result<(), KernelError> {
+    if !crate::legal_hold::is_hold_control(entry, vid) {
+        return Err(KernelError::Corrupt(
+            "legal-hold outcome claim requires its registered control and identity".into(),
+        ));
+    }
+    stage_claim(batch, entry, vid).map(|_| ())
+}
+
+/// A hold retry authenticates both its original control and its atomic key
+/// claim. An authentic legacy control may have no claim at its birth; a
+/// deleted or rewritten modern claim cannot acquire that legacy exception.
+pub(crate) fn verify_hold_recorded<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    entry: &Entry,
+) -> Result<bool, KernelError> {
+    if !crate::legal_hold::is_hold_control(entry, row.vid) {
         return Ok(false);
     }
     verify_control_claim(db, row, entry)

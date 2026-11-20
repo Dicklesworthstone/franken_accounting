@@ -41,6 +41,7 @@ pub mod digits;
 pub mod duplicates;
 pub mod graph;
 pub mod jet;
+pub mod kiting;
 pub mod numbers;
 pub mod projection;
 pub mod sample;
@@ -154,6 +155,7 @@ pub const ROLE_POPULATIONS: &[(&str, &str)] = &[
     ("ponzi.net_investment", "investor_transfer"),
     ("graph.ponzi_motif", "cash"),
     ("graph.ponzi_motif", "investor_capital"),
+    ("graph.kiting", "cash"),
     ("distribution.rising_tide", "cash"),
     ("distribution.rising_tide", "investor_capital"),
     ("distribution.pro_rata", "cash"),
@@ -792,6 +794,18 @@ impl Work {
             .saturating_mul(u64::from((n + 1).ilog2().max(1)))
             .saturating_mul(4);
         match complexity {
+            "O((entries + transfers) log (transfers + 1) + max_search_steps)" => {
+                let transfers = snapshot.bank_transfers.as_ref()?.len() as u64;
+                let lookup = u64::from(transfers.saturating_add(1).ilog2().max(1)) + 1;
+                let preparation = transfers.saturating_mul(lookup).saturating_mul(32);
+                Some(Self {
+                    entries,
+                    legs: transfers.saturating_mul(2),
+                    comparisons: preparation
+                        .saturating_add(entries.saturating_mul(lookup))
+                        .saturating_add(10_000_000_u64.saturating_mul(32)),
+                })
+            }
             // recon.lapping v4 indexes credit positions, visits each outer
             // movement and searches at most once per later candidate. Each
             // binary search takes at most floor(log2(legs)) + 1 comparisons,
@@ -1269,6 +1283,11 @@ pub fn run_over_metered(
     };
     let mut findings = procedure.run(snapshot, book, &mut meter)?;
     meter.checkpoint()?;
+    let inputs_digest = if procedure.id() == kiting::Kiting::ID {
+        kiting::inputs_digest(snapshot, &mut meter)?
+    } else {
+        snapshot.inputs_digest
+    };
     let work = meter.work();
     for f in &findings {
         f.check(&row.id, row.version)?;
@@ -1294,7 +1313,7 @@ pub fn run_over_metered(
         w.str(&row.id)
             .u16(row.version)
             .fixed(&parameters_digest)
-            .fixed(&snapshot.inputs_digest);
+            .fixed(&inputs_digest);
         snapshot.coordinate.encode(&mut w);
         w.list(&findings, |w, f| f.encode(w));
         digest(FINDINGS_DIGEST_DOMAIN, &w.finish()?)
@@ -1320,7 +1339,7 @@ pub fn run_over_metered(
         parameters,
         inputs,
         parameters_digest,
-        inputs_digest: snapshot.inputs_digest,
+        inputs_digest,
         population,
         work,
         findings,
@@ -1379,7 +1398,7 @@ mod tests {
             Err(LanternError::Parameter { name, .. }) if name == "fudge"
         ));
         assert!(matches!(
-            Params::defaults("graph.kiting"),
+            Params::defaults("graph.unregistered_test"),
             Err(LanternError::Unregistered { .. })
         ));
     }
@@ -1420,6 +1439,8 @@ mod tests {
             include_str!("amount.rs"),
             include_str!("assertion_drift.rs"),
             include_str!("bank_reconciliation.rs"),
+            include_str!("kiting.rs"),
+            include_str!("kiting/search.rs"),
             include_str!("witness.rs"),
             include_str!("graph.rs"),
             include_str!("graph/cycles.rs"),
@@ -1499,6 +1520,7 @@ mod tests {
             documents: std::collections::BTreeMap::new(),
             supplements: std::collections::BTreeMap::new(),
             bank_reconciliations: Some(Vec::new()),
+            bank_transfers: Some(Vec::new()),
             inputs_digest: [0x11; 32],
         };
         (snapshot, book)

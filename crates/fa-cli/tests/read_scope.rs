@@ -1199,6 +1199,11 @@ fn direct_procedure_certification_admits_current_whole_book_read_and_produce_bef
     let f = Fixture::new();
     let (reader, _) = f.issue("procedure-reader", &[]);
     let (producer, _) = f.issue_ops("procedure-producer", &["read", "produce"], &[]);
+    let (bank_reader, _) = f.issue_ops(
+        "procedure-bank-reader",
+        &["read", "reconcile", "produce"],
+        &[],
+    );
     let (scoped, _) = f.issue_ops(
         "procedure-account-scoped",
         &["read", "produce"],
@@ -1239,7 +1244,12 @@ fn direct_procedure_certification_admits_current_whole_book_read_and_produce_bef
 
     // Certifying a bank procedure still needs the separate reconcile right,
     // before its source population or even the book's coordinate is observed.
-    for selector in ["recon.bank_statement_drift", "recon.bank_statement_drift@1"] {
+    for selector in [
+        "recon.bank_statement_drift",
+        "recon.bank_statement_drift@1",
+        "graph.kiting",
+        "graph.kiting@1",
+    ] {
         for operation in [
             vec!["procedure", "run", selector],
             vec!["procedure", "run", selector, "--certify"],
@@ -1250,6 +1260,25 @@ fn direct_procedure_certification_admits_current_whole_book_read_and_produce_bef
             let (exit, error) = f.run(&arguments);
             assert_eq!(exit, 7, "{arguments:?}: {error:?}");
             assert!(text(data(&error), "message").contains("reconcile"));
+            assert_eq!(error.get("book"), Some(&Json::Null));
+            assert_eq!(error.get("coordinate"), Some(&Json::Null));
+            assert_eq!(head(), before);
+        }
+    }
+
+    // Exact instrument identities/value dates require the already established
+    // native full-source bank authority, even before opening an empty book.
+    for selector in ["graph.kiting", "graph.kiting@1"] {
+        for operation in [
+            vec!["procedure", "run", selector],
+            vec!["procedure", "run", selector, "--certify"],
+            vec!["finding", "record", selector],
+        ] {
+            let mut arguments = vec!["--token", bank_reader.as_str()];
+            arguments.extend(operation);
+            let (exit, error) = f.run(&arguments);
+            assert_eq!(exit, 7, "{arguments:?}: {error:?}");
+            assert!(text(data(&error), "message").contains("privileged"));
             assert_eq!(error.get("book"), Some(&Json::Null));
             assert_eq!(error.get("coordinate"), Some(&Json::Null));
             assert_eq!(head(), before);

@@ -13,8 +13,7 @@ use super::{
     VerifiedProcedureParameters, VerifiedProcedureStatistic, failed, text,
 };
 
-pub(super) const RSF_DEFAULTS: [(&str, u32); 2] =
-    [("min_rsf_bps", 50_000), ("min_subset_size", 3)];
+pub(super) const RSF_DEFAULTS: [(&str, u32); 2] = [("min_rsf_bps", 50_000), ("min_subset_size", 3)];
 pub(super) const SPLIT_DEFAULTS: [(&str, u32); 5] = [
     ("currency_iso4217", 840),
     ("floor", 250_000),
@@ -58,9 +57,8 @@ pub(super) fn decode(
         values.push(reader.i128("procedure.parameter_value")?);
     }
     let unsigned = |index: usize| {
-        u32::try_from(values[index]).map_err(|_| {
-            invalid("numeric audit count, currency and window parameters require u32")
-        })
+        u32::try_from(values[index])
+            .map_err(|_| invalid("numeric audit count, currency and window parameters require u32"))
     };
     if splitting {
         let currency_iso4217 = unsigned(0)?;
@@ -298,11 +296,7 @@ fn splitting(
     else {
         return Err(invalid("expected threshold splitting"));
     };
-    if !(1..=999).contains(&currency_iso4217)
-        || floor <= 0
-        || floor >= threshold
-        || min_count < 2
-    {
+    if !(1..=999).contains(&currency_iso4217) || floor <= 0 || floor >= threshold || min_count < 2 {
         return Err(invalid("invalid threshold-splitting domain"));
     }
     type Key = (bool, u128, u128, u8);
@@ -317,12 +311,7 @@ fn splitting(
         let (mut debit_total, mut scale, mut party) = (0i128, 2u8, None);
         let (mut first, mut last) = (None, None);
         for (index, &(unit, amount)) in entry.legs.iter().enumerate() {
-            if registry
-                .unit_currencies
-                .get(&unit)
-                .copied()
-                .map(u32::from)
-                != Some(currency_iso4217)
+            if registry.unit_currencies.get(&unit).copied().map(u32::from) != Some(currency_iso4217)
             {
                 continue;
             }

@@ -664,9 +664,7 @@ impl Adapter {
 
         for (step_name, tool_wire, mut raw_argv) in raw_steps {
             let report_step = certifies_period && step_name != "verify_accumulator";
-            if report_step
-                && let Some(known_at) = report_known_at
-            {
+            if report_step && let Some(known_at) = report_known_at {
                 raw_argv.extend(["--as-known-at".into(), known_at.to_string()]);
             }
             let mut argv = raw_argv.clone();
@@ -751,10 +749,7 @@ impl Adapter {
             if let Some(b) = last.line.get("book").filter(|v| !matches!(v, Json::Null)) {
                 last_book = to_wire(b);
             }
-            let step_coordinate = last
-                .line
-                .get("coordinate")
-                .map_or(JsonValue::Null, to_wire);
+            let step_coordinate = last.line.get("coordinate").map_or(JsonValue::Null, to_wire);
             // The accumulator check intentionally verifies current history.
             // Keep its coordinate in the step record without relabelling the
             // historical financial reports with that later frontier.
@@ -2295,7 +2290,9 @@ mod tests {
         for step in &steps[..3] {
             assert_eq!(step["coordinate"]["known_at"], json!(known_at), "{step}");
             assert_eq!(step["data"][1]["known_at"], json!(known_at), "{step}");
-            let oid = step["data"][1]["oid"].as_str().expect("retained certificate");
+            let oid = step["data"][1]["oid"]
+                .as_str()
+                .expect("retained certificate");
             let replay = owner(&book, &["replay", &format!("C:{oid}")], None);
             assert_eq!(replay[0]["data"], step["data"][0], "{step}");
         }
@@ -2303,18 +2300,17 @@ mod tests {
             (1, "balance-sheet", "assets"),
             (2, "income-statement", "net_income"),
         ] {
-            assert_eq!(amount(&steps[index]["data"][0], code), json!(["-10.00 USD"]));
+            assert_eq!(
+                amount(&steps[index]["data"][0], code),
+                json!(["-10.00 USD"])
+            );
             assert!(
                 steps[index]["command"]
                     .as_str()
                     .unwrap()
                     .ends_with(&format!("--as-known-at {known_at}"))
             );
-            let current = owner(
-                &book,
-                &["statement", name, "--for", "FY2026-P03"],
-                None,
-            );
+            let current = owner(&book, &["statement", name, "--for", "FY2026-P03"], None);
             assert_eq!(amount(&current[0]["data"], code), json!(["-30.00 USD"]));
         }
         // The final verification remains a separate current-history check;

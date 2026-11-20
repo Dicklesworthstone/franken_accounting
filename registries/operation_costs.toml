@@ -275,6 +275,21 @@ complexity_witness = "Two new vertices publish atomically. Current issuance/revo
 notes = "original_capability_keys_bind_semantics_and_resealed_retries_return_the_original_result checks the two-vertex, one-publication census. An occupied scoped key cannot observe a different recorded target. An unused new key may observe an already-issued/revoked target without publication under the existing target-idempotence contract. Original-key retries preserve semantic request equality. Genuine legacy target events remain read-only retry anchors; their historical keys are not retroactively added to the monetary-key coverage. This row claims neither full control-key migration nor measured latency."
 
 [[operation_class]]
+id = "legal_hold_lifecycle"
+name = "Legal-hold placement and authorized release"
+substrate_class = "Point-witnessed HoldControl, scoped key claim and hold cells in one WriteTxn"
+substrate_transactions = "1 for a first placement or release; 0 for an authenticated retry"
+today_posture = "One publication journals the HoldControl entry and common-key IntentOutcome atomically with the existing hold-cell changes"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 HoldControl entry + 1 IntentOutcome; placement additionally creates up to S missing LegalHoldCells and S HOLDS edges (S named subjects, or S=1 for a whole-book hold); release changes existing cells and creates no edges"
+hot_object_exceptions = []
+external_authorities = "none; the hold authority and release approvals are already recorded"
+complexity_witness = "Authority/custody and subject checks retain their existing costs. Placement and release visit S bounded hold cells, each carrying at most max_active_legal_holds references; no new shared mutable object is added. Common-key admission adds opaque claim and normal-key Entry witnesses plus authenticated coverage, checking the bounded genesis frame or O(log K) recovered monetary-key nodes. Native history hydration follows current hold authority and retains its history-dependent cost. Retries authenticate original control/claim snapshots without a publication."
+notes = "legal_hold_lifecycle_keys_are_atomic_and_retries_keep_the_original_outcome checks the one-subject and whole-book first-placement census (3 new vertices, 1 edge, 1 publication) and release census (2 new vertices, no new edges, 1 publication). The release retains its target-derived unique identity while reserving the ordinary principal-scoped key; exact retries preserve the original scope, sequence and ordered approval transcript. Genuine claim-free historical controls remain read-only retry anchors; fresh legacy writes require verified monetary-key coverage. Historical target-derived hold-release keys are not retroactively indexed. Existing hold-cell compare-and-set semantics and approval laws are unchanged; no additional publication, measured latency, full legacy-control-key migration or new hot-object exception is claimed."
+
+[[operation_class]]
 id = "account_lifecycle"
 name = "Account opening, closing or promotion"
 substrate_class = "Point-witnessed schema control and account effects in one WriteTxn"

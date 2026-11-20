@@ -6254,12 +6254,27 @@ reach = "judged"
 # Bank reconciliation metadata has its own admitted scope even when reached
 # through the generic procedure and finding tools. Retained certificates are
 # identified under Read, then their native bank replay requires Reconcile.
+# Kiting additionally replays the complete retained statement sources. Its
+# privileged requirement is explicit and never widened by an MCP template.
+[[bound]]
+verbs = ["procedure"]
+subcommands = ["run"]
+args = ["graph.kiting"]
+when_any = ["--certify", "--certificate-out"]
+ops = ["read", "reconcile", "privileged", "produce"]
+
 [[bound]]
 verbs = ["procedure"]
 subcommands = ["run"]
 args = ["recon.bank_statement_drift"]
 when_any = ["--certify", "--certificate-out"]
 ops = ["read", "reconcile", "produce"]
+
+[[bound]]
+verbs = ["procedure"]
+subcommands = ["run"]
+args = ["graph.kiting"]
+ops = ["read", "reconcile", "privileged"]
 
 [[bound]]
 verbs = ["procedure"]
@@ -6278,6 +6293,12 @@ verbs = ["finding"]
 subcommands = ["record"]
 args = ["recon.bank_statement_drift"]
 ops = ["read", "reconcile", "produce"]
+
+[[bound]]
+verbs = ["finding"]
+subcommands = ["record"]
+args = ["graph.kiting"]
+ops = ["read", "reconcile", "privileged", "produce"]
 
 # Data embedded in this build: nothing is read from the book.
 [[bound]]

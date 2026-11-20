@@ -50,6 +50,9 @@ use fgdb_types::{CommitSeq, VId};
 #[path = "lantern/bank_reconciliation.rs"]
 mod bank_reconciliation_tests;
 
+#[path = "lantern/kiting.rs"]
+mod kiting_tests;
+
 #[path = "lantern/register_claims.rs"]
 mod register_claim_tests;
 
@@ -1196,8 +1199,8 @@ fn registry_binding_refuses_unregistered_misversioned_or_foreign_parameters() {
     let snapshot = h.snapshot();
     let weekend = Params::defaults("jet.weekend").unwrap();
     assert!(matches!(
-        run_over(&snapshot, &h.book, &Shape { id: "graph.kiting", version: 1, params: weekend.clone() }),
-        Err(LanternError::Unregistered { procedure }) if procedure == "graph.kiting"
+        run_over(&snapshot, &h.book, &Shape { id: "graph.unregistered_test", version: 1, params: weekend.clone() }),
+        Err(LanternError::Unregistered { procedure }) if procedure == "graph.unregistered_test"
     ));
     assert!(matches!(
         run_over(
@@ -1901,7 +1904,7 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
             .expect("registered role and account type admitted");
     }
     let rows = fa_lantern::catalog::registered().unwrap();
-    assert_eq!(rows.len(), 70, "every registry row is listed");
+    assert_eq!(rows.len(), 71, "every registry row is listed");
     let mut ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     ids.sort_unstable();
     ids.dedup();
@@ -1920,6 +1923,12 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
         assert_eq!(built.version(), row.version, "{}", row.id);
         let r = if row.id == fa_lantern::bank_reconciliation::BankStatementDrift::ID {
             let snapshot = bank_reconciliation_tests::snapshot(&h, None, Some(day(2026, 4, 30)));
+            run_over(&snapshot, &h.book, built.as_ref())
+        } else if row.id == fa_lantern::kiting::Kiting::ID {
+            // This catalog corpus has no bank imports/matches. The separate
+            // bank-aware source tests exercise populated authenticated input.
+            let mut snapshot = h.snapshot();
+            snapshot.bank_transfers = Some(Vec::new());
             run_over(&snapshot, &h.book, built.as_ref())
         } else {
             run(
@@ -1950,7 +1959,7 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
     // An unregistered id is refused by the registry, not guessed.
     assert!(matches!(
         fa_lantern::catalog::build(
-            "graph.kiting",
+            "graph.unregistered_test",
             Params::defaults("jet.weekend").unwrap(),
             fa_lantern::catalog::Inputs::default()
         ),

@@ -64,7 +64,7 @@ consumers = ["aging.inventory"]
 name = "cash"
 account_types = ["Asset"]
 meaning = "Cash on hand and demand deposits at banks: the liquid balances solvency, preference, Ponzi and distribution analyses trace, and that external confirmations cover."
-consumers = ["confirm.coverage", "solvency.cash_flow_test", "lookback.preferences", "ponzi.net_investment", "graph.ponzi_motif", "distribution.rising_tide", "distribution.pro_rata"]
+consumers = ["confirm.coverage", "solvency.cash_flow_test", "lookback.preferences", "ponzi.net_investment", "graph.ponzi_motif", "distribution.rising_tide", "distribution.pro_rata", "graph.kiting"]
 
 [[role]]
 name = "investor_capital"

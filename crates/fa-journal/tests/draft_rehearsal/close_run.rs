@@ -789,11 +789,7 @@ fn lifecycle_key(kind: u8, object: VId) -> Vec<u8> {
     .to_vec()
 }
 
-fn shared_key_batch(
-    h: &mut Harness,
-    key: &[u8],
-    principal: VId,
-) -> Result<BatchPosted, Refusal> {
+fn shared_key_batch(h: &mut Harness, key: &[u8], principal: VId) -> Result<BatchPosted, Refusal> {
     let member = PostIntent::new(
         h.proposal(
             321,
@@ -892,18 +888,15 @@ fn close_lifecycle_and_batches_reserve_the_same_principal_key_in_both_orders() {
                 let before = h.head();
                 let rows = h.db.vertices().unwrap();
                 assert_eq!(
-                    shared_key_batch(&mut h, &key, APPROVER)
-                        .unwrap_err()
-                        .code,
+                    shared_key_batch(&mut h, &key, APPROVER).unwrap_err().code,
                     code::IDEMPOTENCY_CONFLICT,
                     "{kind}"
                 );
                 assert_eq!(h.head(), before, "{kind}");
                 assert_eq!(h.db.vertices().unwrap(), rows, "{kind}");
                 let entry = entry_vid(h.book.book_id, &APPROVER.0.to_le_bytes(), &key);
-                let claim = h
-                    .db
-                    .vertex(fa_model::intent_outcome_vid(
+                let claim =
+                    h.db.vertex(fa_model::intent_outcome_vid(
                         h.book.book_id,
                         &APPROVER.0.to_le_bytes(),
                         &key,
@@ -951,11 +944,8 @@ fn close_control_claims_publish_with_their_native_effect_and_authenticate_every_
                 .to_vec(),
                 _ => unreachable!(),
             };
-            let outcome = fa_model::intent_outcome_vid(
-                h.book.book_id,
-                &APPROVER.0.to_le_bytes(),
-                &key,
-            );
+            let outcome =
+                fa_model::intent_outcome_vid(h.book.book_id, &APPROVER.0.to_le_bytes(), &key);
             let original = h.db.vertex(outcome).unwrap().unwrap();
             assert_eq!(
                 original.created_at,
@@ -966,8 +956,7 @@ fn close_control_claims_publish_with_their_native_effect_and_authenticate_every_
                 }
             );
             assert_eq!(
-                h.db
-                    .vertex(completed.receipt.effect)
+                h.db.vertex(completed.receipt.effect)
                     .unwrap()
                     .unwrap()
                     .created_at,
@@ -1031,10 +1020,7 @@ fn close_control_claims_publish_with_their_native_effect_and_authenticate_every_
                 "{kind}: {attack}"
             );
             // Admission must precede reading even the corrupted claim.
-            let denied = request(
-                &h,
-                Capability::embedded(APPROVER, &["close"]).unwrap(),
-            );
+            let denied = request(&h, Capability::embedded(APPROVER, &["close"]).unwrap());
             let refusal = h
                 .runtime
                 .block_on(execute_close_task(
@@ -1132,14 +1118,13 @@ fn a_current_authorized_controller_can_resume_another_controllers_completed_task
     assert_eq!(h.head(), before);
     let task = fa_model::close_task_vid(h.book.book_id, "controllers", "first");
     assert!(
-        h.db
-            .vertex(fa_model::intent_outcome_vid(
-                h.book.book_id,
-                &OWNER.0.to_le_bytes(),
-                &lifecycle_key(1, task),
-            ))
-            .unwrap()
-            .is_none(),
+        h.db.vertex(fa_model::intent_outcome_vid(
+            h.book.book_id,
+            &OWNER.0.to_le_bytes(),
+            &lifecycle_key(1, task),
+        ))
+        .unwrap()
+        .is_none(),
         "observing another controller's completed task does not acquire its key"
     );
     let req = request(&h, other);
@@ -1230,7 +1215,10 @@ fn a_genuine_legacy_close_open_remains_a_read_only_retry_anchor() {
                 property::BOOK_ID,
                 CanonicalScalar::bytes(h.book.book_id.0.to_vec()).unwrap(),
             ),
-            (property::CODE, CanonicalScalar::ucs_basic_text(code).unwrap()),
+            (
+                property::CODE,
+                CanonicalScalar::ucs_basic_text(code).unwrap(),
+            ),
             (property::STATE, CanonicalScalar::Int(state)),
         ];
         props.sort_by_key(|(key, _)| key.0);
@@ -1279,12 +1267,7 @@ fn a_genuine_legacy_close_open_remains_a_read_only_retry_anchor() {
     assert_eq!(h.head(), before);
     assert_eq!(h.db.vertices().unwrap(), rows);
     assert!(h.db.vertex(claim).unwrap().is_none());
-    assert!(
-        h.db
-            .vertex_at(claim, original.opened_at)
-            .unwrap()
-            .is_none()
-    );
+    assert!(h.db.vertex_at(claim, original.opened_at).unwrap().is_none());
 
     let reviewed = plan(&h, &declaration.name, "close", b"legacy-final-close").unwrap();
     let mut req = request(&h, closer());
@@ -1293,9 +1276,8 @@ fn a_genuine_legacy_close_open_remains_a_read_only_retry_anchor() {
     assert!(complete.run.complete);
     assert!(h.db.vertex(claim).unwrap().is_none());
     for key in [lifecycle_key(1, task), lifecycle_key(2, run)] {
-        let claim = h
-            .db
-            .vertex(fa_model::intent_outcome_vid(
+        let claim =
+            h.db.vertex(fa_model::intent_outcome_vid(
                 h.book.book_id,
                 &APPROVER.0.to_le_bytes(),
                 &key,

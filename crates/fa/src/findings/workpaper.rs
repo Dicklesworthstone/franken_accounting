@@ -412,7 +412,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(r));
         }
-        self.finding_workpaper(cx, principal, capability, digest)
+        let sources = match self
+            .prepare_finding_sources(cx, principal, capability, digest)
+            .await?
+        {
+            Ok(sources) => sources,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        self.finding_workpaper_prepared(cx, principal, capability, digest, sources.as_ref())
             .await
     }
 
@@ -426,11 +433,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         digest: &[u8; 32],
     ) -> Outcome<FindingWorkpaper> {
+        self.finding_workpaper_prepared(cx, principal, capability, digest, None)
+            .await
+    }
+
+    async fn finding_workpaper_prepared(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        digest: &[u8; 32],
+        sources: Option<&crate::bank::PreparedBankTransfers>,
+    ) -> Outcome<FindingWorkpaper> {
         if let Err(r) = authorize(self, cx, principal, capability, true)? {
             return Ok(Err(r));
         }
         let run = match self
-            .read_findings(cx, principal, capability, digest)
+            .read_findings_prepared(cx, principal, capability, digest, sources)
             .await?
         {
             Ok(r) => r,
@@ -481,7 +500,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(r));
         }
-        self.replay_finding_workpaper(cx, principal, capability, bytes)
+        let sources = match self
+            .prepare_finding_sources(cx, principal, capability, certificate.digest())
+            .await?
+        {
+            Ok(sources) => sources,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        self.replay_finding_workpaper_prepared(cx, principal, capability, bytes, sources.as_ref())
             .await
     }
 
@@ -495,6 +521,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         bytes: &[u8],
     ) -> Outcome<RecordedFindings> {
+        self.replay_finding_workpaper_prepared(cx, principal, capability, bytes, None)
+            .await
+    }
+
+    async fn replay_finding_workpaper_prepared(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        bytes: &[u8],
+        sources: Option<&crate::bank::PreparedBankTransfers>,
+    ) -> Outcome<RecordedFindings> {
         if let Err(r) = authorize(self, cx, principal, capability, false)? {
             return Ok(Err(r));
         }
@@ -507,7 +545,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Err(r) => return Ok(Err(r)),
         };
         let run = match self
-            .read_findings(cx, principal, capability, certificate.digest())
+            .read_findings_prepared(cx, principal, capability, certificate.digest(), sources)
             .await?
         {
             Ok(r) => r,

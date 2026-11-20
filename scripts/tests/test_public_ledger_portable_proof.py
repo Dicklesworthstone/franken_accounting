@@ -357,6 +357,58 @@ class PinnedUniversityProofParsingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source profile differs"):
             portable.inspect(self.bundle, source_bound=False, require_fragments=True)
 
+    def version_two_envelope(self, registry_rows=None):
+        # The pinned v1 certificate, native inputs, sources and exact output are
+        # untouched. These registry bytes exercise transport framing only;
+        # this fixture is deliberately NOT a new authenticated native bundle.
+        rows = registry_rows if registry_rows is not None else [
+            (name.encode("ascii"), b"protocol fixture: " + name.encode("ascii"))
+            for name in ("account_types", "entry_classes", "units", "foundations")
+        ]
+        wire = bytearray(self.bundle)
+        header = 4 + len(b"fa:report-bundle:v1")
+        self.assertEqual(struct.unpack_from("<H", wire, header)[0], 1)
+        struct.pack_into("<H", wire, header, 2)
+        wire += struct.pack("<I", len(rows))
+        for name, canonical in rows:
+            wire += struct.pack("<I", len(name)) + name
+            wire += struct.pack("<I", len(canonical)) + canonical
+        return bytes(wire)
+
+    def test_v2_registry_transport_preserves_native_certificate_and_source_comparison(self):
+        wire = self.version_two_envelope()
+        closure = portable.inspect(wire, source_bound=True, require_fragments=True)
+        expected = {**self.closure, "bundle_major": 2, "registry_closure": [
+            {"name": name, "bytes": len(b"protocol fixture: " + name.encode("ascii")),
+             "sha256": hashlib.sha256(b"protocol fixture: " + name.encode("ascii")).hexdigest()}
+            for name in ("account_types", "entry_classes", "units", "foundations")
+        ]}
+        self.assertEqual(closure, expected)
+        self.assertEqual(portable.reconcile_source_output(closure, self.selected, "department"),
+                         portable.reconcile_source_output(self.closure, self.selected, "department"))
+
+    def test_v2_registry_inventory_and_framing_remain_exact(self):
+        rows = [(name, b"framing only") for name in
+                (b"account_types", b"entry_classes", b"units", b"foundations")]
+        cases = [rows[:-1], rows + [(b"unexpected", b"extra")],
+                 list(reversed(rows)), [rows[0], rows[0], *rows[2:]],
+                 [*rows[:2], (b"units", b""), rows[3]],
+                 [*rows[:2], (b"units", b"x" * (1024 * 1024 + 1)), rows[3]]]
+        for changed in cases:
+            with self.subTest(names=[row[0] for row in changed], sizes=[len(row[1]) for row in changed]):
+                with self.assertRaises(ValueError):
+                    portable.inspect(self.version_two_envelope(changed),
+                                     source_bound=True, require_fragments=True)
+        valid = self.version_two_envelope(rows)
+        for malformed in (valid[:-1], valid + b"unexpected"):
+            with self.assertRaises(ValueError):
+                portable.inspect(malformed, source_bound=True, require_fragments=True)
+        for major in (0, 3, 65535):
+            wire = bytearray(valid)
+            struct.pack_into("<H", wire, 4 + len(b"fa:report-bundle:v1"), major)
+            with self.assertRaisesRegex(ValueError, "native dimension report bundles"):
+                portable.inspect(bytes(wire), source_bound=True, require_fragments=True)
+
     def write_public_files(self, out):
         example = ROOT / "examples/public_ledger/university_source_bound"
         for name in portable.PUBLIC_FILES:

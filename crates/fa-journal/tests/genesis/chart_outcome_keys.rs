@@ -683,7 +683,8 @@ fn posting_family_keys_cannot_install_a_chart() {
         h.resolution_posts(target, h.rent_legs(150), vec![0, 1], b"install-resolution");
     h.post(h.request(resolution, &["post"])).unwrap();
     let member = h.proposal(h.rent_legs(300), b"install-member", EntryClass::ORIGINAL);
-    h.post_batch(h.batch(b"install-batch", vec![member])).unwrap();
+    h.post_batch(h.batch(b"install-batch", vec![member]))
+        .unwrap();
 
     for key in [
         b"install-source".as_slice(),
@@ -742,7 +743,9 @@ fn chart_installation_claims_are_atomic_and_bind_the_retry() {
         b"install-unpublished-member",
         EntryClass::ORIGINAL,
     );
-    let refusal = h.post_batch(h.batch(&request.key, vec![member])).unwrap_err();
+    let refusal = h
+        .post_batch(h.batch(&request.key, vec![member]))
+        .unwrap_err();
     assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
     assert_eq!(h.db.frontier().unwrap(), head);
     assert_eq!(h.db.vertices().unwrap(), vertices);
@@ -751,7 +754,11 @@ fn chart_installation_claims_are_atomic_and_bind_the_retry() {
 #[test]
 fn prepared_reversal_loses_to_chart_installation_with_the_same_key() {
     let mut h = harness();
-    let source = h.proposal(h.rent_legs(100), b"install-race-source", EntryClass::ORIGINAL);
+    let source = h.proposal(
+        h.rent_legs(100),
+        b"install-race-source",
+        EntryClass::ORIGINAL,
+    );
     let target = h.post(h.request(source, &["post"])).unwrap().entry_ref();
     let request = chart_request(&h, b"install-race");
     let reversal = h.request(h.reversal_of_entry(target, &request.key), &["post"]);
@@ -781,7 +788,11 @@ fn prepared_reversal_loses_to_chart_installation_with_the_same_key() {
 #[test]
 fn legacy_chart_installations_retry_before_and_after_outcome_recovery() {
     let mut h = harness_legacy();
-    let source = h.proposal(h.rent_legs(100), b"install-legacy-source", EntryClass::ORIGINAL);
+    let source = h.proposal(
+        h.rent_legs(100),
+        b"install-legacy-source",
+        EntryClass::ORIGINAL,
+    );
     let target = outcome_recovery_tests::write_legacy(&mut h, source);
     let reversal = h.reversal_of_entry(target, b"install-legacy-reversal");
     outcome_recovery_tests::write_legacy(&mut h, reversal);
@@ -831,7 +842,10 @@ fn legacy_chart_installations_retry_before_and_after_outcome_recovery() {
     let head = h.db.frontier().unwrap();
     assert_eq!(install_admitted(&mut h, &old).unwrap(), recorded);
     assert_eq!(h.db.frontier().unwrap(), head);
-    assert_eq!(h.db.vertex(recorded.control_entry).unwrap().unwrap(), original_row);
+    assert_eq!(
+        h.db.vertex(recorded.control_entry).unwrap().unwrap(),
+        original_row
+    );
     assert!(h.db.vertex(claim_id).unwrap().is_none());
     let occupied = chart_request(&h, b"install-legacy-reversal");
     installation_refused(&mut h, &occupied, "FA-REF-032");

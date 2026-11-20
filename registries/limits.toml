@@ -205,3 +205,22 @@ value = 128
 [[limit]]
 name = "max_close_run_bytes"
 value = 12288
+
+# graph.kiting v1 registry epoch begins here; preserve the preceding raw closure.
+# Complete exact active bank-transfer population admitted before cycle search.
+# A paired transfer contains two original statement lines and original legs.
+[[limit]]
+name = "max_kiting_transfers"
+value = 100000
+# Complete simple-cycle census, never a successful truncated prefix.
+[[limit]]
+name = "max_kiting_findings"
+value = 10000
+# Sum of canonical Finding bytes, independent of the result-count ceiling.
+[[limit]]
+name = "max_kiting_finding_bytes"
+value = 16777216
+# Original statement instrument identity, checked before sorting the network.
+[[limit]]
+name = "max_kiting_instrument_bytes"
+value = 256

@@ -2745,6 +2745,8 @@ mod tests {
         for (id, expected) in [
             ("jet.round_amounts", vec!["read"]),
             ("recon.bank_statement_drift", vec!["read", "reconcile"]),
+            ("graph.kiting", vec!["read", "reconcile", "privileged"]),
+            ("graph.kiting@1", vec!["read", "reconcile", "privileged"]),
         ] {
             let invocation = tool
                 .invocation(&mcp, reg, &json!({"action": "run", "id": id}))
@@ -2755,6 +2757,22 @@ mod tests {
                 fa_cli::cli::bound_command_ops("procedure", &parsed)
                     .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
                 Some(expected)
+            );
+        }
+        for selector in ["graph.kiting", "graph.kiting@1"] {
+            let invocation = tool
+                .invocation(
+                    &mcp,
+                    reg,
+                    &json!({"action": "run", "id": selector, "certify": true}),
+                )
+                .expect("certified kiting invocation");
+            let parsed =
+                args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+            assert_eq!(
+                fa_cli::cli::bound_command_ops("procedure", &parsed)
+                    .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+                Some(vec!["read", "reconcile", "privileged", "produce"])
             );
         }
         let parsed = args::parse(

@@ -242,6 +242,7 @@ impl ReportArtifact {
         let inner = if format == crate::procedure_certificate::PROCEDURE_CERTIFICATE_FORMAT
             || format == crate::procedure_certificate::EXTENDED_PROCEDURE_CERTIFICATE_FORMAT
             || format == crate::procedure_certificate::BANK_PROCEDURE_CERTIFICATE_FORMAT
+            || format == crate::procedure_certificate::KITING_PROCEDURE_CERTIFICATE_FORMAT
         {
             Artifact::Procedure(Box::new(
                 crate::procedure_certificate::ProcedureCertificate::decode(bytes)?,
@@ -775,7 +776,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             // report's known-at still needs the complete retained history.
             return Ok(Err(refusal));
         }
-        self.replay_report_artifact_for(cx, principal, capability, bytes, expected_digest, expected)
+        let prepared = if let Artifact::Procedure(certificate) = &artifact.inner
+            && certificate.report().procedure == "graph.kiting"
+        {
+            match self
+                .prepare_kiting_inputs(cx, capability, Some(certificate.known_at()))
+                .await?
+            {
+                Ok(inputs) => Some(inputs),
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+        } else {
+            None
+        };
+        self.replay_report_artifact_for_prepared(
+            cx,
+            principal,
+            capability,
+            bytes,
+            expected_digest,
+            expected,
+            prepared.as_ref(),
+        )
     }
 
     /// The same bounded dispatch with independent expected scope/definitions.
@@ -790,6 +812,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         bytes: &[u8],
         expected_digest: Option<&[u8; 32]>,
         expected: ReportArtifactExpectation<'_>,
+    ) -> Outcome<ReplayedReportArtifact> {
+        self.replay_report_artifact_for_prepared(
+            cx,
+            principal,
+            capability,
+            bytes,
+            expected_digest,
+            expected,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn replay_report_artifact_for_prepared(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        bytes: &[u8],
+        expected_digest: Option<&[u8; 32]>,
+        expected: ReportArtifactExpectation<'_>,
+        prepared: Option<&crate::bank::PreparedBankTransfers>,
     ) -> Outcome<ReplayedReportArtifact> {
         if let Err(refusal) = authorize(self, cx, principal, capability)? {
             return Ok(Err(refusal));
@@ -808,7 +852,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         let replayed = match (&artifact.inner, expected) {
             (Artifact::Procedure(c), ReportArtifactExpectation::AsSupplied) => self
-                .replay_procedure(cx, principal, capability, c)?
+                .replay_procedure_prepared(cx, principal, capability, c, prepared)?
                 .map(|_| ()),
             (Artifact::Native(c), ReportArtifactExpectation::AsSupplied) => {
                 self.replay_report(cx, c)?.map(|_| ())

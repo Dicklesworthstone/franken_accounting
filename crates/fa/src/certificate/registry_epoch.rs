@@ -120,6 +120,44 @@ fn document(name: &str, text: &str) -> Result<Document, Refusal> {
     Ok(doc)
 }
 
+/// Adding graph.kiting to the cash role's consumer list does not change a
+/// consolidation's account selection. Accept the exact previously published
+/// document as well as the current one; every role, mapping, meaning and other
+/// consumer remains committed and compared. No field is generally ignored.
+fn supported_account_roles(archived: &Document) -> Result<bool, Refusal> {
+    let mut previous = document(
+        "account_roles",
+        include_str!("../../../../registries/account_roles.toml"),
+    )?;
+    if archived == &previous {
+        return Ok(true);
+    }
+    let consumers = previous
+        .arrays
+        .get_mut("role")
+        .and_then(|roles| {
+            roles
+                .iter_mut()
+                .find(|role| role.get("name").and_then(Value::as_str) == Some("cash"))
+        })
+        .and_then(|cash| cash.get_mut("consumers"));
+    let Some(Value::Array(consumers)) = consumers else {
+        return Err(unavailable(
+            "the pre-kiting cash-role registry is unavailable",
+        ));
+    };
+    if consumers.pop() != Some(Value::Str("graph.kiting".into()))
+        || consumers
+            .iter()
+            .any(|value| value.as_str() == Some("graph.kiting"))
+    {
+        return Err(unavailable(
+            "the pre-kiting cash-role consumer epoch is unavailable",
+        ));
+    }
+    Ok(archived == &previous)
+}
+
 impl Epoch {
     fn new(book_id: Id128, sources: Vec<(String, String)>) -> Result<Self, Refusal> {
         let names = sources
@@ -271,8 +309,12 @@ impl Epoch {
                     )));
                 }
             }
+            if name == "account_roles" && !supported_account_roles(&archived)? {
+                return Err(unavailable(
+                    "registry epoch account_roles differs from this interpreter's supported account-role semantics",
+                ));
+            }
             let exact = match name.as_str() {
-                "account_roles" => Some(include_str!("../../../../registries/account_roles.toml")),
                 "rounding_laws" => Some(include_str!("../../../../registries/rounding_laws.toml")),
                 "fx_laws" => Some(include_str!("../../../../registries/fx_laws.toml")),
                 _ => None,
@@ -1009,6 +1051,153 @@ mod tests {
                     epoch.admit_for(other, &units).unwrap_err().code,
                     code::CERTIFICATE_REGISTRY_UNAVAILABLE
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn consolidation_epochs_accept_only_the_exact_pre_kiting_cash_consumer_document() {
+        let book = Id128([0xc7; 16]);
+        let units = fa_money::UnitRegistry::embedded().unwrap();
+        for selection in [
+            ReportSelection::Consolidation {
+                period: "FY2026-P01".into(),
+            },
+            ReportSelection::FunctionalConsolidation {
+                period: "FY2026-P01".into(),
+            },
+        ] {
+            let current = Epoch::for_selection(book, &selection).unwrap();
+            let mut sources = current.sources.clone();
+            let (_, roles) = sources
+                .iter_mut()
+                .find(|(name, _)| name == "account_roles")
+                .unwrap();
+            assert_eq!(roles.matches(", \"graph.kiting\"").count(), 1);
+            *roles = roles.replacen(", \"graph.kiting\"", "", 1);
+            let original_roles = roles.clone();
+            let previous = Epoch::new(book, sources.clone()).unwrap();
+            assert_ne!(previous.closure, current.closure);
+            assert_eq!(
+                Epoch::decode(&previous.encode().unwrap()).unwrap(),
+                previous
+            );
+            previous.admit_for(&selection, &units).unwrap();
+            assert_eq!(
+                previous.offline_documents(&units).unwrap()[4],
+                (
+                    "account_roles".into(),
+                    document("account_roles", &original_roles)
+                        .unwrap()
+                        .canonical_bytes()
+                )
+            );
+            for (from, to) in [
+                ("name = \"intercompany\"", "name = \"intercompany_changed\""),
+                (
+                    "name = \"cash\"\naccount_types = [\"Asset\"]",
+                    "name = \"cash\"\naccount_types = [\"Liability\"]",
+                ),
+                (", \"graph.ponzi_motif\"", ""),
+                (
+                    "schema_version = 1",
+                    "schema_version = 1\nunregistered_meaning = true",
+                ),
+            ] {
+                assert!(original_roles.contains(from));
+                let mut changed = sources.clone();
+                let (_, roles) = changed
+                    .iter_mut()
+                    .find(|(name, _)| name == "account_roles")
+                    .unwrap();
+                *roles = original_roles.replacen(from, to, 1);
+                let changed = Epoch::new(book, changed).unwrap();
+                assert_ne!(changed.closure, previous.closure);
+                assert_eq!(
+                    changed.admit_for(&selection, &units).unwrap_err().code,
+                    code::CERTIFICATE_REGISTRY_UNAVAILABLE
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pre_kiting_legacy_report_closures_replay_without_accepting_changed_limits() {
+        for statement in [false, true] {
+            let (mut h, _) = Harness::with_posts(1);
+            let original = certificate(&h, statement);
+            let previous = pre_kiting_legacy_report_registries(&original.selection).unwrap();
+            let limits = previous
+                .iter()
+                .find(|(name, _)| *name == "limits")
+                .unwrap()
+                .1;
+            assert!(limits.ends_with("name = \"max_close_run_bytes\"\nvalue = 12288\n"));
+            assert!(!limits.contains("max_kiting_transfers"));
+            let changed_limits = limits.replacen(
+                "name = \"max_legs_per_entry\"\nvalue = 4096",
+                "name = \"max_legs_per_entry\"\nvalue = 4095",
+                1,
+            );
+            assert_ne!(changed_limits, limits);
+            let changed: Vec<_> = previous
+                .iter()
+                .map(|(name, text)| {
+                    (
+                        *name,
+                        if *name == "limits" {
+                            changed_limits.as_str()
+                        } else {
+                            *text
+                        },
+                    )
+                })
+                .collect();
+            for raw in [false, true] {
+                let closure = if raw {
+                    raw_report_registry_digest(&previous)
+                } else {
+                    canonical_closure(b"fa:report-registry-closure:v2", &previous).unwrap()
+                };
+                assert_ne!(closure, original.registry_digest);
+                assert_ne!(closure, original.legacy_registry_closure());
+                assert_ne!(closure, original.legacy_v2_registry_closure());
+                let historical = original.resealed_under(closure);
+                let before = h.head();
+                let replay = h.book.replay_report(&h.cx(), &historical).unwrap().unwrap();
+                assert_eq!(replay.canonical_bytes().unwrap(), original.output);
+                assert_eq!(h.head(), before);
+                h.retain(&historical).unwrap();
+                let retained = h.read(&historical.digest).unwrap();
+                assert_eq!(
+                    retained.canonical_bytes().unwrap(),
+                    historical.canonical_bytes().unwrap()
+                );
+                let before = h.head();
+                assert_eq!(
+                    h.book
+                        .replay_report(&h.cx(), &retained)
+                        .unwrap()
+                        .unwrap()
+                        .canonical_bytes()
+                        .unwrap(),
+                    original.output
+                );
+                let changed_closure = if raw {
+                    raw_report_registry_digest(&changed)
+                } else {
+                    canonical_closure(b"fa:report-registry-closure:v2", &changed).unwrap()
+                };
+                let changed = original.resealed_under(changed_closure);
+                assert_eq!(
+                    h.book
+                        .replay_report(&h.cx(), &changed)
+                        .unwrap()
+                        .unwrap_err()
+                        .code,
+                    code::CERTIFICATE_REGISTRY_UNAVAILABLE
+                );
+                assert_eq!(h.head(), before);
             }
         }
     }

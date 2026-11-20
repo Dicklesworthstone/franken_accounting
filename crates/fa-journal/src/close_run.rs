@@ -632,12 +632,7 @@ pub(crate) fn is_lifecycle_control(entry: &Entry, vid: VId) -> bool {
     else {
         return false;
     };
-    let expected_key = match (
-        *from,
-        *to,
-        p.extensions.as_slice(),
-        proof_refs.as_slice(),
-    ) {
+    let expected_key = match (*from, *to, p.extensions.as_slice(), proof_refs.as_slice()) {
         (0, 1, [(fa_model::entry::CLOSE_RUN_EXTENSION, bytes)], []) => {
             let Ok(body) = CloseRunBody::decode(bytes) else {
                 return false;
@@ -664,9 +659,7 @@ pub(crate) fn is_lifecycle_control(entry: &Entry, vid: VId) -> bool {
             ],
         ) => record_key(RecordKind::Task, *object_ref),
         (1, 2, [], [TypedRef::Vertex(_)]) => record_key(RecordKind::Complete, *object_ref),
-        (1, 1, [], [TypedRef::Object(certificate)]) => {
-            review_key(*object_ref, &certificate.0)
-        }
+        (1, 1, [], [TypedRef::Object(certificate)]) => review_key(*object_ref, &certificate.0),
         _ => return false,
     };
     p.idempotency_key == expected_key
