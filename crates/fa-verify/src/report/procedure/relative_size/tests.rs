@@ -269,10 +269,7 @@ fn relative_size_uses_numeric_maximum_ties_but_complete_canonical_citation_order
                 (40, true, 1, 100, None),
             ],
         ),
-        entry(
-            2,
-            &[(10, true, 1, 100, None), (30, true, 1, 100, None)],
-        ),
+        entry(2, &[(10, true, 1, 100, None), (30, true, 1, 100, None)]),
         entry(256, &[(20, true, 1, 10, None)]),
     ];
     let profile = VerifiedProcedureParameters::RelativeSizeFactor {
@@ -285,10 +282,13 @@ fn relative_size_uses_numeric_maximum_ties_but_complete_canonical_citation_order
         .findings
         .iter()
         .map(|finding| {
-            assert_eq!(finding.entry, Some(1), "equal maxima use numeric entry order");
+            assert_eq!(
+                finding.entry,
+                Some(1),
+                "equal maxima use numeric entry order"
+            );
             assert_eq!(finding.statistic.value(), 10_000);
-            let VerifiedProcedureStatistic::RelativeSizeFactor { account, .. } =
-                finding.statistic
+            let VerifiedProcedureStatistic::RelativeSizeFactor { account, .. } = finding.statistic
             else {
                 unreachable!()
             };
@@ -335,13 +335,7 @@ fn relative_size_ratios_remain_exact_across_i128_product_overflow_and_refuse_tru
         assert_eq!(basis_points(largest, second).unwrap(), expected);
         assert_eq!(super::super::ratio_bps(largest, second).unwrap(), expected);
     }
-    for (largest, second) in [
-        (i128::MAX, 9_999),
-        (i128::MAX, 1),
-        (1, 0),
-        (0, 1),
-        (-1, 1),
-    ] {
+    for (largest, second) in [(i128::MAX, 9_999), (i128::MAX, 1), (1, 0), (0, 1), (-1, 1)] {
         assert_eq!(
             basis_points(largest, second).unwrap_err().predicate,
             "procedure_arithmetic"
@@ -362,10 +356,23 @@ fn relative_size_ratios_remain_exact_across_i128_product_overflow_and_refuse_tru
     // Compare production's binary construction with the independent decimal
     // oracle where no narrow multiplied reference value can be formed.
     for largest in [
-        1, 9_999, 10_001, 1i128 << 100, i128::MAX / 2, i128::MAX - 1, i128::MAX,
+        1,
+        9_999,
+        10_001,
+        1i128 << 100,
+        i128::MAX / 2,
+        i128::MAX - 1,
+        i128::MAX,
     ] {
         for second in [
-            1, 3, 9_999, 10_000, 10_001, 1i128 << 99, i128::MAX / 2, i128::MAX,
+            1,
+            3,
+            9_999,
+            10_000,
+            10_001,
+            1i128 << 99,
+            i128::MAX / 2,
+            i128::MAX,
         ] {
             assert_eq!(
                 super::super::ratio_bps(largest, second).ok(),
@@ -383,14 +390,22 @@ fn relative_size_ratios_remain_exact_across_i128_product_overflow_and_refuse_tru
         min_subset_size: 2,
     };
     assert_eq!(
-        run(profile, entries.clone()).0.findings[0].statistic.value(),
+        run(profile, entries.clone()).0.findings[0]
+            .statistic
+            .value(),
         i128::MAX
     );
     let mut unrepresentable = entries;
     unrepresentable[1].legs[0].1 = 9_999;
     assert_eq!(
         recompute_version(
-            BOOK, FRONTIER, 1, None, profile, unrepresentable, &registry()
+            BOOK,
+            FRONTIER,
+            1,
+            None,
+            profile,
+            unrepresentable,
+            &registry()
         )
         .unwrap_err()
         .predicate,
@@ -445,11 +460,9 @@ fn relative_size_honors_subset_and_threshold_boundaries_without_dropping_work() 
             incomplete[0].leg_parties.clear();
         }
         assert_eq!(
-            recompute_version(
-                BOOK, FRONTIER, 1, None, profile, incomplete, &registry()
-            )
-            .unwrap_err()
-            .predicate,
+            recompute_version(BOOK, FRONTIER, 1, None, profile, incomplete, &registry())
+                .unwrap_err()
+                .predicate,
             "procedure_profile"
         );
     }

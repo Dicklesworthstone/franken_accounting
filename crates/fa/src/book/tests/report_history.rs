@@ -2,6 +2,7 @@
 //! after admitting its complete selected coordinate.
 
 use super::*;
+use crate::ReportSelection;
 use fa_registers::{ReportHistoryWork, Served};
 
 fn work(book: &Book) -> (Option<CommitSeq>, ReportHistoryWork) {

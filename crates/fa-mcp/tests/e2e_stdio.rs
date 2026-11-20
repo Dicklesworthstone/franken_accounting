@@ -1923,7 +1923,11 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
             json!(report_frontier),
             "{step}"
         );
-        assert_eq!(step["data"][1]["known_at"], json!(report_frontier), "{step}");
+        assert_eq!(
+            step["data"][1]["known_at"],
+            json!(report_frontier),
+            "{step}"
+        );
     }
     let pkg_envelope: JsonValue =
         fastmcp_rust::serde_json::from_str(metadata["content"][1]["text"].as_str().unwrap())

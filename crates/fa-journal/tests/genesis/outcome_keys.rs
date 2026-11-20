@@ -990,3 +990,508 @@ fn deleting_a_modern_period_claim_cannot_create_a_legacy_retry() {
     assert_eq!(h.db.frontier().unwrap(), head);
     assert_eq!(h.db.vertices().unwrap(), vertices);
 }
+
+fn hold_authority(h: &mut Harness) -> Oid {
+    let order = h.document(INVOICE, HUMAN_UPLOAD, b"PRESERVATION ORDER: outcome keys");
+    h.add_document(&order).unwrap();
+    order.oid()
+}
+
+fn assert_hold_claim(h: &Harness, key: &[u8], control: VId) {
+    let outcome = fa_model::intent_outcome_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), key);
+    let claim = h.db.vertex(outcome).unwrap().expect("atomic key claim");
+    let entry = h.db.vertex(control).unwrap().expect("hold control");
+    assert_eq!(claim.labels, [fa_model::symbols::label::INTENT_OUTCOME]);
+    assert_eq!(claim.created_at, entry.created_at);
+    assert_eq!(
+        fa_journal::rows::prop(&claim, property::TARGET_REF),
+        Some(&CanonicalScalar::bytes(control.0.to_le_bytes().to_vec()).unwrap())
+    );
+}
+
+#[test]
+fn legal_hold_lifecycle_keys_are_atomic_and_retries_keep_the_original_outcome() {
+    for whole_book in [false, true] {
+        let mut h = harness();
+        let authority = hold_authority(&mut h);
+        let counsel = Capability::embedded(PRINCIPAL, &["hold"]).unwrap();
+        let reach = if whole_book {
+            HoldReach::ThroughHead
+        } else {
+            HoldReach::Subjects(vec![document_vid(&authority)])
+        };
+        let place_basis = h.db.frontier().unwrap();
+        let place_rows = h.db.vertices().unwrap().len();
+        let place_edges = h.db.edges_at(place_basis).unwrap().len();
+        let placed = h
+            .place_reach(&counsel, reach.clone(), authority, b"hold-outcome-place")
+            .unwrap();
+        assert_eq!(placed.recorded_at.0, place_basis.0 + 1);
+        assert_eq!(h.db.vertices().unwrap().len(), place_rows + 3);
+        assert_eq!(
+            h.db.edges_at(placed.recorded_at).unwrap().len(),
+            place_edges + 1
+        );
+        assert_hold_claim(&h, b"hold-outcome-place", placed.hold);
+        let plan = h
+            .plan_hold_release(placed.hold, b"hold-outcome-release")
+            .unwrap();
+        let approval = h
+            .approve_digest(RELEASE_APPROVER, plan.proposal_digest(&h.book).unwrap())
+            .unwrap();
+        let release_basis = h.db.frontier().unwrap();
+        let release_rows = h.db.vertices().unwrap().len();
+        let released = h.release_hold(&plan, &[approval]).unwrap();
+        assert_eq!(released.recorded_at.0, release_basis.0 + 1);
+        assert_eq!(h.db.vertices().unwrap().len(), release_rows + 2);
+        assert_eq!(
+            h.db.edges_at(released.recorded_at).unwrap().len(),
+            place_edges + 1
+        );
+        assert_hold_claim(&h, b"hold-outcome-release", released.release);
+
+        // Lost acknowledgments and later head movement never execute again,
+        // change a ThroughHead hold's original scope, or re-open its cells.
+        h.post(h.request(
+            h.proposal(h.rent_legs(17), b"hold-later-post", EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .unwrap();
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        assert_eq!(
+            h.place_reach(&counsel, reach, authority, b"hold-outcome-place")
+                .unwrap(),
+            LegalHoldPlaced {
+                already_recorded: true,
+                ..placed
+            }
+        );
+        let expected = LegalHoldReleased {
+            already_recorded: true,
+            ..released
+        };
+        assert_eq!(h.release_hold(&plan, &[approval]).unwrap(), expected);
+        let resealed = ReleasePlan {
+            description: h.statement("hold release", 63),
+            ..plan.clone()
+        };
+        assert_eq!(h.release_hold(&resealed, &[approval]).unwrap(), expected);
+        let refusal = h.release_hold(&plan, &[]).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        assert!(h.holds_on(document_vid(&authority)).is_empty());
+    }
+}
+
+#[test]
+fn posting_and_batch_keys_cannot_place_or_release_legal_holds() {
+    let mut h = harness();
+    let authority = hold_authority(&mut h);
+    let counsel = Capability::embedded(PRINCIPAL, &["hold"]).unwrap();
+    let subject = document_vid(&authority);
+    let placed = h
+        .place_hold(&counsel, vec![subject], authority, b"hold-collision-source")
+        .unwrap();
+    let original = h.proposal(h.rent_legs(100), b"hold-post-key", EntryClass::ORIGINAL);
+    let target = h.post(h.request(original, &["post"])).unwrap().entry_ref();
+    let reversal = h.reversal_of_entry(target, b"hold-reverse-key");
+    h.post(h.request(reversal, &["post"])).unwrap();
+    let pending = h.pending(h.rent_legs(200), b"hold-pending-key");
+    let pending = h.post(h.request(pending, &["post"])).unwrap().entry_ref();
+    let resolution = h.resolution_posts(pending, h.rent_legs(150), vec![0, 1], b"hold-resolve-key");
+    h.post(h.request(resolution, &["post"])).unwrap();
+    let member = h.proposal(h.rent_legs(300), b"hold-batch-member", EntryClass::ORIGINAL);
+    h.post_batch(h.batch(b"hold-batch-key", vec![member]))
+        .unwrap();
+    for key in [
+        b"hold-post-key".as_slice(),
+        b"hold-reverse-key",
+        b"hold-resolve-key",
+        b"hold-batch-key",
+    ] {
+        let plan = h.plan_hold_release(placed.hold, key).unwrap();
+        let approval = h
+            .approve_digest(RELEASE_APPROVER, plan.proposal_digest(&h.book).unwrap())
+            .unwrap();
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let edges = h.db.edges_at(head).unwrap();
+        for reach in [HoldReach::Subjects(vec![subject]), HoldReach::ThroughHead] {
+            let refusal = h.place_reach(&counsel, reach, authority, key).unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
+        }
+        let refusal = h.release_hold(&plan, &[approval]).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        assert_eq!(h.db.edges_at(head).unwrap(), edges);
+        assert_eq!(h.holds_on(subject), vec![placed.hold]);
+    }
+}
+
+#[test]
+fn a_legal_hold_release_key_cannot_release_another_hold_or_post_a_batch() {
+    let mut h = harness();
+    let authority = hold_authority(&mut h);
+    let counsel = Capability::embedded(PRINCIPAL, &["hold"]).unwrap();
+    let subject = document_vid(&authority);
+    let first = h
+        .place_hold(&counsel, vec![subject], authority, b"hold-first")
+        .unwrap();
+    let second = h
+        .place_hold(&counsel, vec![subject], authority, b"hold-second")
+        .unwrap();
+    let key = b"hold-shared-release";
+    let plan = h.plan_hold_release(first.hold, key).unwrap();
+    let second_plan = h.plan_hold_release(second.hold, key).unwrap();
+    let approval = h
+        .approve_digest(RELEASE_APPROVER, plan.proposal_digest(&h.book).unwrap())
+        .unwrap();
+    let second_approval = h
+        .approve_digest(
+            RELEASE_APPROVER,
+            second_plan.proposal_digest(&h.book).unwrap(),
+        )
+        .unwrap();
+    h.release_hold(&plan, &[approval]).unwrap();
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    let refusal = h
+        .release_hold(&second_plan, &[second_approval])
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
+    assert_eq!(h.holds_on(subject), vec![second.hold]);
+    for occupied in [key.as_slice(), b"hold-first", b"hold-second"] {
+        let posting = h.proposal(h.rent_legs(10), occupied, EntryClass::ORIGINAL);
+        refused_without_publication(&mut h, posting);
+        let member = h.proposal(
+            h.rent_legs(11),
+            b"hold-forbidden-member",
+            EntryClass::ORIGINAL,
+        );
+        let refusal = h.post_batch(h.batch(occupied, vec![member])).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
+    }
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+    assert!(
+        h.db.vertex(fa_journal::legal_hold::release_vid(
+            h.book.book_id,
+            second.hold
+        ))
+        .unwrap()
+        .is_none()
+    );
+}
+
+#[test]
+fn legal_hold_retries_reject_missing_or_republished_claims_and_controls() {
+    for release in [false, true] {
+        for attack in 0..4 {
+            let mut h = harness();
+            let authority = hold_authority(&mut h);
+            let counsel = Capability::embedded(PRINCIPAL, &["hold"]).unwrap();
+            let placed = h
+                .place_hold(
+                    &counsel,
+                    vec![document_vid(&authority)],
+                    authority,
+                    b"hold-damage",
+                )
+                .unwrap();
+            let plan = h
+                .plan_hold_release(placed.hold, b"hold-damage-release")
+                .unwrap();
+            let approval = h
+                .approve_digest(RELEASE_APPROVER, plan.proposal_digest(&h.book).unwrap())
+                .unwrap();
+            let (key, control) = if release {
+                let released = h.release_hold(&plan, &[approval]).unwrap();
+                (b"hold-damage-release".as_slice(), released.release)
+            } else {
+                (b"hold-damage".as_slice(), placed.hold)
+            };
+            let claim =
+                fa_model::intent_outcome_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), key);
+            let damaged = if attack == 3 { control } else { claim };
+            let original = h.db.vertex(damaged).unwrap().unwrap();
+            let mut change = fgdb::WriteBatch::new(relation::HOLDS);
+            match attack {
+                0 => {
+                    change.delete_vertex(damaged);
+                }
+                2 => {
+                    change.set_vertex_property(
+                        damaged,
+                        property::TARGET_REF,
+                        Some(CanonicalScalar::bytes(VId(0xdead).0.to_le_bytes().to_vec()).unwrap()),
+                    );
+                }
+                _ => {
+                    change.set_vertex_property(
+                        damaged,
+                        property::FA_PAYLOAD,
+                        Some(
+                            CanonicalScalar::bytes(b"altered immutable control".to_vec()).unwrap(),
+                        ),
+                    );
+                }
+            }
+            h.write_raw(change);
+            if attack == 1 || attack == 3 {
+                let mut restore = fgdb::WriteBatch::new(relation::HOLDS);
+                restore.set_vertex_property(
+                    damaged,
+                    property::FA_PAYLOAD,
+                    Some(
+                        fa_journal::rows::prop(&original, property::FA_PAYLOAD)
+                            .unwrap()
+                            .clone(),
+                    ),
+                );
+                h.write_raw(restore);
+            }
+            let head = h.db.frontier().unwrap();
+            let rows = h.db.vertices().unwrap();
+            let refusal = if release {
+                h.release_hold(&plan, &[approval]).unwrap_err()
+            } else {
+                h.place_hold(&counsel, vec![document_vid(&authority)], authority, key)
+                    .unwrap_err()
+            };
+            assert_eq!(
+                (refusal.code, refusal.exit),
+                ("FA-REF-032", exit::CONFLICT),
+                "release={release} attack={attack}"
+            );
+            if !release {
+                // A valid release approval cannot legitimize a placement
+                // whose original control or atomic claim was altered.
+                let refusal = h.release_hold(&plan, &[approval]).unwrap_err();
+                assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
+            }
+            assert_eq!(h.db.frontier().unwrap(), head);
+            assert_eq!(h.db.vertices().unwrap(), rows);
+        }
+    }
+}
+
+fn reopen_hold_store(h: &mut Harness) {
+    let ctx = h.ctx();
+    let (vfs, keys) = h.legacy_storage.clone().expect("durable hold fixture");
+    let empty = h
+        .runtime
+        .block_on(Database::open_memory(&ctx.commit(), keys.clone()))
+        .unwrap();
+    drop(std::mem::replace(&mut h.db, empty));
+    h.db = h
+        .runtime
+        .block_on(Database::open_with_vfs(
+            &ctx.commit(),
+            vfs.clone(),
+            vfs.database_dir(),
+            keys,
+        ))
+        .unwrap();
+}
+
+fn hold_cell_scalar(holds: &[VId]) -> CanonicalScalar {
+    let mut writer = fa_model::Writer::new();
+    writer.list(holds, |writer, hold| writer.u128(hold.0));
+    CanonicalScalar::bytes(writer.finish().unwrap()).unwrap()
+}
+
+#[test]
+fn claim_free_legacy_hold_controls_remain_original_retry_anchors_after_reopen() {
+    for whole_book in [false, true] {
+        let mut h = harness_legacy();
+        let authority = hold_authority(&mut h);
+        let subject = document_vid(&authority);
+        let counsel = Capability::embedded(PRINCIPAL, &["hold"]).unwrap();
+        let scope = if whole_book {
+            fa_journal::legal_hold::Scope::Book(h.db.frontier().unwrap())
+        } else {
+            fa_journal::legal_hold::Scope::Place(vec![subject])
+        };
+        let scope_digest = scope.digest().unwrap();
+        let place_key = b"legacy-hold-original-place";
+        let hold = entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), place_key);
+        let (cell, target, reach, subjects, through) = match &scope {
+            fa_journal::legal_hold::Scope::Book(through) => (
+                fa_journal::legal_hold::book_hold_cell_vid(h.book.book_id),
+                book_root(),
+                HoldReach::ThroughHead,
+                vec![],
+                Some(*through),
+            ),
+            _ => (
+                fa_journal::legal_hold::legal_hold_cell_vid(h.book.book_id, subject),
+                subject,
+                HoldReach::Subjects(vec![subject]),
+                vec![subject],
+                None,
+            ),
+        };
+        let mut proposal = h.proposal(Vec::new(), place_key, EntryClass::HOLD_CONTROL);
+        proposal.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
+        proposal.effective_date = DateDay::from_ymd(2026, 3, 20).unwrap();
+        proposal.description = h.statement("legal hold", 61);
+        proposal.control = Some(ControlPayload::HoldEvent {
+            scope_digest,
+            authority_oid: authority,
+            kind: fa_journal::legal_hold::PLACE,
+        });
+        proposal.origin = EntryOrigin::Control {
+            control_kind: fa_model::ControlKind::LEGAL_HOLD,
+            spec_body_digest: scope_digest,
+        };
+        proposal.evidence.clear();
+        proposal.extensions = vec![(
+            fa_model::entry::LEGAL_HOLD_SCOPE_EXTENSION,
+            scope.canonical_bytes().unwrap(),
+        )];
+        let entry = proposal.seal(Vec::new(), None).unwrap();
+        // Publish the original pre-claim writer's complete native outcome.
+        // A modern claim is never created and then deleted to fake history.
+        let mut place = fgdb::WriteBatch::new(relation::HOLDS);
+        place.create_vertex(
+            hold,
+            vec![fa_model::symbols::label::ENTRY],
+            fa_model::entry_mirrors(&entry).unwrap(),
+        );
+        place.create_vertex(
+            cell,
+            vec![fa_model::symbols::label::LEGAL_HOLD_CELL],
+            vec![(property::LEGAL_HOLDS, hold_cell_scalar(&[hold]))],
+        );
+        place.add_edge(edge_id(relation::HOLDS, hold, target), hold, target, vec![]);
+        h.write_raw(place);
+        let placed = LegalHoldPlaced {
+            hold,
+            subjects,
+            through,
+            recorded_at: h.db.frontier().unwrap(),
+            already_recorded: true,
+        };
+        let release_key = b"legacy-hold-original-release";
+        let plan = h.plan_hold_release(hold, release_key).unwrap();
+        let approval = h
+            .approve_digest(RELEASE_APPROVER, plan.proposal_digest(&h.book).unwrap())
+            .unwrap();
+        let entry = plan
+            .proposal(&h.book)
+            .unwrap()
+            .seal(vec![approval], None)
+            .unwrap();
+        let release = fa_journal::legal_hold::release_vid(h.book.book_id, hold);
+        let mut release_batch = fgdb::WriteBatch::new(relation::HOLDS);
+        release_batch.create_vertex(
+            release,
+            vec![fa_model::symbols::label::ENTRY],
+            fa_model::entry_mirrors(&entry).unwrap(),
+        );
+        release_batch.compare_and_set_vertex_property(
+            cell,
+            property::LEGAL_HOLDS,
+            Some(hold_cell_scalar(&[hold])),
+            hold_cell_scalar(&[]),
+            fgdb::WriteMismatchPolicy::AbortWrite,
+        );
+        h.write_raw(release_batch);
+        let released = LegalHoldReleased {
+            release,
+            hold,
+            recorded_at: h.db.frontier().unwrap(),
+            already_recorded: true,
+        };
+
+        reopen_hold_store(&mut h);
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        assert_eq!(
+            h.place_reach(&counsel, reach, authority, place_key)
+                .unwrap(),
+            placed
+        );
+        assert_eq!(h.release_hold(&plan, &[approval]).unwrap(), released);
+        assert!(h.holds_on(subject).is_empty());
+        for key in [place_key.as_slice(), release_key] {
+            let outcome =
+                fa_model::intent_outcome_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), key);
+            assert!(h.db.vertex(outcome).unwrap().is_none());
+            assert!(
+                h.db.vertex_at(outcome, released.recorded_at)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+}
+
+#[test]
+fn legal_hold_outcomes_survive_durable_reopen_without_another_publication() {
+    let mut h = harness_legacy();
+    let ctx = h.ctx();
+    let prepared = h
+        .runtime
+        .block_on(prepare_outcome_rebuild(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            Capability::embedded(PRINCIPAL, &["read", "schema_change"]).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    h.runtime
+        .block_on(publish_outcome_rebuild(&mut h.db, &ctx, &h.book, prepared))
+        .unwrap()
+        .unwrap();
+    let authority = hold_authority(&mut h);
+    let counsel = Capability::embedded(PRINCIPAL, &["hold"]).unwrap();
+    let key = b"durable-hold-place";
+    let placed = h
+        .place_reach(&counsel, HoldReach::ThroughHead, authority, key)
+        .unwrap();
+    let plan = h
+        .plan_hold_release(placed.hold, b"durable-hold-release")
+        .unwrap();
+    let approval = h
+        .approve_digest(RELEASE_APPROVER, plan.proposal_digest(&h.book).unwrap())
+        .unwrap();
+    reopen_hold_store(&mut h);
+    // Releasing a reopened placement authenticates its original claim and
+    // publication before it changes the persisted active-hold cell.
+    let released = h.release_hold(&plan, &[approval]).unwrap();
+    reopen_hold_store(&mut h);
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    assert_eq!(
+        h.place_reach(&counsel, HoldReach::ThroughHead, authority, key)
+            .unwrap(),
+        LegalHoldPlaced {
+            already_recorded: true,
+            ..placed
+        }
+    );
+    assert_eq!(
+        h.release_hold(&plan, &[approval]).unwrap(),
+        LegalHoldReleased {
+            already_recorded: true,
+            ..released
+        }
+    );
+    assert_hold_claim(&h, key, placed.hold);
+    assert_hold_claim(&h, b"durable-hold-release", released.release);
+    let posting = h.proposal(
+        h.rent_legs(20),
+        b"durable-hold-release",
+        EntryClass::ORIGINAL,
+    );
+    refused_without_publication(&mut h, posting);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+}

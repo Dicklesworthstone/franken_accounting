@@ -655,16 +655,24 @@ fn numeric_audit_registries_reject_resealed_semantic_changes() {
                         ("tie_break".into(), Value::Text("entry_vid".into())),
                         ("complexity".into(), Value::Text("O(legs log legs)".into())),
                         ("calibration".into(), Value::Text("uncalibrated".into())),
-                        ("summary".into(), Value::Text("Exact numeric audit law".into())),
+                        (
+                            "summary".into(),
+                            Value::Text("Exact numeric audit law".into()),
+                        ),
                     ])],
                 ),
                 (
                     "parameter".into(),
-                    defaults.into_iter().map(|(name, default)| BTreeMap::from([
-                        ("procedure".into(), Value::Text(id.into())),
-                        ("name".into(), Value::Text(name.into())),
-                        ("default".into(), Value::Int(default)),
-                    ])).collect(),
+                    defaults
+                        .into_iter()
+                        .map(|(name, default)| {
+                            BTreeMap::from([
+                                ("procedure".into(), Value::Text(id.into())),
+                                ("name".into(), Value::Text(name.into())),
+                                ("default".into(), Value::Int(default)),
+                            ])
+                        })
+                        .collect(),
                 ),
             ]),
         };
@@ -679,9 +687,20 @@ fn numeric_audit_registries_reject_resealed_semantic_changes() {
             assert!(accepted.unit_currencies.values().any(|iso| *iso == 840));
         }
         for variant in [
-            "version", "claim", "evidence", "complexity", "tie_break",
-            "calibration", "cutoff", "default", "duplicate", "input",
-            "missing parameter", "duplicate procedure", "artifact", "extra population law",
+            "version",
+            "claim",
+            "evidence",
+            "complexity",
+            "tie_break",
+            "calibration",
+            "cutoff",
+            "default",
+            "duplicate",
+            "input",
+            "missing parameter",
+            "duplicate procedure",
+            "artifact",
+            "extra population law",
         ] {
             let mut changed = document(&encode_document(&declaration)).unwrap();
             match variant {
@@ -690,14 +709,20 @@ fn numeric_audit_registries_reject_resealed_semantic_changes() {
                 }
                 "duplicate procedure" => {
                     let mut duplicate = document(&encode_document(&declaration)).unwrap();
-                    changed.arrays.get_mut("procedure").unwrap()
+                    changed
+                        .arrays
+                        .get_mut("procedure")
+                        .unwrap()
                         .push(duplicate.arrays.get_mut("procedure").unwrap().remove(0));
                 }
                 "extra population law" => {
-                    changed.arrays.insert("population".into(), vec![BTreeMap::from([
-                        ("procedure".into(), Value::Text(id.into())),
-                        ("selection".into(), Value::Text("omit_small_debits".into())),
-                    ])]);
+                    changed.arrays.insert(
+                        "population".into(),
+                        vec![BTreeMap::from([
+                            ("procedure".into(), Value::Text(id.into())),
+                            ("selection".into(), Value::Text("omit_small_debits".into())),
+                        ])],
+                    );
                 }
                 "default" => {
                     changed.arrays.get_mut("parameter").unwrap()[0]
@@ -709,18 +734,25 @@ fn numeric_audit_registries_reject_resealed_semantic_changes() {
                     } else {
                         ("currency_iso4217", 840)
                     };
-                    changed.arrays.get_mut("parameter").unwrap().push(BTreeMap::from([
-                        ("procedure".into(), Value::Text(id.into())),
-                        ("name".into(), Value::Text(name.into())),
-                        ("default".into(), Value::Int(default)),
-                    ]));
+                    changed
+                        .arrays
+                        .get_mut("parameter")
+                        .unwrap()
+                        .push(BTreeMap::from([
+                            ("procedure".into(), Value::Text(id.into())),
+                            ("name".into(), Value::Text(name.into())),
+                            ("default".into(), Value::Int(default)),
+                        ]));
                 }
                 "input" => {
-                    changed.arrays.insert("input".into(), vec![BTreeMap::from([
-                        ("procedure".into(), Value::Text(id.into())),
-                        ("name".into(), Value::Text("party".into())),
-                        ("kind".into(), Value::Text("party".into())),
-                    ])]);
+                    changed.arrays.insert(
+                        "input".into(),
+                        vec![BTreeMap::from([
+                            ("procedure".into(), Value::Text(id.into())),
+                            ("name".into(), Value::Text("party".into())),
+                            ("kind".into(), Value::Text("party".into())),
+                        ])],
+                    );
                 }
                 field => {
                     let (key, value) = match field {

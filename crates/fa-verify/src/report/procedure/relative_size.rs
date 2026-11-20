@@ -7,8 +7,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    Entry, Reader, Registry, ReportError, VerifiedProcedureFinding,
-    VerifiedProcedureParameters, VerifiedProcedureStatistic, failed,
+    Entry, Reader, Registry, ReportError, VerifiedProcedureFinding, VerifiedProcedureParameters,
+    VerifiedProcedureStatistic, failed,
 };
 
 const DEFAULTS: [(&str, u32); 2] = super::RSF_DEFAULTS;

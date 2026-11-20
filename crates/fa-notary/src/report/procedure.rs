@@ -138,8 +138,14 @@ mod tests {
             assert_eq!(profile(id, 1, None, parameters, &[]), Some(evidence));
             assert_eq!(profile(id, 2, None, parameters, &[]), None);
             assert_eq!(profile(id, 1, Some(0), parameters, &[]), None);
-            assert_eq!(profile(id, 1, None, parameters, &[("account", "1000")]), None);
-            assert_eq!(profile(id, 1, None, &parameters[..parameters.len() - 1], &[]), None);
+            assert_eq!(
+                profile(id, 1, None, parameters, &[("account", "1000")]),
+                None
+            );
+            assert_eq!(
+                profile(id, 1, None, &parameters[..parameters.len() - 1], &[]),
+                None
+            );
             let mut duplicated = parameters.to_vec();
             duplicated[1].0 = duplicated[0].0;
             assert_eq!(profile(id, 1, None, &duplicated, &[]), None);
@@ -148,21 +154,35 @@ mod tests {
             assert_eq!(profile(id, 1, None, &reordered, &[]), None);
         }
         for (index, value) in [
-            (0, -1), (0, i128::from(u32::MAX) + 1),
-            (1, 1), (1, i128::from(u32::MAX) + 1),
+            (0, -1),
+            (0, i128::from(u32::MAX) + 1),
+            (1, 1),
+            (1, i128::from(u32::MAX) + 1),
         ] {
             let mut invalid = rsf;
             invalid[index].1 = value;
-            assert_eq!(profile("numbers.relative_size_factor", 1, None, &invalid, &[]), None);
+            assert_eq!(
+                profile("numbers.relative_size_factor", 1, None, &invalid, &[]),
+                None
+            );
         }
         for (index, value) in [
-            (0, 0), (0, 1_000), (1, 0), (1, i128::MAX), (2, 1),
-            (2, i128::from(u32::MAX) + 1), (3, 1), (4, -1),
+            (0, 0),
+            (0, 1_000),
+            (1, 0),
+            (1, i128::MAX),
+            (2, 1),
+            (2, i128::from(u32::MAX) + 1),
+            (3, 1),
+            (4, -1),
             (4, i128::from(u32::MAX) + 1),
         ] {
             let mut invalid = splitting;
             invalid[index].1 = value;
-            assert_eq!(profile("numbers.threshold_splitting", 1, None, &invalid, &[]), None);
+            assert_eq!(
+                profile("numbers.threshold_splitting", 1, None, &invalid, &[]),
+                None
+            );
         }
     }
 
