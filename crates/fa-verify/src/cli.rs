@@ -2378,6 +2378,7 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
             finding.statistic,
             crate::report::VerifiedProcedureStatistic::TracedAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::SplitTotal { .. }
+                | crate::report::VerifiedProcedureStatistic::StructuredTransfers { .. }
         ) {
             amount(value)
         } else {
@@ -2504,6 +2505,35 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                             .collect(),
                     ),
                 ));
+            }
+            crate::report::VerifiedProcedureStatistic::StructuredTransfers {
+                from,
+                to,
+                unit,
+                entity,
+                transfers,
+                entries,
+                ..
+            } => {
+                details.extend([
+                    ("from_account", s(format!("{from:032x}"))),
+                    ("to_account", s(format!("{to:032x}"))),
+                    ("unit", n(u64::from(*unit))),
+                    (
+                        "legal_entity",
+                        entity.map_or(Json::Null, |entity| s(format!("{entity:032x}"))),
+                    ),
+                    ("transfers", n(*transfers)),
+                    (
+                        "entries",
+                        Json::List(
+                            entries
+                                .iter()
+                                .map(|entry| s(format!("{entry:032x}")))
+                                .collect(),
+                        ),
+                    ),
+                ]);
             }
             crate::report::VerifiedProcedureStatistic::AccountPairOccurrences {
                 first_account,
@@ -7272,6 +7302,33 @@ mod tests {
         assert!(json.contains(&format!("\"value\":\"{}\"", i128::MAX)));
         assert!(json.contains("\"statistic\":\"split_total\""));
         assert!(json.contains("\"entries\":[\"0000000000000000000000000000000b\""));
+        run.procedure = "graph.structuring".into();
+        run.version = 2;
+        run.parameters = VerifiedProcedureParameters::GraphStructuring {
+            currency_iso4217: 840,
+            floor: 0,
+            min_count: 1,
+            threshold: i128::MAX,
+            window_days: u32::MAX,
+        };
+        run.findings[0].entry = None;
+        run.findings[0].statistic = VerifiedProcedureStatistic::StructuredTransfers {
+            from: 10,
+            to: 20,
+            unit: 1,
+            entity: Some(30),
+            transfers: 3,
+            mantissa: i128::MAX,
+            scale: 2,
+            entries: vec![11, 12],
+        };
+        let json = render(&run);
+        assert!(json.contains("\"statistic\":\"chain_mantissa\""));
+        assert!(json.contains("\"from_account\":\"0000000000000000000000000000000a\""));
+        assert!(json.contains("\"to_account\":\"00000000000000000000000000000014\""));
+        assert!(json.contains("\"legal_entity\":\"0000000000000000000000000000001e\""));
+        assert!(json.contains("\"transfers\":3"));
+        assert!(json.contains(&format!("\"value\":\"{}\"", i128::MAX)));
         run.procedure = "numbers.relative_size_factor".into();
         run.parameters = VerifiedProcedureParameters::RelativeSizeFactor {
             min_rsf_bps: 50_000,
