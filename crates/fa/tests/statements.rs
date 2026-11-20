@@ -1121,6 +1121,19 @@ fn the_first_statement_issuance_pins_as_originally_reported_to_its_certificate()
     assert_eq!(again.record, issued.record);
     assert_eq!(fixture.book.head().unwrap(), head);
 
+    // The recorded approval transcript is part of the successful intent.
+    // Omitting it cannot turn a different request into a lost-ack retry.
+    assert_eq!(
+        fixture
+            .book
+            .issue_statements(&controller, plan.clone(), Vec::new())
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::IDEMPOTENCY_CONFLICT
+    );
+    assert_eq!(fixture.book.head().unwrap(), head);
+
     // As originally reported is the issued certificate's coordinate, and the
     // statement there is the issued statement, byte for byte; as currently
     // stated differs by exactly the later correction.

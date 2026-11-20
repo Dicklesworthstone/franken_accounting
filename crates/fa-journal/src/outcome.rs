@@ -15,6 +15,8 @@
 //! does not migrate historical capability keys into the monetary-key coverage.
 //! Legal-hold placements and target-derived releases also reserve the common
 //! key atomically; their original pre-claim entries remain retry anchors.
+//! Statement issuance reserves its registered record key and authenticates
+//! the original approval transcript alongside its immutable issuance body.
 //! Existing normal-key controls are checked before a posting takes their key.
 
 mod keys;
@@ -735,7 +737,8 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
         || migration
         || is_statement_activation(entry)
         || is_cash_flow_policy_activation(entry)
-        || is_rule_activation(entry))
+        || is_rule_activation(entry)
+        || crate::issuance::is_issuance_control(entry, vid))
         && vid
             == fa_model::entry_vid(
                 proposal.book_id,
