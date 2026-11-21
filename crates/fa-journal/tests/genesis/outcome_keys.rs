@@ -1495,3 +1495,384 @@ fn legal_hold_outcomes_survive_durable_reopen_without_another_publication() {
     assert_eq!(h.db.frontier().unwrap(), head);
     assert_eq!(h.db.vertices().unwrap(), rows);
 }
+
+mod statement_issuance_keys {
+    use super::*;
+    use fa_model::ApprovalRef;
+    use fa_model::symbols::label;
+
+    fn plan(h: &mut Harness, key: &[u8]) -> IssuancePlan {
+        let certificate = [0x69; 32];
+        let vid = fa_model::report_certificate_vid(h.book.book_id, &certificate);
+        if h.db.vertex(vid).unwrap().is_none() {
+            // The kernel witnesses retention. The facade separately validates
+            // the statement certificate's full definition and coordinate.
+            let mut retained = fgdb::WriteBatch::new(relation::IN_BOOK);
+            retained.create_vertex(vid, vec![label::CERTIFICATE], vec![]);
+            h.write_raw(retained);
+        }
+        plan_issuance(
+            &h.db,
+            &h.book,
+            &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
+            StatementIssuance {
+                book_id: h.book.book_id,
+                period: h.march.clone(),
+                ordinal: 1,
+                definition_digest: [0x6a; 32],
+                definition_name: "income-statement".into(),
+                definition_version: 1,
+                certificate,
+                certified_at: h.db.frontier().unwrap(),
+                issued_to: IssuedTo::Auditor,
+                document: None,
+            },
+            h.day(),
+            key,
+            h.statement("issued financial statements", 105),
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    fn execute(
+        h: &mut Harness,
+        plan: &IssuancePlan,
+        approvals: &[ApprovalRef],
+        capability: &Capability,
+    ) -> Result<Result<StatementsIssued, Refusal>, KernelError> {
+        let ctx = h.ctx();
+        h.runtime.block_on(issue_statements(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            capability,
+            plan.clone(),
+            approvals.to_vec(),
+        ))
+    }
+
+    fn issue(
+        h: &mut Harness,
+        plan: &IssuancePlan,
+        approvals: &[ApprovalRef],
+    ) -> Result<Result<StatementsIssued, Refusal>, KernelError> {
+        execute(
+            h,
+            plan,
+            approvals,
+            &Capability::embedded(PRINCIPAL, &["close"]).unwrap(),
+        )
+    }
+
+    fn refused_unchanged(h: &mut Harness, plan: &IssuancePlan, approvals: &[ApprovalRef]) {
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let refusal = issue(h, plan, approvals).unwrap().unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+
+    #[test]
+    fn issuance_claim_is_atomic_and_retries_preserve_the_complete_approval_transcript() {
+        let mut h = harness();
+        let plan = plan(&mut h, b"issuance-atomic");
+        let digest = plan.proposal_digest(&h.book).unwrap();
+        let first = h.approve_digest(VId(70), digest).unwrap();
+        let second = h.approve_digest(VId(71), digest).unwrap();
+        let approvals = [first, second];
+        let proposal = plan.proposal(&h.book).unwrap();
+        let basis = h.db.frontier().unwrap();
+        let vertices = h.db.vertices().unwrap().len();
+        let edges = h.db.edges_at(basis).unwrap().len();
+        let issued = issue(&mut h, &plan, &approvals).unwrap().unwrap();
+        assert!(!issued.already_recorded);
+        assert_eq!(issued.record.recorded_at.0, basis.0 + 1);
+        assert_eq!(h.db.vertices().unwrap().len(), vertices + 3);
+        assert_eq!(
+            h.db.edges_at(issued.record.recorded_at).unwrap().len(),
+            edges + 1
+        );
+        assert_hold_claim(&h, &proposal.idempotency_key, issued.record.control_entry);
+        let body = h.db.vertex(issued.record.vid).unwrap().unwrap();
+        assert_eq!(body.created_at, issued.record.recorded_at);
+        assert_eq!(
+            issuances(&h.db, &h.book, &h.march).unwrap(),
+            vec![issued.record.clone()]
+        );
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        assert_eq!(
+            issue(&mut h, &plan, &approvals).unwrap().unwrap(),
+            StatementsIssued {
+                already_recorded: true,
+                ..issued
+            }
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        for changed in [vec![], vec![first], vec![second, first]] {
+            refused_unchanged(&mut h, &plan, &changed);
+        }
+        let mut changed = plan.clone();
+        changed.issuance.issued_to = IssuedTo::Lender;
+        refused_unchanged(&mut h, &changed, &approvals);
+        let refusal = execute(
+            &mut h,
+            &plan,
+            &approvals,
+            &Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(refusal.code, code::CAPABILITY);
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+
+    #[test]
+    fn issuance_record_keys_cannot_cross_posting_or_batch_outcomes_in_either_order() {
+        for occupant in ["ordinary", "reversal", "batch"] {
+            let mut h = harness();
+            let plan = plan(&mut h, b"issuance-reserved-key");
+            let key = plan.proposal(&h.book).unwrap().idempotency_key;
+            let approval = h.approve_transition(plan.proposal_digest(&h.book).unwrap());
+            let original = h.proposal(h.rent_legs(100), b"issuance-source", EntryClass::ORIGINAL);
+            let posted = h.post(h.request(original, &["post"])).unwrap();
+            match occupant {
+                "ordinary" => {
+                    let ordinary = h.proposal(h.rent_legs(20), &key, EntryClass::ORIGINAL);
+                    h.post(h.request(ordinary, &["post"])).unwrap();
+                }
+                "reversal" => {
+                    let reversal = h.reversal_of_entry(posted.entry_ref(), &key);
+                    h.post(h.request(reversal, &["post"])).unwrap();
+                }
+                _ => {
+                    let member =
+                        h.proposal(h.rent_legs(20), b"issuance-member", EntryClass::ORIGINAL);
+                    h.post_batch(h.batch(&key, vec![member])).unwrap();
+                }
+            }
+            refused_unchanged(&mut h, &plan, &[approval]);
+            assert!(h.db.vertex(plan.issuance.vid()).unwrap().is_none());
+        }
+
+        let mut h = harness();
+        let plan = plan(&mut h, b"issuance-first");
+        let key = plan.proposal(&h.book).unwrap().idempotency_key;
+        let approval = h.approve_transition(plan.proposal_digest(&h.book).unwrap());
+        issue(&mut h, &plan, &[approval]).unwrap().unwrap();
+        let original = h.proposal(h.rent_legs(100), b"issued-source", EntryClass::ORIGINAL);
+        let posted = h.post(h.request(original, &["post"])).unwrap();
+        let reversal = h.reversal_of_entry(posted.entry_ref(), &key);
+        refused_without_publication(&mut h, reversal);
+        let member = h.proposal(h.rent_legs(20), b"issued-member", EntryClass::ORIGINAL);
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let refusal = h.post_batch(h.batch(&key, vec![member])).unwrap_err();
+        assert_eq!(refusal.code, code::IDEMPOTENCY_CONFLICT);
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+
+    #[test]
+    fn issuance_retries_and_reported_views_reject_damaged_or_restored_sources() {
+        for attack in 0..6 {
+            let mut h = harness();
+            let plan = plan(&mut h, b"issuance-integrity");
+            let approval = h.approve_transition(plan.proposal_digest(&h.book).unwrap());
+            let issued = issue(&mut h, &plan, &[approval]).unwrap().unwrap();
+            let proposal = plan.proposal(&h.book).unwrap();
+            let claim = outcome_id(&h, &proposal);
+            let damaged = match attack {
+                2 => issued.record.control_entry,
+                3 | 4 => issued.record.vid,
+                _ => claim,
+            };
+            let original = h.db.vertex(damaged).unwrap().unwrap();
+            let property = match attack {
+                4 => property::FA_DIGEST,
+                5 => property::TARGET_REF,
+                _ => property::FA_PAYLOAD,
+            };
+            let mut change = fgdb::WriteBatch::new(relation::IN_CASE);
+            if attack == 0 {
+                change.delete_vertex(damaged);
+            } else {
+                change.set_vertex_property(
+                    damaged,
+                    property,
+                    Some(CanonicalScalar::bytes(vec![0x56; 32]).unwrap()),
+                );
+            }
+            h.write_raw(change);
+            if (1..=3).contains(&attack) {
+                let mut restore = fgdb::WriteBatch::new(relation::IN_CASE);
+                restore.set_vertex_property(
+                    damaged,
+                    property,
+                    Some(fa_journal::rows::prop(&original, property).unwrap().clone()),
+                );
+                h.write_raw(restore);
+            }
+            let head = h.db.frontier().unwrap();
+            let rows = h.db.vertices().unwrap();
+            assert!(
+                issuances(&h.db, &h.book, &h.march).is_err(),
+                "attack {attack}"
+            );
+            match issue(&mut h, &plan, &[approval]) {
+                Ok(Err(refusal)) => assert_eq!(refusal.code, code::IDEMPOTENCY_CONFLICT),
+                Err(KernelError::Corrupt(_)) => {}
+                other => panic!("damaged issuance {attack} was accepted: {other:?}"),
+            }
+            assert_eq!(h.db.frontier().unwrap(), head);
+            assert_eq!(h.db.vertices().unwrap(), rows);
+        }
+    }
+
+    fn write_legacy_issuance(
+        h: &mut Harness,
+        plan: &IssuancePlan,
+        approvals: &[ApprovalRef],
+        separate_publications: bool,
+    ) {
+        let issuance = &plan.issuance;
+        let proposal = plan.proposal(&h.book).unwrap();
+        let control = entry_vid(
+            h.book.book_id,
+            &PRINCIPAL.0.to_le_bytes(),
+            &proposal.idempotency_key,
+        );
+        let entry = proposal.seal(approvals.to_vec(), None).unwrap();
+        let body = issuance.vid();
+        let mut props = vec![
+            (
+                property::FA_PAYLOAD,
+                CanonicalScalar::bytes(issuance.canonical_bytes().unwrap()).unwrap(),
+            ),
+            (
+                property::FA_DIGEST,
+                CanonicalScalar::bytes(issuance.digest().unwrap().to_vec()).unwrap(),
+            ),
+            (
+                property::BOOK_ID,
+                CanonicalScalar::bytes(h.book.book_id.0.to_vec()).unwrap(),
+            ),
+            (
+                property::CODE,
+                fa_journal::rows::scalar_text("issuance.code", &issuance.period).unwrap(),
+            ),
+        ];
+        props.sort_by_key(|(key, _)| key.0);
+        let mut batch = fgdb::WriteBatch::new(relation::IN_CASE);
+        batch.create_vertex(body, vec![label::STATEMENT_ISSUANCE], props);
+        if separate_publications {
+            h.write_raw(batch);
+            batch = fgdb::WriteBatch::new(relation::IN_CASE);
+        }
+        batch.create_vertex(
+            control,
+            vec![label::ENTRY],
+            fa_model::entry_mirrors(&entry).unwrap(),
+        );
+        batch.add_edge(
+            edge_id(relation::IN_CASE, control, body),
+            control,
+            body,
+            vec![],
+        );
+        h.write_raw(batch);
+    }
+
+    #[test]
+    fn legacy_issuance_retry_requires_original_atomic_sources_and_survives_reopen() {
+        for separate_publications in [false, true] {
+            let mut h = harness_legacy();
+            let plan = plan(&mut h, b"legacy-issuance");
+            let approval = h.approve_transition(plan.proposal_digest(&h.book).unwrap());
+            write_legacy_issuance(&mut h, &plan, &[approval], separate_publications);
+            reopen_hold_store(&mut h);
+            let head = h.db.frontier().unwrap();
+            let rows = h.db.vertices().unwrap();
+            if separate_publications {
+                assert!(matches!(
+                    issue(&mut h, &plan, &[approval]),
+                    Err(KernelError::Corrupt(_))
+                ));
+            } else {
+                let recorded = issue(&mut h, &plan, &[approval]).unwrap().unwrap();
+                assert!(recorded.already_recorded);
+                assert_eq!(recorded.record.recorded_at, head);
+                assert_eq!(
+                    first_issuance(&h.db, &h.book, &h.march).unwrap(),
+                    Some(recorded.record)
+                );
+                refused_unchanged(&mut h, &plan, &[]);
+                assert!(
+                    h.db.vertex(outcome_id(&h, &plan.proposal(&h.book).unwrap()))
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            assert_eq!(h.db.frontier().unwrap(), head);
+            assert_eq!(h.db.vertices().unwrap(), rows);
+        }
+    }
+
+    #[test]
+    fn durable_issuance_retry_is_read_only_and_rechecks_current_authority() {
+        let mut h = harness_legacy();
+        let ctx = h.ctx();
+        let prepared = h
+            .runtime
+            .block_on(prepare_outcome_rebuild(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                Capability::embedded(PRINCIPAL, &["read", "schema_change"]).unwrap(),
+            ))
+            .unwrap()
+            .unwrap();
+        h.runtime
+            .block_on(publish_outcome_rebuild(&mut h.db, &ctx, &h.book, prepared))
+            .unwrap()
+            .unwrap();
+        let plan = plan(&mut h, b"durable-issuance");
+        let approval = h.approve_transition(plan.proposal_digest(&h.book).unwrap());
+        let controller = Capability::embedded(PRINCIPAL, &["close"]).unwrap();
+        let issued = execute(&mut h, &plan, &[approval], &controller)
+            .unwrap()
+            .unwrap();
+        reopen_hold_store(&mut h);
+        assert_eq!(
+            first_issuance(&h.db, &h.book, &h.march).unwrap(),
+            Some(issued.record.clone())
+        );
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        assert_eq!(
+            execute(&mut h, &plan, &[approval], &controller)
+                .unwrap()
+                .unwrap(),
+            StatementsIssued {
+                already_recorded: true,
+                ..issued
+            }
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        h.revoke(&controller, 106);
+        reopen_hold_store(&mut h);
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let refusal = execute(&mut h, &plan, &[approval], &controller)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, fa_policy::denial::code::REVOKED);
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+}

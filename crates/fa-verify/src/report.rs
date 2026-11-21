@@ -111,6 +111,12 @@
 //! native-unit debit subsets, original per-leg party grouping, exact wide ratios
 //! and complete inclusive date windows. Their thresholds retain full i128
 //! precision. Both versions deliberately use the complete all-date population.
+//! Graph structuring v2 independently allocates original credit legs against
+//! remaining debit capacities, preserving both margins in each legal entity
+//! and native unit. It rebuilds consecutive-gap transfer chains, including
+//! split-leg multiplicity, exact thresholds and complete candidate counts.
+//! Quadratic allocation expansion is bounded before construction; exceeding
+//! that bound refuses the report instead of omitting transfers.
 //! Findings, citations, population, work and every output digest are rebuilt.
 //! This statistical computation does not establish fraud or approval admission.
 
@@ -2189,17 +2195,18 @@ fn verify_report_with_native_subledger_input(
                 } else {
                     BTreeMap::new()
                 };
-            let mut tracing = request
-                .parameters
-                .is_trace()
-                .then(|| procedure::TraceContext {
-                    account_normal_balances: schema
-                        .accounts
-                        .iter()
-                        .map(|(&identity, account)| (identity, account.normal_balance))
-                        .collect(),
-                    entries: BTreeMap::new(),
-                });
+            let mut tracing =
+                request
+                    .parameters
+                    .uses_leg_entities()
+                    .then(|| procedure::TraceContext {
+                        account_normal_balances: schema
+                            .accounts
+                            .iter()
+                            .map(|(&identity, account)| (identity, account.normal_balance))
+                            .collect(),
+                        entries: BTreeMap::new(),
+                    });
             let mut leg_parties = BTreeMap::new();
             let entries = infos
                 .iter()

@@ -148,19 +148,47 @@ pub(super) fn convert(
 /// independent of narrowing; equal remainders retain the caller's canonical
 /// item order. This is independent of the producer's money implementation.
 pub(super) fn largest_remainder(total: i128, weights: &[i128]) -> Result<Vec<i128>, ReportError> {
+    if total < 0
+        || weights.is_empty()
+        || weights.len() > 2048
+        || weights.iter().any(|weight| *weight <= 0)
+    {
+        return Err(failed(
+            "functional_allocation",
+            "invalid or overflowing exact open-item allocation",
+        ));
+    }
+    allocate_remainders(total, weights)
+}
+
+/// Allocate one credit against the remaining original debit capacities. Zero
+/// capacities retain their canonical indices, but can never receive a share.
+/// The original-entry bound is separate from the open-item profile's bound.
+pub(in crate::report) fn capacity_allocation(
+    total: i128,
+    weights: &[i128],
+) -> Result<Vec<i128>, ReportError> {
+    if total < 0
+        || weights.is_empty()
+        || weights.len() > crate::envelope::MAX_ENVELOPE_LIST
+        || weights.iter().any(|weight| *weight < 0)
+        || weights.iter().all(|weight| *weight == 0)
+    {
+        return Err(failed(
+            "procedure_arithmetic",
+            "money-flow allocation requires nonnegative debit capacities and a positive total capacity",
+        ));
+    }
+    allocate_remainders(total, weights)
+}
+
+fn allocate_remainders(total: i128, weights: &[i128]) -> Result<Vec<i128>, ReportError> {
     let invalid = || {
         failed(
             "functional_allocation",
             "invalid or overflowing exact open-item allocation",
         )
     };
-    if total < 0
-        || weights.is_empty()
-        || weights.len() > 2048
-        || weights.iter().any(|weight| *weight <= 0)
-    {
-        return Err(invalid());
-    }
     let denominator = weights.iter().try_fold(Wide::ZERO, |sum, weight| {
         sum.add(Wide::from_u128(*weight as u128))
             .ok_or_else(invalid)
@@ -291,5 +319,23 @@ mod tests {
         let boundary = largest_remainder(2047, &[1; 2048]).unwrap();
         assert_eq!(boundary[..2047], [1; 2047]);
         assert_eq!(boundary[2047], 0);
+    }
+
+    #[test]
+    fn transfer_capacities_keep_zero_indices_and_the_original_leg_bound() {
+        assert_eq!(capacity_allocation(3, &[0, 1, 0, 3]).unwrap(), [0, 1, 0, 2]);
+        assert_eq!(capacity_allocation(1, &[0, 1, 1]).unwrap(), [0, 1, 0]);
+        assert_eq!(
+            capacity_allocation(7, &[0, i128::MAX, i128::MAX]).unwrap(),
+            [0, 4, 3]
+        );
+        let boundary = capacity_allocation(4095, &[1; 4096]).unwrap();
+        assert_eq!(boundary[..4095], [1; 4095]);
+        assert_eq!(boundary[4095], 0);
+        assert!(capacity_allocation(1, &[1; 4097]).is_err());
+        assert!(capacity_allocation(1, &[0, 0]).is_err());
+        assert!(capacity_allocation(1, &[-1, 2]).is_err());
+        assert!(capacity_allocation(-1, &[1]).is_err());
+        assert!(capacity_allocation(1, &[]).is_err());
     }
 }

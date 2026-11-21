@@ -117,13 +117,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 )));
             }
             if transfers.len() == MAX_KITING_TRANSFERS {
-                return Ok(Err(Refusal::new(
-                    code::DOCUMENT_INTAKE,
-                    exit::REFUSAL,
-                    "graph.kiting exceeds its paired-transfer population bound",
-                    "plan §11.1 (bounded deterministic procedures)",
-                    "select an earlier known-at prefix; no partial cycle inventory was returned",
-                )));
+                return Err(fa_lantern::LanternError::BudgetExhausted {
+                    procedure: "graph.kiting".into(),
+                    used: transfers.len() as u64 + 1,
+                    budget: MAX_KITING_TRANSFERS as u64,
+                    fix: "select an earlier known-at prefix within max_kiting_transfers; no partial cycle inventory was returned".into(),
+                }
+                .into());
             }
             let source = match self
                 .verified_kiting_line(cx, capability, source, at, &mut imports)

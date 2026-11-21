@@ -1,4 +1,4 @@
-//! Independent replay of JET, duplicate, density, tracing and Benford procedures.
+//! Independent replay of JET, duplicate, number, graph, tracing and Benford procedures.
 //!
 //! The complete journal prefix supplies the population; native read witnesses
 //! and the producer's findings supply no arithmetic or period metadata. These
@@ -17,6 +17,9 @@
 //! authenticated chart, including split and reciprocal legs. Relative-size
 //! factor and threshold splitting v1 reconstruct party dimensions from original
 //! legs and independently reproduce exact ratios and complete greedy windows.
+//! Graph structuring v2 independently conserves both original leg margins in
+//! every native-unit/legal-entity partition and reconstructs consecutive-gap
+//! transfer chains from the complete all-date live posting population.
 //! LIBR v2 requires
 //! its account/source handles and effective claim date, and reconstructs one native-unit/entity
 //! stream under its declared intraday and replenishment laws. FIFO and LIFO v2
@@ -46,6 +49,7 @@ mod ordered;
 mod post_closing;
 mod pro_rata;
 mod round_density;
+mod structuring;
 mod unusual_accounts;
 pub(super) use post_closing::period_transitions;
 
@@ -86,6 +90,13 @@ pub enum VerifiedProcedureParameters {
         min_subset_size: u32,
     },
     ThresholdSplitting {
+        currency_iso4217: u32,
+        floor: i128,
+        min_count: u32,
+        threshold: i128,
+        window_days: u32,
+    },
+    GraphStructuring {
         currency_iso4217: u32,
         floor: i128,
         min_count: u32,
@@ -154,6 +165,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmountDensity { .. } => "numbers.round_amount_density",
             Self::RelativeSizeFactor { .. } => "numbers.relative_size_factor",
             Self::ThresholdSplitting { .. } => "numbers.threshold_splitting",
+            Self::GraphStructuring { .. } => "graph.structuring",
             Self::TraceLibr { .. } => "trace.libr",
             Self::TraceFifo { .. } => "trace.fifo",
             Self::TraceLifo { .. } => "trace.lifo",
@@ -175,6 +187,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmountDensity { .. } => "FA-EVID-L64",
             Self::RelativeSizeFactor { .. } => "FA-EVID-L32",
             Self::ThresholdSplitting { .. } => "FA-EVID-L33",
+            Self::GraphStructuring { .. } => "FA-EVID-L14",
             Self::TraceLibr { .. } => "FA-EVID-L15",
             Self::TraceFifo { .. } => "FA-EVID-L16",
             Self::TraceLifo { .. } => "FA-EVID-L17",
@@ -217,6 +230,13 @@ impl VerifiedProcedureParameters {
                 ("min_subset_size", min_subset_size),
             ],
             Self::ThresholdSplitting {
+                currency_iso4217,
+                floor,
+                min_count,
+                threshold,
+                window_days,
+            }
+            | Self::GraphStructuring {
                 currency_iso4217,
                 floor,
                 min_count,
@@ -324,6 +344,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmountDensity { .. } => &round_density::DEFAULTS,
             Self::RelativeSizeFactor { .. } => &number_analytics::RSF_DEFAULTS,
             Self::ThresholdSplitting { .. } => &number_analytics::SPLIT_DEFAULTS,
+            Self::GraphStructuring { .. } => &structuring::DEFAULTS,
             Self::TraceLibr { .. } => &libr::DEFAULTS,
             Self::TraceFifo { .. } | Self::TraceLifo { .. } => &ordered::DEFAULTS,
             Self::TraceProRata { .. } => &pro_rata::DEFAULTS,
@@ -359,6 +380,10 @@ impl VerifiedProcedureParameters {
         )
     }
 
+    pub(crate) fn uses_leg_entities(self) -> bool {
+        self.is_trace() || matches!(self, Self::GraphStructuring { .. })
+    }
+
     pub(crate) fn is_number_analytics(self) -> bool {
         matches!(
             self,
@@ -377,6 +402,9 @@ impl VerifiedProcedureParameters {
             | Self::RoundAmountDensity { .. }
             | Self::RelativeSizeFactor { .. }
             | Self::ThresholdSplitting { .. } => "O(legs log legs)",
+            Self::GraphStructuring { .. } => {
+                "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
+            }
             Self::FirstDigit { .. } | Self::SecondDigit { .. } | Self::FirstTwoDigits { .. } => {
                 "O(legs)"
             }
@@ -464,6 +492,18 @@ pub enum VerifiedProcedureStatistic {
         scale: u8,
         entries: Vec<u128>,
     },
+    /// Consecutive allocated credit-to-debit transfers in one native unit and
+    /// legal entity. Account citations precede distinct chronological entries.
+    StructuredTransfers {
+        from: u128,
+        to: u128,
+        unit: u32,
+        entity: Option<u128>,
+        transfers: u64,
+        mantissa: i128,
+        scale: u8,
+        entries: Vec<u128>,
+    },
     /// Below the requested minimum, only the population is scored.
     FirstDigitPopulation {
         counts: [u64; 9],
@@ -502,6 +542,7 @@ impl VerifiedProcedureStatistic {
             Self::DaysApart { .. } => "days_apart",
             Self::RelativeSizeFactor { .. } => "rsf_bps",
             Self::SplitTotal { .. } => "split_total",
+            Self::StructuredTransfers { .. } => "chain_mantissa",
             Self::FirstDigitPopulation { .. } | Self::DigitPopulation { .. } => "population",
             Self::FirstDigitMad { .. } | Self::DigitMad { .. } => "mad",
         }
@@ -519,6 +560,7 @@ impl VerifiedProcedureStatistic {
             Self::DaysApart { days, .. } => i128::from(*days),
             Self::RelativeSizeFactor { basis_points, .. } => *basis_points,
             Self::SplitTotal { mantissa, .. } => *mantissa,
+            Self::StructuredTransfers { mantissa, .. } => *mantissa,
             Self::FirstDigitPopulation { counts } => {
                 counts.iter().map(|&count| i128::from(count)).sum()
             }
@@ -532,7 +574,9 @@ impl VerifiedProcedureStatistic {
     pub(crate) fn scale(&self) -> u8 {
         match self {
             Self::FirstDigitMad { .. } | Self::DigitMad { .. } => 9,
-            Self::TracedAmount { scale, .. } | Self::SplitTotal { scale, .. } => *scale,
+            Self::TracedAmount { scale, .. }
+            | Self::SplitTotal { scale, .. }
+            | Self::StructuredTransfers { scale, .. } => *scale,
             _ => 0,
         }
     }
@@ -557,6 +601,13 @@ impl VerifiedProcedureFinding {
     /// distinct first citation; its tag and little-endian identity suffice.
     fn citation_order(&self) -> Vec<(u8, [u8; 16])> {
         match &self.statistic {
+            VerifiedProcedureStatistic::StructuredTransfers {
+                from, to, entries, ..
+            } => {
+                let mut citations = vec![(3, to.to_le_bytes()), (3, from.to_le_bytes())];
+                citations.extend(entries.iter().map(|entry| (1, entry.to_le_bytes())));
+                citations
+            }
             VerifiedProcedureStatistic::RelativeSizeFactor {
                 largest_entry,
                 second_entry,
@@ -652,7 +703,7 @@ pub(super) struct Entry {
     pub transition: Option<PeriodTransition>,
 }
 
-/// Tracing-only metadata decoded from the complete authenticated source.
+/// Original-leg tracing and graph metadata from the complete authenticated source.
 #[derive(Clone, Default)]
 pub(super) struct TraceContext {
     pub account_normal_balances: BTreeMap<u128, u8>,
@@ -752,6 +803,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "numbers.round_amount_density" => ("FA-EVID-L64", None),
         "numbers.relative_size_factor" => ("FA-EVID-L32", None),
         "numbers.threshold_splitting" => ("FA-EVID-L33", None),
+        "graph.structuring" => ("FA-EVID-L14", None),
         "trace.libr" => ("FA-EVID-L15", None),
         "trace.fifo" => ("FA-EVID-L16", None),
         "trace.lifo" => ("FA-EVID-L17", None),
@@ -762,7 +814,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, exact duplicates and density/relative-size/threshold-splitting v1, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
@@ -795,6 +847,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         || (matches!(
             id,
             "jet.unusual_accounts"
+                | "graph.structuring"
                 | "benford.first_digit"
                 | "benford.second_digit"
                 | "benford.first_two_digits"
@@ -825,6 +878,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "benford.second_digit"
                 | "benford.first_two_digits"
                 | "jet.unusual_accounts"
+                | "graph.structuring"
         ))
         && effective_through.is_some()
     {
@@ -855,6 +909,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         benford_digits::decode(&mut question, id == "benford.first_two_digits")?
     } else if id == "numbers.round_amount_density" {
         round_density::decode(&mut question)?
+    } else if id == "graph.structuring" {
+        structuring::decode(&mut question)?
     } else if id == "jet.unusual_accounts" {
         unusual_accounts::decode(&mut question)?
     } else if matches!(
@@ -1050,6 +1106,14 @@ fn finding(
         }
         VerifiedProcedureStatistic::SplitTotal { entries, .. } => {
             w.count(entries.len());
+            for entry in entries {
+                w.u8(1).u128(*entry);
+            }
+        }
+        VerifiedProcedureStatistic::StructuredTransfers {
+            from, to, entries, ..
+        } => {
+            w.count(entries.len() + 2).u8(3).u128(*to).u8(3).u128(*from);
             for entry in entries {
                 w.u8(1).u128(*entry);
             }
@@ -1630,6 +1694,7 @@ fn recompute_version(
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
         | VerifiedProcedureParameters::RelativeSizeFactor { .. }
         | VerifiedProcedureParameters::ThresholdSplitting { .. }
+        | VerifiedProcedureParameters::GraphStructuring { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }
         | VerifiedProcedureParameters::TraceLifo { .. }
@@ -1747,6 +1812,7 @@ fn recompute_version(
             | VerifiedProcedureParameters::RoundAmountDensity { .. }
             | VerifiedProcedureParameters::RelativeSizeFactor { .. }
             | VerifiedProcedureParameters::ThresholdSplitting { .. }
+            | VerifiedProcedureParameters::GraphStructuring { .. }
             | VerifiedProcedureParameters::TraceLibr { .. }
             | VerifiedProcedureParameters::TraceFifo { .. }
             | VerifiedProcedureParameters::TraceLifo { .. }
@@ -1785,6 +1851,15 @@ fn recompute_version(
     } else if profile.is_number_analytics() {
         (findings, live_legs, comparisons) =
             number_analytics::replay(profile, &grouped_population, registry)?;
+    } else if matches!(
+        profile,
+        VerifiedProcedureParameters::GraphStructuring { .. }
+    ) {
+        (findings, live_legs, comparisons) =
+            structuring::replay(profile, &grouped_population, registry)?;
+        // This native procedure charges each allocated flow leg and each
+        // qualifying transfer, but no separate entry visits.
+        live_entries = 0;
     } else if matches!(profile, VerifiedProcedureParameters::TraceLibr { .. }) {
         let (finding, legs, compared) =
             libr::replay(profile, effective_through, &grouped_population, registry)?;
@@ -1833,6 +1908,7 @@ fn recompute_version(
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
         | VerifiedProcedureParameters::RelativeSizeFactor { .. }
         | VerifiedProcedureParameters::ThresholdSplitting { .. }
+        | VerifiedProcedureParameters::GraphStructuring { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }
         | VerifiedProcedureParameters::TraceLifo { .. }

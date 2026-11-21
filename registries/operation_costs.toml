@@ -290,6 +290,21 @@ complexity_witness = "Authority/custody and subject checks retain their existing
 notes = "legal_hold_lifecycle_keys_are_atomic_and_retries_keep_the_original_outcome checks the one-subject and whole-book first-placement census (3 new vertices, 1 edge, 1 publication) and release census (2 new vertices, no new edges, 1 publication). The release retains its target-derived unique identity while reserving the ordinary principal-scoped key; exact retries preserve the original scope, sequence and ordered approval transcript. Genuine claim-free historical controls remain read-only retry anchors; fresh legacy writes require verified monetary-key coverage. Historical target-derived hold-release keys are not retroactively indexed. Existing hold-cell compare-and-set semantics and approval laws are unchanged; no additional publication, measured latency, full legacy-control-key migration or new hot-object exception is claimed."
 
 [[operation_class]]
+id = "statement_issuance"
+name = "Statement issuance with an authenticated recorded outcome"
+substrate_class = "Point-witnessed IssuanceControl, scoped key claim and StatementIssuance in one WriteTxn"
+substrate_transactions = "1 for a first issuance; 0 for an authenticated retry"
+today_posture = "One publication journals the IssuanceControl entry, common-key IntentOutcome and immutable StatementIssuance body"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 IssuanceControl entry + 1 IntentOutcome + 1 StatementIssuance + 1 IN_CASE edge"
+hot_object_exceptions = []
+external_authorities = "none; the statement certificate, optional transmittal document and independent approvals are already retained"
+complexity_witness = "Fresh issuance retains the O(I) point-witnessed ordinal scan for I prior issuances of the period, certificate/document reads and approval checks. Common-key admission adds opaque claim and normal-key Entry witnesses plus authenticated coverage, checking a bounded genesis frame or O(log K) recovered monetary-key nodes. Native history hydration follows current authority admission and retains its history-dependent cost. Retries authenticate original control, claim and co-published body snapshots, canonical mirrors and the complete ordered approval transcript without another publication."
+notes = "issuance_claim_is_atomic_and_retries_preserve_the_complete_approval_transcript checks the three-vertex, one-edge, one-publication census. The existing domain-derived issuance record key is preserved; this row does not claim collision coverage between an issuance's raw client key and unrelated raw-key operations. Genuine claim-free historical controls remain read-only retry anchors; fresh legacy issuances require verified monetary-key coverage. Prior certificate-retention and approval publications are excluded. No measured latency or full historical control-key migration is claimed."
+
+[[operation_class]]
 id = "account_lifecycle"
 name = "Account opening, closing or promotion"
 substrate_class = "Point-witnessed schema control and account effects in one WriteTxn"

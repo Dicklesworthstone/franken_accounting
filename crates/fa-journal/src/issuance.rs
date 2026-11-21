@@ -31,6 +31,11 @@
 //! stale instead of renumbering it. An issuance is never withdrawn: a
 //! restatement is a later issuance of restated statements, and the first
 //! stays on record.
+//!
+//! Its registered record key also reserves the common successful-intent
+//! namespace atomically. Exact retries authenticate the original entry,
+//! ordered approvals and issuance body; an old claim-free publication
+//! remains a read-only retry anchor.
 
 use fa_model::limits::{
     MAX_DESCRIPTION_BYTES, MAX_EXTENSION_BYTES, MAX_IDEMPOTENCY_KEY_BYTES, MAX_PERIOD_REF_BYTES,
@@ -45,8 +50,9 @@ use fa_policy::{Capability, Intent, Party};
 use fa_registry::evidence_policy::EvidencePolicy;
 use fa_time::DateDay;
 use fgdb::{Database, VertexRow, WriteBatch, WriteTxn, WriteTxnError};
+use fgdb_delta_types::PropertyKeyId;
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CommitSeq, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::evidence::{document_vid, drift, hex, verify_row};
 use crate::genesis::BookContext;
@@ -469,6 +475,53 @@ fn record_key(key: &[u8]) -> Vec<u8> {
     domain_digest(RECORD_KEY_DOMAIN, &[key]).to_vec()
 }
 
+/// Only the dedicated issuance writer's complete canonical control may use
+/// the common outcome protocol and its legacy normal-key retry exception.
+pub(crate) fn is_issuance_control(entry: &fa_model::Entry, vid: VId) -> bool {
+    let proposal = &entry.proposal;
+    if proposal.schema_minor != fa_model::entry::EXTENSIONS_MINOR
+        || proposal.branch_id != Id128::TRUNK
+        || proposal.effective_period.is_some()
+        || proposal.document_date.is_some()
+        || !proposal.legs.is_empty()
+        || !proposal.unit_totals.is_empty()
+        || proposal.base_totals.is_some()
+        || proposal.session_ref.is_some()
+        || !proposal.evidence.is_empty()
+        || !proposal.supersession.is_empty()
+        || proposal.pending.is_some()
+        || !proposal.external_ids.is_empty()
+        || !proposal.tags.is_empty()
+        || entry.plan_certificate.is_some()
+        || proposal.extensions.len() != 1
+        || vid
+            != entry_vid(
+                proposal.book_id,
+                &proposal.principal_ref.0.to_le_bytes(),
+                &proposal.idempotency_key,
+            )
+    {
+        return false;
+    }
+    let Ok(Some(issuance)) = issuance_of(entry) else {
+        return false;
+    };
+    let EntryOrigin::Control {
+        control_kind: ControlKind::STATEMENT_ISSUANCE,
+        spec_body_digest,
+    } = &proposal.origin
+    else {
+        return false;
+    };
+    issuance.book_id == proposal.book_id
+        && issuance.digest().ok().as_ref() == Some(spec_body_digest)
+        && matches!(&proposal.control,
+            Some(ControlPayload::LifecycleTransition {
+                object_ref, from: 0, to: ISSUED, proof_refs, reason_code: 0,
+            }) if *object_ref == issuance.vid()
+                && *proof_refs == issuance.document.iter().map(|oid| TypedRef::Object(*oid)).collect::<Vec<_>>())
+}
+
 fn checked(book: &BookContext, issuance: &StatementIssuance) -> Result<(), Refusal> {
     if issuance.book_id != book.book_id {
         return Err(usage(
@@ -599,6 +652,11 @@ pub async fn issue_statements<V: asupersync::fs::Vfs + Clone>(
         &principal.0.to_le_bytes(),
         &proposal.idempotency_key,
     );
+    // A reopened book's retained snapshots authenticate the original source
+    // and recovered key coverage. Complete current authority precedes them.
+    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(r));
+    }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     // The capability is not revoked (plan §14.2): the first read.
@@ -607,14 +665,36 @@ pub async fn issue_statements<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let epoch = policy::epoch_witness(&txn, db)?;
+    if let Err(r) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        principal,
+        &proposal.idempotency_key,
+        evid,
+    )? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
         return Ok(
-            recorded_or_conflict(db, book, &row, &proposal)?.map(|record| StatementsIssued {
-                record,
-                already_recorded: true,
+            recorded_or_conflict(db, book, &row, &proposal, &approvals)?.map(|record| {
+                StatementsIssued {
+                    record,
+                    already_recorded: true,
+                }
             }),
         );
+    }
+    if let Err(r) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(r));
     }
     if txn
         .vertex(db, period_vid(&book.calendar.id, &issuance.period))?
@@ -676,30 +756,16 @@ pub async fn issue_statements<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let cited = approvals.len();
-    let entry = proposal.clone().seal(approvals, None)?;
+    let entry = proposal.clone().seal(approvals.clone(), None)?;
     let vid = issuance.vid();
-    let mut props = vec![
-        (
-            property::FA_PAYLOAD,
-            scalar_bytes("issuance._fa_payload", issuance.canonical_bytes()?)?,
-        ),
-        (
-            property::FA_DIGEST,
-            scalar_bytes("issuance._fa_digest", issuance.digest()?.to_vec())?,
-        ),
-        (
-            property::BOOK_ID,
-            scalar_bytes("book_id", book.book_id.0.to_vec())?,
-        ),
-        (
-            property::CODE,
-            scalar_text("issuance.code", &issuance.period)?,
-        ),
-    ];
-    props.sort_by_key(|(k, _)| k.0);
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
-    in_case.create_vertex(vid, vec![label::STATEMENT_ISSUANCE], props);
+    crate::outcome::stage_control(&mut in_case, &entry, evid)?;
+    in_case.create_vertex(
+        vid,
+        vec![label::STATEMENT_ISSUANCE],
+        issuance_properties(&issuance)?,
+    );
     in_case.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
     txn.write(db, in_case)?;
     match txn.commit(db, &ctx.commit()).await {
@@ -721,16 +787,49 @@ pub async fn issue_statements<V: asupersync::fs::Vfs + Clone>(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
             Some(row) => Ok(
-                recorded_or_conflict(db, book, &row, &proposal)?.map(|record| StatementsIssued {
-                    record,
-                    already_recorded: true,
+                recorded_or_conflict(db, book, &row, &proposal, &approvals)?.map(|record| {
+                    StatementsIssued {
+                        record,
+                        already_recorded: true,
+                    }
                 }),
             ),
+            None if db
+                .vertex(crate::outcome::entry_outcome_vid(&proposal))?
+                .is_some() =>
+            {
+                Ok(Err(crate::outcome::key_conflict()))
+            }
             // Another issuance of the period took this ordinal first.
             None => Ok(Err(stale_ordinal(&issuance))),
         },
         Err(e) => Err(e.into()),
     }
+}
+
+fn issuance_properties(
+    issuance: &StatementIssuance,
+) -> Result<Vec<(PropertyKeyId, CanonicalScalar)>, KernelError> {
+    let mut props = vec![
+        (
+            property::FA_PAYLOAD,
+            scalar_bytes("issuance._fa_payload", issuance.canonical_bytes()?)?,
+        ),
+        (
+            property::FA_DIGEST,
+            scalar_bytes("issuance._fa_digest", issuance.digest()?.to_vec())?,
+        ),
+        (
+            property::BOOK_ID,
+            scalar_bytes("book_id", issuance.book_id.0.to_vec())?,
+        ),
+        (
+            property::CODE,
+            scalar_text("issuance.code", &issuance.period)?,
+        ),
+    ];
+    props.sort_by_key(|(k, _)| k.0);
+    Ok(props)
 }
 
 /// A document this book holds, verified.
@@ -762,6 +861,7 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     row: &VertexRow,
     proposal: &EntryPayload,
+    approvals: &[ApprovalRef],
 ) -> Outcome<IssuanceRecord> {
     let conflict = || {
         Refusal::new(
@@ -779,6 +879,13 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(conflict()));
     }
     let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
+    if row.labels.as_slice() != [label::ENTRY]
+        || !crate::entry_storage::mirrors_match(row, &stored)?
+        || stored.approvals != approvals
+        || !crate::outcome::verify_control_recorded(db, row, &stored)?
+    {
+        return Ok(Err(conflict()));
+    }
     let recorded = match issuance_of(&stored)? {
         Some(recorded) if stored.proposal_digest == proposal.proposal_digest()? => recorded,
         _ => {
@@ -830,9 +937,13 @@ fn record_of<V: asupersync::fs::Vfs + Clone>(
     }
     let issuance =
         StatementIssuance::decode(&bytes(&row, property::FA_PAYLOAD, "issuance._fa_payload")?)?;
-    if issuance.vid() != vid || issuance.book_id != book.book_id {
+    if issuance.vid() != vid
+        || issuance.book_id != book.book_id
+        || row.props != issuance_properties(&issuance)?
+        || !crate::outcome::original(db, &row)?
+    {
         return Err(KernelError::Corrupt(format!(
-            "statement issuance {:032x} carries another issuance's body",
+            "statement issuance {:032x} is not its immutable canonical body",
             vid.0
         )));
     }
@@ -847,6 +958,17 @@ fn record_of<V: asupersync::fs::Vfs + Clone>(
         let entry = crate::entry_storage::decode_at(db, &src, seq)?;
         let recorded_at = src.created_at;
         if issuance_of(&entry)?.as_ref() == Some(&issuance) {
+            if recorded_at != row.created_at
+                || src.labels.as_slice() != [label::ENTRY]
+                || !crate::entry_storage::mirrors_match(&src, &entry)?
+                || !is_issuance_control(&entry, evid)
+                || !crate::outcome::verify_control_recorded(db, &src, &entry)?
+            {
+                return Err(KernelError::Corrupt(format!(
+                    "statement issuance {:032x} has no authentic atomic control record",
+                    vid.0
+                )));
+            }
             records.push((evid, entry, recorded_at));
         }
     }

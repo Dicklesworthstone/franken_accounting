@@ -20,6 +20,8 @@ mod pro_rata;
 mod profile_admission;
 #[path = "offline/relative_size_factor.rs"]
 mod relative_size_factor;
+#[path = "offline/structuring.rs"]
+mod structuring;
 #[path = "offline/unusual_accounts.rs"]
 mod unusual_accounts;
 

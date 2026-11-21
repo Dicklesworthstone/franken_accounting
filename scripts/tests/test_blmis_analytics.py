@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import date
 from pathlib import Path
 import sys
+import tomllib
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -64,6 +65,23 @@ class SourcePredicateTests(unittest.TestCase):
     def model(self, rows):
         entries = analytics.source_entries(rows, receipts(rows))
         return entries, analytics.expected_findings(entries)
+
+    def test_source_sweep_matches_registered_native_versions_and_defaults(self):
+        # Native execution resolves the current catalog version. Pinning only
+        # the synthetic report helper to the oracle would miss a broken replay
+        # when the native procedure advances, as round_amounts did at v2.
+        path = Path(__file__).resolve().parents[2] / "registries/procedures.toml"
+        registry = tomllib.loads(path.read_text(encoding="utf-8"))
+        procedures = {value["id"]: value for value in registry["procedure"]}
+        for name, (version, parameters) in analytics.PROCEDURES.items():
+            with self.subTest(procedure=name):
+                native = procedures[name]
+                self.assertEqual(native["version"], version)
+                self.assertEqual(native["claim"], "statistical")
+                self.assertNotEqual(native.get("effective_through"), "required")
+                self.assertEqual({value["name"]: value["default"]
+                                  for value in registry["parameter"]
+                                  if value["procedure"] == name}, parameters)
 
     def test_round_and_weekend_predicates_use_literal_amounts_and_calendar(self):
         rows = [row(1, "2026-10-31", 1000), row(2, "2026-11-01", -250), row(3, "2026-11-02", 2000)]
@@ -188,7 +206,7 @@ class ComparatorFailureTests(unittest.TestCase):
         self.assertEqual(self.check(self.report), self.expected)
 
     def test_wrong_procedure_version_scope_and_threshold_are_refused(self):
-        for field, value in (("procedure", "jet.weekend"), ("version", 2), ("claim", "invariant"),
+        for field, value in (("procedure", "jet.weekend"), ("version", 1), ("version", 3), ("claim", "invariant"),
                              ("known_at", 99), ("effective_through", "2026-11-01"),
                              ("parameters", [{"name": "round_power", "value": 2}])):
             report = deepcopy(self.report)

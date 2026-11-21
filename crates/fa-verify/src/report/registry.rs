@@ -631,6 +631,7 @@ pub(super) fn verify_procedure(
             || matches!(
                 profile,
                 super::procedure::VerifiedProcedureParameters::ThresholdSplitting { .. }
+                    | super::procedure::VerifiedProcedureParameters::GraphStructuring { .. }
             )
         {
             if string(row, "kind")? == "currency" {

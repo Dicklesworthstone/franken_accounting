@@ -17,7 +17,7 @@
 //! authenticated descendant identities bind the fold, and original leg
 //! ordinals survive projection even when its displayed cells are one-sided.
 
-mod arithmetic;
+pub(super) mod arithmetic;
 mod calendar;
 mod valuation;
 

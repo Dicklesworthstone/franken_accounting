@@ -192,7 +192,19 @@ mod tests {
             "suspense, intercompany, receivable, payable, fixed_asset, accrued_expense, inventory, cash, investor_capital, investor_transfer, payroll, intercompany_activity, investment_in_subsidiary, contributed_capital, noncontrolling_interest, noncontrolling_interest_income, retained_earnings"
         );
         assert!(roles.get("payable").is_some_and(|r| !r.admits("Asset")));
-        assert!(roles.get("cash").is_some_and(|r| r.consumers.len() == 7));
+        assert_eq!(
+            roles.get("cash").expect("cash").consumers,
+            [
+                "confirm.coverage",
+                "solvency.cash_flow_test",
+                "lookback.preferences",
+                "ponzi.net_investment",
+                "graph.ponzi_motif",
+                "distribution.rising_tide",
+                "distribution.pro_rata",
+                "graph.kiting",
+            ]
+        );
         // A role a verb reads outside Lantern lists the verb, not a procedure.
         let nci = roles
             .get("noncontrolling_interest_income")

@@ -28,6 +28,13 @@ const THRESHOLD_SPLITTING: &[(&str, i128, i128)] = &[
     ("threshold", 2, i128::MAX),
     ("window_days", 0, u32::MAX as i128),
 ];
+const GRAPH_STRUCTURING: &[(&str, i128, i128)] = &[
+    ("currency_iso4217", 1, 999),
+    ("floor", 0, i128::MAX),
+    ("min_count", 1, u32::MAX as i128),
+    ("threshold", 1, i128::MAX),
+    ("window_days", 0, u32::MAX as i128),
+];
 const BENFORD: &[(&str, i128, i128)] = &[
     ("account_type", 0, 8),
     ("currency_iso4217", 1, 999),
@@ -63,6 +70,7 @@ pub fn profile(
         ("numbers.round_amount_density", 1) => ("FA-EVID-L64", DENSITY),
         ("numbers.relative_size_factor", 1) => ("FA-EVID-L32", RELATIVE_SIZE),
         ("numbers.threshold_splitting", 1) => ("FA-EVID-L33", THRESHOLD_SPLITTING),
+        ("graph.structuring", 2) => ("FA-EVID-L14", GRAPH_STRUCTURING),
         ("benford.first_digit", 2) => ("FA-EVID-L10", BENFORD),
         ("benford.second_digit", 2) => ("FA-EVID-L30", BENFORD),
         ("benford.first_two_digits", 2) => ("FA-EVID-L31", BENFORD),
@@ -90,7 +98,9 @@ pub fn profile(
     {
         return None;
     }
-    if id == "numbers.threshold_splitting" && parameters[1].1 >= parameters[3].1 {
+    if matches!(id, "numbers.threshold_splitting" | "graph.structuring")
+        && parameters[1].1 >= parameters[3].1
+    {
         return None;
     }
     if tracing {
@@ -120,6 +130,49 @@ mod tests {
     use super::*;
 
     type ProfileCase<'a> = (&'a str, u16, &'a [(&'a str, i128)], &'a str);
+
+    #[test]
+    fn graph_structuring_requires_v2_complete_parameters_and_an_all_date_population() {
+        let id = "graph.structuring";
+        let parameters = [
+            ("currency_iso4217", 840),
+            ("floor", 0),
+            ("min_count", 1),
+            ("threshold", i128::MAX),
+            ("window_days", i128::from(u32::MAX)),
+        ];
+        assert_eq!(profile(id, 2, None, &parameters, &[]), Some("FA-EVID-L14"));
+        for version in [0, 1, 3] {
+            assert_eq!(profile(id, version, None, &parameters, &[]), None);
+        }
+        assert_eq!(profile(id, 2, Some(0), &parameters, &[]), None);
+        assert_eq!(
+            profile(id, 2, None, &parameters, &[("account", "1000")]),
+            None
+        );
+        assert_eq!(profile(id, 2, None, &parameters[..4], &[]), None);
+        let mut reordered = parameters;
+        reordered.swap(0, 1);
+        assert_eq!(profile(id, 2, None, &reordered, &[]), None);
+        let mut duplicate = parameters;
+        duplicate[1].0 = duplicate[0].0;
+        assert_eq!(profile(id, 2, None, &duplicate, &[]), None);
+        for (index, value) in [
+            (0, 0),
+            (0, 1_000),
+            (1, -1),
+            (1, i128::MAX),
+            (2, 0),
+            (2, i128::from(u32::MAX) + 1),
+            (3, 0),
+            (4, -1),
+            (4, i128::from(u32::MAX) + 1),
+        ] {
+            let mut wrong = parameters;
+            wrong[index].1 = value;
+            assert_eq!(profile(id, 2, None, &wrong, &[]), None);
+        }
+    }
 
     #[test]
     fn numeric_audit_profiles_preserve_full_width_thresholds_and_exact_inventories() {
