@@ -524,7 +524,14 @@ fn recon_anchor(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )
         .and_then(|()| fa_policy::scope(&capability, book.context().book_id))
         .and_then(|()| fa_policy::admit_direct_write(&capability))
-        .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
+        .and_then(|()| {
+            fa_policy::reach_class(
+                &capability,
+                &fa_policy::Reach::whole_book(true),
+                None,
+                fa_model::EntryClass::SCHEMA_CONTROL,
+            )
+        })
         .map_err(|d| Fail::Refusal(fa_journal::policy::refusal(&d)))?;
         book.admit_current(&capability)??;
         Ok(())

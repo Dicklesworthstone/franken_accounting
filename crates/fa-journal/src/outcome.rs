@@ -708,7 +708,7 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
             && matches!(
                 &proposal.control,
                 Some(fa_model::ControlPayload::SchemaChange {
-                    kind: 1..=12 | 14..=19 | 21..=23 | 25,
+                    kind: 1..=12 | 14..=19 | 21..=23 | 25..=26,
                     ..
                 })
             ));

@@ -880,82 +880,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         parent_known_at: CommitSeq,
     ) -> Outcome<AdjustmentLayerAnchored> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        if let Err(denial) = fa_policy::require(
+        let description = self.seal_text(cx, "Anchor adjustment-layer parent")?;
+        let recorded = match fa_journal::adjustment_layer::record_anchor(
+            &mut self.db,
+            cx,
+            &self.context,
             capability,
-            fa_policy::Op::SchemaChange,
-            "anchoring an adjustment-layer book",
+            parent_book_id,
+            parent_known_at,
+            description,
         )
-        .and_then(|()| fa_policy::scope(capability, self.context.book_id))
-        .and_then(|()| fa_policy::admit_direct_write(capability))
-        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .await?
         {
-            return Ok(Err(fa_journal::policy::refusal(&denial)));
-        }
-        let head = match fa_journal::policy::current_at(&self.db, &self.context, capability)? {
-            Ok(current) => current.at(),
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        if parent_book_id == self.context.book_id {
-            return Ok(Err(refusal_book_to_book(
-                "a book cannot anchor to itself as its own parent book",
-                "create a dedicated adjustment-layer book (`fa book create`) and anchor it to the distinct parent book",
-            )));
-        }
-        if parent_known_at.0 == 0 {
-            return Ok(Err(refusal_book_to_book(
-                "parent_known_at must be a committed sequence >= 1",
-                "supply the parent book's committed known-at sequence (e.g. from `fa book info` or a parent trial-balance certificate)",
-            )));
-        }
-        if let BookKind::AdjustmentLayer {
-            parent_book_id: existing_parent,
-            parent_known_at: existing_seq,
-        } = book_kind_at_db(&self.db, &self.context, head)?
-        {
-            if existing_parent != parent_book_id {
-                return Ok(Err(refusal_book_to_book(
-                    format!(
-                        "this book is already anchored to parent book {}; an adjustment-layer book cannot switch parents",
-                        existing_parent.to_hex()
-                    ),
-                    "create a separate adjustment-layer book for another parent book",
-                )));
-            }
-            if parent_known_at.0 < existing_seq {
-                return Ok(Err(refusal_book_to_book(
-                    format!(
-                        "parent_known_at {} precedes the existing adjustment-layer anchor {}",
-                        parent_known_at.0, existing_seq
-                    ),
-                    "advance parent_known_at monotonically when propagating a parent restatement, or read an earlier snapshot via --as-known-at",
-                )));
-            }
-        }
-        let policy = fa_registry::evidence_policy::EvidencePolicy::embedded()
-            .map_err(|e| KernelError::Corrupt(e.to_string()))?;
-        let grade = fa_journal::upload::upload_grade(&policy, capability.sod_profile())?;
-        let bytes =
-            encode_adjustment_layer_anchor(self.context.book_id, parent_book_id, parent_known_at.0)
-                .map_err(|e| KernelError::Model(e.into()))?;
-        let doc = fa_journal::Document {
-            book_id: self.context.book_id,
-            kind: ADJUSTMENT_LAYER_DOCUMENT_KIND,
-            mime: ADJUSTMENT_LAYER_MIME.to_string(),
-            grade,
-            retrieved_by: capability.holder(),
-            bytes,
-        };
-        let added = match self.add_document(cx, &doc).await? {
-            Ok(added) => added,
+            Ok(recorded) => recorded,
             Err(refusal) => return Ok(Err(refusal)),
         };
         Ok(Ok(AdjustmentLayerAnchored {
-            document_oid: added.oid,
-            doc_commit: added.doc_commit,
+            document_oid: recorded.control.anchor.document_oid()?,
+            doc_commit: recorded.control.anchor.document_commit()?,
             parent_book_id,
             parent_known_at,
-            recorded_at: added.recorded_at,
-            already_recorded: added.already_recorded,
+            recorded_at: recorded.control.recorded_at,
+            already_recorded: recorded.already_recorded,
         }))
     }
 
@@ -1038,9 +984,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     }
 }
 
-pub const ADJUSTMENT_LAYER_DOCUMENT_KIND: u8 = 21;
-pub const ADJUSTMENT_LAYER_MIME: &str = "application/vnd.franken.adjustment-layer.v1";
-pub const ADJUSTMENT_LAYER_ANCHOR_DOMAIN: &[u8] = b"fa:adjustment-layer:v1";
+pub use fa_journal::adjustment_layer::{
+    DOCUMENT_KIND as ADJUSTMENT_LAYER_DOCUMENT_KIND, DOMAIN as ADJUSTMENT_LAYER_ANCHOR_DOMAIN,
+    MIME as ADJUSTMENT_LAYER_MIME,
+};
 pub const BOOK_TO_BOOK_TAG_KEY: &str = "fa.book_to_book";
 pub const BOOK_TO_BOOK_TAG_DOMAIN: &[u8] = b"fa:book-to-book-tag:v1";
 
@@ -1106,98 +1053,20 @@ pub fn decode_book_to_book_tag(
     Ok((reason_code, rule_version_oid))
 }
 
-fn encode_adjustment_layer_anchor(
-    book_id: Id128,
-    parent_book_id: Id128,
-    parent_known_at: u64,
-) -> Result<Vec<u8>, fa_model::EncodeError> {
-    let mut w = Writer::new();
-    w.fixed(ADJUSTMENT_LAYER_ANCHOR_DOMAIN)
-        .fixed(&book_id.0)
-        .fixed(&parent_book_id.0)
-        .u64(parent_known_at);
-    w.finish()
-}
-
-fn decode_adjustment_layer_anchor(
-    bytes: &[u8],
-) -> Result<(Id128, Id128, u64), fa_model::DecodeError> {
-    let mut r = fa_model::Reader::new(bytes);
-    let magic =
-        r.fixed::<{ ADJUSTMENT_LAYER_ANCHOR_DOMAIN.len() }>("adjustment_layer_anchor.magic")?;
-    if magic != ADJUSTMENT_LAYER_ANCHOR_DOMAIN {
-        return Err(r.invalid("adjustment-layer anchor header"));
-    }
-    let book_id = Id128(r.fixed::<16>("adjustment_layer_anchor.book_id")?);
-    let parent_book_id = Id128(r.fixed::<16>("adjustment_layer_anchor.parent_book_id")?);
-    let parent_known_at = r.u64("adjustment_layer_anchor.parent_known_at")?;
-    r.finish()?;
-    Ok((book_id, parent_book_id, parent_known_at))
-}
-
 pub(crate) fn book_kind_at_db<V: Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     at: CommitSeq,
 ) -> Result<BookKind, BookError> {
-    let policy = fa_registry::evidence_policy::EvidencePolicy::embedded()
-        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let mut anchors: Vec<(CommitSeq, u64, fa_model::Oid, Id128)> = Vec::new();
-    for row in db.vertices_at(at).map_err(KernelError::from)? {
-        if !row.labels.contains(&label::DOCUMENT) {
-            continue;
-        }
-        let doc = fa_journal::evidence::verify_row(&row, &policy)
-            .map_err(|why| KernelError::Corrupt(format!("document {:032x}: {why}", row.vid.0)))?;
-        if doc.book_id != book.book_id || doc.mime != ADJUSTMENT_LAYER_MIME {
-            continue;
-        }
-        let fa_journal::evidence::Storage::Inline(ref payload) = doc.storage else {
-            return Err(
-                KernelError::Corrupt("adjustment-layer anchor must be inline".into()).into(),
-            );
-        };
-        let (anchor_book, parent_book_id, parent_known_at) =
-            decode_adjustment_layer_anchor(payload)
-                .map_err(|e| KernelError::Corrupt(format!("adjustment-layer anchor: {e}")))?;
-        if anchor_book != book.book_id || parent_book_id == book.book_id || parent_known_at == 0 {
-            return Err(KernelError::Corrupt(
-                "adjustment-layer anchor carries invalid book or sequence metadata".into(),
-            )
-            .into());
-        }
-        let oid = doc.oid();
-        let receipt_vid = fa_journal::custody::custody_vid(doc.book_id, &oid, 0);
-        let intake = db
-            .vertex_at(receipt_vid, at)
-            .map_err(KernelError::from)?
-            .ok_or_else(|| {
-                KernelError::Corrupt("adjustment-layer anchor lacks custody receipt".into())
-            })?;
-        anchors.push((intake.created_at, parent_known_at, oid, parent_book_id));
-    }
-    if anchors.is_empty() {
-        return Ok(BookKind::Primary);
-    }
-    anchors.sort_by_key(|(rec, seq, oid, _)| (*rec, *seq, *oid));
-    let first_parent = anchors[0].3;
-    let mut prev_seq = 0u64;
-    for (_, seq, _, parent) in &anchors {
-        if *parent != first_parent || *seq < prev_seq {
-            return Err(KernelError::Corrupt(
-                "adjustment-layer anchor history changed parent or regressed parent_known_at"
-                    .into(),
-            )
-            .into());
-        }
-        prev_seq = *seq;
-    }
-    let &(_, latest_parent_known_at, _, parent_book_id) =
-        anchors.last().expect("non-empty anchors");
-    Ok(BookKind::AdjustmentLayer {
-        parent_book_id,
-        parent_known_at: latest_parent_known_at,
-    })
+    Ok(
+        fa_journal::adjustment_layer::anchor_at(db, book, at)?.map_or(
+            BookKind::Primary,
+            |control| BookKind::AdjustmentLayer {
+                parent_book_id: control.anchor.parent_book_id,
+                parent_known_at: control.anchor.parent_known_at.0,
+            },
+        ),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

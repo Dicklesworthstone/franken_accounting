@@ -993,6 +993,29 @@ impl Schema {
             // The authenticated control changes no chart or period facts;
             // ordinary reports do not re-prove the admission policy.
             25 => return Ok(()),
+            // An adjustment-layer anchor names a parent snapshot without
+            // changing this book's accounts or periods. Validate its exact
+            // frame; ordinary native reports do not authenticate the parent
+            // book or combine its balances with the layer's own postings.
+            26 => {
+                if &r.fixed::<{ b"fa:adjustment-layer:v1".len() }>("adjustment_layer.format")?
+                    != b"fa:adjustment-layer:v1"
+                {
+                    return Err(failed(
+                        "schema_history",
+                        "unknown adjustment-layer anchor format",
+                    ));
+                }
+                let anchored_book = r.fixed::<16>("adjustment_layer.book")?;
+                let parent_book = r.fixed::<16>("adjustment_layer.parent")?;
+                let parent_known_at = r.u64("adjustment_layer.parent_known_at")?;
+                if &anchored_book != book || parent_book == anchored_book || parent_known_at == 0 {
+                    return Err(failed(
+                        "schema_history",
+                        "invalid adjustment-layer parent anchor",
+                    ));
+                }
+            }
             // Existing REA controls, role/closing/FX declarations,
             // dimension values (17), requirements (18) and closes (19), and
             // Canon rule versions (20) change neither the immutable account
@@ -1347,6 +1370,52 @@ mod account_hierarchy_tests {
         let mut trailing = valid;
         trailing.push(0);
         assert!(schema.apply(21, &trailing, &book, 7).is_err());
+    }
+
+    #[test]
+    fn adjustment_layer_anchors_validate_their_frame_without_changing_native_accounts() {
+        let book = [21; 16];
+        let parent = [22; 16];
+        let id = crate::ads::account_vid(&book, "110");
+        let mut schema = Schema::default();
+        let mut chart = Writer::default();
+        chart.count(1).fixed(&declaration("110", None, true).buf);
+        schema.apply(1, &chart.buf, &book, 3).unwrap();
+        let encode = |book: [u8; 16], parent: [u8; 16], known_at: u64| {
+            let mut w = Writer::default();
+            w.fixed(b"fa:adjustment-layer:v1")
+                .fixed(&book)
+                .fixed(&parent)
+                .u64(known_at);
+            w.buf
+        };
+        let valid = encode(book, parent, u64::MAX);
+        schema.apply(26, &valid, &book, 4).unwrap();
+        assert_eq!(schema.accounts.len(), 1);
+        assert_eq!(schema.accounts[&id].created_at, 3);
+        assert_eq!(schema.accounts[&id].name, "110");
+        assert_eq!(schema.accounts[&id].unit_policy, -1);
+        assert!(schema.parents.is_empty());
+        assert!(schema.periods.is_empty());
+        for invalid in [
+            encode(parent, book, 1),
+            encode(book, book, 1),
+            encode(book, parent, 0),
+        ] {
+            assert!(schema.apply(26, &invalid, &book, 5).is_err());
+        }
+        for end in 0..valid.len() {
+            assert!(
+                schema.apply(26, &valid[..end], &book, 5).is_err(),
+                "truncation {end}"
+            );
+        }
+        let mut unknown = valid.clone();
+        unknown[0] ^= 1;
+        assert!(schema.apply(26, &unknown, &book, 5).is_err());
+        let mut trailing = valid;
+        trailing.push(0);
+        assert!(schema.apply(26, &trailing, &book, 5).is_err());
     }
 }
 

@@ -5,6 +5,204 @@ use fa_model::{ControlPayload, EntryRef, Supersession, SupersessionKind};
 
 const RULE: Oid = Oid([0x42; 32]);
 
+#[test]
+fn uploaded_anchor_documents_are_inert_until_an_authorized_atomic_activation() {
+    let mut f = Fixture::new(0xb6);
+    let book_id = f.book.context().book_id;
+    let parent = Id128([0xc1; 16]);
+    let anchor = fa_journal::adjustment_layer::AdjustmentLayerAnchor {
+        book_id,
+        parent_book_id: parent,
+        parent_known_at: CommitSeq(12),
+    };
+    let uploaded = Document {
+        book_id,
+        kind: fa::consolidation::ADJUSTMENT_LAYER_DOCUMENT_KIND,
+        mime: fa::consolidation::ADJUSTMENT_LAYER_MIME.into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: anchor.encode().unwrap(),
+    };
+    let imported = f.book.add_document(&uploaded).unwrap().unwrap();
+    let read = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    assert_eq!(
+        f.book.book_kind_at(None, &read).unwrap().unwrap(),
+        fa::BookKind::Primary
+    );
+    let schema = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    let activated = f
+        .book
+        .anchor_adjustment_layer(&schema, parent, CommitSeq(12))
+        .unwrap()
+        .unwrap();
+    assert_eq!(activated.document_oid, imported.oid);
+    assert!(activated.recorded_at > imported.recorded_at);
+    assert!(!activated.already_recorded);
+    assert_eq!(
+        f.book
+            .book_kind_at(Some(imported.recorded_at), &read)
+            .unwrap()
+            .unwrap(),
+        fa::BookKind::Primary
+    );
+    assert_eq!(
+        f.book.book_kind_at(None, &read).unwrap().unwrap(),
+        fa::BookKind::AdjustmentLayer {
+            parent_book_id: parent,
+            parent_known_at: 12,
+        }
+    );
+    let head = f.book.head().unwrap();
+    let retry = f
+        .book
+        .anchor_adjustment_layer(&schema, parent, CommitSeq(12))
+        .unwrap()
+        .unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.recorded_at, activated.recorded_at);
+    assert_eq!(f.book.head().unwrap(), head);
+
+    // Neither a forged parent change nor invalid bytes bearing the reserved
+    // MIME may change the authoritative anchor or poison its historical fold.
+    let mut forged = uploaded;
+    forged.bytes = fa_journal::adjustment_layer::AdjustmentLayerAnchor {
+        book_id,
+        parent_book_id: Id128([0xc2; 16]),
+        parent_known_at: CommitSeq(99),
+    }
+    .encode()
+    .unwrap();
+    f.book.add_document(&forged).unwrap().unwrap();
+    forged.bytes = b"not an anchor".to_vec();
+    f.book.add_document(&forged).unwrap().unwrap();
+    assert_eq!(
+        f.book.book_kind_at(None, &read).unwrap().unwrap(),
+        fa::BookKind::AdjustmentLayer {
+            parent_book_id: parent,
+            parent_known_at: 12,
+        }
+    );
+    let advanced = f
+        .book
+        .anchor_adjustment_layer(&schema, parent, CommitSeq(13))
+        .unwrap()
+        .unwrap();
+    assert!(advanced.recorded_at > head);
+    assert_eq!(
+        f.book
+            .book_kind_at(Some(activated.recorded_at), &read)
+            .unwrap()
+            .unwrap(),
+        fa::BookKind::AdjustmentLayer {
+            parent_book_id: parent,
+            parent_known_at: 12,
+        }
+    );
+    assert_eq!(
+        f.book.book_kind_at(None, &read).unwrap().unwrap(),
+        fa::BookKind::AdjustmentLayer {
+            parent_book_id: parent,
+            parent_known_at: 13,
+        }
+    );
+    let head = f.book.head().unwrap();
+    assert!(
+        f.book
+            .anchor_adjustment_layer(&schema, parent, CommitSeq(12))
+            .unwrap()
+            .is_err()
+    );
+    assert!(
+        f.book
+            .anchor_adjustment_layer(&schema, Id128([0xc2; 16]), CommitSeq(14))
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(f.book.head().unwrap(), head);
+    // An anchor is a recognized nonmonetary schema control in chart replay.
+    assert!(f.book.balance_as_of(day(2026, 1, 31), None).is_ok());
+}
+
+#[test]
+fn adjustment_anchor_requires_schema_control_class_and_direct_write_authority() {
+    let mut f = Fixture::new(0xb7);
+    let schema = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    let denied = [
+        Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
+        schema.clone().for_classes(&[EntryClass::ORIGINAL]).unwrap(),
+        schema.clone().for_accounts(&["1000"]).unwrap(),
+        schema.with_requires_dry_run(),
+    ];
+    let before = f.book.head().unwrap();
+    for capability in denied {
+        assert!(
+            f.book
+                .anchor_adjustment_layer(&capability, Id128([0xc3; 16]), CommitSeq(10))
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(f.book.head().unwrap(), before);
+    }
+}
+
+#[test]
+fn activated_layer_survives_evidence_custody_transfer_and_portable_report_replay() {
+    let mut f = Fixture::new(0xb8);
+    let schema = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    let anchored = f
+        .book
+        .anchor_adjustment_layer(&schema, Id128([0xc4; 16]), CommitSeq(10))
+        .unwrap()
+        .unwrap();
+    f.book
+        .transfer_custody(
+            &Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+            &anchored.document_oid,
+            VId(2),
+        )
+        .unwrap()
+        .unwrap();
+    let read = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    let expected = fa::BookKind::AdjustmentLayer {
+        parent_book_id: Id128([0xc4; 16]),
+        parent_known_at: 10,
+    };
+    assert_eq!(f.book.book_kind_at(None, &read).unwrap().unwrap(), expected);
+    assert_eq!(
+        f.book
+            .book_kind_at(Some(anchored.recorded_at), &read)
+            .unwrap()
+            .unwrap(),
+        expected
+    );
+    f.transfer(
+        day(2026, 1, 15),
+        b"anchored-report",
+        f.usd,
+        ("1000", "4000"),
+        800,
+    );
+    let certificate = f
+        .book
+        .certify_trial_balance(fa::TrialBalanceSelection::AsOf(day(2026, 1, 31)), None)
+        .unwrap()
+        .unwrap()
+        .certificate;
+    let produced = super::report_bundle::produce(&mut f.book, &certificate);
+    let key = f.book.checkpoint_public_key();
+    let checkpoint = fa_verify::verify_checkpoint(&produced.checkpoint.bytes, &[key]).unwrap();
+    let verified = fa_verify::report::verify_report_expected(
+        &produced.bundle.bytes,
+        &[key],
+        Some(&checkpoint.checkpoint),
+        Some(&produced.receipt),
+        Some(&certificate.digest),
+    )
+    .unwrap();
+    assert_eq!(verified.output, certificate.output);
+    assert_eq!(verified.known_at, certificate.known_at.0);
+}
+
 struct BridgeFixture {
     parent: Fixture,
     layer: Fixture,
