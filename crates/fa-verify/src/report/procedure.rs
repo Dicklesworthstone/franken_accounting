@@ -40,6 +40,7 @@ use super::{MAX_REPORT_BUNDLE_BYTES, ReportError, failed, text};
 use crate::blake3::hash_parts;
 use crate::codec::{Reader, Writer};
 
+mod aging;
 mod benford;
 mod benford_digits;
 mod different_dates;
@@ -49,6 +50,7 @@ mod ordered;
 mod post_closing;
 mod pro_rata;
 mod round_density;
+mod round_trips;
 mod structuring;
 mod unusual_accounts;
 pub(super) use post_closing::period_transitions;
@@ -77,6 +79,9 @@ pub enum VerifiedProcedureParameters {
         min_population: u32,
     },
     SameSameSame,
+    OpenItemsAging {
+        edges: [u32; 3],
+    },
     SameSameDifferent {
         window_days: u32,
     },
@@ -101,6 +106,13 @@ pub enum VerifiedProcedureParameters {
         floor: i128,
         min_count: u32,
         threshold: i128,
+        window_days: u32,
+    },
+    /// Chronological two-hop asset-account pairing. Multi-hop searches are
+    /// deliberately outside this portable profile.
+    GraphRoundTrips {
+        max_search_steps: u32,
+        period_end_days: u32,
         window_days: u32,
     },
     TraceLibr {
@@ -161,11 +173,13 @@ impl VerifiedProcedureParameters {
             Self::PostClosing => "jet.post_closing",
             Self::UnusualAccounts { .. } => "jet.unusual_accounts",
             Self::SameSameSame => "duplicates.same_same_same",
+            Self::OpenItemsAging { .. } => "aging.open_items",
             Self::SameSameDifferent { .. } => "duplicates.same_same_different",
             Self::RoundAmountDensity { .. } => "numbers.round_amount_density",
             Self::RelativeSizeFactor { .. } => "numbers.relative_size_factor",
             Self::ThresholdSplitting { .. } => "numbers.threshold_splitting",
             Self::GraphStructuring { .. } => "graph.structuring",
+            Self::GraphRoundTrips { .. } => "graph.round_trips",
             Self::TraceLibr { .. } => "trace.libr",
             Self::TraceFifo { .. } => "trace.fifo",
             Self::TraceLifo { .. } => "trace.lifo",
@@ -183,11 +197,13 @@ impl VerifiedProcedureParameters {
             Self::PostClosing => "FA-EVID-L03",
             Self::UnusualAccounts { .. } => "FA-EVID-L24",
             Self::SameSameSame => "FA-EVID-L07",
+            Self::OpenItemsAging { .. } => "FA-EVID-L12",
             Self::SameSameDifferent { .. } => "FA-EVID-L08",
             Self::RoundAmountDensity { .. } => "FA-EVID-L64",
             Self::RelativeSizeFactor { .. } => "FA-EVID-L32",
             Self::ThresholdSplitting { .. } => "FA-EVID-L33",
             Self::GraphStructuring { .. } => "FA-EVID-L14",
+            Self::GraphRoundTrips { .. } => "FA-EVID-L13",
             Self::TraceLibr { .. } => "FA-EVID-L15",
             Self::TraceFifo { .. } => "FA-EVID-L16",
             Self::TraceLifo { .. } => "FA-EVID-L17",
@@ -206,6 +222,11 @@ impl VerifiedProcedureParameters {
                 vec![("window_days", window_days)]
             }
             Self::PostClosing | Self::SameSameSame => Vec::new(),
+            Self::OpenItemsAging { edges } => vec![
+                ("bucket_1", edges[0]),
+                ("bucket_2", edges[1]),
+                ("bucket_3", edges[2]),
+            ],
             Self::UnusualAccounts {
                 max_pair_count,
                 min_population,
@@ -228,6 +249,16 @@ impl VerifiedProcedureParameters {
             } => vec![
                 ("min_rsf_bps", min_rsf_bps),
                 ("min_subset_size", min_subset_size),
+            ],
+            Self::GraphRoundTrips {
+                max_search_steps,
+                period_end_days,
+                window_days,
+            } => vec![
+                ("max_hops", 2),
+                ("max_search_steps", max_search_steps),
+                ("period_end_days", period_end_days),
+                ("window_days", window_days),
             ],
             Self::ThresholdSplitting {
                 currency_iso4217,
@@ -340,11 +371,13 @@ impl VerifiedProcedureParameters {
             Self::PeriodEndTiming { .. } => &[("window_days", 3)],
             Self::SameSameDifferent { .. } => &[("window_days", 30)],
             Self::PostClosing | Self::SameSameSame => &[],
+            Self::OpenItemsAging { .. } => &aging::DEFAULTS,
             Self::UnusualAccounts { .. } => &unusual_accounts::DEFAULTS,
             Self::RoundAmountDensity { .. } => &round_density::DEFAULTS,
             Self::RelativeSizeFactor { .. } => &number_analytics::RSF_DEFAULTS,
             Self::ThresholdSplitting { .. } => &number_analytics::SPLIT_DEFAULTS,
             Self::GraphStructuring { .. } => &structuring::DEFAULTS,
+            Self::GraphRoundTrips { .. } => &round_trips::DEFAULTS,
             Self::TraceLibr { .. } => &libr::DEFAULTS,
             Self::TraceFifo { .. } | Self::TraceLifo { .. } => &ordered::DEFAULTS,
             Self::TraceProRata { .. } => &pro_rata::DEFAULTS,
@@ -355,12 +388,13 @@ impl VerifiedProcedureParameters {
     }
 
     pub(super) fn supports_cutoff(self, version: u16) -> bool {
-        version == 2
-            && (self.is_trace()
-                || matches!(
-                    self,
-                    Self::RoundAmounts { .. } | Self::PeriodEndTiming { .. }
-                ))
+        matches!(self, Self::OpenItemsAging { .. }) && version == 1
+            || version == 2
+                && (self.is_trace()
+                    || matches!(
+                        self,
+                        Self::RoundAmounts { .. } | Self::PeriodEndTiming { .. }
+                    ))
     }
 
     pub(crate) fn is_trace(self) -> bool {
@@ -381,7 +415,11 @@ impl VerifiedProcedureParameters {
     }
 
     pub(crate) fn uses_leg_entities(self) -> bool {
-        self.is_trace() || matches!(self, Self::GraphStructuring { .. })
+        self.is_trace()
+            || matches!(
+                self,
+                Self::GraphStructuring { .. } | Self::GraphRoundTrips { .. }
+            )
     }
 
     pub(crate) fn is_number_analytics(self) -> bool {
@@ -396,6 +434,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmounts { .. } => "O(legs)",
             Self::PeriodEndTiming { .. } => "O(entries)",
             Self::PostClosing => "O(entries + transitions)",
+            Self::OpenItemsAging { .. } => "O(open items)",
             Self::UnusualAccounts { .. } => "O(legs log legs + account_pairs log account_pairs)",
             Self::SameSameSame
             | Self::SameSameDifferent { .. }
@@ -404,6 +443,9 @@ impl VerifiedProcedureParameters {
             | Self::ThresholdSplitting { .. } => "O(legs log legs)",
             Self::GraphStructuring { .. } => {
                 "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
+            }
+            Self::GraphRoundTrips { .. } => {
+                "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
             }
             Self::FirstDigit { .. } | Self::SecondDigit { .. } | Self::FirstTwoDigits { .. } => {
                 "O(legs)"
@@ -425,7 +467,7 @@ pub(super) struct Certificate<'a> {
     pub version: u16,
     book: [u8; 16],
     known_at: u64,
-    effective_through: Option<i32>,
+    pub(super) effective_through: Option<i32>,
 }
 
 /// A supported statistic and the exact citations needed to reproduce it.
@@ -434,6 +476,18 @@ pub(super) struct Certificate<'a> {
 /// period end; they are not inferred from the producer's narrative.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifiedProcedureStatistic {
+    /// Open residuals by inclusive effective-date age band. These amounts
+    /// are neither due-date assertions nor nets across debit/credit sides.
+    AgedOpenAmount {
+        name: String,
+        account: u128,
+        unit: u32,
+        debit: bool,
+        totals: [i128; 4],
+        items: u64,
+        scale: u8,
+        legs: Vec<(u128, u16)>,
+    },
     RoundLegs {
         ordinals: Vec<u16>,
     },
@@ -504,6 +558,18 @@ pub enum VerifiedProcedureStatistic {
         scale: u8,
         entries: Vec<u128>,
     },
+    /// A matched outward and return transfer from distinct entries, with
+    /// identical exact amount, native unit and legal entity.
+    RoundTrip {
+        outbound: u128,
+        returned: u128,
+        from: u128,
+        to: u128,
+        unit: u32,
+        entity: Option<u128>,
+        mantissa: i128,
+        scale: u8,
+    },
     /// Below the requested minimum, only the population is scored.
     FirstDigitPopulation {
         counts: [u64; 9],
@@ -531,8 +597,9 @@ pub enum VerifiedProcedureStatistic {
 }
 
 impl VerifiedProcedureStatistic {
-    pub(crate) fn name(&self) -> &'static str {
+    pub(crate) fn name(&self) -> &str {
         match self {
+            Self::AgedOpenAmount { name, .. } => name,
             Self::RoundLegs { .. } | Self::AccountRoundLegs { .. } => "round_legs",
             Self::DaysToPeriodEnd { .. } => "days_to_period_end",
             Self::TracedAmount { .. } => "traced_mantissa",
@@ -543,6 +610,7 @@ impl VerifiedProcedureStatistic {
             Self::RelativeSizeFactor { .. } => "rsf_bps",
             Self::SplitTotal { .. } => "split_total",
             Self::StructuredTransfers { .. } => "chain_mantissa",
+            Self::RoundTrip { .. } => "round_trip_mantissa",
             Self::FirstDigitPopulation { .. } | Self::DigitPopulation { .. } => "population",
             Self::FirstDigitMad { .. } | Self::DigitMad { .. } => "mad",
         }
@@ -550,6 +618,7 @@ impl VerifiedProcedureStatistic {
 
     pub(crate) fn value(&self) -> i128 {
         match self {
+            Self::AgedOpenAmount { totals, .. } => totals[3],
             Self::RoundLegs { ordinals } => ordinals.len() as i128,
             Self::AccountRoundLegs { count, .. } => i128::from(*count),
             Self::TracedAmount { mantissa, .. } => *mantissa,
@@ -561,6 +630,7 @@ impl VerifiedProcedureStatistic {
             Self::RelativeSizeFactor { basis_points, .. } => *basis_points,
             Self::SplitTotal { mantissa, .. } => *mantissa,
             Self::StructuredTransfers { mantissa, .. } => *mantissa,
+            Self::RoundTrip { mantissa, .. } => *mantissa,
             Self::FirstDigitPopulation { counts } => {
                 counts.iter().map(|&count| i128::from(count)).sum()
             }
@@ -575,8 +645,10 @@ impl VerifiedProcedureStatistic {
         match self {
             Self::FirstDigitMad { .. } | Self::DigitMad { .. } => 9,
             Self::TracedAmount { scale, .. }
+            | Self::AgedOpenAmount { scale, .. }
             | Self::SplitTotal { scale, .. }
-            | Self::StructuredTransfers { scale, .. } => *scale,
+            | Self::StructuredTransfers { scale, .. }
+            | Self::RoundTrip { scale, .. } => *scale,
             _ => 0,
         }
     }
@@ -599,8 +671,32 @@ impl VerifiedProcedureFinding {
     /// Numerical groups can share their first entry, so compare their entire
     /// ordered citation list. Other supported multi-finding profiles have a
     /// distinct first citation; its tag and little-endian identity suffice.
-    fn citation_order(&self) -> Vec<(u8, [u8; 16])> {
-        match &self.statistic {
+    fn citation_order(&self) -> Vec<Vec<u8>> {
+        if let VerifiedProcedureStatistic::AgedOpenAmount { account, legs, .. } = &self.statistic {
+            let mut account_cite = vec![3];
+            account_cite.extend_from_slice(&account.to_le_bytes());
+            let mut cites = vec![account_cite];
+            for (entry, ordinal) in legs {
+                let mut cite = vec![2];
+                cite.extend_from_slice(&entry.to_le_bytes());
+                cite.extend_from_slice(&ordinal.to_le_bytes());
+                cites.push(cite);
+            }
+            return cites;
+        }
+        let citations: Vec<(u8, [u8; 16])> = match &self.statistic {
+            VerifiedProcedureStatistic::RoundTrip {
+                outbound,
+                returned,
+                from,
+                to,
+                ..
+            } => vec![
+                (1, outbound.to_le_bytes()),
+                (1, returned.to_le_bytes()),
+                (3, from.to_le_bytes()),
+                (3, to.to_le_bytes()),
+            ],
             VerifiedProcedureStatistic::StructuredTransfers {
                 from, to, entries, ..
             } => {
@@ -636,7 +732,15 @@ impl VerifiedProcedureFinding {
                 .map(|entry| (1, entry.to_le_bytes()))
                 .into_iter()
                 .collect(),
-        }
+        };
+        citations
+            .into_iter()
+            .map(|(tag, identity)| {
+                let mut cite = vec![tag];
+                cite.extend_from_slice(&identity);
+                cite
+            })
+            .collect()
     }
 }
 
@@ -727,6 +831,9 @@ pub(super) struct Registry {
     /// authenticated payloads. Empty for procedures that do not need parties.
     pub leg_parties: BTreeMap<u128, Vec<Option<u128>>>,
     pub trace: Option<TraceContext>,
+    /// The independently replayed historical residuals for aging, never
+    /// native witness rows or producer-supplied bucket totals.
+    pub open_items: Option<Vec<super::open_items::VerifiedOpenItem>>,
     pub policy_oid: [u8; 32],
 }
 
@@ -799,11 +906,13 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "jet.post_closing" => ("FA-EVID-L03", None),
         "jet.unusual_accounts" => ("FA-EVID-L24", None),
         "duplicates.same_same_same" => ("FA-EVID-L07", None),
+        "aging.open_items" => ("FA-EVID-L12", None),
         "duplicates.same_same_different" => ("FA-EVID-L08", Some(("window_days", u32::MAX))),
         "numbers.round_amount_density" => ("FA-EVID-L64", None),
         "numbers.relative_size_factor" => ("FA-EVID-L32", None),
         "numbers.threshold_splitting" => ("FA-EVID-L33", None),
         "graph.structuring" => ("FA-EVID-L14", None),
+        "graph.round_trips" => ("FA-EVID-L13", None),
         "trace.libr" => ("FA-EVID-L15", None),
         "trace.fifo" => ("FA-EVID-L16", None),
         "trace.lifo" => ("FA-EVID-L17", None),
@@ -814,7 +923,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-hop round trips v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
@@ -838,6 +947,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         || (matches!(
             id,
             "jet.post_closing"
+                | "aging.open_items"
                 | "duplicates.same_same_same"
                 | "duplicates.same_same_different"
                 | "numbers.round_amount_density"
@@ -848,6 +958,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             id,
             "jet.unusual_accounts"
                 | "graph.structuring"
+                | "graph.round_trips"
                 | "benford.first_digit"
                 | "benford.second_digit"
                 | "benford.first_two_digits"
@@ -871,7 +982,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     } else {
         None
     };
-    if (version == 1
+    if (version == 1 && id != "aging.open_items"
         || matches!(
             id,
             "benford.first_digit"
@@ -879,6 +990,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "benford.first_two_digits"
                 | "jet.unusual_accounts"
                 | "graph.structuring"
+                | "graph.round_trips"
         ))
         && effective_through.is_some()
     {
@@ -889,15 +1001,17 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     }
     if matches!(
         id,
-        "trace.libr" | "trace.fifo" | "trace.lifo" | "trace.pro_rata"
+        "trace.libr" | "trace.fifo" | "trace.lifo" | "trace.pro_rata" | "aging.open_items"
     ) && effective_through.is_none()
     {
         return Err(failed(
             "procedure_profile",
-            "tracing requires an effective claim date",
+            "tracing and open-item aging require an effective date",
         ));
     }
-    let parameters = if id == "trace.libr" {
+    let parameters = if id == "aging.open_items" {
+        aging::decode(&mut question)?
+    } else if id == "trace.libr" {
         libr::decode(&mut question)?
     } else if matches!(id, "trace.fifo" | "trace.lifo") {
         ordered::decode(&mut question, id == "trace.lifo")?
@@ -911,6 +1025,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         round_density::decode(&mut question)?
     } else if id == "graph.structuring" {
         structuring::decode(&mut question)?
+    } else if id == "graph.round_trips" {
+        round_trips::decode(&mut question)?
     } else if id == "jet.unusual_accounts" {
         unusual_accounts::decode(&mut question)?
     } else if matches!(
@@ -1032,7 +1148,8 @@ fn finding(
                 w.u8(2).u128(entry).u16(*ordinal);
             }
         }
-        VerifiedProcedureStatistic::AccountRoundLegs { account, legs, .. } => {
+        VerifiedProcedureStatistic::AccountRoundLegs { account, legs, .. }
+        | VerifiedProcedureStatistic::AgedOpenAmount { account, legs, .. } => {
             w.count(legs.len() + 1).u8(3).u128(*account);
             for &(entry, ordinal) in legs {
                 w.u8(2).u128(entry).u16(ordinal);
@@ -1117,6 +1234,23 @@ fn finding(
             for entry in entries {
                 w.u8(1).u128(*entry);
             }
+        }
+        VerifiedProcedureStatistic::RoundTrip {
+            outbound,
+            returned,
+            from,
+            to,
+            ..
+        } => {
+            w.count(4)
+                .u8(1)
+                .u128(*outbound)
+                .u8(1)
+                .u128(*returned)
+                .u8(3)
+                .u128(*from)
+                .u8(3)
+                .u128(*to);
         }
         VerifiedProcedureStatistic::FirstDigitPopulation { .. }
         | VerifiedProcedureStatistic::FirstDigitMad { .. }
@@ -1690,11 +1824,13 @@ fn recompute_version(
         | VerifiedProcedureParameters::PostClosing
         | VerifiedProcedureParameters::UnusualAccounts { .. }
         | VerifiedProcedureParameters::SameSameSame
+        | VerifiedProcedureParameters::OpenItemsAging { .. }
         | VerifiedProcedureParameters::SameSameDifferent { .. }
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
         | VerifiedProcedureParameters::RelativeSizeFactor { .. }
         | VerifiedProcedureParameters::ThresholdSplitting { .. }
         | VerifiedProcedureParameters::GraphStructuring { .. }
+        | VerifiedProcedureParameters::GraphRoundTrips { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }
         | VerifiedProcedureParameters::TraceLifo { .. }
@@ -1807,12 +1943,14 @@ fn recompute_version(
                 post_closing::finding(entry, &first_closes)?
             }
             VerifiedProcedureParameters::SameSameSame
+            | VerifiedProcedureParameters::OpenItemsAging { .. }
             | VerifiedProcedureParameters::UnusualAccounts { .. }
             | VerifiedProcedureParameters::SameSameDifferent { .. }
             | VerifiedProcedureParameters::RoundAmountDensity { .. }
             | VerifiedProcedureParameters::RelativeSizeFactor { .. }
             | VerifiedProcedureParameters::ThresholdSplitting { .. }
             | VerifiedProcedureParameters::GraphStructuring { .. }
+            | VerifiedProcedureParameters::GraphRoundTrips { .. }
             | VerifiedProcedureParameters::TraceLibr { .. }
             | VerifiedProcedureParameters::TraceFifo { .. }
             | VerifiedProcedureParameters::TraceLifo { .. }
@@ -1836,6 +1974,9 @@ fn recompute_version(
     }
     if profile == VerifiedProcedureParameters::SameSameSame {
         (findings, live_legs, comparisons) = exact_duplicates(&entries, &grouped_population)?;
+    } else if matches!(profile, VerifiedProcedureParameters::OpenItemsAging { .. }) {
+        (findings, live_legs) = aging::replay(profile, effective_through, registry)?;
+        live_entries = 0;
     } else if let VerifiedProcedureParameters::SameSameDifferent { window_days } = profile {
         (findings, live_legs, comparisons) =
             different_dates::replay(&entries, &grouped_population, window_days)?;
@@ -1859,6 +2000,10 @@ fn recompute_version(
             structuring::replay(profile, &grouped_population, registry)?;
         // This native procedure charges each allocated flow leg and each
         // qualifying transfer, but no separate entry visits.
+        live_entries = 0;
+    } else if matches!(profile, VerifiedProcedureParameters::GraphRoundTrips { .. }) {
+        (findings, live_legs, comparisons) =
+            round_trips::replay(profile, &grouped_population, registry)?;
         live_entries = 0;
     } else if matches!(profile, VerifiedProcedureParameters::TraceLibr { .. }) {
         let (finding, legs, compared) =
@@ -1906,9 +2051,11 @@ fn recompute_version(
         | VerifiedProcedureParameters::FirstTwoDigits { .. }
         | VerifiedProcedureParameters::UnusualAccounts { .. }
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
+        | VerifiedProcedureParameters::OpenItemsAging { .. }
         | VerifiedProcedureParameters::RelativeSizeFactor { .. }
         | VerifiedProcedureParameters::ThresholdSplitting { .. }
         | VerifiedProcedureParameters::GraphStructuring { .. }
+        | VerifiedProcedureParameters::GraphRoundTrips { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }
         | VerifiedProcedureParameters::TraceLifo { .. }
@@ -2015,6 +2162,7 @@ mod tests {
             account_types: BTreeMap::from([(0, 1), (1, 3)]),
             leg_parties: BTreeMap::new(),
             trace: None,
+            open_items: None,
             policy_oid: [7; 32],
         }
     }

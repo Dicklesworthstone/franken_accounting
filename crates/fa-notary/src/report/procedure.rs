@@ -6,6 +6,11 @@
 
 const ROUND: &[(&str, i128, i128)] = &[("round_power", 0, 30)];
 const WINDOW: &[(&str, i128, i128)] = &[("window_days", 0, u32::MAX as i128)];
+const AGING: &[(&str, i128, i128)] = &[
+    ("bucket_1", 0, u32::MAX as i128),
+    ("bucket_2", 0, u32::MAX as i128),
+    ("bucket_3", 0, u32::MAX as i128),
+];
 const DENSITY: &[(&str, i128, i128)] = &[
     ("min_legs", 0, u32::MAX as i128),
     ("round_power", 0, 30),
@@ -33,6 +38,12 @@ const GRAPH_STRUCTURING: &[(&str, i128, i128)] = &[
     ("floor", 0, i128::MAX),
     ("min_count", 1, u32::MAX as i128),
     ("threshold", 1, i128::MAX),
+    ("window_days", 0, u32::MAX as i128),
+];
+const GRAPH_ROUND_TRIPS: &[(&str, i128, i128)] = &[
+    ("max_hops", 2, 2),
+    ("max_search_steps", 1, 10_000_000),
+    ("period_end_days", 0, u32::MAX as i128),
     ("window_days", 0, u32::MAX as i128),
 ];
 const BENFORD: &[(&str, i128, i128)] = &[
@@ -66,11 +77,13 @@ pub fn profile(
         ("jet.post_closing", 1) => ("FA-EVID-L03", &[][..]),
         ("jet.unusual_accounts", 2) => ("FA-EVID-L24", ACCOUNT_PAIRS),
         ("duplicates.same_same_same", 1) => ("FA-EVID-L07", &[][..]),
+        ("aging.open_items", 1) => ("FA-EVID-L12", AGING),
         ("duplicates.same_same_different", 1) => ("FA-EVID-L08", WINDOW),
         ("numbers.round_amount_density", 1) => ("FA-EVID-L64", DENSITY),
         ("numbers.relative_size_factor", 1) => ("FA-EVID-L32", RELATIVE_SIZE),
         ("numbers.threshold_splitting", 1) => ("FA-EVID-L33", THRESHOLD_SPLITTING),
         ("graph.structuring", 2) => ("FA-EVID-L14", GRAPH_STRUCTURING),
+        ("graph.round_trips", 2) => ("FA-EVID-L13", GRAPH_ROUND_TRIPS),
         ("benford.first_digit", 2) => ("FA-EVID-L10", BENFORD),
         ("benford.second_digit", 2) => ("FA-EVID-L30", BENFORD),
         ("benford.first_two_digits", 2) => ("FA-EVID-L31", BENFORD),
@@ -84,8 +97,10 @@ pub fn profile(
         id,
         "trace.libr" | "trace.fifo" | "trace.lifo" | "trace.pro_rata"
     );
-    if (tracing && effective_through.is_none())
+    let aging = id == "aging.open_items";
+    if ((tracing || aging) && effective_through.is_none())
         || (!tracing
+            && !aging
             && effective_through.is_some()
             && !(version == 2 && matches!(id, "jet.round_amounts" | "jet.period_end_timing")))
         || parameters.len() != bounds.len()
@@ -96,6 +111,9 @@ pub fn profile(
                 name == expected && (low..=high).contains(&value)
             })
     {
+        return None;
+    }
+    if aging && (parameters[0].1 >= parameters[1].1 || parameters[1].1 >= parameters[2].1) {
         return None;
     }
     if matches!(id, "numbers.threshold_splitting" | "graph.structuring")
@@ -130,6 +148,109 @@ mod tests {
     use super::*;
 
     type ProfileCase<'a> = (&'a str, u16, &'a [(&'a str, i128)], &'a str);
+
+    #[test]
+    fn open_item_aging_requires_an_effective_date_and_exact_ascending_edges() {
+        let id = "aging.open_items";
+        let parameters = [("bucket_1", 30), ("bucket_2", 60), ("bucket_3", 90)];
+        assert_eq!(
+            profile(id, 1, Some(0), &parameters, &[]),
+            Some("FA-EVID-L12")
+        );
+        assert_eq!(profile(id, 1, None, &parameters, &[]), None);
+        for version in [0, 2, 3] {
+            assert_eq!(profile(id, version, Some(0), &parameters, &[]), None);
+        }
+        assert_eq!(profile(id, 1, Some(0), &parameters[..2], &[]), None);
+        assert_eq!(
+            profile(id, 1, Some(0), &parameters, &[("account", "1000")]),
+            None
+        );
+        for (index, value) in [
+            (0, -1),
+            (0, 60),
+            (1, 30),
+            (1, 90),
+            (2, 60),
+            (2, i128::from(u32::MAX) + 1),
+        ] {
+            let mut invalid = parameters;
+            invalid[index].1 = value;
+            assert_eq!(profile(id, 1, Some(0), &invalid, &[]), None);
+        }
+        let mut reordered = parameters;
+        reordered.swap(0, 1);
+        assert_eq!(profile(id, 1, Some(0), &reordered, &[]), None);
+        let mut duplicate = parameters;
+        duplicate[1].0 = duplicate[0].0;
+        assert_eq!(profile(id, 1, Some(0), &duplicate, &[]), None);
+        let extremes = [
+            ("bucket_1", 0),
+            ("bucket_2", i128::from(u32::MAX) - 1),
+            ("bucket_3", i128::from(u32::MAX)),
+        ];
+        assert_eq!(
+            profile(id, 1, Some(i32::MAX), &extremes, &[]),
+            Some("FA-EVID-L12")
+        );
+    }
+
+    #[test]
+    fn round_trips_export_only_the_complete_two_hop_profile() {
+        let parameters = [
+            ("max_hops", 2),
+            ("max_search_steps", 250_000),
+            ("period_end_days", 7),
+            ("window_days", 5),
+        ];
+        assert_eq!(
+            profile("graph.round_trips", 2, None, &parameters, &[]),
+            Some("FA-EVID-L13")
+        );
+        for version in [0, 1, 3] {
+            assert_eq!(
+                profile("graph.round_trips", version, None, &parameters, &[]),
+                None
+            );
+        }
+        assert_eq!(
+            profile("graph.round_trips", 2, Some(0), &parameters, &[]),
+            None
+        );
+        assert_eq!(
+            profile("graph.round_trips", 2, None, &parameters[..3], &[]),
+            None
+        );
+        assert_eq!(
+            profile(
+                "graph.round_trips",
+                2,
+                None,
+                &parameters,
+                &[("account", "1000")]
+            ),
+            None
+        );
+        for (index, value) in [
+            (0, 1),
+            (0, 3),
+            (0, 8),
+            (1, 0),
+            (1, 10_000_001),
+            (2, -1),
+            (3, i128::from(u32::MAX) + 1),
+        ] {
+            let mut invalid = parameters;
+            invalid[index].1 = value;
+            assert_eq!(profile("graph.round_trips", 2, None, &invalid, &[]), None);
+        }
+        let mut duplicate = parameters;
+        duplicate[1].0 = duplicate[0].0;
+        assert_eq!(profile("graph.round_trips", 2, None, &duplicate, &[]), None);
+        let mut reordered = parameters;
+        reordered.swap(2, 3);
+        assert_eq!(profile("graph.round_trips", 2, None, &reordered, &[]), None);
+    }
 
     #[test]
     fn graph_structuring_requires_v2_complete_parameters_and_an_all_date_population() {

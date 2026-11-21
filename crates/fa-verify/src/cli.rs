@@ -2377,8 +2377,10 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
         let rendered_value = if matches!(
             finding.statistic,
             crate::report::VerifiedProcedureStatistic::TracedAmount { .. }
+                | crate::report::VerifiedProcedureStatistic::AgedOpenAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::SplitTotal { .. }
                 | crate::report::VerifiedProcedureStatistic::StructuredTransfers { .. }
+                | crate::report::VerifiedProcedureStatistic::RoundTrip { .. }
         ) {
             amount(value)
         } else {
@@ -2409,6 +2411,39 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
             ("population", n(finding.population)),
         ];
         match &finding.statistic {
+            crate::report::VerifiedProcedureStatistic::AgedOpenAmount {
+                account,
+                unit,
+                debit,
+                totals,
+                items,
+                legs,
+                ..
+            } => {
+                details.extend([
+                    ("account", s(format!("{account:032x}"))),
+                    ("unit", n(u64::from(*unit))),
+                    ("side", s(if *debit { "debit" } else { "credit" })),
+                    ("items", n(*items)),
+                    (
+                        "buckets",
+                        Json::List(totals.iter().copied().map(amount).collect()),
+                    ),
+                    (
+                        "legs",
+                        Json::List(
+                            legs.iter()
+                                .map(|(entry, ordinal)| {
+                                    Json::Obj(vec![
+                                        ("entry", s(format!("{entry:032x}"))),
+                                        ("ordinal", n(u64::from(*ordinal))),
+                                    ])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                ]);
+            }
             crate::report::VerifiedProcedureStatistic::RoundLegs { ordinals } => {
                 details.push((
                     "leg_ordinals",
@@ -2532,6 +2567,27 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                                 .map(|entry| s(format!("{entry:032x}")))
                                 .collect(),
                         ),
+                    ),
+                ]);
+            }
+            crate::report::VerifiedProcedureStatistic::RoundTrip {
+                outbound,
+                returned,
+                from,
+                to,
+                unit,
+                entity,
+                ..
+            } => {
+                details.extend([
+                    ("outbound_entry", s(format!("{outbound:032x}"))),
+                    ("return_entry", s(format!("{returned:032x}"))),
+                    ("from_account", s(format!("{from:032x}"))),
+                    ("to_account", s(format!("{to:032x}"))),
+                    ("unit", n(u64::from(*unit))),
+                    (
+                        "legal_entity",
+                        entity.map_or(Json::Null, |entity| s(format!("{entity:032x}"))),
                     ),
                 ]);
             }

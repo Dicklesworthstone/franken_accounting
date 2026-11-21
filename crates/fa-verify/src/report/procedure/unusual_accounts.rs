@@ -194,6 +194,7 @@ mod tests {
             account_types: BTreeMap::from([(10, 1), (20, 1), (30, 3)]),
             leg_parties: BTreeMap::new(),
             trace: None,
+            open_items: None,
             policy_oid: [7; 32],
         }
     }

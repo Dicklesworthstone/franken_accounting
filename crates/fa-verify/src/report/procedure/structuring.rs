@@ -23,15 +23,15 @@ pub(super) const DEFAULTS: [(&str, u32); 5] = [
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Transfer {
-    entry: u128,
-    recorded: u64,
-    effective: i32,
-    from: u128,
-    to: u128,
-    unit: u32,
-    entity: Option<u128>,
-    amount: i128,
+pub(super) struct Transfer {
+    pub(super) entry: u128,
+    pub(super) recorded: u64,
+    pub(super) effective: i32,
+    pub(super) from: u128,
+    pub(super) to: u128,
+    pub(super) unit: u32,
+    pub(super) entity: Option<u128>,
+    pub(super) amount: i128,
 }
 
 type Group = (Option<u128>, u128, u128, u32);
@@ -104,11 +104,11 @@ pub(super) fn decode(reader: &mut Reader<'_>) -> Result<VerifiedProcedureParamet
     })
 }
 
-fn flow(live: &[&Entry], registry: &Registry) -> Result<Vec<Transfer>, ReportError> {
+pub(super) fn flow(live: &[&Entry], registry: &Registry) -> Result<Vec<Transfer>, ReportError> {
     let context = registry
         .trace
         .as_ref()
-        .ok_or_else(|| invalid("graph structuring lacks authenticated legal-entity dimensions"))?;
+        .ok_or_else(|| invalid("money-flow replay lacks authenticated legal-entity dimensions"))?;
     let mut named_entities = BTreeSet::new();
     for entry in live {
         let facts = context

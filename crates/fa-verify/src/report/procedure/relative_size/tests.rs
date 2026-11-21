@@ -50,6 +50,7 @@ fn bound_registry<'a>(
         account_types: registry.account_types.clone(),
         leg_parties,
         trace: registry.trace.clone(),
+        open_items: registry.open_items.clone(),
         policy_oid: registry.policy_oid,
     }
 }
@@ -109,6 +110,7 @@ fn registry() -> Registry {
         account_types: [10, 20, 30, 40, 77].into_iter().map(|id| (id, 1)).collect(),
         leg_parties: BTreeMap::new(),
         trace: None,
+        open_items: None,
         policy_oid: [7; 32],
     }
 }

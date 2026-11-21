@@ -12,6 +12,8 @@ mod benford_digits;
 mod libr;
 #[path = "offline/number_analytics.rs"]
 mod number_analytics;
+#[path = "offline/open_items_aging.rs"]
+mod open_items_aging;
 #[path = "offline/ordered_trace.rs"]
 mod ordered_trace;
 #[path = "offline/pro_rata.rs"]
@@ -20,6 +22,8 @@ mod pro_rata;
 mod profile_admission;
 #[path = "offline/relative_size_factor.rs"]
 mod relative_size_factor;
+#[path = "offline/round_trips.rs"]
+mod round_trips;
 #[path = "offline/structuring.rs"]
 mod structuring;
 #[path = "offline/unusual_accounts.rs"]

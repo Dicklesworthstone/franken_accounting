@@ -491,6 +491,7 @@ mod tests {
             account_types: BTreeMap::from([(10, 5), (20, 1)]),
             leg_parties: BTreeMap::new(),
             trace: None,
+            open_items: None,
             policy_oid: [0; 32],
         };
         let mut entry = Entry {

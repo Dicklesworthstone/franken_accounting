@@ -1502,6 +1502,26 @@ take no effective cutoff; the threshold and floor are declared integer mantissas
 in the selected currency. These are statistical observations, not determinations
 of a reporting obligation or wrongdoing.
 
+`aging.open_items` v1 exports for standalone replay with a required inclusive
+`--effective-through` date and three strictly ascending `bucket_1`, `bucket_2`
+and `bucket_3` day limits (defaults: 30, 60 and 90). The verifier independently
+reconstructs open amounts from the complete historical application and reversal
+history before aging them. Debit and credit balances remain separate for every
+account and unit. It reproduces all bucket amounts, oldest-item citations,
+severity and work counts; JSON carries monetary mantissas as decimal strings.
+Payments and reversals effective after the selected date cannot change its
+earlier result.
+
+`graph.round_trips` v2 exports its complete two-hop profile (`max_hops=2`).
+The verifier reconstructs capacity-conserving credit-to-debit allocations from
+original legs, then independently pairs the earliest eligible unused return
+with the same amount, unit and entity within the inclusive date window. It
+checks authenticated asset-account types, period-end severity, citations and
+work counts. This portable profile requires all four parameters (`max_hops`,
+`max_search_steps`, `period_end_days`, `window_days`) and takes no effective
+cutoff. Multi-hop selections remain available through native replay in the
+original book and are refused by portable export.
+
 Corrected books can be exported when every Replacement uses the current
 target-derived identity and a later authenticated reversal, replacement or
 ordinary settlement reference resolves that identity within the certificate's

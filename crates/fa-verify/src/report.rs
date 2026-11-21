@@ -115,6 +115,10 @@
 //! remaining debit capacities, preserving both margins in each legal entity
 //! and native unit. It rebuilds consecutive-gap transfer chains, including
 //! split-leg multiplicity, exact thresholds and complete candidate counts.
+//! Two-hop graph round trips v2 reuse that independent allocation, select only
+//! asset accounts and reproduce earliest opposite-direction pairing, exact
+//! per-unit/entity amounts, period-end severity and one-use transfer identity.
+//! Multi-hop searches remain outside the portable round-trip profile.
 //! Quadratic allocation expansion is bounded before construction; exceeding
 //! that bound refuses the report instead of omitting transfers.
 //! Findings, citations, population, work and every output digest are rebuilt.
@@ -2218,6 +2222,7 @@ fn verify_report_with_native_subledger_input(
                         request.parameters,
                         procedure::VerifiedProcedureParameters::PeriodEndTiming { .. }
                             | procedure::VerifiedProcedureParameters::PostClosing
+                            | procedure::VerifiedProcedureParameters::GraphRoundTrips { .. }
                     ) && !legs[index].is_empty()
                     {
                         let effective = envelopes[index].effective_day.ok_or_else(|| {
@@ -2306,6 +2311,7 @@ fn verify_report_with_native_subledger_input(
                 || matches!(
                     request.parameters,
                     procedure::VerifiedProcedureParameters::UnusualAccounts { .. }
+                        | procedure::VerifiedProcedureParameters::GraphRoundTrips { .. }
                 )
             {
                 definitions.account_types = schema
@@ -2316,6 +2322,33 @@ fn verify_report_with_native_subledger_input(
             }
             definitions.trace = tracing;
             definitions.leg_parties = leg_parties;
+            if matches!(
+                request.parameters,
+                procedure::VerifiedProcedureParameters::OpenItemsAging { .. }
+            ) {
+                let cutoff = request.effective_through.ok_or_else(|| {
+                    failed(
+                        "procedure_selection",
+                        "open-item aging requires an effective cutoff",
+                    )
+                })?;
+                definitions.open_items = Some(
+                    open_items::replay_as_of(
+                        cert.known_at,
+                        *account_filter,
+                        cutoff,
+                        &units,
+                        &schema,
+                        envelopes,
+                        &infos,
+                        &legs,
+                        &records,
+                        &visible_migrations,
+                        &migration_activations,
+                    )?
+                    .items,
+                );
+            }
             let (verified, output) =
                 procedure::replay(request, cert.book, cert.known_at, entries, definitions)?;
             (Some(verified), output)

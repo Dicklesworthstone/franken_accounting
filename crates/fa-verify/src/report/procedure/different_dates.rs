@@ -280,6 +280,7 @@ mod tests {
             account_types: BTreeMap::new(),
             leg_parties: BTreeMap::new(),
             trace: None,
+            open_items: None,
             policy_oid: [7; 32],
         }
     }

@@ -21,6 +21,7 @@ impl Fixture {
                 account_types: BTreeMap::new(),
                 leg_parties: BTreeMap::new(),
                 trace: Some(TraceContext::default()),
+                open_items: None,
                 policy_oid: [7; 32],
             },
         }
