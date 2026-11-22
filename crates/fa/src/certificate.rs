@@ -2600,6 +2600,7 @@ fn statement_chart_additions<V: Vfs + Clone>(
     };
     let mut additions = Vec::new();
     let mut chart_entries = BTreeSet::new();
+    let mut anchor_history_checked = false;
     let mut mapped_ids: BTreeSet<_> = statement
         .mappings
         .iter()
@@ -2626,6 +2627,21 @@ fn statement_chart_additions<V: Vfs + Clone>(
                 kind: 2..=11 | fa_model::deposit::SCHEMA_CHANGE_RECORD_DEPOSIT_PROFILE,
                 ..
             }) => continue,
+            Some(ControlPayload::SchemaChange {
+                kind: fa_journal::adjustment_layer::SCHEMA_CHANGE_ADJUSTMENT_LAYER,
+                ..
+            }) => {
+                // An authorized parent anchor changes no local account
+                // membership or amount. Validate its complete native chain,
+                // including the original controls, claims and evidence,
+                // before treating it as unrelated to this statement.
+                if !anchor_history_checked {
+                    fa_journal::chart::read_at(db, book, journal.through_seq)?;
+                    fa_journal::adjustment_layer::anchor_at(db, book, journal.through_seq)?;
+                    anchor_history_checked = true;
+                }
+                continue;
+            }
             Some(ControlPayload::SchemaChange {
                 kind: 12 | 14..=22, ..
             }) => {

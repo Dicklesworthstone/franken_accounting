@@ -6,6 +6,49 @@ use fa_model::{ControlPayload, EntryRef, Supersession, SupersessionKind};
 const RULE: Oid = Oid([0x42; 32]);
 
 #[test]
+fn parent_anchor_activations_leave_historical_statement_certificates_current() {
+    let mut f = Fixture::new(0xba);
+    f.transfer(
+        day(2026, 1, 15),
+        b"pre-anchor-statement",
+        f.usd,
+        ("1000", "4000"),
+        1_250,
+    );
+    let statements = ["balance-sheet", "income-statement"]
+        .into_iter()
+        .map(|name| {
+            f.book
+                .certify_statement(selection(name, JANUARY, DECEMBER), None)
+                .unwrap()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let schema = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    for parent_known_at in [CommitSeq(12), CommitSeq(13)] {
+        let activation = f
+            .book
+            .anchor_adjustment_layer(&schema, Id128([0xc5; 16]), parent_known_at)
+            .unwrap()
+            .unwrap();
+        let head = f.book.head().unwrap();
+        assert_eq!(activation.recorded_at, head);
+        for certified in &statements {
+            assert!(certified.certificate.known_at < head);
+            assert_eq!(
+                f.book
+                    .certificate_status(&certified.certificate)
+                    .unwrap()
+                    .unwrap(),
+                CertificateStatus::Current { checked_at: head }
+            );
+            assert_eq!(replay(&f.book, &certified.certificate), certified.statement);
+        }
+        assert_eq!(f.book.head().unwrap(), head, "status and replay are reads");
+    }
+}
+
+#[test]
 fn uploaded_anchor_documents_are_inert_until_an_authorized_atomic_activation() {
     let mut f = Fixture::new(0xb6);
     let book_id = f.book.context().book_id;
