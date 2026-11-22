@@ -66,7 +66,7 @@
 use fa_model::limits::{MAX_BATCH_ENTRIES, MAX_PERIOD_REF_BYTES};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    AccountType, ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload, Erasable,
+    AccountType, ApprovalRef, ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload, Erasable,
     Id128, Oid, Reader, TypedRef, Writer, domain_digest, entry_mirrors, entry_vid, period_vid,
     report_certificate_vid, restatement_case_vid, scenario_vid,
 };
@@ -811,6 +811,73 @@ fn record_proposal(
     }
 }
 
+/// The dedicated case writer's normal-key lifecycle records. Admission and
+/// the history fold establish the case, evidence and effect correspondence;
+/// the common outcome protocol accepts only these registered control shapes.
+pub(crate) fn is_lifecycle_control(entry: &fa_model::Entry, vid: VId) -> bool {
+    let p = &entry.proposal;
+    if p.class != EntryClass::CASE_CONTROL
+        || p.branch_id != Id128::TRUNK
+        || p.document_date.is_some()
+        || p.effective_period.is_some()
+        || !p.legs.is_empty()
+        || !p.unit_totals.is_empty()
+        || p.base_totals.is_some()
+        || p.session_ref.is_some()
+        || !p.evidence.is_empty()
+        || !p.supersession.is_empty()
+        || p.pending.is_some()
+        || !p.external_ids.is_empty()
+        || !p.tags.is_empty()
+        || entry.plan_certificate.is_some()
+        || p.idempotency_key.len() != 32
+        || vid != entry_vid(p.book_id, &p.principal_ref.0.to_le_bytes(), &p.idempotency_key)
+        || !matches!(p.origin, EntryOrigin::Control {
+            control_kind: ControlKind::CASE_TRANSITION, ..
+        })
+    {
+        return false;
+    }
+    let Some(ControlPayload::LifecycleTransition {
+        from, to, reason_code: 0, ..
+    }) = &p.control else {
+        return false;
+    };
+    if (*from, *to) != (CaseState::Rehearsed.tag(), CaseState::Approved.tag())
+        && !entry.approvals.is_empty()
+    {
+        return false;
+    }
+    matches!(
+        (*from, *to, p.extensions.as_slice()),
+        (0, 1 | 2, [(fa_model::entry::RESTATEMENT_CASE_EXTENSION, _)])
+            | (1, 2, [(fa_model::entry::CASE_DETERMINATION_EXTENSION, _)])
+            | (2, 3, [(fa_model::entry::CASE_REHEARSAL_EXTENSION, _)])
+            | (3, 4, [(fa_model::entry::CASE_APPROVAL_EXTENSION, _)])
+            | (4, 5, [(fa_model::entry::CASE_POSTED_EXTENSION, _)])
+            | (5, 6, [(fa_model::entry::CASE_DISCLOSURE_EXTENSION, _)])
+            | (6, 7, [])
+    )
+}
+
+/// Judge the canonical record key in the publication transaction, after the
+/// capability witness. The derived record key and Entry identity remain the
+/// durable contract; ordinary postings and batches cannot reuse that key.
+async fn witness_record<V: asupersync::fs::Vfs + Clone>(
+    txn: &mut WriteTxn,
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    principal: VId,
+    key: &[u8],
+    evid: VId,
+) -> Outcome<Option<VertexRow>> {
+    crate::outcome::witness_control_record(
+        txn, db, ctx, book, principal, key, evid, EntryClass::CASE_CONTROL,
+    )
+    .await
+}
+
 /// A document this book holds, verified.
 fn witness_document<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
@@ -840,10 +907,12 @@ fn witness_document<V: asupersync::fs::Vfs + Clone>(
 /// The identical record's sequence, or the conflict (plan §4.9: exact
 /// bytes, else a seal-aware semantic comparison under the book key, since a
 /// retry seals its description again).
-fn recorded_or_conflict(
+fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     row: &VertexRow,
     proposal: &EntryPayload,
+    approvals: &[ApprovalRef],
 ) -> Outcome<CommitSeq> {
     let conflict = || {
         Refusal::new(
@@ -863,6 +932,11 @@ fn recorded_or_conflict(
         return Ok(Err(conflict()));
     }
     let (stored, recorded_at) = crate::post::entry_of(row)?;
+    if stored.approvals.as_slice() != approvals
+        || !crate::outcome::verify_control_recorded(db, row, &stored)?
+    {
+        return Ok(Err(conflict()));
+    }
     if stored.proposal_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded_at));
     }
@@ -928,10 +1002,11 @@ pub async fn open_case<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let principal = req.capability.holder();
+    let key = record_key(Act::Open, None, &req.idempotency_key);
     let evid = entry_vid(
         book.book_id,
         &principal.0.to_le_bytes(),
-        &record_key(Act::Open, None, &req.idempotency_key),
+        &key,
     );
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
@@ -940,7 +1015,14 @@ pub async fn open_case<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    if let Some(row) = txn.vertex(db, evid)? {
+    let recorded = match witness_record(&mut txn, db, ctx, book, principal, &key, evid).await? {
+        Ok(recorded) => recorded,
+        Err(refused) => {
+            txn.abort();
+            return Ok(Err(refused));
+        }
+    };
+    if let Some(row) = recorded {
         txn.abort();
         if !crate::entry_storage::has_class_mirror(&row, EntryClass::CASE_CONTROL) {
             return Ok(Err(usage(
@@ -957,7 +1039,7 @@ pub async fn open_case<V: asupersync::fs::Vfs + Clone>(
         };
         body.ordinal = recorded.ordinal;
         let proposal = open_proposal(book, &req, &body)?;
-        return Ok(match recorded_or_conflict(book, &row, &proposal)? {
+        return Ok(match recorded_or_conflict(db, book, &row, &proposal, &[])? {
             Ok(recorded_at) => Ok(CaseRecorded {
                 case: read_case(db, book, body.ordinal)?.ok_or_else(|| {
                     KernelError::Corrupt(format!(
@@ -1032,6 +1114,7 @@ pub async fn open_case<V: asupersync::fs::Vfs + Clone>(
     props.sort_by_key(|(k, _)| k.0);
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.create_vertex(vid, vec![label::RESTATEMENT_CASE], props);
     in_case.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
     txn.write(db, in_case)?;
@@ -1136,9 +1219,18 @@ pub async fn determine_case<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    if let Some(row) = txn.vertex(db, evid)? {
+    let recorded = match witness_record(
+        &mut txn, db, ctx, book, principal, &proposal.idempotency_key, evid,
+    ).await? {
+        Ok(recorded) => recorded,
+        Err(refused) => {
+            txn.abort();
+            return Ok(Err(refused));
+        }
+    };
+    if let Some(row) = recorded {
         txn.abort();
-        return Ok(match recorded_or_conflict(book, &row, &proposal)? {
+        return Ok(match recorded_or_conflict(db, book, &row, &proposal, &[])? {
             Ok(recorded_at) => Ok(CaseRecorded {
                 case: read_case(db, book, ordinal)?
                     .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
@@ -1173,6 +1265,7 @@ pub async fn determine_case<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         vid,
         property::STATE,
@@ -1286,9 +1379,18 @@ pub async fn rehearse_case<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    if let Some(row) = txn.vertex(db, evid)? {
+    let recorded = match witness_record(
+        &mut txn, db, ctx, book, principal, &proposal.idempotency_key, evid,
+    ).await? {
+        Ok(recorded) => recorded,
+        Err(refused) => {
+            txn.abort();
+            return Ok(Err(refused));
+        }
+    };
+    if let Some(row) = recorded {
         txn.abort();
-        return Ok(match recorded_or_conflict(book, &row, &proposal)? {
+        return Ok(match recorded_or_conflict(db, book, &row, &proposal, &[])? {
             Ok(recorded_at) => Ok(CaseRecorded {
                 case: read_case(db, book, ordinal)?
                     .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
@@ -1414,6 +1516,7 @@ pub async fn rehearse_case<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         vid,
         property::STATE,
@@ -1529,7 +1632,7 @@ pub async fn approve_case<V: asupersync::fs::Vfs + Clone>(
     let Some(view) = read_case(db, book, ordinal)? else {
         return Ok(Err(unknown(ordinal)));
     };
-    let manifest = if view.state == CaseState::Approved {
+    let manifest = if view.state >= CaseState::Approved {
         match &view.approval {
             Some(a) => a.manifest.clone(),
             None => {
@@ -1581,9 +1684,18 @@ pub async fn approve_case<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    if let Some(row) = txn.vertex(db, evid)? {
+    let recorded = match witness_record(
+        &mut txn, db, ctx, book, principal, &proposal.idempotency_key, evid,
+    ).await? {
+        Ok(recorded) => recorded,
+        Err(refused) => {
+            txn.abort();
+            return Ok(Err(refused));
+        }
+    };
+    if let Some(row) = recorded {
         txn.abort();
-        return Ok(match recorded_or_conflict(book, &row, &proposal)? {
+        return Ok(match recorded_or_conflict(db, book, &row, &proposal, &approvals)? {
             Ok(recorded_at) => Ok(CaseRecorded {
                 case: read_case(db, book, ordinal)?
                     .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
@@ -1652,6 +1764,7 @@ pub async fn approve_case<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.clone().seal(approvals, None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         vid,
         property::STATE,
@@ -2337,10 +2450,23 @@ pub async fn post_case_with_crash<V: asupersync::fs::Vfs + Clone>(
         &principal.0.to_le_bytes(),
         &record_key(Act::Post, Some(vid), &req.idempotency_key),
     );
-    if view.state == CaseState::Posted {
+    if view.state >= CaseState::Posted {
         let proposal = record(&view.posted)?;
-        return Ok(match db.vertex(evid)? {
-            Some(row) => match recorded_or_conflict(book, &row, &proposal)? {
+        let mut txn = db.begin(&ctx.txn())?;
+        if let Err(refused) = capability_witness(&txn, db, book, &req.capability)? {
+            txn.abort();
+            return Ok(Err(refused));
+        }
+        let recorded = witness_record(
+            &mut txn, db, ctx, book, principal, &proposal.idempotency_key, evid,
+        ).await?;
+        txn.abort();
+        let recorded = match recorded {
+            Ok(recorded) => recorded,
+            Err(refused) => return Ok(Err(refused)),
+        };
+        return Ok(match recorded {
+            Some(row) => match recorded_or_conflict(db, book, &row, &proposal, &[])? {
                 Ok(recorded_at) => Ok(CaseRecorded {
                     case: view,
                     control_entry: evid,
@@ -2404,11 +2530,18 @@ pub async fn post_case_with_crash<V: asupersync::fs::Vfs + Clone>(
     let proposal = record(&entries)?;
     // Every member point-read the case as Approved in this transaction, so
     // its Post record cannot exist here.
-    if staged.txn.vertex(db, evid)?.is_some() {
-        staged.txn.abort();
-        return Err(KernelError::Corrupt(format!(
-            "case {ordinal} is Approved but its Post record already exists"
-        )));
+    match witness_record(
+        &mut staged.txn, db, ctx, book, principal, &proposal.idempotency_key, evid,
+    ).await? {
+        Ok(None) => {}
+        Ok(Some(_)) => {
+            staged.txn.abort();
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        Err(refused) => {
+            staged.txn.abort();
+            return Ok(Err(refused));
+        }
     }
     if proposal.validate().is_err() {
         staged.txn.abort();
@@ -2431,6 +2564,13 @@ pub async fn post_case_with_crash<V: asupersync::fs::Vfs + Clone>(
     );
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], mirrors);
+    crate::outcome::stage_control_tracked(
+        &mut in_case,
+        &mut staged.template_tracker,
+        relation::IN_CASE,
+        &entry,
+        evid,
+    )?;
     in_case.compare_and_set_vertex_property(
         vid,
         property::STATE,
@@ -2730,9 +2870,18 @@ where
         txn.abort();
         return Ok(Err(r));
     }
-    if let Some(row) = txn.vertex(db, evid)? {
+    let recorded = match witness_record(
+        &mut txn, db, ctx, book, req.capability.holder(), &proposal.idempotency_key, evid,
+    ).await? {
+        Ok(recorded) => recorded,
+        Err(refused) => {
+            txn.abort();
+            return Ok(Err(refused));
+        }
+    };
+    if let Some(row) = recorded {
         txn.abort();
-        return Ok(match recorded_or_conflict(book, &row, &proposal)? {
+        return Ok(match recorded_or_conflict(db, book, &row, &proposal, &[])? {
             Ok(recorded_at) => Ok(CaseRecorded {
                 case: read_case(db, book, ordinal)?
                     .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
@@ -2775,6 +2924,7 @@ where
     let entry = proposal.seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         vid,
         property::STATE,
@@ -2997,6 +3147,12 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         let recorded_at = src.created_at;
         if entry.proposal.class != EntryClass::CASE_CONTROL {
             continue;
+        }
+        if !crate::outcome::verify_control_recorded(db, &src, &entry)? {
+            return Err(KernelError::Corrupt(format!(
+                "case record {:032x} has no unchanged original outcome",
+                evid.0
+            )));
         }
         let Some(ControlPayload::LifecycleTransition {
             object_ref,

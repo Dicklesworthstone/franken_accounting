@@ -1876,3 +1876,429 @@ mod statement_issuance_keys {
         assert_eq!(h.db.vertices().unwrap(), rows);
     }
 }
+
+mod case_lifecycle_outcomes {
+    use super::*;
+    use fa_journal::case::{CaseBody, CaseRequest, open_case, read_case};
+    use fa_journal::refusal::{Outcome, code};
+    use fa_model::symbols::label;
+
+    fn request(h: &Harness, key: &[u8]) -> (CaseBody, CaseRequest) {
+        (
+            CaseBody {
+                book_id: h.book.book_id,
+                ordinal: 1,
+                kind: CaseKind::Restatement,
+                periods: vec![h.march.clone()],
+                narrative: None,
+                determination: None,
+            },
+            CaseRequest {
+                capability: Capability::embedded(PRINCIPAL, &["restate"]).unwrap(),
+                effective_date: h.day(),
+                description: h.statement("case outcome", 181),
+                idempotency_key: key.to_vec(),
+            },
+        )
+    }
+
+    fn record_key(request: &CaseRequest) -> Vec<u8> {
+        fa_model::domain_digest(
+            b"fa:case-record-key:v1",
+            &[&[0], &[0; 16], &request.idempotency_key],
+        )
+        .to_vec()
+    }
+
+    fn outcome(h: &Harness, request: &CaseRequest) -> VId {
+        fa_model::intent_outcome_vid(
+            h.book.book_id,
+            &request.capability.holder().0.to_le_bytes(),
+            &record_key(request),
+        )
+    }
+
+    fn execute(h: &mut Harness, body: &CaseBody, request: &CaseRequest) -> Outcome<CaseRecorded> {
+        let ctx = h.ctx();
+        h.runtime.block_on(open_case(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            body.clone(),
+            request.clone(),
+        ))
+    }
+
+    fn assert_open_conflict(h: &mut Harness, body: &CaseBody, request: &CaseRequest) {
+        let head = h.db.frontier().unwrap();
+        let vertices = h.db.vertices().unwrap();
+        let edges = h.db.edges_at(head).unwrap();
+        let refused = execute(h, body, request).unwrap().unwrap_err();
+        assert_eq!(
+            (refused.code, refused.exit),
+            (code::IDEMPOTENCY_CONFLICT, exit::CONFLICT)
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), vertices);
+        assert_eq!(h.db.edges_at(head).unwrap(), edges);
+    }
+
+    fn assert_control_claim(h: &Harness, recorded: &CaseRecorded) {
+        let row = h.db.vertex(recorded.control_entry).unwrap().unwrap();
+        let (entry, _) = read_entry(&h.db, row.vid).unwrap().unwrap();
+        let claim = h
+            .db
+            .vertex(outcome_id(h, &entry.proposal))
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim.labels, vec![label::INTENT_OUTCOME]);
+        assert_eq!(
+            (row.created_at, claim.created_at),
+            (recorded.recorded_at, recorded.recorded_at)
+        );
+        assert_eq!(
+            fa_journal::rows::prop(&claim, property::TARGET_REF),
+            Some(&CanonicalScalar::bytes(row.vid.0.to_le_bytes().to_vec()).unwrap())
+        );
+    }
+
+    fn compact_and_reopen(h: &mut Harness) {
+        let ctx = h.ctx();
+        h.runtime.block_on(h.db.compact(&ctx.commit())).unwrap();
+        let (vfs, keys) = h.legacy_storage.clone().unwrap();
+        let empty = h.runtime.block_on(Database::open_memory(&ctx.commit(), keys.clone())).unwrap();
+        drop(std::mem::replace(&mut h.db, empty));
+        h.db = h
+            .runtime
+            .block_on(Database::open_with_vfs(
+                &ctx.commit(),
+                vfs.clone(),
+                vfs.database_dir(),
+                keys,
+            ))
+            .unwrap();
+        assert!(matches!(
+            h.db.delta_since(fgdb_types::CommitSeq(0)),
+            Err(fgdb::ReadError::DeltaCursorRetired { .. })
+        ));
+    }
+
+    #[test]
+    fn case_controls_claim_their_canonical_key_and_bind_the_complete_retry() {
+        let mut h = harness();
+        let (body, original) = request(&h, b"case-original");
+        let first = execute(&mut h, &body, &original).unwrap().unwrap();
+        assert_control_claim(&h, &first);
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        for description in [
+            original.description.clone(),
+            h.statement("case outcome", 182),
+        ] {
+            let mut retry = original.clone();
+            retry.description = description;
+            assert_eq!(
+                execute(&mut h, &body, &retry).unwrap().unwrap(),
+                CaseRecorded {
+                    already_recorded: true,
+                    ..first.clone()
+                }
+            );
+            assert_eq!(h.db.frontier().unwrap(), head);
+            assert_eq!(h.db.vertices().unwrap(), rows);
+        }
+        let mut changed_body = body.clone();
+        changed_body.kind = CaseKind::Revision;
+        assert_open_conflict(&mut h, &changed_body, &original);
+        let mut changed = original.clone();
+        changed.description = h.statement("another case outcome", 183);
+        assert_open_conflict(&mut h, &body, &changed);
+        changed = original.clone();
+        changed.effective_date = DateDay::from_ymd(2026, 3, 16).unwrap();
+        assert_open_conflict(&mut h, &body, &changed);
+
+        let authority = h.document(INVOICE, HUMAN_UPLOAD, b"case determination authority");
+        h.add_document(&authority).unwrap();
+        let determination = Determination {
+            day: h.day(),
+            authority: authority.oid(),
+        };
+        let (_, determine) = request(&h, b"case-determine");
+        let ctx = h.ctx();
+        let determined = h
+            .runtime
+            .block_on(fa_journal::case::determine_case(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                1,
+                determination,
+                determine,
+            ))
+            .unwrap()
+            .unwrap();
+        assert_control_claim(&h, &determined);
+        let head = h.db.frontier().unwrap();
+        let late_retry = execute(&mut h, &body, &original).unwrap().unwrap();
+        assert!(late_retry.already_recorded);
+        assert_eq!(late_retry.recorded_at, first.recorded_at);
+        assert_eq!(late_retry.control_entry, first.control_entry);
+        assert_eq!(late_retry.case.state, CaseState::Determined);
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+
+    #[test]
+    fn posting_families_cannot_reuse_a_case_record_key() {
+        for family in ["original", "reversal", "replacement", "pending", "resolution", "batch"] {
+            let mut h = harness();
+            let (body, request) = request(&h, b"case-collision");
+            let key = record_key(&request);
+            let source = h.proposal(h.rent_legs(100), b"case-source", EntryClass::ORIGINAL);
+            let target = h.post(h.request(source, &["post"])).unwrap().entry_ref();
+            let occupied = match family {
+                "original" | "batch" => h.proposal(h.rent_legs(200), &key, EntryClass::ORIGINAL),
+                "reversal" => h.reversal_of_entry(target, &key),
+                "replacement" => replacement_proposal(
+                    target,
+                    h.proposal(h.rent_legs(125), &key, EntryClass::REPLACEMENT),
+                ),
+                "pending" => h.pending(h.rent_legs(200), &key),
+                "resolution" => {
+                    let pending = h.pending(h.rent_legs(200), b"case-held-source");
+                    let hold = h.post(h.request(pending, &["post"])).unwrap().entry_ref();
+                    h.resolution_posts(hold, h.rent_legs(150), vec![0, 1], &key)
+                }
+                _ => unreachable!(),
+            };
+            if family == "replacement" {
+                h.post_pair(
+                    h.request(h.reversal_of_entry(target, b"case-pair-reversal"), &["post"]),
+                    h.request(occupied, &["post"]),
+                )
+                .unwrap();
+            } else if family == "batch" {
+                let mut member = occupied;
+                member.idempotency_key = b"case-batch-member".to_vec();
+                h.post_batch(h.batch(&key, vec![member])).unwrap();
+            } else {
+                h.post(h.request(occupied, &["post"])).unwrap();
+            }
+            assert_open_conflict(&mut h, &body, &request);
+            assert!(read_case(&h.db, &h.book, 1).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn a_case_claim_blocks_postings_and_batches_without_partial_effects() {
+        let mut h = harness();
+        let source = h.proposal(h.rent_legs(100), b"case-blocked-source", EntryClass::ORIGINAL);
+        let target = h.post(h.request(source, &["post"])).unwrap().entry_ref();
+        let pending = h.pending(h.rent_legs(200), b"case-blocked-hold");
+        let hold = h.post(h.request(pending, &["post"])).unwrap().entry_ref();
+        let (body, request) = request(&h, b"case-owned");
+        execute(&mut h, &body, &request).unwrap().unwrap();
+        let key = record_key(&request);
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let edges = h.db.edges_at(head).unwrap();
+        let original = h.proposal(h.rent_legs(300), &key, EntryClass::ORIGINAL);
+        let reversal = h.reversal_of_entry(target, &key);
+        let pending = h.pending(h.rent_legs(300), &key);
+        let resolution = h.resolution_posts(hold, h.rent_legs(150), vec![0, 1], &key);
+        for proposal in [original, reversal, pending, resolution] {
+            let refused = h.post(h.request(proposal, &["post"])).unwrap_err();
+            assert_eq!(
+                (refused.code, refused.exit),
+                (code::IDEMPOTENCY_CONFLICT, exit::CONFLICT)
+            );
+        }
+        let reversal = h.request(
+            h.reversal_of_entry(target, b"case-unpublished-reversal"),
+            &["post"],
+        );
+        let replacement = h.request(
+            replacement_proposal(
+                target,
+                h.proposal(h.rent_legs(125), &key, EntryClass::REPLACEMENT),
+            ),
+            &["post"],
+        );
+        assert_eq!(
+            h.post_pair(reversal, replacement).unwrap_err().code,
+            code::IDEMPOTENCY_CONFLICT
+        );
+        let member = h.proposal(h.rent_legs(300), b"case-unpublished-member", EntryClass::ORIGINAL);
+        assert_eq!(
+            h.post_batch(h.batch(&key, vec![member])).unwrap_err().code,
+            code::IDEMPOTENCY_CONFLICT
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        assert_eq!(h.db.edges_at(head).unwrap(), edges);
+        assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+        assert!(h.db.vertex(resolution_vid(hold.vid)).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_prepared_reversal_loses_to_the_case_claim_without_changing_the_winner() {
+        let mut h = harness();
+        let source = h.proposal(h.rent_legs(100), b"case-race-source", EntryClass::ORIGINAL);
+        let target = h.post(h.request(source, &["post"])).unwrap().entry_ref();
+        let (body, request) = request(&h, b"case-race");
+        let reversal = h.request(h.reversal_of_entry(target, &record_key(&request)), &["post"]);
+        let ctx = h.ctx();
+        let PostPreparation::Ready(prepared) = prepare_post(&mut h.db, &ctx, &h.book, reversal)
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("fresh reversal");
+        };
+        let epoch = security_policy_epoch(&h.db).unwrap();
+        execute(&mut h, &body, &request).unwrap().unwrap();
+        assert_eq!(security_policy_epoch(&h.db).unwrap(), epoch);
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let refusal = h
+            .runtime
+            .block_on(prepared.commit(&mut h.db, &ctx))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.exit, exit::CONFLICT);
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+    }
+
+    #[test]
+    fn authentic_legacy_case_retries_survive_durable_reopen_and_recovery() {
+        let mut producer = harness();
+        let (body, original) = request(&producer, b"legacy-case");
+        let first = execute(&mut producer, &body, &original).unwrap().unwrap();
+        let claim = outcome(&producer, &original);
+        let mut publication = fgdb::WriteBatch::new(relation::IN_CASE);
+        let mut created = std::collections::BTreeSet::new();
+        // Retain the original pre-protocol publication in a separate store.
+        // No modern claim is ever published there and then deleted.
+        for row in producer.db.vertices_at(first.recorded_at).unwrap() {
+            if row.created_at != first.recorded_at || row.vid == claim {
+                continue;
+            }
+            assert!(row.labels.iter().all(|kind| matches!(*kind, label::ENTRY | label::RESTATEMENT_CASE)));
+            assert!(created.insert(row.vid));
+            publication.create_vertex(row.vid, row.labels, row.props);
+        }
+        assert_eq!(created.len(), 2);
+        for edge in producer.db.edges_at(first.recorded_at).unwrap() {
+            if created.contains(&edge.entry.src) {
+                assert_eq!(edge.entry.relation, relation::IN_CASE);
+                publication.add_edge(edge.entry.eid, edge.entry.src, edge.entry.dst, edge.props);
+            }
+        }
+        let mut h = harness_legacy();
+        h.write_raw(publication);
+        let original_sequence = h.db.frontier().unwrap();
+        let original_row = h.db.vertex(first.control_entry).unwrap().unwrap();
+        let ctx = h.ctx();
+        compact_and_reopen(&mut h);
+        let head = h.db.frontier().unwrap();
+        let retry = execute(&mut h, &body, &original).unwrap().unwrap();
+        assert!(retry.already_recorded);
+        assert_eq!(retry.control_entry, first.control_entry);
+        assert_eq!(retry.recorded_at, original_sequence);
+        assert_eq!(h.db.vertex(first.control_entry).unwrap().unwrap(), original_row);
+        assert!(h.db.vertex(claim).unwrap().is_none());
+        assert_eq!(h.db.frontier().unwrap(), head);
+        let (_, fresh) = request(&h, b"fresh-after-legacy-case");
+        assert_eq!(
+            execute(&mut h, &body, &fresh).unwrap().unwrap_err().code,
+            code::PLAN_INVALIDATED
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        let prepared = h
+            .runtime
+            .block_on(prepare_outcome_rebuild(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                Capability::embedded(PRINCIPAL, &["read", "schema_change"]).unwrap(),
+            ))
+            .unwrap()
+            .unwrap();
+        h.runtime
+            .block_on(publish_outcome_rebuild(&mut h.db, &ctx, &h.book, prepared))
+            .unwrap()
+            .unwrap();
+        compact_and_reopen(&mut h);
+        let head = h.db.frontier().unwrap();
+        let retry = execute(&mut h, &body, &original).unwrap().unwrap();
+        assert_eq!(retry.recorded_at, original_sequence);
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert!(h.db.vertex(claim).unwrap().is_none());
+        assert!(matches!(
+            h.db.delta_since(fgdb_types::CommitSeq(0)),
+            Err(fgdb::ReadError::DeltaCursorRetired { .. })
+        ), "an authentic exact retry does not need capsule history");
+        let next = execute(&mut h, &body, &fresh).unwrap().unwrap();
+        assert_eq!(next.case.body.ordinal, 2);
+        assert_control_claim(&h, &next);
+    }
+
+    #[test]
+    fn changed_control_rows_and_deleted_or_retargeted_claims_cannot_become_legacy() {
+        for variant in ["mirror", "deleted claim", "retargeted claim"] {
+            let mut h = harness();
+            let (body, request) = request(&h, b"damaged-case-outcome");
+            let recorded = execute(&mut h, &body, &request).unwrap().unwrap();
+            let mut write = fgdb::WriteBatch::new(relation::IN_CASE);
+            match variant {
+                "mirror" => write.set_vertex_property(
+                    recorded.control_entry,
+                    property::FA_EFFECTIVE_DAY,
+                    Some(CanonicalScalar::Int(1)),
+                ),
+                "deleted claim" => write.delete_vertex(outcome(&h, &request)),
+                "retargeted claim" => write.set_vertex_property(
+                    outcome(&h, &request),
+                    property::TARGET_REF,
+                    Some(CanonicalScalar::bytes(VId(188).0.to_le_bytes().to_vec()).unwrap()),
+                ),
+                _ => unreachable!(),
+            };
+            h.write_raw(write);
+            let head = h.db.frontier().unwrap();
+            let rows = h.db.vertices().unwrap();
+            assert!(read_case(&h.db, &h.book, 1).is_err(), "{variant}");
+            assert!(!matches!(execute(&mut h, &body, &request), Ok(Ok(_))), "{variant}");
+            assert_eq!(h.db.frontier().unwrap(), head, "{variant}");
+            assert_eq!(h.db.vertices().unwrap(), rows, "{variant}");
+        }
+    }
+
+    #[test]
+    fn case_authority_precedes_malformed_outcome_observation() {
+        let mut h = harness();
+        let (body, original) = request(&h, b"unauthorized-case-outcome");
+        let mut write = fgdb::WriteBatch::new(relation::IN_CASE);
+        write.create_vertex(
+            outcome(&h, &original),
+            vec![label::INTENT_OUTCOME],
+            vec![(property::FA_PAYLOAD, CanonicalScalar::bytes(vec![0]).unwrap())],
+        );
+        h.write_raw(write);
+        let head = h.db.frontier().unwrap();
+        for capability in [
+            Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
+            Capability::embedded(PRINCIPAL, &["restate"])
+                .unwrap()
+                .for_classes(&[EntryClass::ORIGINAL])
+                .unwrap(),
+            Capability::embedded(PRINCIPAL, &["restate"]).unwrap().with_requires_dry_run(),
+        ] {
+            let mut unauthorized = original.clone();
+            unauthorized.capability = capability;
+            let refused = execute(&mut h, &body, &unauthorized).unwrap().unwrap_err();
+            assert_eq!(refused.code, code::CAPABILITY);
+            assert_eq!(h.db.frontier().unwrap(), head);
+        }
+    }
+}
