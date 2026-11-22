@@ -1510,6 +1510,229 @@ fn a_carry_forward_brings_the_prior_engagements_misstatements_under_both_methods
     );
 }
 
+#[test]
+fn carried_sources_remain_distinct_and_resolve_after_multiple_engagements() {
+    let f = Fixture::new();
+    f.write(
+        "retained-chain.json",
+        r#"{"code":"3000","name":"Retained earnings","type":"Equity","unit":"USD"}"#,
+    );
+    f.ok(&[
+        "chart",
+        "open",
+        "retained-chain.json",
+        "--opened",
+        "2026-01-01",
+    ]);
+    f.ok(&[
+        "close",
+        "map",
+        "--route",
+        "4000:3000",
+        "--route",
+        "6000:3000",
+        "--effective-from",
+        "2026-01-01",
+        "--key",
+        "chain-routes",
+    ]);
+    for (engagement, period) in [
+        ("march", "FY2026-P03"),
+        ("april", "FY2026-P04"),
+        ("may", "FY2026-P05"),
+        ("june", "FY2026-P06"),
+    ] {
+        f.ok(&[
+            "engagement",
+            "open",
+            engagement,
+            "--kind",
+            "audit",
+            "--period",
+            period,
+            "--overall",
+            "500.00 USD",
+            "--performance",
+            "375.00 USD",
+            "--clearly-trivial",
+            "25.00 USD",
+        ]);
+    }
+    // Both engagements have proposal 1. Its originating engagement must
+    // remain part of the identity through every later carry-forward.
+    for (engagement, date, amount) in [
+        ("march", "2026-03-31", "40.00"),
+        ("april", "2026-04-30", "70.00"),
+    ] {
+        let name = format!("{engagement}-chain.json");
+        f.intent(
+            &name,
+            date,
+            &[("debit", "6000", amount), ("credit", "2100", amount)],
+        );
+        f.ok(&[
+            "adjustment",
+            "propose",
+            "--engagement",
+            engagement,
+            "--intent",
+            &name,
+            "--key",
+            &name,
+        ]);
+        f.ok(&[
+            "adjustment",
+            "pass",
+            "--engagement",
+            engagement,
+            "--proposal",
+            "1",
+            "--reason",
+            "ManagementDeclined",
+        ]);
+    }
+    f.ok(&["engagement", "carry-forward", "april", "--from", "march"]);
+    f.ok(&["engagement", "carry-forward", "may", "--from", "april"]);
+    let unresolved = f.ok(&["engagement", "sud", "may"]);
+    let carried = rows(data(&unresolved), "carried");
+    assert_eq!(carried.len(), 2);
+    for (engagement, amount) in [("march", "-40.00 USD"), ("april", "-70.00 USD")] {
+        let item = carried
+            .iter()
+            .find(|item| text(item.get("source").unwrap(), "engagement") == engagement)
+            .unwrap();
+        assert_eq!(int(item.get("source").unwrap(), "number"), 1);
+        assert_eq!(text(item.get("original_effect").unwrap(), "income"), amount);
+        assert_eq!(text(item.get("effect").unwrap(), "income"), "0.00 USD");
+    }
+    assert_eq!(
+        text(
+            data(&unresolved).get("iron_curtain").unwrap(),
+            "liabilities"
+        ),
+        "110.00 USD"
+    );
+
+    let resolved = [
+        "engagement",
+        "carry-forward",
+        "may",
+        "--from",
+        "april",
+        "--turned-around-source",
+        "march:1",
+        "--corrected-source",
+        "april:1",
+        "--key",
+        "resolved",
+    ];
+    let first = f.ok(&resolved);
+    let sources = rows(data(&first), "turned_around_sources");
+    assert_eq!(text(&sources[0], "engagement"), "march");
+    assert_eq!(int(&sources[0], "number"), 1);
+    let corrected_sources = rows(data(&first), "corrected_sources");
+    assert_eq!(text(&corrected_sources[0], "engagement"), "april");
+    assert_eq!(int(&corrected_sources[0], "number"), 1);
+    let before_retry = f.head();
+    let retry = f.ok(&resolved);
+    assert_eq!(
+        data(&retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(
+        text(data(&retry), "control_entry"),
+        text(data(&first), "control_entry")
+    );
+    assert_eq!(f.head(), before_retry);
+    let summary = f.ok(&["engagement", "sud", "may"]);
+    assert_eq!(text(data(&summary), "rollover_income"), "40.00 USD");
+    assert_eq!(
+        text(data(&summary).get("iron_curtain").unwrap(), "liabilities"),
+        "0.00 USD"
+    );
+    let line = rows(data(&summary).get("rollover_lines").unwrap(), "lines")
+        .iter()
+        .find(|line| text(line, "code") == "net_income")
+        .unwrap();
+    assert_eq!(text(line, "amount"), "40.00 USD");
+    let shown = f.ok(&["engagement", "show", "may"]);
+    assert_eq!(rows(data(&shown), "carry_forwards").len(), 2);
+
+    // Explicit aliases of one source cannot select it twice or contradict
+    // one another. A source already resolved in May cannot be selected in June.
+    for flags in [
+        vec!["--turned-around", "1", "--corrected-source", "april:1"],
+        vec![
+            "--turned-around-source",
+            "march:1",
+            "--turned-around-source",
+            "march:1",
+        ],
+    ] {
+        let mut args = vec![
+            "engagement",
+            "carry-forward",
+            "may",
+            "--from",
+            "april",
+            "--key",
+            "invalid-alias",
+        ];
+        args.extend(flags);
+        f.refused(&args, 2, "FA-REF-100");
+    }
+    f.refused(
+        &[
+            "engagement",
+            "carry-forward",
+            "june",
+            "--from",
+            "may",
+            "--turned-around-source",
+            "march:1",
+            "--key",
+            "already-resolved",
+        ],
+        3,
+        "FA-REF-191",
+    );
+    f.ok(&["engagement", "carry-forward", "june", "--from", "may"]);
+    let next = f.ok(&["engagement", "sud", "june"]);
+    assert!(rows(data(&next), "carried").is_empty());
+    assert_eq!(text(data(&next), "rollover_income"), "0.00 USD");
+
+    // A later lawful revision of an ancestor can remove May's selected
+    // source. Report a typed source-selection refusal with a refresh path,
+    // without mislabelling the journal as corrupt or silently dropping it.
+    f.ok(&[
+        "engagement",
+        "carry-forward",
+        "april",
+        "--from",
+        "march",
+        "--corrected",
+        "1",
+        "--key",
+        "revised-ancestor",
+    ]);
+    let stale = f.refused(&["engagement", "sud", "may"], 3, "FA-REF-191");
+    assert!(text(data(&stale), "fix").contains("carry-forward"));
+    f.ok(&[
+        "engagement",
+        "carry-forward",
+        "may",
+        "--from",
+        "april",
+        "--corrected-source",
+        "april:1",
+        "--key",
+        "refreshed-chain",
+    ]);
+    let refreshed = f.ok(&["engagement", "sud", "may"]);
+    assert_eq!(rows(data(&refreshed), "carried").len(), 1);
+    assert_eq!(text(data(&refreshed), "rollover_income"), "0.00 USD");
+}
+
 /// Plan §11.12: an engagement's findings join its index like its
 /// workpapers, once each, and one filed after the documentation completion
 /// is marked an addition after completion (AS 1215.16).

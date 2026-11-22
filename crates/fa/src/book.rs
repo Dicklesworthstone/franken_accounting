@@ -457,6 +457,7 @@ impl BookError {
     #[must_use]
     pub fn exit(&self) -> u8 {
         match self {
+            Self::Kernel(KernelError::EngagementSourceChanged { .. }) => fa_journal::exit::REFUSAL,
             Self::Registers(fa_registers::RegisterError::Capacity(_)) => fa_journal::exit::REFUSAL,
             Self::Registers(fa_registers::RegisterError::InvalidSelection(_))
             | Self::Lantern(
@@ -491,6 +492,22 @@ impl BookError {
     #[must_use]
     pub fn refusal(&self) -> Option<Refusal> {
         match self {
+            Self::Kernel(KernelError::EngagementSourceChanged {
+                engagement,
+                prior,
+                detail,
+            }) => Some(Refusal::new(
+                fa_journal::refusal::code::CARRY_FORWARD,
+                fa_journal::exit::REFUSAL,
+                format!(
+                    "engagement `{engagement}` cannot resolve its carry-forward dispositions against the current ancestry from {:032x}: {detail}",
+                    prior.0
+                ),
+                "plan §11.12 (audit.sud source identity and current carry-forward ancestry)",
+                format!(
+                    "review `fa engagement show {engagement:?} --json`; refresh affected carry-forwards oldest ancestor first with `fa engagement carry-forward {engagement:?} --from <reviewed prior engagement code> [--turned-around-source <source engagement>:N]... [--corrected-source <source engagement>:N]... --key <fresh key>`"
+                ),
+            )),
             Self::Registers(fa_registers::RegisterError::Capacity(diagnosis)) => {
                 Some(diagnosis.refusal())
             }
@@ -688,8 +705,10 @@ pub struct Book {
 struct UncorrectedInputs {
     view: fa_journal::EngagementView,
     corrections: Vec<fa_journal::OutOfPeriodCorrection>,
-    /// The prior engagement the latest carry-forward names.
-    prior: Option<fa_journal::EngagementView>,
+    /// Original proposals from the checked ancestry, never transformed
+    /// carried balance-sheet amounts or an ordinal in the wrong engagement.
+    source_proposals:
+        std::collections::BTreeMap<fa_journal::CarryForwardSource, fa_journal::ProposedAdjustment>,
     summary: fa_journal::UncorrectedSummary,
 }
 
@@ -2773,9 +2792,39 @@ impl Book {
         effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::CarriedForward> {
+        self.carry_forward_qualified(
+            capability,
+            engagement,
+            prior,
+            turned_around,
+            corrected,
+            Vec::new(),
+            Vec::new(),
+            effective_date,
+            idempotency_key,
+        )
+    }
+
+    /// Carry forward the complete unresolved ancestry of `prior`. Qualified
+    /// source identities can turn around or correct older inherited items;
+    /// bare ordinals always refer to `prior`'s own proposals.
+    #[allow(clippy::too_many_arguments)]
+    pub fn carry_forward_qualified(
+        &mut self,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        prior: &str,
+        turned_around: Vec<u32>,
+        corrected: Vec<u32>,
+        turned_around_sources: Vec<fa_journal::CarryForwardSource>,
+        corrected_sources: Vec<fa_journal::CarryForwardSource>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CarriedForward> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => self.runtime.block_on(core.carry_forward(
-            &purposes, capability, engagement, prior, turned_around, corrected, effective_date,
+        with_store!(&mut self.store, core => self.runtime.block_on(core.carry_forward_qualified(
+            &purposes, capability, engagement, prior, turned_around, corrected,
+            turned_around_sources, corrected_sources, effective_date,
             idempotency_key,
         )))
     }
@@ -2806,43 +2855,52 @@ impl Book {
             .map(|inputs| inputs.summary))
     }
 
-    /// The engagement, the out-of-period corrections in its scope, the prior
-    /// engagement its latest carry-forward names, and its summary of
-    /// uncorrected misstatements.
+    /// Reconstruct each engagement in the bounded ancestry once. Every
+    /// ancestor's own out-of-period corrections affect its rollover only;
+    /// only unresolved source proposals continue into the next engagement.
     fn uncorrected_inputs(&self, engagement: &str) -> Result<Option<UncorrectedInputs>, BookError> {
-        let Some(view) = self.engagement(engagement)? else {
+        let Some(mut chain) = with_store!(&self.store, core => core.uncorrected_engagement_chain(
+            &self.purposes(), engagement,
+        ))?
+        else {
             return Ok(None);
         };
-        let corrections = with_store!(&self.store, core => core.out_of_period_corrections(
-            &self.purposes(),
-            &view.profile.scope_periods,
-        ))?;
+        let view = chain.pop().ok_or_else(|| {
+            BookError::Kernel(fa_journal::KernelError::Corrupt(
+                "an engagement's SUD source ancestry is empty".into(),
+            ))
+        })?;
         let types: std::collections::BTreeMap<u128, fa_model::AccountType> = self
             .accounts()?
             .into_iter()
             .map(|row| (row.vid.0, fa_model::AccountType(row.account_type)))
             .collect();
         let account_type = |vid: VId| types.get(&vid.0).copied();
-        // A carry-forward brings the prior engagement's own uncorrected
-        // proposals (its carry-forward is not chained).
-        let prior = match view.carry_forwards.last() {
-            None => None,
-            Some(carried) => Some(
-                self.engagements()?
-                    .into_iter()
-                    .find(|e| e.vid == carried.carry_forward.prior)
-                    .ok_or_else(|| {
-                        BookError::Kernel(fa_journal::KernelError::Corrupt(format!(
-                            "engagement `{engagement}` carries forward {:032x}, which is no engagement",
-                            carried.carry_forward.prior.0
-                        )))
-                    })?,
-            ),
-        };
-        let prior_summary = prior
-            .as_ref()
-            .map(|prior| fa_journal::uncorrected_misstatements(prior, &[], None, account_type))
-            .transpose()?;
+        let mut prior_summary = None;
+        let mut source_proposals = std::collections::BTreeMap::new();
+        for source in chain {
+            let corrections = with_store!(&self.store, core => core.out_of_period_corrections(
+                &self.purposes(), &source.profile.scope_periods,
+            ))?;
+            prior_summary = Some(fa_journal::uncorrected_misstatements(
+                &source,
+                &corrections,
+                prior_summary.as_ref(),
+                account_type,
+            )?);
+            for proposal in source.proposals {
+                source_proposals.insert(
+                    fa_journal::CarryForwardSource {
+                        engagement: source.vid,
+                        ordinal: proposal.proposal.ordinal,
+                    },
+                    proposal.proposal,
+                );
+            }
+        }
+        let corrections = with_store!(&self.store, core => core.out_of_period_corrections(
+            &self.purposes(), &view.profile.scope_periods,
+        ))?;
         let summary = fa_journal::uncorrected_misstatements(
             &view,
             &corrections,
@@ -2852,7 +2910,7 @@ impl Book {
         Ok(Some(UncorrectedInputs {
             view,
             corrections,
-            prior,
+            source_proposals,
             summary,
         }))
     }
@@ -2881,7 +2939,7 @@ impl Book {
         let Some(UncorrectedInputs {
             view,
             corrections,
-            prior,
+            source_proposals,
             summary,
         }) = self.uncorrected_inputs(engagement)?
         else {
@@ -2944,8 +3002,8 @@ impl Book {
             .chain(legs.iter().copied())
             .collect();
         let mut balance_legs = legs;
-        if let (Some(prior), false) = (&prior, summary.carried.is_empty()) {
-            match self.carried_lines(&view, prior, &summary, &accounts, capability)? {
+        if !summary.carried.is_empty() {
+            match self.carried_lines(&view, &source_proposals, &summary, &accounts, capability)? {
                 Ok((rollover, balance)) => {
                     rollover_legs.extend(rollover);
                     balance_legs.extend(balance);
@@ -2970,7 +3028,10 @@ impl Book {
     fn carried_lines(
         &self,
         view: &fa_journal::EngagementView,
-        prior: &fa_journal::EngagementView,
+        source_proposals: &std::collections::BTreeMap<
+            fa_journal::CarryForwardSource,
+            fa_journal::ProposedAdjustment,
+        >,
         summary: &fa_journal::UncorrectedSummary,
         accounts: &std::collections::BTreeMap<u128, fa_statements::Account>,
         capability: &fa_policy::Capability,
@@ -3006,14 +3067,13 @@ impl Book {
         let mut rollover = Vec::new();
         let mut balance = Vec::new();
         for item in &summary.carried {
-            let legs = prior
-                .proposals
-                .iter()
-                .find(|p| p.proposal.ordinal == item.prior_ordinal)
-                .map(|p| p.proposal.legs.as_slice())
-                .unwrap_or_default()
-                .iter()
-                .filter(|leg| leg.amount.unit == unit);
+            let proposal = source_proposals.get(&item.source).ok_or_else(|| {
+                BookError::Kernel(fa_journal::KernelError::Corrupt(format!(
+                    "carried source proposal {:032x}:{} has no original legs in the SUD ancestry",
+                    item.source.engagement.0, item.source.ordinal
+                )))
+            })?;
+            let legs = proposal.legs.iter().filter(|leg| leg.amount.unit == unit);
             match item.carried {
                 fa_journal::Carried::TurnedAround => rollover.extend(
                     legs.map(|leg| (leg.account.0, leg.side.flipped(), leg.amount.mantissa)),
@@ -3032,8 +3092,9 @@ impl Book {
                                         fa_journal::refusal::code::STRUCTURE,
                                         fa_journal::exit::USAGE,
                                         format!(
-                                            "carried proposal {} names income account `{code}`, which no closing route sends to equity at {}: its prior income is in opening retained earnings, and the balance sheet lines need that account",
-                                            item.prior_ordinal,
+                                            "carried source proposal {:032x}:{} names income account `{code}`, which no closing route sends to equity at {}: its prior income is in opening retained earnings, and the balance sheet lines need that account",
+                                            item.source.engagement.0,
+                                            item.source.ordinal,
                                             last_day.render()
                                         ),
                                         "plan §11.12 (SAB 108 iron curtain), §7.5 (closing routes)",

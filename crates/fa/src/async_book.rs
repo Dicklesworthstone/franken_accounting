@@ -3174,6 +3174,37 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::CarriedForward> {
+        self.carry_forward_qualified(
+            cx,
+            capability,
+            engagement,
+            prior,
+            turned_around,
+            corrected,
+            Vec::new(),
+            Vec::new(),
+            effective_date,
+            idempotency_key,
+        )
+        .await
+    }
+
+    /// Carry forward an engagement's complete unresolved source ancestry,
+    /// optionally disposing of older items by originating engagement/ordinal.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn carry_forward_qualified(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        prior: &str,
+        turned_around: Vec<u32>,
+        corrected: Vec<u32>,
+        turned_around_sources: Vec<fa_journal::CarryForwardSource>,
+        corrected_sources: Vec<fa_journal::CarryForwardSource>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CarriedForward> {
         let description =
             format!("carry engagement {prior}'s uncorrected misstatements into {engagement}");
         let req = self.engagement_request(
@@ -3183,7 +3214,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &description,
             idempotency_key,
         )?;
-        Ok(fa_journal::carry_forward(
+        Ok(fa_journal::carry_forward_qualified(
             &mut self.db,
             cx,
             &self.context,
@@ -3191,6 +3222,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             prior,
             turned_around,
             corrected,
+            turned_around_sources,
+            corrected_sources,
             req,
         )
         .await?)
@@ -3204,6 +3237,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Result<Option<fa_journal::EngagementView>, BookError> {
         self.query(cx, |db, context| {
             Ok(fa_journal::read_engagement(db, context, engagement)?)
+        })
+    }
+
+    /// The complete native SUD source ancestry, with its oldest engagement
+    /// first, bounded and checked before monetary replay.
+    pub fn uncorrected_engagement_chain(
+        &self,
+        cx: &PurposeContexts,
+        engagement: &str,
+    ) -> Result<Option<Vec<fa_journal::EngagementView>>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::read_uncorrected_engagement_chain(
+                db, context, engagement,
+            )?)
         })
     }
 

@@ -40,7 +40,7 @@
 //! for its EngagementControl transition (`produce`), so an Agent prepares
 //! none. Nothing here alters a committed amount.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_model::entry::PRIOR_PERIOD_ERROR_EXTENSION;
 use fa_model::symbols::{label, property, relation};
@@ -88,14 +88,26 @@ pub const DOCUMENTATION_WINDOW_DAYS: i32 = 45;
 /// Canonical bytes of a carry-forward (extension 28): `u16 version ‖ u128
 /// prior engagement ‖ list(u32 turned-around) ‖ list(u32 corrected)`.
 pub const CARRY_FORWARD_VERSION: u16 = 1;
+/// Version 2 appends source-qualified turned-around and corrected lists:
+/// each source is `u128 originating engagement ‖ u32 original ordinal`.
+pub const QUALIFIED_CARRY_FORWARD_VERSION: u16 = 2;
 /// The ordinals one carry-forward list may name.
 pub const MAX_CARRIED_ORDINALS: usize = 4096;
+/// Maximum engagement ancestry read to reconstruct a multiyear SUD.
+pub const MAX_CARRY_FORWARD_DEPTH: usize = 64;
+/// Maximum unresolved source proposals in one reconstructed SUD.
+pub const MAX_UNCORRECTED_SOURCES: usize = 65_536;
 const PROFILE_DOMAIN: &[u8] = b"fa:engagement:v1";
 const CARRY_FORWARD_DOMAIN: &[u8] = b"fa:engagement-carry-forward:v1";
+const QUALIFIED_CARRY_FORWARD_DOMAIN: &[u8] = b"fa:engagement-carry-forward:v2";
 const PROPOSAL_DOMAIN: &[u8] = b"fa:proposed-adjustment:v1";
 const COMPLETION_DOMAIN: &[u8] = b"fa:documentation-completion:v1";
 const WORKPAPER_DOMAIN: &[u8] = b"fa:engagement-workpaper:v1";
 const RECORD_KEY_DOMAIN: &[u8] = b"fa:engagement-record-key:v1";
+
+#[cfg(test)]
+#[path = "engagement/carry_forward_tests.rs"]
+mod carry_forward_tests;
 
 /// The kind of engagement (Appendix A `Engagement.kind`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -824,7 +836,8 @@ pub struct CompletionView {
 /// prior items reversed through this period's income (turned around) and
 /// which an out-of-period correction in this period corrected. Every other
 /// uncorrected item of the prior engagement is still uncorrected at this
-/// period's end. The prior engagement's own carry-forward is not chained.
+/// period's end. Bare ordinals always name that engagement's own proposals;
+/// source-qualified references also name unresolved items it inherited.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CarryForward {
     /// The prior engagement's vertex.
@@ -833,24 +846,53 @@ pub struct CarryForward {
     pub turned_around: Vec<u32>,
     /// Strictly ascending, disjoint from `turned_around`.
     pub corrected: Vec<u32>,
+    /// Strictly ascending originating engagement / original ordinal pairs.
+    pub turned_around_sources: Vec<CarryForwardSource>,
+    /// Strictly ascending, disjoint from every other disposition list.
+    pub corrected_sources: Vec<CarryForwardSource>,
+}
+
+/// A misstatement's permanent identity across engagement carry-forwards.
+/// Proposal ordinals are local to an engagement and cannot identify an
+/// inherited item by themselves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CarryForwardSource {
+    pub engagement: VId,
+    pub ordinal: u32,
 }
 
 impl CarryForward {
+    fn version(&self) -> u16 {
+        if self.turned_around_sources.is_empty() && self.corrected_sources.is_empty() {
+            CARRY_FORWARD_VERSION
+        } else {
+            QUALIFIED_CARRY_FORWARD_VERSION
+        }
+    }
+
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
         let mut w =
             Writer::with_capacity(30 + 4 * (self.turned_around.len() + self.corrected.len()));
-        w.u16(CARRY_FORWARD_VERSION).u128(self.prior.0);
+        w.u16(self.version()).u128(self.prior.0);
         for list in [&self.turned_around, &self.corrected] {
             w.list(list, |w, ordinal| {
                 w.u32(*ordinal);
             });
+        }
+        if self.version() == QUALIFIED_CARRY_FORWARD_VERSION {
+            for list in [&self.turned_around_sources, &self.corrected_sources] {
+                w.list(list, |w, source| {
+                    w.u128(source.engagement.0).u32(source.ordinal);
+                });
+            }
         }
         Ok(w.finish()?)
     }
 
     pub fn decode(raw: &[u8]) -> Result<Self, KernelError> {
         let mut r = Reader::new(raw);
-        if r.u16("carry_forward.version").map_err(decode)? != CARRY_FORWARD_VERSION {
+        let version = r.u16("carry_forward.version").map_err(decode)?;
+        if ![CARRY_FORWARD_VERSION, QUALIFIED_CARRY_FORWARD_VERSION].contains(&version) {
             return Err(KernelError::Corrupt(
                 "unsupported carry-forward version".into(),
             ));
@@ -865,16 +907,40 @@ impl CarryForward {
                 .list(MAX_CARRIED_ORDINALS, field, |r| r.u32(field))
                 .map_err(decode)?;
         }
+        let mut source_lists = [Vec::new(), Vec::new()];
+        if version == QUALIFIED_CARRY_FORWARD_VERSION {
+            for (list, field) in source_lists.iter_mut().zip([
+                "carry_forward.turned_around_sources",
+                "carry_forward.corrected_sources",
+            ]) {
+                *list = r
+                    .list(MAX_CARRIED_ORDINALS, field, |r| {
+                        Ok(CarryForwardSource {
+                            engagement: VId(r.u128(field)?),
+                            ordinal: r.u32(field)?,
+                        })
+                    })
+                    .map_err(decode)?;
+            }
+        }
         r.finish().map_err(decode)?;
         let [turned_around, corrected] = lists;
+        let [turned_around_sources, corrected_sources] = source_lists;
         let carry_forward = Self {
             prior,
             turned_around,
             corrected,
+            turned_around_sources,
+            corrected_sources,
         };
         carry_forward
             .check()
             .map_err(|why| KernelError::Corrupt(format!("carry-forward: {why}")))?;
+        if carry_forward.version() != version {
+            return Err(KernelError::Corrupt(
+                "a version 2 carry-forward must contain source-qualified dispositions".into(),
+            ));
+        }
         Ok(carry_forward)
     }
 
@@ -906,12 +972,113 @@ impl CarryForward {
                 "prior proposal {both} is named both turned around and corrected"
             ));
         }
+        let mut selected: BTreeSet<CarryForwardSource> = self
+            .turned_around
+            .iter()
+            .chain(&self.corrected)
+            .map(|ordinal| CarryForwardSource {
+                engagement: self.prior,
+                ordinal: *ordinal,
+            })
+            .collect();
+        for (name, list) in [
+            ("turned-around source", &self.turned_around_sources),
+            ("corrected source", &self.corrected_sources),
+        ] {
+            if list.len() > MAX_CARRIED_ORDINALS {
+                return Err(format!(
+                    "{name} names {} proposals; at most {MAX_CARRIED_ORDINALS}",
+                    list.len()
+                ));
+            }
+            if list.iter().any(|source| source.ordinal == 0)
+                || list.windows(2).any(|w| w[0] >= w[1])
+            {
+                return Err(format!(
+                    "{name} proposals must be sorted by engagement and positive ordinal, each named once"
+                ));
+            }
+            for source in list {
+                if !selected.insert(*source) {
+                    return Err(format!(
+                        "source proposal {:032x}:{} is named more than once across carry-forward dispositions",
+                        source.engagement.0, source.ordinal
+                    ));
+                }
+            }
+        }
+        // The lists share the entry-extension byte budget, even though each
+        // also has its own count bound. Counts were bounded above.
+        let encoded_len = 26
+            + 4 * (self.turned_around.len() + self.corrected.len())
+            + if self.version() == QUALIFIED_CARRY_FORWARD_VERSION {
+                8 + 20 * (self.turned_around_sources.len() + self.corrected_sources.len())
+            } else {
+                0
+            };
+        if encoded_len > fa_model::limits::MAX_EXTENSION_BYTES {
+            return Err(format!(
+                "carry-forward dispositions need {encoded_len} bytes; at most {}",
+                fa_model::limits::MAX_EXTENSION_BYTES
+            ));
+        }
         Ok(())
+    }
+
+    /// Refuse references outside the immediate prior's complete unresolved
+    /// source set, including an older item already corrected or turned around.
+    fn check_sources(&self, available: &BTreeSet<CarryForwardSource>) -> Result<(), String> {
+        self.check()?;
+        for source in self.selected_sources() {
+            if !available.contains(&source) {
+                return Err(format!(
+                    "source engagement {:032x} proposal {} is not unresolved in the prior engagement's current SUD",
+                    source.engagement.0, source.ordinal
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn selected_sources(&self) -> impl Iterator<Item = CarryForwardSource> + '_ {
+        self.turned_around
+            .iter()
+            .chain(&self.corrected)
+            .map(|ordinal| CarryForwardSource {
+                engagement: self.prior,
+                ordinal: *ordinal,
+            })
+            .chain(
+                self.turned_around_sources
+                    .iter()
+                    .chain(&self.corrected_sources)
+                    .copied(),
+            )
+    }
+
+    fn disposition(&self, source: CarryForwardSource) -> Carried {
+        if self.turned_around_sources.binary_search(&source).is_ok()
+            || (source.engagement == self.prior
+                && self.turned_around.binary_search(&source.ordinal).is_ok())
+        {
+            Carried::TurnedAround
+        } else if self.corrected_sources.binary_search(&source).is_ok()
+            || (source.engagement == self.prior
+                && self.corrected.binary_search(&source.ordinal).is_ok())
+        {
+            Carried::Corrected
+        } else {
+            Carried::Uncorrected
+        }
     }
 
     pub fn digest(&self) -> Result<[u8; 32], KernelError> {
         Ok(domain_digest(
-            CARRY_FORWARD_DOMAIN,
+            if self.version() == QUALIFIED_CARRY_FORWARD_VERSION {
+                QUALIFIED_CARRY_FORWARD_DOMAIN
+            } else {
+                CARRY_FORWARD_DOMAIN
+            },
             &[&self.canonical_bytes()?],
         ))
     }
@@ -2910,7 +3077,38 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
     corrected: Vec<u32>,
     req: EngagementRequest,
 ) -> Outcome<CarriedForward> {
-    const FIX: &str = "fa engagement carry-forward <id> --from <prior engagement> [--turned-around N]... [--corrected N]...";
+    carry_forward_qualified(
+        db,
+        ctx,
+        book,
+        engagement,
+        prior,
+        turned_around,
+        corrected,
+        Vec::new(),
+        Vec::new(),
+        req,
+    )
+    .await
+}
+
+/// Carry forward the complete unresolved ancestry of `prior`. Qualified
+/// dispositions identify an originating engagement and its proposal ordinal;
+/// bare ordinals retain their version 1 meaning of `prior`'s own proposals.
+#[allow(clippy::too_many_arguments)]
+pub async fn carry_forward_qualified<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    engagement: &str,
+    prior: &str,
+    turned_around: Vec<u32>,
+    corrected: Vec<u32>,
+    turned_around_sources: Vec<CarryForwardSource>,
+    corrected_sources: Vec<CarryForwardSource>,
+    req: EngagementRequest,
+) -> Outcome<CarriedForward> {
+    const FIX: &str = "fa engagement carry-forward <id> --from <prior engagement> [--turned-around N]... [--corrected N]... [--turned-around-source <engagement>:N]... [--corrected-source <engagement>:N]...";
     for code in [engagement, prior] {
         if let Err(why) = check_engagement(code) {
             return Ok(Err(usage(why, FIX)));
@@ -2922,6 +3120,8 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
         prior: prior_vid,
         turned_around,
         corrected,
+        turned_around_sources,
+        corrected_sources,
     };
     if let Err(why) = carried.check() {
         return Ok(Err(usage(why, FIX)));
@@ -2955,7 +3155,7 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
                 return Ok(Err(refused));
             }
         };
-    let Some((_, profile)) = engagement_row(&txn, db, vid)? else {
+    let Some((current_row, profile)) = engagement_row(&txn, db, vid)? else {
         txn.abort();
         return Ok(Err(unknown(engagement)));
     };
@@ -3041,23 +3241,38 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
             )));
         }
     }
-    let prior_view = view_of(db, &prior_row)?;
-    if let Some(ordinal) = carried
-        .turned_around
+    let prior_chain = read_carry_forward_chain(db, book, view_of(db, &prior_row)?)?;
+    if prior_chain.len() >= MAX_CARRY_FORWARD_DEPTH {
+        txn.abort();
+        return Ok(Err(carry_forward_refused(
+            prior,
+            format!(
+                "engagement `{engagement}` would exceed {MAX_CARRY_FORWARD_DEPTH} engagements in its carry-forward ancestry"
+            ),
+        )));
+    }
+    let own_proposals =
+        usize::try_from(next_of(prop(&current_row, property::ORDINAL), vid)? - 1)
+            .map_err(|_| KernelError::Corrupt("engagement proposal count exceeds usize".into()))?;
+    if prior_chain
         .iter()
-        .chain(&carried.corrected)
-        .find(|ordinal| {
-            !prior_view
-                .proposals
-                .iter()
-                .any(|p| p.proposal.ordinal == **ordinal && uncorrected_basis(p).is_some())
-        })
+        .map(|view| view.proposals.len())
+        .sum::<usize>()
+        .checked_add(own_proposals)
+        .is_none_or(|count| count > MAX_UNCORRECTED_SOURCES)
     {
         txn.abort();
         return Ok(Err(carry_forward_refused(
             prior,
-            format!("engagement `{prior}` has no uncorrected proposal {ordinal}"),
+            format!(
+                "engagement `{engagement}` would exceed {MAX_UNCORRECTED_SOURCES} source proposals in its carry-forward ancestry"
+            ),
         )));
+    }
+    let available = unresolved_sources(&prior_chain)?;
+    if let Err(why) = carried.check_sources(&available) {
+        txn.abort();
+        return Ok(Err(carry_forward_refused(prior, why)));
     }
     let record = record_proposal(
         book,
@@ -3164,6 +3379,187 @@ pub fn list_engagements<V: asupersync::fs::Vfs + Clone>(
     }
     out.sort_by_key(|v| (v.opened_at, v.vid.0));
     Ok(out)
+}
+
+/// The named engagement's complete carry-forward ancestry, oldest first,
+/// reconstructed from native engagement records at the current prefix.
+/// Every source keeps its own proposal and decision evidence.
+pub fn read_uncorrected_engagement_chain<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    engagement: &str,
+) -> Result<Option<Vec<EngagementView>>, KernelError> {
+    read_engagement(db, book, engagement)?
+        .map(|view| read_carry_forward_chain(db, book, view))
+        .transpose()
+}
+
+fn read_carry_forward_chain<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    view: EngagementView,
+) -> Result<Vec<EngagementView>, KernelError> {
+    carry_forward_chain(
+        view,
+        |vid| match db.vertex(vid)? {
+            Some(row) if row.labels.contains(&label::ENGAGEMENT) => Ok(Some(view_of(db, &row)?)),
+            _ => Ok(None),
+        },
+        |profile| scope_bounds(book, profile),
+    )
+}
+
+/// Normalize ancestry once, before either monetary replay or source
+/// disposition validation. Bounds and identities prevent cycles, cross-book
+/// aliases, overlapping periods and unbounded input from being summarized.
+fn carry_forward_chain(
+    mut view: EngagementView,
+    mut load: impl FnMut(VId) -> Result<Option<EngagementView>, KernelError>,
+    bounds: impl Fn(&EngagementProfile) -> Option<(DateDay, DateDay)>,
+) -> Result<Vec<EngagementView>, KernelError> {
+    let book = view.profile.book_id;
+    let unit = view.profile.unit;
+    let mut chain = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut later_start = None;
+    let mut proposals = 0usize;
+    loop {
+        if chain.len() >= MAX_CARRY_FORWARD_DEPTH {
+            return Err(KernelError::Corrupt(format!(
+                "carry-forward ancestry exceeds {MAX_CARRY_FORWARD_DEPTH} engagements"
+            )));
+        }
+        if !seen.insert(view.vid) {
+            return Err(KernelError::Corrupt(format!(
+                "carry-forward ancestry repeats engagement {:032x}",
+                view.vid.0
+            )));
+        }
+        if view.profile.vid() != view.vid
+            || view.profile.book_id != book
+            || view.profile.unit != unit
+        {
+            return Err(KernelError::Corrupt(format!(
+                "carry-forward engagement {:032x} has a mismatched identity, book or unit",
+                view.vid.0
+            )));
+        }
+        let (start, end) = bounds(&view.profile).ok_or_else(|| {
+            KernelError::Corrupt(format!(
+                "carry-forward engagement `{}` names a scope period the calendar does not have",
+                view.profile.engagement
+            ))
+        })?;
+        if start >= end || later_start.is_some_and(|later| end > later) {
+            return Err(KernelError::Corrupt(format!(
+                "carry-forward engagement `{}` does not precede the scope it is carried into",
+                view.profile.engagement
+            )));
+        }
+        later_start = Some(start);
+        proposals = proposals
+            .checked_add(view.proposals.len())
+            .ok_or_else(|| KernelError::Corrupt("carry-forward proposal count overflow".into()))?;
+        if proposals > MAX_UNCORRECTED_SOURCES {
+            return Err(KernelError::Corrupt(format!(
+                "carry-forward ancestry exceeds {MAX_UNCORRECTED_SOURCES} source proposals"
+            )));
+        }
+        let prior = view.carry_forwards.last().map(|c| c.carry_forward.prior);
+        chain.push(view);
+        let Some(prior) = prior else {
+            break;
+        };
+        if chain.len() >= MAX_CARRY_FORWARD_DEPTH {
+            return Err(KernelError::Corrupt(format!(
+                "carry-forward ancestry exceeds {MAX_CARRY_FORWARD_DEPTH} engagements"
+            )));
+        }
+        view = load(prior)?.ok_or_else(|| {
+            KernelError::Corrupt(format!(
+                "carry-forward source {:032x} is not an engagement in the authenticated ancestry",
+                prior.0
+            ))
+        })?;
+        if view.vid != prior {
+            return Err(KernelError::Corrupt(format!(
+                "carry-forward source {:032x} resolved to another engagement",
+                prior.0
+            )));
+        }
+    }
+    chain.reverse();
+    Ok(chain)
+}
+
+/// Outstanding source identities, without amount arithmetic: the write path
+/// uses the same disposition rules as monetary replay. Resolved inherited
+/// items disappear from the next period's input; out-of-period corrections
+/// are current-period rollover effects and are never inherited proposals.
+fn unresolved_sources(
+    chain: &[EngagementView],
+) -> Result<BTreeSet<CarryForwardSource>, KernelError> {
+    let mut unresolved = BTreeSet::new();
+    let mut previous = None;
+    for view in chain {
+        match view.carry_forwards.last() {
+            Some(record) if Some(record.carry_forward.prior) == previous => {
+                check_summary_sources(view, record, &unresolved)?;
+                unresolved.retain(|source| {
+                    record.carry_forward.disposition(*source) == Carried::Uncorrected
+                });
+            }
+            None if previous.is_none() => {}
+            _ => {
+                return Err(KernelError::Corrupt(
+                    "carry-forward ancestry does not name its preceding engagement".into(),
+                ));
+            }
+        }
+        for proposal in &view.proposals {
+            if uncorrected_basis(proposal).is_some() {
+                let source = CarryForwardSource {
+                    engagement: view.vid,
+                    ordinal: proposal.proposal.ordinal,
+                };
+                if source.ordinal == 0 || !unresolved.insert(source) {
+                    return Err(KernelError::Corrupt(
+                        "carry-forward repeats a source proposal or names ordinal zero".into(),
+                    ));
+                }
+                if unresolved.len() > MAX_UNCORRECTED_SOURCES {
+                    return Err(KernelError::Corrupt(format!(
+                        "carry-forward exceeds {MAX_UNCORRECTED_SOURCES} unresolved source proposals"
+                    )));
+                }
+            }
+        }
+        previous = Some(view.vid);
+    }
+    Ok(unresolved)
+}
+
+/// A disposition whose selected source is absent from the current ancestry
+/// needs review. This includes later resolution or reparenting and does not
+/// assert that a previous source state was proved. Malformed bytes still fail
+/// as corruption; a well-formed but unsatisfied source never yields amounts.
+fn check_summary_sources(
+    view: &EngagementView,
+    record: &CarryForwardView,
+    available: &BTreeSet<CarryForwardSource>,
+) -> Result<(), KernelError> {
+    let carry = &record.carry_forward;
+    carry
+        .check()
+        .map_err(|why| KernelError::Corrupt(format!("carry-forward: {why}")))?;
+    if let Err(detail) = carry.check_sources(available) {
+        return Err(KernelError::EngagementSourceChanged {
+            engagement: view.profile.engagement.clone(),
+            prior: carry.prior,
+            detail,
+        });
+    }
+    Ok(())
 }
 
 /// The `EngagementControl` records with an `IN_CASE` edge to `object`, at
@@ -3719,7 +4115,10 @@ impl Carried {
 /// A prior engagement's uncorrected misstatement carried into this summary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CarriedItem {
-    /// Its number in the prior engagement.
+    /// The originating engagement and its original proposal number.
+    pub source: CarryForwardSource,
+    /// The original proposal number, retained for version 1 consumers. Use
+    /// `source` to distinguish proposals with the same number in different years.
     pub prior_ordinal: u32,
     pub effective_date: DateDay,
     pub carried: Carried,
@@ -3729,6 +4128,10 @@ pub struct CarriedItem {
     /// period's income against opening retained earnings; nothing for a
     /// corrected one.
     pub effect: StatementEffect,
+    /// The source proposal's effect before any period moved its income to
+    /// opening retained earnings. A later turnaround uses this income, not
+    /// the zero income of an already-carried balance-sheet effect.
+    pub original_effect: StatementEffect,
     pub clearly_trivial: bool,
     pub other_units: Vec<UnitId>,
 }
@@ -3745,6 +4148,8 @@ pub struct CarriedItem {
 /// iron curtain, those that turned around under the rollover.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UncorrectedSummary {
+    /// The engagement whose complete source closure produced this summary.
+    pub engagement: VId,
     pub unit: UnitId,
     pub items: Vec<UncorrectedItem>,
     pub out_of_period: Vec<OutOfPeriodItem>,
@@ -3849,8 +4254,9 @@ fn effect_of(
 
 /// The summary of uncorrected misstatements for `view`'s uncorrected
 /// proposals, the out-of-period `corrections` in its scope and, when it
-/// carries one forward, the `prior` engagement's summary (its own items;
-/// its carry-forward is not chained). `account_type` names each leg
+/// carries one forward, the `prior` engagement's complete summary. Its own
+/// uncorrected proposals and inherited items still uncorrected at its end
+/// continue under their original identities. `account_type` names each leg
 /// account's type (from the chart); memo legs are outside the statements
 /// and are not summarized.
 pub fn uncorrected_misstatements(
@@ -3859,6 +4265,11 @@ pub fn uncorrected_misstatements(
     prior: Option<&UncorrectedSummary>,
     account_type: impl Fn(VId) -> Option<fa_model::AccountType>,
 ) -> Result<UncorrectedSummary, KernelError> {
+    if view.proposals.len() > MAX_UNCORRECTED_SOURCES {
+        return Err(KernelError::Corrupt(format!(
+            "engagement summary exceeds {MAX_UNCORRECTED_SOURCES} source proposals"
+        )));
+    }
     let unit = view.profile.unit;
     let trivial = view.profile.materiality.clearly_trivial.unsigned_abs();
     let mut items = Vec::new();
@@ -3912,10 +4323,17 @@ pub fn uncorrected_misstatements(
         });
     }
     let overflow = || KernelError::Corrupt("uncorrected misstatements overflow".into());
-    let carry_forward = view.carry_forwards.last().map(|c| &c.carry_forward);
+    let carry_record = view.carry_forwards.last();
+    let carry_forward = carry_record.map(|c| &c.carry_forward);
     let mut carried = Vec::new();
     match (carry_forward, prior) {
-        (None, _) => {}
+        (None, None) => {}
+        (None, Some(_)) => {
+            return Err(KernelError::Corrupt(format!(
+                "engagement `{}` has no carry-forward for the supplied prior summary",
+                view.profile.engagement
+            )));
+        }
         (Some(_), None) => {
             return Err(KernelError::Corrupt(format!(
                 "engagement `{}` carries a prior engagement forward, but its summary was not supplied",
@@ -3928,17 +4346,69 @@ pub fn uncorrected_misstatements(
                 view.profile.engagement
             )));
         }
+        (Some(carry), Some(prior)) if carry.prior != prior.engagement => {
+            return Err(KernelError::Corrupt(format!(
+                "engagement `{}` carries forward another engagement's summary",
+                view.profile.engagement
+            )));
+        }
         (Some(carry_forward), Some(prior)) => {
-            for item in &prior.items {
-                let e = item.effect;
-                let ordinal = item.ordinal;
-                let disposition = if carry_forward.turned_around.binary_search(&ordinal).is_ok() {
-                    Carried::TurnedAround
-                } else if carry_forward.corrected.binary_search(&ordinal).is_ok() {
-                    Carried::Corrected
-                } else {
-                    Carried::Uncorrected
-                };
+            if prior.items.len() > MAX_UNCORRECTED_SOURCES
+                || prior.carried.len() > MAX_UNCORRECTED_SOURCES
+            {
+                return Err(KernelError::Corrupt(format!(
+                    "prior engagement summary exceeds {MAX_UNCORRECTED_SOURCES} source proposals"
+                )));
+            }
+            let own = prior.items.iter().map(|item| {
+                (
+                    CarryForwardSource {
+                        engagement: prior.engagement,
+                        ordinal: item.ordinal,
+                    },
+                    (
+                        item.effective_date,
+                        item.effect,
+                        item.other_units.as_slice(),
+                    ),
+                )
+            });
+            let inherited = prior
+                .carried
+                .iter()
+                .filter(|item| item.carried == Carried::Uncorrected)
+                .map(|item| {
+                    (
+                        item.source,
+                        (
+                            item.effective_date,
+                            item.original_effect,
+                            item.other_units.as_slice(),
+                        ),
+                    )
+                });
+            let mut sources = BTreeMap::new();
+            for (source, item) in own.chain(inherited) {
+                if source.ordinal == 0
+                    || source.engagement == view.vid
+                    || sources.insert(source, item).is_some()
+                {
+                    return Err(KernelError::Corrupt(
+                        "prior summary repeats or misidentifies a carried source proposal".into(),
+                    ));
+                }
+                if sources.len() > MAX_UNCORRECTED_SOURCES.saturating_sub(items.len()) {
+                    return Err(KernelError::Corrupt(format!(
+                        "engagement summary exceeds {MAX_UNCORRECTED_SOURCES} source proposals"
+                    )));
+                }
+            }
+            let record = carry_record.ok_or_else(|| {
+                KernelError::Corrupt("carry-forward summary lost its governing record".into())
+            })?;
+            check_summary_sources(view, record, &sources.keys().copied().collect())?;
+            for (source, (effective_date, e, other_units)) in sources {
+                let disposition = carry_forward.disposition(source);
                 let effect = match disposition {
                     // At this period's end the prior period's income effect
                     // sits in opening retained earnings.
@@ -3967,12 +4437,14 @@ pub fn uncorrected_misstatements(
                     Carried::Corrected => {}
                 }
                 carried.push(CarriedItem {
-                    prior_ordinal: ordinal,
-                    effective_date: item.effective_date,
+                    source,
+                    prior_ordinal: source.ordinal,
+                    effective_date,
                     carried: disposition,
                     effect,
+                    original_effect: e,
                     clearly_trivial: effect.largest() <= trivial,
-                    other_units: item.other_units.clone(),
+                    other_units: other_units.to_vec(),
                 });
             }
         }
@@ -3980,6 +4452,7 @@ pub fn uncorrected_misstatements(
     let m = view.profile.materiality;
     let largest = total.largest().max(rollover_income.unsigned_abs());
     Ok(UncorrectedSummary {
+        engagement: view.vid,
         unit,
         items,
         out_of_period,
@@ -4605,17 +5078,20 @@ mod tests {
                 AdjustmentDecision::Pass { reason_code: 3 },
             )
         };
-        let prior_view = engagement_view(vec![
+        let mut prior_view = engagement_view(vec![
             accrual(1, 1_000),
             accrual(2, 2_000),
             accrual(3, 4_000),
         ]);
+        prior_view.vid = VId(51);
         let prior = uncorrected_misstatements(&prior_view, &[], None, chart).unwrap();
         let carry = |record: u128, turned_around: Vec<u32>, corrected: Vec<u32>| CarryForwardView {
             carry_forward: CarryForward {
                 prior: VId(51),
                 turned_around,
                 corrected,
+                turned_around_sources: Vec::new(),
+                corrected_sources: Vec::new(),
             },
             record: VId(record),
             recorded_at: CommitSeq(9),
@@ -4689,6 +5165,8 @@ mod tests {
             prior: VId(51),
             turned_around: vec![1, 4],
             corrected: vec![2],
+            turned_around_sources: Vec::new(),
+            corrected_sources: Vec::new(),
         };
         assert_eq!(
             CarryForward::decode(&carried.canonical_bytes().unwrap()).unwrap(),
@@ -4704,6 +5182,8 @@ mod tests {
                 prior: VId(51),
                 turned_around,
                 corrected,
+                turned_around_sources: Vec::new(),
+                corrected_sources: Vec::new(),
             };
             assert!(bad.check().is_err(), "{bad:?}");
             assert!(CarryForward::decode(&bad.canonical_bytes().unwrap()).is_err());

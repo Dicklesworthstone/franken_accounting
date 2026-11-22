@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 
 use fa_journal::refusal::{Refusal, code, exit};
 use fa_journal::{
-    AdjustmentDecision, EngagementKind, EngagementProfile, EngagementView, Materiality,
-    ProposalLeg, ProposalView, Uncorrected,
+    AdjustmentDecision, CarryForwardSource, EngagementKind, EngagementProfile, EngagementView,
+    Materiality, ProposalLeg, ProposalView, Uncorrected,
 };
 use fa_model::account_vid;
 use fa_money::{Amount, Side};
@@ -49,7 +49,7 @@ pub(crate) fn engagement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
 const FILE_EXAMPLE: &str =
     "fa engagement file <id> --document <oid> | --finding <vid> [--key K] --json";
 const COMPLETE_EXAMPLE: &str = "fa engagement complete <id> --completion-date YYYY-MM-DD [--report-release YYYY-MM-DD] [--key K] --json";
-const CARRY_FORWARD_EXAMPLE: &str = "fa engagement carry-forward <id> --from <prior engagement> [--turned-around <n>]... [--corrected <n>]... [--key K] --json";
+const CARRY_FORWARD_EXAMPLE: &str = "fa engagement carry-forward <id> --from <prior engagement> [--turned-around <n>]... [--corrected <n>]... [--turned-around-source <engagement>:<n>]... [--corrected-source <engagement>:<n>]... [--key K] --json";
 
 /// `fa engagement carry-forward <id> --from <prior>`: journal that the prior
 /// engagement's uncorrected misstatements carry into this one, and which of
@@ -95,13 +95,18 @@ fn carry_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "carrying an engagement's misstatements forward",
         )
     })?;
+    let codes = engagement_codes(&book)?;
+    let turned_around_sources = qualified_sources(args, "--turned-around-source", &codes)?;
+    let corrected_sources = qualified_sources(args, "--corrected-source", &codes)?;
     let date = control_date(args, &book)?;
-    let carried = book.carry_forward(
+    let carried = book.carry_forward_qualified(
         capability,
         &engagement,
         &prior,
         turned_around,
         corrected,
+        turned_around_sources,
+        corrected_sources,
         date,
         key.as_bytes(),
     )??;
@@ -109,8 +114,8 @@ fn carry_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let c = &carried.carry_forward;
     let human = format!(
         "engagement {engagement}: carries forward {prior}'s uncorrected misstatements ({} turned around, {} corrected){}{}",
-        c.turned_around.len(),
-        c.corrected.len(),
+        c.turned_around.len() + c.turned_around_sources.len(),
+        c.corrected.len() + c.corrected_sources.len(),
         if carried.added_after_completion {
             ", added after documentation completion"
         } else {
@@ -129,6 +134,14 @@ fn carry_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("prior", s(&prior)),
             ("turned_around", ordinals_json(&c.turned_around)),
             ("corrected", ordinals_json(&c.corrected)),
+            (
+                "turned_around_sources",
+                sources_json(&c.turned_around_sources, &codes)?,
+            ),
+            (
+                "corrected_sources",
+                sources_json(&c.corrected_sources, &codes)?,
+            ),
             ("control_entry", vid_hex(carried.control_entry)),
             ("recorded_at", seq(carried.recorded_at)),
             (
@@ -144,6 +157,74 @@ fn carry_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 fn ordinals_json(ordinals: &[u32]) -> Json {
     Json::Arr(ordinals.iter().map(|n| Json::Int(i128::from(*n))).collect())
+}
+
+fn qualified_sources(
+    args: &Args,
+    flag: &str,
+    codes: &BTreeMap<u128, String>,
+) -> Result<Vec<CarryForwardSource>, Fail> {
+    let mut sources = args
+        .flag_all(flag)
+        .iter()
+        .map(|value| {
+            let (engagement, number) = value.rsplit_once(':').ok_or_else(|| {
+                usage(
+                    format!("{flag} needs an engagement code and proposal number separated by :"),
+                    CARRY_FORWARD_EXAMPLE,
+                )
+            })?;
+            let ordinal = number
+                .parse::<u32>()
+                .ok()
+                .filter(|number| *number > 0)
+                .ok_or_else(|| {
+                    usage(
+                        format!("{flag} `{value}` has no positive proposal number"),
+                        CARRY_FORWARD_EXAMPLE,
+                    )
+                })?;
+            let engagement = codes
+                .iter()
+                .find(|(_, code)| code.as_str() == engagement)
+                .map(|(vid, _)| VId(*vid))
+                .ok_or_else(|| unknown(engagement))?;
+            Ok(CarryForwardSource {
+                engagement,
+                ordinal,
+            })
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    sources.sort_unstable();
+    if sources.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(usage(
+            format!("{flag} names a source proposal twice"),
+            CARRY_FORWARD_EXAMPLE,
+        ));
+    }
+    Ok(sources)
+}
+
+fn source_json(source: CarryForwardSource, codes: &BTreeMap<u128, String>) -> Result<Json, Fail> {
+    let code = codes
+        .get(&source.engagement.0)
+        .ok_or_else(|| unknown(&format!("{:032x}", source.engagement.0)))?;
+    Ok(obj(vec![
+        ("engagement", s(code)),
+        ("number", Json::Int(i128::from(source.ordinal))),
+    ]))
+}
+
+fn sources_json(
+    sources: &[CarryForwardSource],
+    codes: &BTreeMap<u128, String>,
+) -> Result<Json, Fail> {
+    Ok(Json::Arr(
+        sources
+            .iter()
+            .map(|source| source_json(*source, codes))
+            .collect::<Result<Vec<_>, _>>()?,
+    ))
 }
 
 /// The engagement codes of the book, by vertex: a carry-forward names its
@@ -859,8 +940,8 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .ok_or_else(|| unknown(&format!("{:032x}", c.carry_forward.prior.0)))?;
             human.push(format!(
                 "  carries forward {prior} ({} turned around, {} corrected){}",
-                c.carry_forward.turned_around.len(),
-                c.carry_forward.corrected.len(),
+                c.carry_forward.turned_around.len() + c.carry_forward.turned_around_sources.len(),
+                c.carry_forward.corrected.len() + c.carry_forward.corrected_sources.len(),
                 if c.added_after_completion {
                     " (added after documentation completion)"
                 } else {
@@ -874,6 +955,14 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ordinals_json(&c.carry_forward.turned_around),
                 ),
                 ("corrected", ordinals_json(&c.carry_forward.corrected)),
+                (
+                    "turned_around_sources",
+                    sources_json(&c.carry_forward.turned_around_sources, &engagements)?,
+                ),
+                (
+                    "corrected_sources",
+                    sources_json(&c.carry_forward.corrected_sources, &engagements)?,
+                ),
                 ("record", vid_hex(c.record)),
                 ("recorded_at", seq(c.recorded_at)),
                 ("recorded_by", vid_hex(c.recorded_by)),
@@ -1052,11 +1141,17 @@ fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
+    let codes = if summary.carried_from.is_some() {
+        engagement_codes(&book)?
+    } else {
+        BTreeMap::new()
+    };
     let carried_from = match summary.carried_from {
         None => None,
         Some(prior) => Some(
-            engagement_codes(&book)?
-                .remove(&prior.0)
+            codes
+                .get(&prior.0)
+                .cloned()
                 .ok_or_else(|| unknown(&format!("{:032x}", prior.0)))?,
         ),
     };
@@ -1066,9 +1161,14 @@ fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .map(|item| {
             Ok(obj(vec![
                 ("prior_number", Json::Int(i128::from(item.prior_ordinal))),
+                ("source", source_json(item.source, &codes)?),
                 ("effective_date", s(item.effective_date.render())),
                 ("carried", s(item.carried.name())),
                 ("effect", effect_json(item.effect, summary.unit, &units)?),
+                (
+                    "original_effect",
+                    effect_json(item.original_effect, summary.unit, &units)?,
+                ),
                 ("clearly_trivial", Json::Bool(item.clearly_trivial)),
                 (
                     "other_units",
