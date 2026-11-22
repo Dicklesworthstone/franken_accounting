@@ -21,6 +21,8 @@
 //! their Bates assignments; retries and views authenticate the original claims.
 //! Restatement-case lifecycle records share that atomic reservation; retries
 //! preserve the original approval transcript and outcome after later transitions.
+//! Engagement lifecycle and filing records reserve their existing canonical
+//! keys with their effects and authenticate their original claims on replay.
 //! Existing normal-key controls are checked before a posting takes their key.
 
 mod keys;
@@ -805,7 +807,8 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
         || is_rule_activation(entry)
         || crate::issuance::is_issuance_control(entry, vid)
         || crate::production::is_lifecycle_control(entry, vid)
-        || crate::case::is_lifecycle_control(entry, vid))
+        || crate::case::is_lifecycle_control(entry, vid)
+        || crate::engagement::is_lifecycle_control(entry, vid))
         && vid
             == fa_model::entry_vid(
                 proposal.book_id,

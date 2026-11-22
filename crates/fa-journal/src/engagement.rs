@@ -1055,6 +1055,71 @@ fn record_proposal(
     }
 }
 
+/// Only the dedicated engagement writer's registered normal-key records
+/// participate in the shared successful-intent namespace. Admission and
+/// the history fold validate the bodies and their referenced effects.
+pub(crate) fn is_lifecycle_control(entry: &fa_model::Entry, vid: VId) -> bool {
+    let p = &entry.proposal;
+    if p.class != EntryClass::ENGAGEMENT_CONTROL
+        || p.branch_id != Id128::TRUNK
+        || p.document_date.is_some()
+        || p.effective_period.is_some()
+        || !p.legs.is_empty()
+        || !p.unit_totals.is_empty()
+        || p.base_totals.is_some()
+        || p.session_ref.is_some()
+        || !p.evidence.is_empty()
+        || !p.supersession.is_empty()
+        || p.pending.is_some()
+        || !p.external_ids.is_empty()
+        || !p.tags.is_empty()
+        || !entry.approvals.is_empty()
+        || entry.plan_certificate.is_some()
+        || p.idempotency_key.len() != 32
+        || vid != entry_vid(p.book_id, &p.principal_ref.0.to_le_bytes(), &p.idempotency_key)
+        || !matches!(p.origin, EntryOrigin::Control {
+            control_kind: ControlKind::ENGAGEMENT_TRANSITION, ..
+        })
+    {
+        return false;
+    }
+    let Some(ControlPayload::LifecycleTransition {
+        from, to, proof_refs, reason_code, ..
+    }) = &p.control else {
+        return false;
+    };
+    match (*from, *to, p.extensions.as_slice(), proof_refs.as_slice()) {
+        (0, 1, [(fa_model::entry::ENGAGEMENT_PROFILE_EXTENSION, _)], [])
+        | (1, 2, [(fa_model::entry::DOCUMENTATION_COMPLETION_EXTENSION, _)], [])
+        | (1, 2, [], [TypedRef::Vertex(_)]) => *reason_code == 0,
+        (1 | 2, _, [(fa_model::entry::PROPOSED_ADJUSTMENT_EXTENSION, _)], [TypedRef::Vertex(_)])
+        | (1 | 2, _, [(fa_model::entry::ENGAGEMENT_CARRY_FORWARD_EXTENSION, _)], [TypedRef::Vertex(_)])
+        | (1 | 2, _, [], [TypedRef::Object(_) | TypedRef::Vertex(_)]) => {
+            from == to && *reason_code == 0
+        }
+        (1, 3, [], []) => fa_registry::reason_codes::ReasonCodes::embedded()
+            .is_ok_and(|reasons| reasons.get("adjustment_pass", *reason_code).is_some()),
+        _ => false,
+    }
+}
+
+/// Retain the existing record identity, including document/finding-derived
+/// filing keys, while witnessing its common outcome in the same transaction.
+async fn witness_record<V: asupersync::fs::Vfs + Clone>(
+    txn: &mut WriteTxn,
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    principal: VId,
+    key: &[u8],
+    evid: VId,
+) -> Outcome<Option<VertexRow>> {
+    crate::outcome::witness_control_record(
+        txn, db, ctx, book, principal, key, evid, EntryClass::ENGAGEMENT_CONTROL,
+    )
+    .await
+}
+
 /// Authority before any read (doctrine 8): the `EngagementControl` row's
 /// preparer op for `kind`, held by the acting principal, current at the
 /// head. An engagement record is a trunk record, so an Agent is refused.
@@ -1174,7 +1239,8 @@ fn already_filed(
     })
 }
 
-fn recorded_or_conflict(
+fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     row: &VertexRow,
     proposal: &EntryPayload,
@@ -1184,6 +1250,9 @@ fn recorded_or_conflict(
         return Ok(Err(conflict_with(row)));
     }
     let (stored, recorded_at) = crate::post::entry_of(row)?;
+    if !crate::outcome::verify_control_recorded(db, row, &stored)? {
+        return Ok(Err(conflict_with(row)));
+    }
     if stored.proposal_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded_at));
     }
@@ -1335,10 +1404,19 @@ pub async fn open_engagement<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    if let Some(row) = txn.vertex(db, evid)? {
+    let recorded = match witness_record(
+        &mut txn, db, ctx, book, req.capability.holder(), &proposal.idempotency_key, evid,
+    ).await? {
+        Ok(recorded) => recorded,
+        Err(refused) => {
+            txn.abort();
+            return Ok(Err(refused));
+        }
+    };
+    if let Some(row) = recorded {
         txn.abort();
         return Ok(
-            recorded_or_conflict(book, &row, &proposal)?.map(|recorded_at| EngagementOpened {
+            recorded_or_conflict(db, book, &row, &proposal)?.map(|recorded_at| EngagementOpened {
                 engagement: vid,
                 control_entry: evid,
                 recorded_at,
@@ -1393,6 +1471,7 @@ pub async fn open_engagement<V: asupersync::fs::Vfs + Clone>(
     props.sort_by_key(|(k, _)| k.0);
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.create_vertex(vid, vec![label::ENGAGEMENT], props);
     in_case.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
     txn.write(db, in_case)?;
@@ -1410,7 +1489,7 @@ pub async fn open_engagement<V: asupersync::fs::Vfs + Clone>(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
             Some(row) => Ok(
-                recorded_or_conflict(book, &row, &proposal)?.map(|recorded_at| EngagementOpened {
+                recorded_or_conflict(db, book, &row, &proposal)?.map(|recorded_at| EngagementOpened {
                     engagement: vid,
                     control_entry: evid,
                     recorded_at,
@@ -1562,11 +1641,20 @@ pub async fn propose_adjustment<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    let recorded = match witness_record(
+        &mut txn, db, ctx, book, req.capability.holder(), &key, evid,
+    ).await? {
+        Ok(recorded) => recorded,
+        Err(refused) => {
+            txn.abort();
+            return Ok(Err(refused));
+        }
+    };
     let Some((_, profile)) = engagement_row(&txn, db, vid)? else {
         txn.abort();
         return Ok(Err(unknown(engagement)));
     };
-    if let Some(stored) = txn.vertex(db, evid)? {
+    if let Some(stored) = recorded {
         txn.abort();
         return recorded_proposal(db, book, &stored, effective_date, &legs, &req);
     }
@@ -1647,6 +1735,7 @@ pub async fn propose_adjustment<V: asupersync::fs::Vfs + Clone>(
     let entry = record.clone().seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     let mut props = vec![
         (
             property::FA_PAYLOAD,
@@ -1751,7 +1840,7 @@ fn recorded_proposal<V: asupersync::fs::Vfs + Clone>(
             proposal.canonical_bytes()?,
         )),
     );
-    let recorded_at = match recorded_or_conflict(book, stored, &candidate)? {
+    let recorded_at = match recorded_or_conflict(db, book, stored, &candidate)? {
         Ok(seq) => seq,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -1861,6 +1950,15 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    let recorded = match witness_record(
+        &mut txn, db, ctx, book, req.capability.holder(), &key, evid,
+    ).await? {
+        Ok(recorded) => recorded,
+        Err(refused) => {
+            txn.abort();
+            return Ok(Err(refused));
+        }
+    };
     let Some((_, profile)) = engagement_row(&txn, db, vid)? else {
         txn.abort();
         return Ok(Err(unknown(engagement)));
@@ -1901,10 +1999,10 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
         reason_code,
         None,
     );
-    if let Some(stored) = txn.vertex(db, evid)? {
+    if let Some(stored) = recorded {
         txn.abort();
         return Ok(
-            recorded_or_conflict(book, &stored, &record)?.map(|recorded_at| AdjustmentDecided {
+            recorded_or_conflict(db, book, &stored, &record)?.map(|recorded_at| AdjustmentDecided {
                 proposal: pvid,
                 decision,
                 control_entry: evid,
@@ -2077,6 +2175,7 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
     let entry = record.clone().seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.add_edge(edge_id(relation::IN_CASE, evid, pvid), evid, pvid, vec![]);
     batch.compare_and_set_vertex_property(
         pvid,
@@ -2107,7 +2206,7 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => {
             match db.vertex(evid)? {
-                Some(stored) => Ok(recorded_or_conflict(book, &stored, &record)?.map(
+                Some(stored) => Ok(recorded_or_conflict(db, book, &stored, &record)?.map(
                     |recorded_at| AdjustmentDecided {
                         proposal: pvid,
                         decision,
@@ -2206,6 +2305,15 @@ pub async fn file_workpaper<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    let recorded = match witness_record(
+        &mut txn, db, ctx, book, req.capability.holder(), &key, evid,
+    ).await? {
+        Ok(recorded) => recorded,
+        Err(refused) => {
+            txn.abort();
+            return Ok(Err(refused));
+        }
+    };
     if engagement_row(&txn, db, vid)?.is_none() {
         txn.abort();
         return Ok(Err(unknown(engagement)));
@@ -2220,7 +2328,7 @@ pub async fn file_workpaper<V: asupersync::fs::Vfs + Clone>(
             vid.0
         )));
     };
-    if let Some(stored) = txn.vertex(db, evid)? {
+    if let Some(stored) = recorded {
         txn.abort();
         if !crate::entry_storage::has_class_mirror(&stored, EntryClass::ENGAGEMENT_CONTROL) {
             return Ok(Err(conflict_with(&stored)));
@@ -2248,7 +2356,7 @@ pub async fn file_workpaper<V: asupersync::fs::Vfs + Clone>(
         );
         let subject = format!("document {}", crate::evidence::hex(&document.0));
         return Ok(already_filed(
-            recorded_or_conflict(book, &stored, &record)?,
+            recorded_or_conflict(db, book, &stored, &record)?,
             engagement,
             &subject,
             &stored,
@@ -2306,6 +2414,7 @@ pub async fn file_workpaper<V: asupersync::fs::Vfs + Clone>(
     let entry = record.clone().seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
     if let Err(e) = txn.write(db, batch) {
         txn.abort();
@@ -2328,7 +2437,7 @@ pub async fn file_workpaper<V: asupersync::fs::Vfs + Clone>(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
             Some(stored) => Ok(already_filed(
-                recorded_or_conflict(book, &stored, &record)?,
+                recorded_or_conflict(db, book, &stored, &record)?,
                 engagement,
                 &format!("document {}", crate::evidence::hex(&document.0)),
                 &stored,
@@ -2394,6 +2503,15 @@ pub async fn file_finding<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    let recorded = match witness_record(
+        &mut txn, db, ctx, book, req.capability.holder(), &key, evid,
+    ).await? {
+        Ok(recorded) => recorded,
+        Err(refused) => {
+            txn.abort();
+            return Ok(Err(refused));
+        }
+    };
     if engagement_row(&txn, db, vid)?.is_none() {
         txn.abort();
         return Ok(Err(unknown(engagement)));
@@ -2419,7 +2537,7 @@ pub async fn file_finding<V: asupersync::fs::Vfs + Clone>(
             None,
         )
     };
-    if let Some(stored) = txn.vertex(db, evid)? {
+    if let Some(stored) = recorded {
         txn.abort();
         if !crate::entry_storage::has_class_mirror(&stored, EntryClass::ENGAGEMENT_CONTROL) {
             return Ok(Err(conflict_with(&stored)));
@@ -2435,7 +2553,7 @@ pub async fn file_finding<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(conflict_with(&stored)));
         };
         return Ok(already_filed(
-            recorded_or_conflict(book, &stored, &record_in(stored_state))?,
+            recorded_or_conflict(db, book, &stored, &record_in(stored_state))?,
             engagement,
             &format!("finding {:032x}", finding.0),
             &stored,
@@ -2487,6 +2605,7 @@ pub async fn file_finding<V: asupersync::fs::Vfs + Clone>(
     let entry = record.clone().seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
     if let Err(e) = txn.write(db, batch) {
         txn.abort();
@@ -2509,7 +2628,7 @@ pub async fn file_finding<V: asupersync::fs::Vfs + Clone>(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
             Some(stored) => Ok(already_filed(
-                recorded_or_conflict(book, &stored, &record)?,
+                recorded_or_conflict(db, book, &stored, &record)?,
                 engagement,
                 &format!("finding {:032x}", finding.0),
                 &stored,
@@ -2562,6 +2681,15 @@ pub async fn complete_documentation<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    let recorded = match witness_record(
+        &mut txn, db, ctx, book, req.capability.holder(), &key, evid,
+    ).await? {
+        Ok(recorded) => recorded,
+        Err(refused) => {
+            txn.abort();
+            return Ok(Err(refused));
+        }
+    };
     let Some((_, profile)) = engagement_row(&txn, db, vid)? else {
         txn.abort();
         return Ok(Err(unknown(engagement)));
@@ -2611,10 +2739,10 @@ pub async fn complete_documentation<V: asupersync::fs::Vfs + Clone>(
             completion.canonical_bytes()?,
         )),
     );
-    if let Some(stored) = txn.vertex(db, evid)? {
+    if let Some(stored) = recorded {
         txn.abort();
         return Ok(
-            recorded_or_conflict(book, &stored, &record)?.map(|recorded_at| {
+            recorded_or_conflict(db, book, &stored, &record)?.map(|recorded_at| {
                 DocumentationCompleted {
                     engagement: vid,
                     completion,
@@ -2652,6 +2780,7 @@ pub async fn complete_documentation<V: asupersync::fs::Vfs + Clone>(
     let entry = record.clone().seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
     batch.compare_and_set_vertex_property(
         vid,
@@ -2682,7 +2811,7 @@ pub async fn complete_documentation<V: asupersync::fs::Vfs + Clone>(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => {
             match db.vertex(evid)? {
-                Some(stored) => Ok(recorded_or_conflict(book, &stored, &record)?.map(
+                Some(stored) => Ok(recorded_or_conflict(db, book, &stored, &record)?.map(
                     |recorded_at| DocumentationCompleted {
                         engagement: vid,
                         completion,
@@ -2784,6 +2913,15 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    let recorded = match witness_record(
+        &mut txn, db, ctx, book, req.capability.holder(), &key, evid,
+    ).await? {
+        Ok(recorded) => recorded,
+        Err(refused) => {
+            txn.abort();
+            return Ok(Err(refused));
+        }
+    };
     let Some((_, profile)) = engagement_row(&txn, db, vid)? else {
         txn.abort();
         return Ok(Err(unknown(engagement)));
@@ -2802,7 +2940,7 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
             vid.0
         )));
     };
-    if let Some(stored) = txn.vertex(db, evid)? {
+    if let Some(stored) = recorded {
         txn.abort();
         if !crate::entry_storage::has_class_mirror(&stored, EntryClass::ENGAGEMENT_CONTROL) {
             return Ok(Err(conflict_with(&stored)));
@@ -2829,7 +2967,7 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
             extension,
         );
         return Ok(
-            recorded_or_conflict(book, &stored, &record)?.map(|recorded_at| CarriedForward {
+            recorded_or_conflict(db, book, &stored, &record)?.map(|recorded_at| CarriedForward {
                 engagement: vid,
                 carry_forward: carried,
                 control_entry: evid,
@@ -2909,6 +3047,7 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
     let entry = record.clone().seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
     if let Err(e) = txn.write(db, batch) {
         txn.abort();
@@ -2931,7 +3070,7 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
             Some(stored) => Ok(
-                recorded_or_conflict(book, &stored, &record)?.map(|recorded_at| CarriedForward {
+                recorded_or_conflict(db, book, &stored, &record)?.map(|recorded_at| CarriedForward {
                     engagement: vid,
                     carry_forward: carried,
                     control_entry: evid,
@@ -3019,6 +3158,12 @@ fn records_into<V: asupersync::fs::Vfs + Clone>(
         let recorded_at = src.created_at;
         if entry.proposal.class != EntryClass::ENGAGEMENT_CONTROL {
             continue;
+        }
+        if !crate::outcome::verify_control_recorded(db, &src, &entry)? {
+            return Err(KernelError::Corrupt(format!(
+                "engagement record {:032x} has no unchanged original outcome",
+                source.0
+            )));
         }
         let Some(ControlPayload::LifecycleTransition { from, to, .. }) = &entry.proposal.control
         else {
