@@ -15,6 +15,8 @@ use fa_model::{EventKind, EventResource, EventSpec};
 
 #[path = "rule_authority/outcome_keys.rs"]
 mod outcome_keys;
+#[path = "rule_authority/drafts.rs"]
+mod drafts;
 
 fn source(ceiling: &str) -> String {
     format!(

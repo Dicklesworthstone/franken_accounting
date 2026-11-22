@@ -1316,7 +1316,7 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
         members.push(intent.clone());
         capabilities.push((*capability).clone());
     }
-    let batch = match PostBatch::new(promotion_key(view.vid), members) {
+    let batch = match PostBatch::for_draft(promotion_key(view.vid), members) {
         Ok(batch) => batch,
         Err(error) => {
             return Ok(Err(usage(
@@ -2037,7 +2037,7 @@ async fn promote_draft_in<V: asupersync::fs::Vfs + Clone>(
     }
     let members: Vec<PostIntent> = view.intents.iter().map(|i| i.intent.clone()).collect();
     let capabilities: Vec<Capability> = view.intents.iter().map(|i| i.capability.clone()).collect();
-    let batch = match PostBatch::new(promotion_key(view.vid), members) {
+    let batch = match PostBatch::for_draft(promotion_key(view.vid), members) {
         Ok(b) => b,
         Err(e) => {
             return Ok(Err(usage(

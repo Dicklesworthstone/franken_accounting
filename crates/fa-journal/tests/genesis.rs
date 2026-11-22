@@ -81,6 +81,8 @@ mod prior_period_adjustment_tests;
 mod production_outcome_keys;
 #[path = "genesis/engagement_outcome_keys.rs"]
 mod engagement_outcome_keys;
+#[path = "genesis/rule_draft_admission.rs"]
+mod rule_draft_admission_tests;
 #[path = "genesis/proportional.rs"]
 mod proportional_tests;
 #[path = "genesis/rea_outcome_keys.rs"]

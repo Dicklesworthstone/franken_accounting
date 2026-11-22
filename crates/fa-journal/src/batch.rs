@@ -1554,6 +1554,20 @@ pub(crate) fn batchable(class: fa_model::EntryClass) -> bool {
 /// Automatic selection is a complete native posting request. It does not
 /// confer a draft, case, replacement, or scenario execution protocol.
 fn automatic_batch_mode(batch: &PostBatch, admission: Admission) -> Result<(), Refusal> {
+    if batch.is_draft_only()
+        && !matches!(
+            admission,
+            Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
+        )
+    {
+        return Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            "explicit rule draft batches require the native draft lifecycle",
+            "plan §10.3 / §15.2 (retained typed derivations and independent draft promotion)",
+            "append each selected derivation with fa rule derive --rule <version> --event <event> --draft <name>, then review and promote that draft",
+        ));
+    }
     if batch.automatic_event().is_some()
         && !matches!(
             admission,

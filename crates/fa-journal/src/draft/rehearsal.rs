@@ -684,7 +684,7 @@ async fn apply_reviewed_draft(
         .iter()
         .map(|plan| plan.capability.clone())
         .collect();
-    let batch = PostBatch::new(promotion_key(view.vid), members).map_err(intent_error)?;
+    let batch = PostBatch::for_draft(promotion_key(view.vid), members).map_err(intent_error)?;
     let admission = Admission::ScratchDraft(Rehearsing(fa_model::draft_branch(
         book.book_id,
         &view.body.name,

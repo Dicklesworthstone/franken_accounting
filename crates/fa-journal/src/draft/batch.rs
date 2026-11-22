@@ -82,10 +82,10 @@ pub(super) fn decode_plan_record(bytes: &[u8]) -> Result<DecodedPlanRecord, Kern
         }
         members.push(member);
     }
-    // Reuse the public batch shape law: nonempty, bounded, common principal,
-    // book and branch, and distinct member keys. No different interpretation
-    // of a PostBatch is introduced by its draft transport.
-    let batch = PostBatch::new(
+    // Retain the original typed intent kind while checking the shared shape
+    // law: nonempty, bounded, common principal/book/branch and distinct keys.
+    // RuleDerived members require the draft-only execution profile.
+    let batch = PostBatch::for_draft(
         key.clone(),
         members.iter().map(|member| member.0.clone()).collect(),
     )
@@ -157,6 +157,14 @@ pub async fn plan_batch_into_draft<V: asupersync::fs::Vfs + Clone>(
     batch: PostBatch,
     req: DraftRequest,
 ) -> Outcome<DraftPlanned> {
+    // V4 retains explicit typed members, not an automatic catalog selection.
+    // Never flatten AutomaticRules and lose its event/complete-set binding.
+    if batch.automatic_event().is_some() {
+        return Ok(Err(usage(
+            "automatic rule selection cannot be appended as explicit draft members",
+            "select one rule with fa rule derive --rule <version> --event <event> --draft <name>, or rehearse and commit the complete automatic batch through its native plan",
+        )));
+    }
     if batch.principal() != req.capability.holder() {
         return Ok(Err(denial(&Denial::NotHolder {
             holder: req.capability.holder(),
