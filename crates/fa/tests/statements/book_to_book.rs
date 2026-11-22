@@ -431,6 +431,319 @@ fn reconcile_replayed_parent(
         .unwrap()
 }
 
+fn native_stock_certificate(fixture: &Fixture, at: Option<CommitSeq>) -> ReportCertificate {
+    fixture
+        .book
+        .certify_trial_balance(fa::TrialBalanceSelection::AsOf(day(2026, 1, 31)), at)
+        .unwrap()
+        .unwrap()
+        .certificate
+}
+
+fn composed_parent(
+    layer: &Fixture,
+    parent: &fa::consolidation::ReplayedParentTrialBalance,
+    certificate: &ReportCertificate,
+) -> Result<fa::consolidation::ReplayedParentTrialBalance, fa_journal::Refusal> {
+    layer
+        .book
+        .replay_layered_parent_trial_balance(
+            &Capability::embedded(PRINCIPAL, &["read", "reconcile"]).unwrap(),
+            certificate,
+            parent,
+        )
+        .unwrap()
+}
+
+fn tagged_adjustment(fixture: &mut Fixture, key: &[u8], accounts: (&str, &str), amount: i128) {
+    let mut proposal = fixture.proposal(
+        day(2026, 1, 15),
+        key,
+        EntryClass::ORIGINAL,
+        fixture.legs(fixture.usd, accounts, amount),
+    );
+    fixture
+        .book
+        .attach_book_to_book_tag(
+            &mut proposal,
+            BookToBookReasonCode::M1TemporaryDepreciation,
+            RULE,
+        )
+        .unwrap();
+    fixture.commit(proposal);
+}
+
+fn composed_columns(
+    source: &fa::consolidation::ReplayedParentTrialBalance,
+    code: &str,
+) -> [i128; 4] {
+    let row = source
+        .trial_balance()
+        .rows
+        .iter()
+        .find(|row| row.code == code)
+        .unwrap();
+    [
+        row.debits,
+        row.credits,
+        row.debits_pending,
+        row.credits_pending,
+    ]
+}
+
+#[test]
+fn native_parent_chain_preserves_gross_posted_and_pending_stock() {
+    let mut f = BridgeFixture::new();
+    f.parent.transfer(
+        day(2026, 1, 6),
+        b"parent-offsetting-expense",
+        f.parent.usd,
+        ("1000", "6000"),
+        400,
+    );
+    let mut hold = f.parent.proposal(
+        day(2026, 1, 7),
+        b"ancestor-reservation",
+        EntryClass::PENDING,
+        f.parent.legs(f.parent.usd, ("6100", "1000"), 900),
+    );
+    hold.pending = Some(Pending {
+        timeout_ns: None,
+        resolution_of: None,
+        disposition: None,
+    });
+    f.parent.commit(hold);
+    let primary = replayed_parent(&f.parent, None);
+    anchor_replayed_parent(&mut f.layer, &primary);
+    tagged_adjustment(&mut f.layer, b"layer-expense", ("6000", "1000"), 100);
+    f.reserve(b"layer-reservation", 200);
+    let layer_certificate = native_stock_certificate(&f.layer, None);
+    let layered = composed_parent(&f.layer, &primary, &layer_certificate).unwrap();
+    assert_eq!(composed_columns(&layered, "6000"), [1_100, 400, 200, 0]);
+    assert_eq!(composed_columns(&layered, "6100"), [0, 0, 900, 0]);
+
+    let mut child = Fixture::new(0xd4);
+    anchor_replayed_parent(&mut child, &layered);
+    tagged_adjustment(&mut child, b"child-expense-release", ("1000", "6000"), 25);
+    let child_certificate = native_stock_certificate(&child, None);
+    let heads = (
+        f.parent.book.head().unwrap(),
+        f.layer.book.head().unwrap(),
+        child.book.head().unwrap(),
+    );
+    let complete = composed_parent(&child, &layered, &child_certificate).unwrap();
+    assert_eq!(composed_columns(&complete, "6000"), [1_100, 425, 200, 0]);
+    assert_eq!(composed_columns(&complete, "1000"), [425, 1_100, 0, 1_100]);
+    assert_eq!(composed_columns(&complete, "6100"), [0, 0, 900, 0]);
+    assert_eq!(
+        complete.trial_balance().unit_totals[&child.usd.0],
+        (1_525, 1_525)
+    );
+    assert_eq!(
+        complete.trial_balance().pending_unit_totals[&child.usd.0],
+        (1_100, 1_100)
+    );
+    assert_eq!(
+        complete.ancestry(),
+        &[
+            (primary.book_id(), primary.known_at()),
+            (layered.book_id(), layered.known_at()),
+            (child.book.context().book_id, child_certificate.known_at),
+        ]
+    );
+    let again = composed_parent(&child, &layered, &child_certificate).unwrap();
+    assert_eq!(again.trial_balance(), complete.trial_balance());
+    assert_eq!(again.source_digest(), complete.source_digest());
+    let bridge = reconcile_replayed_parent(&child, &layered, None).unwrap();
+    assert_eq!(
+        (
+            expense(&bridge).parent_net,
+            expense(&bridge).adjustments_net,
+            expense(&bridge).layered_net,
+        ),
+        (700, -25, 675),
+        "pending holds remain separate from the posted bridge"
+    );
+    assert_eq!(
+        (
+            f.parent.book.head().unwrap(),
+            f.layer.book.head().unwrap(),
+            child.book.head().unwrap(),
+        ),
+        heads,
+        "composition and reconciliation never publish"
+    );
+}
+
+#[test]
+fn native_parent_chain_binds_ancestor_history_even_when_stock_matches() {
+    let f = BridgeFixture::new();
+    let first_parent = replayed_parent(&f.parent, None);
+    let mut alternate = Fixture::new(0xb4);
+    alternate.transfer(
+        day(2026, 1, 5),
+        b"different-parent-source",
+        alternate.usd,
+        ("6000", "1000"),
+        1_000,
+    );
+    let other_parent = replayed_parent(&alternate, None);
+    assert_eq!(first_parent.book_id(), other_parent.book_id());
+    assert_eq!(first_parent.known_at(), other_parent.known_at());
+    assert_eq!(first_parent.trial_balance(), other_parent.trial_balance());
+    assert_ne!(first_parent.source_digest(), other_parent.source_digest());
+    let certificate = native_stock_certificate(&f.layer, None);
+    let first = composed_parent(&f.layer, &first_parent, &certificate).unwrap();
+    let other = composed_parent(&f.layer, &other_parent, &certificate).unwrap();
+    assert_eq!(first.trial_balance(), other.trial_balance());
+    assert_eq!(first.ancestry(), other.ancestry());
+    assert_ne!(
+        first.source_digest(),
+        other.source_digest(),
+        "equal boundary coordinates and rows cannot erase ancestor history identity"
+    );
+}
+
+#[test]
+fn native_parent_chain_replays_historical_anchors_and_refuses_stale_parents() {
+    let mut f = BridgeFixture::new();
+    tagged_adjustment(
+        &mut f.layer,
+        b"historical-layer-expense",
+        ("6000", "1000"),
+        100,
+    );
+    let parent_before = replayed_parent(&f.parent, None);
+    let certificate_before = native_stock_certificate(&f.layer, None);
+    let before = composed_parent(&f.layer, &parent_before, &certificate_before).unwrap();
+    assert_eq!(composed_columns(&before, "6000"), [1_100, 0, 0, 0]);
+
+    f.parent.transfer(
+        day(2026, 1, 6),
+        b"parent-restatement",
+        f.parent.usd,
+        ("6000", "1000"),
+        250,
+    );
+    let parent_after = replayed_parent(&f.parent, None);
+    assert!(composed_parent(&f.layer, &parent_after, &certificate_before).is_err());
+    anchor_replayed_parent(&mut f.layer, &parent_after);
+    let certificate_after = native_stock_certificate(&f.layer, None);
+    assert!(composed_parent(&f.layer, &parent_before, &certificate_after).is_err());
+    let after = composed_parent(&f.layer, &parent_after, &certificate_after).unwrap();
+    assert_eq!(composed_columns(&after, "6000"), [1_350, 0, 0, 0]);
+    let old_again = composed_parent(&f.layer, &parent_before, &certificate_before).unwrap();
+    assert_eq!(old_again.source_digest(), before.source_digest());
+    assert_eq!(old_again.trial_balance(), before.trial_balance());
+    let unrelated = Fixture::new(0xd5);
+    let unrelated = replayed_parent(&unrelated, None);
+    assert!(composed_parent(&f.layer, &unrelated, &certificate_after).is_err());
+    assert_eq!(f.layer.book.head().unwrap(), certificate_after.known_at);
+}
+
+#[test]
+fn native_parent_chain_validates_pending_only_inherited_account_semantics() {
+    let mut parent = Fixture::new(0xd6);
+    open_bridge_account(
+        &mut parent,
+        "7000",
+        "Reserved prepaid asset",
+        AccountType::ASSET,
+        UnitPolicy::AnyCurrency,
+    );
+    let mut reservation = parent.proposal(
+        day(2026, 1, 5),
+        b"pending-only-parent",
+        EntryClass::PENDING,
+        parent.legs(parent.usd, ("7000", "1000"), 900),
+    );
+    reservation.pending = Some(Pending {
+        timeout_ns: None,
+        resolution_of: None,
+        disposition: None,
+    });
+    parent.commit(reservation);
+    let source = replayed_parent(&parent, None);
+    for (seed, account_type, policy, expected) in [
+        (0xd7, None, UnitPolicy::AnyCurrency, "absent"),
+        (
+            0xd8,
+            Some(AccountType::REVENUE),
+            UnitPolicy::AnyCurrency,
+            "type",
+        ),
+        (
+            0xd9,
+            Some(AccountType::ASSET),
+            UnitPolicy::Single(parent.jpy),
+            "unit policy",
+        ),
+        (0xda, Some(AccountType::ASSET), UnitPolicy::AnyCurrency, ""),
+    ] {
+        let mut layer = Fixture::new(seed);
+        if let Some(account_type) = account_type {
+            open_bridge_account(&mut layer, "7000", "Layer asset", account_type, policy);
+        }
+        anchor_replayed_parent(&mut layer, &source);
+        let certificate = native_stock_certificate(&layer, None);
+        let result = composed_parent(&layer, &source, &certificate);
+        if expected.is_empty() {
+            let complete = result.unwrap();
+            assert_eq!(composed_columns(&complete, "7000"), [0, 0, 900, 0]);
+        } else {
+            let refused = result.unwrap_err();
+            assert!(refused.message.contains(expected), "{refused}");
+        }
+        assert_eq!(layer.book.head().unwrap(), certificate.known_at);
+    }
+}
+
+#[test]
+fn native_parent_chain_checks_authority_before_replay_and_rejects_cycles() {
+    let mut f = BridgeFixture::new();
+    let parent = replayed_parent(&f.parent, None);
+    let certificate = native_stock_certificate(&f.layer, None);
+    let mut malformed = certificate.clone();
+    malformed.digest[0] ^= 1;
+    let admitted = Capability::embedded(PRINCIPAL, &["read", "reconcile"]).unwrap();
+    for denied in [
+        Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
+        Capability::embedded(PRINCIPAL, &["reconcile"]).unwrap(),
+        admitted.clone().for_accounts(&["6000"]).unwrap(),
+        admitted.clone().for_books(&[parent.book_id()]).unwrap(),
+    ] {
+        let original = f
+            .layer
+            .book
+            .replay_layered_parent_trial_balance(&denied, &certificate, &parent)
+            .unwrap()
+            .unwrap_err();
+        let corrupt = f
+            .layer
+            .book
+            .replay_layered_parent_trial_balance(&denied, &malformed, &parent)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(original, corrupt, "admission precedes source observation");
+    }
+    assert!(composed_parent(&f.layer, &parent, &malformed).is_err());
+    let layered = composed_parent(&f.layer, &parent, &certificate).unwrap();
+    anchor_replayed_parent(&mut f.parent, &layered);
+    let cyclic = native_stock_certificate(&f.parent, None);
+    let refusal = composed_parent(&f.parent, &layered, &cyclic).unwrap_err();
+    assert!(
+        refusal.message.contains("cannot repeat a book"),
+        "{refusal}"
+    );
+    let refusal = reconcile_replayed_parent(&f.parent, &layered, None).unwrap_err();
+    assert!(
+        refusal.message.contains("cannot repeat a book"),
+        "{refusal}"
+    );
+    assert_eq!(f.parent.book.head().unwrap(), cyclic.known_at);
+    assert_eq!(f.layer.book.head().unwrap(), certificate.known_at);
+}
+
 #[test]
 fn native_parent_bridge_refuses_same_code_with_a_different_account_type() {
     let mut parent = Fixture::new(0xc6);

@@ -984,14 +984,98 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             ) {
                 return Ok(Err(refusal_book_to_book(
                     "an adjustment-layer parent cannot supply complete stock through its own native trial-balance certificate: inherited parent balances would be omitted",
-                    "use a primary parent book at the selected prefix; recursively authenticated parent stock for nested adjustment layers is not supported",
+                    "replay the complete ancestor chain and compose this layer with replay_layered_parent_trial_balance, or use a primary parent book",
                 )));
             }
             Ok(Ok(ReplayedParentTrialBalance {
                 book_id: book.book_id,
                 known_at: at,
+                source_digest: replayed_stock_digest(certificate, &report, &book.units, None)?,
+                ancestry: vec![(book.book_id, at)],
                 report,
                 units: book.units.clone(),
+            }))
+        })
+    }
+
+    /// Compose this layer's replayed native stock with its complete immediate
+    /// parent's stock. Every link retains its own historical prefix and native
+    /// certificate identity; a native certificate is never reinterpreted as
+    /// including another book's entries. The result may itself serve as a
+    /// parent without dropping inherited posted or pending amounts. Current
+    /// whole-book Read and Reconcile authority precede source observation;
+    /// each composition also verifies the layer's reason-code closure.
+    pub fn replay_layered_parent_trial_balance(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        certificate: &crate::ReportCertificate,
+        parent: &ReplayedParentTrialBalance,
+    ) -> Outcome<ReplayedParentTrialBalance> {
+        self.query(cx, |db, book| {
+            if let Err(denial) =
+                fa_policy::require(capability, fa_policy::Op::Reconcile, "layered parent stock")
+            {
+                return Ok(Err(fa_journal::policy::refusal(&denial)));
+            }
+            let at = match crate::subledger::admitted_at(
+                db,
+                book,
+                capability,
+                Some(certificate.known_at),
+            )? {
+                Ok(at) => at,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if let Err(refusal) = parent.admit_child(book.book_id) {
+                return Ok(Err(refusal));
+            }
+            let own = match crate::certificate::replay(db, cx, book, certificate)? {
+                Ok(report) => report,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let Some(through) = own.effective_through.filter(|_| !own.activity) else {
+                return Ok(Err(refusal_book_to_book(
+                    "a layered parent source must be cumulative stock, not period activity",
+                    "select native cumulative trial balances with the same civil cutoff in every book",
+                )));
+            };
+            let Some(anchor) = fa_journal::adjustment_layer::anchor_at(db, book, at)? else {
+                return Ok(Err(refusal_book_to_book(
+                    "the selected book prefix is not an adjustment layer",
+                    "replay a primary book without a parent, or select a prefix after its authorized layer activation",
+                )));
+            };
+            let (_, report) = match reconcile_book_to_book_at(
+                db,
+                book,
+                at,
+                parent.book_id,
+                parent.known_at,
+                &parent.report,
+                Some(&parent.units),
+                None,
+                Some(through),
+                Some(&own),
+            )? {
+                Ok(composed) => composed,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let source_digest = replayed_stock_digest(
+                certificate,
+                &report,
+                &book.units,
+                Some((parent.source_digest, anchor.entry)),
+            )?;
+            let mut ancestry = parent.ancestry.clone();
+            ancestry.push((book.book_id, at));
+            Ok(Ok(ReplayedParentTrialBalance {
+                book_id: book.book_id,
+                known_at: at,
+                report,
+                units: book.units.clone(),
+                source_digest,
+                ancestry,
             }))
         })
     }
@@ -1021,6 +1105,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Ok(at) => at,
                 Err(refusal) => return Ok(Err(refusal)),
             };
+            if let Err(refusal) = parent.admit_child(book.book_id) {
+                return Ok(Err(refusal));
+            }
             reconcile_book_to_book_at(
                 db,
                 book,
@@ -1031,7 +1118,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Some(&parent.units),
                 period,
                 as_of,
+                None,
             )
+            .map(|result| result.map(|(reconciliation, _)| reconciliation))
         })
     }
 
@@ -1072,7 +1161,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 None,
                 period,
                 as_of,
+                None,
             )
+            .map(|result| result.map(|(reconciliation, _)| reconciliation))
         })
     }
 }
@@ -1108,6 +1199,8 @@ pub struct ReplayedParentTrialBalance {
     known_at: CommitSeq,
     report: fa_registers::TrialBalance,
     units: fa_money::UnitRegistry,
+    source_digest: [u8; 32],
+    ancestry: Vec<(Id128, CommitSeq)>,
 }
 
 impl ReplayedParentTrialBalance {
@@ -1120,6 +1213,59 @@ impl ReplayedParentTrialBalance {
     pub fn known_at(&self) -> CommitSeq {
         self.known_at
     }
+
+    /// Complete stock, including every replayed ancestor. All four gross
+    /// columns are retained; this is not a net-only bridge projection.
+    #[must_use]
+    pub fn trial_balance(&self) -> &fa_registers::TrialBalance {
+        &self.report
+    }
+
+    /// Recursive commitment to native certificates, activated parent links,
+    /// unit definitions and composed output. This in-process replay identity
+    /// is not a portable proof or a signature.
+    #[must_use]
+    pub fn source_digest(&self) -> [u8; 32] {
+        self.source_digest
+    }
+
+    /// Complete primary-to-self chain, with each book's independent prefix.
+    #[must_use]
+    pub fn ancestry(&self) -> &[(Id128, CommitSeq)] {
+        &self.ancestry
+    }
+
+    fn admit_child(&self, book: Id128) -> Result<(), Refusal> {
+        if self.ancestry.iter().any(|(id, _)| *id == book) {
+            return Err(refusal_book_to_book(
+                "an adjustment-layer parent chain cannot repeat a book",
+                "supply an acyclic chain from a primary book through each immediate parent",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn replayed_stock_digest(
+    certificate: &crate::ReportCertificate,
+    report: &fa_registers::TrialBalance,
+    units: &fa_money::UnitRegistry,
+    parent: Option<([u8; 32], fa_model::EntryRef)>,
+) -> Result<[u8; 32], BookError> {
+    let encoded = |error: fa_model::EncodeError| KernelError::Model(error.into());
+    let mut writer = Writer::new();
+    writer
+        .fixed(&certificate.digest)
+        .fixed(&fa_model::unit::unit_table_digest(units).map_err(encoded)?)
+        .bytes(&report.canonical_bytes().map_err(encoded)?)
+        .opt(parent.as_ref(), |writer, (source, anchor)| {
+            writer.fixed(source);
+            anchor.encode(writer);
+        });
+    Ok(fa_model::domain_digest(
+        b"fa:replayed-parent-stock:v1",
+        &[&writer.finish().map_err(encoded)?],
+    ))
 }
 
 /// Deterministic book-to-book arithmetic and explanation closure.
@@ -1200,7 +1346,8 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
     parent_units: Option<&fa_money::UnitRegistry>,
     period: Option<&str>,
     as_of: Option<DateDay>,
-) -> Outcome<BookToBookReconciliation> {
+    replayed_own: Option<&fa_registers::TrialBalance>,
+) -> Outcome<(BookToBookReconciliation, fa_registers::TrialBalance)> {
     crate::certificate::context_at(db, book, at)?;
     let (through, resolved_period) = match (period, as_of) {
         (Some(p), None) => {
@@ -1294,10 +1441,17 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
         unit_codes.insert(unit_id.0, unit.code.clone());
     }
 
-    let mut parent_cells: BTreeMap<(u128, u32), (i128, i128)> = BTreeMap::new();
+    let mut parent_cells: BTreeMap<(u128, u32), [i128; 4]> = BTreeMap::new();
     for row in &parent_tb.rows {
-        if row.debits == 0 && row.credits == 0 {
+        let columns = stock_columns(row);
+        if columns == [0; 4] {
             continue;
+        }
+        if columns.iter().any(|value| *value < 0) {
+            return Ok(Err(refusal_book_to_book(
+                "parent gross posted and pending amounts must be nonnegative",
+                "replay the parent's native stock certificate instead of supplying signed gross columns",
+            )));
         }
         let Some(layered_account) = accounts_by_code.get(&row.code) else {
             return Ok(Err(refusal_book_to_book(
@@ -1357,20 +1511,24 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
         let slot = parent_cells
             .entry((layered_account.vid.0, row.unit_id))
             .or_default();
-        slot.0 = slot
-            .0
-            .checked_add(row.debits)
-            .ok_or(fa_registers::RegisterError::Overflow)
-            .map_err(BookError::from)?;
-        slot.1 = slot
-            .1
-            .checked_add(row.credits)
-            .ok_or(fa_registers::RegisterError::Overflow)
-            .map_err(BookError::from)?;
+        add_stock_columns(slot, columns)?;
     }
 
-    let layered_own =
-        fa_registers::balance_as_of(db, book, through, Some(at)).map_err(BookError::from)?;
+    let layered_own = match replayed_own {
+        Some(report) => std::borrow::Cow::Borrowed(report),
+        None => std::borrow::Cow::Owned(
+            fa_registers::balance_as_of(db, book, through, Some(at)).map_err(BookError::from)?,
+        ),
+    };
+    if layered_own.known_at != at
+        || layered_own.activity
+        || layered_own.effective_through != Some(through)
+    {
+        return Err(KernelError::Corrupt(
+            "replayed adjustment-layer stock has a different coordinate".into(),
+        )
+        .into());
+    }
     if let Some(parent_units) = parent_units
         && let Err(refusal) =
             validate_bridge_units(parent_tb, &layered_own, parent_units, &book.units)
@@ -1379,29 +1537,26 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
     }
     let mut layered_cells = parent_cells.clone();
     for row in &layered_own.rows {
-        if row.debits == 0 && row.credits == 0 {
+        let columns = stock_columns(row);
+        if columns == [0; 4] {
             continue;
         }
         units_set.insert(row.unit_id);
         let slot = layered_cells
             .entry((row.account.0, row.unit_id))
             .or_default();
-        slot.0 = slot
-            .0
-            .checked_add(row.debits)
-            .ok_or(fa_registers::RegisterError::Overflow)
-            .map_err(BookError::from)?;
-        slot.1 = slot
-            .1
-            .checked_add(row.credits)
-            .ok_or(fa_registers::RegisterError::Overflow)
-            .map_err(BookError::from)?;
+        add_stock_columns(slot, columns)?;
     }
+
+    // A bridge explains posted net changes, but an inherited stock source
+    // must retain gross history and reservations as separate measures. Build
+    // it from the original columns, never by expanding a net bridge row.
+    let layered_stock = combined_stock(&chart, &layered_cells, &layered_own)?;
 
     let parent_balances: Vec<AccountBalance> = parent_cells
         .iter()
         .map(
-            |(&(account_id, unit_id), &(debits, credits))| AccountBalance {
+            |(&(account_id, unit_id), &[debits, credits, _, _])| AccountBalance {
                 account_id,
                 unit_id,
                 debits,
@@ -1412,7 +1567,7 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
     let layered_balances: Vec<AccountBalance> = layered_cells
         .iter()
         .map(
-            |(&(account_id, unit_id), &(debits, credits))| AccountBalance {
+            |(&(account_id, unit_id), &[debits, credits, _, _])| AccountBalance {
                 account_id,
                 unit_id,
                 debits,
@@ -1524,13 +1679,85 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
         .into());
     }
     let bridge_digest = bridge.digest().map_err(|e| KernelError::Model(e.into()))?;
-    Ok(Ok(BookToBookReconciliation {
-        effective_through: through,
-        period: resolved_period,
-        bridge,
-        bridge_digest,
-        unit_codes,
-    }))
+    Ok(Ok((
+        BookToBookReconciliation {
+            effective_through: through,
+            period: resolved_period,
+            bridge,
+            bridge_digest,
+            unit_codes,
+        },
+        layered_stock,
+    )))
+}
+
+fn stock_columns(row: &fa_registers::TbRow) -> [i128; 4] {
+    [
+        row.debits,
+        row.credits,
+        row.debits_pending,
+        row.credits_pending,
+    ]
+}
+
+fn add_stock_columns(into: &mut [i128; 4], from: [i128; 4]) -> Result<(), BookError> {
+    for (sum, amount) in into.iter_mut().zip(from) {
+        *sum = sum
+            .checked_add(amount)
+            .ok_or(fa_registers::RegisterError::Overflow)?;
+    }
+    Ok(())
+}
+
+fn combined_stock(
+    chart: &[Account],
+    cells: &BTreeMap<(u128, u32), [i128; 4]>,
+    own: &fa_registers::TrialBalance,
+) -> Result<fa_registers::TrialBalance, BookError> {
+    let accounts: BTreeMap<_, _> = chart.iter().map(|account| (account.id, account)).collect();
+    let mut rows = Vec::with_capacity(cells.len());
+    let mut totals: BTreeMap<u32, [i128; 4]> = BTreeMap::new();
+    for (&(account, unit_id), &columns) in cells {
+        let meta = accounts.get(&account).ok_or_else(|| {
+            KernelError::Corrupt("combined stock names an absent layer account".into())
+        })?;
+        let account_type = fa_model::AccountType(meta.account_type);
+        if !account_type.is_memo() {
+            add_stock_columns(totals.entry(unit_id).or_default(), columns)?;
+        }
+        let [debits, credits, debits_pending, credits_pending] = columns;
+        rows.push(fa_registers::TbRow {
+            account: VId(account),
+            code: meta.code.clone(),
+            name: meta.name.clone(),
+            account_type,
+            unit_id,
+            debits,
+            credits,
+            debits_pending,
+            credits_pending,
+        });
+    }
+    rows.sort_by(|left, right| {
+        left.code
+            .cmp(&right.code)
+            .then(left.unit_id.cmp(&right.unit_id))
+    });
+    Ok(fa_registers::TrialBalance {
+        periods: own.periods.clone(),
+        known_at: own.known_at,
+        effective_through: own.effective_through,
+        activity: false,
+        rows,
+        unit_totals: totals
+            .iter()
+            .map(|(&unit, &[debits, credits, _, _])| (unit, (debits, credits)))
+            .collect(),
+        pending_unit_totals: totals
+            .into_iter()
+            .map(|(unit, [_, _, debits, credits])| (unit, (debits, credits)))
+            .collect(),
+    })
 }
 
 fn concordat_book_to_book_refusal(
@@ -1582,7 +1809,7 @@ fn validate_bridge_units(
         .rows
         .iter()
         .chain(&layer.rows)
-        .filter(|row| row.debits != 0 || row.credits != 0)
+        .filter(|row| stock_columns(row) != [0; 4])
         .map(|row| UnitId(row.unit_id))
         .collect();
     for id in used {
@@ -1693,6 +1920,58 @@ mod parent_unit_tests {
             assert!(
                 validate_bridge_units(&stock(None), &stock(Some(0)), &parent, &layer).is_err(),
                 "a unit used only by the layer must still have a shared meaning"
+            );
+            let mut pending = stock(Some(0));
+            pending.rows[0].debits = 0;
+            pending.rows[0].debits_pending = 100;
+            assert!(
+                validate_bridge_units(&pending, &stock(None), &parent, &layer).is_err(),
+                "pending-only inherited stock still binds the complete unit definition"
+            );
+            assert!(
+                validate_bridge_units(&stock(None), &pending, &parent, &layer).is_err(),
+                "a pending-only layer reservation cannot introduce a numeric unit alias"
+            );
+        }
+    }
+
+    #[test]
+    fn composed_stock_rejects_gross_cell_and_unit_total_overflow() {
+        let chart = [
+            Account {
+                id: 1,
+                code: "1000".into(),
+                name: "First account".into(),
+                account_type: fa_model::AccountType::ASSET.0,
+                is_leaf: true,
+            },
+            Account {
+                id: 2,
+                code: "2000".into(),
+                name: "Second account".into(),
+                account_type: fa_model::AccountType::LIABILITY.0,
+                is_leaf: true,
+            },
+        ];
+        for column in 0..4 {
+            let mut maximum = [0; 4];
+            maximum[column] = i128::MAX;
+            let mut one = [0; 4];
+            one[column] = 1;
+            let overflow = add_stock_columns(&mut maximum, one).unwrap_err();
+            assert!(matches!(
+                overflow,
+                BookError::Registers(fa_registers::RegisterError::Overflow)
+            ));
+
+            let cells = BTreeMap::from([((1, 0), maximum), ((2, 0), one)]);
+            let overflow = combined_stock(&chart, &cells, &stock(None)).unwrap_err();
+            assert!(
+                matches!(
+                    overflow,
+                    BookError::Registers(fa_registers::RegisterError::Overflow)
+                ),
+                "representable rows cannot overflow the separate posted or pending totals"
             );
         }
     }

@@ -4786,6 +4786,21 @@ impl Book {
         ))
     }
 
+    /// Replay this adjustment layer's native stock and combine it with a
+    /// complete replayed immediate parent. The returned opaque source retains
+    /// every ancestor, gross posted column and unresolved reservation. Requires
+    /// current whole-book Read and Reconcile authority to verify each bridge.
+    pub fn replay_layered_parent_trial_balance(
+        &self,
+        capability: &fa_policy::Capability,
+        certificate: &crate::ReportCertificate,
+        parent: &crate::consolidation::ReplayedParentTrialBalance,
+    ) -> Outcome<crate::consolidation::ReplayedParentTrialBalance> {
+        with_store!(&self.store, core => core.replay_layered_parent_trial_balance(
+            &self.purposes(), capability, certificate, parent,
+        ))
+    }
+
     /// Reconcile a parent source replayed against its native book, checking
     /// full unit identity for all nonzero parent and adjustment-layer rows.
     pub fn reconcile_book_to_book_from_parent(
