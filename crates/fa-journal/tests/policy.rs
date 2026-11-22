@@ -3938,3 +3938,381 @@ fn an_agent_capability_beyond_its_template_ceiling_is_refused() {
         "unexpected refusal: {refused}"
     );
 }
+
+/// fa-0hs4.30 / Appendix A `Approval`: kernel-level recording, idempotency,
+/// Ed25519 signature binding, branch-caveat enforcement, and symmetric commit
+/// admission over v3 `effects_digest` + `target_coordinate`.
+#[test]
+fn scoped_v3_approval_binds_effects_and_coordinate_at_commit() {
+    #[derive(Debug)]
+    struct TestVerifier;
+
+    fn test_sig(key: &[u8; 32], message: &[u8]) -> [u8; 64] {
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(&fa_model::domain_digest(
+            b"scoped-v3-sig-a",
+            &[key, message],
+        ));
+        sig[32..].copy_from_slice(&fa_model::domain_digest(
+            b"scoped-v3-sig-b",
+            &[key, message],
+        ));
+        sig
+    }
+
+    impl fa_policy::SignatureVerifier for TestVerifier {
+        fn verify_ed25519(
+            &self,
+            public_key: &[u8; 32],
+            message: &[u8],
+            signature: &[u8; 64],
+        ) -> bool {
+            *signature == test_sig(public_key, message)
+        }
+    }
+
+    let mut h = harness();
+    let proposal_digest = [0x41; 32];
+    let effects = [0x99; 32];
+    let wrong_effects = [0x98; 32];
+    let branch = Id128([0x42; 16]);
+    let other_branch = Id128([0x43; 16]);
+
+    // 1. Unsigned v3 scoped approval by Alice with both effects_digest and target_coordinate.
+    let alice_cap = human(ALICE, &["approve"]);
+    let ctx = h.ctx();
+    let recorded = h
+        .runtime
+        .block_on(fa_journal::policy::record_scoped_approval(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            ApprovalRequest {
+                capability: alice_cap.clone(),
+                approved_proposal_digest: proposal_digest,
+                role: 0,
+            },
+            Some(effects),
+            Some(branch),
+            None,
+        ))
+        .unwrap()
+        .expect("unsigned scoped v3 approval records");
+    let alice_ref = recorded.approval();
+
+    // Verify stored payload decodes as v3 carrying exact effects_digest + target_coordinate.
+    let stored_row =
+        h.db.vertex(alice_ref.approval_vid)
+            .unwrap()
+            .expect("approval vertex");
+    let Some(CanonicalScalar::Bytes(raw)) =
+        fa_journal::rows::prop(&stored_row, property::FA_PAYLOAD)
+    else {
+        panic!("expected bytes payload");
+    };
+    let (decoded, sig) = fa_policy::Approval::decode_record(raw.as_slice()).unwrap();
+    assert!(sig.is_none());
+    assert_eq!(decoded.effects_digest, Some(effects));
+    assert_eq!(decoded.target_coordinate, Some(branch));
+
+    // Exact retry is idempotent.
+    let ctx = h.ctx();
+    let retry = h
+        .runtime
+        .block_on(fa_journal::policy::record_scoped_approval(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            ApprovalRequest {
+                capability: alice_cap.clone(),
+                approved_proposal_digest: proposal_digest,
+                role: 0,
+            },
+            Some(effects),
+            Some(branch),
+            None,
+        ))
+        .unwrap()
+        .expect("exact retry succeeds");
+    assert!(matches!(retry, Approved::AlreadyRecorded { .. }));
+
+    // Re-approving same (proposal, epoch) with different effects_digest conflicts.
+    let ctx = h.ctx();
+    let conflict = h
+        .runtime
+        .block_on(fa_journal::policy::record_scoped_approval(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            ApprovalRequest {
+                capability: alice_cap,
+                approved_proposal_digest: proposal_digest,
+                role: 0,
+            },
+            Some(wrong_effects),
+            Some(branch),
+            None,
+        ))
+        .unwrap()
+        .expect_err("different effects_digest must conflict");
+    assert_eq!(
+        conflict.code,
+        fa_journal::refusal::code::IDEMPOTENCY_CONFLICT
+    );
+
+    // 2. Signed v3 scoped approval by Bob with a registered principal key + issued branch caveat.
+    let bob_pub = [0x77; 32];
+    let mut pk = fa_policy::PrincipalKey {
+        book_id: h.book.book_id,
+        principal: BOB,
+        generation: 0,
+        public_key: bob_pub,
+        possession: [0; 64],
+        endorsement: None,
+    };
+    pk.possession = test_sig(&bob_pub, &pk.message());
+    let ctx = h.ctx();
+    let desc = h.period_description();
+    h.runtime
+        .block_on(fa_journal::register_principal_key(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            fa_journal::PrincipalKeyRequest {
+                capability: human(BOB, &["approve"]),
+                key: pk,
+                effective_date: DateDay::from_ymd(2026, 3, 1).unwrap(),
+                idempotency_key: b"bob-v3-key".to_vec(),
+                description: desc,
+                verifier: &TestVerifier,
+            },
+        ))
+        .unwrap()
+        .expect("register bob key");
+
+    let steward_id = VId(99);
+    let issuer = human(steward_id, &["approve", "issue_capability"]);
+    let bob_branch_cap = Capability::new(BOB, Profile::Human, &[Op::Approve], steward_id)
+        .unwrap()
+        .holder_bound(possession_digest(&[0xbb; 32]))
+        .on_branch(branch)
+        .unwrap();
+    h.issue(&issuer, &bob_branch_cap, b"issue-bob-branch-cap")
+        .expect("issue branch-scoped capability");
+
+    let epoch = security_policy_epoch(&h.db).unwrap();
+    let bob_approval = fa_policy::Approval::by(
+        &bob_branch_cap,
+        Op::Approve,
+        h.book.book_id,
+        proposal_digest,
+        epoch,
+        0,
+    )
+    .unwrap()
+    .unwrap()
+    .with_effects_digest(effects)
+    .with_target_coordinate(branch);
+    let bob_digest = bob_approval.digest().unwrap();
+    let bob_sig = fa_policy::PrincipalSignature {
+        scheme: fa_policy::principal_key::SCHEME_ED25519,
+        generation: 0,
+        key_id: fa_policy::principal_key::key_id(&bob_pub),
+        bytes: test_sig(
+            &bob_pub,
+            &fa_policy::principal_key::approval_message(&bob_digest),
+        ),
+    };
+
+    // Wrong branch against Bob's branch-caveated capability is refused before write.
+    let ctx = h.ctx();
+    let wrong_branch_refusal = h
+        .runtime
+        .block_on(fa_journal::policy::record_scoped_approval(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            ApprovalRequest {
+                capability: bob_branch_cap.clone(),
+                approved_proposal_digest: proposal_digest,
+                role: 0,
+            },
+            Some(effects),
+            Some(other_branch),
+            Some(SignedBy {
+                signature: bob_sig.clone(),
+                verifier: &TestVerifier,
+            }),
+        ))
+        .unwrap()
+        .expect_err("branch-scoped capability must refuse other branch");
+    assert_eq!(
+        wrong_branch_refusal.code, "FA-REF-011",
+        "{wrong_branch_refusal}"
+    );
+    assert!(
+        wrong_branch_refusal.message.contains("`branch`"),
+        "{wrong_branch_refusal}"
+    );
+
+    // Signature over tampered effects_digest is refused.
+    let ctx = h.ctx();
+    let bad_sig_refusal = h
+        .runtime
+        .block_on(fa_journal::policy::record_scoped_approval(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            ApprovalRequest {
+                capability: bob_branch_cap.clone(),
+                approved_proposal_digest: proposal_digest,
+                role: 0,
+            },
+            Some(wrong_effects),
+            Some(branch),
+            Some(SignedBy {
+                signature: bob_sig.clone(),
+                verifier: &TestVerifier,
+            }),
+        ))
+        .unwrap()
+        .expect_err("signature must bind effects_digest");
+    assert_eq!(
+        bad_sig_refusal.code,
+        fa_journal::refusal::code::APPROVAL_SIGNATURE
+    );
+
+    // Matching signed v3 scoped approval succeeds.
+    let ctx = h.ctx();
+    let bob_recorded = h
+        .runtime
+        .block_on(fa_journal::policy::record_scoped_approval(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            ApprovalRequest {
+                capability: bob_branch_cap,
+                approved_proposal_digest: proposal_digest,
+                role: 0,
+            },
+            Some(effects),
+            Some(branch),
+            Some(SignedBy {
+                signature: bob_sig,
+                verifier: &TestVerifier,
+            }),
+        ))
+        .unwrap()
+        .expect("signed scoped v3 approval records");
+    let bob_ref = bob_recorded.approval();
+
+    // 3. Record a legacy v1 approval by Carol on the same proposal digest.
+    let carol_ref = h
+        .approve(CAROL, proposal_digest)
+        .expect("carol legacy v1 approval")
+        .approval();
+
+    // 4. Commit-time authorization inside WriteTxn.
+    let key = fa_policy::sod::posting_key("Original", PeriodState::Closed, true);
+    let preparer = fa_policy::Party {
+        principal: PREPARER,
+        profile: Profile::Human,
+    };
+    let ctx = h.ctx();
+    let txn_cx = ctx.txn();
+    let txn = h.db.begin(&txn_cx).unwrap();
+
+    // Both Alice (unsigned v3) and Bob (signed v3 + branch-caveat) admit on exact match.
+    fa_journal::policy::authorize_approvals_scoped_in(
+        &txn,
+        &h.db,
+        &h.book,
+        &[alice_ref, bob_ref],
+        &proposal_digest,
+        Some(&effects),
+        Some(branch),
+        epoch,
+        &key,
+        1,
+        preparer,
+        None,
+    )
+    .unwrap()
+    .expect("exact v3 effects + target match must admit");
+
+    // Wrong effects_digest refuses.
+    let err = fa_journal::policy::authorize_approvals_scoped_in(
+        &txn,
+        &h.db,
+        &h.book,
+        &[alice_ref],
+        &proposal_digest,
+        Some(&wrong_effects),
+        Some(branch),
+        epoch,
+        &key,
+        1,
+        preparer,
+        None,
+    )
+    .unwrap()
+    .expect_err("wrong effects_digest must refuse");
+    assert_eq!(err.code, "FA-REF-016", "{err}");
+
+    // Wrong target_coordinate refuses.
+    let err = fa_journal::policy::authorize_approvals_scoped_in(
+        &txn,
+        &h.db,
+        &h.book,
+        &[alice_ref],
+        &proposal_digest,
+        Some(&effects),
+        Some(other_branch),
+        epoch,
+        &key,
+        1,
+        preparer,
+        None,
+    )
+    .unwrap()
+    .expect_err("wrong target_coordinate must refuse");
+    assert_eq!(err.code, "FA-REF-016", "{err}");
+
+    // Scoped v3 approval fails closed on plain trunk authorize_approvals_in.
+    let err = fa_journal::policy::authorize_approvals_in(
+        &txn,
+        &h.db,
+        &h.book,
+        &[alice_ref],
+        &proposal_digest,
+        epoch,
+        &key,
+        1,
+        preparer,
+        None,
+    )
+    .unwrap()
+    .expect_err("scoped v3 approval must refuse plain unscoped trunk commit");
+    assert_eq!(err.code, "FA-REF-016", "{err}");
+
+    // Legacy v1 approval cannot bypass effects_digest or non-trunk target_coordinate.
+    let err = fa_journal::policy::authorize_approvals_scoped_in(
+        &txn,
+        &h.db,
+        &h.book,
+        &[carol_ref],
+        &proposal_digest,
+        Some(&effects),
+        Some(branch),
+        epoch,
+        &key,
+        1,
+        preparer,
+        None,
+    )
+    .unwrap()
+    .expect_err("legacy v1 approval must refuse effects/branch-scoped commit");
+    assert_eq!(err.code, "FA-REF-016", "{err}");
+
+    txn.abort();
+}

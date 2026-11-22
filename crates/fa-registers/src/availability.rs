@@ -256,7 +256,7 @@ pub fn verify_availability<V: asupersync::fs::Vfs + Clone>(
     let mut limited: BTreeMap<VId, (AccountRow, BalanceLimit)> = BTreeMap::new();
     let mut codes: BTreeMap<VId, String> = BTreeMap::new();
     let mut periods: Vec<String> = Vec::new();
-    for row in db.vertices_at(seq)? {
+    for row in fa_journal::op_witness::vertices_at(db, seq)? {
         if row.labels.contains(&label::PERIOD) {
             periods.push(PeriodRow::decode(&row)?.code);
             continue;

@@ -165,7 +165,7 @@ fn cash_fold<V: Vfs + Clone>(
             "exact bank closing requires a debit-normal Asset leaf in the statement currency",
         )));
     }
-    let mut rows = db.vertices_at(at)?;
+    let mut rows = crate::op_witness::vertices_at(db, at)?;
     rows.sort_by_key(|row| (row.created_at, row.vid));
     let mut amount = 0_i128;
     let mut digest = domain_digest(
@@ -632,7 +632,7 @@ fn history_at<V: Vfs + Clone>(
             "native reconciliation history ends before the selected prefix",
         )));
     }
-    for row in db.vertices_at(at)? {
+    for row in crate::op_witness::vertices_at(db, at)? {
         if row.labels.contains(&label::ATTESTATION)
             && is_reconciled_payload(&row.props)
             && !births.contains_key(&row.vid)

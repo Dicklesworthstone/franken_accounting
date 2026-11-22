@@ -613,6 +613,8 @@ fn approval_records() -> RecordsAndApprovals {
         security_policy_epoch: 0,
         op: fa_policy::Op::Approve,
         role: 0,
+        effects_digest: None,
+        target_coordinate: None,
     };
     let signature = fa_policy::PrincipalSignature {
         scheme: SCHEME_ED25519,

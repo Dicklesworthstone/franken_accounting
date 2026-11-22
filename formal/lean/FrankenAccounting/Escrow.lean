@@ -31,6 +31,7 @@ theorem admitHold_preserves_wellFormed (c : EscrowCell) (amount : Nat)
     (hWf : wellFormed c) (hAvail : amount ≤ available c) :
     wellFormed (admitHold c amount) := by
   unfold wellFormed admitHold available at *
+  dsimp only at *
   omega
 
 end FrankenAccounting.Escrow

@@ -498,7 +498,7 @@ pub(crate) fn entries_at_counted<V: asupersync::fs::Vfs + Clone>(
     seq: CommitSeq,
     work: &mut EntryReadCount,
 ) -> Result<Vec<(VId, Entry, CommitSeq)>, RegisterError> {
-    let rows = db.vertices_at(seq)?;
+    let rows = fa_journal::op_witness::vertices_at(db, seq)?;
     entries_from_rows_at_counted(db, book, seq, &rows, work)
 }
 
@@ -952,7 +952,7 @@ type CellValues = (i128, i128, u64);
 
 /// A materialized row contains both columns, including a zero posted column
 /// for an account which only has an outstanding reservation.
-fn fold_columns(fold: &Fold) -> BTreeMap<&CellKey, (CellValues, CellValues)> {
+pub(crate) fn fold_columns(fold: &Fold) -> BTreeMap<&CellKey, (CellValues, CellValues)> {
     let mut columns = BTreeMap::new();
     for c in &fold.cells {
         columns.entry(&c.key).or_insert(((0, 0, 0), (0, 0, 0))).0 =
@@ -1054,8 +1054,131 @@ fn materialize_batch<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     fold: &Fold,
 ) -> Result<WriteBatch, RegisterError> {
-    let rows = RegisterRows::from_vertices(db.vertices()?);
-    materialize_batch_in(db, book, fold, &rows, &period_memberships(&db.edges()?))
+    let rows = RegisterRows::from_vertices(fa_journal::op_witness::vertices(db)?);
+    materialize_batch_in(
+        db,
+        book,
+        fold,
+        &rows,
+        &period_memberships(&fa_journal::op_witness::edges(db)?),
+    )
+}
+
+/// Write only `fold`'s active cells when an incremental advance has already
+/// authenticated the period's previous cells and retired none of them. Each
+/// target cell is point-read to guard against authoritative-label collision
+/// without scanning the entire book's vertices or edges (`fa-0hs4.6`).
+pub(crate) fn materialize_batch_incremental<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    fold: &Fold,
+) -> Result<WriteBatch, RegisterError> {
+    let pvid = period_vid(&book.calendar.id, &fold.period);
+    let frontier = db.frontier()?;
+    let mut batch = WriteBatch::new(relation::IN_PERIOD);
+    for (key, (posted, pending)) in fold_columns(fold) {
+        let rvid = register_vid(book.book_id, key);
+        if let Some(row) = db.vertex(rvid)?
+            && row.labels.iter().any(|l| *l != label::REGISTER)
+        {
+            return Err(KernelError::Corrupt(
+                "register identity also belongs to an authoritative object".into(),
+            )
+            .into());
+        }
+        stage_register_cell(&mut batch, book, fold, pvid, frontier, key, posted, pending)?;
+    }
+    Ok(batch)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_register_cell(
+    batch: &mut WriteBatch,
+    book: &BookContext,
+    fold: &Fold,
+    pvid: VId,
+    frontier: CommitSeq,
+    key: &CellKey,
+    posted: CellValues,
+    pending: CellValues,
+) -> Result<(), RegisterError> {
+    let rvid = register_vid(book.book_id, key);
+    batch.ensure_vertex(
+        rvid,
+        vec![label::REGISTER],
+        vec![(
+            property::BOOK_ID,
+            scalar_bytes("book_id", book.book_id.0.to_vec())?,
+        )],
+    );
+    batch.set_vertex_label(rvid, label::REGISTER, true);
+    let props = [
+        (
+            property::BOOK_ID,
+            scalar_bytes("book_id", book.book_id.0.to_vec())?,
+        ),
+        (
+            property::ACCOUNT_REF,
+            scalar_bytes("account_ref", key.account.0.to_le_bytes().to_vec())?,
+        ),
+        (
+            property::UNIT_ID,
+            CanonicalScalar::Int(i64::from(key.unit_id)),
+        ),
+        (
+            property::EFFECTIVE_PERIOD,
+            scalar_text("effective_period", &key.period)?,
+        ),
+        (
+            property::DEBITS_POSTED,
+            scalar_bytes("debits_posted", posted.0.to_le_bytes().to_vec())?,
+        ),
+        (
+            property::CREDITS_POSTED,
+            scalar_bytes("credits_posted", posted.1.to_le_bytes().to_vec())?,
+        ),
+        (
+            property::ENTRY_COUNT,
+            CanonicalScalar::Int(i64::try_from(posted.2).map_err(|_| RegisterError::Overflow)?),
+        ),
+        (
+            property::DEBITS_PENDING,
+            scalar_bytes("debits_pending", pending.0.to_le_bytes().to_vec())?,
+        ),
+        (
+            property::CREDITS_PENDING,
+            scalar_bytes("credits_pending", pending.1.to_le_bytes().to_vec())?,
+        ),
+        (
+            property::PENDING_COUNT,
+            CanonicalScalar::Int(i64::try_from(pending.2).map_err(|_| RegisterError::Overflow)?),
+        ),
+        (
+            property::WATERMARK,
+            CanonicalScalar::Int(
+                i64::try_from(fold.watermark.map_or(0, |w| w.0))
+                    .map_err(|_| RegisterError::Overflow)?,
+            ),
+        ),
+        (
+            property::FA_FOLD_DIGEST,
+            scalar_bytes("_fa_fold_digest", fold.fold_digest.to_vec())?,
+        ),
+    ];
+    for (k, v) in props {
+        batch.set_vertex_property(rvid, k, Some(v));
+    }
+    // A removed edge ID is spent in the substrate. A repair therefore
+    // uses a fresh deterministic projection identity at this frontier.
+    let mut h = Hasher::new();
+    h.update(b"fa:register-membership:v1");
+    h.update(&rvid.0.to_le_bytes());
+    h.update(&pvid.0.to_le_bytes());
+    h.update(&frontier.0.to_le_bytes());
+    let mut lo = [0; 16];
+    lo.copy_from_slice(&h.finalize().0[..16]);
+    batch.ensure_edge_by_triple(fgdb_types::EId(u128::from_le_bytes(lo)), rvid, pvid, vec![]);
+    Ok(())
 }
 
 /// [`materialize_batch`] among `rows`, the book's indexed current vertices, and
@@ -1095,85 +1218,9 @@ fn materialize_batch_in<V: asupersync::fs::Vfs + Clone>(
             }
         }
     }
+    let frontier = db.frontier()?;
     for (key, (posted, pending)) in fold_columns(fold) {
-        let rvid = register_vid(book.book_id, key);
-        batch.ensure_vertex(
-            rvid,
-            vec![label::REGISTER],
-            vec![(
-                property::BOOK_ID,
-                scalar_bytes("book_id", book.book_id.0.to_vec())?,
-            )],
-        );
-        batch.set_vertex_label(rvid, label::REGISTER, true);
-        let props = [
-            (
-                property::BOOK_ID,
-                scalar_bytes("book_id", book.book_id.0.to_vec())?,
-            ),
-            (
-                property::ACCOUNT_REF,
-                scalar_bytes("account_ref", key.account.0.to_le_bytes().to_vec())?,
-            ),
-            (
-                property::UNIT_ID,
-                CanonicalScalar::Int(i64::from(key.unit_id)),
-            ),
-            (
-                property::EFFECTIVE_PERIOD,
-                scalar_text("effective_period", &key.period)?,
-            ),
-            (
-                property::DEBITS_POSTED,
-                scalar_bytes("debits_posted", posted.0.to_le_bytes().to_vec())?,
-            ),
-            (
-                property::CREDITS_POSTED,
-                scalar_bytes("credits_posted", posted.1.to_le_bytes().to_vec())?,
-            ),
-            (
-                property::ENTRY_COUNT,
-                CanonicalScalar::Int(i64::try_from(posted.2).map_err(|_| RegisterError::Overflow)?),
-            ),
-            (
-                property::DEBITS_PENDING,
-                scalar_bytes("debits_pending", pending.0.to_le_bytes().to_vec())?,
-            ),
-            (
-                property::CREDITS_PENDING,
-                scalar_bytes("credits_pending", pending.1.to_le_bytes().to_vec())?,
-            ),
-            (
-                property::PENDING_COUNT,
-                CanonicalScalar::Int(
-                    i64::try_from(pending.2).map_err(|_| RegisterError::Overflow)?,
-                ),
-            ),
-            (
-                property::WATERMARK,
-                CanonicalScalar::Int(
-                    i64::try_from(fold.watermark.map_or(0, |w| w.0))
-                        .map_err(|_| RegisterError::Overflow)?,
-                ),
-            ),
-            (
-                property::FA_FOLD_DIGEST,
-                scalar_bytes("_fa_fold_digest", fold.fold_digest.to_vec())?,
-            ),
-        ];
-        for (k, v) in props {
-            batch.set_vertex_property(rvid, k, Some(v));
-        }
-        // A removed edge ID is spent in the substrate. A repair therefore
-        // uses a fresh deterministic projection identity at this frontier.
-        let mut h = Hasher::new();
-        h.update(b"fa:register-membership:v1");
-        h.update(&rvid.0.to_le_bytes());
-        h.update(&pvid.0.to_le_bytes());
-        h.update(&db.frontier()?.0.to_le_bytes());
-        let mut lo = [0; 16];
-        lo.copy_from_slice(&h.finalize().0[..16]);
-        batch.ensure_edge_by_triple(fgdb_types::EId(u128::from_le_bytes(lo)), rvid, pvid, vec![]);
+        stage_register_cell(&mut batch, book, fold, pvid, frontier, key, posted, pending)?;
     }
     Ok(batch)
 }
@@ -1472,7 +1519,7 @@ impl<'a, V: asupersync::fs::Vfs + Clone> Reads<'a, V> {
     fn current_vertices(&mut self) -> Result<&RegisterRows, RegisterError> {
         if self.vertices.is_none() {
             self.projection_work.vertex_scans = self.projection_work.vertex_scans.saturating_add(1);
-            let rows = self.db.vertices()?;
+            let rows = fa_journal::op_witness::vertices(self.db)?;
             self.projection_work.vertices_read = self
                 .projection_work
                 .vertices_read
@@ -1491,7 +1538,7 @@ impl<'a, V: asupersync::fs::Vfs + Clone> Reads<'a, V> {
         self.current_vertices()?;
         if self.memberships.is_none() {
             self.projection_work.edge_scans = self.projection_work.edge_scans.saturating_add(1);
-            let edges = self.db.edges()?;
+            let edges = fa_journal::op_witness::edges(self.db)?;
             self.projection_work.edges_read =
                 self.projection_work.edges_read.saturating_add(edges.len());
             self.memberships = Some(period_memberships(&edges));
@@ -1512,9 +1559,7 @@ impl<'a, V: asupersync::fs::Vfs + Clone> Reads<'a, V> {
         if seq != head {
             self.entry_rows.retain(|at, _| *at == head);
         }
-        let rows = self
-            .db
-            .vertices_at(seq)?
+        let rows = fa_journal::op_witness::vertices_at(self.db, seq)?
             .into_iter()
             .filter(|row| row.labels.contains(&label::ENTRY))
             .map(|row| (row.vid, row))
@@ -2413,7 +2458,7 @@ fn report_metadata_at<V: asupersync::fs::Vfs + Clone>(
     report_checkpoint(cx)?;
     let mut accounts = Vec::new();
     let mut periods = Vec::new();
-    for row in db.vertices_at(seq)? {
+    for row in fa_journal::op_witness::vertices_at(db, seq)? {
         report_checkpoint(cx)?;
         if row.labels.contains(&label::ACCOUNT) {
             accounts.push(AccountRow::decode(&row)?);
@@ -2467,7 +2512,7 @@ fn period_has_postings_at<V: asupersync::fs::Vfs + Clone>(
     let mut runs = BTreeMap::new();
     // Reuse the literal reader's payload and migration-selection laws, but
     // retain only the period population, checking cancellation while decoding.
-    for row in db.vertices_at(seq)? {
+    for row in fa_journal::op_witness::vertices_at(db, seq)? {
         report_checkpoint(cx)?;
         let Some(entry) = entry_from_row(db, &row, book, seq)? else {
             continue;
@@ -2509,7 +2554,7 @@ fn balance_as_of_filtered<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<TrialBalance, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     let mut periods = BTreeSet::new();
-    for row in db.vertices_at(seq)? {
+    for row in fa_journal::op_witness::vertices_at(db, seq)? {
         if row.labels.contains(&label::PERIOD) {
             let p = PeriodRow::decode(&row)?;
             if p.calendar_id == book.calendar.id && p.start <= day {
@@ -2582,7 +2627,7 @@ pub fn activity_as_of_excluding_classes<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<TrialBalance, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     let mut periods = BTreeSet::new();
-    for row in db.vertices_at(seq)? {
+    for row in fa_journal::op_witness::vertices_at(db, seq)? {
         if row.labels.contains(&label::PERIOD) {
             let period = PeriodRow::decode(&row)?;
             if period.calendar_id == book.calendar.id && period.start <= day {

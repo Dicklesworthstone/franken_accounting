@@ -22,11 +22,12 @@
 //!    `cas_moves`, `edges_written`, `vertices_written`, `transactions`) are
 //!    checked against `registries/operation_costs.toml`.
 //!
-//! **What this crate does not do yet (fa-e75k, fa-ykbp):** it times none of the
-//! §17 workloads. Earlier revisions timed corpus generation or a kernel witness
-//! under the §17 names and shipped hand-entered baselines; that was withdrawn.
-//! Every §17 benchmark now reports [`BenchOutcome::Unmeasured`] with its reason
-//! until a bench executes the named workload at the stated scale.
+//! **Current §17 workload coverage (`fa-ykbp`, `fa-0hs4.27`):** `driver::SAMPLED`
+//! currently executes 4 of the 19 registered §17 workloads against a live
+//! incumbent in the same invocation (`single_entry_post`, `batched_post`,
+//! `register_rebuild_10m`, and `bundle_production_and_verify`). The remaining
+//! 15 §17 benchmarks report [`BenchOutcome::Unmeasured`] with their reason
+//! until their workload harnesses land at the stated scale.
 
 #![forbid(unsafe_code)]
 
@@ -2084,323 +2085,517 @@ mod tests {
             }
         };
 
-        // Seed 1 entry in P01 (for fold_per_entry), 1 in P05 (for 1k verify_per_cell),
-        // and 1 in P06 (for 10k verify_per_cell).
+        // Seed 1 entry in P01 (for fold_per_entry). Populated verification runs
+        // directly against FY2026-P02 (the 1k / 10k entry period) so full-book
+        // refold scans are exposed honestly rather than hidden on an empty period.
         let jan_day = DateDay::from_ymd(2026, 1, 15).expect("jan");
-        let may_day = DateDay::from_ymd(2026, 5, 15).expect("may");
-        let jun_day = DateDay::from_ymd(2026, 6, 15).expect("jun");
         post_single(&mut book, jan_day, "1010", "4000", 1_000, b"scale:p01:seed");
-        post_single(&mut book, may_day, "1010", "4000", 1_000, b"scale:p05:seed");
-        post_single(&mut book, jun_day, "1010", "4000", 1_000, b"scale:p06:seed");
-        book.materialize_registers(operator, &maintain_cap, "FY2026-P05")
-            .expect("mat p05")
-            .expect("p05 ok");
-        book.materialize_registers(operator, &maintain_cap, "FY2026-P06")
-            .expect("mat p06")
-            .expect("p06 ok");
 
-        let measure_suite = |book: &mut Book,
-                             tag: &str,
-                             close_period: &str,
-                             verify_period: &str|
-         -> Vec<(String, OpCount)> {
-            let mut out = Vec::new();
+        let measure_suite =
+            |book: &mut Book,
+             tag: &str,
+             close_period: &str|
+             -> Vec<(String, OpCount, fa_journal::op_witness::RawOpCensus)> {
+                let mut out = Vec::new();
 
-            // 1. post
-            let post_key = format!("scale:{tag}:post").into_bytes();
-            let (_, live_post) = book
-                .measure_with_op_witness(|b| {
-                    let legs = vec![
-                        LegPayload::simple(
-                            Side::Debit,
-                            account_vid(book_id, "1010"),
-                            Amount::new(usd, 2_500),
-                        ),
-                        LegPayload::simple(
-                            Side::Credit,
-                            account_vid(book_id, "4000"),
-                            Amount::new(usd, 2_500),
-                        ),
-                    ];
-                    let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
-                    b.post(PostRequest {
-                        proposal: EntryPayload {
-                            schema_minor: 0,
-                            book_id,
-                            branch_id: Id128::TRUNK,
-                            class: EntryClass::ORIGINAL,
-                            effective_date: jan_day,
-                            document_date: Some(jan_day),
-                            description: sealed_desc.clone(),
-                            effective_period: None,
-                            legs,
-                            control: None,
-                            unit_totals: totals,
-                            base_totals: None,
-                            origin: EntryOrigin::Intent {
-                                intent_oid: Oid(domain_digest(b"fa:intent:v1", &[&post_key])),
-                                intent_kind: 1,
+                // 1. post
+                let post_key = format!("scale:{tag}:post").into_bytes();
+                let (_, live_post, raw_post) = book
+                    .measure_with_op_witness_raw(|b| {
+                        let legs = vec![
+                            LegPayload::simple(
+                                Side::Debit,
+                                account_vid(book_id, "1010"),
+                                Amount::new(usd, 2_500),
+                            ),
+                            LegPayload::simple(
+                                Side::Credit,
+                                account_vid(book_id, "4000"),
+                                Amount::new(usd, 2_500),
+                            ),
+                        ];
+                        let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+                        b.post(PostRequest {
+                            proposal: EntryPayload {
+                                schema_minor: 0,
+                                book_id,
+                                branch_id: Id128::TRUNK,
+                                class: EntryClass::ORIGINAL,
+                                effective_date: jan_day,
+                                document_date: Some(jan_day),
+                                description: sealed_desc.clone(),
+                                effective_period: None,
+                                legs,
+                                control: None,
+                                unit_totals: totals,
+                                base_totals: None,
+                                origin: EntryOrigin::Intent {
+                                    intent_oid: Oid(domain_digest(b"fa:intent:v1", &[&post_key])),
+                                    intent_kind: 1,
+                                },
+                                idempotency_key: post_key,
+                                principal_ref: operator,
+                                session_ref: None,
+                                evidence: vec![ev],
+                                supersession: Vec::new(),
+                                pending: None,
+                                external_ids: Vec::new(),
+                                extensions: Vec::new(),
+                                tags: Vec::new(),
                             },
-                            idempotency_key: post_key,
-                            principal_ref: operator,
-                            session_ref: None,
-                            evidence: vec![ev],
-                            supersession: Vec::new(),
-                            pending: None,
-                            external_ids: Vec::new(),
-                            extensions: Vec::new(),
-                            tags: Vec::new(),
-                        },
-                        approvals: Vec::new(),
-                        plan_certificate: None,
-                        capability: post_cap.clone(),
+                            approvals: Vec::new(),
+                            plan_certificate: None,
+                            capability: post_cap.clone(),
+                        })
+                        .map_err(|e| e.to_string())?
+                        .map_err(|r| r.message)
                     })
-                    .map_err(|e| e.to_string())?
-                    .map_err(|r| r.message)
-                })
-                .expect("post witness");
-            out.push(("post".into(), op_count_from_live_witness(live_post)));
+                    .expect("post witness");
+                out.push((
+                    "post".into(),
+                    op_count_from_live_witness(live_post),
+                    raw_post,
+                ));
 
-            // 2. reserve & 3. resolve
-            let res_key = format!("scale:{tag}:reserve").into_bytes();
-            let (hold, live_reserve) = book
-                .measure_with_op_witness(|b| {
-                    let legs = vec![
-                        LegPayload::simple(
-                            Side::Debit,
-                            account_vid(book_id, "1010"),
-                            Amount::new(usd, 3_000),
-                        ),
-                        LegPayload::simple(
-                            Side::Credit,
-                            account_vid(book_id, "1030"),
-                            Amount::new(usd, 3_000),
-                        ),
-                    ];
-                    let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
-                    b.post(PostRequest {
-                        proposal: EntryPayload {
-                            schema_minor: 0,
-                            book_id,
-                            branch_id: Id128::TRUNK,
-                            class: EntryClass::PENDING,
-                            effective_date: jan_day,
-                            document_date: Some(jan_day),
-                            description: sealed_desc.clone(),
-                            effective_period: None,
-                            legs,
-                            control: None,
-                            unit_totals: totals,
-                            base_totals: None,
-                            origin: EntryOrigin::Intent {
-                                intent_oid: Oid(domain_digest(b"fa:intent:v1", &[&res_key])),
-                                intent_kind: 2,
+                // 2. reserve & 3. resolve
+                let res_key = format!("scale:{tag}:reserve").into_bytes();
+                let (hold, live_reserve, raw_reserve) = book
+                    .measure_with_op_witness_raw(|b| {
+                        let legs = vec![
+                            LegPayload::simple(
+                                Side::Debit,
+                                account_vid(book_id, "1010"),
+                                Amount::new(usd, 3_000),
+                            ),
+                            LegPayload::simple(
+                                Side::Credit,
+                                account_vid(book_id, "1030"),
+                                Amount::new(usd, 3_000),
+                            ),
+                        ];
+                        let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+                        b.post(PostRequest {
+                            proposal: EntryPayload {
+                                schema_minor: 0,
+                                book_id,
+                                branch_id: Id128::TRUNK,
+                                class: EntryClass::PENDING,
+                                effective_date: jan_day,
+                                document_date: Some(jan_day),
+                                description: sealed_desc.clone(),
+                                effective_period: None,
+                                legs,
+                                control: None,
+                                unit_totals: totals,
+                                base_totals: None,
+                                origin: EntryOrigin::Intent {
+                                    intent_oid: Oid(domain_digest(b"fa:intent:v1", &[&res_key])),
+                                    intent_kind: 2,
+                                },
+                                idempotency_key: res_key,
+                                principal_ref: operator,
+                                session_ref: None,
+                                evidence: vec![ev],
+                                supersession: Vec::new(),
+                                pending: Some(Pending {
+                                    timeout_ns: None,
+                                    resolution_of: None,
+                                    disposition: None,
+                                }),
+                                external_ids: Vec::new(),
+                                extensions: Vec::new(),
+                                tags: Vec::new(),
                             },
-                            idempotency_key: res_key,
-                            principal_ref: operator,
-                            session_ref: None,
-                            evidence: vec![ev],
-                            supersession: Vec::new(),
-                            pending: Some(Pending {
-                                timeout_ns: None,
-                                resolution_of: None,
-                                disposition: None,
-                            }),
-                            external_ids: Vec::new(),
-                            extensions: Vec::new(),
-                            tags: Vec::new(),
-                        },
-                        approvals: Vec::new(),
-                        plan_certificate: None,
-                        capability: post_cap.clone(),
+                            approvals: Vec::new(),
+                            plan_certificate: None,
+                            capability: post_cap.clone(),
+                        })
+                        .map_err(|e| e.to_string())?
+                        .map_err(|r| r.message)
                     })
-                    .map_err(|e| e.to_string())?
-                    .map_err(|r| r.message)
-                })
-                .expect("reserve witness");
-            out.push(("reserve".into(), op_count_from_live_witness(live_reserve)));
+                    .expect("reserve witness");
+                out.push((
+                    "reserve".into(),
+                    op_count_from_live_witness(live_reserve),
+                    raw_reserve,
+                ));
 
-            let void_key = format!("scale:{tag}:resolve").into_bytes();
-            let (_, live_resolve) = book
-                .measure_with_op_witness(|b| {
-                    b.post(PostRequest {
-                        proposal: EntryPayload {
-                            schema_minor: 0,
-                            book_id,
-                            branch_id: Id128::TRUNK,
-                            class: EntryClass::RESOLUTION,
-                            effective_date: jan_day,
-                            document_date: Some(jan_day),
-                            description: sealed_desc.clone(),
-                            effective_period: None,
-                            legs: Vec::new(),
-                            control: Some(ControlPayload::ReservationRelease),
-                            unit_totals: Vec::new(),
-                            base_totals: None,
-                            origin: EntryOrigin::Intent {
-                                intent_oid: Oid(domain_digest(b"fa:intent:v1", &[&void_key])),
-                                intent_kind: 3,
+                let void_key = format!("scale:{tag}:resolve").into_bytes();
+                let (_, live_resolve, raw_resolve) = book
+                    .measure_with_op_witness_raw(|b| {
+                        b.post(PostRequest {
+                            proposal: EntryPayload {
+                                schema_minor: 0,
+                                book_id,
+                                branch_id: Id128::TRUNK,
+                                class: EntryClass::RESOLUTION,
+                                effective_date: jan_day,
+                                document_date: Some(jan_day),
+                                description: sealed_desc.clone(),
+                                effective_period: None,
+                                legs: Vec::new(),
+                                control: Some(ControlPayload::ReservationRelease),
+                                unit_totals: Vec::new(),
+                                base_totals: None,
+                                origin: EntryOrigin::Intent {
+                                    intent_oid: Oid(domain_digest(b"fa:intent:v1", &[&void_key])),
+                                    intent_kind: 3,
+                                },
+                                idempotency_key: void_key,
+                                principal_ref: operator,
+                                session_ref: None,
+                                evidence: Vec::new(),
+                                supersession: Vec::new(),
+                                pending: Some(Pending {
+                                    timeout_ns: None,
+                                    resolution_of: Some(hold.entry_ref()),
+                                    disposition: Some(Disposition::Voids),
+                                }),
+                                external_ids: Vec::new(),
+                                extensions: Vec::new(),
+                                tags: Vec::new(),
                             },
-                            idempotency_key: void_key,
-                            principal_ref: operator,
-                            session_ref: None,
-                            evidence: Vec::new(),
-                            supersession: Vec::new(),
-                            pending: Some(Pending {
-                                timeout_ns: None,
-                                resolution_of: Some(hold.entry_ref()),
-                                disposition: Some(Disposition::Voids),
-                            }),
-                            external_ids: Vec::new(),
-                            extensions: Vec::new(),
-                            tags: Vec::new(),
-                        },
-                        approvals: Vec::new(),
-                        plan_certificate: None,
-                        capability: post_cap.clone(),
+                            approvals: Vec::new(),
+                            plan_certificate: None,
+                            capability: post_cap.clone(),
+                        })
+                        .map_err(|e| e.to_string())?
+                        .map_err(|r| r.message)
                     })
-                    .map_err(|e| e.to_string())?
-                    .map_err(|r| r.message)
-                })
-                .expect("resolve witness");
-            out.push(("resolve".into(), op_count_from_live_witness(live_resolve)));
+                    .expect("resolve witness");
+                out.push((
+                    "resolve".into(),
+                    op_count_from_live_witness(live_resolve),
+                    raw_resolve,
+                ));
 
-            // 4. period_transition
-            let close_key = format!("scale:{tag}:softclose").into_bytes();
-            let (_, live_pt) = book
-                .measure_with_op_witness(|b| {
-                    b.transition_period(
-                        close_period,
-                        PeriodTransition::SoftClose,
-                        controller,
-                        1,
-                        &close_key,
-                        &close_cap,
-                    )
-                    .map_err(|e| e.to_string())?
-                    .map_err(|r| r.message)
-                })
-                .expect("period_transition witness");
-            out.push((
-                "period_transition".into(),
-                op_count_from_live_witness(live_pt),
-            ));
+                // 4. period_transition
+                let close_key = format!("scale:{tag}:softclose").into_bytes();
+                let (_, live_pt, raw_pt) = book
+                    .measure_with_op_witness_raw(|b| {
+                        b.transition_period(
+                            close_period,
+                            PeriodTransition::SoftClose,
+                            controller,
+                            1,
+                            &close_key,
+                            &close_cap,
+                        )
+                        .map_err(|e| e.to_string())?
+                        .map_err(|r| r.message)
+                    })
+                    .expect("period_transition witness");
+                out.push((
+                    "period_transition".into(),
+                    op_count_from_live_witness(live_pt),
+                    raw_pt,
+                ));
 
-            // 5. document_add
-            let fresh_doc = Document {
-                book_id,
-                kind: 1,
-                mime: "text/plain".into(),
-                grade: 3,
-                retrieved_by: operator,
-                bytes: format!("scale-doc-{tag}").into_bytes(),
+                // 5. document_add
+                let fresh_doc = Document {
+                    book_id,
+                    kind: 1,
+                    mime: "text/plain".into(),
+                    grade: 3,
+                    retrieved_by: operator,
+                    bytes: format!("scale-doc-{tag}").into_bytes(),
+                };
+                let (_, live_doc, raw_doc) = book
+                    .measure_with_op_witness_raw(|b| {
+                        b.add_document(&fresh_doc)
+                            .map_err(|e| e.to_string())?
+                            .map_err(|r| r.message)
+                    })
+                    .expect("document_add witness");
+                out.push((
+                    "document_add".into(),
+                    op_count_from_live_witness(live_doc),
+                    raw_doc,
+                ));
+
+                // 6. checkpoint (over 1 new entry leaf after caught-up predecessor)
+                book.checkpoint(controller, &witness_cap)
+                    .expect("cp catchup io")
+                    .expect("cp catchup ok");
+                post_single(
+                    book,
+                    jan_day,
+                    "1010",
+                    "4000",
+                    1_500,
+                    format!("scale:{tag}:cp-leaf").as_bytes(),
+                );
+                let (_, live_cp, raw_cp) = book
+                    .measure_with_op_witness_raw(|b| {
+                        b.checkpoint(controller, &witness_cap)
+                            .map_err(|e| e.to_string())?
+                            .map_err(|r| r.message)
+                    })
+                    .expect("checkpoint witness");
+                out.push((
+                    "checkpoint".into(),
+                    op_count_from_live_witness(live_cp),
+                    raw_cp,
+                ));
+
+                // 7. fold_per_entry (over 1 new entry on caught-up FY2026-P01)
+                book.advance_registers(operator, &maintain_cap, "FY2026-P01")
+                    .expect("adv catchup io")
+                    .expect("adv catchup ok");
+                post_single(
+                    book,
+                    jan_day,
+                    "1010",
+                    "4000",
+                    1_750,
+                    format!("scale:{tag}:fold").as_bytes(),
+                );
+                let (_, live_fold, raw_fold) = book
+                    .measure_with_op_witness_raw(|b| {
+                        b.advance_registers(operator, &maintain_cap, "FY2026-P01")
+                            .map_err(|e| e.to_string())?
+                            .map_err(|r| r.message)
+                    })
+                    .expect("fold_per_entry witness");
+                out.push((
+                    "fold_per_entry".into(),
+                    op_count_from_live_witness(live_fold),
+                    raw_fold,
+                ));
+
+                // 8. verify_per_cell on the POPULATED period (FY2026-P02)
+                book.materialize_registers(operator, &maintain_cap, "FY2026-P02")
+                    .expect("mat p02 io")
+                    .expect("mat p02 ok");
+                let (ver, live_ver, raw_ver) = book
+                    .measure_with_op_witness_raw(|b| {
+                        b.verify_registers("FY2026-P02").map_err(|e| e.to_string())
+                    })
+                    .expect("verify_per_cell witness");
+                assert!(ver.is_green(), "populated FY2026-P02 verify drift: {ver:?}");
+                out.push((
+                    "verify_per_cell".into(),
+                    op_count_from_live_witness(live_ver),
+                    raw_ver,
+                ));
+
+                // 9. query_procedure
+                let proc = RoundAmounts::new().expect("proc");
+                let (_, live_proc, raw_proc) = book
+                    .measure_with_op_witness_raw(|b| {
+                        b.run_procedure(
+                            &proc,
+                            None,
+                            Some(DateDay::from_ymd(2026, 1, 31).unwrap()),
+                            None,
+                        )
+                        .map_err(|e| e.to_string())
+                    })
+                    .expect("query_procedure witness");
+                out.push((
+                    "query_procedure".into(),
+                    op_count_from_live_witness(live_proc),
+                    raw_proc,
+                ));
+
+                out
             };
-            let (_, live_doc) = book
-                .measure_with_op_witness(|b| {
-                    b.add_document(&fresh_doc)
-                        .map_err(|e| e.to_string())?
-                        .map_err(|r| r.message)
-                })
-                .expect("document_add witness");
-            out.push(("document_add".into(), op_count_from_live_witness(live_doc)));
-
-            // 6. checkpoint (over 1 new entry leaf after caught-up predecessor)
-            book.checkpoint(controller, &witness_cap)
-                .expect("cp catchup io")
-                .expect("cp catchup ok");
-            post_single(
-                book,
-                jan_day,
-                "1010",
-                "4000",
-                1_500,
-                format!("scale:{tag}:cp-leaf").as_bytes(),
-            );
-            let (_, live_cp) = book
-                .measure_with_op_witness(|b| {
-                    b.checkpoint(controller, &witness_cap)
-                        .map_err(|e| e.to_string())?
-                        .map_err(|r| r.message)
-                })
-                .expect("checkpoint witness");
-            out.push(("checkpoint".into(), op_count_from_live_witness(live_cp)));
-
-            // 7. fold_per_entry (over 1 new entry on caught-up FY2026-P01)
-            book.advance_registers(operator, &maintain_cap, "FY2026-P01")
-                .expect("adv catchup io")
-                .expect("adv catchup ok");
-            post_single(
-                book,
-                jan_day,
-                "1010",
-                "4000",
-                1_750,
-                format!("scale:{tag}:fold").as_bytes(),
-            );
-            let (_, live_fold) = book
-                .measure_with_op_witness(|b| {
-                    b.advance_registers(operator, &maintain_cap, "FY2026-P01")
-                        .map_err(|e| e.to_string())?
-                        .map_err(|r| r.message)
-                })
-                .expect("fold_per_entry witness");
-            out.push((
-                "fold_per_entry".into(),
-                op_count_from_live_witness(live_fold),
-            ));
-
-            // 8. verify_per_cell
-            let (_, live_ver) = book
-                .measure_with_op_witness(|b| {
-                    b.verify_registers(verify_period).map_err(|e| e.to_string())
-                })
-                .expect("verify_per_cell witness");
-            out.push((
-                "verify_per_cell".into(),
-                op_count_from_live_witness(live_ver),
-            ));
-
-            // 9. query_procedure
-            let proc = RoundAmounts::new().expect("proc");
-            let (_, live_proc) = book
-                .measure_with_op_witness(|b| {
-                    b.run_procedure(
-                        &proc,
-                        None,
-                        Some(DateDay::from_ymd(2026, 1, 31).unwrap()),
-                        None,
-                    )
-                    .map_err(|e| e.to_string())
-                })
-                .expect("query_procedure witness");
-            out.push((
-                "query_procedure".into(),
-                op_count_from_live_witness(live_proc),
-            ));
-
-            out
-        };
 
         // Populate 1,000 real entries into FY2026-P02 and measure all 9 operations.
         populate_batches(&mut book, 0, 1_000);
-        let ops_1k = measure_suite(&mut book, "1k", "FY2026-P03", "FY2026-P05");
+        let ops_1k = measure_suite(&mut book, "1k", "FY2026-P03");
         assert_eq!(ops_1k.len(), 9);
-        for (id, count) in &ops_1k {
-            verify_kernel_op_witness(id, count, &op_costs)
-                .unwrap_or_else(|e| panic!("1k witness drift on {id}: {e}"));
-        }
 
         // Populate 9,000 more real entries (10,000+ total) and re-measure all 9 operations.
         populate_batches(&mut book, 1_000, 9_000);
-        let ops_10k = measure_suite(&mut book, "10k", "FY2026-P04", "FY2026-P06");
-        assert_eq!(
-            ops_1k, ops_10k,
-            "O(1) kernel witnesses must stay scale-invariant between 1k and 10k entries"
-        );
-        for (id, count) in &ops_10k {
-            verify_kernel_op_witness(id, count, &op_costs)
-                .unwrap_or_else(|e| panic!("10k witness drift on {id}: {e}"));
+        let ops_10k = measure_suite(&mut book, "10k", "FY2026-P04");
+        assert_eq!(ops_10k.len(), 9);
+
+        // 1) All 7 O(1) write/maintenance operations must remain scale-invariant
+        //    AND prove ZERO full-book vertex/edge scans at both 1k and 10k.
+        for ((id1, c1, r1), (id2, c2, r2)) in ops_1k.iter().zip(&ops_10k) {
+            assert_eq!(id1, id2);
+            match id1.as_str() {
+                "post" | "reserve" | "resolve" | "period_transition" | "document_add"
+                | "checkpoint" | "fold_per_entry" => {
+                    assert_eq!(
+                        c1, c2,
+                        "O(1) kernel witness `{id1}` must stay scale-invariant between 1k and 10k"
+                    );
+                    for (scale, count, raw) in [("1k", c1, r1), ("10k", c2, r2)] {
+                        verify_kernel_op_witness(id1, count, &op_costs)
+                            .unwrap_or_else(|e| panic!("{scale} witness drift on {id1}: {e}"));
+                        assert_eq!(
+                            (
+                                raw.vertex_scans,
+                                raw.edge_scans,
+                                raw.scanned_rows,
+                                raw.scanned_edges
+                            ),
+                            (0, 0, 0, 0),
+                            "{scale} `{id1}` must perform zero full-book scans, got {raw:?}"
+                        );
+                    }
+                }
+                "query_procedure" => {
+                    verify_kernel_op_witness(id1, c1, &op_costs).expect("1k query_procedure");
+                    verify_kernel_op_witness(id1, c2, &op_costs).expect("10k query_procedure");
+                    assert_eq!(r1.vertex_scans, 1);
+                    assert_eq!(r2.vertex_scans, 1);
+                    assert!(
+                        r2.scanned_rows > r1.scanned_rows + 8_000,
+                        "query_procedure must honestly report full snapshot row growth (1k={}, 10k={})",
+                        r1.scanned_rows,
+                        r2.scanned_rows
+                    );
+                }
+                "verify_per_cell" => {
+                    // Honest disclosure: authoritative refold of populated FY2026-P02
+                    // currently scans the full book's vertices and edges until Beacon
+                    // secondary indexes land (fa-0hs4.6).
+                    assert!(r2.vertex_scans >= 2, "expected refold vertex scans: {r2:?}");
+                    assert!(r2.edge_scans >= 1, "expected refold edge scans: {r2:?}");
+                    assert!(
+                        r2.scanned_rows > r1.scanned_rows + 8_000,
+                        "populated verify_per_cell must expose full-book vertex growth (1k={}, 10k={})",
+                        r1.scanned_rows,
+                        r2.scanned_rows
+                    );
+                    assert!(
+                        r2.scanned_edges > r1.scanned_edges + 30_000,
+                        "populated verify_per_cell must expose full-book edge growth (1k={}, 10k={})",
+                        r1.scanned_edges,
+                        r2.scanned_edges
+                    );
+                    assert!(
+                        r2.verify_legs_folded > r1.verify_legs_folded + 15_000,
+                        "populated verify_per_cell must fold all FY2026-P02 legs (1k={}, 10k={})",
+                        r1.verify_legs_folded,
+                        r2.verify_legs_folded
+                    );
+                }
+                other => panic!("unexpected kernel_op_witness `{other}`"),
+            }
         }
+    }
+
+    #[test]
+    fn cold_book_post_exposes_real_capacity_vertex_scan() {
+        let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
+        let (mut book, book_id, usd) = build_witness_test_book(47, 1);
+        let operator = principal_vid("operator");
+        let post_cap = Capability::embedded(operator, &["post"]).expect("post cap");
+        let doc = Document {
+            book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: operator,
+            bytes: b"cold-book-witness-doc".to_vec(),
+        };
+        book.add_document(&doc).expect("doc io").expect("doc ok");
+        let day = DateDay::from_ymd(2026, 1, 15).expect("day");
+
+        // First post on a cold Book (unwarmed CarriedHistory) MUST honestly
+        // record the full-frontier cold-init scan(s) and trip
+        // `verify_kernel_op_witness("post", ...)` loudly.
+        let sealed_cold = book.seal_text("cold witness").unwrap();
+        let make_proposal = |key: &[u8]| {
+            let legs = vec![
+                LegPayload::simple(
+                    Side::Debit,
+                    account_vid(book_id, "1010"),
+                    Amount::new(usd, 1_000),
+                ),
+                LegPayload::simple(
+                    Side::Credit,
+                    account_vid(book_id, "4000"),
+                    Amount::new(usd, 1_000),
+                ),
+            ];
+            let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+            EntryPayload {
+                schema_minor: 0,
+                book_id,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ORIGINAL,
+                effective_date: day,
+                document_date: Some(day),
+                description: sealed_cold.clone(),
+                effective_period: None,
+                legs,
+                control: None,
+                unit_totals: totals,
+                base_totals: None,
+                idempotency_key: key.to_vec(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid(domain_digest(b"fa:intent:v1", &[key])),
+                    intent_kind: 1,
+                },
+                principal_ref: operator,
+                session_ref: None,
+                evidence: vec![doc.evidence_ref(1)],
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            }
+        };
+
+        let cold_prop = make_proposal(b"cold:first");
+        let (_, live_cold, raw_cold) = book
+            .measure_with_op_witness_raw(|b| {
+                b.post(PostRequest {
+                    proposal: cold_prop,
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: post_cap.clone(),
+                })
+                .map_err(|e| e.to_string())?
+                .map_err(|r| r.message)
+            })
+            .expect("cold post");
+        assert!(
+            raw_cold.vertex_scans >= 1,
+            "cold post must report its cold-init vertex scan(s): {raw_cold:?}"
+        );
+        assert!(
+            raw_cold.scanned_rows > 10,
+            "cold post must count scanned rows: {raw_cold:?}"
+        );
+        assert!(
+            verify_kernel_op_witness("post", &op_count_from_live_witness(live_cold), &op_costs)
+                .is_err(),
+            "cold-book capacity scan must trip operation_costs ceiling"
+        );
+
+        // Second post on the same warm handle uses CarriedHistory with zero scans.
+        let warm_prop = make_proposal(b"cold:second");
+        let (_, live_warm, raw_warm) = book
+            .measure_with_op_witness_raw(|b| {
+                b.post(PostRequest {
+                    proposal: warm_prop,
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: post_cap,
+                })
+                .map_err(|e| e.to_string())?
+                .map_err(|r| r.message)
+            })
+            .expect("warm post");
+        assert_eq!(
+            (
+                raw_warm.vertex_scans,
+                raw_warm.edge_scans,
+                raw_warm.scanned_rows,
+                raw_warm.scanned_edges
+            ),
+            (0, 0, 0, 0),
+            "warm post must perform zero scans: {raw_warm:?}"
+        );
+        verify_kernel_op_witness("post", &op_count_from_live_witness(live_warm), &op_costs)
+            .expect("warm post matches operation_costs");
     }
 
     #[test]

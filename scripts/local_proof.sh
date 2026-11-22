@@ -119,6 +119,11 @@ mkdir "$output" || fail "could not claim output directory: $output"
 if [ -n "$resume_from" ]; then
   [ -d "$resume_from" ] || fail "--resume-from directory does not exist: $resume_from"
   resume_from="$(cd "$resume_from" && pwd -P)"
+  case "$output" in
+    "$resume_from"|"$resume_from"/*)
+      fail "output must be outside --resume-from directory: $output"
+      ;;
+  esac
   source_id="$("${hash_command[@]}" "$resume_from/SHA256SUMS" | awk '{print $1}')"
   mkdir -p "$output/sources/$source_id"
   cp -R "$resume_from"/. "$output/sources/$source_id/" \

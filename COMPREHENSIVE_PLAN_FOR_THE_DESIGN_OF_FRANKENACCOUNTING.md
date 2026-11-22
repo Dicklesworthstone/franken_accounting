@@ -1284,6 +1284,79 @@ This section records an audit and remaining work; it neither changes the target
 contracts above nor closes implementation beads. The generated workflow scoreboard
 is a sample of commands, not a percentage of the complete product delivered.
 
+#### Current-cut refresh (2026-11-20)
+
+**Assessment: substantive engineering progress continued across 62 commits since
+2026-11-11 (`3f944175` → `830a4ff2`, now 1,089,818 LOC / 1,361 Rust files / 6,956
+`#[test]` functions / 0 `todo!()`/`unimplemented!()`), fixing `fa-0hs4.20` (`fx_routes`),
+most `fa-0hs4.21`/`fa-0hs4.22` script defects, `fa-0hs4.4` closed scoreboard owners,
+`fa-0hs4.5` uninitialized `verify book`, `fa-0hs4.24` scoped draft caveats, `fa-m35p`
+`graph.kiting` (procedure #71), and lifting `fa-verify` offline procedure replay from 5/70
+to 16/71 — YET canonical `HEAD` (`830a4ff2cb8b`, tree `bbb7587c10ae`) is currently RED on
+SEVEN independent live gates (including Tier 0 compilation, `G0` `registry-check`,
+`xtask reachability`, `cargo deny`, `ubs_scan.sh`, `docs_sync_check.sh`, and macOS
+`check_classify.sh`), `formal/lean` fails `lake build` on its own pinned toolchain,
+`fa-bench`'s `op_witness` (`fa-0hs4.23`) commits metering evasion on 4 of 9 operations,
+zero full Tier-1 `fa-verdict` PASS notes have landed in 26 days, and zero beads have closed
+in 25 days (all 123 `in_progress` beads stale >24h).**
+
+All 368 lines of `AGENTS.md`, all 2,900 lines of `README.md`, and the plan, registries,
+scripts, formal specs, and all 501 pre-audit `.beads/issues.jsonl` records were audited on
+canonical `main` (`830a4ff2cb8b9da9ab3732653744d68b4f694d83`, tree
+`bbb7587c10ae7aa5d548a382713ac238d80f4cb7`; 3 local commits ahead of `origin/main`
+`dd3508e6`; local `master` 15 commits behind at `7634677a`; `core.hooksPath` unset). No
+branch or worktree was created, no gate was weakened, no implementation bead was closed,
+and no file was deleted.
+
+**Live execution receipts on `830a4ff2cb8b` (strict separation of PASS, FAIL, UNRUN):**
+
+- **PASS (`exit 0`):**
+  - `cargo fmt --all --check` (`exit 0`).
+  - `bash scripts/doctrine_check.sh` (`exit 0`, 6/6: 40/40 `#![forbid(unsafe_code)]`, 0 floats across 15 amount crates / 723 files, 0 raw GQL, 0 detached threads, 0 serde durable derives, single `fnx-classes`).
+  - `bash scripts/topology_check.sh registries/workspace_topology.toml <meta>` (`exit 0`, 35/35 incl. `facade-bytes`; 5 planned crates — `fa-types`, `fa-claim`, `fa-sim-harness`, `fa-concordat`, `fa-sim` — remain uncreated).
+  - `bash scripts/check-forbidden-deps.sh` (`exit 0`, 27 foundation IDs in `fa`/`fa-cli`/`fad`, 36 in `fa-mcp`, single shared `Cx`).
+  - `bash scripts/gate_health.sh` (`exit 0`, 3/3: `hz2` 2/2 warning 68.9 GB, `vmi1152480` 3/3 healthy 116.6 GB, `last_tier0=44c5b96cebaf@2026-11-05`, `last_tier1=ba456b5553d1@2026-10-25`).
+  - `shellcheck -S warning install.sh scripts/*.sh` (`exit 0`).
+  - `public_ledger_unit` (`scripts/check.sh:753-773` exact 4 sub-suites: `59 + 25 + 6 + 18 = 108/108 OK`).
+  - Selftests & Python tools: `tier0_selftest.sh` (12/12), `close_bead_selftest.sh`, `gate_health_selftest.sh` (12/12), `installer_integration.sh` (60/60), `gate_evidence_negative.sh` (11/11), `local_proof_selftest.sh`, `merge_train_selftest.sh`, `owner_watch.sh --self-test`, `tools/public-data` (18/18), `tools/case-fetch` (55/55), `br dep cycles` (0 cycles).
+- **FAIL (genuine live defects reproduced on `HEAD`):**
+  - `bash scripts/tier0.sh --no-note` (`ovh-b`, 792s, `exit 101` -> **Tier 0 FAIL**, `fa-0hs4.25`): all 32 other crates compile, **except** `crates/fa-lantern/tests/lantern/kiting.rs:289` and `:304` (`E0599: no method named unwrap found for struct Kiting`, introduced `2026-11-20` in `dd3508e6`).
+  - `cargo test -p registry-check --bins` (`exit 101`, `13 passed; 5 failed`, `fa-0hs4.25`): `tests::real_workspace_registries_pass` (and 4 siblings) panic with `operation_costs.toml: unregistered operation_class legal_hold_lifecycle` (`registries/operation_costs.toml:278` added in `8c39f0c2` without registering `"legal_hold_lifecycle"` in `REQUIRED_OPERATION_CLASS_IDS` at `crates/fa-registry/src/g0.rs:1060`) — breaking **`G0` itself** (`OperationCosts::embedded()`).
+  - `cargo run -p xtask -- reachability --today 2026-11-20` (`exit 2`, `fa-0hs4.25`): `fa_registry::procedures::legacy_v1_document` (`crates/fa-registry/src/procedures.rs:360`) is `UNREGISTERED` (2,311/2,383 reached, 15 unwired, 56 verification, 1 unregistered).
+  - `cargo deny check` (`exit 1`, `advisories FAILED`, `fa-0hs4.26`): **`RUSTSEC-2026-0543`** (`chrono 0.4.45` newly flagged unmaintained via `fastmcp-server 0.12.0 -> fastmcp-rust 0.12.0 -> fa-mcp`, no safe upgrade), plus unmatched `fgdb-unsafe-vfs` exception (`deny.toml:91`).
+  - `bash scripts/ubs_scan.sh` (`exit 1`, `32 passed, 1 failed, 0 unrun`, `fa-0hs4.26`): `crates/fa-journal/src/policy.rs:603,605,606` triggers 3 `CRITICAL` `rust.security.constant-time-compare` findings.
+  - `bash scripts/docs_sync_check.sh` (`exit 1`, `3 passed, 1 failed`): `readme-status-date` fails (`README.md:24` `2026-11-05` is 11 days from latest `fa-verdict` `2026-10-25`, 26 days stale today; max 7 days).
+  - `bash scripts/tests/check_classify.sh` (`exit 1`, `10 passed, 1 failed`, `fa-0hs4.29`): `ubs_scan_classifies_each_package_scan` fails on macOS `/private/var` vs `/var` (`scripts/ubs_scan.sh:36` `pwd` instead of `pwd -P`).
+  - `(cd formal/lean && ~/.elan/bin/lake build)` (`exit 1`, `fa-0hs4.28`): 5/7 Lean files pass, 2 fail on pinned Lean `v4.12.0` (`Escrow.lean:34` `omega`, `Amount.lean:87` `split`); all 11 dormant `registries/proof_lanes.toml` rows still point `owning_bead = "fa-8x9"` (CLOSED).
+  - `python3 -m unittest discover -s scripts/tests` (`exit 1`, `17 failures, 1 error, 27 skipped` / 415 tests, `fa-0hs4.29`): all 18 failures are macOS `/private/var` vs `/var` mismatches in `test_blmis_magnify_continue.py` (5) and `test_native_document_readback.py` (13).
+  - `python3 -m unittest discover -s tools/dashboard/tests -p 'test_*.py'` (`exit 1`, `71/72`, `fa-0hs4.29`): `test_report_assets.py:52` expects `src="/app.js"`, whereas `tools/dashboard/web/index.html:11` uses `/workbench.mjs`.
+- **UNRUN:** Full 205-target workspace `cargo test`; `fa-bench --smoke`, `fa-cli --test readme --test scoreboard`, `fa-verify --lib`, and `clippy --lib --bins` (cancelled after 19.5m cold debug compile on `vmi1153651`; note also that `fa-bench` and `scoreboard` call `OperationCosts::embedded()` which is broken by `fa-0hs4.25`, and running `cargo` without `-j 2` hits 4-core RCH `queue_timeout` across 2–3 slot workers); all 20 inactive `slo.toml` rows; all 11 dormant `proof_lanes.toml` lanes; external binaries absent on host (`tlc`, `bean-check`, `hledger`, `ledger`, `verapdf`, `cargo-mutants`).
+
+**Newly uncovered architectural & governance defects filed under `fa-0hs4` (`fa-0hs4.25`–`fa-0hs4.30`):**
+
+1. **`fa-0hs4.25` (P0, blocks `fa-0hs4.2`):** Three live `HEAD` regressions (`kiting.rs:289,304` `E0599`, `operation_costs.toml:278` `legal_hold_lifecycle` breaking `G0` `registry-check`, and `fa_registry::procedures::legacy_v1_document` breaking `xtask reachability`).
+2. **`fa-0hs4.26` (P0, blocks `fa-0hs4.2`):** Live Tier-1 security/static blockers (`cargo deny` `RUSTSEC-2026-0543` on `chrono 0.4.45` via `fastmcp-rust` + stale `fgdb-unsafe-vfs`; `ubs_scan.sh` 3 criticals in `fa-journal/src/policy.rs:603-606`).
+3. **`fa-0hs4.27` (P1, blocks `fa-0hs4.6`, `fa-ykbp`):** **`op_witness` metering evasion (`fa-0hs4.23` follow-up).** Because `fa_journal::op_witness` is an opt-in manual counter rather than a substrate wrapper, 4 of the 9 metered operations silently execute uninstrumented full-book `O(N)`/`O(E)` scans while reporting constant manual counts in `kernel_op_witness_scales_invariantly_between_1k_and_10k_entries`: `checkpoint` (`fa-notary/src/state.rs:790,835`), `fold_per_entry` (`fa-registers/src/maintainer.rs:356,398,590`), `verify_per_cell` (`fa-registers/src/lib.rs:1475,1494,1517,1572`, also measured on empty periods `FY2026-P05`/`P06` in `fa-bench/src/lib.rs:2386,2395`), and `query_procedure` (`fa-lantern/src/snapshot.rs:140-141`, literally calling `record_snapshot_read(1)` on the line after `db.vertices_at(seq)?`). Only 5 of 90 scan sites in `fa-journal/src` call `record_vertex_scan`, `fa-bench/src/lib.rs:683-720` pre-warms RAM-only `CarriedHistory` (hiding cold-CLI `O(N)` scans), and `fa-bench/src/lib.rs:25-29` still claims 0/19 §17 workloads are timed while `driver.rs` implements 4/19.
+4. **`fa-0hs4.28` (P1, blocks `fa-09q8`):** Broken `formal/lean` `lake build` (`Escrow.lean:34`, `Amount.lean:87`) + all 11 dormant `registries/proof_lanes.toml` rows pointing to CLOSED `fa-8x9`, requiring open-owner registry validation across all registries and live formal compilation.
+5. **`fa-0hs4.29` (P1, blocks `fa-0hs4.2`):** macOS canonical-path failures in `ubs_scan.sh:36` / `check_classify.sh` (1/11) and `scripts/tests/` (18/415 in `test_blmis_magnify_continue.py` & `test_native_document_readback.py`), stale dashboard `test_report_assets.py:52` (`/app.js` vs `/workbench.mjs`), and unfixed `scripts/local_proof.sh:124` recursive `sources/` copy nesting.
+6. **`fa-0hs4.30` (P1, blocks `fa-09q8`, `fa-651f`):** `registries/invariants.toml [shipped_capabilities]` covers only 24 of 90 shipped verbs (`fa-j6ue` closed, leaving 66 verbs unmapped against dormant clauses), and `crates/fa-policy/src/approval.rs:12-16` still omits Appendix A `effects_digest` and `target_coordinate` despite Canon and branches having shipped.
+
+**Would completing all pre-audit open/in-progress beads reach 100%?** **No.** Without
+`fa-0hs4.25`–`fa-0hs4.30`, (1) `main` cannot compile `--all-targets`, pass `G0`
+`registry-check`, pass `xtask reachability`, pass `cargo deny`, pass `ubs_scan.sh`, or pass
+`check_classify.sh` on macOS — making `fa-0hs4.2` (the first full Tier-1 verdict)
+unreachable; (2) `fa-bench`'s `op_witness` would falsely certify `O(N)` full-book scans in
+4 of 9 operations as `O(1)`; (3) `formal/lean` does not compile and all 11 `proof_lanes.toml`
+rows point to closed `fa-8x9`; and (4) 66/90 shipped verbs bypass `invariants.toml`
+capability mapping while `Approval` omits Appendix A `effects_digest`/`target_coordinate`.
+With `fa-0hs4.25`–`fa-0hs4.30` filed and `br dep cycles` verified at 0, the critical path to
+unjam the entire 507-bead work graph is strictly sequential: **clear `fa-0hs4.25` +
+`fa-0hs4.26` + `fa-0hs4.29` -> execute `fa-0hs4.2` (first real full-scope Tier-1 PASS on
+`main`) -> close already-implemented `in_progress` beads (`fa-0hs4.20`–`.24`, `fa-0hs4.5`,
+`fa-yugf.3`/`.22`, etc.) via `close_bead.sh` to break the 25-day zero-closure freeze ->
+enforce unbypassable `op_witness` (`fa-0hs4.27`) and eliminate real `O(N)` scans
+(`fa-0hs4.6`) -> converge `G1`–`G4`.**
+
 #### Current-cut refresh (2026-11-11)
 
 **Assessment: kernel discipline, exactness laws, and standalone proof machinery are

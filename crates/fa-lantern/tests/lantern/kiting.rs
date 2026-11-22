@@ -285,8 +285,7 @@ fn verified_empty_population_has_a_commitment_and_parameters_have_hard_bounds() 
                     .unwrap()
                     .set(name, value)
                     .unwrap(),
-            )
-            .unwrap();
+            );
             assert!(
                 run_over(&snapshot, &h.book, &procedure)
                     .unwrap()
@@ -300,8 +299,7 @@ fn verified_empty_population_has_a_commitment_and_parameters_have_hard_bounds() 
                     .unwrap()
                     .set(name, value)
                     .unwrap(),
-            )
-            .unwrap();
+            );
             assert!(matches!(
                 run_over(&snapshot, &h.book, &procedure),
                 Err(LanternError::Parameter { .. })

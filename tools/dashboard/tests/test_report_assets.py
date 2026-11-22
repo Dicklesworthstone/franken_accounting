@@ -49,7 +49,11 @@ class ReportAssets(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b'href="/reports.html#ledger"', body)
         self.assertIn(b'href="/reports.html#aging"', body)
-        self.assertIn(b'src="/app.js"', body)  # the existing overview remains intact
+        self.assertIn(b'src="/workbench.mjs"', body)  # the ledger workbench entrypoint
+        wb_status, wb_headers, wb_body = self.request("/workbench.mjs")
+        self.assertEqual(wb_status, 200)
+        self.assertTrue(wb_headers["Content-Type"].startswith("text/javascript"))
+        self.assertGreater(len(wb_body), 100)
 
     def test_report_assets_keep_host_validation_and_have_no_directory_or_source_route(self):
         self.assertEqual(self.request("/reports.html", Host="attacker.example")[0], 403)

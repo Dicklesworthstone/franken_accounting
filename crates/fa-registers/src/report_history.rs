@@ -169,7 +169,7 @@ impl Read<'_> {
         if let Some(populated) = &prefix.populated {
             return Ok(populated.contains(period));
         }
-        let rows = db.vertices_at(prefix.at)?;
+        let rows = fa_journal::op_witness::vertices_at(db, prefix.at)?;
         self.work.population_scans = self.work.population_scans.saturating_add(1);
         self.work.snapshot_rows = self.work.snapshot_rows.saturating_add(rows.len());
         let mut populated = BTreeSet::new();
@@ -206,7 +206,7 @@ fn metadata<V: Vfs + Clone>(
     work: &mut ReportHistoryWork,
 ) -> Result<Prefix, RegisterError> {
     report_checkpoint(cx)?;
-    let rows = db.vertices_at(at)?;
+    let rows = fa_journal::op_witness::vertices_at(db, at)?;
     work.metadata_scans = work.metadata_scans.saturating_add(1);
     work.snapshot_rows = work.snapshot_rows.saturating_add(rows.len());
     let mut accounts = BTreeMap::new();

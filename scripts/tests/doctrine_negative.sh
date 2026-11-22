@@ -93,7 +93,7 @@ run_case positive "$ROOT" "$FOUNDATIONS_DIR"
 if [ "$RC" -eq 2 ] && grep -q '^UNRUN ' "$OUT"; then
   gate_abort_unrun "doctrine-negative — positive control did not run ($(grep -m1 '^UNRUN ' "$OUT" | cut -c7-))"
 elif [ "$RC" -eq 0 ]; then
-  gate_pass "doctrine-negative — positive control: real workspace passes all 6 checks"
+  gate_pass "doctrine-negative — positive control: real workspace passes all 7 checks"
 else
   gate_fail "doctrine-negative — positive control: real workspace failed (exit $RC); see $OUT"
 fi
@@ -152,5 +152,16 @@ fnx-classes v0.2.0 (registry+https://github.com/rust-lang/crates.io-index)|defau
 EOF
 run_case case6-fnx "$CASE6" "$CASE6/foundations"
 expect_fail "duplicate fnx-classes package ID" "single-fnx-classes" "fa-mcp.tree:" "requires 1 fnx-classes package ID, found 2"
+
+# 7. Planted uninstrumented substrate scan in a metered crate
+CASE7="$WORK/case7-scan"
+make_clean_tree "$CASE7"
+mkdir -p "$CASE7/crates/fa-notary/src"
+cat >"$CASE7/crates/fa-notary/src/lib.rs" <<'RS'
+#![forbid(unsafe_code)]
+pub fn scan(db: &Db, seq: u64) { let _ = db.vertices_at(seq); }
+RS
+run_case case7-scan "$CASE7" "$CASE7/foundations"
+expect_fail "uninstrumented substrate scan" "metered-substrate-scans" "crates/fa-notary/src/lib.rs:2:" "fa_journal::op_witness"
 
 gate_verdict

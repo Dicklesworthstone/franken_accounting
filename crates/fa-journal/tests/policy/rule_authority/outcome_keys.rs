@@ -56,7 +56,7 @@ fn outcome(h: &Harness, plan: &RuleActivationPlan) -> VId {
 fn write_raw(h: &mut Harness, batch: WriteBatch) -> CommitSeq {
     let ctx = h.ctx();
     let mut txn = h.db.begin(&ctx.txn()).unwrap();
-    txn.write(&h.db, batch).unwrap();
+    txn.write(&mut h.db, batch).unwrap();
     h.runtime
         .block_on(txn.commit(&mut h.db, &ctx.commit()))
         .unwrap()

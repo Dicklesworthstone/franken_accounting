@@ -137,8 +137,7 @@ impl Snapshot {
         checkpoint(cx)?;
         let seq = resolve_known_at(db, known_at)?;
         checkpoint(cx)?;
-        let rows = db.vertices_at(seq)?;
-        fa_journal::op_witness::record_snapshot_read(1);
+        let rows = fa_journal::op_witness::snapshot_vertices_at(db, seq)?;
         checkpoint(cx)?;
         let raw_entries = entries_from_rows_at(db, book, seq, &rows)?;
         let raw_entries_for_open_items = effective_through.map(|_| raw_entries.clone());

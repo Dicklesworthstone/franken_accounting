@@ -520,8 +520,7 @@ pub fn list_documents<V: asupersync::fs::Vfs + Clone>(
 ) -> Outcome<Vec<DocumentSummary>> {
     let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let mut out = Vec::new();
-    let all_rows = db.vertices_at(seq)?;
-    crate::op_witness::record_vertex_scan(all_rows.len());
+    let all_rows = crate::op_witness::vertices_at(db, seq)?;
     for row in all_rows {
         if !row.labels.contains(&label::DOCUMENT) {
             continue;
@@ -1954,7 +1953,6 @@ fn walk_derived_from<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     policy: &EvidencePolicy,
-    derived_edges: &std::collections::BTreeSet<(VId, VId)>,
     root_vid: VId,
     root_rec: &DocumentRecord,
 ) -> Result<Vec<DerivedFromDocumentSummary>, KernelError> {
@@ -1962,17 +1960,21 @@ fn walk_derived_from<V: asupersync::fs::Vfs + Clone>(
     visited.insert(root_rec.oid());
     let mut queue = std::collections::VecDeque::new();
 
-    let enqueue_parents =
-        |cur_vid: VId,
-         cur_rec: &DocumentRecord,
-         q: &mut std::collections::VecDeque<(Oid, bool)>| {
-            for parent_oid in content_bound_sources(cur_rec) {
-                let pvid = document_vid(&parent_oid);
-                q.push_back((parent_oid, derived_edges.contains(&(cur_vid, pvid))));
-            }
-        };
+    let enqueue_parents = |cur_vid: VId,
+                           cur_rec: &DocumentRecord,
+                           q: &mut std::collections::VecDeque<(Oid, bool)>|
+     -> Result<(), KernelError> {
+        for parent_oid in content_bound_sources(cur_rec) {
+            let pvid = document_vid(&parent_oid);
+            let edge_recorded = db
+                .neighbours(cur_vid, relation::DERIVED_FROM)?
+                .contains(&pvid);
+            q.push_back((parent_oid, edge_recorded));
+        }
+        Ok(())
+    };
 
-    enqueue_parents(root_vid, root_rec, &mut queue);
+    enqueue_parents(root_vid, root_rec, &mut queue)?;
 
     let mut out = Vec::new();
     while let Some((parent_oid, edge_recorded)) = queue.pop_front() {
@@ -1996,7 +1998,7 @@ fn walk_derived_from<V: asupersync::fs::Vfs + Clone>(
             continue;
         }
         let grand_parents = content_bound_sources(&prec);
-        enqueue_parents(pvid, &prec, &mut queue);
+        enqueue_parents(pvid, &prec, &mut queue)?;
         out.push(DerivedFromDocumentSummary {
             document_oid: parent_oid,
             doc_commit: prec.doc_commit,
@@ -2464,12 +2466,6 @@ pub fn explain_entry_evidence<V: asupersync::fs::Vfs + Clone>(
     let mut documents = Vec::with_capacity(entry.proposal.evidence.len());
     let mut cited = Vec::new();
     let mut seen_oids = std::collections::BTreeSet::new();
-    let derived_edges: std::collections::BTreeSet<(VId, VId)> = db
-        .edges_at(db.frontier()?)?
-        .into_iter()
-        .filter(|e| e.entry.relation == relation::DERIVED_FROM)
-        .map(|e| (e.entry.src, e.entry.dst))
-        .collect();
 
     for ev in &entry.proposal.evidence {
         let dvid = document_vid(&ev.document_oid);
@@ -2519,7 +2515,7 @@ pub fn explain_entry_evidence<V: asupersync::fs::Vfs + Clone>(
             });
         }
         let extraction = extraction_info_from_record(&rec);
-        let derived_from = walk_derived_from(db, book, &policy, &derived_edges, dvid, &rec)?;
+        let derived_from = walk_derived_from(db, book, &policy, dvid, &rec)?;
         documents.push(DocumentEvidenceSummary {
             document_oid: ev.document_oid,
             doc_commit: ev.doc_commit,

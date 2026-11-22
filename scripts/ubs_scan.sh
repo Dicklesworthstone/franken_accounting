@@ -27,13 +27,13 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # shellcheck source=lib/gate_verdict.sh
 source "$ROOT/scripts/lib/gate_verdict.sh"
 
 scan_root="$ROOT"
 if [ "${1:-}" = "--root" ] && [ -n "${2:-}" ]; then
-  scan_root="$(cd "$2" && pwd)" || exit 2
+  scan_root="$(cd "$2" && pwd -P)" || exit 2
 fi
 cd "$scan_root" || exit 2
 gate_init "ubs"

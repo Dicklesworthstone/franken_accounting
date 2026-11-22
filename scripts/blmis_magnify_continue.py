@@ -109,6 +109,8 @@ def file_inventory(directory: Path) -> dict[str, dict]:
 def copy_guard(prior: Path, copied: Path, inventory_path: Path, expected: str) -> tuple[dict, dict]:
     record_pin = pinned(inventory_path, expected)
     record = json.loads(inventory_path.read_text(encoding="utf-8"))
+    prior = Path(prior).resolve()
+    copied = Path(copied).resolve()
     require(record.get("status") == "BYTE_IDENTICAL_COPY"
             and Path(record["source"]).resolve() == prior
             and Path(record["destination"]).resolve() == copied,

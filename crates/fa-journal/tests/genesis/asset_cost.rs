@@ -6,8 +6,8 @@ use fa_journal::asset_cost::{
     AssetScheduleSpec, PreparedAssetCharge, asset_register, asset_schedules, create_asset_schedule,
     prepare_asset_charge, verify_asset_schedules,
 };
+use fa_journal::refusal::code;
 use fa_model::PeriodRef;
-use fa_model::refusal::code;
 use fa_money::RoundingLaw;
 
 fn asset_dimension(h: &mut Harness, dimension: &str, code: &str) -> (u32, VId) {

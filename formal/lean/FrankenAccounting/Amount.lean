@@ -83,7 +83,7 @@ theorem checkedAdd_comm {u : UnitId} (a b : ExactAmount u) :
 theorem checkedAdd_exact_when_some {u : UnitId} (a b res : ExactAmount u)
     (h : checkedAdd a b = some res) :
     res = ExactAmount.add a b := by
-  unfold checkedAdd at h
+  dsimp only [checkedAdd] at h
   split at h
   · injection h with h_eq
     exact h_eq.symm

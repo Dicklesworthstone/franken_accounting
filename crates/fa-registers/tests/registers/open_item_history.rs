@@ -297,15 +297,19 @@ fn resident_open_item_source_mutations_preserve_literal_errors_and_coordinates()
         let original = h.db.vertex(posted.entry_ref().vid).unwrap().unwrap();
         let mut change = WriteBatch::new(relation::IN_BOOK);
         match fault {
-            "entry-label" => change.set_vertex_label(posted.entry_ref().vid, label::ENTRY, false),
-            "account" => {
-                change.set_vertex_property(h.rent, property::NAME, Some(CanonicalScalar::Int(9)))
+            "entry-label" => {
+                change.set_vertex_label(posted.entry_ref().vid, label::ENTRY, false);
             }
-            _ => change.set_vertex_property(
-                posted.entry_ref().vid,
-                property::FA_PAYLOAD,
-                Some(scalar_bytes(vec![0xff])),
-            ),
+            "account" => {
+                change.set_vertex_property(h.rent, property::NAME, Some(CanonicalScalar::Int(9)));
+            }
+            _ => {
+                change.set_vertex_property(
+                    posted.entry_ref().vid,
+                    property::FA_PAYLOAD,
+                    Some(scalar_bytes(vec![0xff])),
+                );
+            }
         }
         h.write_derived(change);
         if fault == "restored-entry" {

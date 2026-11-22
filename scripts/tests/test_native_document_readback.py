@@ -18,7 +18,7 @@ class ReadbackTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.source = self.root / "source.pdf"
         self.output = self.root / "recovered.pdf"
         self.content = b"%PDF-1.4\noriginal bytes\x00\xff\n%%EOF\n"

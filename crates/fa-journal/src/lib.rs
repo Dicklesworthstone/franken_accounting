@@ -198,7 +198,8 @@ pub use policy::{
     ActivationRequest, ApprovalRequest, Approved, IssuanceRequest, Issued, IssuedCapability,
     PolicyActivated, RevocationRequest, Revoked, SignedBy, activate_policy, activation_proposal,
     issuance_vid, issue_capability, list_issued, read_issued, record_approval, record_approval_for,
-    record_signed_approval, record_signed_approval_for, revoke_capability, security_policy_epoch,
+    record_scoped_approval, record_signed_approval, record_signed_approval_for, revoke_capability,
+    security_policy_epoch,
 };
 pub use post::{
     Capability, CarriedHistory, PostPreparation, PostRequest, Posted, PreparedPost,
@@ -280,10 +281,12 @@ pub mod op_witness {
         pub witnesses: u32,
         pub vertex_scans: u32,
         pub scanned_rows: u32,
+        pub edge_scans: u32,
+        pub scanned_edges: u32,
         pub register_cell_touches: u32,
         pub verify_cells_checked: u32,
         pub verify_legs_folded: u32,
-        pub snapshot_reads: u32,
+        pub snapshot_frontier_scans: u32,
     }
 
     thread_local! {
@@ -347,6 +350,68 @@ pub mod op_witness {
     }
 
     #[inline]
+    pub fn record_edge_scan(edges: usize) {
+        let edges_u32 = u32::try_from(edges).unwrap_or(u32::MAX);
+        update(|c| {
+            c.edge_scans = c.edge_scans.saturating_add(1);
+            c.scanned_edges = c.scanned_edges.saturating_add(edges_u32);
+        });
+    }
+
+    /// Metered full-book current vertex scan. Every call records both the scan
+    /// invocation and the returned row count in the active census.
+    pub fn vertices<V: asupersync::fs::Vfs + Clone>(
+        db: &fgdb::Database<V>,
+    ) -> Result<Vec<fgdb::VertexRow>, fgdb::ReadError> {
+        let rows = db.vertices()?;
+        record_vertex_scan(rows.len());
+        Ok(rows)
+    }
+
+    /// Metered full-book historical vertex scan at `at`.
+    pub fn vertices_at<V: asupersync::fs::Vfs + Clone>(
+        db: &fgdb::Database<V>,
+        at: fgdb_types::CommitSeq,
+    ) -> Result<Vec<fgdb::VertexRow>, fgdb::ReadError> {
+        let rows = db.vertices_at(at)?;
+        record_vertex_scan(rows.len());
+        Ok(rows)
+    }
+
+    /// Metered full-book snapshot frontier read for analytical procedures.
+    /// Records the full row scan (`vertex_scans`, `scanned_rows`) AND marks
+    /// the frontier snapshot count (`snapshot_frontier_scans`) so the census
+    /// exposes both the Appendix G frontier-read count and the true row count.
+    pub fn snapshot_vertices_at<V: asupersync::fs::Vfs + Clone>(
+        db: &fgdb::Database<V>,
+        at: fgdb_types::CommitSeq,
+    ) -> Result<Vec<fgdb::VertexRow>, fgdb::ReadError> {
+        let rows = db.vertices_at(at)?;
+        record_vertex_scan(rows.len());
+        update(|c| c.snapshot_frontier_scans = c.snapshot_frontier_scans.saturating_add(1));
+        Ok(rows)
+    }
+
+    /// Metered full-book current edge scan.
+    pub fn edges<V: asupersync::fs::Vfs + Clone>(
+        db: &fgdb::Database<V>,
+    ) -> Result<Vec<fgdb::EdgeRecord>, fgdb::ReadError> {
+        let rows = db.edges()?;
+        record_edge_scan(rows.len());
+        Ok(rows)
+    }
+
+    /// Metered full-book historical edge scan at `at`.
+    pub fn edges_at<V: asupersync::fs::Vfs + Clone>(
+        db: &fgdb::Database<V>,
+        at: fgdb_types::CommitSeq,
+    ) -> Result<Vec<fgdb::EdgeRecord>, fgdb::ReadError> {
+        let rows = db.edges_at(at)?;
+        record_edge_scan(rows.len());
+        Ok(rows)
+    }
+
+    #[inline]
     pub fn record_register_cell_touch(cells: u32) {
         update(|c| c.register_cell_touches = c.register_cell_touches.saturating_add(cells));
     }
@@ -357,10 +422,5 @@ pub mod op_witness {
             c.verify_cells_checked = c.verify_cells_checked.saturating_add(cells_checked);
             c.verify_legs_folded = c.verify_legs_folded.saturating_add(legs_folded);
         });
-    }
-
-    #[inline]
-    pub fn record_snapshot_read(n: u32) {
-        update(|c| c.snapshot_reads = c.snapshot_reads.saturating_add(n));
     }
 }

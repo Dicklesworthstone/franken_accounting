@@ -540,8 +540,8 @@ pub(crate) fn protected_record_row(row: &VertexRow) -> bool {
     row.labels.contains(&label::ENTRY_FRAGMENT) || record_row(row)
 }
 
-fn record_row(row: &VertexRow) -> bool {
-    row.labels.iter().any(|candidate| {
+pub(crate) fn has_record_labels(labels: &[fgdb_delta_types::LabelId]) -> bool {
+    labels.iter().any(|candidate| {
         [
             label::ENTRY,
             label::ATTESTATION,
@@ -552,6 +552,10 @@ fn record_row(row: &VertexRow) -> bool {
         ]
         .contains(candidate)
     })
+}
+
+fn record_row(row: &VertexRow) -> bool {
+    has_record_labels(&row.labels)
 }
 
 fn corrupt(what: impl Into<String>) -> KernelError {
@@ -681,6 +685,78 @@ impl Journal {
         })
     }
 
+    /// Incrementally append records strictly after `self.through_seq` through
+    /// `new_through` under the exact same ordering, boundary, and ordinal laws
+    /// as [`Self::from_records_with_boundaries`] (`fa-0hs4.6`, `fa-u3zf`).
+    pub(crate) fn extend_with_records(
+        &mut self,
+        new_through: CommitSeq,
+        mut records: Vec<(VId, Record, CommitSeq)>,
+    ) -> Result<(), KernelError> {
+        if new_through < self.through_seq {
+            return Err(corrupt("cannot regress accumulator prefix"));
+        }
+        records.sort_by_key(|(vid, _, seq)| (*seq, vid.0));
+        let mut ordinal = self
+            .leaves
+            .last()
+            .map_or(0u32, |leaf| leaf.envelope.within_commit_ordinal);
+        for (vid, record, seq) in records {
+            if record.book_id() != self.book_id || record.branch_id() != Id128::TRUNK {
+                return Err(corrupt(format!(
+                    "record {:032x} does not belong to this book's trunk",
+                    vid.0
+                )));
+            }
+            if seq <= self.through_seq || seq > new_through {
+                return Err(corrupt(format!(
+                    "record {:032x} at {} lies outside extension ({}, {}]",
+                    vid.0, seq.0, self.through_seq.0, new_through.0
+                )));
+            }
+            let boundary = if record.kind() == KIND_ACCESS_EVENT {
+                self.access_after
+            } else {
+                self.evidence_after
+            };
+            if record.kind() != KIND_ENTRY && boundary.is_none_or(|b| seq <= b) {
+                return Err(corrupt(format!(
+                    "evidence record {:032x} was recorded at {}, outside boundary",
+                    vid.0, seq.0
+                )));
+            }
+            if let Record::Access(event) = &record
+                && event.vid().map_err(encode_failed)? != vid
+            {
+                return Err(corrupt(
+                    "an access event does not match its content-derived identity",
+                ));
+            }
+            ordinal = match self.leaves.last() {
+                Some(prev) if prev.envelope.commit_seq == seq => ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| corrupt("more than u32::MAX records in one commit"))?,
+                _ => 0,
+            };
+            let envelope = record.envelope(seq, ordinal)?;
+            let envelope_bytes = envelope.canonical_bytes().map_err(encode_failed)?;
+            let payload = record.payload()?;
+            let proposal_len = record.body_len(&payload)?;
+            let hash = leaf_hash(&envelope_bytes);
+            self.tree.push(hash);
+            self.leaves.push(Leaf {
+                vid,
+                envelope,
+                envelope_bytes,
+                hash,
+                payload,
+                proposal_len,
+            });
+        }
+        self.through_seq = new_through;
+        Ok(())
+    }
+
     /// Read the journal of `book` as known at `known_at` (default: head)
     /// from the authoritative record payloads: every `Entry`, and every
     /// evidence record created after `evidence_after` (none when `None`).
@@ -738,7 +814,7 @@ impl Journal {
             )));
         }
         work.full_reads = work.full_reads.saturating_add(1);
-        let rows = db.vertices_at(seq)?;
+        let rows = fa_journal::op_witness::vertices_at(db, seq)?;
         Ok(Ok(Self::from_native_rows(
             db,
             book,

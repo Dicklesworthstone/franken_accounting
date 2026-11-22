@@ -266,8 +266,7 @@ fn admit_including_with_pending_limit<V: asupersync::fs::Vfs + Clone>(
     let spec = crate::genesis::read_book_spec_at(db, txn.basis())?
         .ok_or_else(|| KernelError::Corrupt("register capacity requires a book".into()))?;
     let base = spec.base_unit;
-    let all_rows = db.vertices_at(txn.basis())?;
-    crate::op_witness::record_vertex_scan(all_rows.len());
+    let all_rows = crate::op_witness::vertices_at(db, txn.basis())?;
     let mut rows: BTreeMap<VId, _> = all_rows
         .into_iter()
         .filter(|row| row.labels.contains(&label::ENTRY))
@@ -700,8 +699,7 @@ fn summarize<V: asupersync::fs::Vfs + Clone>(
     };
     let mut entries = Vec::new();
     let mut visibility = BTreeMap::new();
-    let all_rows = db.vertices_at(at)?;
-    crate::op_witness::record_vertex_scan(all_rows.len());
+    let all_rows = crate::op_witness::vertices_at(db, at)?;
     for row in all_rows {
         if !row.labels.contains(&label::ENTRY) {
             continue;

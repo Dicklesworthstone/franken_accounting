@@ -364,7 +364,7 @@ fn verify_mirrors<V: Vfs + Clone>(
         ));
     }
     let mut live = BTreeSet::new();
-    for edge in db.edges_at(at)? {
+    for edge in crate::op_witness::edges_at(db, at)? {
         let entry = &edge.entry;
         if expected_edges.contains_key(&entry.eid)
             || (entry.relation == relation::IN_CASE
@@ -402,7 +402,7 @@ pub(super) fn capture<V: Vfs + Clone>(
     crate::entry_history::verify_entry_history(db, cx, book, Some(request.known_at))?;
     let draft = draft_vid(book.book_id, &request.name);
     let mut records = Vec::new();
-    for row in db.vertices_at(request.known_at)? {
+    for row in crate::op_witness::vertices_at(db, request.known_at)? {
         checkpoint(cx)?;
         if !row.labels.contains(&label::ENTRY) {
             continue;
@@ -610,7 +610,9 @@ pub async fn rehearse_draft_into<V: Vfs + Clone>(
             "select the captured current head or an earlier retained draft prefix",
         )));
     }
-    if target.frontier()? != CommitSeq(0) || !target.vertices_at(CommitSeq(0))?.is_empty() {
+    if target.frontier()? != CommitSeq(0)
+        || !crate::op_witness::vertices_at(&target, CommitSeq(0))?.is_empty()
+    {
         return Ok(Err(usage(
             "a draft rehearsal requires an empty memory database at sequence zero",
             "create a fresh open_memory database for this rehearsal",

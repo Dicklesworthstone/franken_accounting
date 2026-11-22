@@ -19,8 +19,11 @@ SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 . "$SOURCE_ROOT/scripts/lib/gate_verdict.sh"
 gate_init "check-classify"
 
-base="${TMPDIR:-/tmp}/fa-check-classify-$$-${RANDOM:-0}"
+tmp_base="${TMPDIR:-/tmp}"
+tmp_base="${tmp_base%/}"
+base="$tmp_base/fa-check-classify-$$-${RANDOM:-0}"
 mkdir -p "$base/bin" "$base/logs"
+base="$(cd "$base" && pwd -P)"
 # Inside a real proof, local_proof.sh exports CHECK_STEP_MANIFEST and
 # CHECK_LOG_DIR for check.sh. The harness below truncates $STEP_MANIFEST and
 # records into it, so an inherited value would erase the real proof's step

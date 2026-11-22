@@ -73,11 +73,15 @@ const APPROVAL_VID_DOMAIN: &[u8] = b"fa:vid:approval:v1";
 const APPROVAL_SIGNATURE_DOMAIN: &[u8] = b"fa:approval-signature:v1";
 const BODY_VERSION: u16 = 1;
 const SIGNED_VERSION: u16 = 2;
-/// A version-1 approval body is exactly this long.
+/// Additive body format carrying optional `effects_digest` and/or
+/// `target_coordinate` (plan Appendix A, bead `fa-0hs4.30`).
+const SCOPED_BODY_VERSION: u16 = 3;
+/// A version-1 approval body is 110 bytes; version-3 adds up to 50 bytes.
 const BODY_BYTES: usize = 2 + 16 + 16 + 1 + 32 + 32 + 8 + 1 + 2;
+const MAX_BODY_BYTES: usize = BODY_BYTES + 1 + 32 + 1 + 16;
 /// A signed record: version, framed body, scheme, generation, key id,
 /// signature.
-const SIGNED_BYTES: usize = 2 + 4 + BODY_BYTES + 2 + 4 + 32 + 64;
+const SIGNED_BYTES: usize = 2 + 4 + MAX_BODY_BYTES + 2 + 4 + 32 + 64;
 const MAX_APPROVALS: usize = 1 << 20;
 const MAX_KEY_LEAVES: usize = 1 << 16;
 
@@ -145,6 +149,8 @@ pub(crate) struct ApprovalRecord {
     pub principal: u128,
     pub approved_digest: Digest,
     pub epoch: u64,
+    pub effects_digest: Option<Digest>,
+    pub target_coordinate: Option<[u8; 16]>,
     /// What the identity and the signature are computed over.
     pub digest: Digest,
     pub signature: Option<ApprovalSignature>,
@@ -156,7 +162,7 @@ impl ApprovalRecord {
         if r.u16("approval.version")? != SIGNED_VERSION {
             return decode_body(record);
         }
-        let mut approval = decode_body(r.bytes(BODY_BYTES, "approval.body")?)?;
+        let mut approval = decode_body(r.bytes(MAX_BODY_BYTES, "approval.body")?)?;
         approval.signature = Some(ApprovalSignature {
             scheme: r.u16("approval.signature.scheme")?,
             generation: r.u32("approval.signature.generation")?,
@@ -187,7 +193,7 @@ impl ApprovalRecord {
 fn decode_body(body: &[u8]) -> Result<ApprovalRecord, DecodeError> {
     let mut r = Reader::new(body);
     let version = r.u16("approval.version")?;
-    if version != BODY_VERSION {
+    if version != BODY_VERSION && version != SCOPED_BODY_VERSION {
         return Err(r.error("approval.version", Reason::BadTag(version.to_le_bytes()[0])));
     }
     let book_id = r.fixed("approval.book_id")?;
@@ -198,12 +204,32 @@ fn decode_body(body: &[u8]) -> Result<ApprovalRecord, DecodeError> {
     let epoch = r.u64("approval.security_policy_epoch")?;
     r.u8("approval.op")?;
     r.u16("approval.role")?;
+    let (effects_digest, target_coordinate) = if version == SCOPED_BODY_VERSION {
+        let effects = match r.u8("approval.has_effects_digest")? {
+            0 => None,
+            1 => Some(r.fixed("approval.effects_digest")?),
+            tag => return Err(r.error("approval.has_effects_digest", Reason::BadTag(tag))),
+        };
+        let target = match r.u8("approval.has_target_coordinate")? {
+            0 => None,
+            1 => Some(r.fixed("approval.target_coordinate")?),
+            tag => return Err(r.error("approval.has_target_coordinate", Reason::BadTag(tag))),
+        };
+        if effects.is_none() && target.is_none() {
+            return Err(r.error("approval.version", Reason::BadTag(version.to_le_bytes()[0])));
+        }
+        (effects, target)
+    } else {
+        (None, None)
+    };
     r.finish("approval body")?;
     Ok(ApprovalRecord {
         book_id,
         principal,
         approved_digest,
         epoch,
+        effects_digest,
+        target_coordinate,
         digest: framed(APPROVAL_DOMAIN, &[body]),
         signature: None,
     })
@@ -614,5 +640,41 @@ mod tests {
         assert!(KeyGeneration::decode(&k[..k.len() - 1]).is_err());
         let why = chain_grade(&[key]).unwrap_err();
         assert!(why.contains("possession proof"), "{why}");
+    }
+
+    #[test]
+    fn scoped_v3_approval_decodes_independently_and_rejects_noncanonical() {
+        let mut v3 = record(BOOK, 10, [1u8; 32]);
+        v3[0..2].copy_from_slice(&SCOPED_BODY_VERSION.to_le_bytes());
+        v3.push(1);
+        v3.extend_from_slice(&[0xab; 32]);
+        v3.push(1);
+        v3.extend_from_slice(&[0xcd; 16]);
+        let decoded = ApprovalRecord::decode(&v3).expect("valid v3 approval decodes");
+        assert_eq!(decoded.effects_digest, Some([0xab; 32]));
+        assert_eq!(decoded.target_coordinate, Some([0xcd; 16]));
+        assert_eq!(decoded.digest, framed(APPROVAL_DOMAIN, &[&v3]));
+
+        // Signed v2 envelope wrapping a scoped v3 body decodes cleanly.
+        let mut signed_v3 = Vec::new();
+        signed_v3.extend_from_slice(&SIGNED_VERSION.to_le_bytes());
+        signed_v3.extend_from_slice(&(v3.len() as u32).to_le_bytes());
+        signed_v3.extend_from_slice(&v3);
+        signed_v3.extend_from_slice(&1u16.to_le_bytes()); // scheme
+        signed_v3.extend_from_slice(&2u32.to_le_bytes()); // generation
+        signed_v3.extend_from_slice(&[0x55; 32]); // key_id
+        signed_v3.extend_from_slice(&[0x66; 64]); // signature
+        let decoded_signed = ApprovalRecord::decode(&signed_v3).expect("signed v3 decodes");
+        assert_eq!(decoded_signed.effects_digest, Some([0xab; 32]));
+        assert_eq!(decoded_signed.target_coordinate, Some([0xcd; 16]));
+        assert_eq!(decoded_signed.digest, decoded.digest);
+        let sig = decoded_signed.signature.expect("signature present");
+        assert_eq!((sig.scheme, sig.generation, sig.key_id), (1, 2, [0x55; 32]));
+
+        let mut noncanonical = record(BOOK, 10, [1u8; 32]);
+        noncanonical[0..2].copy_from_slice(&SCOPED_BODY_VERSION.to_le_bytes());
+        noncanonical.push(0);
+        noncanonical.push(0);
+        assert!(ApprovalRecord::decode(&noncanonical).is_err());
     }
 }

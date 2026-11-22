@@ -254,6 +254,55 @@ if fnx_hits:
 elif not unruns:
     passes.append("single-fnx-classes — every shipped posture resolves fnx-classes to a single package ID")
 
+# 7. metered-substrate-scans: no direct .vertices/.vertices_at/.edges/.edges_at
+# bypassing fa_journal::op_witness in metered kernel/register/notary/lantern paths
+# (bead fa-0hs4.27).
+scan_re = re.compile(r"\.\s*(vertices|vertices_at|edges|edges_at)\s*\(")
+metered_files = []
+for sub in [
+    "crates/fa-notary/src",
+    "crates/fa-registers/src",
+    "crates/fa-lantern/src",
+]:
+    base = root / sub
+    if base.is_dir():
+        for p in sorted(base.rglob("*.rs")):
+            if p.name == "tests.rs" or "tests" in p.relative_to(base).parts:
+                continue
+            metered_files.append(p)
+for rel_file in [
+    "crates/fa-journal/src/post.rs",
+    "crates/fa-journal/src/register_capacity.rs",
+    "crates/fa-journal/src/evidence.rs",
+    "crates/fa-journal/src/draft/rehearsal.rs",
+]:
+    p = root / rel_file
+    if p.is_file():
+        metered_files.append(p)
+
+scan_hits = []
+for path in metered_files:
+    rel = path.relative_to(root)
+    in_cfg_test = False
+    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        code = strip_line_comment(raw)
+        if re.match(r"^\s*#\[cfg\(test\)\]", code):
+            in_cfg_test = True
+        if in_cfg_test:
+            continue
+        m = scan_re.search(code)
+        if m:
+            scan_hits.append(
+                f"{rel}:{lineno}: uninstrumented direct substrate scan `.{m.group(1)}()`; route through `fa_journal::op_witness`"
+            )
+if scan_hits:
+    for hit in scan_hits:
+        fails.append(f"metered-substrate-scans — {hit}")
+else:
+    passes.append(
+        f"metered-substrate-scans — 0 uninstrumented substrate scans across {len(metered_files)} metered production files"
+    )
+
 for u in unruns:
     print(f"UNRUN::{u}")
 for p in passes:

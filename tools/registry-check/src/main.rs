@@ -852,15 +852,9 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     .map_err(|e| e.to_string())?;
     let unwired =
         UnwiredModules::from_text(&read("unwired_modules.toml")?).map_err(|e| e.to_string())?;
-    if let Some(open_beads) = load_open_beads(root) {
-        for row in unwired.unwired.iter().chain(&unwired.unwired_items) {
-            if !open_beads.contains(&row.owner_bead) {
-                return Err(format!(
-                    "unwired_modules.toml: `{}` cites owner_bead `{}` which is not open or in_progress in .beads/issues.jsonl",
-                    row.path, row.owner_bead
-                ));
-            }
-        }
+    let open_beads = load_open_beads(root);
+    if let Some(ref open_beads) = open_beads {
+        check_open_bead_owners(open_beads, &unwired, &proof_lanes)?;
     }
     let claims_config =
         ClaimsLintConfig::parse(&read("claims_lint.toml")?).map_err(|e| e.to_string())?;
@@ -881,15 +875,19 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
             "threat_model.toml: {owner_id} references nonexistent test `{test_ref}`"
         ));
     }
-    let _scoreboard = Scoreboard::parse(&read("scoreboard.toml")?, &exits, &refusals)
+    let scoreboard = Scoreboard::parse(&read("scoreboard.toml")?, &exits, &refusals)
         .map_err(|e| e.to_string())?;
+    if let Some(ref open_beads) = open_beads {
+        check_scoreboard_open_beads(open_beads, &scoreboard)?;
+    }
     let mutants = MutantLedger::parse(&read("mutants.toml")?, &invariants, &refusals)
         .map_err(|e| e.to_string())?;
     if root.join("crates").is_dir() {
         mutants.verify_against_workspace(|rel| fs::read_to_string(root.join(rel)).ok())?;
     }
-    let (verbs_checked, mcp_tools_checked, mcp_default_tools) =
-        check_verbs(&read("verbs.toml")?, &exits)?;
+    let verbs_text = read("verbs.toml")?;
+    let (verbs_checked, mcp_tools_checked, mcp_default_tools) = check_verbs(&verbs_text, &exits)?;
+    check_shipped_capabilities_verb_parity(&verbs_text, &invariants)?;
 
     // 3. Cross-document claims_lint check.
     let mut known_markers = BTreeSet::new();
@@ -1702,6 +1700,115 @@ fn check_proof_lane_artifacts(root: &Path, lanes: &ProofLanes) -> Result<(), Str
     }
 }
 
+/// Every unwired-module owner and every dormant proof/model lane owner must
+/// name an `open` or `in_progress` bead in `.beads/issues.jsonl` (fa-0hs4.28).
+fn check_open_bead_owners(
+    open_beads: &BTreeSet<String>,
+    unwired: &UnwiredModules,
+    proof_lanes: &ProofLanes,
+) -> Result<(), String> {
+    for row in unwired.unwired.iter().chain(&unwired.unwired_items) {
+        if !open_beads.contains(&row.owner_bead) {
+            return Err(format!(
+                "unwired_modules.toml: `{}` cites owner_bead `{}` which is not open or in_progress in .beads/issues.jsonl",
+                row.path, row.owner_bead
+            ));
+        }
+    }
+    for lane in &proof_lanes.lanes {
+        if lane.status != "live" && !open_beads.contains(&lane.owning_bead) {
+            return Err(format!(
+                "proof_lanes.toml: dormant lane `{}` cites owning_bead `{}` which is not open or in_progress in .beads/issues.jsonl",
+                lane.id, lane.owning_bead
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Every unmet scoreboard gate criterion and governance row must name an
+/// `open` or `in_progress` bead in `.beads/issues.jsonl` (fa-0hs4.28).
+fn check_scoreboard_open_beads(
+    open_beads: &BTreeSet<String>,
+    scoreboard: &Scoreboard,
+) -> Result<(), String> {
+    for crit in &scoreboard.gate_criteria {
+        if let Some(bead) = crit.expected.bead()
+            && !open_beads.contains(bead)
+        {
+            return Err(format!(
+                "scoreboard.toml: `{}` cites bead `{bead}` which is not open or in_progress in .beads/issues.jsonl",
+                crit.id
+            ));
+        }
+    }
+    for gov in &scoreboard.governance_rows {
+        if let Some(bead) = gov.expected.bead()
+            && !open_beads.contains(bead)
+        {
+            return Err(format!(
+                "scoreboard.toml: `{}` cites bead `{bead}` which is not open or in_progress in .beads/issues.jsonl",
+                gov.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Every verb in `registries/verbs.toml` must be mapped in
+/// `registries/invariants.toml [shipped_capabilities]` (exact name or `-` -> `_`)
+/// and vice versa, so no shipped verb can silently bypass dormant invariant
+/// enforcement (fa-0hs4.30).
+fn check_shipped_capabilities_verb_parity(
+    verbs_text: &str,
+    invariants: &Invariants,
+) -> Result<(), String> {
+    let verbs_doc = toml::parse(verbs_text).map_err(|e| format!("verbs.toml: {e}"))?;
+    let mut verb_keys: BTreeSet<String> = BTreeSet::new();
+    let mut missing = Vec::new();
+    if let Some(verbs) = verbs_doc.arrays.get("verb") {
+        for v in verbs {
+            let name = req_str("verbs.toml", v, "name")?;
+            let normalized = name.replace('-', "_");
+            verb_keys.insert(name.to_string());
+            verb_keys.insert(normalized.clone());
+            if !invariants.shipped_capabilities.contains_key(name)
+                && !invariants.shipped_capabilities.contains_key(&normalized)
+            {
+                missing.push(name.to_string());
+            }
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "invariants.toml [shipped_capabilities]: unmapped shipped verb(s) from verbs.toml: {}",
+            missing.join(", ")
+        ));
+    }
+    let unknown: Vec<String> = invariants
+        .shipped_capabilities
+        .keys()
+        .filter(|cap| !verb_keys.contains(cap.as_str()))
+        .cloned()
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "invariants.toml [shipped_capabilities]: capability key(s) do not match any verb in verbs.toml: {}",
+            unknown.join(", ")
+        ));
+    }
+    let mut seen_normalized = BTreeSet::new();
+    for cap in invariants.shipped_capabilities.keys() {
+        let normalized = cap.replace('-', "_");
+        if !seen_normalized.insert(normalized.clone()) {
+            return Err(format!(
+                "invariants.toml [shipped_capabilities]: duplicate normalized verb key `{cap}` (`{normalized}`)"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn default_workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1842,6 +1949,56 @@ mod tests {
         assert_eq!(g0.total, 38);
         assert_eq!(g0.missing, 0);
         assert_eq!(g0.present + g0.owned, 38);
+    }
+
+    #[test]
+    fn planted_unmapped_verb_and_closed_proof_lane_owner_fail() {
+        let root = default_workspace_root();
+        let verbs_text =
+            fs::read_to_string(root.join("registries/verbs.toml")).expect("read verbs.toml");
+        let invariants = Invariants::embedded().expect("invariants.toml");
+        check_shipped_capabilities_verb_parity(&verbs_text, &invariants)
+            .expect("real workspace verbs and shipped_capabilities match");
+
+        let mut pruned = invariants.clone();
+        pruned.shipped_capabilities.remove("fx");
+        let err = check_shipped_capabilities_verb_parity(&verbs_text, &pruned)
+            .expect_err("omitting a shipped verb from [shipped_capabilities] must fail");
+        assert!(
+            err.contains("unmapped shipped verb") && err.contains("fx"),
+            "{err}"
+        );
+
+        let mut extra = invariants.clone();
+        extra
+            .shipped_capabilities
+            .insert("nonexistent_verb".into(), vec!["FA-INV-01.per-unit".into()]);
+        let err = check_shipped_capabilities_verb_parity(&verbs_text, &extra)
+            .expect_err("an orphan key in [shipped_capabilities] must fail");
+        assert!(err.contains("nonexistent_verb"), "{err}");
+
+        let unwired = UnwiredModules::from_text(
+            &fs::read_to_string(root.join("registries/unwired_modules.toml"))
+                .expect("read unwired_modules.toml"),
+        )
+        .expect("unwired_modules.toml");
+        let mut lanes = ProofLanes::embedded(&invariants).expect("proof_lanes.toml");
+        let mut open = BTreeSet::new();
+        for row in unwired.unwired.iter().chain(&unwired.unwired_items) {
+            open.insert(row.owner_bead.clone());
+        }
+        for lane in &lanes.lanes {
+            open.insert(lane.owning_bead.clone());
+        }
+        check_open_bead_owners(&open, &unwired, &lanes).expect("all active owners accepted");
+        lanes.lanes[0].owning_bead = "fa-8x9".into();
+        open.remove("fa-8x9");
+        let err = check_open_bead_owners(&open, &unwired, &lanes)
+            .expect_err("dormant proof lane pointing to closed bead must fail");
+        assert!(
+            err.contains("proof_lanes.toml") && err.contains("fa-8x9"),
+            "{err}"
+        );
     }
 
     #[test]

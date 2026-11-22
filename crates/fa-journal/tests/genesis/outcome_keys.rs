@@ -1299,7 +1299,9 @@ fn reopen_hold_store(h: &mut Harness) {
 
 fn hold_cell_scalar(holds: &[VId]) -> CanonicalScalar {
     let mut writer = fa_model::Writer::new();
-    writer.list(holds, |writer, hold| writer.u128(hold.0));
+    writer.list(holds, |writer, hold| {
+        writer.u128(hold.0);
+    });
     CanonicalScalar::bytes(writer.finish().unwrap()).unwrap()
 }
 
@@ -1498,6 +1500,7 @@ fn legal_hold_outcomes_survive_durable_reopen_without_another_publication() {
 
 mod statement_issuance_keys {
     use super::*;
+    use fa_journal::refusal::code;
     use fa_model::ApprovalRef;
     use fa_model::symbols::label;
 

@@ -5332,6 +5332,106 @@ fn sequential_checkpoints_share_single_journal_scan_and_tampered_predecessor_fal
     assert_eq!(third_work.literal_prefixes, 1, "{third_work:?}");
 }
 
+#[test]
+fn carried_accumulator_extends_without_full_scan_and_still_refuses_tampering() {
+    let mut h = harness();
+    let ctx = h.ctx();
+    let mut memo = fa_notary::CarriedAccumulator::default();
+
+    let first_entry = h.post(h.rent, 100, b"cp-carried-1");
+    let g1 = fa_journal::op_witness::begin();
+    let (first_res, first_work) = h
+        .runtime
+        .block_on(fa_notary::checkpoint_carried_counted(
+            &mut h.db, &ctx, &h.book, &h.signer, &mut memo,
+        ))
+        .unwrap();
+    let raw1 = g1.finish();
+    let first = first_res.expect("first carried checkpoint");
+    assert_eq!(first_work.journal_full_reads, 1);
+    assert_eq!(raw1.vertex_scans, 1);
+
+    // Second sequential checkpoint extends incrementally from delta_since with
+    // zero full-book vertex scans and matches independent verification.
+    h.post(h.rent, 200, b"cp-carried-2");
+    let g2 = fa_journal::op_witness::begin();
+    let (second_res, second_work) = h
+        .runtime
+        .block_on(fa_notary::checkpoint_carried_counted(
+            &mut h.db, &ctx, &h.book, &h.signer, &mut memo,
+        ))
+        .unwrap();
+    let raw2 = g2.finish();
+    let second = second_res.expect("second carried checkpoint");
+    assert_eq!(second_work.journal_full_reads, 0, "{second_work:?}");
+    assert_eq!(raw2.vertex_scans, 0, "{raw2:?}");
+    assert_eq!(raw2.scanned_rows, 0, "{raw2:?}");
+    assert_eq!(second.stored.state.prev_state_oid, Some(first.stored.oid));
+    assert_eq!(
+        second.stored.state.leaf_count,
+        first.stored.state.leaf_count + 1
+    );
+    let verified = verify_accumulator(&h.db, &ctx, &h.book, &h.signer).unwrap();
+    assert!(verified.is_green(), "{verified:?}");
+
+    // Switching to a different signing key with a warm CarriedAccumulator must
+    // invalidate the carried fast path, fall back to literal verification, and
+    // refuse with CHECKPOINT_INVALID rather than trusting the cached checkpoint.
+    let wrong_signer = fa_notary::SigningKey::from_seed(&[0x77; 32]);
+    let (wrong_key_res, wrong_key_work) = h
+        .runtime
+        .block_on(fa_notary::checkpoint_carried_counted(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &wrong_signer,
+            &mut memo,
+        ))
+        .unwrap();
+    let wrong_key_refusal =
+        wrong_key_res.expect_err("wrong signing key must refuse even with warm CarriedAccumulator");
+    assert_eq!(wrong_key_refusal.code, code::CHECKPOINT_INVALID);
+    assert_eq!(
+        wrong_key_refusal.exit,
+        fa_journal::refusal::exit::VERIFICATION
+    );
+    assert!(
+        wrong_key_work.journal_full_reads >= 1,
+        "wrong signer must fall back off the zero-scan carried path: {wrong_key_work:?}"
+    );
+
+    // Re-warm the memo with the genuine signer, then plant raw-store tamper of
+    // the first entry; it must invalidate the memo, fall back, and refuse.
+    h.post(h.rent, 250, b"cp-carried-2b");
+    let (rewarm_res, _) = h
+        .runtime
+        .block_on(fa_notary::checkpoint_carried_counted(
+            &mut h.db, &ctx, &h.book, &h.signer, &mut memo,
+        ))
+        .unwrap();
+    rewarm_res.expect("re-warm carried checkpoint with genuine signer");
+
+    // Planted raw-store tamper of the first entry must invalidate the memo,
+    // fall back to literal verification, and refuse with ACCUMULATOR_DRIFT.
+    let mut tamper = WriteBatch::new(relation::IN_PERIOD);
+    tamper.set_vertex_property(
+        first_entry,
+        property::FA_DIGEST,
+        Some(CanonicalScalar::bytes(vec![0xEE; 32]).unwrap()),
+    );
+    h.write_raw(tamper);
+    h.post(h.rent, 300, b"cp-carried-3");
+    let (third_res, _third_work) = h
+        .runtime
+        .block_on(fa_notary::checkpoint_carried_counted(
+            &mut h.db, &ctx, &h.book, &h.signer, &mut memo,
+        ))
+        .unwrap();
+    let refusal = third_res.expect_err("tampered entry must refuse even with CarriedAccumulator");
+    assert_eq!(refusal.code, code::ACCUMULATOR_DRIFT);
+    assert_eq!(refusal.exit, fa_journal::refusal::exit::VERIFICATION);
+}
+
 #[path = "notary/access_events.rs"]
 mod access_events;
 

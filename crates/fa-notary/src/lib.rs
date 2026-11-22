@@ -74,10 +74,11 @@ pub use production::{
 pub use scope::{ScopeIndex, ScopeRequest};
 pub use sign::{CheckpointSigner, SigningKey};
 pub use state::{
-    AccumulatorReadWork, AccumulatorState, AccumulatorVerification, Checkpointed, StateCheck,
-    StoredCheckpoint, StoredState, bundle_basis, chain, checkpoint, checkpoint_counted, latest,
-    prove_balance, prove_consistency, prove_inclusion, prove_prefix, prove_scope, state_oid,
-    state_vid, stored_checkpoint, verify_accumulator, verify_accumulator_counted,
+    AccumulatorReadWork, AccumulatorState, AccumulatorVerification, CarriedAccumulator,
+    Checkpointed, StateCheck, StoredCheckpoint, StoredState, bundle_basis, chain, checkpoint,
+    checkpoint_carried, checkpoint_carried_counted, checkpoint_counted, latest, prove_balance,
+    prove_consistency, prove_inclusion, prove_prefix, prove_scope, state_oid, state_vid,
+    stored_checkpoint, verify_accumulator, verify_accumulator_counted,
 };
 
 /// Refusal codes the notary issues (`FA-REF-12x`).

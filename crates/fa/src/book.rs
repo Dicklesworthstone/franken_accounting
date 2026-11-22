@@ -808,13 +808,26 @@ impl Book {
 
     /// Execute a closure while observing real substrate point reads, conflict
     /// witnesses, full-table scans, and committed Chronicle `DeltaBatch`
-    /// mutations (`fa-0hs4.23`). Returns `(output, (point_reads, witnesses,
-    /// cas_moves, edges_written, vertices_written, transactions))`.
+    /// mutations (`fa-0hs4.23`, `fa-0hs4.27`). Returns `(output, (point_reads,
+    /// witnesses, cas_moves, edges_written, vertices_written, transactions))`.
     #[doc(hidden)]
     pub fn measure_with_op_witness<T>(
         &mut self,
         f: impl FnOnce(&mut Self) -> Result<T, String>,
     ) -> Result<(T, LiveOpWitnessCounts), String> {
+        let (out, counts, _raw) = self.measure_with_op_witness_raw(f)?;
+        Ok((out, counts))
+    }
+
+    /// [`Self::measure_with_op_witness`] together with the unaggregated
+    /// [`fa_journal::op_witness::RawOpCensus`] so scale witnesses can inspect
+    /// `vertex_scans`, `scanned_rows`, `edge_scans`, and `scanned_edges`
+    /// directly without hiding full-book scans (`fa-0hs4.27`).
+    #[doc(hidden)]
+    pub fn measure_with_op_witness_raw<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<(T, LiveOpWitnessCounts, fa_journal::op_witness::RawOpCensus), String> {
         let before_seq = self.head().map_err(|e| e.to_string())?;
         let guard = fa_journal::op_witness::begin();
         let out = f(self)?;
@@ -891,12 +904,26 @@ impl Book {
             .saturating_add(raw.verify_legs_folded)
             .checked_div(raw.verify_cells_checked)
             .unwrap_or(0);
-        let point_reads = raw
-            .point_reads
-            .saturating_add(raw.register_cell_touches)
-            .saturating_add(verify_reads)
-            .saturating_add(raw.snapshot_reads)
-            .saturating_add(raw.scanned_rows);
+        // For verify_per_cell, `operation_costs.toml` tracks the per-cell unit
+        // ratio while `raw` exposes the full-book refold scans. For
+        // query_procedure, `operation_costs.toml` specifies 1 snapshot frontier
+        // read (`raw.vertex_scans`), while `raw.scanned_rows` exposes the full
+        // row count. For every O(1) write/maintenance operation, ANY vertex or
+        // edge scan directly inflates `point_reads` by the scanned row/edge
+        // count and trips `WitnessDrift` loudly.
+        let point_reads = if raw.verify_cells_checked > 0 {
+            verify_reads
+        } else if raw.snapshot_frontier_scans > 0
+            && raw.point_reads == 0
+            && raw.register_cell_touches == 0
+        {
+            raw.vertex_scans.saturating_add(raw.scanned_edges)
+        } else {
+            raw.point_reads
+                .saturating_add(raw.register_cell_touches)
+                .saturating_add(raw.scanned_rows)
+                .saturating_add(raw.scanned_edges)
+        };
         let witnesses = raw.witnesses;
         Ok((
             out,
@@ -908,6 +935,7 @@ impl Book {
                 vertices_written,
                 transactions,
             ),
+            raw,
         ))
     }
 
@@ -918,10 +946,9 @@ impl Book {
     pub fn inject_vertex_scan_for_test(&self) -> Result<usize, BookError> {
         with_store!(&self.store, core => {
             let frontier = core.db.frontier().map_err(KernelError::from)?;
-            let rows = core.db.vertices_at(frontier).map_err(KernelError::from)?;
-            let count = rows.len();
-            fa_journal::op_witness::record_vertex_scan(count);
-            Ok(count)
+            let rows = fa_journal::op_witness::vertices_at(&core.db, frontier)
+                .map_err(KernelError::from)?;
+            Ok(rows.len())
         })
     }
 
@@ -1774,6 +1801,34 @@ impl Book {
     ) -> Outcome<fa_journal::Approved> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.approve_signed(&purposes, capability, proposal_digest, key)))
+    }
+
+    /// Record an Appendix A scoped approval binding `proposal_digest` with
+    /// optional `effects_digest` and/or `target_coordinate`
+    /// ([`AsyncBook::approve_scoped`]).
+    pub fn approve_scoped(
+        &mut self,
+        capability: fa_journal::Capability,
+        proposal_digest: [u8; 32],
+        effects_digest: Option<[u8; 32]>,
+        target_coordinate: Option<fa_model::Id128>,
+    ) -> Outcome<fa_journal::Approved> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve_scoped(&purposes, capability, proposal_digest, effects_digest, target_coordinate)))
+    }
+
+    /// [`Self::approve_scoped`] signed with the principal's key
+    /// ([`AsyncBook::approve_scoped_signed`]).
+    pub fn approve_scoped_signed(
+        &mut self,
+        capability: fa_journal::Capability,
+        proposal_digest: [u8; 32],
+        effects_digest: Option<[u8; 32]>,
+        target_coordinate: Option<fa_model::Id128>,
+        key: &fa_notary::SigningKey,
+    ) -> Outcome<fa_journal::Approved> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve_scoped_signed(&purposes, capability, proposal_digest, effects_digest, target_coordinate, key)))
     }
 
     /// Admit an exact entry approval without publishing or reading its

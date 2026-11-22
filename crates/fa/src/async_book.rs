@@ -122,6 +122,9 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     pub(crate) carried: fa_journal::CarriedHistory,
     /// Authenticated Entry history carried only by ordinary functional reads.
     pub(crate) functional_history: fa_journal::entry_history::EntryHistoryMemo,
+    /// Disposable handle-owned accumulator prefix carried across sequential
+    /// checkpoints on a resident book (`fa-0hs4.6`, `fa-u3zf`).
+    pub(crate) accumulator_memo: fa_notary::CarriedAccumulator,
     /// Independently enumerated source metadata for resident native TB and
     /// activity reads. Contended or poisoned disposable state uses the literal
     /// path; a report never waits for this optional optimization.
@@ -281,6 +284,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             signer: keys.checkpoint_signing_key(),
             carried: fa_journal::CarriedHistory::default(),
             functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
+            accumulator_memo: fa_notary::CarriedAccumulator::default(),
             report_history: std::sync::Mutex::default(),
             open_item_history: std::sync::Mutex::default(),
             principal_key: None,
@@ -340,6 +344,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             signer: keys.checkpoint_signing_key(),
             carried: fa_journal::CarriedHistory::default(),
             functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
+            accumulator_memo: fa_notary::CarriedAccumulator::default(),
             report_history: std::sync::Mutex::default(),
             open_item_history: std::sync::Mutex::default(),
             principal_key: None,
@@ -1270,6 +1275,91 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.principal_key = Some(crate::book::ClientKey(key));
     }
 
+    /// Record an Appendix A scoped approval binding `proposal_digest` together
+    /// with optional `effects_digest` and/or `target_coordinate` branch id.
+    /// Configured principal signing applies as it does to [`Self::approve`].
+    pub async fn approve_scoped(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        proposal_digest: [u8; 32],
+        effects_digest: Option<[u8; 32]>,
+        target_coordinate: Option<fa_model::Id128>,
+    ) -> Outcome<fa_journal::Approved> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        if let Some(key) = self.principal_key.take() {
+            let signed = self
+                .approve_scoped_signed(
+                    cx,
+                    capability,
+                    proposal_digest,
+                    effects_digest,
+                    target_coordinate,
+                    &key.0,
+                )
+                .await;
+            self.principal_key = Some(key);
+            return signed;
+        }
+        Ok(fa_journal::record_scoped_approval(
+            &mut self.db,
+            cx,
+            &self.context,
+            fa_journal::ApprovalRequest {
+                capability,
+                approved_proposal_digest: proposal_digest,
+                role: 0,
+            },
+            effects_digest,
+            target_coordinate,
+            None,
+        )
+        .await?)
+    }
+
+    /// [`Self::approve_scoped`] signed with the approver's registered key.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn approve_scoped_signed(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        proposal_digest: [u8; 32],
+        effects_digest: Option<[u8; 32]>,
+        target_coordinate: Option<fa_model::Id128>,
+        key: &fa_notary::SigningKey,
+    ) -> Outcome<fa_journal::Approved> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let signature = match self.approval_signature(
+            cx,
+            &capability,
+            proposal_digest,
+            None,
+            effects_digest,
+            target_coordinate,
+            key,
+        )? {
+            Ok(signature) => signature,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(fa_journal::record_scoped_approval(
+            &mut self.db,
+            cx,
+            &self.context,
+            fa_journal::ApprovalRequest {
+                capability,
+                approved_proposal_digest: proposal_digest,
+                role: 0,
+            },
+            effects_digest,
+            target_coordinate,
+            Some(fa_journal::SignedBy {
+                signature,
+                verifier: &crate::book::PRINCIPAL_SIGNATURES,
+            }),
+        )
+        .await?)
+    }
+
     /// [`Self::approve`] as a principal that signs with `key` (plan §14.5,
     /// fa-kae). The approval is built at the current policy epoch and its
     /// digest signed here, by the client; the kernel checks the signature
@@ -1283,11 +1373,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         key: &fa_notary::SigningKey,
     ) -> Outcome<fa_journal::Approved> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        let signature =
-            match self.approval_signature(cx, &capability, proposal_digest, None, key)? {
-                Ok(signature) => signature,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
+        let signature = match self.approval_signature(
+            cx,
+            &capability,
+            proposal_digest,
+            None,
+            None,
+            None,
+            key,
+        )? {
+            Ok(signature) => signature,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         Ok(fa_journal::record_signed_approval(
             &mut self.db,
             cx,
@@ -1330,11 +1427,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .await?);
         }
         let proposal_digest = proposal.proposal_digest().map_err(KernelError::from)?;
-        let signature =
-            match self.approval_signature(cx, &capability, proposal_digest, Some(proposal), key)? {
-                Ok(signature) => signature,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
+        let signature = match self.approval_signature(
+            cx,
+            &capability,
+            proposal_digest,
+            Some(proposal),
+            None,
+            None,
+            key,
+        )? {
+            Ok(signature) => signature,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         Ok(fa_journal::record_signed_approval_for(
             &mut self.db,
             cx,
@@ -1354,12 +1458,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// kernel repeats these checks in its publication transaction, so a
     /// changed key, policy epoch or authority cannot authorize a stale
     /// signature.
+    #[allow(clippy::too_many_arguments)]
     fn approval_signature(
         &self,
         cx: &PurposeContexts,
         capability: &fa_journal::Capability,
         proposal_digest: [u8; 32],
         proposal: Option<&fa_model::EntryPayload>,
+        effects_digest: Option<[u8; 32]>,
+        target_coordinate: Option<fa_model::Id128>,
         key: &fa_notary::SigningKey,
     ) -> Outcome<fa_policy::PrincipalSignature> {
         fn capability_error(error: fa_policy::CapabilityError) -> KernelError {
@@ -1370,9 +1477,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
         }
         let coordinates = self.query(cx, |db, context| {
-            if let Err(refusal) =
-                fa_journal::policy::admit_approval(db, context, capability, proposal)?
-            {
+            if let Err(refusal) = fa_journal::policy::admit_approval_scoped(
+                db,
+                context,
+                capability,
+                proposal,
+                target_coordinate,
+            )? {
                 return Ok(Err(refusal));
             }
             let chain = fa_journal::read_principal_keys(db, context, capability.holder())?;
@@ -1387,7 +1498,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(coordinates) => coordinates,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let approval = match fa_policy::Approval::by(
+        let mut approval = match fa_policy::Approval::by(
             capability,
             fa_policy::Op::Approve,
             self.context.book_id,
@@ -1400,6 +1511,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(approval) => approval,
             Err(denial) => return Ok(Err(fa_journal::policy::refusal(&denial))),
         };
+        if let Some(effects) = effects_digest {
+            approval = approval.with_effects_digest(effects);
+        }
+        if let Some(coord) = target_coordinate {
+            approval = approval.with_target_coordinate(coord);
+        }
         let digest = approval
             .digest()
             .map_err(|error| KernelError::Model(error.into()))?;
@@ -4050,6 +4167,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
                 functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
+                accumulator_memo: fa_notary::CarriedAccumulator::default(),
                 report_history: std::sync::Mutex::default(),
                 open_item_history: std::sync::Mutex::default(),
                 principal_key: None,
@@ -4094,6 +4212,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
                 functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
+                accumulator_memo: fa_notary::CarriedAccumulator::default(),
                 report_history: std::sync::Mutex::default(),
                 open_item_history: std::sync::Mutex::default(),
                 principal_key: None,
@@ -4140,6 +4259,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
                 functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
+                accumulator_memo: fa_notary::CarriedAccumulator::default(),
                 report_history: std::sync::Mutex::default(),
                 open_item_history: std::sync::Mutex::default(),
                 principal_key: None,
@@ -4193,6 +4313,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 signer: keys.checkpoint_signing_key(),
                 carried: fa_journal::CarriedHistory::default(),
                 functional_history: fa_journal::entry_history::EntryHistoryMemo::default(),
+                accumulator_memo: fa_notary::CarriedAccumulator::default(),
                 report_history: std::sync::Mutex::default(),
                 open_item_history: std::sync::Mutex::default(),
                 principal_key: None,
@@ -5253,7 +5374,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Err(BookError::Context(error));
         }
-        Ok(fa_notary::checkpoint(&mut self.db, cx, &self.context, &self.signer).await?)
+        Ok(fa_notary::checkpoint_carried(
+            &mut self.db,
+            cx,
+            &self.context,
+            &self.signer,
+            &mut self.accumulator_memo,
+        )
+        .await?)
     }
 
     /// Recompute every accumulator state from its journal prefix, and every

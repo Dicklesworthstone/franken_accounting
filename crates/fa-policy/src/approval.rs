@@ -3,17 +3,13 @@
 //!
 //! An approval binds the *proposal* digest it approves — never a committed
 //! envelope — together with the approver, the profile and capability
-//! commitment it acted under, the op it exercised, the book, and the
-//! security policy epoch current when it was recorded. Its recorded
-//! sequence is its vertex's `created_at` only after the kernel verifies
-//! that the row is its unchanged creation record: the native field is a
-//! version start and also advances when a stored record is rewritten.
-//!
-//! Subset of the Appendix A row, stated: `effects_digest` and
-//! `target_coordinate` are not carried yet. Rule-generated effects do not
-//! exist in this slice (an entry's effects are its proposal's legs, which
-//! the proposal digest already binds), and trunk is the only coordinate.
-//! They arrive additively with Canon and branches.
+//! commitment it acted under, the op it exercised, the book, the security
+//! policy epoch current when it was recorded, and (additively via v3 body
+//! encoding per plan Appendix A, bead `fa-0hs4.30`) optional `effects_digest`
+//! (for rule-generated effects) and `target_coordinate` (branch coordinate).
+//! Its recorded sequence is its vertex's `created_at` only after the kernel
+//! verifies that the row is its unchanged creation record: the native field is
+//! a version start and also advances when a stored record is rewritten.
 
 use fa_model::{DecodeError, EncodeError, Id128, Reader, Writer, domain_digest};
 use fgdb_types::VId;
@@ -26,8 +22,12 @@ use crate::principal_key::PrincipalSignature;
 pub const APPROVAL_DOMAIN: &[u8] = b"fa:approval:v1";
 const APPROVAL_VERSION: u16 = 1;
 const SIGNED_RECORD_VERSION: u16 = 2;
-/// A version-1 body is exactly 110 bytes; a record may not smuggle more.
-const MAX_BODY_BYTES: usize = 2 + 16 + 16 + 1 + 32 + 32 + 8 + 1 + 2;
+/// Additive body format (Appendix A, bead `fa-0hs4.30`) carrying optional
+/// `effects_digest` and/or `target_coordinate`. Emitted only when at least one
+/// optional field is `Some`, keeping all legacy v1 records byte-identical.
+const APPROVAL_SCOPED_VERSION: u16 = 3;
+/// Version-1 body is 110 bytes; version-3 adds at most `(1 + 32) + (1 + 16) = 50` bytes.
+const MAX_BODY_BYTES: usize = 2 + 16 + 16 + 1 + 32 + 32 + 8 + 1 + 2 + 1 + 32 + 1 + 16;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Approval {
@@ -42,6 +42,12 @@ pub struct Approval {
     /// The approver's declared role (0 = unspecified; registered roles land
     /// with the profile registry).
     pub role: u16,
+    /// Optional digest of rule-generated or rehearsal effects bound by this
+    /// approval (Appendix A `Approval.effects_digest`).
+    pub effects_digest: Option<[u8; 32]>,
+    /// Optional target branch coordinate bound by this approval (Appendix A
+    /// `Approval.target_coordinate`; `None` denotes trunk-only legacy v1).
+    pub target_coordinate: Option<Id128>,
 }
 
 impl Approval {
@@ -68,15 +74,38 @@ impl Approval {
             security_policy_epoch,
             op,
             role,
+            effects_digest: None,
+            target_coordinate: None,
         }))
     }
 
-    /// `u16 version ‖ id128 book ‖ u128 principal ‖ u8 profile ‖ [32]
-    /// capability_commitment ‖ [32] approved_proposal_digest ‖ u64 epoch ‖
-    /// u8 op ‖ u16 role`.
+    /// Bind an explicit `effects_digest` (Appendix A) to this approval.
+    #[must_use]
+    pub const fn with_effects_digest(mut self, digest: [u8; 32]) -> Self {
+        self.effects_digest = Some(digest);
+        self
+    }
+
+    /// Bind an explicit `target_coordinate` branch id (Appendix A) to this approval.
+    #[must_use]
+    pub const fn with_target_coordinate(mut self, branch: Id128) -> Self {
+        self.target_coordinate = Some(branch);
+        self
+    }
+
+    /// Version 1 (when both optional fields are `None`, 110 bytes):
+    /// `u16 1 ‖ id128 book ‖ u128 principal ‖ u8 profile ‖ [32] cap ‖ [32] proposal ‖ u64 epoch ‖ u8 op ‖ u16 role`.
+    /// Version 3 (when `effects_digest` or `target_coordinate` is `Some`):
+    /// same fields with `u16 3`, followed by `u8 has_effects [32 effects]` and `u8 has_target [16 target]`.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
-        let mut w = Writer::with_capacity(2 + 16 + 16 + 1 + 32 + 32 + 8 + 1 + 2);
-        w.u16(APPROVAL_VERSION)
+        let scoped = self.effects_digest.is_some() || self.target_coordinate.is_some();
+        let version = if scoped {
+            APPROVAL_SCOPED_VERSION
+        } else {
+            APPROVAL_VERSION
+        };
+        let mut w = Writer::with_capacity(MAX_BODY_BYTES);
+        w.u16(version)
             .fixed(&self.book_id.0)
             .u128(self.principal.0)
             .u8(self.profile.tag())
@@ -85,6 +114,24 @@ impl Approval {
             .u64(self.security_policy_epoch)
             .u8(self.op.tag())
             .u16(self.role);
+        if scoped {
+            match self.effects_digest {
+                Some(d) => {
+                    w.u8(1).fixed(&d);
+                }
+                None => {
+                    w.u8(0);
+                }
+            }
+            match self.target_coordinate {
+                Some(coord) => {
+                    w.u8(1).fixed(&coord.0);
+                }
+                None => {
+                    w.u8(0);
+                }
+            }
+        }
         w.finish()
     }
 
@@ -141,7 +188,8 @@ impl Approval {
 
     fn decode_body(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut r = Reader::new(bytes);
-        if r.u16("approval.version")? != APPROVAL_VERSION {
+        let version = r.u16("approval.version")?;
+        if version != APPROVAL_VERSION && version != APPROVAL_SCOPED_VERSION {
             return Err(r.invalid("approval.version"));
         }
         let book_id = Id128(r.fixed("approval.book_id")?);
@@ -154,6 +202,24 @@ impl Approval {
         let t = r.u8("approval.op")?;
         let op = Op::from_tag(t).ok_or_else(|| r.bad_tag("approval.op", t))?;
         let role = r.u16("approval.role")?;
+        let (effects_digest, target_coordinate) = if version == APPROVAL_SCOPED_VERSION {
+            let effects = match r.u8("approval.has_effects_digest")? {
+                0 => None,
+                1 => Some(r.fixed("approval.effects_digest")?),
+                tag => return Err(r.bad_tag("approval.has_effects_digest", tag)),
+            };
+            let target = match r.u8("approval.has_target_coordinate")? {
+                0 => None,
+                1 => Some(Id128(r.fixed("approval.target_coordinate")?)),
+                tag => return Err(r.bad_tag("approval.has_target_coordinate", tag)),
+            };
+            if effects.is_none() && target.is_none() {
+                return Err(r.invalid("approval.version"));
+            }
+            (effects, target)
+        } else {
+            (None, None)
+        };
         r.finish()?;
         if profile.forbidden_ops().contains(&op) {
             return Err(DecodeError {
@@ -171,12 +237,18 @@ impl Approval {
             security_policy_epoch,
             op,
             role,
+            effects_digest,
+            target_coordinate,
         })
     }
 
     /// The witnessed approval, cited as transcript item `index`, binds this
     /// proposal in this book under the current epoch. `cited_digest` is the
     /// `ApprovalRef.approved_digest` the transcript carries.
+    ///
+    /// Fails closed if the approval explicitly bound an `effects_digest` or a
+    /// non-trunk `target_coordinate`; callers with effects or branch scope must
+    /// call [`Self::check_binding_scope`].
     pub fn check_binding(
         &self,
         index: usize,
@@ -185,9 +257,47 @@ impl Approval {
         book_id: Id128,
         current_epoch: u64,
     ) -> Result<(), Denial> {
+        self.check_binding_scope(
+            index,
+            cited_digest,
+            proposal_digest,
+            None,
+            None,
+            book_id,
+            current_epoch,
+        )
+    }
+
+    /// Full Appendix A binding check including optional `effects_digest` and
+    /// `target_coordinate`.
+    /// - `self.effects_digest` must match `expected_effects` symmetrically
+    ///   (an effect-less legacy approval cannot approve an effects-bound
+    ///   commit, and an effects-bound approval cannot approve an effect-less
+    ///   commit).
+    /// - `self.target_coordinate.unwrap_or(Id128::TRUNK)` must equal
+    ///   `expected_target.unwrap_or(Id128::TRUNK)` (a trunk-only legacy
+    ///   approval cannot authorize a non-trunk branch coordinate).
+    #[allow(clippy::too_many_arguments)]
+    pub fn check_binding_scope(
+        &self,
+        index: usize,
+        cited_digest: &[u8; 32],
+        proposal_digest: &[u8; 32],
+        expected_effects: Option<&[u8; 32]>,
+        expected_target: Option<Id128>,
+        book_id: Id128,
+        current_epoch: u64,
+    ) -> Result<(), Denial> {
         if cited_digest != proposal_digest
             || &self.approved_proposal_digest != proposal_digest
             || self.book_id != book_id
+        {
+            return Err(Denial::ApprovalBinding { index });
+        }
+        if self.effects_digest.as_ref() != expected_effects {
+            return Err(Denial::ApprovalBinding { index });
+        }
+        if self.target_coordinate.unwrap_or(Id128::TRUNK) != expected_target.unwrap_or(Id128::TRUNK)
         {
             return Err(Denial::ApprovalBinding { index });
         }
@@ -305,5 +415,115 @@ mod tests {
             .check_binding(0, &[7; 32], &[7; 32], Id128([4; 16]), 4)
             .unwrap_err();
         assert_eq!((stale.code(), stale.exit()), ("FA-REF-022", 6));
+    }
+
+    #[test]
+    fn scoped_v3_approval_binds_effects_digest_and_target_coordinate() {
+        let base = sample();
+        assert_eq!(base.canonical_bytes().unwrap().len(), 110);
+
+        let branch = Id128([0x42; 16]);
+        let effects = [0x99; 32];
+        let scoped = base
+            .clone()
+            .with_effects_digest(effects)
+            .with_target_coordinate(branch);
+        let bytes = scoped.canonical_bytes().unwrap();
+        assert_eq!(bytes.len(), MAX_BODY_BYTES);
+        assert_eq!(Approval::decode(&bytes).unwrap(), scoped);
+        assert_ne!(scoped.digest().unwrap(), base.digest().unwrap());
+
+        let sig = PrincipalSignature {
+            scheme: crate::principal_key::SCHEME_ED25519,
+            generation: 1,
+            key_id: [3; 32],
+            bytes: [4; 64],
+        };
+        let signed = scoped.record_bytes(Some(&sig)).unwrap();
+        assert_eq!(
+            Approval::decode_record(&signed).unwrap(),
+            (scoped.clone(), Some(sig))
+        );
+
+        // Fails closed under trunk-only / effect-less check_binding.
+        assert_eq!(
+            scoped.check_binding(0, &[7; 32], &[7; 32], Id128([4; 16]), 3),
+            Err(Denial::ApprovalBinding { index: 0 })
+        );
+        // Passes when both bound effects and target coordinate match.
+        assert_eq!(
+            scoped.check_binding_scope(
+                0,
+                &[7; 32],
+                &[7; 32],
+                Some(&effects),
+                Some(branch),
+                Id128([4; 16]),
+                3,
+            ),
+            Ok(())
+        );
+        // Refuses mismatched effects_digest or target_coordinate.
+        assert_eq!(
+            scoped.check_binding_scope(
+                0,
+                &[7; 32],
+                &[7; 32],
+                Some(&[0x98; 32]),
+                Some(branch),
+                Id128([4; 16]),
+                3,
+            ),
+            Err(Denial::ApprovalBinding { index: 0 })
+        );
+        assert_eq!(
+            scoped.check_binding_scope(
+                0,
+                &[7; 32],
+                &[7; 32],
+                Some(&effects),
+                Some(Id128([0x43; 16])),
+                Id128([4; 16]),
+                3,
+            ),
+            Err(Denial::ApprovalBinding { index: 0 })
+        );
+        // Legacy trunk-only/effect-less approval cannot authorize effects-bound
+        // or non-trunk branch commits, but continues to authorize trunk.
+        assert_eq!(
+            base.check_binding_scope(
+                0,
+                &[7; 32],
+                &[7; 32],
+                Some(&effects),
+                None,
+                Id128([4; 16]),
+                3,
+            ),
+            Err(Denial::ApprovalBinding { index: 0 })
+        );
+        assert_eq!(
+            base.check_binding_scope(0, &[7; 32], &[7; 32], None, Some(branch), Id128([4; 16]), 3,),
+            Err(Denial::ApprovalBinding { index: 0 })
+        );
+        assert_eq!(
+            base.check_binding_scope(
+                0,
+                &[7; 32],
+                &[7; 32],
+                None,
+                Some(Id128::TRUNK),
+                Id128([4; 16]),
+                3,
+            ),
+            Ok(())
+        );
+
+        // Non-canonical v3 encoding (both optional fields absent) is refused.
+        let mut noncanonical = base.canonical_bytes().unwrap();
+        noncanonical[0..2].copy_from_slice(&APPROVAL_SCOPED_VERSION.to_le_bytes());
+        noncanonical.push(0);
+        noncanonical.push(0);
+        assert!(Approval::decode(&noncanonical).is_err());
     }
 }

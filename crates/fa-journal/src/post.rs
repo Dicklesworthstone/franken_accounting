@@ -6421,8 +6421,7 @@ pub fn explain_entry_lineage<V: asupersync::fs::Vfs + Clone>(
         None => db.frontier()?,
     };
     let mut entries = Vec::new();
-    let all_rows = db.vertices_at(seq)?;
-    crate::op_witness::record_vertex_scan(all_rows.len());
+    let all_rows = crate::op_witness::vertices_at(db, seq)?;
     for row in all_rows {
         if !row.labels.contains(&label::ENTRY) {
             continue;

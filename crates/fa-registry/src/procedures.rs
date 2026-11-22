@@ -353,14 +353,6 @@ pub fn legacy_lookback_registry_text(text: &str) -> Result<String, RegistryError
     Ok(retained)
 }
 
-/// The canonical registry closure preceding the two effective-window JET
-/// algorithms. Durable certificates and authored case references may retain
-/// those v1 rows; their other fields and all other procedures remain exact.
-/// This is not a fallback for an arbitrary future registry revision.
-pub fn legacy_v1_document() -> Result<crate::toml::Document, RegistryError> {
-    legacy_v1_document_from_text(PROCEDURES)
-}
-
 /// Reconstruct the retained JET rows from a supplied registry for validators
 /// that must also reject changed registry inputs. Only the explicit v2
 /// optional-window transition is reversible; all other edits remain visible

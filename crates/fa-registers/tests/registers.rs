@@ -1098,6 +1098,70 @@ fn zero_phantom_cells_are_detected_and_rebuild_removes_them() {
 }
 
 #[test]
+fn incremental_advance_detects_phantom_cell_and_missing_membership() {
+    // 1. After a caught-up advance, planting a phantom REGISTER cell for the
+    //    same period must invalidate load_for_advance's O(delta) fast path and
+    //    surface ProjectionDrift (never silently keep the phantom cell).
+    let mut h = harness();
+    h.post_rent(1_000, b"adv-phantom-1");
+    let ctx = h.ctx();
+    let first = h
+        .runtime
+        .block_on(fa_registers::advance(&mut h.db, &ctx, &h.book, &h.march))
+        .expect("initial advance");
+    assert!(first.wrote);
+    let _phantom = h.plant_zero_phantom(&first.fold, true);
+    h.post_rent(500, b"adv-phantom-2");
+    let err = h
+        .runtime
+        .block_on(fa_registers::advance(&mut h.db, &ctx, &h.book, &h.march))
+        .expect_err("phantom register cell planted after caught-up advance must be detected");
+    assert!(
+        matches!(err, RegisterError::ProjectionDrift(_)),
+        "expected ProjectionDrift, got {err:?}"
+    );
+
+    // 2. After a caught-up advance, deleting an active cell's IN_PERIOD edge
+    //    must also invalidate load_for_advance's fast path (DeleteEdge in
+    //    suffix) rather than skipping membership verification.
+    let mut h2 = harness();
+    h2.post_rent(1_000, b"adv-edge-1");
+    let ctx2 = h2.ctx();
+    let adv1 = h2
+        .runtime
+        .block_on(fa_registers::advance(
+            &mut h2.db, &ctx2, &h2.book, &h2.march,
+        ))
+        .expect("initial advance 2");
+    let pvid = period_vid(&h2.book.calendar.id, &h2.march);
+    let cell_vid = register_vid(h2.book.book_id, &adv1.fold.cells[0].key);
+    let mut del = WriteBatch::new(relation::IN_PERIOD);
+    let mut deleted_any = false;
+    for edge in h2.db.edges().unwrap() {
+        if edge.entry.relation == relation::IN_PERIOD
+            && edge.entry.src == cell_vid
+            && edge.entry.dst == pvid
+        {
+            del.delete_edge(edge.entry.eid);
+            deleted_any = true;
+        }
+    }
+    assert!(deleted_any, "expected IN_PERIOD edge for materialized cell");
+    h2.write_derived(del);
+    h2.post_rent(250, b"adv-edge-2");
+    let adv2_res = h2.runtime.block_on(fa_registers::advance(
+        &mut h2.db, &ctx2, &h2.book, &h2.march,
+    ));
+    assert!(
+        adv2_res.is_err()
+            || verify_period(&h2.db, &h2.book, &h2.march)
+                .unwrap()
+                .is_green(),
+        "deleted IN_PERIOD edge must either surface drift or repair cleanly: {adv2_res:?}"
+    );
+}
+
+#[test]
 fn register_metadata_and_watermark_corruption_cannot_verify() {
     let mut h = harness();
     let first = h.post_rent(1_000, b"r1");

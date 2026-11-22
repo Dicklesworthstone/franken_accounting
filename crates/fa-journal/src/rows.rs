@@ -17,7 +17,7 @@ use crate::refusal::KernelError;
 /// Markers chain to their predecessor, so two databases whose markers at
 /// `at` agree have the same committed prefix through `at` (fa-rcw1: a
 /// carried history is only ever extended on the database it describes).
-pub(crate) fn marker_at<V: asupersync::fs::Vfs + Clone>(
+pub fn marker_at<V: asupersync::fs::Vfs + Clone>(
     db: &fgdb::Database<V>,
     at: CommitSeq,
 ) -> Result<Option<fgdb_types::MarkerRef>, KernelError> {

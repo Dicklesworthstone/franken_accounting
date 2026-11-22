@@ -1230,7 +1230,7 @@ fn entry_inventory<V: Vfs + Clone>(
     at: CommitSeq,
 ) -> Result<BTreeMap<VId, VertexRow>, RegisterError> {
     let mut entries = BTreeMap::new();
-    for row in db.vertices_at(at)? {
+    for row in fa_journal::op_witness::vertices_at(db, at)? {
         context(cx)?;
         if row.labels.contains(&label::ENTRY) {
             entries.insert(row.vid, row);

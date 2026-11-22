@@ -244,12 +244,50 @@ pub fn authorize_approvals_in<V: asupersync::fs::Vfs + Clone>(
     preparer: Party,
     case_preparers: Option<&std::collections::BTreeSet<VId>>,
 ) -> Outcome<()> {
+    authorize_approvals_scoped_in(
+        txn,
+        db,
+        book,
+        approvals,
+        proposal_digest,
+        None,
+        None,
+        epoch,
+        key,
+        matrix_approvals,
+        preparer,
+        case_preparers,
+    )
+}
+
+/// [`authorize_approvals_in`] with explicit Appendix A `effects_digest` and
+/// `target_coordinate` binding checks. Both optional dimensions are checked
+/// symmetrically: a scoped approval cannot authorize an unscoped trunk commit,
+/// and a legacy unscoped approval cannot authorize an effects- or branch-bound
+/// commit.
+#[allow(clippy::too_many_arguments)]
+pub fn authorize_approvals_scoped_in<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    approvals: &[ApprovalRef],
+    proposal_digest: &[u8; 32],
+    expected_effects: Option<&[u8; 32]>,
+    expected_target: Option<Id128>,
+    epoch: u64,
+    key: &SodKey,
+    matrix_approvals: u8,
+    preparer: Party,
+    case_preparers: Option<&std::collections::BTreeSet<VId>>,
+) -> Outcome<()> {
     authorize_approvals_target(
         txn,
         db,
         book,
         approvals,
         proposal_digest,
+        expected_effects,
+        expected_target,
         epoch,
         key,
         matrix_approvals,
@@ -281,6 +319,8 @@ pub(crate) fn authorize_entry_approvals<V: asupersync::fs::Vfs + Clone>(
         book,
         approvals,
         &proposal.proposal_digest()?,
+        None,
+        Some(proposal.branch_id),
         epoch,
         key,
         matrix_approvals,
@@ -314,6 +354,8 @@ fn authorize_approvals_target<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     approvals: &[ApprovalRef],
     proposal_digest: &[u8; 32],
+    expected_effects: Option<&[u8; 32]>,
+    expected_target: Option<Id128>,
     epoch: u64,
     key: &SodKey,
     matrix_approvals: u8,
@@ -322,11 +364,20 @@ fn authorize_approvals_target<V: asupersync::fs::Vfs + Clone>(
     target: ApprovalTarget<'_>,
 ) -> Outcome<()> {
     let steward = steward()?;
-    let witnessed =
-        match witness_approvals(txn, db, book, approvals, proposal_digest, epoch, target)? {
-            Ok(read) => read,
-            Err(r) => return Ok(Err(r)),
-        };
+    let witnessed = match witness_approvals(
+        txn,
+        db,
+        book,
+        approvals,
+        proposal_digest,
+        expected_effects,
+        expected_target,
+        epoch,
+        target,
+    )? {
+        Ok(read) => read,
+        Err(r) => return Ok(Err(r)),
+    };
     let mut lineages = None;
     if steward.excludes(key, "session_lineage") {
         lineages = approval_lineages(txn, db, book, &witnessed.commitments)?;
@@ -541,6 +592,8 @@ pub fn authorize_lineage<V: asupersync::fs::Vfs + Clone>(
         book,
         approvals,
         proposal_digest,
+        None,
+        None,
         epoch,
         ApprovalTarget::Class(None),
     )? {
@@ -599,18 +652,24 @@ fn approval_signing_key<V: asupersync::fs::Vfs + Clone>(
         (None, None) => return Ok(Ok(None)),
         (None, Some(_)) => Err(KeyError::NoKey),
         (Some(_), None) => Err(KeyError::Unsigned),
-        (Some(current), Some(signature)) => {
-            if signature.scheme != SCHEME_ED25519 {
-                Err(KeyError::Scheme(signature.scheme))
-            } else if signature.generation != current.key.generation
-                || signature.key_id != current.key.key_id()
-            {
-                Err(KeyError::NotCurrent {
-                    generation: signature.generation,
-                    current: current.key.generation,
-                })
-            } else {
-                Ok(signature.key_id)
+        (Some(current), Some(signed)) => {
+            let scheme = signed.scheme;
+            let generation = signed.generation;
+            let expected_generation = current.key.generation;
+            let signer_id = signed.key_id;
+            let expected_id = current.key.key_id();
+            let mut mismatch_bits = 0u8;
+            for (lhs, rhs) in signer_id.iter().zip(expected_id.iter()) {
+                mismatch_bits |= lhs ^ rhs;
+            }
+            let diff = u64::from(generation ^ expected_generation) | u64::from(mismatch_bits);
+            match (scheme, diff) {
+                (SCHEME_ED25519, 0) => Ok(signer_id),
+                (SCHEME_ED25519, _) => Err(KeyError::NotCurrent {
+                    generation,
+                    current: expected_generation,
+                }),
+                _ => Err(KeyError::Scheme(scheme)),
             }
         }
     };
@@ -680,16 +739,20 @@ fn rewritten_approval(vid: VId) -> Refusal {
     )
 }
 
-/// Witness every cited approval inside `txn`: each binds `proposal_digest`,
-/// names a recorded approval of this book whose identity matches its
-/// content, and was recorded under `epoch`. Returns the approvers, their
-/// retained capability commitments and any registered signing-key identities.
+/// Witness every cited approval inside `txn`: each binds `proposal_digest`
+/// (and optional `expected_effects` / `expected_target`), names a recorded
+/// approval of this book whose identity matches its content, and was recorded
+/// under `epoch`. Returns the approvers, their retained capability commitments
+/// and any registered signing-key identities.
+#[allow(clippy::too_many_arguments)]
 fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     book: &BookContext,
     approvals: &[ApprovalRef],
     proposal_digest: &[u8; 32],
+    expected_effects: Option<&[u8; 32]>,
+    expected_target: Option<Id128>,
     epoch: u64,
     target: ApprovalTarget<'_>,
 ) -> Outcome<WitnessedApprovals> {
@@ -732,10 +795,12 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
                 cited.approval_vid.0
             )));
         }
-        if let Err(d) = approval.check_binding(
+        if let Err(d) = approval.check_binding_scope(
             index,
             &cited.approved_digest,
             proposal_digest,
+            expected_effects,
+            expected_target,
             book.book_id,
             epoch,
         ) {
@@ -776,7 +841,7 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
             }
             let (capability, _) =
                 issued_here(&issued, book.book_id, &approval.capability_commitment)?;
-            let expected = match Approval::by(
+            let mut expected = match Approval::by(
                 &capability,
                 Op::Approve,
                 book.book_id,
@@ -789,6 +854,8 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
                 Ok(expected) => expected,
                 Err(denial) => return Ok(Err(refusal(&denial))),
             };
+            expected.effects_digest = approval.effects_digest;
+            expected.target_coordinate = approval.target_coordinate;
             if approval != expected {
                 return Ok(Err(Refusal::new(
                     code::CAPABILITY,
@@ -798,11 +865,17 @@ fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
                     "obtain an approval from the holder and profile of the retained approval capability",
                 )));
             }
-            if let Err(refused) = approval_base(book, &capability, target) {
+            if let Err(refused) = approval_base(book, &capability, target, expected_target) {
                 return Ok(Err(refused));
             }
             let accounts = approval_accounts(txn, db, book, &capability, Some(row.created_at))?;
-            if let Err(denial) = approval_reach(book, &capability, target, accounts.as_ref()) {
+            if let Err(denial) = approval_reach(
+                book,
+                &capability,
+                target,
+                expected_target,
+                accounts.as_ref(),
+            ) {
                 return Ok(Err(refusal(&denial)));
             }
         }
@@ -845,6 +918,7 @@ fn approval_issuance_caveat(capability: &Capability) -> Option<&'static str> {
     capability
         .classes()
         .map(|_| "classes")
+        .or_else(|| capability.branch().map(|_| "branch"))
         .or_else(|| approval_payload_caveat(capability))
 }
 
@@ -862,6 +936,7 @@ fn approval_base(
     book: &BookContext,
     capability: &Capability,
     target: ApprovalTarget<'_>,
+    target_coordinate: Option<Id128>,
 ) -> Result<(), Refusal> {
     let mut legs = Vec::new();
     if let ApprovalTarget::Entry(proposal) = target {
@@ -925,12 +1000,13 @@ fn approval_base(
     // Judge coordinates known from the request before reading current
     // issuance or even the capability's own chart roots. The complete reach
     // is still checked after compiling those roots and again at consumption.
+    let expected_branch = target_coordinate.unwrap_or(Id128::TRUNK);
     if let Some(branch) = capability.branch()
-        && branch != Id128::TRUNK
+        && branch != expected_branch
     {
         return Err(refusal(&Denial::OutOfScope {
             caveat: "branch",
-            value: format!("branch {}", Id128::TRUNK.to_hex()),
+            value: format!("branch {}", expected_branch.to_hex()),
         }));
     }
     if let Some(pin) = capability.known_at_pin() {
@@ -985,17 +1061,20 @@ fn approval_reach(
     book: &BookContext,
     capability: &Capability,
     target: ApprovalTarget<'_>,
+    target_coordinate: Option<Id128>,
     accounts: Option<&AccountScope>,
 ) -> Result<(), Denial> {
+    let reach = Reach {
+        branch: Some(target_coordinate.unwrap_or(Id128::TRUNK)),
+        ..Reach::whole_book(true)
+    };
     match target {
         ApprovalTarget::Entry(proposal) if approval_payload_caveat(capability).is_some() => {
             payload_reach(capability, book, proposal, accounts)
         }
         _ => match target.class() {
-            Some(class) => {
-                fa_policy::reach_class(capability, &Reach::whole_book(true), None, class)
-            }
-            None => fa_policy::reach(capability, &Reach::whole_book(true), None),
+            Some(class) => fa_policy::reach_class(capability, &reach, None, class),
+            None => fa_policy::reach(capability, &reach, None),
         },
     }
 }
@@ -1043,8 +1122,20 @@ pub fn admit_approval<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     proposal: Option<&EntryPayload>,
 ) -> Outcome<()> {
+    admit_approval_scoped(db, book, capability, proposal, None)
+}
+
+/// [`admit_approval`] for an approval targeting an explicit Appendix A branch
+/// coordinate (`None` targets trunk).
+pub fn admit_approval_scoped<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    proposal: Option<&EntryPayload>,
+    target_coordinate: Option<Id128>,
+) -> Outcome<()> {
     let target = proposal.map_or(ApprovalTarget::Class(None), ApprovalTarget::Entry);
-    if let Err(refused) = approval_base(book, capability, target) {
+    if let Err(refused) = approval_base(book, capability, target, target_coordinate) {
         return Ok(Err(refused));
     }
     let current = match current_at(db, book, capability)? {
@@ -1059,8 +1150,14 @@ pub fn admit_approval<V: asupersync::fs::Vfs + Clone>(
         issued_here(&issued, book.book_id, &commitment)?;
     }
     let accounts = account_scope(db, book, &current)?;
-    Ok(approval_reach(book, capability, target, accounts.as_ref())
-        .map_err(|denial| refusal(&denial)))
+    Ok(approval_reach(
+        book,
+        capability,
+        target,
+        target_coordinate,
+        accounts.as_ref(),
+    )
+    .map_err(|denial| refusal(&denial)))
 }
 
 /// Record one approval over a proposal digest.
@@ -1140,7 +1237,34 @@ pub async fn record_signed_approval<V: asupersync::fs::Vfs + Clone>(
     req: ApprovalRequest,
     signed: Option<SignedBy>,
 ) -> Outcome<Approved> {
-    record_approval_with_target(db, ctx, book, req, signed, None).await
+    record_scoped_approval(db, ctx, book, req, None, None, signed).await
+}
+
+/// [`record_signed_approval`] with explicit Appendix A `effects_digest` and/or
+/// `target_coordinate` binding (v3 body when either is `Some`, byte-identical
+/// v1 when both are `None`). Any principal-key signature covers the scoped v3
+/// approval digest.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_scoped_approval<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: ApprovalRequest,
+    effects_digest: Option<[u8; 32]>,
+    target_coordinate: Option<Id128>,
+    signed: Option<SignedBy>,
+) -> Outcome<Approved> {
+    record_approval_with_target(
+        db,
+        ctx,
+        book,
+        req,
+        signed,
+        None,
+        effects_digest,
+        target_coordinate,
+    )
+    .await
 }
 
 /// Record an approval of a complete canonical proposal. The digest and
@@ -1196,10 +1320,13 @@ pub async fn record_signed_approval_for<V: asupersync::fs::Vfs + Clone>(
         },
         signed,
         Some(proposal),
+        None,
+        None,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn record_approval_with_target<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -1207,8 +1334,12 @@ async fn record_approval_with_target<V: asupersync::fs::Vfs + Clone>(
     req: ApprovalRequest,
     signed: Option<SignedBy>,
     proposal: Option<&EntryPayload>,
+    effects_digest: Option<[u8; 32]>,
+    target_coordinate: Option<Id128>,
 ) -> Outcome<Approved> {
-    if let Err(refused) = admit_approval(db, book, &req.capability, proposal)? {
+    if let Err(refused) =
+        admit_approval_scoped(db, book, &req.capability, proposal, target_coordinate)?
+    {
         return Ok(Err(refused));
     }
     let target = proposal.map_or(ApprovalTarget::Class(None), ApprovalTarget::Entry);
@@ -1227,12 +1358,18 @@ async fn record_approval_with_target<V: asupersync::fs::Vfs + Clone>(
         issued_here(&issued, book.book_id, &commitment)?;
     }
     let accounts = approval_accounts(&txn, db, book, &req.capability, None)?;
-    if let Err(denial) = approval_reach(book, &req.capability, target, accounts.as_ref()) {
+    if let Err(denial) = approval_reach(
+        book,
+        &req.capability,
+        target,
+        target_coordinate,
+        accounts.as_ref(),
+    ) {
         txn.abort();
         return Ok(Err(refusal(&denial)));
     }
     let epoch = epoch_witness(&txn, db)?;
-    let approval = match Approval::by(
+    let mut approval = match Approval::by(
         &req.capability,
         Op::Approve,
         book.book_id,
@@ -1248,6 +1385,12 @@ async fn record_approval_with_target<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(refusal(&d)));
         }
     };
+    if let Some(effects) = effects_digest {
+        approval = approval.with_effects_digest(effects);
+    }
+    if let Some(coord) = target_coordinate {
+        approval = approval.with_target_coordinate(coord);
+    }
     let digest = approval
         .digest()
         .map_err(|e| KernelError::Model(e.into()))?;

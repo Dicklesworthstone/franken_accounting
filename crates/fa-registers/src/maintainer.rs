@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_journal::KernelError;
 use fa_journal::genesis::{BookContext, UnitPolicy};
 use fa_journal::rows::{AccountRow, bytes, prop, scalar_bytes, scalar_text};
-use fa_model::symbols::{label, property};
+use fa_model::symbols::{label, property, relation};
 use fa_model::{ControlPayload, Entry, EntryClass, Id128, Reader, Writer};
 use fa_money::Side;
 use fgdb::{Database, WriteMismatchPolicy};
@@ -68,6 +68,7 @@ pub struct PreparedAdvance {
     state: VId,
     expected_state: Option<CanonicalScalar>,
     reset_checkpoint: bool,
+    incremental: bool,
     result: Advance,
 }
 
@@ -288,6 +289,195 @@ fn load<V: asupersync::fs::Vfs + Clone>(
         Some(cx),
         period,
     )
+}
+
+/// Point-read maintenance state loader for caught-up incremental advances
+/// (`fa-0hs4.6`). When the latest immutable `RegisterCheckpoint` matches the
+/// header's `through` frontier and `fold_digest`, every active period cell is
+/// verified via direct point reads (`O(|period_cells|)`) with zero full-book
+/// vertex or edge scans. Any missing checkpoint falls back to [`load`]; any
+/// cell or header corruption still returns `Err(RegisterError::ProjectionDrift)`.
+fn load_for_advance<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    period: &str,
+) -> Result<Option<(CommitSeq, Fold, CanonicalScalar, bool)>, RegisterError> {
+    let frontier = db.frontier()?;
+    let Some(state) = state_row_at(db, book, period, frontier)? else {
+        return Ok(None);
+    };
+    if state.labels != vec![label::REGISTER_STATE]
+        || bytes(&state, property::BOOK_ID, "register-state.book")? != book.book_id.0
+        || crate::text(&state, property::EFFECTIVE_PERIOD, "register-state.period")? != period
+    {
+        return Err(drift("maintenance state identity or coordinate"));
+    }
+    let payload = bytes(&state, property::FA_PAYLOAD, "register-state.payload")?;
+    if bytes(&state, property::FA_DIGEST, "register-state.digest")?
+        != state_digest(book.book_id, period, &payload)
+    {
+        return Err(drift("maintenance state checksum"));
+    }
+    let (through, fold, reference) = decode(&payload, period)?;
+    if through > frontier {
+        return Err(drift("maintenance cursor exceeds book frontier"));
+    }
+    match crate::period_at(db, book, period, through) {
+        Ok(_) => {}
+        Err(RegisterError::InvalidSelection(_)) => {
+            return Err(drift("maintenance cursor predates its period"));
+        }
+        Err(error) => return Err(error),
+    }
+    let checkpoint_ref = match reference {
+        Some(r) => Some(r),
+        None => checkpoint::latest_ref(db, cx, book, period, frontier)?
+            .filter(|cp_ref| cp_ref.through == through),
+    };
+    if let Some(cp_ref) = checkpoint_ref {
+        let (snapshot, born) = checkpoint::load_with_birth(db, cx, book, period, cp_ref, frontier)?;
+        if born <= state.created_at
+            && snapshot.through == through
+            && snapshot.fold.watermark == fold.watermark
+            && snapshot.fold.entries == fold.entries
+            && snapshot.fold.fold_digest == fold.fold_digest
+            && snapshot.fold.posted_legs_digest == fold.posted_legs_digest
+            && (reference.is_some() || snapshot.fold.pending_holds == fold.pending_holds)
+        {
+            let pvid = fa_model::period_vid(&book.calendar.id, period);
+            let mut active_rvids = BTreeSet::new();
+            for (key, (posted, pending)) in crate::fold_columns(&snapshot.fold) {
+                let rvid = crate::register_vid(book.book_id, key);
+                active_rvids.insert(rvid);
+                let Some(row) = db.vertex(rvid)? else {
+                    return Err(drift(
+                        "stored cells disagree with maintenance digest or metadata",
+                    ));
+                };
+                let metadata_ok = row.labels == vec![label::REGISTER]
+                    && bytes(&row, property::BOOK_ID, "register.book_id")? == book.book_id.0
+                    && bytes(&row, property::ACCOUNT_REF, "register.account_ref")?
+                        == key.account.0.to_le_bytes()
+                    && crate::int(&row, property::UNIT_ID, "register.unit_id")?
+                        == i64::from(key.unit_id)
+                    && crate::text(&row, property::EFFECTIVE_PERIOD, "register.period")? == period
+                    && u64::try_from(crate::int(&row, property::WATERMARK, "register.watermark")?)
+                        .ok()
+                        == Some(snapshot.fold.watermark.map_or(0, |s| s.0))
+                    && matches!(
+                        prop(&row, property::FA_FOLD_DIGEST),
+                        Some(CanonicalScalar::Bytes(b)) if b.as_slice() == snapshot.fold.fold_digest
+                    );
+                if !metadata_ok
+                    || crate::stored_values(&row, false)? != Some(posted)
+                    || crate::stored_values(&row, true)? != Some(pending)
+                    || db.neighbours(rvid, relation::IN_PERIOD)?.as_slice() != [pvid]
+                {
+                    return Err(drift(
+                        "stored cells disagree with maintenance digest or metadata",
+                    ));
+                }
+            }
+            // Audit the O(delta) suffix (through, frontier] so phantom REGISTER
+            // cells injected for this period, label flips, cell rewrites, or
+            // deleted IN_PERIOD edges force a fallback to full `load()`.
+            let touches_period_register = |vid: VId| -> Result<bool, RegisterError> {
+                let Some(row) = db.vertex(vid)? else {
+                    return Ok(true);
+                };
+                match prop(&row, property::EFFECTIVE_PERIOD) {
+                    Some(CanonicalScalar::Text(p)) => Ok(p.as_str() == period),
+                    _ => Ok(true),
+                }
+            };
+            let suffix_clean = match db.delta_since(through) {
+                Ok(batches) => {
+                    let mut cursor = through;
+                    let mut clean = true;
+                    for batch in batches {
+                        let seq = batch.commit_seq();
+                        if seq > frontier {
+                            break;
+                        }
+                        if cursor.0.checked_add(1) != Some(seq.0) {
+                            clean = false;
+                            break;
+                        }
+                        for coordinate in batch.coordinate_entries() {
+                            for delta in &coordinate.rows {
+                                match delta {
+                                    DeltaRow::CreateVertex { vid, labels, .. } => {
+                                        if labels.contains(&label::REGISTER)
+                                            && !active_rvids.contains(vid)
+                                            && touches_period_register(*vid)?
+                                        {
+                                            clean = false;
+                                            break;
+                                        }
+                                    }
+                                    DeltaRow::LabelMembership {
+                                        vid, label, after, ..
+                                    } => {
+                                        if *label == label::REGISTER
+                                            && *after
+                                            && !active_rvids.contains(vid)
+                                            && touches_period_register(*vid)?
+                                        {
+                                            clean = false;
+                                            break;
+                                        }
+                                    }
+                                    DeltaRow::Property {
+                                        elem: ElementId::Vertex(vid),
+                                        property,
+                                        ..
+                                    } => {
+                                        if seq != state.created_at
+                                            && (active_rvids.contains(vid)
+                                                || (*property == property::EFFECTIVE_PERIOD
+                                                    && db.vertex(*vid)?.is_none_or(|row| {
+                                                        row.labels.contains(&label::REGISTER)
+                                                    })
+                                                    && touches_period_register(*vid)?))
+                                        {
+                                            clean = false;
+                                            break;
+                                        }
+                                    }
+                                    DeltaRow::DeleteVertex { .. } | DeltaRow::DeleteEdge { .. } => {
+                                        if seq != state.created_at {
+                                            clean = false;
+                                            break;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if !clean {
+                                break;
+                            }
+                        }
+                        if !clean {
+                            break;
+                        }
+                        cursor = seq;
+                    }
+                    clean && cursor == frontier
+                }
+                Err(_) => false,
+            };
+            if suffix_clean {
+                return Ok(Some((
+                    through,
+                    snapshot.fold,
+                    scalar_bytes("register-state.payload", payload)?,
+                    true,
+                )));
+            }
+        }
+    }
+    Ok(load(db, cx, book, period)?.map(|(through, fold, scalar)| (through, fold, scalar, false)))
 }
 
 /// Load and validate a maintenance state using the same current projection
@@ -613,19 +803,29 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<PreparedAdvance, RegisterError> {
     let basis = db.frontier()?;
     crate::period_at(db, book, period, basis)?;
-    let (from, mut fold, expected_state, recovered_from) =
-        match load(db, &ctx.query(), book, period)? {
-            Some((through, fold, payload)) => (through, fold, Some(payload), None),
+    let (from, mut fold, expected_state, recovered_from, fast_loaded) =
+        match load_for_advance(db, &ctx.query(), book, period)? {
+            Some((through, fold, payload, fast)) => (through, fold, Some(payload), None, fast),
             None => match checkpoint::load_latest(db, &ctx.query(), book, period, basis)? {
                 Some(checkpoint) => (
                     checkpoint.through,
                     checkpoint.fold,
                     None,
                     Some(checkpoint.through),
+                    false,
                 ),
-                None => (CommitSeq::ORIGIN, empty(period)?, None, None),
+                None => (CommitSeq::ORIGIN, empty(period)?, None, None, false),
             },
         };
+    let prev_keys: BTreeSet<CellKey> = if fast_loaded {
+        fold.cells
+            .iter()
+            .chain(fold.pending.iter())
+            .map(|c| c.key.clone())
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
     if let Err(error) = db.ensure_delta_window(&ctx.commit(), from).await {
         return match error {
             fgdb::RebuildError::Index {
@@ -639,6 +839,15 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
     {
         Tail::Applied(decoded, legs) => (decoded, legs),
         Tail::Rebuild => return prepare_rebuild(db, book, period, false),
+    };
+    let incremental = fast_loaded && {
+        let new_keys: BTreeSet<&CellKey> = fold
+            .cells
+            .iter()
+            .chain(fold.pending.iter())
+            .map(|c| &c.key)
+            .collect();
+        prev_keys.iter().all(|k| new_keys.contains(k))
     };
     // Repeated calls after our own maintenance write must not manufacture
     // an endless stream of empty maintenance commits.
@@ -665,6 +874,7 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
         state: publication_state(db, book, period)?,
         expected_state,
         reset_checkpoint: false,
+        incremental,
         result: Advance {
             period: period.into(),
             from,
@@ -1136,6 +1346,7 @@ fn prepare_fold_inner<V: asupersync::fs::Vfs + Clone>(
         state: state_vid,
         expected_state,
         reset_checkpoint,
+        incremental: false,
         result: Advance {
             period: fold.period.clone(),
             from: CommitSeq::ORIGIN,
@@ -1205,6 +1416,9 @@ async fn publish_advance_in<V: asupersync::fs::Vfs + Clone>(
     let mut batch = match scans {
         Some((rows, memberships)) => {
             crate::materialize_batch_in(db, book, &result.fold, rows, memberships)?
+        }
+        None if prepared.incremental => {
+            crate::materialize_batch_incremental(db, book, &result.fold)?
         }
         None => crate::materialize_batch(db, book, &result.fold)?,
     };
@@ -1400,8 +1614,8 @@ impl SharedRebuild {
         }
         let at = db.frontier().ok()?;
         let folds = crate::folds_at(db, book, &distinct, at, None);
-        let rows = crate::RegisterRows::from_vertices(db.vertices().ok()?);
-        let memberships = crate::period_memberships(&db.edges().ok()?);
+        let rows = crate::RegisterRows::from_vertices(fa_journal::op_witness::vertices(db).ok()?);
+        let memberships = crate::period_memberships(&fa_journal::op_witness::edges(db).ok()?);
         let mut owners: BTreeMap<VId, &str> = BTreeMap::new();
         for (period, fold) in &folds {
             let Ok((fold, _)) = fold else { continue };
