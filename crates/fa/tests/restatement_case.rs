@@ -659,7 +659,10 @@ fn a_rehearsed_case_is_approved_under_dual_control() {
             .approve_case(restate.clone(), 1, changed, date, b"dual")
             .unwrap()
             .unwrap_err();
-        assert_eq!((refused.code, refused.exit), (code::IDEMPOTENCY_CONFLICT, 6));
+        assert_eq!(
+            (refused.code, refused.exit),
+            (code::IDEMPOTENCY_CONFLICT, 6)
+        );
         assert_eq!(book.head().unwrap(), head);
     }
     let twice = book
@@ -1549,7 +1552,10 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         .unwrap()
         .unwrap();
     assert!(approval_retry.already_recorded);
-    assert_eq!(approval_retry.control_entry, original_approval.control_entry);
+    assert_eq!(
+        approval_retry.control_entry,
+        original_approval.control_entry
+    );
     assert_eq!(approval_retry.recorded_at, original_approval.recorded_at);
     assert_eq!(approval_retry.case.state, CaseState::Closed);
     let changed_approval = book
@@ -1557,10 +1563,7 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         .unwrap()
         .unwrap_err();
     assert_eq!(changed_approval.code, code::IDEMPOTENCY_CONFLICT);
-    let post_retry = book
-        .post_case(poster, 1, date, b"post")
-        .unwrap()
-        .unwrap();
+    let post_retry = book.post_case(poster, 1, date, b"post").unwrap().unwrap();
     assert!(post_retry.already_recorded);
     assert_eq!(post_retry.control_entry, posted.control_entry);
     assert_eq!(post_retry.recorded_at, posted.recorded_at);

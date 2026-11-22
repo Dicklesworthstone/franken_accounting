@@ -640,12 +640,7 @@ fn production_retry_binds_metadata_and_preserves_the_original_bates_receipt() {
     let retry = h
         .runtime
         .block_on(produce(
-            &mut h.db,
-            &cx,
-            &h.book,
-            "M-retry",
-            documents,
-            resealed,
+            &mut h.db, &cx, &h.book, "M-retry", documents, resealed,
         ))
         .unwrap()
         .unwrap();

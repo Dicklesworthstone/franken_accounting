@@ -60,13 +60,7 @@ fn execute(
     } else {
         let profile = profile(h);
         h.runtime
-            .block_on(open_production(
-                &mut h.db,
-                &ctx,
-                &h.book,
-                profile,
-                request,
-            ))
+            .block_on(open_production(&mut h.db, &ctx, &h.book, profile, request))
             .map(|result| result.map(|opened| (opened.control_entry, opened.recorded_at)))
     }
 }
@@ -240,7 +234,10 @@ fn production_retries_and_views_reject_deleted_retargeted_and_restored_claims() 
                     ),
                 );
                 h.write_raw(restore);
-                assert_eq!(h.db.vertex(claim_vid).unwrap().unwrap().props, original.props);
+                assert_eq!(
+                    h.db.vertex(claim_vid).unwrap().unwrap().props,
+                    original.props
+                );
             }
 
             let head = h.db.frontier().unwrap();

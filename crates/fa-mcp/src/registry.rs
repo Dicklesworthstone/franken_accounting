@@ -2339,6 +2339,55 @@ mod tests {
     }
 
     #[test]
+    fn selected_rule_drafts_forward_without_implicit_dry_run() {
+        let (mcp, reg) = embedded();
+        let tool = mcp.tool_by_wire("fa_rules_derive").unwrap();
+        let schema = tool.input_schema(&mcp, reg);
+        assert_eq!(schema["properties"]["draft"]["type"], json!("string"));
+        let digest = "12".repeat(32);
+        let inv = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({
+                    "rule": digest.clone(),
+                    "event": "EV-1",
+                    "draft": "rule-review",
+                }),
+            )
+            .unwrap();
+        assert!(
+            inv.argv
+                .windows(2)
+                .any(|pair| pair[0] == "--draft" && pair[1] == "rule-review")
+        );
+        assert!(
+            inv.argv
+                .windows(2)
+                .any(|pair| pair[0] == "--rule" && pair[1] == digest)
+        );
+        assert!(!inv.argv.iter().any(|arg| arg == "--dry-run"));
+        assert!(inv.stdin.is_none());
+
+        // Forward an explicit conflicting request unchanged so the CLI's
+        // pre-observation option check refuses it on every surface.
+        let conflict = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({
+                    "rule": digest,
+                    "event": "EV-1",
+                    "draft": "rule-review",
+                    "dry_run": true,
+                }),
+            )
+            .unwrap();
+        assert!(conflict.argv.iter().any(|arg| arg == "--draft"));
+        assert!(conflict.argv.iter().any(|arg| arg == "--dry-run"));
+    }
+
+    #[test]
     fn posting_tools_plan_inline_and_commit_exact_artifacts_under_launch_authority() {
         let (mcp, reg) = embedded();
         for wire in [

@@ -1076,24 +1076,48 @@ pub(crate) fn is_lifecycle_control(entry: &fa_model::Entry, vid: VId) -> bool {
         || !entry.approvals.is_empty()
         || entry.plan_certificate.is_some()
         || p.idempotency_key.len() != 32
-        || vid != entry_vid(p.book_id, &p.principal_ref.0.to_le_bytes(), &p.idempotency_key)
-        || !matches!(p.origin, EntryOrigin::Control {
-            control_kind: ControlKind::ENGAGEMENT_TRANSITION, ..
-        })
+        || vid
+            != entry_vid(
+                p.book_id,
+                &p.principal_ref.0.to_le_bytes(),
+                &p.idempotency_key,
+            )
+        || !matches!(
+            p.origin,
+            EntryOrigin::Control {
+                control_kind: ControlKind::ENGAGEMENT_TRANSITION,
+                ..
+            }
+        )
     {
         return false;
     }
     let Some(ControlPayload::LifecycleTransition {
-        from, to, proof_refs, reason_code, ..
-    }) = &p.control else {
+        from,
+        to,
+        proof_refs,
+        reason_code,
+        ..
+    }) = &p.control
+    else {
         return false;
     };
     match (*from, *to, p.extensions.as_slice(), proof_refs.as_slice()) {
         (0, 1, [(fa_model::entry::ENGAGEMENT_PROFILE_EXTENSION, _)], [])
         | (1, 2, [(fa_model::entry::DOCUMENTATION_COMPLETION_EXTENSION, _)], [])
         | (1, 2, [], [TypedRef::Vertex(_)]) => *reason_code == 0,
-        (1 | 2, _, [(fa_model::entry::PROPOSED_ADJUSTMENT_EXTENSION, _)], [TypedRef::Vertex(_)])
-        | (1 | 2, _, [(fa_model::entry::ENGAGEMENT_CARRY_FORWARD_EXTENSION, _)], [TypedRef::Vertex(_)])
+        (
+            1 | 2,
+            _,
+            [(fa_model::entry::PROPOSED_ADJUSTMENT_EXTENSION, _)],
+            [TypedRef::Vertex(_)],
+        )
+        | (
+            1 | 2,
+            _,
+            [(fa_model::entry::ENGAGEMENT_CARRY_FORWARD_EXTENSION, _)],
+            [TypedRef::Vertex(_)],
+        )
         | (1 | 2, _, [], [TypedRef::Object(_) | TypedRef::Vertex(_)]) => {
             from == to && *reason_code == 0
         }
@@ -1115,7 +1139,14 @@ async fn witness_record<V: asupersync::fs::Vfs + Clone>(
     evid: VId,
 ) -> Outcome<Option<VertexRow>> {
     crate::outcome::witness_control_record(
-        txn, db, ctx, book, principal, key, evid, EntryClass::ENGAGEMENT_CONTROL,
+        txn,
+        db,
+        ctx,
+        book,
+        principal,
+        key,
+        evid,
+        EntryClass::ENGAGEMENT_CONTROL,
     )
     .await
 }
@@ -1405,8 +1436,16 @@ pub async fn open_engagement<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let recorded = match witness_record(
-        &mut txn, db, ctx, book, req.capability.holder(), &proposal.idempotency_key, evid,
-    ).await? {
+        &mut txn,
+        db,
+        ctx,
+        book,
+        req.capability.holder(),
+        &proposal.idempotency_key,
+        evid,
+    )
+    .await?
+    {
         Ok(recorded) => recorded,
         Err(refused) => {
             txn.abort();
@@ -1487,17 +1526,19 @@ pub async fn open_engagement<V: asupersync::fs::Vfs + Clone>(
         }
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-        )) => match db.vertex(evid)? {
-            Some(row) => Ok(
-                recorded_or_conflict(db, book, &row, &proposal)?.map(|recorded_at| EngagementOpened {
-                    engagement: vid,
-                    control_entry: evid,
-                    recorded_at,
-                    already_recorded: true,
-                }),
-            ),
-            None => Ok(Err(fcw("the engagement was opened concurrently"))),
-        },
+        )) => {
+            match db.vertex(evid)? {
+                Some(row) => Ok(recorded_or_conflict(db, book, &row, &proposal)?.map(
+                    |recorded_at| EngagementOpened {
+                        engagement: vid,
+                        control_entry: evid,
+                        recorded_at,
+                        already_recorded: true,
+                    },
+                )),
+                None => Ok(Err(fcw("the engagement was opened concurrently"))),
+            }
+        }
         Err(e) => Err(e.into()),
     }
 }
@@ -1641,15 +1682,14 @@ pub async fn propose_adjustment<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    let recorded = match witness_record(
-        &mut txn, db, ctx, book, req.capability.holder(), &key, evid,
-    ).await? {
-        Ok(recorded) => recorded,
-        Err(refused) => {
-            txn.abort();
-            return Ok(Err(refused));
-        }
-    };
+    let recorded =
+        match witness_record(&mut txn, db, ctx, book, req.capability.holder(), &key, evid).await? {
+            Ok(recorded) => recorded,
+            Err(refused) => {
+                txn.abort();
+                return Ok(Err(refused));
+            }
+        };
     let Some((_, profile)) = engagement_row(&txn, db, vid)? else {
         txn.abort();
         return Ok(Err(unknown(engagement)));
@@ -1950,15 +1990,14 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    let recorded = match witness_record(
-        &mut txn, db, ctx, book, req.capability.holder(), &key, evid,
-    ).await? {
-        Ok(recorded) => recorded,
-        Err(refused) => {
-            txn.abort();
-            return Ok(Err(refused));
-        }
-    };
+    let recorded =
+        match witness_record(&mut txn, db, ctx, book, req.capability.holder(), &key, evid).await? {
+            Ok(recorded) => recorded,
+            Err(refused) => {
+                txn.abort();
+                return Ok(Err(refused));
+            }
+        };
     let Some((_, profile)) = engagement_row(&txn, db, vid)? else {
         txn.abort();
         return Ok(Err(unknown(engagement)));
@@ -2002,12 +2041,14 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
     if let Some(stored) = recorded {
         txn.abort();
         return Ok(
-            recorded_or_conflict(db, book, &stored, &record)?.map(|recorded_at| AdjustmentDecided {
-                proposal: pvid,
-                decision,
-                control_entry: evid,
-                recorded_at,
-                already_recorded: true,
+            recorded_or_conflict(db, book, &stored, &record)?.map(|recorded_at| {
+                AdjustmentDecided {
+                    proposal: pvid,
+                    decision,
+                    control_entry: evid,
+                    recorded_at,
+                    already_recorded: true,
+                }
             }),
         );
     }
@@ -2204,20 +2245,18 @@ pub async fn decide_adjustment<V: asupersync::fs::Vfs + Clone>(
         }
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-        )) => {
-            match db.vertex(evid)? {
-                Some(stored) => Ok(recorded_or_conflict(db, book, &stored, &record)?.map(
-                    |recorded_at| AdjustmentDecided {
-                        proposal: pvid,
-                        decision,
-                        control_entry: evid,
-                        recorded_at,
-                        already_recorded: true,
-                    },
-                )),
-                None => Ok(Err(fcw("the proposal was decided concurrently"))),
-            }
-        }
+        )) => match db.vertex(evid)? {
+            Some(stored) => Ok(recorded_or_conflict(db, book, &stored, &record)?.map(
+                |recorded_at| AdjustmentDecided {
+                    proposal: pvid,
+                    decision,
+                    control_entry: evid,
+                    recorded_at,
+                    already_recorded: true,
+                },
+            )),
+            None => Ok(Err(fcw("the proposal was decided concurrently"))),
+        },
         Err(e) => Err(e.into()),
     }
 }
@@ -2305,15 +2344,14 @@ pub async fn file_workpaper<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    let recorded = match witness_record(
-        &mut txn, db, ctx, book, req.capability.holder(), &key, evid,
-    ).await? {
-        Ok(recorded) => recorded,
-        Err(refused) => {
-            txn.abort();
-            return Ok(Err(refused));
-        }
-    };
+    let recorded =
+        match witness_record(&mut txn, db, ctx, book, req.capability.holder(), &key, evid).await? {
+            Ok(recorded) => recorded,
+            Err(refused) => {
+                txn.abort();
+                return Ok(Err(refused));
+            }
+        };
     if engagement_row(&txn, db, vid)?.is_none() {
         txn.abort();
         return Ok(Err(unknown(engagement)));
@@ -2503,15 +2541,14 @@ pub async fn file_finding<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    let recorded = match witness_record(
-        &mut txn, db, ctx, book, req.capability.holder(), &key, evid,
-    ).await? {
-        Ok(recorded) => recorded,
-        Err(refused) => {
-            txn.abort();
-            return Ok(Err(refused));
-        }
-    };
+    let recorded =
+        match witness_record(&mut txn, db, ctx, book, req.capability.holder(), &key, evid).await? {
+            Ok(recorded) => recorded,
+            Err(refused) => {
+                txn.abort();
+                return Ok(Err(refused));
+            }
+        };
     if engagement_row(&txn, db, vid)?.is_none() {
         txn.abort();
         return Ok(Err(unknown(engagement)));
@@ -2681,15 +2718,14 @@ pub async fn complete_documentation<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    let recorded = match witness_record(
-        &mut txn, db, ctx, book, req.capability.holder(), &key, evid,
-    ).await? {
-        Ok(recorded) => recorded,
-        Err(refused) => {
-            txn.abort();
-            return Ok(Err(refused));
-        }
-    };
+    let recorded =
+        match witness_record(&mut txn, db, ctx, book, req.capability.holder(), &key, evid).await? {
+            Ok(recorded) => recorded,
+            Err(refused) => {
+                txn.abort();
+                return Ok(Err(refused));
+            }
+        };
     let Some((_, profile)) = engagement_row(&txn, db, vid)? else {
         txn.abort();
         return Ok(Err(unknown(engagement)));
@@ -2809,22 +2845,20 @@ pub async fn complete_documentation<V: asupersync::fs::Vfs + Clone>(
         )),
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-        )) => {
-            match db.vertex(evid)? {
-                Some(stored) => Ok(recorded_or_conflict(db, book, &stored, &record)?.map(
-                    |recorded_at| DocumentationCompleted {
-                        engagement: vid,
-                        completion,
-                        control_entry: evid,
-                        recorded_at,
-                        already_recorded: true,
-                    },
-                )),
-                None => Ok(Err(fcw(
-                    "the documentation completion was journaled concurrently",
-                ))),
-            }
-        }
+        )) => match db.vertex(evid)? {
+            Some(stored) => Ok(recorded_or_conflict(db, book, &stored, &record)?.map(
+                |recorded_at| DocumentationCompleted {
+                    engagement: vid,
+                    completion,
+                    control_entry: evid,
+                    recorded_at,
+                    already_recorded: true,
+                },
+            )),
+            None => Ok(Err(fcw(
+                "the documentation completion was journaled concurrently",
+            ))),
+        },
         Err(e) => Err(e.into()),
     }
 }
@@ -2913,15 +2947,14 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    let recorded = match witness_record(
-        &mut txn, db, ctx, book, req.capability.holder(), &key, evid,
-    ).await? {
-        Ok(recorded) => recorded,
-        Err(refused) => {
-            txn.abort();
-            return Ok(Err(refused));
-        }
-    };
+    let recorded =
+        match witness_record(&mut txn, db, ctx, book, req.capability.holder(), &key, evid).await? {
+            Ok(recorded) => recorded,
+            Err(refused) => {
+                txn.abort();
+                return Ok(Err(refused));
+            }
+        };
     let Some((_, profile)) = engagement_row(&txn, db, vid)? else {
         txn.abort();
         return Ok(Err(unknown(engagement)));
@@ -3069,16 +3102,16 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
-            Some(stored) => Ok(
-                recorded_or_conflict(db, book, &stored, &record)?.map(|recorded_at| CarriedForward {
+            Some(stored) => Ok(recorded_or_conflict(db, book, &stored, &record)?.map(
+                |recorded_at| CarriedForward {
                     engagement: vid,
                     carry_forward: carried,
                     control_entry: evid,
                     recorded_at,
                     added_after_completion,
                     already_recorded: true,
-                }),
-            ),
+                },
+            )),
             None => Ok(Err(fcw("the carry-forward was journaled concurrently"))),
         },
         Err(e) => Err(e.into()),

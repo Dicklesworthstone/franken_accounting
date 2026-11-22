@@ -31,8 +31,7 @@ fn agent_mixed_rule_drafts_preserve_reviewed_effects_and_promote_atomically() {
         };
         ordinary.idempotency_key = b"draft-ordinary".to_vec();
         ordinary.extensions.clear();
-        let ordinary_intent =
-            fa_intents::PostIntent::new(ordinary.clone(), Vec::new()).unwrap();
+        let ordinary_intent = fa_intents::PostIntent::new(ordinary.clone(), Vec::new()).unwrap();
         let expected = [ordinary_intent.clone(), rule_intent.clone()];
         let capability = fa_policy::Capability::new(
             AGENT,
@@ -55,11 +54,9 @@ fn agent_mixed_rule_drafts_preserve_reviewed_effects_and_promote_atomically() {
             .unwrap();
 
         let planned = if atomic_append {
-            let batch = fa_intents::PostBatch::for_draft(
-                b"mixed-draft-append".to_vec(),
-                expected.to_vec(),
-            )
-            .unwrap();
+            let batch =
+                fa_intents::PostBatch::for_draft(b"mixed-draft-append".to_vec(), expected.to_vec())
+                    .unwrap();
             h.runtime
                 .block_on(fa_journal::plan_batch_into_draft(
                     &mut h.db,
@@ -153,8 +150,7 @@ fn agent_mixed_rule_drafts_preserve_reviewed_effects_and_promote_atomically() {
         assert!(refused.is_err());
         assert_eq!(h.db.frontier().unwrap(), head);
 
-        let promoter =
-            fa_policy::Capability::embedded(PREPARER, &["approve", "read"]).unwrap();
+        let promoter = fa_policy::Capability::embedded(PREPARER, &["approve", "read"]).unwrap();
         let promoted = h
             .runtime
             .block_on(fa_journal::promote_draft(
@@ -168,8 +164,9 @@ fn agent_mixed_rule_drafts_preserve_reviewed_effects_and_promote_atomically() {
             .unwrap();
         assert_eq!(promoted.entries.len(), expected.len());
         for (entry_ref, reviewed) in promoted.entries.iter().zip(preview.members()) {
-            let (entry, recorded_at) =
-                fa_journal::post::read_entry(&h.db, entry_ref.vid).unwrap().unwrap();
+            let (entry, recorded_at) = fa_journal::post::read_entry(&h.db, entry_ref.vid)
+                .unwrap()
+                .unwrap();
             assert_eq!(recorded_at, promoted.recorded_at);
             assert_eq!(entry, reviewed.entry);
             assert_eq!(entry_ref.entry_digest, reviewed.entry.entry_digest);

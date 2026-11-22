@@ -292,14 +292,8 @@ pub(crate) async fn witness_control_record<V: Vfs + Clone>(
     expected_entry: VId,
     class: EntryClass,
 ) -> Outcome<Option<VertexRow>> {
-    if let Err(refusal) = witness_named_key(
-        txn,
-        db,
-        book.book_id,
-        principal,
-        key,
-        expected_entry,
-    )? {
+    if let Err(refusal) = witness_named_key(txn, db, book.book_id, principal, key, expected_entry)?
+    {
         return Ok(Err(refusal));
     }
     if let Some(is_entry) = txn.vertex_has_label(db, expected_entry, label::ENTRY)? {
@@ -330,8 +324,7 @@ pub(crate) async fn witness_control_record<V: Vfs + Clone>(
                     "restore the book's retained commit history, then retry the same intent",
                 )));
             }
-            require_unused_legacy_key(txn, db, book, outcome)
-                .map(|result| result.map(|()| None))
+            require_unused_legacy_key(txn, db, book, outcome).map(|result| result.map(|()| None))
         }
         result => result.map(|result| result.map(|()| None)),
     }

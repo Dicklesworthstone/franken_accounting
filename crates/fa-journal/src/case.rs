@@ -66,9 +66,9 @@
 use fa_model::limits::{MAX_BATCH_ENTRIES, MAX_PERIOD_REF_BYTES};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    AccountType, ApprovalRef, ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload, Erasable,
-    Id128, Oid, Reader, TypedRef, Writer, domain_digest, entry_mirrors, entry_vid, period_vid,
-    report_certificate_vid, restatement_case_vid, scenario_vid,
+    AccountType, ApprovalRef, ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload,
+    Erasable, Id128, Oid, Reader, TypedRef, Writer, domain_digest, entry_mirrors, entry_vid,
+    period_vid, report_certificate_vid, restatement_case_vid, scenario_vid,
 };
 use fa_policy::{Capability, Intent};
 use fa_registry::evidence_policy::EvidencePolicy;
@@ -831,16 +831,29 @@ pub(crate) fn is_lifecycle_control(entry: &fa_model::Entry, vid: VId) -> bool {
         || !p.tags.is_empty()
         || entry.plan_certificate.is_some()
         || p.idempotency_key.len() != 32
-        || vid != entry_vid(p.book_id, &p.principal_ref.0.to_le_bytes(), &p.idempotency_key)
-        || !matches!(p.origin, EntryOrigin::Control {
-            control_kind: ControlKind::CASE_TRANSITION, ..
-        })
+        || vid
+            != entry_vid(
+                p.book_id,
+                &p.principal_ref.0.to_le_bytes(),
+                &p.idempotency_key,
+            )
+        || !matches!(
+            p.origin,
+            EntryOrigin::Control {
+                control_kind: ControlKind::CASE_TRANSITION,
+                ..
+            }
+        )
     {
         return false;
     }
     let Some(ControlPayload::LifecycleTransition {
-        from, to, reason_code: 0, ..
-    }) = &p.control else {
+        from,
+        to,
+        reason_code: 0,
+        ..
+    }) = &p.control
+    else {
         return false;
     };
     if (*from, *to) != (CaseState::Rehearsed.tag(), CaseState::Approved.tag())
@@ -873,7 +886,14 @@ async fn witness_record<V: asupersync::fs::Vfs + Clone>(
     evid: VId,
 ) -> Outcome<Option<VertexRow>> {
     crate::outcome::witness_control_record(
-        txn, db, ctx, book, principal, key, evid, EntryClass::CASE_CONTROL,
+        txn,
+        db,
+        ctx,
+        book,
+        principal,
+        key,
+        evid,
+        EntryClass::CASE_CONTROL,
     )
     .await
 }
@@ -1003,11 +1023,7 @@ pub async fn open_case<V: asupersync::fs::Vfs + Clone>(
     }
     let principal = req.capability.holder();
     let key = record_key(Act::Open, None, &req.idempotency_key);
-    let evid = entry_vid(
-        book.book_id,
-        &principal.0.to_le_bytes(),
-        &key,
-    );
+    let evid = entry_vid(book.book_id, &principal.0.to_le_bytes(), &key);
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     // The capability is not revoked (plan §14.2): the first read.
@@ -1039,20 +1055,22 @@ pub async fn open_case<V: asupersync::fs::Vfs + Clone>(
         };
         body.ordinal = recorded.ordinal;
         let proposal = open_proposal(book, &req, &body)?;
-        return Ok(match recorded_or_conflict(db, book, &row, &proposal, &[])? {
-            Ok(recorded_at) => Ok(CaseRecorded {
-                case: read_case(db, book, body.ordinal)?.ok_or_else(|| {
-                    KernelError::Corrupt(format!(
-                        "case record {:032x} has no RestatementCase vertex",
-                        row.vid.0
-                    ))
-                })?,
-                control_entry: evid,
-                recorded_at,
-                already_recorded: true,
-            }),
-            Err(r) => Err(r),
-        });
+        return Ok(
+            match recorded_or_conflict(db, book, &row, &proposal, &[])? {
+                Ok(recorded_at) => Ok(CaseRecorded {
+                    case: read_case(db, book, body.ordinal)?.ok_or_else(|| {
+                        KernelError::Corrupt(format!(
+                            "case record {:032x} has no RestatementCase vertex",
+                            row.vid.0
+                        ))
+                    })?,
+                    control_entry: evid,
+                    recorded_at,
+                    already_recorded: true,
+                }),
+                Err(r) => Err(r),
+            },
+        );
     }
     for period in &body.periods {
         if txn
@@ -1220,8 +1238,16 @@ pub async fn determine_case<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let recorded = match witness_record(
-        &mut txn, db, ctx, book, principal, &proposal.idempotency_key, evid,
-    ).await? {
+        &mut txn,
+        db,
+        ctx,
+        book,
+        principal,
+        &proposal.idempotency_key,
+        evid,
+    )
+    .await?
+    {
         Ok(recorded) => recorded,
         Err(refused) => {
             txn.abort();
@@ -1230,16 +1256,18 @@ pub async fn determine_case<V: asupersync::fs::Vfs + Clone>(
     };
     if let Some(row) = recorded {
         txn.abort();
-        return Ok(match recorded_or_conflict(db, book, &row, &proposal, &[])? {
-            Ok(recorded_at) => Ok(CaseRecorded {
-                case: read_case(db, book, ordinal)?
-                    .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
-                control_entry: evid,
-                recorded_at,
-                already_recorded: true,
-            }),
-            Err(r) => Err(r),
-        });
+        return Ok(
+            match recorded_or_conflict(db, book, &row, &proposal, &[])? {
+                Ok(recorded_at) => Ok(CaseRecorded {
+                    case: read_case(db, book, ordinal)?
+                        .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
+                    control_entry: evid,
+                    recorded_at,
+                    already_recorded: true,
+                }),
+                Err(r) => Err(r),
+            },
+        );
     }
     let Some(row) = txn.vertex(db, vid)? else {
         txn.abort();
@@ -1380,8 +1408,16 @@ pub async fn rehearse_case<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let recorded = match witness_record(
-        &mut txn, db, ctx, book, principal, &proposal.idempotency_key, evid,
-    ).await? {
+        &mut txn,
+        db,
+        ctx,
+        book,
+        principal,
+        &proposal.idempotency_key,
+        evid,
+    )
+    .await?
+    {
         Ok(recorded) => recorded,
         Err(refused) => {
             txn.abort();
@@ -1390,16 +1426,18 @@ pub async fn rehearse_case<V: asupersync::fs::Vfs + Clone>(
     };
     if let Some(row) = recorded {
         txn.abort();
-        return Ok(match recorded_or_conflict(db, book, &row, &proposal, &[])? {
-            Ok(recorded_at) => Ok(CaseRecorded {
-                case: read_case(db, book, ordinal)?
-                    .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
-                control_entry: evid,
-                recorded_at,
-                already_recorded: true,
-            }),
-            Err(r) => Err(r),
-        });
+        return Ok(
+            match recorded_or_conflict(db, book, &row, &proposal, &[])? {
+                Ok(recorded_at) => Ok(CaseRecorded {
+                    case: read_case(db, book, ordinal)?
+                        .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
+                    control_entry: evid,
+                    recorded_at,
+                    already_recorded: true,
+                }),
+                Err(r) => Err(r),
+            },
+        );
     }
     let Some(row) = txn.vertex(db, vid)? else {
         txn.abort();
@@ -1685,8 +1723,16 @@ pub async fn approve_case<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let recorded = match witness_record(
-        &mut txn, db, ctx, book, principal, &proposal.idempotency_key, evid,
-    ).await? {
+        &mut txn,
+        db,
+        ctx,
+        book,
+        principal,
+        &proposal.idempotency_key,
+        evid,
+    )
+    .await?
+    {
         Ok(recorded) => recorded,
         Err(refused) => {
             txn.abort();
@@ -1695,16 +1741,18 @@ pub async fn approve_case<V: asupersync::fs::Vfs + Clone>(
     };
     if let Some(row) = recorded {
         txn.abort();
-        return Ok(match recorded_or_conflict(db, book, &row, &proposal, &approvals)? {
-            Ok(recorded_at) => Ok(CaseRecorded {
-                case: read_case(db, book, ordinal)?
-                    .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
-                control_entry: evid,
-                recorded_at,
-                already_recorded: true,
-            }),
-            Err(r) => Err(r),
-        });
+        return Ok(
+            match recorded_or_conflict(db, book, &row, &proposal, &approvals)? {
+                Ok(recorded_at) => Ok(CaseRecorded {
+                    case: read_case(db, book, ordinal)?
+                        .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
+                    control_entry: evid,
+                    recorded_at,
+                    already_recorded: true,
+                }),
+                Err(r) => Err(r),
+            },
+        );
     }
     let Some(row) = txn.vertex(db, vid)? else {
         txn.abort();
@@ -2458,8 +2506,15 @@ pub async fn post_case_with_crash<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(refused));
         }
         let recorded = witness_record(
-            &mut txn, db, ctx, book, principal, &proposal.idempotency_key, evid,
-        ).await?;
+            &mut txn,
+            db,
+            ctx,
+            book,
+            principal,
+            &proposal.idempotency_key,
+            evid,
+        )
+        .await?;
         txn.abort();
         let recorded = match recorded {
             Ok(recorded) => recorded,
@@ -2531,8 +2586,16 @@ pub async fn post_case_with_crash<V: asupersync::fs::Vfs + Clone>(
     // Every member point-read the case as Approved in this transaction, so
     // its Post record cannot exist here.
     match witness_record(
-        &mut staged.txn, db, ctx, book, principal, &proposal.idempotency_key, evid,
-    ).await? {
+        &mut staged.txn,
+        db,
+        ctx,
+        book,
+        principal,
+        &proposal.idempotency_key,
+        evid,
+    )
+    .await?
+    {
         Ok(None) => {}
         Ok(Some(_)) => {
             staged.txn.abort();
@@ -2871,8 +2934,16 @@ where
         return Ok(Err(r));
     }
     let recorded = match witness_record(
-        &mut txn, db, ctx, book, req.capability.holder(), &proposal.idempotency_key, evid,
-    ).await? {
+        &mut txn,
+        db,
+        ctx,
+        book,
+        req.capability.holder(),
+        &proposal.idempotency_key,
+        evid,
+    )
+    .await?
+    {
         Ok(recorded) => recorded,
         Err(refused) => {
             txn.abort();
@@ -2881,16 +2952,18 @@ where
     };
     if let Some(row) = recorded {
         txn.abort();
-        return Ok(match recorded_or_conflict(db, book, &row, &proposal, &[])? {
-            Ok(recorded_at) => Ok(CaseRecorded {
-                case: read_case(db, book, ordinal)?
-                    .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
-                control_entry: evid,
-                recorded_at,
-                already_recorded: true,
-            }),
-            Err(r) => Err(r),
-        });
+        return Ok(
+            match recorded_or_conflict(db, book, &row, &proposal, &[])? {
+                Ok(recorded_at) => Ok(CaseRecorded {
+                    case: read_case(db, book, ordinal)?
+                        .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?,
+                    control_entry: evid,
+                    recorded_at,
+                    already_recorded: true,
+                }),
+                Err(r) => Err(r),
+            },
+        );
     }
     let Some(row) = txn.vertex(db, vid)? else {
         txn.abort();

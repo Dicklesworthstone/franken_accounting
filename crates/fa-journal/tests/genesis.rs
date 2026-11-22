@@ -59,6 +59,8 @@ mod disposal_tests;
 mod draft_authority_tests;
 #[path = "genesis/draft_correction.rs"]
 mod draft_correction_tests;
+#[path = "genesis/engagement_outcome_keys.rs"]
+mod engagement_outcome_keys;
 #[path = "genesis/entry_storage.rs"]
 mod entry_storage_tests;
 #[path = "genesis/external_subledger.rs"]
@@ -79,10 +81,6 @@ mod policy_outcome_keys;
 mod prior_period_adjustment_tests;
 #[path = "genesis/production_outcome_keys.rs"]
 mod production_outcome_keys;
-#[path = "genesis/engagement_outcome_keys.rs"]
-mod engagement_outcome_keys;
-#[path = "genesis/rule_draft_admission.rs"]
-mod rule_draft_admission_tests;
 #[path = "genesis/proportional.rs"]
 mod proportional_tests;
 #[path = "genesis/rea_outcome_keys.rs"]
@@ -93,6 +91,8 @@ mod recurring_tests;
 mod register_capacity;
 #[path = "genesis/registration_outcome_keys.rs"]
 mod registration_outcome_keys;
+#[path = "genesis/rule_draft_admission.rs"]
+mod rule_draft_admission_tests;
 #[path = "genesis/scheduled_admission.rs"]
 mod scheduled_admission_tests;
 #[path = "genesis/settlement_scaling.rs"]

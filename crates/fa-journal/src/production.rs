@@ -578,7 +578,9 @@ pub(crate) fn is_lifecycle_control(entry: &fa_model::Entry, vid: VId) -> bool {
             };
             profile.book_id == proposal.book_id
                 && profile.vid() == *object_ref
-                && profile.digest().is_ok_and(|digest| digest == *spec_body_digest)
+                && profile
+                    .digest()
+                    .is_ok_and(|digest| digest == *spec_body_digest)
                 && proof_refs
                     == &profile
                         .protective_order
@@ -586,9 +588,7 @@ pub(crate) fn is_lifecycle_control(entry: &fa_model::Entry, vid: VId) -> bool {
                         .map(|oid| TypedRef::Object(*oid))
                         .collect::<Vec<_>>()
         }
-        (f, t, [(fa_model::entry::PRODUCTION_BATES_EXTENSION, body)])
-            if f == open && t == open =>
-        {
+        (f, t, [(fa_model::entry::PRODUCTION_BATES_EXTENSION, body)]) if f == open && t == open => {
             let Ok(record) = BatesRecord::decode(body) else {
                 return false;
             };
@@ -957,18 +957,20 @@ pub async fn open_production<V: asupersync::fs::Vfs + Clone>(
         }
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-        )) => match db.vertex(evid)? {
-            Some(row) => Ok(
-                recorded_or_conflict(db, book, &row, &proposal)?.map(|recorded_at| ProductionOpened {
-                    profile: vid,
-                    control_entry: evid,
-                    recorded_at,
-                    already_recorded: true,
-                }),
-            ),
-            // Another principal opened the same matter first.
-            None => Ok(Err(fcw("the matter's profile was opened concurrently"))),
-        },
+        )) => {
+            match db.vertex(evid)? {
+                Some(row) => Ok(recorded_or_conflict(db, book, &row, &proposal)?.map(
+                    |recorded_at| ProductionOpened {
+                        profile: vid,
+                        control_entry: evid,
+                        recorded_at,
+                        already_recorded: true,
+                    },
+                )),
+                // Another principal opened the same matter first.
+                None => Ok(Err(fcw("the matter's profile was opened concurrently"))),
+            }
+        }
         Err(e) => Err(e.into()),
     }
 }

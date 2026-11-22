@@ -1946,11 +1946,10 @@ mod case_lifecycle_outcomes {
     fn assert_control_claim(h: &Harness, recorded: &CaseRecorded) {
         let row = h.db.vertex(recorded.control_entry).unwrap().unwrap();
         let (entry, _) = read_entry(&h.db, row.vid).unwrap().unwrap();
-        let claim = h
-            .db
-            .vertex(outcome_id(h, &entry.proposal))
-            .unwrap()
-            .unwrap();
+        let claim =
+            h.db.vertex(outcome_id(h, &entry.proposal))
+                .unwrap()
+                .unwrap();
         assert_eq!(claim.labels, vec![label::INTENT_OUTCOME]);
         assert_eq!(
             (row.created_at, claim.created_at),
@@ -1966,7 +1965,10 @@ mod case_lifecycle_outcomes {
         let ctx = h.ctx();
         h.runtime.block_on(h.db.compact(&ctx.commit())).unwrap();
         let (vfs, keys) = h.legacy_storage.clone().unwrap();
-        let empty = h.runtime.block_on(Database::open_memory(&ctx.commit(), keys.clone())).unwrap();
+        let empty = h
+            .runtime
+            .block_on(Database::open_memory(&ctx.commit(), keys.clone()))
+            .unwrap();
         drop(std::mem::replace(&mut h.db, empty));
         h.db = h
             .runtime
@@ -2049,7 +2051,14 @@ mod case_lifecycle_outcomes {
 
     #[test]
     fn posting_families_cannot_reuse_a_case_record_key() {
-        for family in ["original", "reversal", "replacement", "pending", "resolution", "batch"] {
+        for family in [
+            "original",
+            "reversal",
+            "replacement",
+            "pending",
+            "resolution",
+            "batch",
+        ] {
             let mut h = harness();
             let (body, request) = request(&h, b"case-collision");
             let key = record_key(&request);
@@ -2072,7 +2081,10 @@ mod case_lifecycle_outcomes {
             };
             if family == "replacement" {
                 h.post_pair(
-                    h.request(h.reversal_of_entry(target, b"case-pair-reversal"), &["post"]),
+                    h.request(
+                        h.reversal_of_entry(target, b"case-pair-reversal"),
+                        &["post"],
+                    ),
                     h.request(occupied, &["post"]),
                 )
                 .unwrap();
@@ -2091,7 +2103,11 @@ mod case_lifecycle_outcomes {
     #[test]
     fn a_case_claim_blocks_postings_and_batches_without_partial_effects() {
         let mut h = harness();
-        let source = h.proposal(h.rent_legs(100), b"case-blocked-source", EntryClass::ORIGINAL);
+        let source = h.proposal(
+            h.rent_legs(100),
+            b"case-blocked-source",
+            EntryClass::ORIGINAL,
+        );
         let target = h.post(h.request(source, &["post"])).unwrap().entry_ref();
         let pending = h.pending(h.rent_legs(200), b"case-blocked-hold");
         let hold = h.post(h.request(pending, &["post"])).unwrap().entry_ref();
@@ -2127,7 +2143,11 @@ mod case_lifecycle_outcomes {
             h.post_pair(reversal, replacement).unwrap_err().code,
             code::IDEMPOTENCY_CONFLICT
         );
-        let member = h.proposal(h.rent_legs(300), b"case-unpublished-member", EntryClass::ORIGINAL);
+        let member = h.proposal(
+            h.rent_legs(300),
+            b"case-unpublished-member",
+            EntryClass::ORIGINAL,
+        );
         assert_eq!(
             h.post_batch(h.batch(&key, vec![member])).unwrap_err().code,
             code::IDEMPOTENCY_CONFLICT
@@ -2145,7 +2165,10 @@ mod case_lifecycle_outcomes {
         let source = h.proposal(h.rent_legs(100), b"case-race-source", EntryClass::ORIGINAL);
         let target = h.post(h.request(source, &["post"])).unwrap().entry_ref();
         let (body, request) = request(&h, b"case-race");
-        let reversal = h.request(h.reversal_of_entry(target, &record_key(&request)), &["post"]);
+        let reversal = h.request(
+            h.reversal_of_entry(target, &record_key(&request)),
+            &["post"],
+        );
         let ctx = h.ctx();
         let PostPreparation::Ready(prepared) = prepare_post(&mut h.db, &ctx, &h.book, reversal)
             .unwrap()
@@ -2183,7 +2206,11 @@ mod case_lifecycle_outcomes {
             if row.created_at != first.recorded_at || row.vid == claim {
                 continue;
             }
-            assert!(row.labels.iter().all(|kind| matches!(*kind, label::ENTRY | label::RESTATEMENT_CASE)));
+            assert!(
+                row.labels
+                    .iter()
+                    .all(|kind| matches!(*kind, label::ENTRY | label::RESTATEMENT_CASE))
+            );
             assert!(created.insert(row.vid));
             publication.create_vertex(row.vid, row.labels, row.props);
         }
@@ -2205,7 +2232,10 @@ mod case_lifecycle_outcomes {
         assert!(retry.already_recorded);
         assert_eq!(retry.control_entry, first.control_entry);
         assert_eq!(retry.recorded_at, original_sequence);
-        assert_eq!(h.db.vertex(first.control_entry).unwrap().unwrap(), original_row);
+        assert_eq!(
+            h.db.vertex(first.control_entry).unwrap().unwrap(),
+            original_row
+        );
         assert!(h.db.vertex(claim).unwrap().is_none());
         assert_eq!(h.db.frontier().unwrap(), head);
         let (_, fresh) = request(&h, b"fresh-after-legacy-case");
@@ -2234,10 +2264,13 @@ mod case_lifecycle_outcomes {
         assert_eq!(retry.recorded_at, original_sequence);
         assert_eq!(h.db.frontier().unwrap(), head);
         assert!(h.db.vertex(claim).unwrap().is_none());
-        assert!(matches!(
-            h.db.delta_since(fgdb_types::CommitSeq(0)),
-            Err(fgdb::ReadError::DeltaCursorRetired { .. })
-        ), "an authentic exact retry does not need capsule history");
+        assert!(
+            matches!(
+                h.db.delta_since(fgdb_types::CommitSeq(0)),
+                Err(fgdb::ReadError::DeltaCursorRetired { .. })
+            ),
+            "an authentic exact retry does not need capsule history"
+        );
         let next = execute(&mut h, &body, &fresh).unwrap().unwrap();
         assert_eq!(next.case.body.ordinal, 2);
         assert_control_claim(&h, &next);
@@ -2268,7 +2301,10 @@ mod case_lifecycle_outcomes {
             let head = h.db.frontier().unwrap();
             let rows = h.db.vertices().unwrap();
             assert!(read_case(&h.db, &h.book, 1).is_err(), "{variant}");
-            assert!(!matches!(execute(&mut h, &body, &request), Ok(Ok(_))), "{variant}");
+            assert!(
+                !matches!(execute(&mut h, &body, &request), Ok(Ok(_))),
+                "{variant}"
+            );
             assert_eq!(h.db.frontier().unwrap(), head, "{variant}");
             assert_eq!(h.db.vertices().unwrap(), rows, "{variant}");
         }
@@ -2282,7 +2318,10 @@ mod case_lifecycle_outcomes {
         write.create_vertex(
             outcome(&h, &original),
             vec![label::INTENT_OUTCOME],
-            vec![(property::FA_PAYLOAD, CanonicalScalar::bytes(vec![0]).unwrap())],
+            vec![(
+                property::FA_PAYLOAD,
+                CanonicalScalar::bytes(vec![0]).unwrap(),
+            )],
         );
         h.write_raw(write);
         let head = h.db.frontier().unwrap();
@@ -2292,7 +2331,9 @@ mod case_lifecycle_outcomes {
                 .unwrap()
                 .for_classes(&[EntryClass::ORIGINAL])
                 .unwrap(),
-            Capability::embedded(PRINCIPAL, &["restate"]).unwrap().with_requires_dry_run(),
+            Capability::embedded(PRINCIPAL, &["restate"])
+                .unwrap()
+                .with_requires_dry_run(),
         ] {
             let mut unauthorized = original.clone();
             unauthorized.capability = capability;

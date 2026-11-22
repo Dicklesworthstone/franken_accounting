@@ -22,7 +22,7 @@ use fa_time::DateDay;
 use crate::args::Args;
 use crate::cli::{
     Ctx, Fail, check_post_planning_options, emit_batch_plan, emit_post_plan, find_event, hex,
-    known_at_read_flag, parse_vid, read_plan_bytes, usage,
+    known_at_read_flag, parse_vid, plan_intent_into_draft, read_plan_bytes, usage,
 };
 use crate::json::{Json, obj, s};
 
@@ -32,7 +32,7 @@ const LIST: &str = "fa rule list [--as-known-at HEAD|<seq>]";
 const SHOW: &str = "fa rule show <ir_digest> [--as-known-at HEAD|<seq>]";
 const ACTIVATE: &str = "fa rule activate <ir_digest> --from YYYY-MM-DD [--key K] --dry-run";
 const COMMIT: &str = "fa rule activate --plan <file|-> --approval <vid> --approval <vid>";
-const DERIVE: &str = "fa rule derive --event <code|vid> [--rule <ir_digest> [--input <name>=<value>]... [--key K]] [--dry-run [--plan-out <new-file>]]";
+const DERIVE: &str = "fa rule derive --event <code|vid> [--rule <ir_digest> [--input <name>=<value>]... [--key K]] [--dry-run [--plan-out <new-file>] | --draft <name> (requires --rule)]";
 const EVAL: &str = "fa rule eval (<rule-file|-> | --rule <ir_digest>) --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
 const TEST: &str = "fa rule test (<rule-file|-> | --rule <ir_digest>) --golden <file|dir>...";
 const GOLDEN: &str = "a golden case: [event] kind = \"sale\", occurred_on = \"2026-03-12\", resources = [\"net:40.00 USD\"]; optional [inputs] as_of = \"2026-03-31\"; [expect] legs = [\"debit 1000 40.00 USD\", \"credit 6000 40.00 USD region=EU\"] with an optional effective = \"2026-03-12\" and, for a rule that reverses, reverse_on = \"2026-04-01\", or refused = \"<part of the refusal>\"";
@@ -42,6 +42,12 @@ pub(crate) fn rule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // The registry admits options for the whole verb. Reject unsupported
     // modes before any handler reads inputs or publishes a control/entry.
     let subcommand = args.positional.get(1).map(String::as_str);
+    if args.flag("--draft").is_some() && subcommand != Some("derive") {
+        return Err(usage(
+            "--draft is supported only by an explicitly selected rule derivation",
+            DERIVE,
+        ));
+    }
     if args.switch("--dry-run") && !matches!(subcommand, Some("activate" | "derive")) {
         return Err(usage(
             "--dry-run is supported only by rule activate and rule derive",
@@ -482,11 +488,12 @@ fn commit_activation(
 }
 
 /// `fa rule derive --rule <ir_digest> --event <code|vid> [--input …] [--key K]`:
-/// Prepare a portable native plan with --dry-run, or post the entry the
-/// version derives from the event. Both paths run the kernel's derivation
-/// and output-authority checks; committing a plan revalidates them.
+/// Prepare a portable native plan with --dry-run, retain a selected intent
+/// with --draft, or post the entry the version derives. Every route runs the
+/// kernel's derivation and output-authority checks; publication revalidates them.
 fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     check_post_planning_options(args)?;
+    let draft = derivation_draft(args)?;
     if args.positional.len() != 2 {
         return Err(usage(
             "rule derive takes no positional; name the version with --rule",
@@ -503,6 +510,12 @@ fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let Some(rule) = args.flag("--rule") else {
+        if draft.is_some() {
+            return Err(usage(
+                "--draft requires one explicit --rule; an automatic selection cannot be flattened into draft members",
+                DERIVE,
+            ));
+        }
         return derive_all(ctx, args, target);
     };
     derive_selected(ctx, args, target, rule, None)
@@ -517,8 +530,9 @@ pub(crate) fn derive_business_intent(
     kind: RuleIntentKind,
 ) -> Result<(), Fail> {
     check_post_planning_options(args)?;
+    derivation_draft(args)?;
     let example = format!(
-        "fa {} --rule <ir_digest> --event <code|vid> [--input <name>=<value>]... [--key K] [--dry-run [--plan-out <new-file>]]",
+        "fa {} --rule <ir_digest> --event <code|vid> [--input <name>=<value>]... [--key K] [--dry-run [--plan-out <new-file>] | --draft <name>]",
         kind.name().to_ascii_lowercase(),
     );
     if args.positional.len() != 1 {
@@ -542,7 +556,6 @@ pub(crate) fn derive_business_intent(
         "--description",
         "--evidence",
         "--period",
-        "--draft",
         "--scenario",
         "--plan",
         "--approval",
@@ -577,6 +590,23 @@ pub(crate) fn derive_business_intent(
             )
         })?;
     derive_selected(ctx, args, event, rule, Some(kind))
+}
+
+fn derivation_draft(args: &Args) -> Result<Option<&str>, Fail> {
+    if args.flag_all("--draft").len() > 1 {
+        return Err(usage("supply exactly one --draft", DERIVE));
+    }
+    let draft = args.flag("--draft");
+    if draft.is_some() && (args.switch("--dry-run") || args.flag("--plan-out").is_some()) {
+        return Err(usage(
+            "--draft retains a rehearsed derivation; it cannot be combined with --dry-run or --plan-out",
+            "choose --draft <name> to retain the intent, or --dry-run to prepare a portable native plan",
+        ));
+    }
+    if draft.is_some_and(str::is_empty) {
+        return Err(usage("--draft requires the owned draft's name", DERIVE));
+    }
+    Ok(draft)
 }
 
 /// Select one immutable version and event, parse only the rule's declared
@@ -625,6 +655,15 @@ fn derive_selected(
         Some(key) => key.to_string(),
         None => default_key(event_vid, &rule, &given)?,
     };
+    if let Some(name) = derivation_draft(args)? {
+        let intent = match kind {
+            Some(kind) => {
+                book.prepare_rule_intent(&cap, kind, &digest, event_vid, &given, key.as_bytes())??
+            }
+            None => book.prepare_rule_entry(&cap, &digest, event_vid, &given, key.as_bytes())??,
+        };
+        return plan_intent_into_draft(&ctx.out, &mut book, cap, name, intent);
+    }
     if args.switch("--dry-run") {
         let intent = match kind {
             Some(kind) => {

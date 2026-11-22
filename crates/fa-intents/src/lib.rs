@@ -1630,11 +1630,8 @@ mod tests {
         );
 
         let rule = PostIntent::rule_derived(rule_proposal(), Vec::new()).unwrap();
-        let batch = PostBatch::for_draft(
-            b"draft".to_vec(),
-            vec![ordinary.clone(), rule.clone()],
-        )
-        .unwrap();
+        let batch =
+            PostBatch::for_draft(b"draft".to_vec(), vec![ordinary.clone(), rule.clone()]).unwrap();
         assert!(batch.is_draft_only());
         assert_eq!(batch.automatic_event(), None);
         let bytes = batch.canonical_bytes().unwrap();
@@ -1664,7 +1661,10 @@ mod tests {
         mislabeled.extend_from_slice(&old[b"FA-BATCH\0".len()..]);
         assert!(PostBatch::decode(&mislabeled).is_err());
         for end in 0..bytes.len() {
-            assert!(PostBatch::decode(&bytes[..end]).is_err(), "truncated at {end}");
+            assert!(
+                PostBatch::decode(&bytes[..end]).is_err(),
+                "truncated at {end}"
+            );
         }
 
         let mut not_trunk = rule.proposal().clone();
@@ -1677,9 +1677,7 @@ mod tests {
             .is_err()
         );
         let reversed = correction_plan(true, false);
-        assert!(
-            PostBatch::for_draft(b"draft".to_vec(), vec![reversed.intent().clone()]).is_err()
-        );
+        assert!(PostBatch::for_draft(b"draft".to_vec(), vec![reversed.intent().clone()]).is_err());
     }
 
     #[test]

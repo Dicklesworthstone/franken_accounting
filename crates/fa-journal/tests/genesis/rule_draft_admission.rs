@@ -22,7 +22,10 @@ fn draft_only_refusal(refusal: Refusal) {
         (refusal::code::STRUCTURE, refusal::exit::USAGE),
         "{refusal}"
     );
-    assert!(refusal.to_string().contains("native draft lifecycle"), "{refusal}");
+    assert!(
+        refusal.to_string().contains("native draft lifecycle"),
+        "{refusal}"
+    );
 }
 
 #[test]
@@ -82,26 +85,24 @@ fn decoded_explicit_rule_draft_profile_cannot_post_plan_or_confirm_on_trunk() {
         certificate.clone(),
     )
     .unwrap();
-    let refusal = h.publish_batch_plan(unauthenticated, &capability).unwrap_err();
+    let refusal = h
+        .publish_batch_plan(unauthenticated, &capability)
+        .unwrap_err();
     assert_eq!(refusal.code, refusal::code::PLAN_INVALIDATED, "{refusal}");
     assert_eq!(h.db.frontier().unwrap(), head);
     assert_eq!(h.db.vertices().unwrap(), vertices);
 
     // Harness-only access to the book's authentication key: no public caller
     // can cause native planning to issue a certificate for this profile.
-    let authentication_key = fgdb_crypto::derive_key(
-        "fa:batch-plan-authentication-key:v1",
-        &h.book.seal_key.0,
-    );
+    let authentication_key =
+        fgdb_crypto::derive_key("fa:batch-plan-authentication-key:v1", &h.book.seal_key.0);
     certificate.authentication = fgdb_crypto::keyed_hash(
         &authentication_key,
         &certificate.authentication_bytes().unwrap(),
     )
     .0;
-    let portable =
-        fa_intents::BatchPlan::new(decoded, entries, periods, certificate).unwrap();
-    let portable =
-        fa_intents::BatchPlan::decode(&portable.canonical_bytes().unwrap()).unwrap();
+    let portable = fa_intents::BatchPlan::new(decoded, entries, periods, certificate).unwrap();
+    let portable = fa_intents::BatchPlan::decode(&portable.canonical_bytes().unwrap()).unwrap();
     draft_only_refusal(h.publish_batch_plan(portable, &capability).unwrap_err());
     assert_eq!(h.db.frontier().unwrap(), head);
     assert_eq!(h.db.vertices().unwrap(), vertices);
@@ -111,7 +112,8 @@ fn decoded_explicit_rule_draft_profile_cannot_post_plan_or_confirm_on_trunk() {
 fn automatic_rule_selection_cannot_be_flattened_into_a_draft_record() {
     let mut h = harness();
     let capability = Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap();
-    h.open_draft(capability.clone(), "automatic-is-not-explicit").unwrap();
+    h.open_draft(capability.clone(), "automatic-is-not-explicit")
+        .unwrap();
     let batch = fa_intents::PostBatch::automatic_rules(
         VId(92),
         b"automatic-draft-attempt".to_vec(),
@@ -139,7 +141,10 @@ fn automatic_rule_selection_cannot_be_flattened_into_a_draft_record() {
         (refusal::code::STRUCTURE, refusal::exit::USAGE),
         "{refusal}"
     );
-    assert!(refusal.to_string().contains("automatic rule selection"), "{refusal}");
+    assert!(
+        refusal.to_string().contains("automatic rule selection"),
+        "{refusal}"
+    );
     assert_eq!(h.db.frontier().unwrap(), head);
     assert_eq!(h.db.vertices().unwrap(), vertices);
     assert!(h.draft("automatic-is-not-explicit").intents.is_empty());
