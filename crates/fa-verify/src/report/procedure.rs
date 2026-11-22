@@ -20,6 +20,9 @@
 //! Graph structuring v2 independently conserves both original leg margins in
 //! every native-unit/legal-entity partition and reconstructs consecutive-gap
 //! transfer chains from the complete all-date live posting population.
+//! Unrecorded-liability v2 screens live Expense/Liability postings against the
+//! authenticated document period's exclusive end, preserving original unit
+//! scales and leg-order ties; it does not establish absence of a prior accrual.
 //! LIBR v2 requires
 //! its account/source handles and effective claim date, and reconstructs one native-unit/entity
 //! stream under its declared intraday and replenishment laws. FIFO and LIFO v2
@@ -77,6 +80,9 @@ pub enum VerifiedProcedureParameters {
     PostClosing,
     /// Document and effective dates resolved only from authenticated periods.
     PeriodBoundary,
+    UnrecordedLiabilities {
+        window_days: u32,
+    },
     UnusualAccounts {
         max_pair_count: u32,
         min_population: u32,
@@ -176,6 +182,7 @@ impl VerifiedProcedureParameters {
             Self::PeriodEndTiming { .. } => "jet.period_end_timing",
             Self::PostClosing => "jet.post_closing",
             Self::PeriodBoundary => "cutoff.period_boundary",
+            Self::UnrecordedLiabilities { .. } => "completeness.unrecorded_liabilities",
             Self::UnusualAccounts { .. } => "jet.unusual_accounts",
             Self::SameSameSame => "duplicates.same_same_same",
             Self::OpenItemsAging { .. } => "aging.open_items",
@@ -201,6 +208,7 @@ impl VerifiedProcedureParameters {
             Self::PeriodEndTiming { .. } => "FA-EVID-L02",
             Self::PostClosing => "FA-EVID-L03",
             Self::PeriodBoundary => "FA-EVID-L11",
+            Self::UnrecordedLiabilities { .. } => "FA-EVID-L44",
             Self::UnusualAccounts { .. } => "FA-EVID-L24",
             Self::SameSameSame => "FA-EVID-L07",
             Self::OpenItemsAging { .. } => "FA-EVID-L12",
@@ -224,7 +232,9 @@ impl VerifiedProcedureParameters {
     pub(crate) fn parameters(self) -> Vec<(&'static str, i128)> {
         let parameters = match self {
             Self::RoundAmounts { round_power } => vec![("round_power", round_power)],
-            Self::PeriodEndTiming { window_days } | Self::SameSameDifferent { window_days } => {
+            Self::PeriodEndTiming { window_days }
+            | Self::SameSameDifferent { window_days }
+            | Self::UnrecordedLiabilities { window_days } => {
                 vec![("window_days", window_days)]
             }
             Self::PostClosing | Self::PeriodBoundary | Self::SameSameSame => Vec::new(),
@@ -377,6 +387,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmounts { .. } => &[("round_power", 3)],
             Self::PeriodEndTiming { .. } => &[("window_days", 3)],
             Self::SameSameDifferent { .. } => &[("window_days", 30)],
+            Self::UnrecordedLiabilities { .. } => &[("window_days", 45)],
             Self::PostClosing | Self::PeriodBoundary | Self::SameSameSame => &[],
             Self::OpenItemsAging { .. } => &aging::DEFAULTS,
             Self::UnusualAccounts { .. } => &unusual_accounts::DEFAULTS,
@@ -444,6 +455,7 @@ impl VerifiedProcedureParameters {
             Self::OpenItemsAging { .. } => "O(open items)",
             Self::UnusualAccounts { .. } => "O(legs log legs + account_pairs log account_pairs)",
             Self::SameSameSame
+            | Self::UnrecordedLiabilities { .. }
             | Self::SameSameDifferent { .. }
             | Self::RoundAmountDensity { .. }
             | Self::RelativeSizeFactor { .. }
@@ -520,6 +532,14 @@ pub enum VerifiedProcedureStatistic {
         effective_period: String,
         document_period: String,
         days: u32,
+    },
+    UnrecordedLiabilityAmount {
+        account: u128,
+        unit: u32,
+        effective_period: String,
+        document_period: String,
+        amount: i128,
+        scale: u8,
     },
     /// Recording-sequence distance from the period's first qualifying close.
     CommitsAfterClose {
@@ -625,6 +645,7 @@ impl VerifiedProcedureStatistic {
             Self::RoundLegs { .. } | Self::AccountRoundLegs { .. } => "round_legs",
             Self::DaysToPeriodEnd { .. } => "days_to_period_end",
             Self::DaysBetweenPeriods { .. } => "days_between_dates",
+            Self::UnrecordedLiabilityAmount { .. } => "unrecorded_liability_amount",
             Self::TracedAmount { .. } => "traced_mantissa",
             Self::CommitsAfterClose { .. } => "commits_after_close",
             Self::AccountPairOccurrences { .. } => "pair_occurrences",
@@ -647,6 +668,7 @@ impl VerifiedProcedureStatistic {
             Self::TracedAmount { mantissa, .. } => *mantissa,
             Self::DaysToPeriodEnd { days, .. } => i128::from(*days),
             Self::DaysBetweenPeriods { days, .. } => i128::from(*days),
+            Self::UnrecordedLiabilityAmount { amount, .. } => *amount,
             Self::CommitsAfterClose { commits, .. } => i128::from(*commits),
             Self::AccountPairOccurrences { count, .. } => i128::from(*count),
             Self::DuplicateEntries { count, .. } => i128::from(*count),
@@ -669,6 +691,7 @@ impl VerifiedProcedureStatistic {
         match self {
             Self::FirstDigitMad { .. } | Self::DigitMad { .. } => 9,
             Self::TracedAmount { scale, .. }
+            | Self::UnrecordedLiabilityAmount { scale, .. }
             | Self::AgedOpenAmount { scale, .. }
             | Self::SplitTotal { scale, .. }
             | Self::StructuredTransfers { scale, .. }
@@ -817,6 +840,7 @@ pub(super) struct EntryPeriod {
 pub(super) struct DocumentPeriod {
     pub date: i32,
     pub code: Option<String>,
+    pub end: Option<i32>,
 }
 
 /// A period transition decoded from its original control payload and checked
@@ -943,6 +967,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "jet.period_end_timing" => ("FA-EVID-L02", Some(("window_days", u32::MAX))),
         "jet.post_closing" => ("FA-EVID-L03", None),
         "cutoff.period_boundary" => ("FA-EVID-L11", None),
+        "completeness.unrecorded_liabilities" => ("FA-EVID-L44", Some(("window_days", u32::MAX))),
         "jet.unusual_accounts" => ("FA-EVID-L24", None),
         "duplicates.same_same_same" => ("FA-EVID-L07", None),
         "aging.open_items" => ("FA-EVID-L12", None),
@@ -962,7 +987,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing and authenticated-period cutoff v1, unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing and authenticated-period cutoff v1, unrecorded-liability and unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
@@ -974,6 +999,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "jet.unusual_accounts"
                 | "numbers.relative_size_factor"
                 | "numbers.threshold_splitting"
+                | "completeness.unrecorded_liabilities"
         )
     {
         return Err(failed(
@@ -997,6 +1023,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         || (matches!(
             id,
             "jet.unusual_accounts"
+                | "completeness.unrecorded_liabilities"
                 | "graph.structuring"
                 | "graph.round_trips"
                 | "benford.first_digit"
@@ -1029,6 +1056,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "benford.second_digit"
                 | "benford.first_two_digits"
                 | "jet.unusual_accounts"
+                | "completeness.unrecorded_liabilities"
                 | "graph.structuring"
                 | "graph.round_trips"
         ))
@@ -1096,6 +1124,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             VerifiedProcedureParameters::RoundAmounts { round_power: value }
         } else if id == "duplicates.same_same_different" {
             VerifiedProcedureParameters::SameSameDifferent { window_days: value }
+        } else if id == "completeness.unrecorded_liabilities" {
+            if value == 0 {
+                return Err(failed(
+                    "procedure_profile",
+                    "unrecorded-liability window_days must be positive",
+                ));
+            }
+            VerifiedProcedureParameters::UnrecordedLiabilities { window_days: value }
         } else {
             VerifiedProcedureParameters::PeriodEndTiming { window_days: value }
         }
@@ -1223,6 +1259,28 @@ fn finding(
             w.count(3)
                 .u8(1)
                 .u128(entry)
+                .u8(4)
+                .bytes(effective_period.as_bytes())
+                .u8(4)
+                .bytes(document_period.as_bytes());
+        }
+        VerifiedProcedureStatistic::UnrecordedLiabilityAmount {
+            account,
+            effective_period,
+            document_period,
+            ..
+        } => {
+            let entry = value.entry.ok_or_else(|| {
+                failed(
+                    "procedure_recomputation",
+                    "unrecorded-liability finding lacks its entry",
+                )
+            })?;
+            w.count(4)
+                .u8(1)
+                .u128(entry)
+                .u8(3)
+                .u128(*account)
                 .u8(4)
                 .bytes(effective_period.as_bytes())
                 .u8(4)
@@ -1887,6 +1945,7 @@ fn recompute_version(
         VerifiedProcedureParameters::PeriodEndTiming { .. }
         | VerifiedProcedureParameters::PostClosing
         | VerifiedProcedureParameters::PeriodBoundary
+        | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
         | VerifiedProcedureParameters::UnusualAccounts { .. }
         | VerifiedProcedureParameters::SameSameSame
         | VerifiedProcedureParameters::OpenItemsAging { .. }
@@ -2009,6 +2068,7 @@ fn recompute_version(
             }
             VerifiedProcedureParameters::SameSameSame
             | VerifiedProcedureParameters::PeriodBoundary
+            | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
             | VerifiedProcedureParameters::OpenItemsAging { .. }
             | VerifiedProcedureParameters::UnusualAccounts { .. }
             | VerifiedProcedureParameters::SameSameDifferent { .. }
@@ -2042,6 +2102,9 @@ fn recompute_version(
         (findings, live_legs, comparisons) = exact_duplicates(&entries, &grouped_population)?;
     } else if profile == VerifiedProcedureParameters::PeriodBoundary {
         findings = cutoff::replay(&grouped_population)?;
+    } else if let VerifiedProcedureParameters::UnrecordedLiabilities { window_days } = profile {
+        (findings, live_legs) =
+            cutoff::unrecorded_liabilities(&grouped_population, window_days, registry)?;
     } else if matches!(profile, VerifiedProcedureParameters::OpenItemsAging { .. }) {
         (findings, live_legs) = aging::replay(profile, effective_through, registry)?;
         live_entries = 0;
@@ -2116,6 +2179,7 @@ fn recompute_version(
         | VerifiedProcedureParameters::SameSameDifferent { .. } => Some(live_entries),
         VerifiedProcedureParameters::FirstDigit { .. }
         | VerifiedProcedureParameters::PeriodBoundary
+        | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
         | VerifiedProcedureParameters::SecondDigit { .. }
         | VerifiedProcedureParameters::FirstTwoDigits { .. }
         | VerifiedProcedureParameters::UnusualAccounts { .. }

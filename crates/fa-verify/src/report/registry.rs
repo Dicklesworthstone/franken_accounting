@@ -551,6 +551,7 @@ pub(super) fn verify_procedure(
             profile,
             super::procedure::VerifiedProcedureParameters::RoundAmountDensity { .. }
                 | super::procedure::VerifiedProcedureParameters::UnusualAccounts { .. }
+                | super::procedure::VerifiedProcedureParameters::UnrecordedLiabilities { .. }
         );
     if integer(row, "version")? != i128::from(version)
         || if profile.is_trace() || aging {

@@ -6,6 +6,7 @@
 
 const ROUND: &[(&str, i128, i128)] = &[("round_power", 0, 30)];
 const WINDOW: &[(&str, i128, i128)] = &[("window_days", 0, u32::MAX as i128)];
+const POST_PERIOD_WINDOW: &[(&str, i128, i128)] = &[("window_days", 1, u32::MAX as i128)];
 const AGING: &[(&str, i128, i128)] = &[
     ("bucket_1", 0, u32::MAX as i128),
     ("bucket_2", 0, u32::MAX as i128),
@@ -76,6 +77,7 @@ pub fn profile(
         ("jet.period_end_timing", 1 | 2) => ("FA-EVID-L02", WINDOW),
         ("jet.post_closing", 1) => ("FA-EVID-L03", &[][..]),
         ("cutoff.period_boundary", 1) => ("FA-EVID-L11", &[][..]),
+        ("completeness.unrecorded_liabilities", 2) => ("FA-EVID-L44", POST_PERIOD_WINDOW),
         ("jet.unusual_accounts", 2) => ("FA-EVID-L24", ACCOUNT_PAIRS),
         ("duplicates.same_same_same", 1) => ("FA-EVID-L07", &[][..]),
         ("aging.open_items", 1) => ("FA-EVID-L12", AGING),
@@ -158,6 +160,33 @@ mod tests {
         assert_eq!(profile(id, 1, Some(0), &[], &[]), None);
         assert_eq!(profile(id, 1, None, &[("window_days", 3)], &[]), None);
         assert_eq!(profile(id, 1, None, &[], &[("account", "1000")]), None);
+    }
+
+    #[test]
+    fn unrecorded_liabilities_requires_v2_and_an_exact_positive_window() {
+        let id = "completeness.unrecorded_liabilities";
+        for days in [1, 45, i128::from(u32::MAX)] {
+            assert_eq!(
+                profile(id, 2, None, &[("window_days", days)], &[]),
+                Some("FA-EVID-L44")
+            );
+        }
+        for days in [-1, 0, i128::from(u32::MAX) + 1] {
+            assert_eq!(profile(id, 2, None, &[("window_days", days)], &[]), None);
+        }
+        for version in [0, 1, 3] {
+            assert_eq!(
+                profile(id, version, None, &[("window_days", 45)], &[]),
+                None
+            );
+        }
+        assert_eq!(profile(id, 2, Some(0), &[("window_days", 45)], &[]), None);
+        assert_eq!(profile(id, 2, None, &[], &[]), None);
+        assert_eq!(profile(id, 2, None, &[("window", 45)], &[]), None);
+        assert_eq!(
+            profile(id, 2, None, &[("window_days", 45)], &[("account", "1000")]),
+            None
+        );
     }
 
     #[test]

@@ -2504,6 +2504,18 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 details.push(("effective_period", s(effective_period)));
                 details.push(("document_period", s(document_period)));
             }
+            crate::report::VerifiedProcedureStatistic::UnrecordedLiabilityAmount {
+                account,
+                unit,
+                effective_period,
+                document_period,
+                ..
+            } => {
+                details.push(("account", s(format!("{account:032x}"))));
+                details.push(("unit", n(u64::from(*unit))));
+                details.push(("effective_period", s(effective_period)));
+                details.push(("document_period", s(document_period)));
+            }
             crate::report::VerifiedProcedureStatistic::DuplicateEntries { entries, .. } => {
                 details.push((
                     "entries",

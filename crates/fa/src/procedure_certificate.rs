@@ -186,7 +186,7 @@ fn offline_unsupported(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §11.1/13.3 (independent procedure replay requires its complete supported input and policy closure)",
-        "select a supported standalone procedure profile with its original canonical registry closure, or replay this selection in its original book; period-boundary cutoff v1 requires no parameters or cutoff and declared document periods at its original known-at, open-item aging v1 requires a cutoff and three ascending bucket edges, tracing v2 requires a claim date and canonical account/source handles, JET round-amount/period-end v2 permits an optional cutoff, and graph round-trips v2 requires max_hops in 2..=8 and no cutoff",
+        "select a supported standalone procedure profile with its original canonical registry closure, or replay this selection in its original book; period-boundary cutoff v1 and unrecorded-liability v2 require declared document periods at their original known-at and no effective cutoff; the latter requires positive window_days; open-item aging v1 requires a cutoff and three ascending bucket edges, tracing v2 requires a claim date and canonical account/source handles, JET round-amount/period-end v2 permits an optional cutoff, and graph round-trips v2 requires max_hops in 2..=8 and no cutoff",
     )
 }
 
@@ -960,6 +960,7 @@ impl ProcedureCertificate {
                 | "jet.unusual_accounts"
                 | "numbers.relative_size_factor"
                 | "numbers.threshold_splitting"
+                | "completeness.unrecorded_liabilities"
         ) {
             EXTENDED_PROCEDURE_CERTIFICATE_FORMAT
         } else {
@@ -970,7 +971,7 @@ impl ProcedureCertificate {
             || evidence != Some(self.report.evidence.as_str())
         {
             return Err(offline_unsupported(
-                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, period-boundary cutoff v1 with declared document periods, unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2 permit an optional cutoff, aging v1 requires a cutoff, and tracing v2 requires a claim date and canonical account/source handles",
+                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, period-boundary cutoff v1 and unrecorded-liability v2 with declared document periods, unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2 permit an optional cutoff, aging v1 requires a cutoff, and tracing v2 requires a claim date and canonical account/source handles",
             ));
         }
         let jet = matches!(
@@ -1469,7 +1470,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         certificate: &ProcedureCertificate,
         journal: &fa_notary::Journal,
     ) -> Outcome<()> {
-        if certificate.report.procedure != "cutoff.period_boundary" {
+        let unrecorded = certificate.report.procedure == "completeness.unrecorded_liabilities";
+        if certificate.report.procedure != "cutoff.period_boundary" && !unrecorded {
             return Ok(Ok(()));
         }
         self.query(cx, |db, book| {
@@ -1514,6 +1516,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 let Some(date) = proposal.document_date else {
                     continue;
                 };
+                // This screen never resolves contemporaneous or future
+                // documents, so their undeclared years are not dependencies.
+                if unrecorded && date >= proposal.effective_date {
+                    continue;
+                }
                 let normal = snapshot.document_period_of(book, date, None)?;
                 let missing = || {
                     Refusal::new(
@@ -1525,8 +1532,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                         ),
                         "plan §7.3/11.1/13.3 (document-period resolution must use authenticated declarations at the original frontier)",
                         format!(
-                            "run fa period create --fiscal-year {} for this book, then create a fresh cutoff.period_boundary certificate at the updated known-at; later declarations cannot repair this historical certificate, which remains replayable in its original book",
-                            normal.fiscal_year
+                            "run fa period create --fiscal-year {} for this book, then create a fresh {} certificate at the updated known-at; later declarations cannot repair this historical certificate, which remains replayable in its original book",
+                            normal.fiscal_year, certificate.report.procedure
                         ),
                     )
                 };

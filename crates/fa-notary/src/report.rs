@@ -534,6 +534,7 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
                     | "jet.unusual_accounts"
                     | "numbers.relative_size_factor"
                     | "numbers.threshold_splitting"
+                    | "completeness.unrecorded_liabilities"
             )
         {
             return Ok(false);

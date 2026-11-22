@@ -2225,6 +2225,7 @@ fn verify_report_with_native_subledger_input(
                         procedure::VerifiedProcedureParameters::PeriodEndTiming { .. }
                             | procedure::VerifiedProcedureParameters::PostClosing
                             | procedure::VerifiedProcedureParameters::PeriodBoundary
+                            | procedure::VerifiedProcedureParameters::UnrecordedLiabilities { .. }
                             | procedure::VerifiedProcedureParameters::GraphRoundTrips { .. }
                     ) && !legs[index].is_empty()
                     {
@@ -2239,14 +2240,25 @@ fn verify_report_with_native_subledger_input(
                             code,
                             effective,
                             end,
-                            document: if request.parameters
-                                == procedure::VerifiedProcedureParameters::PeriodBoundary
-                            {
+                            document: if matches!(request.parameters,
+                                procedure::VerifiedProcedureParameters::PeriodBoundary
+                                    | procedure::VerifiedProcedureParameters::UnrecordedLiabilities { .. }) {
                                 info.document_date
                                     .map(|date| -> Result<_, ReportError> {
+                                        let code = if matches!(request.parameters,
+                                            procedure::VerifiedProcedureParameters::UnrecordedLiabilities { .. })
+                                            && date >= effective {
+                                            None
+                                        } else {
+                                            schema.document_period(info.period, date)?
+                                        };
+                                        let end = code.as_deref().and_then(|code| {
+                                            schema.period_state(code).map(|(_, end, _, _)| end)
+                                        });
                                         Ok(procedure::DocumentPeriod {
                                             date,
-                                            code: schema.document_period(info.period, date)?,
+                                            code,
+                                            end,
                                         })
                                     })
                                     .transpose()?
@@ -2328,6 +2340,7 @@ fn verify_report_with_native_subledger_input(
                 || matches!(
                     request.parameters,
                     procedure::VerifiedProcedureParameters::UnusualAccounts { .. }
+                        | procedure::VerifiedProcedureParameters::UnrecordedLiabilities { .. }
                         | procedure::VerifiedProcedureParameters::GraphRoundTrips { .. }
                 )
             {
