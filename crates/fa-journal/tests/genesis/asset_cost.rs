@@ -70,6 +70,9 @@ fn asset_requirement(h: &mut Harness, dimension: &str, account: VId, required: b
 #[path = "asset_cost/batches.rs"]
 mod batches;
 
+#[path = "asset_cost/calendars.rs"]
+mod calendars;
+
 struct Fixture {
     h: Harness,
     acquisition: EntryRef,

@@ -146,10 +146,30 @@ struct Fixture {
     book: PathBuf,
     evidence: String,
     acquisition: String,
+    first_period: String,
+    acquisition_date: String,
 }
 
 impl Fixture {
     fn new() -> Self {
+        Self::on_calendar(
+            "monthly",
+            None,
+            "2026-01-05",
+            FIRST,
+            &[2026],
+            &[FIRST, "FY2026-P02", "FY2026-P03", "FY2026-P04"],
+        )
+    }
+
+    fn on_calendar(
+        calendar: &str,
+        custom_periods: Option<&str>,
+        acquisition_date: &str,
+        first_period: &str,
+        years: &[i32],
+        service_periods: &[&str],
+    ) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = loop {
             let path = std::env::temp_dir().join(format!(
@@ -164,11 +184,20 @@ impl Fixture {
             }
         };
         let book = dir.join("book");
-        ok(
-            &book,
-            "create book",
-            &["book", "create", "--name", "Asset cost CLI"],
-        );
+        let calendar_file = dir.join("periods.json");
+        let mut create = vec![
+            "book",
+            "create",
+            "--name",
+            "Asset cost CLI",
+            "--calendar",
+            calendar,
+        ];
+        if let Some(periods) = custom_periods {
+            std::fs::write(&calendar_file, periods).unwrap();
+            create.extend(["--periods", calendar_file.to_str().unwrap()]);
+        }
+        ok(&book, "create book", &create);
         let chart = dir.join("chart.json");
         std::fs::write(&chart, r#"{"accounts":[
             {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
@@ -182,12 +211,14 @@ impl Fixture {
             "import chart",
             &["chart", "import", chart.to_str().unwrap()],
         );
-        ok(
-            &book,
-            "materialize year",
-            &["period", "create", "--fiscal-year", "2026"],
-        );
-        for period in [FIRST, "FY2026-P02", "FY2026-P03", "FY2026-P04"] {
+        for year in years {
+            ok(
+                &book,
+                "materialize year",
+                &["period", "create", "--fiscal-year", &year.to_string()],
+            );
+        }
+        for period in service_periods {
             ok(&book, "open service period", &["period", "open", period]);
         }
         let source = dir.join("invoice.txt");
@@ -214,6 +245,8 @@ impl Fixture {
             book,
             evidence: format!("D:{}", text(data(&document), "oid")),
             acquisition: String::new(),
+            first_period: first_period.into(),
+            acquisition_date: acquisition_date.into(),
         };
         let acquisition = fixture.post_source("asset-acquisition", "1500", "1000", "100.00");
         fixture.acquisition = text(data(&acquisition), "vid").into();
@@ -230,10 +263,11 @@ impl Fixture {
             &path,
             format!(
                 r#"{{
-            "effective_date":"2026-01-05","idempotency_key":"{key}","legs":[
+            "effective_date":"{}","idempotency_key":"{key}","legs":[
                 {{"side":"debit","account":"{debit}","amount":"{amount} USD"}},
                 {{"side":"credit","account":"{credit}","amount":"{amount} USD"}}
-            ]}}"#
+            ]}}"#,
+                self.acquisition_date,
             ),
         )
         .unwrap();
@@ -257,7 +291,7 @@ impl Fixture {
             "--leg",
             "0",
             "--first-period",
-            FIRST,
+            &self.first_period,
             "--periods",
             "3",
             "--salvage",
@@ -269,7 +303,7 @@ impl Fixture {
             "--rounding-law",
             "HalfEven",
             "--date",
-            "2026-01-05",
+            &self.acquisition_date,
             "--key",
             name,
         ]
@@ -891,6 +925,161 @@ fn amortization_catches_up_skipped_periods_and_preserves_salvage() {
         assert_eq!(text(data(&noop), "delta"), "0.00 USD");
     }
     assert_eq!(head(&f.book), before);
+}
+
+#[test]
+fn weekly_asset_charges_count_fiscal_periods_across_the_fifty_third_week() {
+    for (calendar, first) in [
+        ("4-4-5:nearest:saturday:12", "FY2025-P12"),
+        ("52-53:nearest:saturday:12", "FY2025-P13"),
+    ] {
+        let f = Fixture::on_calendar(
+            calendar,
+            None,
+            "2025-12-01",
+            first,
+            &[2025, 2026],
+            &[first, "FY2026-P01", "FY2026-P02", "FY2026-P03"],
+        );
+        let (_, _, spec) = f.schedule("retail-machine", "depreciation", "0.00 USD");
+        // The 53rd week lengthens the last fiscal period, not the asset's
+        // explicitly declared number of equal service periods.
+        let initial = f.review("depreciate", "retail-machine", first, "retail-first");
+        assert_charge(&initial, &spec, "33.33 USD", first, "2026-01-03");
+        f.post_review("depreciate", &initial);
+        let after_first = head(&f.book);
+
+        let catchup = f.review(
+            "depreciate",
+            "retail-machine",
+            "FY2026-P02",
+            "retail-catchup",
+        );
+        assert_charge(&catchup, &spec, "66.67 USD", "FY2026-P02", "2026-02-28");
+        assert_eq!(text(data(&catchup), "target"), "100.00 USD");
+        assert_eq!(text(data(&catchup), "recognized"), "33.33 USD");
+        let posted = f.post_review("depreciate", &catchup);
+        ok(
+            &f.book,
+            "reverse catch-up without forgetting fiscal coverage",
+            &[
+                "reverse",
+                text(data(&posted), "vid"),
+                "--reason",
+                "WrongAmount",
+                "--grant",
+                "read",
+            ],
+        );
+        let before = head(&f.book);
+        call(
+            &f.book,
+            "reversal cannot move asset coverage backward",
+            &f.charge_args(
+                "depreciate",
+                "retail-machine",
+                "FY2026-P01",
+                "retail-backward",
+            ),
+            2,
+        );
+        assert_eq!(head(&f.book), before);
+        let replacement = f.review(
+            "depreciate",
+            "retail-machine",
+            "FY2026-P02",
+            "retail-restored",
+        );
+        assert_charge(&replacement, &spec, "66.67 USD", "FY2026-P02", "2026-02-28");
+        f.post_review("depreciate", &replacement);
+        let complete = head(&f.book);
+        let noop = ok(
+            &f.book,
+            "completed fiscal life stays a no-op",
+            &f.charge_args(
+                "depreciate",
+                "retail-machine",
+                "FY2026-P03",
+                "retail-complete",
+            ),
+        );
+        assert_eq!(text(&noop, "event"), "asset_charge_noop");
+        assert_eq!(text(data(&noop), "recognized"), "100.00 USD");
+        let historical = ok(
+            &f.book,
+            "historical register retains original fiscal coverage",
+            &[
+                "schedule",
+                "asset",
+                "register",
+                "--as-known-at",
+                &after_first.to_string(),
+            ],
+        );
+        assert_eq!(
+            text(&rows(data(&historical), "rows")[0], "recognized"),
+            "33.33 USD"
+        );
+        assert_eq!(head(&f.book), complete);
+        ok(
+            &f.book,
+            "verify fiscal asset history",
+            &["verify", "schedules"],
+        );
+    }
+}
+
+#[test]
+fn custom_stub_and_unequal_periods_amortize_by_declared_service_period_count() {
+    let periods = r#"{"years":[
+        {"fiscal_year":2025,"periods":[
+            {"start":"2025-11-01","end":"2025-11-30"},
+            {"start":"2025-12-01","end":"2026-01-03"}
+        ]},
+        {"fiscal_year":2026,"periods":[
+            {"start":"2026-01-04","end":"2026-01-10"},
+            {"start":"2026-01-11","end":"2026-02-28"},
+            {"start":"2026-03-01","end":"2026-12-31"}
+        ]}
+    ]}"#;
+    let f = Fixture::on_calendar(
+        "custom",
+        Some(periods),
+        "2025-12-01",
+        "FY2025-P02",
+        &[2025, 2026],
+        &["FY2025-P02", "FY2026-P01", "FY2026-P02", "FY2026-P03"],
+    );
+    let (_, _, spec) = f.schedule("stub-license", "amortization", "10.00 USD");
+    for (ordinal, period, date, target) in [
+        (1, "FY2025-P02", "2026-01-03", "30.00 USD"),
+        (2, "FY2026-P01", "2026-01-10", "60.00 USD"),
+        (3, "FY2026-P02", "2026-02-28", "90.00 USD"),
+    ] {
+        let review = f.review(
+            "amortize",
+            "stub-license",
+            period,
+            &format!("stub-{ordinal}"),
+        );
+        assert_charge(&review, &spec, "30.00 USD", period, date);
+        assert_eq!(text(data(&review), "target"), target);
+        f.post_review("amortize", &review);
+    }
+    let before = head(&f.book);
+    let noop = ok(
+        &f.book,
+        "retain salvage after the complete custom lifetime",
+        &f.charge_args("amortize", "stub-license", "FY2026-P03", "stub-complete"),
+    );
+    assert_eq!(text(&noop, "event"), "asset_charge_noop");
+    assert_eq!(text(data(&noop), "target"), "90.00 USD");
+    assert_eq!(head(&f.book), before);
+    ok(
+        &f.book,
+        "verify custom asset history",
+        &["verify", "schedules"],
+    );
 }
 
 #[test]

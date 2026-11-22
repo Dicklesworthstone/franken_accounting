@@ -387,6 +387,55 @@ impl FiscalCalendar {
         Ok(out)
     }
 
+    /// A consecutive index of complete normal fiscal periods in this calendar.
+    ///
+    /// Only an exact generated [`PeriodDef`] is accepted. Opening, adjustment,
+    /// closing and historical periods do not consume a scheduled period. The
+    /// difference between two indices counts fiscal periods, regardless of
+    /// their civil-month boundaries or lengths (including a 53rd retail week).
+    ///
+    /// Monthly calendars retain the civil-month index. Week calendars use
+    /// twelve or thirteen periods per fiscal year; custom calendars start at
+    /// zero and count only their explicitly declared periods. Indices from
+    /// different calendars are not comparable.
+    pub fn normal_period_index(&self, period: &PeriodDef) -> Result<i64, DateError> {
+        let canonical = self
+            .periods_for_year(period.fiscal_year)?
+            .into_iter()
+            .find(|candidate| {
+                candidate.kind == PeriodKind::Normal && candidate.ordinal == period.ordinal
+            });
+        if canonical.as_ref() != Some(period) {
+            return Err(DateError::InvalidCalendar(format!(
+                "{} is not a canonical normal period in calendar {}",
+                period.code, self.id
+            )));
+        }
+        let ordinal = i64::from(period.ordinal) - 1;
+        match &self.kind {
+            CalendarKind::Monthly12 { .. } => i64::from(period.start.year())
+                .checked_mul(12)
+                .and_then(|year| year.checked_add(i64::from(period.start.month()) - 1))
+                .ok_or(DateError::OutOfRange),
+            CalendarKind::Weeks { .. } => i64::from(period.fiscal_year)
+                .checked_mul(12)
+                .and_then(|year| year.checked_add(ordinal))
+                .ok_or(DateError::OutOfRange),
+            CalendarKind::Week5253 { .. } => i64::from(period.fiscal_year)
+                .checked_mul(13)
+                .and_then(|year| year.checked_add(ordinal))
+                .ok_or(DateError::OutOfRange),
+            CalendarKind::Custom { years } => years
+                .iter()
+                .take_while(|year| year.fiscal_year < period.fiscal_year)
+                .try_fold(ordinal, |index, year| {
+                    let count =
+                        i64::try_from(year.bounds.len() - 1).map_err(|_| DateError::OutOfRange)?;
+                    index.checked_add(count).ok_or(DateError::OutOfRange)
+                }),
+        }
+    }
+
     /// The fiscal year containing `day`.
     pub fn fiscal_year_of(&self, day: DateDay) -> Result<i32, DateError> {
         self.validate()?;
@@ -726,6 +775,115 @@ mod tests {
         }
         let thirteen = CustomYear::from_periods(2026, &periods).unwrap();
         vec![stub, thirteen]
+    }
+
+    #[test]
+    fn normal_indices_preserve_monthly_civil_months_for_every_year_start() {
+        for month in 1..=12 {
+            let cal = FiscalCalendar::monthly("monthly-index", month, 1).unwrap();
+            let mut previous = None;
+            for year in 2025..=2027 {
+                for period in cal.periods_for_year(year).unwrap() {
+                    if period.kind != PeriodKind::Normal {
+                        assert!(cal.normal_period_index(&period).is_err());
+                        continue;
+                    }
+                    let index = cal.normal_period_index(&period).unwrap();
+                    assert_eq!(
+                        index,
+                        i64::from(period.start.year()) * 12 + i64::from(period.start.month()) - 1
+                    );
+                    if let Some(before) = previous {
+                        assert_eq!(index, before + 1);
+                    }
+                    previous = Some(index);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn normal_indices_count_retail_periods_across_fifty_three_week_years() {
+        let end = YearEndRule::LastWeekdayOfMonth {
+            weekday: Weekday::Saturday,
+            month: 12,
+        };
+        let mut calendars: Vec<_> = [WeekPattern::W445, WeekPattern::W454, WeekPattern::W544]
+            .into_iter()
+            .map(|pattern| FiscalCalendar::weeks("retail-index", pattern, end, 1).unwrap())
+            .collect();
+        calendars.push(FiscalCalendar::week_52_53("thirteen-index", end, 1).unwrap());
+        for cal in calendars {
+            let count = if matches!(cal.kind, CalendarKind::Week5253 { .. }) {
+                13
+            } else {
+                12
+            };
+            let mut previous = None;
+            let mut saw_fifty_three = false;
+            for year in 2020..=2032 {
+                let (start, end) = cal.year_bounds(year).unwrap();
+                saw_fifty_three |= end.0 - start.0 + 1 == 53 * 7;
+                let normal: Vec<_> = cal
+                    .periods_for_year(year)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|period| period.kind == PeriodKind::Normal)
+                    .collect();
+                assert_eq!(normal.len(), count);
+                for period in normal {
+                    let index = cal.normal_period_index(&period).unwrap();
+                    if let Some(before) = previous {
+                        assert_eq!(index, before + 1);
+                    }
+                    previous = Some(index);
+                }
+            }
+            assert!(saw_fifty_three);
+        }
+    }
+
+    #[test]
+    fn custom_normal_indices_cross_variable_length_years_without_month_inference() {
+        let cal = FiscalCalendar::custom("custom-index", custom_years(), 1).unwrap();
+        let indices: Vec<_> = [2025, 2026]
+            .into_iter()
+            .flat_map(|year| cal.periods_for_year(year).unwrap())
+            .filter(|period| period.kind == PeriodKind::Normal)
+            .map(|period| cal.normal_period_index(&period).unwrap())
+            .collect();
+        assert_eq!(indices, (0..15).collect::<Vec<i64>>());
+    }
+
+    #[test]
+    fn normal_index_rejects_forged_and_special_definitions_and_range_overflow() {
+        let cal = FiscalCalendar::monthly("canonical-index", 1, 1).unwrap();
+        let definitions = cal.periods_for_year(2026).unwrap();
+        let original = definitions[0].clone();
+        let mut forged = vec![original.clone(); 6];
+        forged[0].code.push('x');
+        forged[1].fiscal_year += 1;
+        forged[2].ordinal += 1;
+        forged[3].kind = PeriodKind::Historical;
+        forged[4].start = forged[4].start.succ().unwrap();
+        forged[5].end = forged[5].end.pred().unwrap();
+        for period in forged.into_iter().chain(
+            definitions
+                .into_iter()
+                .filter(|period| period.kind != PeriodKind::Normal),
+        ) {
+            assert!(cal.normal_period_index(&period).is_err(), "{period:?}");
+        }
+        for year in [i32::MIN, i32::MAX] {
+            let mut period = original.clone();
+            period.fiscal_year = year;
+            assert!(cal.normal_period_index(&period).is_err());
+        }
+        let invalid = FiscalCalendar {
+            adjustment_periods: MAX_ADJUSTMENT_PERIODS + 1,
+            ..cal
+        };
+        assert!(invalid.normal_period_index(&original).is_err());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Finite source-bound straight-line depreciation and amortization.
 //!
-//! Immutable terms select one original acquisition debit, full monthly fiscal
+//! Immutable terms select one original acquisition debit, complete normal fiscal
 //! periods and a separate accumulated-cost account. Charges are cumulative
 //! targets less the exact recorded charges and reversals, never caller amounts.
 //! Both charge legs retain the selected acquisition debit's exact dimensions;
@@ -22,7 +22,7 @@ use fa_model::{
 };
 use fa_money::{Amount, Side, UnitKind};
 use fa_policy::{Capability, Op, Reach};
-use fa_time::{CalendarKind, DateDay, PeriodKind};
+use fa_time::{CalendarKind, DateDay, PeriodDef, PeriodKind};
 use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
@@ -173,7 +173,7 @@ fn invalid(detail: impl core::fmt::Display) -> Refusal {
         exit::USAGE,
         format!("asset cost: {detail}"),
         "plan §10.2 / Appendix B (source-bound Depreciate and Amortize)",
-        "use an immutable native-currency acquisition schedule, full normal monthly periods and its journal-derived Adjusting charge",
+        "use an immutable native-currency acquisition schedule, complete normal fiscal periods and its journal-derived Adjusting charge",
     )
 }
 
@@ -277,11 +277,9 @@ fn period<V: Vfs + Clone>(
     selected: &PeriodRef,
     at: CommitSeq,
 ) -> Outcome<PeriodRow> {
-    if selected.calendar != book.calendar.id
-        || !matches!(book.calendar.kind, CalendarKind::Monthly12 { .. })
-    {
+    if selected.calendar != book.calendar.id {
         return Ok(Err(invalid(
-            "the schedule requires the book's Monthly12 calendar",
+            "the schedule requires the book's fiscal calendar",
         )));
     }
     let Some(definition) = crate::policy::calendar_period(book, &selected.code) else {
@@ -305,14 +303,70 @@ fn period<V: Vfs + Clone>(
     }
     if period.kind != PeriodKind::Normal || definition.kind != PeriodKind::Normal {
         return Ok(Err(invalid(
-            "asset charges require normal full monthly periods",
+            "asset charges require complete normal fiscal periods",
         )));
     }
     Ok(Ok(period))
 }
 
-fn period_index(period: &PeriodRow) -> i64 {
-    i64::from(period.start.year()) * 12 + i64::from(period.start.month()) - 1
+fn period_index(book: &BookContext, period: &PeriodRow) -> Result<i64, KernelError> {
+    book.calendar
+        .normal_period_index(&PeriodDef {
+            code: period.code.clone(),
+            fiscal_year: period.fiscal_year,
+            ordinal: period.ordinal,
+            kind: period.kind,
+            start: period.start,
+            end: period.end,
+        })
+        .map_err(corrupt)
+}
+
+/// A new calendar shape must contain the entire declared useful life. Monthly
+/// schedules retain their original eligibility and exact period indices.
+fn life_coverage(book: &BookContext, first: &PeriodRow, life: u32) -> Outcome<()> {
+    if matches!(book.calendar.kind, CalendarKind::Monthly12 { .. }) {
+        return Ok(Ok(()));
+    }
+    let Some(offset) = life.checked_sub(1) else {
+        return Ok(Err(invalid(
+            "useful life must contain at least one fiscal period",
+        )));
+    };
+    let Some(last) = period_index(book, first)?.checked_add(i64::from(offset)) else {
+        return Ok(Err(invalid("the scheduled fiscal period range overflows")));
+    };
+    match &book.calendar.kind {
+        CalendarKind::Custom { years } => {
+            let count = years.iter().try_fold(0i64, |total, year| {
+                let periods = i64::try_from(year.bounds.len() - 1).map_err(corrupt)?;
+                total
+                    .checked_add(periods)
+                    .ok_or_else(|| corrupt("custom period count overflow"))
+            })?;
+            if last >= count {
+                return Ok(Err(invalid(
+                    "the useful life extends beyond the custom calendar's declared normal periods",
+                )));
+            }
+        }
+        CalendarKind::Weeks { .. } | CalendarKind::Week5253 { .. } => {
+            let per_year = if matches!(book.calendar.kind, CalendarKind::Week5253 { .. }) {
+                13
+            } else {
+                12
+            };
+            let year = match i32::try_from(last.div_euclid(per_year)) {
+                Ok(year) => year,
+                Err(e) => return Ok(Err(invalid(e))),
+            };
+            if let Err(e) = book.calendar.periods_for_year(year) {
+                return Ok(Err(invalid(e)));
+            }
+        }
+        CalendarKind::Monthly12 { .. } => {}
+    }
+    Ok(Ok(()))
 }
 
 pub(crate) fn source_guard_vid(book: Id128, source: VId) -> VId {
@@ -505,7 +559,7 @@ fn recognized_ceiling<V: Vfs + Clone>(
     };
     let first =
         period(db, book, &schedule.spec.first_period, at)?.map_err(|r| corrupt(r.message))?;
-    let elapsed = u32::try_from(high - period_index(&first) + 1).map_err(corrupt)?;
+    let elapsed = u32::try_from(high - period_index(book, &first)? + 1).map_err(corrupt)?;
     Ok(fa_money::straight_line::cumulative(
         cost,
         schedule.spec.salvage,
@@ -633,12 +687,10 @@ fn history<V: Vfs + Clone>(
                         "the reviewed asset state changed before its charge was published",
                     ));
                 }
-                let elapsed = u32::try_from(period_index(&selected) - period_index(&first) + 1)
+                let selected_index = period_index(book, &selected)?;
+                let elapsed = u32::try_from(selected_index - period_index(book, &first)? + 1)
                     .map_err(corrupt)?;
-                if state
-                    .high_water
-                    .is_some_and(|high| period_index(&selected) < high)
-                {
+                if state.high_water.is_some_and(|high| selected_index < high) {
                     return Err(corrupt("charge moved behind its historical coverage"));
                 }
                 let target = fa_money::straight_line::cumulative(
@@ -667,7 +719,7 @@ fn history<V: Vfs + Clone>(
                         "recorded charge differs from its exact cumulative law",
                     ));
                 }
-                state.high_water = Some(period_index(&selected));
+                state.high_water = Some(selected_index);
                 state.covered_through = Some(basis.through_period.clone());
                 delta
             } else if entry.proposal.class == EntryClass::REVERSAL {
@@ -879,6 +931,9 @@ fn accounts<V: Vfs + Clone>(
         Ok(p) => p,
         Err(r) => return Ok(Err(r)),
     };
+    if let Err(r) = life_coverage(book, &first, schedule.spec.useful_life_periods)? {
+        return Ok(Err(r));
+    }
     if source.effective_date > first.end.pred().map_err(corrupt)? {
         return Ok(Err(invalid(
             "the first depreciation period cannot precede acquisition",
@@ -1306,7 +1361,8 @@ fn derive<V: Vfs + Clone>(
         Ok(p) => p,
         Err(r) => return Ok(Err(r)),
     };
-    let elapsed = match u32::try_from(period_index(&selected) - period_index(&first) + 1) {
+    let selected_index = period_index(book, &selected)?;
+    let elapsed = match u32::try_from(selected_index - period_index(book, &first)? + 1) {
         Ok(v) => v,
         Err(e) => return Ok(Err(invalid(e))),
     };
@@ -1316,10 +1372,7 @@ fn derive<V: Vfs + Clone>(
         )));
     }
     let state = &history.states[&schedule.entry.vid];
-    if state
-        .high_water
-        .is_some_and(|high| period_index(&selected) < high)
-    {
+    if state.high_water.is_some_and(|high| selected_index < high) {
         return Ok(Err(invalid(
             "the through-period precedes previously recognized coverage, including reversed charges",
         )));

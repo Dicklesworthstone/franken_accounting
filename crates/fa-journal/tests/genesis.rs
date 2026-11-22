@@ -504,6 +504,22 @@ fn harness_configured_coverage(
     cash_limit: Option<BalanceLimit>,
     coverage: bool,
 ) -> Harness {
+    harness_with_calendar(
+        entities,
+        time_zone_policy,
+        cash_limit,
+        coverage,
+        FiscalCalendar::monthly("cal", 1, 1).unwrap(),
+    )
+}
+
+fn harness_with_calendar(
+    entities: Vec<LegalEntitySpec>,
+    time_zone_policy: Option<TimeZonePolicy>,
+    cash_limit: Option<BalanceLimit>,
+    coverage: bool,
+    calendar: FiscalCalendar,
+) -> Harness {
     let runtime = RuntimeBuilder::new().build().expect("runtime");
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let ctx = PurposeContexts::narrow_runtime_root(&root);
@@ -519,7 +535,6 @@ fn harness_configured_coverage(
 
     let units = UnitRegistry::with_defaults();
     let usd = units.lookup("USD").unwrap();
-    let calendar = FiscalCalendar::monthly("cal", 1, 1).unwrap();
     let book_id = Id128([9; 16]);
     let spec = BookSpec {
         book_id,
