@@ -50,12 +50,20 @@ pub const MAX_OUTCOME_BYTES: usize = 52 + 48 * fa_model::limits::MAX_BATCH_ENTRI
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct VerifiedBatchPlan(());
 
-/// The existing single-item carrying law composes only when no member can
-/// change another member's source. This token admits the complete batch's
-/// shape and execution posture; fresh preparation also checks source and
-/// valuation account isolation before staging the outcome or publishing.
+/// Distinct carrying targets compose when no member changes another member's
+/// relief basis. A native draft may also create an exact quoted Original
+/// before its one application. Only the complete ordered batch proves this
+/// exception; ordinary batch and portable-plan admissions cannot acquire it.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct IndependentCarryingBatch(());
+pub(crate) struct IndependentCarryingBatch {
+    fresh_draft_sources: bool,
+}
+
+impl IndependentCarryingBatch {
+    pub(crate) const fn admits_fresh_sources(self) -> bool {
+        self.fresh_draft_sources
+    }
+}
 
 /// One exact foreign-application reversal is the complete monetary content
 /// of a native draft. No predecessor can alter its carrying source before
@@ -347,10 +355,14 @@ fn independent_carrying_batch(
     batch: &PostBatch,
     admission: Admission,
 ) -> Outcome<Option<IndependentCarryingBatch>> {
-    if !batch
+    let proposals: Vec<_> = batch
         .members()
         .iter()
-        .any(|member| crate::carrying::is_source_bound(member.proposal()))
+        .map(|member| member.proposal())
+        .collect();
+    if !proposals
+        .iter()
+        .any(|proposal| crate::carrying::is_source_bound(proposal))
     {
         return Ok(Ok(None));
     }
@@ -365,9 +377,36 @@ fn independent_carrying_batch(
     ) {
         return Ok(Err(crate::carrying::unsupported_batch()));
     }
+    carrying_batch_shape(
+        &proposals,
+        matches!(
+            admission,
+            Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
+        ),
+    )
+}
+
+fn carrying_batch_shape(
+    proposals: &[&fa_model::EntryPayload],
+    admit_fresh_sources: bool,
+) -> Outcome<Option<IndependentCarryingBatch>> {
+    let identities: BTreeMap<_, _> = proposals
+        .iter()
+        .enumerate()
+        .map(|(index, proposal)| {
+            (
+                fa_model::entry_vid(
+                    proposal.book_id,
+                    &proposal.principal_ref.0.to_le_bytes(),
+                    &proposal.idempotency_key,
+                ),
+                index,
+            )
+        })
+        .collect();
     let mut targets = BTreeSet::new();
-    for (index, member) in batch.members().iter().enumerate() {
-        let proposal = member.proposal();
+    let mut fresh_draft_sources = false;
+    for (index, proposal) in proposals.iter().enumerate() {
         if !crate::carrying::is_source_bound(proposal) {
             // Ordinary companions cannot change target liveness, apply to
             // an open item, or add another committed-prefix derivation.
@@ -392,8 +431,7 @@ fn independent_carrying_batch(
                 crate::carrying::unsupported_batch(),
             )));
         }
-        let applications: Option<Vec<_>> = member
-            .proposal()
+        let applications: Option<Vec<_>> = proposal
             .legs
             .iter()
             .filter(|leg| !leg.settles.is_empty())
@@ -429,9 +467,33 @@ fn independent_carrying_batch(
                     ),
                 )));
             }
+            if let Some(&source_index) = identities.get(&application.target.vid) {
+                let source = proposals[source_index];
+                if !admit_fresh_sources
+                    || source_index >= index
+                    || !crate::carrying::fresh_source_shape(source)?
+                    || proposal.base_totals.as_ref().is_none_or(|totals| {
+                        totals.fx_law_oid != crate::fx::FxLawId::SettlementCarryingBasis.oid()
+                    })
+                {
+                    return Ok(Err(member_refusal(
+                        index,
+                        Refusal::new(
+                            code::SETTLE_SHAPE,
+                            exit::REFUSAL,
+                            "a draft settlement may depend only on an earlier quoted Original with no other carrying effect on its target",
+                            "plan §5.7–5.10 / §15.2 (ordered draft source derivation)",
+                            "plan the quoted invoice first, retain its exact reviewed handle, and use one SettlementCarryingBasis application per target leg",
+                        ),
+                    )));
+                }
+                fresh_draft_sources = true;
+            }
         }
     }
-    Ok(Ok(Some(IndependentCarryingBatch(()))))
+    Ok(Ok(Some(IndependentCarryingBatch {
+        fresh_draft_sources,
+    })))
 }
 
 /// Complete the carrying proof only after every member passed native
@@ -443,6 +505,7 @@ fn admit_carrying_batch_accounts<V: Vfs + Clone>(
     book: &BookContext,
     entries: &[Entry],
     at: CommitSeq,
+    fresh_sources: bool,
 ) -> Outcome<()> {
     ctx.query()
         .checkpoint()
@@ -454,6 +517,42 @@ fn admit_carrying_batch_accounts<V: Vfs + Clone>(
         .filter(|leg| !leg.settles.is_empty())
         .map(|leg| leg.account_ref)
         .collect();
+    let mut fresh_legs = BTreeSet::new();
+    if fresh_sources {
+        let identities: BTreeMap<_, _> = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                (
+                    fa_model::entry_vid(
+                        entry.proposal.book_id,
+                        &entry.proposal.principal_ref.0.to_le_bytes(),
+                        &entry.proposal.idempotency_key,
+                    ),
+                    index,
+                )
+            })
+            .collect();
+        for (index, entry) in entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| crate::carrying::is_source_bound(&entry.proposal))
+        {
+            for application in entry.proposal.legs.iter().flat_map(|leg| &leg.settles) {
+                if let Some(&source) = identities.get(&application.target.vid) {
+                    if source >= index
+                        || entries[source].entry_ref(application.target.vid) != application.target
+                    {
+                        return Ok(Err(member_refusal(
+                            index,
+                            crate::carrying::unsupported_batch(),
+                        )));
+                    }
+                    fresh_legs.insert((source, usize::from(application.ordinal)));
+                }
+            }
+        }
+    }
     let chart = crate::chart::read_at(db, book, at)?;
     // Carrying replay protects every retained route epoch, including a
     // future-effective declaration. Selecting only today's map would let
@@ -477,8 +576,10 @@ fn admit_carrying_batch_accounts<V: Vfs + Clone>(
                     return Ok(Err(member_refusal(index, refusal)));
                 }
             }
-        } else if proposal.legs.iter().any(|leg| {
-            (!foreign && sources.contains(&leg.account_ref))
+        } else if proposal.legs.iter().enumerate().any(|(ordinal, leg)| {
+            (!foreign
+                && sources.contains(&leg.account_ref)
+                && !fresh_legs.contains(&(index, ordinal)))
                 || routes
                     .iter()
                     .any(|(_, route)| route.valuation_account == leg.account_ref)
@@ -488,14 +589,108 @@ fn admit_carrying_batch_accounts<V: Vfs + Clone>(
                 Refusal::new(
                     code::SETTLE_SHAPE,
                     exit::REFUSAL,
-                    "atomic FX companions cannot post to a carried source or valuation account outside an exact allocated release",
+                    "atomic FX companions cannot affect a carried source or valuation account outside its exact new source leg or allocated release",
                     "plan §5.7–5.10 (independent carrying-value sources)",
-                    "keep ordinary postings outside the participating source and valuation accounts, and use the prepared allocated release for valuation relief",
+                    "keep other ordinary legs outside the participating source and valuation accounts, and use the prepared allocated release for valuation relief",
                 ),
             )));
         }
     }
     Ok(Ok(()))
+}
+
+/// Reproduce the exact ordered membership of a recorded dependent carrying
+/// batch. A same-sequence entry on its own is not a source witness: the original
+/// outcome, its complete membership and every member's immutable identity must
+/// agree before historical validation uses a newly created invoice.
+pub(crate) fn recorded_carrying_members<V: Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    reference: EntryRef,
+    recorded_at: CommitSeq,
+) -> Outcome<Vec<Entry>> {
+    let invalid = || crate::carrying::unsupported_batch();
+    let Some(before) = recorded_at.0.checked_sub(1).map(CommitSeq) else {
+        return Ok(Err(invalid()));
+    };
+    let edges = db.edges_at(recorded_at)?;
+    let memberships: Vec<_> = edges
+        .iter()
+        .filter(|edge| edge.entry.relation == relation::IN_BATCH && edge.entry.src == reference.vid)
+        .collect();
+    let [membership] = memberships.as_slice() else {
+        return Ok(Err(invalid()));
+    };
+    let outcome = membership.entry.dst;
+    let Some(root) = db.vertex_at(outcome, recorded_at)? else {
+        return Ok(Err(invalid()));
+    };
+    if !original_vertex(db, &root, recorded_at, before)? {
+        return Ok(Err(invalid()));
+    }
+    let (body, born) = outcome_of(db, &ctx.query(), &root, recorded_at)?;
+    if born != recorded_at || !body.entries.contains(&reference) {
+        return Ok(Err(invalid()));
+    }
+    let expected: BTreeSet<_> = body.entries.iter().map(|entry| entry.vid).collect();
+    let mut actual = BTreeSet::new();
+    for edge in edges
+        .iter()
+        .filter(|edge| edge.entry.relation == relation::IN_BATCH && edge.entry.dst == outcome)
+    {
+        if edge.entry.eid != edge_id(relation::IN_BATCH, edge.entry.src, outcome)
+            || edge.entry.created_at != recorded_at
+            || edge
+                .entry
+                .retired_at
+                .is_some_and(|retired| retired <= recorded_at)
+            || !edge.props.is_empty()
+            || !actual.insert(edge.entry.src)
+        {
+            return Ok(Err(invalid()));
+        }
+    }
+    if expected.len() != body.entries.len() || actual != expected {
+        return Ok(Err(invalid()));
+    }
+    let mut entries = Vec::with_capacity(body.entries.len());
+    for member in &body.entries {
+        ctx.query()
+            .checkpoint()
+            .map_err(WriteTxnError::Interrupted)?;
+        let Some(row) = db.vertex_at(member.vid, recorded_at)? else {
+            return Ok(Err(invalid()));
+        };
+        if row.labels.as_slice() != [label::ENTRY]
+            || !original_vertex(db, &row, recorded_at, before)?
+        {
+            return Ok(Err(invalid()));
+        }
+        let entry = crate::entry_storage::decode_at(db, &row, recorded_at)?;
+        if entry.proposal.book_id != book.book_id
+            || entry.proposal.branch_id != fa_model::Id128::TRUNK
+            || planned_entry_ref(&entry).map_err(|refusal| KernelError::Corrupt(refusal.message))?
+                != *member
+            || !crate::entry_storage::mirrors_match(&row, &entry)?
+        {
+            return Ok(Err(invalid()));
+        }
+        entries.push(entry);
+    }
+    let proposals: Vec<_> = entries.iter().map(|entry| &entry.proposal).collect();
+    let proof = match carrying_batch_shape(&proposals, true)? {
+        Ok(Some(proof)) => proof,
+        Ok(None) => return Ok(Err(invalid())),
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if !proof.admits_fresh_sources() {
+        return Ok(Err(invalid()));
+    }
+    if let Err(refusal) = admit_carrying_batch_accounts(db, ctx, book, &entries, before, true)? {
+        return Ok(Err(refusal));
+    }
+    Ok(Ok(entries))
 }
 
 /// A committed-prefix lot derivation composes only if no earlier member
@@ -2041,8 +2236,15 @@ fn stage_batch_with<V: Vfs + Clone>(
         txn.abort();
         return Ok(Err(refusal));
     }
-    if carrying.is_some()
-        && let Err(refusal) = admit_carrying_batch_accounts(db, ctx, book, &resolved, txn.basis())?
+    if let Some(carrying) = carrying
+        && let Err(refusal) = admit_carrying_batch_accounts(
+            db,
+            ctx,
+            book,
+            &resolved,
+            txn.basis(),
+            carrying.admits_fresh_sources(),
+        )?
     {
         txn.abort();
         return Ok(Err(refusal));

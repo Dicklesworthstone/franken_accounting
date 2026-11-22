@@ -780,6 +780,7 @@ pub(super) fn verify_history(
         registry,
         &rates,
         envelopes,
+        records,
         infos,
         legs,
         &parsed,

@@ -148,6 +148,47 @@ impl DraftSourceAdmission {
         &self.capability
     }
 
+    /// Resolve one reviewed dependency from this owner's intent log. Only
+    /// complete retained Entries are usable: a historical proposal or digest
+    /// alone cannot stand in for the effects the native preview admitted.
+    /// This grants no publication authority; every new append and promotion
+    /// still replays the complete ordered draft under its retained planners.
+    pub(crate) fn retained_source_entry<V: asupersync::fs::Vfs + Clone>(
+        &self,
+        db: &Database<V>,
+        ctx: &PurposeContexts,
+        book: &BookContext,
+        vid: VId,
+    ) -> Outcome<Option<Entry>> {
+        if let Err(refusal) = self.recheck(db, book)? {
+            return Ok(Err(refusal));
+        }
+        let view = match owned_draft(db, ctx, book, &self.capability, &self.name)? {
+            Ok(view) => view,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut found = None;
+        for planned in &view.intents {
+            let proposal = planned.intent.proposal();
+            if proposal.class != EntryClass::ORIGINAL
+                || fa_model::entry_vid(
+                    book.book_id,
+                    &proposal.principal_ref.0.to_le_bytes(),
+                    &proposal.idempotency_key,
+                ) != vid
+            {
+                continue;
+            }
+            if found.is_some() {
+                return Err(KernelError::Corrupt(
+                    "a draft repeats a retained source identity".into(),
+                ));
+            }
+            found = planned.resolved_entry.clone();
+        }
+        Ok(Ok(found))
+    }
+
     /// Re-admit before observing sources and after any suspended source I/O.
     /// Point reads suffice: preparation does not return the retained draft's
     /// members, and the eventual Plan replays its complete ordered history.

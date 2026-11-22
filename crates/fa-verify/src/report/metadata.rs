@@ -112,9 +112,35 @@ fn period_creation_identity(book: &[u8; 16], body: &[u8]) -> Result<u128, Report
     ))
 }
 
+/// Literal source shape decoded from the authenticated canonical proposal.
+/// This grants no authority and does not replace the valuation or lineage laws.
+#[derive(Default)]
+pub(super) struct EntrySourceShape {
+    pub lifecycle_free: bool,
+    pub aggregate_basis: bool,
+    pub extension_free: bool,
+}
+
+pub(super) fn entry_source_shape(
+    proposal: &[u8],
+    envelope: &LeafEnvelope,
+) -> Result<EntrySourceShape, ReportError> {
+    let mut shape = EntrySourceShape::default();
+    entry_info_with_shape(proposal, envelope, Some(&mut shape))?;
+    Ok(shape)
+}
+
 pub(super) fn entry_info<'a>(
     proposal: &'a [u8],
     envelope: &LeafEnvelope,
+) -> Result<EntryInfo<'a>, ReportError> {
+    entry_info_with_shape(proposal, envelope, None)
+}
+
+fn entry_info_with_shape<'a>(
+    proposal: &'a [u8],
+    envelope: &LeafEnvelope,
+    source_shape: Option<&mut EntrySourceShape>,
 ) -> Result<EntryInfo<'a>, ReportError> {
     let mut first = Reader::new(proposal);
     first.u16("entry.major")?;
@@ -339,8 +365,11 @@ pub(super) fn entry_info<'a>(
     let mut case_member = None;
     let mut prior_period_adjustment = None;
     let mut cash_policy_body = false;
+    let mut aggregate_basis = false;
+    let mut extension_free = true;
     if minor >= 1 {
         let n = r.count(MAX_ENVELOPE_LIST, 6, "entry.extensions")?;
+        extension_free = n == 0;
         let mut previous = None;
         for _ in 0..n {
             let tag = r.u16("extension.tag")?;
@@ -352,6 +381,9 @@ pub(super) fn entry_info<'a>(
                 ));
             }
             previous = Some(tag);
+            // Intrinsic close, revaluation, prior-period adjustment,
+            // allocated carrying, lot disposal and asset-charge sources.
+            aggregate_basis |= matches!(tag, 12 | 16 | 36 | 37 | 38 | 39);
             if tag == 12 {
                 if envelope.class != 8
                     || !matches!(n, 1 | 2)
@@ -520,6 +552,11 @@ pub(super) fn entry_info<'a>(
     };
     if let Some(occurrence) = recurring {
         identity = occurrence;
+    }
+    if let Some(shape) = source_shape {
+        shape.lifecycle_free = !has_control && !has_pending && supersession.is_empty();
+        shape.aggregate_basis = aggregate_basis;
+        shape.extension_free = extension_free;
     }
     Ok(EntryInfo {
         schema,

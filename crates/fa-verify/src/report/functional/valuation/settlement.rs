@@ -14,6 +14,7 @@ use super::{
 use std::collections::{BTreeMap, BTreeSet};
 
 type Target = (usize, u16);
+type Components = BTreeMap<usize, Vec<(std::ops::Range<usize>, Target)>>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct AllocationRoute {
@@ -176,6 +177,7 @@ struct History<'a> {
     registry: &'a registry::FunctionalRegistry,
     rates: &'a BTreeMap<[u8; 32], Rate>,
     envelopes: &'a [LeafEnvelope],
+    records: &'a [(usize, &'a [u8])],
     legs: &'a [Vec<Leg>],
     parsed: &'a BTreeMap<usize, ParsedEntry>,
     migration_activations: &'a BTreeMap<u64, u64>,
@@ -337,6 +339,7 @@ impl History<'_> {
         entry: usize,
         ordinal: usize,
         identities: &BTreeMap<u128, usize>,
+        infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
     ) -> Result<Target, ReportError> {
         let leg = &self.legs[entry][ordinal];
         let [reference] = self.parsed[&entry].details[ordinal].settlements.as_slice() else {
@@ -347,10 +350,31 @@ impl History<'_> {
             .ok_or_else(|| invalid("carrying target identity is absent from the prefix"))?;
         let source_envelope = &self.envelopes[target];
         let envelope = &self.envelopes[entry];
+        let same_publication = source_envelope.commit_seq == envelope.commit_seq;
+        let fresh_source = if same_publication {
+            let (length, record) = self.records[target];
+            let shape = metadata::entry_source_shape(&record[..length], source_envelope)?;
+            source_envelope.class == 1
+                && source_envelope.branch_id == [0; 16]
+                && infos[&target].origin == 0
+                && shape.lifecycle_free
+                && shape.extension_free
+                && self.parsed[&target]
+                    .details
+                    .iter()
+                    .all(|detail| detail.settlements.is_empty())
+                && self.parsed[&entry]
+                    .base
+                    .as_ref()
+                    .is_some_and(|claim| claim.law == law_oid(4))
+        } else {
+            false
+        };
         if reference.digest != source_envelope.record_digest
             || source_envelope.book_id != envelope.book_id
             || source_envelope.branch_id != envelope.branch_id
-            || source_envelope.commit_seq >= envelope.commit_seq
+            || source_envelope.commit_seq > envelope.commit_seq
+            || same_publication && !fresh_source
             || source_envelope.class == 12
                 && self
                     .migration_activations
@@ -367,7 +391,7 @@ impl History<'_> {
                     .is_none_or(|claim| claim.law != law_oid(11))
         {
             return Err(invalid(
-                "application must fully name a matching posted target from an earlier publication",
+                "application must name an exact earlier target or one fresh quoted Original in an unambiguous atomic publication",
             ));
         }
         let source = self.legs[target]
@@ -393,6 +417,98 @@ impl History<'_> {
             ));
         }
         Ok((target, reference.ordinal))
+    }
+
+    /// The envelope ordinal is VID order, not execution order. A fresh,
+    /// nonapplying Original and its unique carrying consumer instead form an
+    /// acyclic accounting dependency. No other sibling may change that source
+    /// or its dedicated valuation account. Native admission separately proves
+    /// that the source was staged before its consumer.
+    fn fresh_publication_targets(
+        &self,
+        group: &[usize],
+        components: &Components,
+        routes: &BTreeMap<u128, (u128, u128)>,
+    ) -> Result<BTreeSet<Target>, ReportError> {
+        let sequence = self.envelopes[group[0]].commit_seq;
+        let fresh: BTreeSet<_> = group
+            .iter()
+            .flat_map(|index| components.get(index).into_iter().flatten())
+            .filter_map(|(_, target)| {
+                (self.envelopes[target.0].commit_seq == sequence).then_some(*target)
+            })
+            .collect();
+        if fresh.is_empty() {
+            return Ok(fresh);
+        }
+        let mut targets = BTreeSet::new();
+        for index in group {
+            for (_, target) in components.get(index).into_iter().flatten() {
+                if !targets.insert(*target) {
+                    return Err(invalid(
+                        "a fresh-source publication requires one carrying effect per target leg",
+                    ));
+                }
+            }
+        }
+        let sources: BTreeSet<_> = targets
+            .iter()
+            .map(|(source, ordinal)| self.legs[*source][usize::from(*ordinal)].account)
+            .collect();
+        let valuations: BTreeSet<_> = routes
+            .iter()
+            .filter(|(source, _)| sources.contains(*source))
+            .map(|(_, (valuation, _))| *valuation)
+            .collect();
+        for &index in group {
+            let envelope = &self.envelopes[index];
+            let entry = &self.parsed[&index];
+            // Native draft promotion co-publishes its lifecycle record.
+            if envelope.class == 25 && self.legs[index].is_empty() {
+                continue;
+            }
+            let (length, record) = self.records[index];
+            let shape = metadata::entry_source_shape(&record[..length], envelope)?;
+            if carries(entry) {
+                let allocated = entry
+                    .base
+                    .as_ref()
+                    .is_some_and(|claim| claim.law == law_oid(10));
+                if !matches!(envelope.class, 1 | 7)
+                    || !shape.lifecycle_free
+                    || shape.aggregate_basis && !allocated
+                    || !allocated
+                        && self.legs[index]
+                            .iter()
+                            .any(|leg| valuations.contains(&leg.account))
+                {
+                    return Err(invalid(
+                        "fresh-source carrying siblings cannot undo, revalue or poison a source's valuation account",
+                    ));
+                }
+                // Allocated companions retain the complete route coverage
+                // check below; the fresh target itself cannot be allocated.
+            } else if envelope.class != 1
+                || !shape.lifecycle_free
+                || shape.aggregate_basis
+                || entry
+                    .details
+                    .iter()
+                    .any(|detail| !detail.settlements.is_empty())
+                || self.legs[index].iter().enumerate().any(|(ordinal, leg)| {
+                    valuations.contains(&leg.account)
+                        || sources.contains(&leg.account)
+                            && !u16::try_from(ordinal)
+                                .ok()
+                                .is_some_and(|ordinal| fresh.contains(&(index, ordinal)))
+                })
+            {
+                return Err(invalid(
+                    "fresh-source companions must be nonapplying Originals isolated from carried source and valuation accounts",
+                ));
+            }
+        }
+        Ok(fresh)
     }
 
     fn ranges(&self, index: usize) -> Result<Vec<std::ops::Range<usize>>, ReportError> {
@@ -681,6 +797,7 @@ pub(super) fn verify(
     registry: &registry::FunctionalRegistry,
     rates: &BTreeMap<[u8; 32], Rate>,
     envelopes: &[LeafEnvelope],
+    records: &[(usize, &[u8])],
     infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
     legs: &[Vec<Leg>],
     parsed: &BTreeMap<usize, ParsedEntry>,
@@ -694,6 +811,7 @@ pub(super) fn verify(
         registry,
         rates,
         envelopes,
+        records,
         legs,
         parsed,
         migration_activations,
@@ -762,7 +880,7 @@ pub(super) fn verify(
         }
     }
     let mut targets: BTreeMap<Target, Carrying> = BTreeMap::new();
-    let mut components: BTreeMap<usize, Vec<(std::ops::Range<usize>, Target)>> = BTreeMap::new();
+    let mut components = Components::new();
     for &index in &order {
         if envelopes[index].class == 4 || !carries(&parsed[&index]) {
             continue;
@@ -792,7 +910,7 @@ pub(super) fn verify(
         }
         let mut seen = BTreeSet::new();
         for range in ranges {
-            let target = history.target(index, range.start, &identities)?;
+            let target = history.target(index, range.start, &identities, infos)?;
             if !seen.insert(target) {
                 return Err(invalid(
                     "settlement components must name distinct target legs",
@@ -814,11 +932,13 @@ pub(super) fn verify(
         let end =
             cursor + order[cursor..].partition_point(|index| envelopes[*index].commit_seq == seq);
         let group = &order[cursor..end];
+        let fresh = history.fresh_publication_targets(group, &components, &routes)?;
         let mut impacts: BTreeMap<Target, Vec<(usize, Effect)>> = BTreeMap::new();
         let mut allocations = Vec::new();
         let mut release_coverage = BTreeMap::new();
-        // Every new operation observes the same complete pre-publication
-        // prefix. Revaluation itself forbids monetary/schema siblings.
+        // Existing sources observe the complete pre-publication prefix.
+        // A proved fresh dependency starts from its independently checked
+        // Original native/base amounts. Revaluation still forbids siblings.
         for &index in group {
             for update in revaluations.verify_entry(index, &checked)? {
                 allocations.push((index, update));
@@ -888,7 +1008,7 @@ pub(super) fn verify(
             } else {
                 let mut current = Vec::new();
                 for (range, target) in components.get(&index).into_iter().flatten() {
-                    if !live.contains(&target.0) {
+                    if !live.contains(&target.0) && !fresh.contains(target) {
                         return Err(invalid(
                             "settlement target is reversed at its precommit prefix",
                         ));
