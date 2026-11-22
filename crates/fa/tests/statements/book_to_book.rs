@@ -312,6 +312,146 @@ impl BridgeFixture {
     }
 }
 
+#[test]
+fn native_parent_replay_rejects_a_valid_certificate_from_a_different_same_id_history() {
+    let f = BridgeFixture::new();
+    let through = day(2026, 1, 31);
+    let read = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    let reconcile = Capability::embedded(PRINCIPAL, &["read", "reconcile"]).unwrap();
+    let genuine = f
+        .parent
+        .book
+        .certify_trial_balance(fa::TrialBalanceSelection::AsOf(through), Some(f.parent_at))
+        .unwrap()
+        .unwrap();
+    let source = f
+        .parent
+        .book
+        .replay_parent_trial_balance(&read, &genuine.certificate)
+        .unwrap()
+        .unwrap();
+    assert_eq!(source.book_id(), f.parent.book.context().book_id);
+    assert_eq!(source.known_at(), f.parent_at);
+    let native = f
+        .layer
+        .book
+        .reconcile_book_to_book_from_parent(&reconcile, &source, None, Some(through), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(native, f.reconcile(through, None).unwrap());
+    assert_eq!(expense(&native).parent_net, 1_000);
+
+    // A self-consistent certificate can claim the same book and prefix while
+    // coming from a completely different source history. Its content digest
+    // alone is not evidence that the actual parent carried these amounts.
+    let mut alternate = Fixture::new(0xb4);
+    alternate.transfer(
+        day(2026, 1, 5),
+        b"parent-expense",
+        alternate.usd,
+        ("6000", "1000"),
+        9_000,
+    );
+    let substituted = alternate
+        .book
+        .certify_trial_balance(fa::TrialBalanceSelection::AsOf(through), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(substituted.certificate.book_id, genuine.certificate.book_id);
+    assert_eq!(
+        substituted.certificate.known_at,
+        genuine.certificate.known_at
+    );
+    let decoded =
+        ReportCertificate::decode(&substituted.certificate.canonical_bytes().unwrap()).unwrap();
+    assert!(
+        f.parent
+            .book
+            .replay_parent_trial_balance(&read, &decoded)
+            .unwrap()
+            .is_err()
+    );
+
+    let head = f.parent.book.head().unwrap();
+    for denied in [
+        Capability::embedded(PRINCIPAL, &["reconcile"]).unwrap(),
+        read.clone().for_accounts(&["1000"]).unwrap(),
+        read.clone()
+            .for_books(&[f.layer.book.context().book_id])
+            .unwrap(),
+    ] {
+        let genuine_denial = f
+            .parent
+            .book
+            .replay_parent_trial_balance(&denied, &genuine.certificate)
+            .unwrap()
+            .unwrap_err();
+        let substitute_denial = f
+            .parent
+            .book
+            .replay_parent_trial_balance(&denied, &decoded)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            genuine_denial, substitute_denial,
+            "authority precedes source replay"
+        );
+    }
+    assert_eq!(f.parent.book.head().unwrap(), head);
+}
+
+#[test]
+fn native_parent_source_keeps_its_actual_civil_cutoff_and_refuses_activity() {
+    let f = BridgeFixture::new();
+    let read = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    let reconcile = Capability::embedded(PRINCIPAL, &["read", "reconcile"]).unwrap();
+    let later = f
+        .parent
+        .book
+        .certify_trial_balance(
+            fa::TrialBalanceSelection::AsOf(day(2026, 2, 28)),
+            Some(f.parent_at),
+        )
+        .unwrap()
+        .unwrap();
+    let source = f
+        .parent
+        .book
+        .replay_parent_trial_balance(&read, &later.certificate)
+        .unwrap()
+        .unwrap();
+    let refused = f
+        .layer
+        .book
+        .reconcile_book_to_book_from_parent(&reconcile, &source, Some(JANUARY), None, None)
+        .unwrap()
+        .unwrap_err();
+    assert!(refused.message.contains("cutoff"), "{refused}");
+    let matching = f
+        .layer
+        .book
+        .reconcile_book_to_book_from_parent(&reconcile, &source, Some(FEBRUARY), None, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(matching.effective_through, day(2026, 2, 28));
+    let activity = f
+        .parent
+        .book
+        .certify_trial_balance(
+            fa::TrialBalanceSelection::Activity(vec![JANUARY.into()]),
+            Some(f.parent_at),
+        )
+        .unwrap()
+        .unwrap();
+    let refused = f
+        .parent
+        .book
+        .replay_parent_trial_balance(&read, &activity.certificate)
+        .unwrap()
+        .unwrap_err();
+    assert!(refused.message.contains("period activity"), "{refused}");
+}
+
 fn expense(report: &fa::consolidation::BookToBookReconciliation) -> &BookToBookBridgeRow {
     report
         .bridge

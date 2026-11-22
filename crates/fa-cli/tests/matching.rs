@@ -500,6 +500,8 @@ fn book_to_book_schedule_m1_bridge_and_planted_negatives() {
     );
 
     // Reconcile via --parent-book and decode canonical BookToBookBridge bytes.
+    let native_parent_head = head(&gaap);
+    let native_layer_head = head(&tax);
     let reconciled = ok(
         &tax,
         &[
@@ -512,6 +514,16 @@ fn book_to_book_schedule_m1_bridge_and_planted_negatives() {
         ],
     );
     assert_eq!(text(&reconciled, "event"), "book_to_book_reconciled");
+    assert_eq!(
+        head(&gaap),
+        native_parent_head,
+        "internal source certification is read-only"
+    );
+    assert_eq!(
+        head(&tax),
+        native_layer_head,
+        "native-source reconciliation is read-only"
+    );
     let bridge_data = data(&reconciled);
     let bridge_digest = text(bridge_data, "bridge_digest").to_string();
     let bridge_hex = text(bridge_data, "bytes");
@@ -545,7 +557,8 @@ fn book_to_book_schedule_m1_bridge_and_planted_negatives() {
     assert_eq!(text(meals_exp, "reason_code"), "M1-PERM-MEALS");
     assert_eq!(meals_exp.get("permanent"), Some(&Json::Bool(true)));
 
-    // Also reconcile via certified parent trial balance hex (--parent-certificate, the MCP path).
+    // A supplied certificate must replay against the native parent. Its
+    // self-consistent hashes alone grant no cross-book source authority.
     let cert_out = Command::new(env!("CARGO_BIN_EXE_fa"))
         .arg("--book")
         .arg(&gaap)
@@ -562,6 +575,24 @@ fn book_to_book_schedule_m1_bridge_and_planted_negatives() {
         .find(|j| text(j, "event") == "report_certificate")
         .expect("report_certificate event");
     let cert_hex = text(data(&cert_line), "bytes");
+    let layer_head = head(&tax);
+    let parent_head = head(&gaap);
+    for args in [
+        vec!["recon", "anchor", "--parent-certificate", cert_hex],
+        vec![
+            "recon",
+            "book-to-book",
+            "--period",
+            "FY2026-P03",
+            "--parent-certificate",
+            cert_hex,
+        ],
+    ] {
+        let (status, refused) = run(&tax, &args);
+        assert_eq!(status, 3, "{}", refused.render());
+        assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-194");
+        assert!(text(data(&refused), "message").contains("does not authenticate"));
+    }
     let via_cert = ok(
         &tax,
         &[
@@ -571,9 +602,127 @@ fn book_to_book_schedule_m1_bridge_and_planted_negatives() {
             "FY2026-P03",
             "--parent-certificate",
             cert_hex,
+            "--parent-book",
+            gaap.to_str().unwrap(),
         ],
     );
     assert_eq!(text(data(&via_cert), "bridge_digest"), bridge_digest);
+    let anchor_retry = ok(
+        &tax,
+        &[
+            "recon",
+            "anchor",
+            "--parent-book",
+            gaap.to_str().unwrap(),
+            "--parent-certificate",
+            cert_hex,
+        ],
+    );
+    assert_eq!(
+        data(&anchor_retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+
+    // Plant a balanced false parent output and repair both public hashes.
+    // The artifact still decodes; only replay against the original parent
+    // can establish that these monetary amounts were never its report.
+    let certificate_bytes: Vec<u8> = cert_hex
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let mut forged = fa::ReportCertificate::decode(&certificate_bytes).unwrap();
+    let mut false_output = fa_registers::TrialBalance::decode(&forged.output).unwrap();
+    let debit = false_output
+        .rows
+        .iter_mut()
+        .find(|row| row.code == "5000")
+        .unwrap();
+    debit.debits += 1;
+    let unit = debit.unit_id;
+    false_output
+        .rows
+        .iter_mut()
+        .find(|row| row.code == "1500")
+        .unwrap()
+        .credits += 1;
+    let totals = false_output.unit_totals.get_mut(&unit).unwrap();
+    totals.0 += 1;
+    totals.1 += 1;
+    forged.output = false_output.canonical_bytes().unwrap();
+    forged.output_digest = fa_verify::blake3::hash_parts(b"fa:report-output:v1", &[&forged.output]);
+    let body = forged.canonical_bytes().unwrap();
+    forged.digest = fa_verify::blake3::hash_parts(
+        fa::certificate::CERTIFICATE_FORMAT,
+        &[&body[..body.len() - 32]],
+    );
+    let forged_bytes = forged.canonical_bytes().unwrap();
+    fa::ReportCertificate::decode(&forged_bytes).expect("forgery has consistent public hashes");
+    let forged_hex = fa_verify::blake3::hex(&forged_bytes);
+    for args in [
+        vec![
+            "recon",
+            "anchor",
+            "--parent-book",
+            gaap.to_str().unwrap(),
+            "--parent-certificate",
+            forged_hex.as_str(),
+        ],
+        vec![
+            "recon",
+            "book-to-book",
+            "--period",
+            "FY2026-P03",
+            "--parent-book",
+            gaap.to_str().unwrap(),
+            "--parent-certificate",
+            forged_hex.as_str(),
+        ],
+    ] {
+        let (status, refused) = run(&tax, &args);
+        assert_ne!(status, 0, "{}", refused.render());
+        assert_eq!(text(&refused, "event"), "error");
+    }
+    assert_eq!(
+        head(&tax),
+        layer_head,
+        "parent reads and refusals do not publish in the layer"
+    );
+    assert_eq!(
+        head(&gaap),
+        parent_head,
+        "parent verification never publishes in its source"
+    );
+
+    let absent_parent = dir.join("unopened-parent");
+    let authority = LaunchAuthority::new(
+        tax.clone(),
+        None,
+        "tax-reader",
+        LaunchProfile::Preparer,
+        &["read", "reconcile"],
+    )
+    .unwrap();
+    let bound_args: Vec<_> = [
+        "recon",
+        "book-to-book",
+        "--period",
+        "FY2026-P03",
+        "--parent-book",
+        absent_parent.to_str().unwrap(),
+        "--json",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    let (status, output) = fa_with_authority(&bound_args, Files::default(), &authority, true);
+    assert_eq!(status, 2, "{output:?}");
+    assert!(
+        !absent_parent.exists(),
+        "a bound request cannot open a second host book"
+    );
 
     // Planted negative 1 (ParentBookRestated): advancing GAAP parent without re-anchoring refuses.
     let gaap_late = dir.join("gaap_late.json");

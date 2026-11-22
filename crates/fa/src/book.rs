@@ -4773,8 +4773,37 @@ impl Book {
         ))
     }
 
-    /// Reconcile this `AdjustmentLayer` book against its parent book's stock
-    /// trial balance at `period` or `as_of` (`recon.book_to_book`, plan §12.2, FA-INV-13).
+    /// Replay a parent stock certificate against this book's retained native
+    /// history under current whole-book Read authority. A content-addressed
+    /// external certificate is not itself an authenticated parent source.
+    pub fn replay_parent_trial_balance(
+        &self,
+        capability: &fa_policy::Capability,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<crate::consolidation::ReplayedParentTrialBalance> {
+        with_store!(&self.store, core => core.replay_parent_trial_balance(
+            &self.purposes(), capability, certificate,
+        ))
+    }
+
+    /// Reconcile a parent source replayed against its native book, checking
+    /// full unit identity for all nonzero parent and adjustment-layer rows.
+    pub fn reconcile_book_to_book_from_parent(
+        &self,
+        capability: &fa_policy::Capability,
+        parent: &crate::consolidation::ReplayedParentTrialBalance,
+        period: Option<&str>,
+        as_of: Option<fa_time::DateDay>,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::consolidation::BookToBookReconciliation> {
+        with_store!(&self.store, core => core.reconcile_book_to_book_from_parent(
+            &self.purposes(), capability, parent, period, as_of, known_at,
+        ))
+    }
+
+    /// Arithmetic bridge over caller-supplied parent stock rows. This legacy
+    /// helper does not authenticate their source or unit definitions; use
+    /// [`Self::reconcile_book_to_book_from_parent`] for native source replay.
     #[allow(clippy::too_many_arguments)]
     pub fn reconcile_book_to_book(
         &self,

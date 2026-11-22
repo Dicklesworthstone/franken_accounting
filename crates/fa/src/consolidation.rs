@@ -944,10 +944,88 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(())
     }
 
-    /// Reconcile this `AdjustmentLayer` book against its parent book's stock
-    /// trial balance at `period` or `as_of`, producing a deterministic,
-    /// round-trip-verified [`BookToBookReconciliation`] (`recon.book_to_book`,
-    /// plan §12.2, FA-INV-13, bead `fa-259c`).
+    /// Replay a parent stock certificate against this book's retained history
+    /// under current whole-book Read authority. The resulting opaque source
+    /// binds the native book, prefix, rows and complete unit definitions.
+    /// Decoding an externally supplied certificate alone cannot create one.
+    pub fn replay_parent_trial_balance(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<ReplayedParentTrialBalance> {
+        self.query(cx, |db, book| {
+            let at = match crate::subledger::admitted_at(
+                db,
+                book,
+                capability,
+                Some(certificate.known_at),
+            )? {
+                Ok(at) => at,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let report = match crate::certificate::replay(db, cx, book, certificate)? {
+                Ok(report) => report,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            if report.activity {
+                return Ok(Err(refusal_book_to_book(
+                    "a parent source must be cumulative stock, not period activity",
+                    "select a native cumulative trial balance or an as-of stock certificate",
+                )));
+            }
+            crate::certificate::context_at(db, book, at)?;
+            Ok(Ok(ReplayedParentTrialBalance {
+                book_id: book.book_id,
+                known_at: at,
+                report,
+                units: book.units.clone(),
+            }))
+        })
+    }
+
+    /// Reconcile a parent source already replayed against its actual native
+    /// book. Every unit used by either book must have the same complete
+    /// definition in both registries before their mantissas are combined.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconcile_book_to_book_from_parent(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        parent: &ReplayedParentTrialBalance,
+        period: Option<&str>,
+        as_of: Option<DateDay>,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<BookToBookReconciliation> {
+        self.query(cx, |db, book| {
+            if let Err(denial) =
+                fa_policy::require(capability, fa_policy::Op::Reconcile, "book-to-book bridge")
+            {
+                return Ok(Err(fa_journal::policy::refusal(&denial)));
+            }
+            let at = match crate::subledger::admitted_at(db, book, capability, known_at)? {
+                Ok(at) => at,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            reconcile_book_to_book_at(
+                db,
+                book,
+                at,
+                parent.book_id,
+                parent.known_at,
+                &parent.report,
+                Some(&parent.units),
+                period,
+                as_of,
+            )
+        })
+    }
+
+    /// Arithmetic reconciliation over caller-supplied parent rows. The caller
+    /// must independently establish their source and normalize their units;
+    /// this compatibility helper cannot authenticate a bare trial balance.
+    /// Use [`Self::reconcile_book_to_book_from_parent`] for native source replay
+    /// and unit-identity validation (`recon.book_to_book`, plan §12.2).
     #[allow(clippy::too_many_arguments)]
     pub fn reconcile_book_to_book(
         &self,
@@ -977,6 +1055,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 parent_book_id,
                 parent_known_at,
                 parent_tb,
+                None,
                 period,
                 as_of,
             )
@@ -1005,7 +1084,34 @@ pub struct AdjustmentLayerAnchored {
     pub already_recorded: bool,
 }
 
-/// Deterministic, verified book-to-book reconciliation result (`recon.book_to_book`).
+/// A parent stock source replayed against its actual retained native book.
+/// Private fields prevent a decoded external envelope or arbitrary rows from
+/// masquerading as native replay. This is an in-process source, not a portable
+/// signed proof; importing such a proof requires a separate trusted verifier.
+#[derive(Clone, Debug)]
+pub struct ReplayedParentTrialBalance {
+    book_id: Id128,
+    known_at: CommitSeq,
+    report: fa_registers::TrialBalance,
+    units: fa_money::UnitRegistry,
+}
+
+impl ReplayedParentTrialBalance {
+    #[must_use]
+    pub fn book_id(&self) -> Id128 {
+        self.book_id
+    }
+
+    #[must_use]
+    pub fn known_at(&self) -> CommitSeq {
+        self.known_at
+    }
+}
+
+/// Deterministic book-to-book arithmetic and explanation closure.
+/// Parent source and unit identity are established by the native
+/// `reconcile_book_to_book_from_parent` entry point; the raw-row compatibility
+/// helper leaves those premises with its caller.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BookToBookReconciliation {
     pub effective_through: DateDay,
@@ -1077,6 +1183,7 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
     parent_book_id: Id128,
     parent_known_at: CommitSeq,
     parent_tb: &fa_registers::TrialBalance,
+    parent_units: Option<&fa_money::UnitRegistry>,
     period: Option<&str>,
     as_of: Option<DateDay>,
 ) -> Outcome<BookToBookReconciliation> {
@@ -1216,6 +1323,12 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
 
     let layered_own =
         fa_registers::balance_as_of(db, book, through, Some(at)).map_err(BookError::from)?;
+    if let Some(parent_units) = parent_units
+        && let Err(refusal) =
+            validate_bridge_units(parent_tb, &layered_own, parent_units, &book.units)
+    {
+        return Ok(Err(refusal));
+    }
     let mut layered_cells = parent_cells.clone();
     for row in &layered_own.rows {
         if row.debits == 0 && row.credits == 0 {
@@ -1406,4 +1519,151 @@ fn concordat_book_to_book_refusal(
         }
     };
     refusal_book_to_book(why, fix)
+}
+
+/// UnitId is local to a registry epoch, not a cross-book identity. Check the
+/// union of both stocks: a layer-only adjustment can introduce an alias even
+/// when the parent's selected stock has no amount in that numeric unit.
+fn validate_bridge_units(
+    parent: &fa_registers::TrialBalance,
+    layer: &fa_registers::TrialBalance,
+    parent_units: &fa_money::UnitRegistry,
+    layer_units: &fa_money::UnitRegistry,
+) -> Result<(), Refusal> {
+    let used: BTreeSet<_> = parent
+        .rows
+        .iter()
+        .chain(&layer.rows)
+        .filter(|row| row.debits != 0 || row.credits != 0)
+        .map(|row| UnitId(row.unit_id))
+        .collect();
+    for id in used {
+        let (Some(parent_unit), Some(layer_unit)) = (parent_units.get(id), layer_units.get(id))
+        else {
+            return Err(refusal_book_to_book(
+                format!(
+                    "used unit id {} is not declared in both parent and adjustment-layer registries",
+                    id.0
+                ),
+                "use matching declared unit definitions in both books before combining their balances",
+            ));
+        };
+        if parent_unit != layer_unit {
+            return Err(refusal_book_to_book(
+                format!(
+                    "used unit id {} has different definitions: parent {} at scale {}, layer {} at scale {}; unit kind and rounding law must also agree",
+                    id.0,
+                    parent_unit.spelling(),
+                    parent_unit.scale,
+                    layer_unit.spelling(),
+                    layer_unit.scale,
+                ),
+                "match unit code, scale, version, kind and rounding law; currency translation requires an explicit conversion rather than reusing a numeric unit id",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod parent_unit_tests {
+    use super::*;
+    use fa_money::{Unit, UnitKind, UnitRegistry};
+
+    fn unit(code: &str, scale: u8) -> Unit {
+        Unit {
+            code: code.into(),
+            scale,
+            version: 0,
+            kind: UnitKind::Currency {
+                iso4217: match code {
+                    "EUR" => 978,
+                    "JPY" => 392,
+                    _ => 840,
+                },
+            },
+            rounding_default: RoundingLaw::HalfEven,
+        }
+    }
+
+    fn registry(units: impl IntoIterator<Item = Unit>) -> UnitRegistry {
+        let mut registry = UnitRegistry::empty();
+        for unit in units {
+            registry.register(unit).unwrap();
+        }
+        registry
+    }
+
+    fn stock(unit: Option<u32>) -> fa_registers::TrialBalance {
+        fa_registers::TrialBalance {
+            periods: Vec::new(),
+            known_at: CommitSeq(1),
+            effective_through: Some(DateDay(0)),
+            activity: false,
+            rows: unit
+                .into_iter()
+                .map(|unit_id| fa_registers::TbRow {
+                    account: VId(1),
+                    code: "1000".into(),
+                    name: "Cash".into(),
+                    account_type: fa_model::AccountType::ASSET,
+                    unit_id,
+                    debits: 100,
+                    credits: 0,
+                    debits_pending: 0,
+                    credits_pending: 0,
+                })
+                .collect(),
+            unit_totals: BTreeMap::new(),
+            pending_unit_totals: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn same_numeric_unit_requires_the_complete_definition_in_both_books() {
+        let usd = unit("USD", 2);
+        let parent = registry([usd.clone()]);
+        assert!(validate_bridge_units(&stock(Some(0)), &stock(None), &parent, &parent).is_ok());
+        let mut other_version = usd.clone();
+        other_version.version = 1;
+        let mut other_kind = usd.clone();
+        other_kind.kind = UnitKind::Count;
+        let mut other_iso = usd.clone();
+        other_iso.kind = UnitKind::Currency { iso4217: 978 };
+        let mut other_rounding = usd;
+        other_rounding.rounding_default = RoundingLaw::TowardZero;
+        for different in [
+            unit("EUR", 2),
+            unit("USD", 4),
+            other_version,
+            other_kind,
+            other_iso,
+            other_rounding,
+        ] {
+            let layer = registry([different]);
+            assert!(validate_bridge_units(&stock(Some(0)), &stock(None), &parent, &layer).is_err());
+            assert!(
+                validate_bridge_units(&stock(None), &stock(Some(0)), &parent, &layer).is_err(),
+                "a unit used only by the layer must still have a shared meaning"
+            );
+        }
+    }
+
+    #[test]
+    fn layer_only_units_are_checked_while_unused_registry_differences_are_irrelevant() {
+        let parent = registry([unit("USD", 2), unit("EUR", 2)]);
+        let layer = registry([unit("USD", 2), unit("JPY", 0)]);
+        assert!(validate_bridge_units(&stock(Some(0)), &stock(None), &parent, &layer).is_ok());
+        assert!(validate_bridge_units(&stock(Some(0)), &stock(Some(1)), &parent, &layer).is_err());
+        let parent_without_second = registry([unit("USD", 2)]);
+        assert!(
+            validate_bridge_units(
+                &stock(None),
+                &stock(Some(1)),
+                &parent_without_second,
+                &layer
+            )
+            .is_err()
+        );
+    }
 }
