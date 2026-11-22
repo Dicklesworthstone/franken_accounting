@@ -545,6 +545,8 @@ pub(super) fn verify_procedure(
     );
     let uncalibrated = benford
         || aging
+        || profile.is_override_jet()
+        || profile.is_correction_history()
         || profile.is_trace()
         || profile.is_number_analytics()
         || matches!(
@@ -665,6 +667,7 @@ pub(super) fn verify_procedure(
         unit_currencies,
         account_types: BTreeMap::new(),
         leg_parties: BTreeMap::new(),
+        entry_facts: BTreeMap::new(),
         trace: None,
         open_items: None,
         policy_oid: procedure_policy_oid(&document(inputs[5].1)?)?,

@@ -1491,6 +1491,29 @@ frequency, population, citations and work counts, including historical
 reversals. This profile accepts `max_pair_count` and `min_population`; it
 refuses the older v1 algorithm and effective-date cutoffs.
 
+The standalone verifier also replays `jet.unusual_preparers`,
+`jet.manual_vs_rule`, and `jet.large_round_reversals` v1. Preparer analysis
+counts each live entry once per account from its authenticated author, even
+when that entry splits an account across multiple legs. Manual-versus-rule
+analysis reconstructs the exact rule-origin share in basis points and flags
+manual entries on qualifying accounts. These two procedures apply complete
+reversal and replacement history before counting. Large-round reversal
+analysis instead retains canceled entries and reversals of reversals, checks
+roundness in each unit's whole-value scale, and reproduces cross-period
+reversal distances within the inclusive `window_days` limit. The observations
+do not establish that a principal was authorized or a rule was properly admitted.
+
+`reversal.patterns` v2 and `events.subsequent` v3 export with the same complete
+historical journal closure. Reversal patterns reproduce correction chains,
+cross-period severity, ordered citations, and deterministic successor selection.
+Subsequent events reconstruct the latest period close or reopening from
+authenticated control records, then apply the materiality threshold and exact
+period-end window, including its first day. Supersession findings retain their
+original period relationship even if that period is later reopened. All five
+profiles reproduce findings, populations, narratives and work counts at the
+certificate's original recorded frontier and require an all-date population;
+they accept no effective cutoff or external input handles.
+
 `numbers.relative_size_factor` v1 and `numbers.threshold_splitting` v1 also
 export for independent replay. Relative-size analysis preserves separate party
 or account groups and units, exact largest-to-second-largest ratios, and

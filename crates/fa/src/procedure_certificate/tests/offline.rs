@@ -10,6 +10,11 @@ mod benford_digits;
 #[path = "offline/cutoff.rs"]
 mod cutoff;
 
+#[path = "offline/correction_history.rs"]
+mod correction_history;
+#[path = "offline/jet.rs"]
+mod jet;
+
 #[path = "offline/libr.rs"]
 mod libr;
 #[path = "offline/number_analytics.rs"]

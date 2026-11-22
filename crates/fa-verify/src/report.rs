@@ -2195,12 +2195,15 @@ fn verify_report_with_native_subledger_input(
             ));
         }
         let (verified_procedure, output) = if let Some(request) = &procedure {
-            let period_transitions =
-                if request.parameters == procedure::VerifiedProcedureParameters::PostClosing {
-                    procedure::period_transitions(&cert.book, envelopes, &records, &infos)?
-                } else {
-                    BTreeMap::new()
-                };
+            let period_transitions = if matches!(
+                request.parameters,
+                procedure::VerifiedProcedureParameters::PostClosing
+                    | procedure::VerifiedProcedureParameters::SubsequentEvents { .. }
+            ) {
+                procedure::period_transitions(&cert.book, envelopes, &records, &infos)?
+            } else {
+                BTreeMap::new()
+            };
             let mut tracing =
                 request
                     .parameters
@@ -2214,6 +2217,7 @@ fn verify_report_with_native_subledger_input(
                         entries: BTreeMap::new(),
                     });
             let mut leg_parties = BTreeMap::new();
+            let mut entry_facts = BTreeMap::new();
             let entries = infos
                 .iter()
                 .filter(|(index, _)| {
@@ -2227,10 +2231,20 @@ fn verify_report_with_native_subledger_input(
                             | procedure::VerifiedProcedureParameters::PeriodBoundary
                             | procedure::VerifiedProcedureParameters::UnrecordedLiabilities { .. }
                             | procedure::VerifiedProcedureParameters::GraphRoundTrips { .. }
-                    ) && !legs[index].is_empty()
+                            | procedure::VerifiedProcedureParameters::LargeRoundReversals { .. }
+                            | procedure::VerifiedProcedureParameters::ReversalPatterns
+                            | procedure::VerifiedProcedureParameters::SubsequentEvents { .. }
+                    ) && (!legs[index].is_empty()
+                        || (matches!(
+                            request.parameters,
+                            procedure::VerifiedProcedureParameters::SubsequentEvents { .. }
+                        ) && period_transitions.contains_key(&index)))
                     {
                         let effective = envelopes[index].effective_day.ok_or_else(|| {
-                            failed("procedure_period", "monetary entry has no effective date")
+                            failed(
+                                "procedure_period",
+                                "period-bearing entry has no effective date",
+                            )
                         })?;
                         let code = schema.entry_period(info, effective)?;
                         let (_, end, _, _) = schema.period_state(&code).ok_or_else(|| {
@@ -2272,6 +2286,15 @@ fn verify_report_with_native_subledger_input(
                     let details = crate::envelope::proposal_leg_details(
                         &records[index].1[..records[index].0],
                     )?;
+                    if request.parameters.is_override_jet() {
+                        entry_facts.insert(
+                            info.identity,
+                            procedure::EntryFacts {
+                                principal: info.principal,
+                                origin: info.origin,
+                            },
+                        );
+                    }
                     if request.parameters.is_number_analytics() {
                         leg_parties.insert(
                             info.identity,
@@ -2337,6 +2360,7 @@ fn verify_report_with_native_subledger_input(
                 .ok_or_else(|| failed("registry_closure", "procedure registries are absent"))?;
             if request.parameters.is_benford()
                 || request.parameters.is_number_analytics()
+                || request.parameters.is_override_jet()
                 || matches!(
                     request.parameters,
                     procedure::VerifiedProcedureParameters::UnusualAccounts { .. }
@@ -2352,6 +2376,7 @@ fn verify_report_with_native_subledger_input(
             }
             definitions.trace = tracing;
             definitions.leg_parties = leg_parties;
+            definitions.entry_facts = entry_facts;
             if matches!(
                 request.parameters,
                 procedure::VerifiedProcedureParameters::OpenItemsAging { .. }

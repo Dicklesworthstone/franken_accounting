@@ -2363,7 +2363,7 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
         (
             "proof_scope",
             s(
-                "exact statistical replay; fraud, approval admission and policy activation are not established",
+                "exact statistical replay; fraud, approval admission, rule execution and policy activation are not established",
             ),
         ),
     ]);
@@ -2382,6 +2382,8 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 | crate::report::VerifiedProcedureStatistic::StructuredTransfers { .. }
                 | crate::report::VerifiedProcedureStatistic::RoundTrip { .. }
                 | crate::report::VerifiedProcedureStatistic::RoundTripCycle { .. }
+                | crate::report::VerifiedProcedureStatistic::SubsequentEventAmount { .. }
+                | crate::report::VerifiedProcedureStatistic::UnrecordedLiabilityAmount { .. }
         ) {
             amount(value)
         } else {
@@ -2516,7 +2518,8 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 details.push(("effective_period", s(effective_period)));
                 details.push(("document_period", s(document_period)));
             }
-            crate::report::VerifiedProcedureStatistic::DuplicateEntries { entries, .. } => {
+            crate::report::VerifiedProcedureStatistic::DuplicateEntries { entries, .. }
+            | crate::report::VerifiedProcedureStatistic::ReversalChainEntries { entries } => {
                 details.push((
                     "entries",
                     Json::List(
@@ -2537,6 +2540,37 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                             .collect(),
                     ),
                 ));
+            }
+            crate::report::VerifiedProcedureStatistic::PreparerAccountPostings {
+                account, ..
+            }
+            | crate::report::VerifiedProcedureStatistic::RuleShare { account, .. } => {
+                details.push(("account", s(format!("{account:032x}"))));
+            }
+            crate::report::VerifiedProcedureStatistic::DaysToReversal {
+                original,
+                reversal,
+                ..
+            } => {
+                details.push(("original_entry", s(format!("{original:032x}"))));
+                details.push(("reversal_entry", s(format!("{reversal:032x}"))));
+            }
+            crate::report::VerifiedProcedureStatistic::SubsequentEventAmount {
+                unit,
+                period,
+                prior_period,
+                original,
+                ..
+            } => {
+                details.extend([
+                    ("unit", n(u64::from(*unit))),
+                    ("period", s(period)),
+                    ("prior_period", s(prior_period)),
+                    (
+                        "original_entry",
+                        original.map_or(Json::Null, |entry| s(format!("{entry:032x}"))),
+                    ),
+                ]);
             }
             crate::report::VerifiedProcedureStatistic::RelativeSizeFactor {
                 largest_entry,

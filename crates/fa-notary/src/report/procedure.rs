@@ -23,6 +23,20 @@ const ACCOUNT_PAIRS: &[(&str, i128, i128)] = &[
     ("max_pair_count", 0, u32::MAX as i128),
     ("min_population", 0, u32::MAX as i128),
 ];
+const PREPARERS: &[(&str, i128, i128)] = &[
+    ("max_preparer_count", 0, u32::MAX as i128),
+    ("min_account_entries", 0, u32::MAX as i128),
+];
+const MANUAL_RULE: &[(&str, i128, i128)] = &[
+    ("min_account_entries", 0, u32::MAX as i128),
+    ("min_rule_share_bps", 0, u32::MAX as i128),
+];
+const ROUND_REVERSALS: &[(&str, i128, i128)] =
+    &[("round_power", 0, 30), ("window_days", 0, u32::MAX as i128)];
+const SUBSEQUENT_EVENTS: &[(&str, i128, i128)] = &[
+    ("min_amount", 0, i128::MAX),
+    ("window_days", 1, u32::MAX as i128),
+];
 const RELATIVE_SIZE: &[(&str, i128, i128)] = &[
     ("min_rsf_bps", 0, u32::MAX as i128),
     ("min_subset_size", 2, u32::MAX as i128),
@@ -79,6 +93,11 @@ pub fn profile(
         ("cutoff.period_boundary", 1) => ("FA-EVID-L11", &[][..]),
         ("completeness.unrecorded_liabilities", 2) => ("FA-EVID-L44", POST_PERIOD_WINDOW),
         ("jet.unusual_accounts", 2) => ("FA-EVID-L24", ACCOUNT_PAIRS),
+        ("jet.unusual_preparers", 1) => ("FA-EVID-L25", PREPARERS),
+        ("jet.manual_vs_rule", 1) => ("FA-EVID-L26", MANUAL_RULE),
+        ("jet.large_round_reversals", 1) => ("FA-EVID-L27", ROUND_REVERSALS),
+        ("reversal.patterns", 2) => ("FA-EVID-L50", &[][..]),
+        ("events.subsequent", 3) => ("FA-EVID-L45", SUBSEQUENT_EVENTS),
         ("duplicates.same_same_same", 1) => ("FA-EVID-L07", &[][..]),
         ("aging.open_items", 1) => ("FA-EVID-L12", AGING),
         ("duplicates.same_same_different", 1) => ("FA-EVID-L08", WINDOW),
@@ -151,6 +170,129 @@ mod tests {
     use super::*;
 
     type ProfileCase<'a> = (&'a str, u16, &'a [(&'a str, i128)], &'a str);
+
+    #[test]
+    fn override_and_correction_profiles_require_exact_all_date_contracts() {
+        let cases: &[ProfileCase<'_>] = &[
+            (
+                "jet.unusual_preparers",
+                1,
+                &[("max_preparer_count", 1), ("min_account_entries", 3)],
+                "FA-EVID-L25",
+            ),
+            (
+                "jet.manual_vs_rule",
+                1,
+                &[("min_account_entries", 3), ("min_rule_share_bps", 6000)],
+                "FA-EVID-L26",
+            ),
+            (
+                "jet.large_round_reversals",
+                1,
+                &[("round_power", 3), ("window_days", 15)],
+                "FA-EVID-L27",
+            ),
+            ("reversal.patterns", 2, &[], "FA-EVID-L50"),
+            (
+                "events.subsequent",
+                3,
+                &[("min_amount", 100_000), ("window_days", 30)],
+                "FA-EVID-L45",
+            ),
+        ];
+        for &(id, version, parameters, evidence) in cases {
+            assert_eq!(
+                profile(id, version, None, parameters, &[]),
+                Some(evidence),
+                "{id}"
+            );
+            for wrong_version in [0, 1, 2, 3, 4]
+                .into_iter()
+                .filter(|value| *value != version)
+            {
+                assert_eq!(
+                    profile(id, wrong_version, None, parameters, &[]),
+                    None,
+                    "{id}@{wrong_version}"
+                );
+            }
+            assert_eq!(profile(id, version, Some(0), parameters, &[]), None, "{id}");
+            assert_eq!(
+                profile(id, version, None, parameters, &[("source", "1000")]),
+                None,
+                "{id}"
+            );
+            if parameters.is_empty() {
+                assert_eq!(
+                    profile(id, version, None, &[("window_days", 30)], &[]),
+                    None
+                );
+                continue;
+            }
+            assert_eq!(
+                profile(id, version, None, &parameters[..1], &[]),
+                None,
+                "{id}"
+            );
+            let mut changed = parameters.to_vec();
+            changed.swap(0, 1);
+            assert_eq!(profile(id, version, None, &changed, &[]), None, "{id}");
+            changed = parameters.to_vec();
+            changed[1].0 = changed[0].0;
+            assert_eq!(profile(id, version, None, &changed, &[]), None, "{id}");
+            for index in 0..parameters.len() {
+                changed = parameters.to_vec();
+                changed[index].1 = -1;
+                assert_eq!(profile(id, version, None, &changed, &[]), None, "{id}");
+            }
+        }
+        assert_eq!(
+            profile(
+                "jet.manual_vs_rule",
+                1,
+                None,
+                &[
+                    ("min_account_entries", 0),
+                    ("min_rule_share_bps", i128::from(u32::MAX))
+                ],
+                &[]
+            ),
+            Some("FA-EVID-L26")
+        );
+        assert_eq!(
+            profile(
+                "jet.large_round_reversals",
+                1,
+                None,
+                &[("round_power", 31), ("window_days", 0)],
+                &[]
+            ),
+            None
+        );
+        assert_eq!(
+            profile(
+                "events.subsequent",
+                3,
+                None,
+                &[
+                    ("min_amount", i128::MAX),
+                    ("window_days", i128::from(u32::MAX))
+                ],
+                &[]
+            ),
+            Some("FA-EVID-L45")
+        );
+        assert_eq!(
+            profile(
+                "events.subsequent",
+                3,
+                None,
+                &[("min_amount", 0), ("window_days", 0)],
+                &[]
+            ),
+            None
+        );
+    }
 
     #[test]
     fn cutoff_period_boundary_requires_its_exact_unfiltered_profile() {

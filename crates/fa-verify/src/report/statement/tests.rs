@@ -23,6 +23,7 @@ fn info(identity: u128, target: Option<(u128, [u8; 32], u8)>) -> metadata::Entry
         document_date: None,
         resolution: None,
         principal: 0,
+        origin: 0,
         identity,
         legacy_identity: None,
         supersession: target.into_iter().collect(),

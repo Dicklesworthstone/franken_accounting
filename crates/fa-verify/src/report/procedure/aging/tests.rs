@@ -28,6 +28,7 @@ fn registry(items: Vec<VerifiedOpenItem>) -> Registry {
         unit_currencies: BTreeMap::new(),
         account_types: BTreeMap::new(),
         leg_parties: BTreeMap::new(),
+        entry_facts: BTreeMap::new(),
         trace: None,
         open_items: Some(items),
         policy_oid: [7; 32],

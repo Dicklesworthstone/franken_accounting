@@ -14,7 +14,12 @@
 //! reconstructs the first journaled close of each period and compares it with
 //! each live posting's recording sequence. Unusual-accounts v2 independently
 //! counts undirected debit/credit pairs once per live entry against the
-//! authenticated chart, including split and reciprocal legs. Relative-size
+//! authenticated chart, including split and reciprocal legs.
+//! Preparer rarity and manual-versus-rule v1 count live entry/account incidence
+//! from authenticated author and origin metadata. Large-round reversal v1,
+//! reversal patterns v2 and subsequent events v3 retain correction history;
+//! subsequent events reconstruct the latest close/reopen of each boundary.
+//! Relative-size
 //! factor and threshold splitting v1 reconstruct party dimensions from original
 //! legs and independently reproduce exact ratios and complete greedy windows.
 //! Graph structuring v2 independently conserves both original leg margins in
@@ -46,8 +51,10 @@ use crate::codec::{Reader, Writer};
 mod aging;
 mod benford;
 mod benford_digits;
+mod correction_history;
 mod cutoff;
 mod different_dates;
+mod jet;
 mod libr;
 mod number_analytics;
 mod ordered;
@@ -86,6 +93,23 @@ pub enum VerifiedProcedureParameters {
     UnusualAccounts {
         max_pair_count: u32,
         min_population: u32,
+    },
+    UnusualPreparers {
+        max_preparer_count: u32,
+        min_account_entries: u32,
+    },
+    ManualVsRule {
+        min_account_entries: u32,
+        min_rule_share_bps: u32,
+    },
+    LargeRoundReversals {
+        round_power: u32,
+        window_days: u32,
+    },
+    ReversalPatterns,
+    SubsequentEvents {
+        min_amount: i128,
+        window_days: u32,
     },
     SameSameSame,
     OpenItemsAging {
@@ -184,6 +208,11 @@ impl VerifiedProcedureParameters {
             Self::PeriodBoundary => "cutoff.period_boundary",
             Self::UnrecordedLiabilities { .. } => "completeness.unrecorded_liabilities",
             Self::UnusualAccounts { .. } => "jet.unusual_accounts",
+            Self::UnusualPreparers { .. } => "jet.unusual_preparers",
+            Self::ManualVsRule { .. } => "jet.manual_vs_rule",
+            Self::LargeRoundReversals { .. } => "jet.large_round_reversals",
+            Self::ReversalPatterns => "reversal.patterns",
+            Self::SubsequentEvents { .. } => "events.subsequent",
             Self::SameSameSame => "duplicates.same_same_same",
             Self::OpenItemsAging { .. } => "aging.open_items",
             Self::SameSameDifferent { .. } => "duplicates.same_same_different",
@@ -210,6 +239,11 @@ impl VerifiedProcedureParameters {
             Self::PeriodBoundary => "FA-EVID-L11",
             Self::UnrecordedLiabilities { .. } => "FA-EVID-L44",
             Self::UnusualAccounts { .. } => "FA-EVID-L24",
+            Self::UnusualPreparers { .. } => "FA-EVID-L25",
+            Self::ManualVsRule { .. } => "FA-EVID-L26",
+            Self::LargeRoundReversals { .. } => "FA-EVID-L27",
+            Self::ReversalPatterns => "FA-EVID-L50",
+            Self::SubsequentEvents { .. } => "FA-EVID-L45",
             Self::SameSameSame => "FA-EVID-L07",
             Self::OpenItemsAging { .. } => "FA-EVID-L12",
             Self::SameSameDifferent { .. } => "FA-EVID-L08",
@@ -237,7 +271,10 @@ impl VerifiedProcedureParameters {
             | Self::UnrecordedLiabilities { window_days } => {
                 vec![("window_days", window_days)]
             }
-            Self::PostClosing | Self::PeriodBoundary | Self::SameSameSame => Vec::new(),
+            Self::PostClosing
+            | Self::PeriodBoundary
+            | Self::ReversalPatterns
+            | Self::SameSameSame => Vec::new(),
             Self::OpenItemsAging { edges } => vec![
                 ("bucket_1", edges[0]),
                 ("bucket_2", edges[1]),
@@ -250,6 +287,33 @@ impl VerifiedProcedureParameters {
                 ("max_pair_count", max_pair_count),
                 ("min_population", min_population),
             ],
+            Self::UnusualPreparers {
+                max_preparer_count,
+                min_account_entries,
+            } => vec![
+                ("max_preparer_count", max_preparer_count),
+                ("min_account_entries", min_account_entries),
+            ],
+            Self::ManualVsRule {
+                min_account_entries,
+                min_rule_share_bps,
+            } => vec![
+                ("min_account_entries", min_account_entries),
+                ("min_rule_share_bps", min_rule_share_bps),
+            ],
+            Self::LargeRoundReversals {
+                round_power,
+                window_days,
+            } => vec![("round_power", round_power), ("window_days", window_days)],
+            Self::SubsequentEvents {
+                min_amount,
+                window_days,
+            } => {
+                return vec![
+                    ("min_amount", min_amount),
+                    ("window_days", i128::from(window_days)),
+                ];
+            }
             Self::RoundAmountDensity {
                 min_legs,
                 round_power,
@@ -388,9 +452,16 @@ impl VerifiedProcedureParameters {
             Self::PeriodEndTiming { .. } => &[("window_days", 3)],
             Self::SameSameDifferent { .. } => &[("window_days", 30)],
             Self::UnrecordedLiabilities { .. } => &[("window_days", 45)],
-            Self::PostClosing | Self::PeriodBoundary | Self::SameSameSame => &[],
+            Self::PostClosing
+            | Self::PeriodBoundary
+            | Self::ReversalPatterns
+            | Self::SameSameSame => &[],
             Self::OpenItemsAging { .. } => &aging::DEFAULTS,
             Self::UnusualAccounts { .. } => &unusual_accounts::DEFAULTS,
+            Self::UnusualPreparers { .. } => &jet::PREPARER_DEFAULTS,
+            Self::ManualVsRule { .. } => &jet::MANUAL_DEFAULTS,
+            Self::LargeRoundReversals { .. } => &jet::REVERSAL_DEFAULTS,
+            Self::SubsequentEvents { .. } => &correction_history::SUBSEQUENT_DEFAULTS,
             Self::RoundAmountDensity { .. } => &round_density::DEFAULTS,
             Self::RelativeSizeFactor { .. } => &number_analytics::RSF_DEFAULTS,
             Self::ThresholdSplitting { .. } => &number_analytics::SPLIT_DEFAULTS,
@@ -447,16 +518,36 @@ impl VerifiedProcedureParameters {
         )
     }
 
+    pub(crate) fn is_override_jet(self) -> bool {
+        matches!(
+            self,
+            Self::UnusualPreparers { .. }
+                | Self::ManualVsRule { .. }
+                | Self::LargeRoundReversals { .. }
+        )
+    }
+
+    pub(crate) fn is_correction_history(self) -> bool {
+        matches!(self, Self::ReversalPatterns | Self::SubsequentEvents { .. })
+    }
+
     pub(crate) fn complexity(self) -> &'static str {
         match self {
             Self::RoundAmounts { .. } => "O(legs)",
             Self::PeriodEndTiming { .. } | Self::PeriodBoundary => "O(entries)",
             Self::PostClosing => "O(entries + transitions)",
+            Self::SubsequentEvents { .. } => {
+                "O(entries log entries + legs + periods log periods + entries × periods)"
+            }
             Self::OpenItemsAging { .. } => "O(open items)",
             Self::UnusualAccounts { .. } => "O(legs log legs + account_pairs log account_pairs)",
             Self::SameSameSame
             | Self::UnrecordedLiabilities { .. }
             | Self::SameSameDifferent { .. }
+            | Self::UnusualPreparers { .. }
+            | Self::ManualVsRule { .. }
+            | Self::LargeRoundReversals { .. }
+            | Self::ReversalPatterns
             | Self::RoundAmountDensity { .. }
             | Self::RelativeSizeFactor { .. }
             | Self::ThresholdSplitting { .. } => "O(legs log legs)",
@@ -552,6 +643,35 @@ pub enum VerifiedProcedureStatistic {
         first_account: u128,
         second_account: u128,
         count: u64,
+    },
+    /// Entry-level preparer frequency on the first qualifying account.
+    PreparerAccountPostings {
+        account: u128,
+        count: u64,
+    },
+    /// Truncated exact rule-origin share in basis points on one account.
+    RuleShare {
+        account: u128,
+        basis_points: i128,
+    },
+    /// Complete recorded reversal history; citations use numeric identity order.
+    DaysToReversal {
+        original: u128,
+        reversal: u128,
+        days: u32,
+    },
+    /// Correction traversal order: current entry, target, then least successor.
+    ReversalChainEntries {
+        entries: Vec<u128>,
+    },
+    /// A material correction linked to an authenticated prior period boundary.
+    SubsequentEventAmount {
+        unit: u32,
+        mantissa: i128,
+        scale: u8,
+        period: String,
+        prior_period: String,
+        original: Option<u128>,
     },
     /// Full group size and the first at most 4096 members by numeric identity.
     DuplicateEntries {
@@ -649,6 +769,11 @@ impl VerifiedProcedureStatistic {
             Self::TracedAmount { .. } => "traced_mantissa",
             Self::CommitsAfterClose { .. } => "commits_after_close",
             Self::AccountPairOccurrences { .. } => "pair_occurrences",
+            Self::PreparerAccountPostings { .. } => "preparer_account_postings",
+            Self::RuleShare { .. } => "rule_share_bps",
+            Self::DaysToReversal { .. } => "days_to_reversal",
+            Self::ReversalChainEntries { .. } => "reversal_chain_entries",
+            Self::SubsequentEventAmount { .. } => "subsequent_event_amount",
             Self::DuplicateEntries { .. } => "entries",
             Self::DaysApart { .. } => "days_apart",
             Self::RelativeSizeFactor { .. } => "rsf_bps",
@@ -671,6 +796,11 @@ impl VerifiedProcedureStatistic {
             Self::UnrecordedLiabilityAmount { amount, .. } => *amount,
             Self::CommitsAfterClose { commits, .. } => i128::from(*commits),
             Self::AccountPairOccurrences { count, .. } => i128::from(*count),
+            Self::PreparerAccountPostings { count, .. } => i128::from(*count),
+            Self::RuleShare { basis_points, .. } => *basis_points,
+            Self::DaysToReversal { days, .. } => i128::from(*days),
+            Self::ReversalChainEntries { entries } => entries.len() as i128,
+            Self::SubsequentEventAmount { mantissa, .. } => *mantissa,
             Self::DuplicateEntries { count, .. } => i128::from(*count),
             Self::DaysApart { days, .. } => i128::from(*days),
             Self::RelativeSizeFactor { basis_points, .. } => *basis_points,
@@ -691,6 +821,7 @@ impl VerifiedProcedureStatistic {
         match self {
             Self::FirstDigitMad { .. } | Self::DigitMad { .. } => 9,
             Self::TracedAmount { scale, .. }
+            | Self::SubsequentEventAmount { scale, .. }
             | Self::UnrecordedLiabilityAmount { scale, .. }
             | Self::AgedOpenAmount { scale, .. }
             | Self::SplitTotal { scale, .. }
@@ -771,10 +902,17 @@ impl VerifiedProcedureFinding {
                 }
                 citations
             }
-            VerifiedProcedureStatistic::SplitTotal { entries, .. } => entries
+            VerifiedProcedureStatistic::SplitTotal { entries, .. }
+            | VerifiedProcedureStatistic::ReversalChainEntries { entries } => entries
                 .iter()
                 .map(|entry| (1, entry.to_le_bytes()))
                 .collect(),
+            VerifiedProcedureStatistic::DaysToReversal {
+                original, reversal, ..
+            } => vec![
+                (1, (*original).min(*reversal).to_le_bytes()),
+                (1, (*original).max(*reversal).to_le_bytes()),
+            ],
             VerifiedProcedureStatistic::AccountRoundLegs { account, .. }
             | VerifiedProcedureStatistic::TracedAmount { account, .. } => {
                 vec![(3, account.to_le_bytes())]
@@ -808,8 +946,8 @@ pub struct VerifiedProcedure {
     pub parameters: VerifiedProcedureParameters,
     /// Every visible entry, including controls, reservations and reversals.
     pub population: u64,
-    /// Work over the net live posting stream. Period-end timing visits
-    /// entries without charging leg work.
+    /// Registered entry-work charges. Most profiles visit live postings;
+    /// correction-history profiles visit the complete recorded population.
     pub live_entries: u64,
     pub live_legs: u64,
     /// Reconstructed native comparison charges, including correction lineage.
@@ -884,6 +1022,14 @@ pub(super) struct TraceEntryFacts {
     pub evidence: BTreeSet<[u8; 32]>,
 }
 
+/// Observed principal and source kind from each immutable entry payload.
+/// These facts do not assert current authority or prove rule execution.
+#[derive(Clone, Copy)]
+pub(super) struct EntryFacts {
+    pub principal: u128,
+    pub origin: u8,
+}
+
 pub(super) struct Registry {
     pub unit_scales: BTreeMap<u32, u8>,
     pub unit_currencies: BTreeMap<u32, u16>,
@@ -892,6 +1038,7 @@ pub(super) struct Registry {
     /// First party dimension on each original leg, independently decoded from
     /// authenticated payloads. Empty for procedures that do not need parties.
     pub leg_parties: BTreeMap<u128, Vec<Option<u128>>>,
+    pub entry_facts: BTreeMap<u128, EntryFacts>,
     pub trace: Option<TraceContext>,
     /// The independently replayed historical residuals for aging, never
     /// native witness rows or producer-supplied bucket totals.
@@ -969,6 +1116,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "cutoff.period_boundary" => ("FA-EVID-L11", None),
         "completeness.unrecorded_liabilities" => ("FA-EVID-L44", Some(("window_days", u32::MAX))),
         "jet.unusual_accounts" => ("FA-EVID-L24", None),
+        "jet.unusual_preparers" => ("FA-EVID-L25", None),
+        "jet.manual_vs_rule" => ("FA-EVID-L26", None),
+        "jet.large_round_reversals" => ("FA-EVID-L27", None),
+        "reversal.patterns" => ("FA-EVID-L50", None),
+        "events.subsequent" => ("FA-EVID-L45", None),
         "duplicates.same_same_same" => ("FA-EVID-L07", None),
         "aging.open_items" => ("FA-EVID-L12", None),
         "duplicates.same_same_different" => ("FA-EVID-L08", Some(("window_days", u32::MAX))),
@@ -987,7 +1139,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing and authenticated-period cutoff v1, unrecorded-liability and unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing and preparer/manual-origin/round-reversal v1, authenticated-period cutoff v1, unrecorded-liability and unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
@@ -997,6 +1149,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             "benford.second_digit"
                 | "benford.first_two_digits"
                 | "jet.unusual_accounts"
+                | "jet.unusual_preparers"
+                | "jet.manual_vs_rule"
+                | "jet.large_round_reversals"
+                | "reversal.patterns"
+                | "events.subsequent"
                 | "numbers.relative_size_factor"
                 | "numbers.threshold_splitting"
                 | "completeness.unrecorded_liabilities"
@@ -1008,10 +1165,15 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         ));
     }
     let version = question.u16("procedure.version")?;
-    if !matches!(version, 1 | 2)
+    if !matches!(version, 1 | 2 | 3)
+        || (id == "events.subsequent" && version != 3)
+        || (id != "events.subsequent" && version == 3)
         || (matches!(
             id,
             "jet.post_closing"
+                | "jet.unusual_preparers"
+                | "jet.manual_vs_rule"
+                | "jet.large_round_reversals"
                 | "cutoff.period_boundary"
                 | "aging.open_items"
                 | "duplicates.same_same_same"
@@ -1023,6 +1185,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         || (matches!(
             id,
             "jet.unusual_accounts"
+                | "reversal.patterns"
                 | "completeness.unrecorded_liabilities"
                 | "graph.structuring"
                 | "graph.round_trips"
@@ -1056,6 +1219,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "benford.second_digit"
                 | "benford.first_two_digits"
                 | "jet.unusual_accounts"
+                | "reversal.patterns"
+                | "events.subsequent"
                 | "completeness.unrecorded_liabilities"
                 | "graph.structuring"
                 | "graph.round_trips"
@@ -1097,6 +1262,13 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         round_trips::decode(&mut question)?
     } else if id == "jet.unusual_accounts" {
         unusual_accounts::decode(&mut question)?
+    } else if matches!(
+        id,
+        "jet.unusual_preparers" | "jet.manual_vs_rule" | "jet.large_round_reversals"
+    ) {
+        jet::decode(&mut question, id)?
+    } else if matches!(id, "reversal.patterns" | "events.subsequent") {
+        correction_history::decode(&mut question, id)?
     } else if matches!(
         id,
         "numbers.relative_size_factor" | "numbers.threshold_splitting"
@@ -1310,7 +1482,8 @@ fn finding(
                 w.u8(3).u128(*second_account);
             }
         }
-        VerifiedProcedureStatistic::DuplicateEntries { entries, .. } => {
+        VerifiedProcedureStatistic::DuplicateEntries { entries, .. }
+        | VerifiedProcedureStatistic::ReversalChainEntries { entries } => {
             w.count(entries.len());
             for entry in entries {
                 w.u8(1).u128(*entry);
@@ -1318,6 +1491,48 @@ fn finding(
         }
         VerifiedProcedureStatistic::DaysApart { earlier, later, .. } => {
             w.count(2).u8(1).u128(*earlier).u8(1).u128(*later);
+        }
+        VerifiedProcedureStatistic::PreparerAccountPostings { account, .. }
+        | VerifiedProcedureStatistic::RuleShare { account, .. } => {
+            let entry = value.entry.ok_or_else(|| {
+                failed(
+                    "procedure_recomputation",
+                    "JET account finding lacks its entry",
+                )
+            })?;
+            w.count(2).u8(1).u128(entry).u8(3).u128(*account);
+        }
+        VerifiedProcedureStatistic::DaysToReversal {
+            original, reversal, ..
+        } => {
+            w.count(2)
+                .u8(1)
+                .u128((*original).min(*reversal))
+                .u8(1)
+                .u128((*original).max(*reversal));
+        }
+        VerifiedProcedureStatistic::SubsequentEventAmount {
+            period,
+            prior_period,
+            original,
+            ..
+        } => {
+            let entry = value.entry.ok_or_else(|| {
+                failed(
+                    "procedure_recomputation",
+                    "subsequent event lacks its entry",
+                )
+            })?;
+            w.count(3 + usize::from(original.is_some()))
+                .u8(1)
+                .u128(entry)
+                .u8(4)
+                .bytes(period.as_bytes())
+                .u8(4)
+                .bytes(prior_period.as_bytes());
+            if let Some(original) = original {
+                w.u8(1).u128(*original);
+            }
         }
         VerifiedProcedureStatistic::RelativeSizeFactor {
             largest_entry,
@@ -1947,6 +2162,11 @@ fn recompute_version(
         | VerifiedProcedureParameters::PeriodBoundary
         | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
         | VerifiedProcedureParameters::UnusualAccounts { .. }
+        | VerifiedProcedureParameters::UnusualPreparers { .. }
+        | VerifiedProcedureParameters::ManualVsRule { .. }
+        | VerifiedProcedureParameters::LargeRoundReversals { .. }
+        | VerifiedProcedureParameters::ReversalPatterns
+        | VerifiedProcedureParameters::SubsequentEvents { .. }
         | VerifiedProcedureParameters::SameSameSame
         | VerifiedProcedureParameters::OpenItemsAging { .. }
         | VerifiedProcedureParameters::SameSameDifferent { .. }
@@ -2071,6 +2291,11 @@ fn recompute_version(
             | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
             | VerifiedProcedureParameters::OpenItemsAging { .. }
             | VerifiedProcedureParameters::UnusualAccounts { .. }
+            | VerifiedProcedureParameters::UnusualPreparers { .. }
+            | VerifiedProcedureParameters::ManualVsRule { .. }
+            | VerifiedProcedureParameters::LargeRoundReversals { .. }
+            | VerifiedProcedureParameters::ReversalPatterns
+            | VerifiedProcedureParameters::SubsequentEvents { .. }
             | VerifiedProcedureParameters::SameSameDifferent { .. }
             | VerifiedProcedureParameters::RoundAmountDensity { .. }
             | VerifiedProcedureParameters::RelativeSizeFactor { .. }
@@ -2120,6 +2345,12 @@ fn recompute_version(
     } else if matches!(profile, VerifiedProcedureParameters::UnusualAccounts { .. }) {
         (findings, live_entries, live_legs, comparisons) =
             unusual_accounts::replay(profile, &grouped_population, registry)?;
+    } else if profile.is_override_jet() {
+        (findings, live_entries, live_legs, comparisons) =
+            jet::replay(profile, &entries, &grouped_population, registry)?;
+    } else if profile.is_correction_history() {
+        (findings, live_entries, live_legs, comparisons) =
+            correction_history::replay(profile, &entries, registry)?;
     } else if profile.is_number_analytics() {
         (findings, live_legs, comparisons) =
             number_analytics::replay(profile, &grouped_population, registry)?;
@@ -2183,6 +2414,11 @@ fn recompute_version(
         | VerifiedProcedureParameters::SecondDigit { .. }
         | VerifiedProcedureParameters::FirstTwoDigits { .. }
         | VerifiedProcedureParameters::UnusualAccounts { .. }
+        | VerifiedProcedureParameters::UnusualPreparers { .. }
+        | VerifiedProcedureParameters::ManualVsRule { .. }
+        | VerifiedProcedureParameters::LargeRoundReversals { .. }
+        | VerifiedProcedureParameters::ReversalPatterns
+        | VerifiedProcedureParameters::SubsequentEvents { .. }
         | VerifiedProcedureParameters::RoundAmountDensity { .. }
         | VerifiedProcedureParameters::OpenItemsAging { .. }
         | VerifiedProcedureParameters::RelativeSizeFactor { .. }
@@ -2294,6 +2530,7 @@ mod tests {
             unit_currencies: BTreeMap::from([(1, 840), (2, 392)]),
             account_types: BTreeMap::from([(0, 1), (1, 3)]),
             leg_parties: BTreeMap::new(),
+            entry_facts: BTreeMap::new(),
             trace: None,
             open_items: None,
             policy_oid: [7; 32],

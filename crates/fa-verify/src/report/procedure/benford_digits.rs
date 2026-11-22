@@ -490,6 +490,7 @@ mod tests {
             unit_currencies: BTreeMap::from([(1, 840), (2, 392), (4, 840)]),
             account_types: BTreeMap::from([(10, 5), (20, 1)]),
             leg_parties: BTreeMap::new(),
+            entry_facts: BTreeMap::new(),
             trace: None,
             open_items: None,
             policy_oid: [0; 32],

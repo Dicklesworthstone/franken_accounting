@@ -119,6 +119,7 @@ fn exact(selection: &statement::Selection) -> statement::VerifiedStatement {
         prior_period_adjustment: None,
         evidence: vec![],
         principal: 1,
+        origin: 0,
         identity: 1,
         legacy_identity: None,
     };

@@ -20,6 +20,7 @@ impl Fixture {
                 unit_currencies: BTreeMap::from([(1, 840), (2, 392), (3, 978), (4, 840)]),
                 account_types: BTreeMap::from([(10, 1), (20, 5), (30, 5), (99, 3)]),
                 leg_parties: BTreeMap::new(),
+                entry_facts: BTreeMap::new(),
                 trace: None,
                 open_items: None,
                 policy_oid: [7; 32],

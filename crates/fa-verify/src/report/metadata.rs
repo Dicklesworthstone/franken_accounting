@@ -52,6 +52,9 @@ pub(super) struct EntryInfo<'a> {
     pub prior_period_adjustment: Option<&'a [u8]>,
     pub evidence: Vec<([u8; 32], [u8; 32], u8)>,
     pub principal: u128,
+    /// Literal registered origin tag; observational procedures distinguish
+    /// manual, rule and other sources without claiming rule admission.
+    pub origin: u8,
     pub identity: u128,
     /// Before replacement-pair identities were target-derived, the immutable
     /// corrected member used its ordinary key identity. Both encodings name
@@ -536,6 +539,7 @@ pub(super) fn entry_info<'a>(
         prior_period_adjustment,
         evidence,
         principal,
+        origin,
         identity,
         legacy_identity,
     })

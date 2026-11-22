@@ -234,6 +234,7 @@ mod tests {
                     unit_currencies: BTreeMap::new(),
                     account_types: BTreeMap::new(),
                     leg_parties: BTreeMap::new(),
+                    entry_facts: BTreeMap::new(),
                     trace: Some(TraceContext {
                         account_normal_balances: BTreeMap::from([(7, 0), (99, 1)]),
                         entries: BTreeMap::new(),
