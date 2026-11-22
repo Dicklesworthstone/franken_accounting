@@ -108,9 +108,10 @@ pub enum VerifiedProcedureParameters {
         threshold: i128,
         window_days: u32,
     },
-    /// Chronological two-hop asset-account pairing. Multi-hop searches are
-    /// deliberately outside this portable profile.
+    /// Chronological asset-account pairing at two hops, or bounded canonical
+    /// temporal cycles when the requested maximum is three through eight.
     GraphRoundTrips {
+        max_hops: u32,
         max_search_steps: u32,
         period_end_days: u32,
         window_days: u32,
@@ -251,11 +252,12 @@ impl VerifiedProcedureParameters {
                 ("min_subset_size", min_subset_size),
             ],
             Self::GraphRoundTrips {
+                max_hops,
                 max_search_steps,
                 period_end_days,
                 window_days,
             } => vec![
-                ("max_hops", 2),
+                ("max_hops", max_hops),
                 ("max_search_steps", max_search_steps),
                 ("period_end_days", period_end_days),
                 ("window_days", window_days),
@@ -570,6 +572,16 @@ pub enum VerifiedProcedureStatistic {
         mantissa: i128,
         scale: u8,
     },
+    /// A canonical temporal cycle. Each hop names its original entry and
+    /// source account; the following source is its destination, wrapping at
+    /// the end. Native citations alternate entry/account in this path order.
+    RoundTripCycle {
+        hops: Vec<(u128, u128)>,
+        unit: u32,
+        entity: Option<u128>,
+        mantissa: i128,
+        scale: u8,
+    },
     /// Below the requested minimum, only the population is scored.
     FirstDigitPopulation {
         counts: [u64; 9],
@@ -610,7 +622,7 @@ impl VerifiedProcedureStatistic {
             Self::RelativeSizeFactor { .. } => "rsf_bps",
             Self::SplitTotal { .. } => "split_total",
             Self::StructuredTransfers { .. } => "chain_mantissa",
-            Self::RoundTrip { .. } => "round_trip_mantissa",
+            Self::RoundTrip { .. } | Self::RoundTripCycle { .. } => "round_trip_mantissa",
             Self::FirstDigitPopulation { .. } | Self::DigitPopulation { .. } => "population",
             Self::FirstDigitMad { .. } | Self::DigitMad { .. } => "mad",
         }
@@ -630,7 +642,7 @@ impl VerifiedProcedureStatistic {
             Self::RelativeSizeFactor { basis_points, .. } => *basis_points,
             Self::SplitTotal { mantissa, .. } => *mantissa,
             Self::StructuredTransfers { mantissa, .. } => *mantissa,
-            Self::RoundTrip { mantissa, .. } => *mantissa,
+            Self::RoundTrip { mantissa, .. } | Self::RoundTripCycle { mantissa, .. } => *mantissa,
             Self::FirstDigitPopulation { counts } => {
                 counts.iter().map(|&count| i128::from(count)).sum()
             }
@@ -648,7 +660,8 @@ impl VerifiedProcedureStatistic {
             | Self::AgedOpenAmount { scale, .. }
             | Self::SplitTotal { scale, .. }
             | Self::StructuredTransfers { scale, .. }
-            | Self::RoundTrip { scale, .. } => *scale,
+            | Self::RoundTrip { scale, .. }
+            | Self::RoundTripCycle { scale, .. } => *scale,
             _ => 0,
         }
     }
@@ -697,6 +710,10 @@ impl VerifiedProcedureFinding {
                 (3, from.to_le_bytes()),
                 (3, to.to_le_bytes()),
             ],
+            VerifiedProcedureStatistic::RoundTripCycle { hops, .. } => hops
+                .iter()
+                .flat_map(|(entry, account)| [(1, entry.to_le_bytes()), (3, account.to_le_bytes())])
+                .collect(),
             VerifiedProcedureStatistic::StructuredTransfers {
                 from, to, entries, ..
             } => {
@@ -923,7 +940,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-hop round trips v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
@@ -1251,6 +1268,12 @@ fn finding(
                 .u128(*from)
                 .u8(3)
                 .u128(*to);
+        }
+        VerifiedProcedureStatistic::RoundTripCycle { hops, .. } => {
+            w.count(hops.len() * 2);
+            for (entry, account) in hops {
+                w.u8(1).u128(*entry).u8(3).u128(*account);
+            }
         }
         VerifiedProcedureStatistic::FirstDigitPopulation { .. }
         | VerifiedProcedureStatistic::FirstDigitMad { .. }

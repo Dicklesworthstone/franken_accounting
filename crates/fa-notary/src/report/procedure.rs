@@ -41,7 +41,7 @@ const GRAPH_STRUCTURING: &[(&str, i128, i128)] = &[
     ("window_days", 0, u32::MAX as i128),
 ];
 const GRAPH_ROUND_TRIPS: &[(&str, i128, i128)] = &[
-    ("max_hops", 2, 2),
+    ("max_hops", 2, 8),
     ("max_search_steps", 1, 10_000_000),
     ("period_end_days", 0, u32::MAX as i128),
     ("window_days", 0, u32::MAX as i128),
@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_export_only_the_complete_two_hop_profile() {
+    fn round_trips_export_complete_profiles_from_two_through_eight_hops() {
         let parameters = [
             ("max_hops", 2),
             ("max_search_steps", 250_000),
@@ -207,6 +207,14 @@ mod tests {
             profile("graph.round_trips", 2, None, &parameters, &[]),
             Some("FA-EVID-L13")
         );
+        for max_hops in 3..=8 {
+            let mut multihop = parameters;
+            multihop[0].1 = max_hops;
+            assert_eq!(
+                profile("graph.round_trips", 2, None, &multihop, &[]),
+                Some("FA-EVID-L13")
+            );
+        }
         for version in [0, 1, 3] {
             assert_eq!(
                 profile("graph.round_trips", version, None, &parameters, &[]),
@@ -232,9 +240,9 @@ mod tests {
             None
         );
         for (index, value) in [
+            (0, 0),
             (0, 1),
-            (0, 3),
-            (0, 8),
+            (0, 9),
             (1, 0),
             (1, 10_000_001),
             (2, -1),

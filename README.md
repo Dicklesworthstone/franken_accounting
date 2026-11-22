@@ -1512,15 +1512,22 @@ severity and work counts; JSON carries monetary mantissas as decimal strings.
 Payments and reversals effective after the selected date cannot change its
 earlier result.
 
-`graph.round_trips` v2 exports its complete two-hop profile (`max_hops=2`).
+`graph.round_trips` v2 exports both two-account returns and cycles through
+up to eight asset accounts (`max_hops=2..=8`).
 The verifier reconstructs capacity-conserving credit-to-debit allocations from
-original legs, then independently pairs the earliest eligible unused return
-with the same amount, unit and entity within the inclusive date window. It
-checks authenticated asset-account types, period-end severity, citations and
-work counts. This portable profile requires all four parameters (`max_hops`,
+original legs. At two hops it pairs the earliest eligible unused return; above
+two it independently searches chronological alternatives for the first complete
+simple cycle, consuming each transfer at most once. All hops have the same
+exact amount, unit and entity within the inclusive date window, and each comes
+from a distinct entry. The verifier checks authenticated asset-account types,
+period-end severity, ordered path citations and exact work counts. Exhausting
+the declared search budget refuses the entire result, including findings found
+before the limit. JSON lists the cycle's entries and accounts in path order
+and carries its monetary mantissa as a decimal string. These are reproducible
+motifs, not tracing-law allocations or conclusions about wrongdoing.
+The portable profile requires all four parameters (`max_hops`,
 `max_search_steps`, `period_end_days`, `window_days`) and takes no effective
-cutoff. Multi-hop selections remain available through native replay in the
-original book and are refused by portable export.
+cutoff.
 
 Corrected books can be exported when every Replacement uses the current
 target-derived identity and a later authenticated reversal, replacement or

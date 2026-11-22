@@ -115,10 +115,12 @@
 //! remaining debit capacities, preserving both margins in each legal entity
 //! and native unit. It rebuilds consecutive-gap transfer chains, including
 //! split-leg multiplicity, exact thresholds and complete candidate counts.
-//! Two-hop graph round trips v2 reuse that independent allocation, select only
-//! asset accounts and reproduce earliest opposite-direction pairing, exact
-//! per-unit/entity amounts, period-end severity and one-use transfer identity.
-//! Multi-hop searches remain outside the portable round-trip profile.
+//! Graph round trips v2 reuse that independent allocation and select only
+//! asset accounts. Two-hop mode reproduces earliest opposite-direction pairs;
+//! longer searches independently select canonical temporal cycles through up
+//! to eight accounts. Exact amounts and unit/entity partitions, period-end
+//! severity, path citations and one-use transfer identity are reproduced.
+//! Exhausting the declared search budget refuses the entire result.
 //! Quadratic allocation expansion is bounded before construction; exceeding
 //! that bound refuses the report instead of omitting transfers.
 //! Findings, citations, population, work and every output digest are rebuilt.

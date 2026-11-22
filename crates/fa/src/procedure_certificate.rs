@@ -186,7 +186,7 @@ fn offline_unsupported(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §11.1/13.3 (independent procedure replay requires its complete supported input and policy closure)",
-        "select a supported standalone procedure profile with its original canonical registry closure, or replay this selection in its original book; open-item aging v1 requires a cutoff and three ascending bucket edges, tracing v2 requires a claim date and canonical account/source handles, JET round-amount/period-end v2 permits an optional cutoff, and graph round-trips v2 requires max_hops=2 and no cutoff",
+        "select a supported standalone procedure profile with its original canonical registry closure, or replay this selection in its original book; open-item aging v1 requires a cutoff and three ascending bucket edges, tracing v2 requires a claim date and canonical account/source handles, JET round-amount/period-end v2 permits an optional cutoff, and graph round-trips v2 requires max_hops in 2..=8 and no cutoff",
     )
 }
 
@@ -970,7 +970,7 @@ impl ProcedureCertificate {
             || evidence != Some(self.report.evidence.as_str())
         {
             return Err(offline_unsupported(
-                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-hop round trips v2, Benford digit profiles v2, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2 permit an optional cutoff, aging v1 requires a cutoff, and tracing v2 requires a claim date and canonical account/source handles",
+                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2 permit an optional cutoff, aging v1 requires a cutoff, and tracing v2 requires a claim date and canonical account/source handles",
             ));
         }
         let jet = matches!(

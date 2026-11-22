@@ -11,6 +11,12 @@ fn request(f: &Fixture) -> ProcedureRequest {
     request
 }
 
+fn cycle_request(f: &Fixture, max_hops: i128) -> ProcedureRequest {
+    let mut request = request(f);
+    request.parameters = request.parameters.set("max_hops", max_hops).unwrap();
+    request
+}
+
 fn export(f: &mut Fixture, certified: &CertifiedProcedure) -> crate::ProducedBundle {
     assert_eq!(certified.certificate.format(), PROCEDURE_CERTIFICATE_FORMAT);
     certified.certificate.check_offline_profile().unwrap();
@@ -173,7 +179,7 @@ fn graph_round_trips_export_allocated_split_legs_and_original_entity_identity() 
 }
 
 #[test]
-fn graph_round_trips_reject_resealed_outputs_and_unsupported_multihop_profiles() {
+fn graph_round_trips_reject_resealed_outputs_and_out_of_bounds_profiles() {
     let mut f = Fixture::new(222);
     let (outgoing, _) = f.post(24, "1000", "1010", 800, false);
     f.post(29, "1010", "1000", 800, false);
@@ -228,17 +234,23 @@ fn graph_round_trips_reject_resealed_outputs_and_unsupported_multihop_profiles()
             "{variant}"
         );
     }
-    for variant in ["multihop", "version", "cutoff", "zero_search", "handle"] {
+    for variant in [
+        "too_many_hops",
+        "version",
+        "cutoff",
+        "zero_search",
+        "handle",
+    ] {
         let mut forged = certified.certificate.clone();
         match variant {
-            "multihop" => {
+            "too_many_hops" => {
                 forged
                     .report
                     .parameters
                     .iter_mut()
                     .find(|(name, _)| name == "max_hops")
                     .unwrap()
-                    .1 = 3
+                    .1 = 9
             }
             "zero_search" => {
                 forged
@@ -363,4 +375,162 @@ fn graph_round_trips_reject_resealed_outputs_and_unsupported_multihop_profiles()
     assert!(command.stdout.contains("\"value\":\"800\""));
     assert!(command.stdout.contains("outbound_entry"));
     assert!(command.stdout.contains("return_entry"));
+}
+
+#[test]
+fn graph_round_trip_cycles_export_native_paths_and_preserve_historical_reversals() {
+    let mut f = Fixture::new(223);
+    let (first, _) = f.post(24, "1000", "1010", 800, false);
+    let (middle, _) = f.post(26, "1010", "1020", 800, false);
+    let (last, _) = f.post(29, "1020", "1000", 800, false);
+    let pairs_only = f.certify(&request(&f));
+    assert!(pairs_only.report.findings.is_empty());
+    let original = f.certify(&cycle_request(&f, 3));
+    assert_eq!(original.report.findings.len(), 1);
+    assert_eq!(original.report.findings[0].severity, Severity::High);
+    assert_eq!(original.report.findings[0].statistic.population, 3);
+    assert_eq!(
+        original.report.findings[0].cites,
+        [
+            Cite::Entry(first),
+            Cite::Account(f.id("1000")),
+            Cite::Entry(middle),
+            Cite::Account(f.id("1010")),
+            Cite::Entry(last),
+            Cite::Account(f.id("1020")),
+        ]
+    );
+    assert_eq!(
+        (
+            original.report.work.entries,
+            original.report.work.legs,
+            original.report.work.comparisons
+        ),
+        (0, 3, 8),
+    );
+    let original_known_at = original.certificate.known_at();
+    let undo = reverse(&mut f, middle, b"cycle-middle-undo", 30);
+    let corrected = f.certify(&cycle_request(&f, 3));
+    assert!(corrected.report.findings.is_empty());
+    reverse(&mut f, undo, b"cycle-middle-restore", 31);
+    let restored = f.certify(&cycle_request(&f, 8));
+    assert_eq!(restored.report.findings, original.report.findings);
+    let key = f.book.checkpoint_public_key();
+    let artifacts: Vec<_> = [pairs_only, original, corrected, restored]
+        .into_iter()
+        .map(|certified| {
+            let produced = export(&mut f, &certified);
+            (certified, produced)
+        })
+        .collect();
+    drop(f);
+    for (certified, produced) in artifacts {
+        let checked = verify(&produced, &certified.certificate, key);
+        assert!(checked.checkpoint.checkpoint.through_seq > original_known_at.0);
+        let run = checked.procedure.unwrap();
+        assert_eq!(
+            (run.live_entries, run.live_legs, run.comparisons),
+            (
+                certified.report.work.entries,
+                certified.report.work.legs,
+                certified.report.work.comparisons
+            ),
+        );
+        for finding in run.findings {
+            assert!(matches!(finding.statistic,
+                VerifiedProcedureStatistic::RoundTripCycle { ref hops, mantissa: 800, scale: 2, .. }
+                if hops.len() == 3 && hops[0].0 == first.0 && hops[1].0 == middle.0 && hops[2].0 == last.0
+            ));
+        }
+    }
+}
+
+#[test]
+fn graph_round_trip_cycles_reject_resealed_path_and_budget_forgery() {
+    let mut f = Fixture::new(224);
+    f.post(24, "1000", "1010", 800, false);
+    f.post(26, "1010", "1020", 800, false);
+    f.post(29, "1020", "1000", 800, false);
+    let certified = f.certify(&cycle_request(&f, 3));
+    let produced = export(&mut f, &certified);
+    let key = f.book.checkpoint_public_key();
+    verify(&produced, &certified.certificate, key);
+    for variant in [
+        "path_order",
+        "omitted_hop",
+        "account",
+        "amount",
+        "population",
+        "omitted_finding",
+        "comparisons",
+        "hops",
+        "budget",
+    ] {
+        let mut forged = certified.certificate.clone();
+        match variant {
+            "path_order" => forged.report.findings[0].cites.rotate_left(2),
+            "omitted_hop" => drop(forged.report.findings[0].cites.drain(2..4)),
+            "account" => forged.report.findings[0].cites[3] = Cite::Account(f.id("6000")),
+            "amount" => forged.report.findings[0].statistic.value += 1,
+            "population" => forged.report.findings[0].statistic.population += 1,
+            "omitted_finding" => forged.report.findings.clear(),
+            "comparisons" => forged.report.work.comparisons += 1,
+            "hops" | "budget" => {
+                let parameter = if variant == "hops" {
+                    "max_hops"
+                } else {
+                    "max_search_steps"
+                };
+                forged
+                    .report
+                    .parameters
+                    .iter_mut()
+                    .find(|(name, _)| name == parameter)
+                    .unwrap()
+                    .1 = if variant == "hops" { 2 } else { 4 };
+            }
+            _ => unreachable!(),
+        }
+        // Every forged selection is a supported profile. Repairing all public
+        // hashes must not make an invented path or an exhausted run verifiable.
+        forged.check_offline_profile().unwrap();
+        reseal(&mut forged);
+        let changed = replace_certificate(&produced.bundle.bytes, &forged);
+        assert_eq!(
+            verify_report_expected(&changed, &[key], None, None, Some(forged.digest()))
+                .unwrap_err()
+                .predicate,
+            if variant == "budget" {
+                "procedure_search_limit"
+            } else {
+                "procedure_recomputation"
+            },
+            "{variant}",
+        );
+    }
+    drop(f);
+    let command = fa_verify::cli::run(
+        &[
+            "report".into(),
+            "cycles.fab".into(),
+            "--key".into(),
+            key.iter().map(|byte| format!("{byte:02x}")).collect(),
+            "--receipt".into(),
+            "cycles.receipt".into(),
+            "--json".into(),
+        ],
+        &|path| match path {
+            "cycles.fab" => Ok(produced.bundle.bytes.clone()),
+            "cycles.receipt" => Ok(produced.receipt.clone()),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "unexpected test input",
+            )),
+        },
+    );
+    assert_eq!(command.exit, 0, "{}", command.stdout);
+    assert!(command.stdout.contains("\"hop_count\":3"));
+    assert!(command.stdout.contains("\"entries\":["));
+    assert!(command.stdout.contains("\"accounts\":["));
+    assert!(command.stdout.contains("\"value\":\"800\""));
 }

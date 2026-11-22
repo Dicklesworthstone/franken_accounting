@@ -2381,6 +2381,7 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 | crate::report::VerifiedProcedureStatistic::SplitTotal { .. }
                 | crate::report::VerifiedProcedureStatistic::StructuredTransfers { .. }
                 | crate::report::VerifiedProcedureStatistic::RoundTrip { .. }
+                | crate::report::VerifiedProcedureStatistic::RoundTripCycle { .. }
         ) {
             amount(value)
         } else {
@@ -2588,6 +2589,37 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                     (
                         "legal_entity",
                         entity.map_or(Json::Null, |entity| s(format!("{entity:032x}"))),
+                    ),
+                ]);
+            }
+            crate::report::VerifiedProcedureStatistic::RoundTripCycle {
+                hops,
+                unit,
+                entity,
+                ..
+            } => {
+                details.extend([
+                    ("hop_count", n(hops.len() as u64)),
+                    ("unit", n(u64::from(*unit))),
+                    (
+                        "legal_entity",
+                        entity.map_or(Json::Null, |entity| s(format!("{entity:032x}"))),
+                    ),
+                    (
+                        "entries",
+                        Json::List(
+                            hops.iter()
+                                .map(|(entry, _)| s(format!("{entry:032x}")))
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "accounts",
+                        Json::List(
+                            hops.iter()
+                                .map(|(_, account)| s(format!("{account:032x}")))
+                                .collect(),
+                        ),
                     ),
                 ]);
             }
@@ -7384,6 +7416,28 @@ mod tests {
         assert!(json.contains("\"to_account\":\"00000000000000000000000000000014\""));
         assert!(json.contains("\"legal_entity\":\"0000000000000000000000000000001e\""));
         assert!(json.contains("\"transfers\":3"));
+        assert!(json.contains(&format!("\"value\":\"{}\"", i128::MAX)));
+        run.procedure = "graph.round_trips".into();
+        run.parameters = VerifiedProcedureParameters::GraphRoundTrips {
+            max_hops: 8,
+            max_search_steps: 250_000,
+            period_end_days: 7,
+            window_days: 5,
+        };
+        run.findings[0].statistic = VerifiedProcedureStatistic::RoundTripCycle {
+            hops: vec![(11, 10), (12, 20), (13, 40)],
+            unit: 1,
+            entity: Some(30),
+            mantissa: i128::MAX,
+            scale: 2,
+        };
+        let json = render(&run);
+        assert!(json.contains("\"statistic\":\"round_trip_mantissa\""));
+        assert!(json.contains("\"max_hops\":8"));
+        assert!(json.contains("\"hop_count\":3"));
+        assert!(json.contains("\"entries\":[\"0000000000000000000000000000000b\",\"0000000000000000000000000000000c\",\"0000000000000000000000000000000d\"]"));
+        assert!(json.contains("\"accounts\":[\"0000000000000000000000000000000a\",\"00000000000000000000000000000014\",\"00000000000000000000000000000028\"]"));
+        assert!(json.contains("\"legal_entity\":\"0000000000000000000000000000001e\""));
         assert!(json.contains(&format!("\"value\":\"{}\"", i128::MAX)));
         run.procedure = "numbers.relative_size_factor".into();
         run.parameters = VerifiedProcedureParameters::RelativeSizeFactor {

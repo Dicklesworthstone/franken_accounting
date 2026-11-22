@@ -63,25 +63,58 @@ impl Fixture {
     }
 
     fn run(&self, days: u32) -> (VerifiedProcedure, Vec<u8>) {
+        self.run_profile(profile(days)).unwrap()
+    }
+
+    fn run_profile(
+        &self,
+        profile: VerifiedProcedureParameters,
+    ) -> Result<(VerifiedProcedure, Vec<u8>), ReportError> {
         recompute_version(
             [1; 16],
             100,
             2,
             None,
-            profile(days),
+            profile,
             self.entries.clone(),
             &self.registry,
         )
-        .unwrap()
     }
 }
 
 fn profile(window_days: u32) -> VerifiedProcedureParameters {
     VerifiedProcedureParameters::GraphRoundTrips {
+        max_hops: 2,
         max_search_steps: 250_000,
         period_end_days: 7,
         window_days,
     }
+}
+
+fn cycle_profile(
+    max_hops: u32,
+    window_days: u32,
+    max_search_steps: u32,
+) -> VerifiedProcedureParameters {
+    VerifiedProcedureParameters::GraphRoundTrips {
+        max_hops,
+        max_search_steps,
+        period_end_days: 7,
+        window_days,
+    }
+}
+
+fn paths(report: &VerifiedProcedure) -> Vec<Vec<(u128, u128)>> {
+    let mut paths: Vec<_> = report
+        .findings
+        .iter()
+        .map(|finding| match &finding.statistic {
+            VerifiedProcedureStatistic::RoundTripCycle { hops, .. } => hops.clone(),
+            _ => panic!("wrong statistic"),
+        })
+        .collect();
+    paths.sort();
+    paths
 }
 
 fn pairs(report: &VerifiedProcedure) -> Vec<(u128, u128)> {
@@ -236,9 +269,21 @@ fn round_trips_retain_full_width_amounts_and_authenticated_period_severity() {
 }
 
 #[test]
-fn round_trips_decoder_rejects_multihop_and_malformed_parameter_inventories() {
+fn round_trips_decoder_admits_bounded_hops_and_rejects_malformed_parameter_inventories() {
+    for max_hops in 2..=8 {
+        let mut writer = Writer::default();
+        writer.count(4);
+        for ((name, _), value) in DEFAULTS.iter().zip([max_hops, 250_000, 7, 5]) {
+            writer.bytes(name.as_bytes()).i128(value);
+        }
+        assert_eq!(
+            decode(&mut Reader::new(&writer.buf)).unwrap(),
+            cycle_profile(max_hops as u32, 5, 250_000),
+        );
+    }
     for values in [
-        [3i128, 250_000, 7, 5],
+        [1i128, 250_000, 7, 5],
+        [9, 250_000, 7, 5],
         [2, 0, 7, 5],
         [2, 10_000_001, 7, 5],
         [2, 250_000, -1, 5],
@@ -273,4 +318,159 @@ fn round_trips_decoder_rejects_multihop_and_malformed_parameter_inventories() {
             "procedure_profile"
         );
     }
+}
+
+#[test]
+fn round_trip_cycles_backtrack_and_consume_the_first_complete_temporal_path() {
+    let mut f = Fixture::new();
+    f.registry.account_types.insert(40, 1);
+    f.movement(1, 0, 10, 20, 100);
+    f.movement(2, 1, 20, 30, 100); // Earlier alternative is a dead end.
+    f.movement(3, 1, 20, 40, 100);
+    f.movement(4, 2, 40, 10, 100);
+    f.movement(5, 3, 20, 10, 100); // Direct return loses to the earlier chain.
+    f.movement(6, 4, 10, 20, 100);
+    f.movement(7, 5, 20, 10, 100);
+    let profile = cycle_profile(3, 5, 250_000);
+    let (run, output) = f.run_profile(profile).unwrap();
+    assert_eq!(
+        paths(&run),
+        [vec![(1, 10), (3, 20), (4, 40)], vec![(5, 20), (6, 10)]],
+    );
+    assert_eq!(
+        (run.live_entries, run.live_legs, run.comparisons),
+        (0, 7, 25)
+    );
+    assert!(run.findings.iter().all(|finding| finding.population == 7));
+    assert!(
+        run.findings[0]
+            .narrative
+            .contains("through 3 asset accounts")
+    );
+    // Input iteration does not choose the path or the finding/citation order.
+    f.entries.reverse();
+    assert_eq!(f.run_profile(profile).unwrap().1, output);
+    let bytes = wrap(&output);
+    let decoded = certificate(&bytes).unwrap();
+    assert_eq!(decoded.parameters, profile);
+    assert_eq!(
+        super::super::replay(&decoded, [1; 16], 100, f.entries, &f.registry)
+            .unwrap()
+            .1,
+        output,
+    );
+}
+
+#[test]
+fn round_trip_cycles_enforce_eight_hop_boundary_and_preserve_full_width_amounts() {
+    let mut f = Fixture::new();
+    for index in 0..8u128 {
+        let from = (index + 1) * 10;
+        let to = ((index + 1) % 8 + 1) * 10;
+        f.registry.account_types.insert(from, 1);
+        f.movement(index + 1, 23 + index as i32, from, to, i128::MAX);
+    }
+    assert!(
+        f.run_profile(cycle_profile(7, 7, 100))
+            .unwrap()
+            .0
+            .findings
+            .is_empty()
+    );
+    assert!(
+        f.run_profile(cycle_profile(8, 6, 100))
+            .unwrap()
+            .0
+            .findings
+            .is_empty()
+    );
+    let (run, _) = f.run_profile(cycle_profile(8, 7, 100)).unwrap();
+    assert_eq!(run.findings.len(), 1);
+    assert_eq!(paths(&run)[0].len(), 8);
+    assert_eq!(run.findings[0].statistic.value(), i128::MAX);
+    assert_eq!(run.findings[0].statistic.scale(), 2);
+    assert_eq!(run.findings[0].severity, 3);
+    assert_eq!(run.findings[0].population, 8);
+    assert_eq!(
+        (run.live_entries, run.live_legs, run.comparisons),
+        (0, 8, 39)
+    );
+    // An intermediate account's historical type is part of eligibility.
+    f.registry.account_types.insert(50, 3);
+    assert!(
+        f.run_profile(cycle_profile(8, 7, 100))
+            .unwrap()
+            .0
+            .findings
+            .is_empty()
+    );
+}
+
+#[test]
+fn round_trip_cycles_refuse_all_results_after_search_budget_exhaustion() {
+    let mut f = Fixture::new();
+    f.movement(1, 0, 10, 20, 100);
+    f.movement(2, 1, 20, 30, 100);
+    f.movement(3, 2, 30, 10, 100);
+    // The path completes on step three, but all three outer starts must also
+    // be accounted for. A successful partial finding is never returned.
+    for max_search_steps in [1, 3, 4] {
+        assert_eq!(
+            f.run_profile(cycle_profile(3, 2, max_search_steps))
+                .unwrap_err()
+                .predicate,
+            "procedure_search_limit",
+        );
+    }
+    let (run, _) = f.run_profile(cycle_profile(3, 2, 5)).unwrap();
+    assert_eq!(paths(&run), [vec![(1, 10), (2, 20), (3, 30)]]);
+    assert_eq!(run.comparisons, 8);
+    assert!(
+        Fixture::new()
+            .run_profile(cycle_profile(8, 0, 1))
+            .unwrap()
+            .0
+            .findings
+            .is_empty()
+    );
+}
+
+#[test]
+fn round_trip_cycles_do_not_cross_entity_unit_amount_or_temporal_boundaries() {
+    let mut f = Fixture::new();
+    for (id, day, from, to, unit, amount, entity) in [
+        (1, 0, 10, 20, 1, 100, 7),
+        (2, 1, 20, 30, 1, 100, 8),
+        (3, 1, 30, 10, 1, 100, 7),
+        (4, 1, 20, 30, 2, 100, 7),
+        (5, 1, 20, 30, 1, 101, 7),
+        (6, 2, 20, 30, 1, 100, 7),
+    ] {
+        f.legs(
+            id,
+            day,
+            &[
+                (from, false, unit, amount, Some(entity)),
+                (to, true, unit, amount, Some(entity)),
+            ],
+        );
+    }
+    let profile = cycle_profile(3, 3, 100);
+    assert!(f.run_profile(profile).unwrap().0.findings.is_empty());
+    f.legs(
+        7,
+        3,
+        &[(30, false, 1, 100, Some(7)), (10, true, 1, 100, Some(7))],
+    );
+    let (run, _) = f.run_profile(profile).unwrap();
+    assert_eq!(paths(&run), [vec![(1, 10), (6, 20), (7, 30)]]);
+    assert!(matches!(
+        run.findings[0].statistic,
+        VerifiedProcedureStatistic::RoundTripCycle {
+            entity: Some(7),
+            unit: 1,
+            mantissa: 100,
+            ..
+        }
+    ));
 }
